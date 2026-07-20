@@ -12,6 +12,8 @@ import {
   Document,
   List,
   Setting,
+  CollectionTag,
+  ChatDotRound,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -26,7 +28,15 @@ const menus = [
   { path: '/finance', label: '财务', icon: Coin },
   { path: '/plans', label: '套餐', icon: Goods },
   { path: '/tasks', label: '任务监控', icon: Monitor },
-  { path: '/gallery', label: '画廊审核', icon: Picture },
+]
+
+const communityMenus = [
+  { path: '/prompt-library', label: '提示词库', icon: CollectionTag },
+  { path: '/community', label: '社区管理', icon: ChatDotRound },
+  { path: '/gallery', label: '投稿审核', icon: Picture },
+]
+
+const tailMenus = [
   { path: '/content', label: '内容管理', icon: Document },
   { path: '/audit', label: '审计日志', icon: List },
   { path: '/settings', label: '系统设置', icon: Setting },
@@ -44,6 +54,16 @@ async function onLogout() {
       <div class="logo">StartClouds 后台</div>
       <el-menu router :default-active="route.path" class="menu">
         <el-menu-item v-for="item in menus" :key="item.path" :index="item.path">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </el-menu-item>
+        <el-menu-item-group title="社区运营">
+          <el-menu-item v-for="item in communityMenus" :key="item.path" :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+          </el-menu-item>
+        </el-menu-item-group>
+        <el-menu-item v-for="item in tailMenus" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
         </el-menu-item>
