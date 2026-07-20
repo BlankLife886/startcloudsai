@@ -1,23 +1,22 @@
-FROM python:3.12-slim
+FROM golang:1.26-alpine AS build
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/usr/local
+WORKDIR /src
 
-WORKDIR /app
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-COPY pyproject.toml uv.lock* ./
-RUN if [ -f uv.lock ]; then uv sync --frozen --no-dev --no-install-project; \
-    else uv sync --no-dev --no-install-project; fi
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=build /out/server /app/server
 
 EXPOSE 8000
 
-# server:  sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
-# worker:  arq app.worker.WorkerSettings
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# server:  /app/server serve   （启动时自动执行 goose 迁移，migrations 已 embed）
+# worker:  /app/server worker
+CMD ["/app/server", "serve"]

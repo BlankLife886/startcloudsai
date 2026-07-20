@@ -6,7 +6,7 @@
 
 - 移除 Wallhaven 壁纸浏览与 OpenAI 中转站（AI Gateway）能力。
 - 图片生成统一对接自部署的 [chatgpt2api](https://github.com/yukkcat/chatgpt2api)（OpenAI 兼容接口）。
-- 后端从 Cloudflare Worker 重写为 FastAPI + PostgreSQL + Redis，Docker 统一部署。
+- 后端从 Cloudflare Worker 重写为 Go（Gin + Asynq）+ PostgreSQL + Redis，Docker 统一部署。
 - 文件存储使用 Cloudflare R2（S3 兼容接口，新建 bucket）。
 - 后台重写为轻量管理端。
 
@@ -16,7 +16,7 @@
 .
 ├── apps/web/       # 用户端（Vue 3 + Vite）
 ├── apps/admin/     # 轻量后台（Vue 3 + Vite）
-├── apps/server/    # 后端（FastAPI + SQLAlchemy + arq Worker）
+├── apps/server/    # 后端（Go：Gin + pgx + Asynq Worker）
 ├── deploy/         # nginx 网关配置
 ├── docs/           # 架构、API 契约、数据库设计
 └── docker-compose.yml
@@ -27,8 +27,8 @@
 | 服务 | 说明 |
 | --- | --- |
 | `gateway` | nginx：`/` 用户端、`/admin/` 后台、`/api` 反代后端 |
-| `server` | FastAPI API 服务 |
-| `worker` | arq 任务 Worker，调用 chatgpt2api 出图并写入 R2 |
+| `server` | Go API 服务（Gin，启动时自动执行数据库迁移） |
+| `worker` | Asynq 任务 Worker，调用 chatgpt2api 出图并写入 R2 |
 | `postgres` | 主数据库 |
 | `redis` | 任务队列 + 缓存 |
 
@@ -50,16 +50,16 @@ docker compose up -d --build
 初始化管理员（首次部署后执行一次）：
 
 ```bash
-docker compose exec server python -m app.cli create-admin --email admin@example.com --password <密码>
+docker compose exec server /app/server create-admin --email admin@example.com --password <密码>
 ```
 
 ## 本地开发
 
 ```bash
-# 后端
-cd apps/server && uv sync && uv run uvicorn app.main:app --reload --port 8000
+# 后端 API（自动执行迁移）
+cd apps/server && go run ./cmd/server serve
 # Worker
-cd apps/server && uv run arq app.worker.WorkerSettings
+cd apps/server && go run ./cmd/server worker
 # 用户端
 cd apps/web && npm install && npm run dev
 # 后台
