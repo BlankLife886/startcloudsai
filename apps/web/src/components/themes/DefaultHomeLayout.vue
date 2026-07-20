@@ -1,424 +1,684 @@
 <script setup>
-import { onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
-import { listShareItems } from '@/services/shareGallery'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
+import { useAuthStore } from '@/stores/auth'
+import ShareProgressiveImage from '@/features/share/components/ShareProgressiveImage.vue'
+import HomeCelestialCanvas from '@/features/home-motion/components/HomeCelestialCanvas.vue'
+import { useHomeMotion } from '@/features/home-motion/composables/useHomeMotion'
+import HomeVirtualGrid from './default-home/HomeVirtualGrid.vue'
+import {
+  randomGallerySeed,
+  rotateSlice,
+  seededShuffle,
+  useHomeGalleryData,
+} from './default-home/useHomeGalleryData'
 
-const studios = [
+const router = useRouter()
+const runtimeConfigStore = useRuntimeConfigStore()
+const authStore = useAuthStore()
+const homeRoot = ref(null)
+const celestialRef = ref(null)
+
+/* —— 后台可配置的首页模块开关（沿用原 key：video=云端画廊，mobile/desktop=展墙） —— */
+const homeLayout = computed(() => runtimeConfigStore.getPageLayout('home') || {})
+function isHomeModuleVisible(key) {
+  return homeLayout.value?.[key]?.enabled !== false
+}
+const showHeroSection = computed(() => isHomeModuleVisible('hero'))
+const showCommunitySection = computed(() => isHomeModuleVisible('video'))
+const showMobileSection = computed(() => isHomeModuleVisible('mobile'))
+const showDesktopSection = computed(() => isHomeModuleVisible('desktop'))
+const showRandomSection = computed(() => isHomeModuleVisible('random'))
+
+/* —— 馆藏数据：全部来自共享画廊 GET /api/gallery —— */
+const { galleryItems, galleryStats, isLoading, error, hasMore, reload } = useHomeGalleryData()
+
+/* —— 动效中枢：GSAP ScrollTrigger + anime.js + three.js 星幕 —— */
+const {
+  observeNewReveals,
+  animateNewHeroCells,
+  animateGridRefresh,
+  refreshTriggers,
+  countUpStats,
+  scrambleSeed,
+  popButton,
+} = useHomeMotion(homeRoot, celestialRef)
+
+/* —— 创作工坊：站内六大核心工作台（与顶栏 AI 菜单保持一致） —— */
+const studioEntries = [
   {
+    key: 'text-to-image',
     to: '/text-to-image',
-    icon: 'bi-stars',
+    icon: 'bi-magic',
     title: '文生图',
-    description: '一句话生成高清图片，支持参考图与多比例输出。',
-    tone: 'violet',
+    tag: 'Text → Image',
+    desc: '以文字为笔，把想象绘成高清图像与插画，画完即可投稿入馆',
   },
   {
+    key: 'coloring',
     to: '/ai-illustration-coloring',
     icon: 'bi-brush-fill',
     title: '插画染色',
-    description: '上传线稿，AI 智能上色并保留全部笔触细节。',
-    tone: 'rose',
+    tag: 'Lineart Color',
+    desc: '上传线稿，AI 注入色彩与光影',
   },
   {
+    key: 'ui-design',
     to: '/design-workshop',
     icon: 'bi-bezier2',
     title: 'UI 设计稿',
-    description: '生成前端界面设计稿，透明 PNG 与 SVG 一键导出。',
-    tone: 'cyan',
+    tag: 'Product UI',
+    desc: '描述产品灵感，产出高保真界面设计稿',
   },
   {
+    key: 'model-sheet',
     to: '/model-sheet',
     icon: 'bi-person-bounding-box',
     title: '超高清模型图',
-    description: '多视角模型参考图，为建模与手办制作提供素材。',
-    tone: 'amber',
+    tag: 'Ultra HD',
+    desc: '角色设定与模型图，超高清细节呈现',
   },
   {
+    key: 'game-art',
     to: '/game-art',
     icon: 'bi-controller',
     title: '游戏设计',
-    description: '角色、场景、道具、图标与贴图等游戏生产素材。',
-    tone: 'emerald',
+    tag: 'Game Asset',
+    desc: '原画、图标、场景资产一站生成',
   },
   {
+    key: 'puzzle',
     to: '/ai-puzzle',
     icon: 'bi-puzzle-fill',
     title: 'AI 拼图',
-    description: '选择模板在线制作照片拼图，导出高清 PNG。',
-    tone: 'blue',
+    tag: 'Puzzle',
+    desc: '把喜欢的画面拆成星屑再拼回',
   },
 ]
 
-const galleryItems = ref([])
-const galleryLoading = ref(true)
+/* —— 序厅 —— */
+const heroCollage = computed(() => rotateSlice(galleryItems.value, 0, 5))
+const primaryCtaTo = computed(() => (authStore.isAuthenticated ? '/text-to-image' : '/auth'))
+const primaryCtaLabel = computed(() => (authStore.isAuthenticated ? '开始创作' : '登录开启创作'))
+const heroStats = computed(() => ({
+  works: galleryStats.value.works,
+  creators: galleryStats.value.creators,
+  studios: studioEntries.length,
+}))
+const hasGallery = computed(() => galleryItems.value.length > 0)
 
-onMounted(async () => {
-  try {
-    const { items } = await listShareItems({ limit: 12 })
-    galleryItems.value = items.filter((item) => item.coverUrl || item.mediaUrls?.length)
-  } catch {
-    galleryItems.value = []
-  } finally {
-    galleryLoading.value = false
-  }
+/* 工坊卡片配图：从馆藏轮流取画，避开序厅拼贴已用的 5 张 */
+const studioCards = computed(() => {
+  const art = rotateSlice(galleryItems.value, 5, studioEntries.length)
+  return studioEntries.map((entry, index) => ({ ...entry, art: art[index] || null }))
 })
 
-function itemCover(item) {
-  return item.coverUrl || item.mediaUrls?.[0] || ''
+/* —— 云端画廊（Hall 03）—— */
+const communityFeatured = computed(() => rotateSlice(galleryItems.value, 5, 4))
+const communityPopular = computed(() => rotateSlice(galleryItems.value, 9, 5))
+const hasCommunityContent = computed(
+  () => communityFeatured.value.length > 0 || communityPopular.value.length > 0,
+)
+
+/* —— 展墙（Hall 04/05）：无横竖屏元数据，按奇偶切分错开陈列 —— */
+const portraitWallItems = computed(() => {
+  const items = galleryItems.value
+  if (items.length < 8) return items
+  return items.filter((_, index) => index % 2 === 0)
+})
+const landscapeWallItems = computed(() => {
+  const items = galleryItems.value
+  if (items.length < 8) return items
+  return items.filter((_, index) => index % 2 === 1)
+})
+
+/* —— 随机星尘（Hall 06）：本地种子洗牌，换种子即换一批 —— */
+const randomSeed = ref(randomGallerySeed())
+const randomWallItems = computed(() =>
+  seededShuffle(galleryItems.value, randomSeed.value).slice(0, 12),
+)
+
+async function refreshRandomWithMotion(event) {
+  popButton(event?.currentTarget)
+  randomSeed.value = randomGallerySeed()
+  await nextTick()
+  animateGridRefresh('[data-home-hall="06"]')
+  scrambleSeed()
 }
+
+/* —— 工具 —— */
+function galleryRoute(item) {
+  return { name: 'share', query: { item: item.id } }
+}
+
+function goStudio(studio) {
+  router.push(studio.to)
+}
+
+function compactNumber(value = 0) {
+  const number = Number(value || 0)
+  if (number >= 10000) return `${(number / 10000).toFixed(number >= 100000 ? 0 : 1)}w`
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`
+  return String(Math.max(0, Math.round(number)))
+}
+
+function padIndex(index) {
+  return String(index + 1).padStart(2, '0')
+}
+
+function shortDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+/* —— 数据到达后的动效补挂 —— */
+// 骨架屏 → 内容 / 错误态切换都会渲染新的 reveal 节点，需要补挂显现观察
+watch(
+  () => [galleryItems.value.length, isLoading.value, error.value],
+  async () => {
+    await nextTick()
+    observeNewReveals()
+    refreshTriggers()
+  },
+)
+
+watch(
+  () => heroCollage.value.map((item) => item.id).join('|'),
+  async (fingerprint) => {
+    if (!fingerprint) return
+    await nextTick()
+    animateNewHeroCells()
+  },
+)
+
+watch(
+  () => [isLoading.value, hasGallery.value],
+  async ([loading, ready]) => {
+    if (loading || !ready) return
+    await nextTick()
+    countUpStats()
+  },
+)
+
+onMounted(() => {
+  document.documentElement.classList.add('starcloud-home-page')
+})
+
+onBeforeUnmount(() => {
+  document.documentElement.classList.remove('starcloud-home-page')
+})
 </script>
 
 <template>
-  <div class="home-page">
-    <!-- 星空氛围背景 -->
-    <div class="home-sky" aria-hidden="true">
-      <span v-for="n in 40" :key="n" class="home-star" :style="{
-        left: `${(n * 61) % 100}%`,
-        top: `${(n * 37) % 100}%`,
-        animationDelay: `${(n % 9) * 0.7}s`,
-        animationDuration: `${3 + (n % 5)}s`,
-      }"></span>
+  <div ref="homeRoot" class="starcloud-home">
+    <HomeCelestialCanvas ref="celestialRef" />
+    <div class="home-atmosphere" aria-hidden="true"></div>
+    <div class="home-orbit" aria-hidden="true">
+      <i class="home-orbit__ring is-one"></i>
+      <i class="home-orbit__ring is-two"></i>
+      <span v-for="index in 7" :key="index" class="home-spark"></span>
     </div>
+    <div class="home-godrays" aria-hidden="true">
+      <i class="home-godray"></i>
+      <i class="home-godray"></i>
+      <i class="home-godray"></i>
+    </div>
+    <div class="home-spotlight" aria-hidden="true"></div>
+    <div class="home-vignette" aria-hidden="true"></div>
+    <div class="home-grain" aria-hidden="true"></div>
+    <div class="home-cursor" aria-hidden="true"><i></i><span></span></div>
+    <aside class="home-journey" aria-hidden="true">
+      <span class="home-journey__number">01</span>
+      <i class="home-journey__rail"><b></b></i>
+      <em class="home-journey__name">Prologue</em>
+    </aside>
 
-    <!-- Hero -->
-    <section class="home-hero">
-      <p class="home-hero-eyebrow">StarCloudIsAI · 星空云绘</p>
-      <h1 class="home-hero-title">在云端星空里，<br />把想象绘成图像</h1>
-      <p class="home-hero-subtitle">
-        文生图、插画染色、UI 设计稿、模型图、游戏素材与拼图 —— 一站式 AI 创作工作台。
-      </p>
-      <div class="home-hero-actions">
-        <RouterLink class="home-btn is-primary" to="/text-to-image">
-          <i class="bi bi-stars"></i> 开始创作
-        </RouterLink>
-        <RouterLink class="home-btn is-ghost" to="/share">
-          <i class="bi bi-images"></i> 逛逛画廊
-        </RouterLink>
+    <!-- Hall 01 · 序厅 -->
+    <section
+      v-if="showHeroSection"
+      class="home-hero"
+      data-home-hall="01"
+      data-home-hall-name="Prologue"
+    >
+      <div class="home-hero__masthead" aria-hidden="true">
+        <div class="home-hero__masthead-index">
+          <b>SC / 01</b>
+          <span>云层编号 · 今日星幕</span>
+        </div>
+        <div class="home-hero__masthead-map">
+          <i></i>
+          <span>31°13′ N · 121°28′ E</span>
+          <i></i>
+        </div>
+        <div class="home-hero__masthead-live">
+          <i></i>
+          <span>Collection online</span>
+        </div>
+      </div>
+
+      <div class="home-shape-grid" aria-hidden="true"></div>
+
+      <div class="home-hero__copy" data-home-reveal>
+        <div class="home-spine" aria-hidden="true">
+          <span>StarCloud Atlas</span>
+          <i></i>
+          <em>Vol. 01</em>
+        </div>
+        <div class="home-hero__body">
+          <p class="home-eyebrow">Hall 01 · Prologue</p>
+          <h1 class="home-hero__title">
+            <span class="home-seal" aria-hidden="true">云绘</span>
+            <span class="home-title-line is-first"><span>星空为幕</span></span
+            ><br />
+            <span class="home-title-line is-second"><span>云上作画</span></span>
+          </h1>
+          <p class="home-hero__lede">
+            星空云绘是一座云上美术馆：以 AI 为画笔生成图像与插画，
+            在社区展厅分享创作，也可以随时巡览馆藏，把星空带回你的屏幕。
+          </p>
+
+          <div class="home-hero__cta">
+            <router-link :to="primaryCtaTo" class="is-primary">
+              {{ primaryCtaLabel }}
+            </router-link>
+            <router-link to="/share">进入画廊巡馆</router-link>
+          </div>
+
+          <div class="home-quick" aria-label="创作工坊快捷入口">
+            <em>Quick</em>
+            <button
+              v-for="studio in studioEntries"
+              :key="studio.key"
+              type="button"
+              @click="goStudio(studio)"
+            >
+              {{ studio.title }}
+            </button>
+          </div>
+
+          <dl v-if="hasGallery" class="home-stats">
+            <div>
+              <dt>Works</dt>
+              <dd>{{ compactNumber(heroStats.works) }}{{ hasMore ? '+' : '' }}</dd>
+            </div>
+            <div>
+              <dt>Creators</dt>
+              <dd>{{ compactNumber(heroStats.creators) }}</dd>
+            </div>
+            <div>
+              <dt>Studios</dt>
+              <dd>{{ compactNumber(heroStats.studios) }}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <div class="home-hero__wall" data-home-reveal>
+        <svg
+          class="home-constellation"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <path
+            class="home-constellation__line"
+            pathLength="100"
+            d="M3 71 L24 45 L42 56 L66 20 L96 34"
+          />
+          <path
+            class="home-constellation__line is-secondary"
+            pathLength="100"
+            d="M24 45 L18 13 M42 56 L57 88 M66 20 L83 72"
+          />
+          <circle class="home-constellation__node" cx="3" cy="71" r="0.75" />
+          <circle class="home-constellation__node" cx="24" cy="45" r="1" />
+          <circle class="home-constellation__node" cx="42" cy="56" r="0.7" />
+          <circle class="home-constellation__node" cx="66" cy="20" r="1.15" />
+          <circle class="home-constellation__node" cx="96" cy="34" r="0.7" />
+          <circle class="home-constellation__node" cx="57" cy="88" r="0.6" />
+          <circle class="home-constellation__node" cx="83" cy="72" r="0.85" />
+        </svg>
+        <div v-if="isLoading && !heroCollage.length" class="home-hero__collage is-skeleton">
+          <span v-for="index in 5" :key="index" class="home-skeleton-block"></span>
+        </div>
+        <div v-else-if="error && !heroCollage.length" class="home-section-error">
+          <i class="bi bi-exclamation-circle"></i>
+          <strong>{{ error }}</strong>
+          <button type="button" @click="reload">重新加载</button>
+        </div>
+        <div v-else-if="!heroCollage.length" class="home-section-error">
+          <i class="bi bi-images"></i>
+          <strong>展墙虚位以待，等你挂上第一幅作品</strong>
+          <button type="button" @click="router.push('/text-to-image')">去创作</button>
+        </div>
+        <div v-else class="home-hero__collage">
+          <router-link
+            v-for="(item, index) in heroCollage"
+            :key="item.id"
+            :to="galleryRoute(item)"
+            class="home-hero__cell"
+            :class="{ 'is-primary': index === 0 }"
+          >
+            <ShareProgressiveImage :src="item.cover" :alt="item.title" :eager="index === 0" />
+            <span class="home-cell-mark">No.{{ padIndex(index) }}</span>
+          </router-link>
+        </div>
+        <p class="home-hero__wall-note">Collection · 社区画廊近期入馆作品</p>
+      </div>
+
+      <div class="home-hero__footer" aria-hidden="true">
+        <div class="home-hero__edition">
+          <em>Vol. 01</em>
+          <span>
+            Curated by Star Clouds
+            <small>AI Art · Gallery · Community</small>
+          </span>
+        </div>
+        <div class="home-hero__scroll"><i></i><span>Scroll to explore</span><b>↓</b></div>
       </div>
     </section>
 
-    <!-- AI 创作入口 -->
-    <section class="home-section">
-      <header class="home-section-head">
-        <h2>AI 创作入口</h2>
-        <p>六大工作台，覆盖从灵感草图到生产素材的完整链路。</p>
+    <!-- Hall 02 · 创作工坊 -->
+    <section
+      class="home-hall home-studios"
+      data-hall="02"
+      data-home-hall="02"
+      data-home-hall-name="Studios"
+    >
+      <header class="home-hall-head" data-home-reveal>
+        <div class="home-hall-head__label">
+          <em>Hall 02</em>
+          <i></i>
+          <span>Studios</span>
+        </div>
+        <h2>创作工坊</h2>
+        <p>从文字到高清图像，从线稿到成画，再到 UI 设计稿与游戏资产——六间工坊，全天开放。</p>
       </header>
-      <div class="home-studio-grid">
-        <RouterLink
-          v-for="studio in studios"
-          :key="studio.to"
+      <div class="home-studios__grid" data-home-reveal>
+        <router-link
+          v-for="(studio, index) in studioCards"
+          :key="studio.key"
           :to="studio.to"
           class="home-studio-card"
-          :data-tone="studio.tone"
+          :class="{ 'is-feature': index === 0 }"
         >
-          <span class="home-studio-icon"><i class="bi" :class="studio.icon"></i></span>
-          <h3>{{ studio.title }}</h3>
-          <p>{{ studio.description }}</p>
-          <span class="home-studio-cta">进入工作台 <i class="bi bi-arrow-right"></i></span>
-        </RouterLink>
+          <span v-if="studio.art" class="home-studio-card__art" aria-hidden="true">
+            <ShareProgressiveImage :src="studio.art.cover" alt="" :eager="index === 0" />
+          </span>
+          <span class="home-studio-card__index">{{ padIndex(index) }}</span>
+          <span class="home-studio-card__tag">{{ studio.tag }}</span>
+          <span class="home-studio-card__body">
+            <i class="bi" :class="studio.icon" aria-hidden="true"></i>
+            <strong>{{ studio.title }}</strong>
+            <small>{{ studio.desc }}</small>
+            <span class="home-studio-card__arrow" aria-hidden="true">进入工坊 →</span>
+          </span>
+        </router-link>
       </div>
     </section>
 
-    <!-- 画廊精选 -->
-    <section class="home-section">
-      <header class="home-section-head">
-        <h2>画廊精选</h2>
-        <p>社区创作者提交并通过审核的近期作品。</p>
-        <RouterLink class="home-section-more" to="/share">查看全部 <i class="bi bi-arrow-right"></i></RouterLink>
+    <!-- 大字跑马灯 · 分厅走廊 -->
+    <div class="home-marquee" aria-hidden="true">
+      <div class="home-marquee__track">
+        <span v-for="n in 2" :key="n">
+          <b>星空为幕</b> STARCLOUD ATLAS <i></i> AI ART <i></i> <b>云上作画</b> CLOUD GALLERY
+          <i></i> COMMUNITY WORKS <i></i>
+        </span>
+      </div>
+    </div>
+
+    <!-- Hall 03 · 云端画廊（社区精选） -->
+    <section
+      v-if="showCommunitySection"
+      class="home-hall home-community"
+      data-hall="03"
+      data-home-hall="03"
+      data-home-hall-name="Gallery"
+    >
+      <header class="home-hall-head" data-home-reveal>
+        <div class="home-hall-head__label">
+          <em>Hall 03</em>
+          <i></i>
+          <span>Gallery</span>
+        </div>
+        <h2>云端画廊</h2>
+        <p>创作者把 AI 作品挂进社区展厅，这里是最近被挂上墙的几幅。</p>
+        <router-link class="home-hall-head__action" to="/share">进入画廊 →</router-link>
       </header>
 
-      <div v-if="galleryLoading" class="home-gallery-grid">
-        <div v-for="n in 8" :key="n" class="home-gallery-skeleton"></div>
+      <div
+        v-if="isLoading && !hasCommunityContent"
+        class="home-community__loading"
+        data-home-reveal
+      >
+        <span v-for="index in 5" :key="index" class="home-skeleton-block"></span>
       </div>
-      <div v-else-if="galleryItems.length" class="home-gallery-grid">
-        <RouterLink
-          v-for="item in galleryItems"
-          :key="item.id"
-          to="/share"
-          class="home-gallery-card"
+      <div v-else-if="error && !hasCommunityContent" class="home-section-error" data-home-reveal>
+        <i class="bi bi-cloud-slash"></i>
+        <strong>{{ error }}</strong>
+        <button type="button" @click="reload">重新连接展厅</button>
+      </div>
+      <div v-else-if="!hasCommunityContent" class="home-section-error" data-home-reveal>
+        <i class="bi bi-images"></i>
+        <strong>展厅还没有作品，快去创作第一幅吧</strong>
+        <button type="button" @click="router.push('/text-to-image')">立即创作</button>
+      </div>
+      <div v-else class="home-community__layout">
+        <div v-if="communityFeatured.length" class="home-community__featured" data-home-reveal>
+          <router-link
+            v-for="(item, index) in communityFeatured"
+            :key="item.id"
+            :to="galleryRoute(item)"
+            class="home-community-card"
+          >
+            <div class="home-community-card__media">
+              <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+              <span class="home-cell-mark">Featured {{ padIndex(index) }}</span>
+            </div>
+            <footer>
+              <strong :title="item.title">{{ item.title }}</strong>
+              <small>{{ item.authorName }}</small>
+            </footer>
+          </router-link>
+        </div>
+
+        <aside v-if="communityPopular.length" class="home-community__rank" data-home-reveal>
+          <header>
+            <em>Board</em>
+            <strong>近期入馆</strong>
+          </header>
+          <ol>
+            <li v-for="(item, index) in communityPopular" :key="item.id">
+              <router-link :to="galleryRoute(item)">
+                <b>{{ padIndex(index) }}</b>
+                <ShareProgressiveImage :src="item.cover" alt="" />
+                <span>
+                  <strong>{{ item.title }}</strong>
+                  <small>{{ item.authorName }}</small>
+                </span>
+                <em><i class="bi bi-calendar3"></i>{{ shortDate(item.createdAt) }}</em>
+              </router-link>
+            </li>
+          </ol>
+          <div class="home-community__tags">
+            <router-link
+              v-for="studio in studioEntries.slice(0, 4)"
+              :key="studio.key"
+              :to="studio.to"
+            >
+              # {{ studio.title }}
+            </router-link>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Hall 04 · 竖幅星轨 -->
+    <section
+      v-if="showMobileSection && (isLoading || portraitWallItems.length)"
+      class="home-hall home-wall"
+      data-hall="04"
+      data-home-hall="04"
+      data-home-hall-name="Portrait"
+    >
+      <header class="home-hall-head" data-home-reveal>
+        <div class="home-hall-head__label">
+          <em>Hall 04</em>
+          <i></i>
+          <span>Portrait</span>
+        </div>
+        <h2>竖幅星轨</h2>
+        <p>竖幅陈列的社区馆藏，适合握在手心里细看。</p>
+      </header>
+
+      <div v-if="isLoading && !portraitWallItems.length" class="home-wall__skeleton is-portrait">
+        <span v-for="index in 6" :key="index" class="home-skeleton-block"></span>
+      </div>
+      <HomeVirtualGrid
+        v-else
+        :items="portraitWallItems"
+        :min-column-width="170"
+        :min-columns="2"
+        :gap="14"
+        :aspect-ratio="0.5715"
+        :meta-height="30"
+      >
+        <template #default="{ item }">
+          <router-link :to="galleryRoute(item)" class="home-work-card is-portrait">
+            <div class="home-work-card__media">
+              <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+            </div>
+            <footer>
+              <em>{{ shortDate(item.createdAt) || 'Portrait' }}</em>
+              <span><i class="bi bi-person-circle"></i>{{ item.authorName }}</span>
+            </footer>
+          </router-link>
+        </template>
+      </HomeVirtualGrid>
+    </section>
+
+    <!-- Hall 05 · 横幅星野 -->
+    <section
+      v-if="showDesktopSection && (isLoading || landscapeWallItems.length)"
+      class="home-hall home-wall"
+      data-hall="05"
+      data-home-hall="05"
+      data-home-hall-name="Landscape"
+    >
+      <header class="home-hall-head" data-home-reveal>
+        <div class="home-hall-head__label">
+          <em>Hall 05</em>
+          <i></i>
+          <span>Landscape</span>
+        </div>
+        <h2>横幅星野</h2>
+        <p>横幅展墙上的社区新作，铺满整块屏幕的辽阔。</p>
+      </header>
+
+      <div v-if="isLoading && !landscapeWallItems.length" class="home-wall__skeleton">
+        <span v-for="index in 6" :key="index" class="home-skeleton-block"></span>
+      </div>
+      <HomeVirtualGrid
+        v-else
+        :items="landscapeWallItems"
+        :min-column-width="280"
+        :min-columns="2"
+        :gap="16"
+        :aspect-ratio="1.7778"
+        :meta-height="30"
+      >
+        <template #default="{ item }">
+          <router-link :to="galleryRoute(item)" class="home-work-card">
+            <div class="home-work-card__media">
+              <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+            </div>
+            <footer>
+              <em>{{ shortDate(item.createdAt) || 'Landscape' }}</em>
+              <span><i class="bi bi-person-circle"></i>{{ item.authorName }}</span>
+            </footer>
+          </router-link>
+        </template>
+      </HomeVirtualGrid>
+    </section>
+
+    <!-- 大字跑马灯 · 分厅走廊 -->
+    <div class="home-marquee" data-reverse="true" aria-hidden="true">
+      <div class="home-marquee__track">
+        <span v-for="n in 2" :key="n">
+          <b>随机星尘</b> STARDUST SEED <i></i> PORTRAIT <i></i> <b>横幅星野</b> LANDSCAPE
+          <i></i> COLLECTION <i></i>
+        </span>
+      </div>
+    </div>
+
+    <!-- Hall 06 · 随机星尘 -->
+    <section
+      v-if="showRandomSection && (isLoading || randomWallItems.length)"
+      class="home-hall home-wall home-random"
+      data-hall="06"
+      data-home-hall="06"
+      data-home-hall-name="Stardust"
+    >
+      <header class="home-hall-head" data-home-reveal>
+        <div class="home-hall-head__label">
+          <em>Hall 06</em>
+          <i></i>
+          <span>Stardust</span>
+        </div>
+        <h2>随机星尘</h2>
+        <p>用一颗随机种子重洗馆藏，说不定就有让你停下脚步的那一张。</p>
+        <button
+          class="home-hall-head__action"
+          type="button"
+          :disabled="isLoading"
+          @click="refreshRandomWithMotion"
         >
-          <img :src="itemCover(item)" :alt="item.title || 'AI 作品'" loading="lazy" />
-          <span class="home-gallery-meta">
-            <strong>{{ item.title || 'AI 作品' }}</strong>
-            <small v-if="item.author?.username">@{{ item.author.username }}</small>
-          </span>
-        </RouterLink>
+          <i class="bi bi-shuffle" :class="{ spin: isLoading }"></i>
+          换一批星尘
+        </button>
+      </header>
+      <p class="home-random__seed" data-home-reveal>Seed · {{ randomSeed }}</p>
+
+      <div v-if="isLoading && !randomWallItems.length" class="home-wall__skeleton">
+        <span v-for="index in 6" :key="index" class="home-skeleton-block"></span>
       </div>
-      <div v-else class="home-gallery-empty">
-        <i class="bi bi-image"></i>
-        <p>画廊暂时还没有作品，快去创作第一幅吧。</p>
-        <RouterLink class="home-btn is-primary" to="/text-to-image">立即创作</RouterLink>
+      <HomeVirtualGrid
+        v-else
+        :items="randomWallItems"
+        :min-column-width="240"
+        :min-columns="2"
+        :gap="16"
+        :aspect-ratio="1.5"
+        :meta-height="30"
+      >
+        <template #default="{ item }">
+          <router-link :to="galleryRoute(item)" class="home-work-card">
+            <div class="home-work-card__media">
+              <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+            </div>
+            <footer>
+              <em>{{ shortDate(item.createdAt) || 'Random' }}</em>
+              <span><i class="bi bi-person-circle"></i>{{ item.authorName }}</span>
+            </footer>
+          </router-link>
+        </template>
+      </HomeVirtualGrid>
+    </section>
+
+    <!-- 馆末落款 -->
+    <section class="home-outro" data-home-reveal data-home-hall="07" data-home-hall-name="Epilogue">
+      <p class="home-outro__mono">StarCloudIsAI · Cloud Painted Sky</p>
+      <h2>把星空带回你的屏幕</h2>
+      <div class="home-outro__actions">
+        <router-link to="/text-to-image" class="is-primary">开始创作</router-link>
+        <router-link to="/share">逛逛画廊</router-link>
       </div>
     </section>
   </div>
 </template>
 
-<style scoped>
-.home-page {
-  position: relative;
-  min-height: 100vh;
-  padding: 0 clamp(16px, 4vw, 48px) 80px;
-  color: var(--text-color, #f0f0f0);
-  overflow: hidden;
-}
-
-.home-sky {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(1200px 500px at 70% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
-    radial-gradient(900px 420px at 15% 10%, rgba(56, 189, 248, 0.1), transparent 65%);
-}
-
-.home-star {
-  position: absolute;
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.7);
-  animation: home-star-twinkle 4s ease-in-out infinite;
-}
-
-@keyframes home-star-twinkle {
-  0%, 100% { opacity: 0.15; transform: scale(0.8); }
-  50% { opacity: 0.9; transform: scale(1.25); }
-}
-
-.home-hero {
-  position: relative;
-  max-width: 860px;
-  margin: 0 auto;
-  padding: clamp(64px, 12vh, 140px) 0 clamp(40px, 7vh, 80px);
-  text-align: center;
-}
-
-.home-hero-eyebrow {
-  margin-bottom: 14px;
-  font-size: 13px;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(165, 180, 252, 0.85);
-}
-
-.home-hero-title {
-  margin: 0 0 18px;
-  font-size: clamp(34px, 6vw, 60px);
-  font-weight: 700;
-  line-height: 1.16;
-  background: linear-gradient(120deg, #e0e7ff 20%, #a5b4fc 55%, #67e8f9 90%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.home-hero-subtitle {
-  margin: 0 auto 30px;
-  max-width: 560px;
-  font-size: clamp(14px, 1.8vw, 17px);
-  line-height: 1.7;
-  color: rgba(226, 232, 240, 0.72);
-}
-
-.home-hero-actions {
-  display: flex;
-  justify-content: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.home-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 26px;
-  border-radius: 999px;
-  font-size: 15px;
-  font-weight: 600;
-  text-decoration: none;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-}
-
-.home-btn.is-primary {
-  color: #0b1020;
-  background: linear-gradient(120deg, #a5b4fc, #67e8f9);
-  box-shadow: 0 10px 30px rgba(103, 232, 249, 0.22);
-}
-
-.home-btn.is-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(103, 232, 249, 0.3); }
-
-.home-btn.is-ghost {
-  color: rgba(226, 232, 240, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.32);
-  background: rgba(15, 23, 42, 0.4);
-}
-
-.home-btn.is-ghost:hover { transform: translateY(-2px); background: rgba(30, 41, 59, 0.55); }
-
-.home-section {
-  position: relative;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding-top: clamp(44px, 7vh, 72px);
-}
-
-.home-section-head {
-  position: relative;
-  margin-bottom: 26px;
-}
-
-.home-section-head h2 {
-  margin: 0 0 6px;
-  font-size: clamp(22px, 3vw, 30px);
-  font-weight: 700;
-}
-
-.home-section-head p {
-  margin: 0;
-  color: rgba(226, 232, 240, 0.6);
-  font-size: 14px;
-}
-
-.home-section-more {
-  position: absolute;
-  right: 0;
-  top: 8px;
-  color: rgba(165, 180, 252, 0.9);
-  font-size: 14px;
-  text-decoration: none;
-}
-
-.home-section-more:hover { color: #c7d2fe; }
-
-.home-studio-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 18px;
-}
-
-.home-studio-card {
-  --tone: 129, 140, 248;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 24px;
-  border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: linear-gradient(160deg, rgba(var(--tone), 0.09), rgba(15, 23, 42, 0.55) 55%);
-  text-decoration: none;
-  color: inherit;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.home-studio-card[data-tone='rose'] { --tone: 244, 114, 182; }
-.home-studio-card[data-tone='cyan'] { --tone: 34, 211, 238; }
-.home-studio-card[data-tone='amber'] { --tone: 251, 191, 36; }
-.home-studio-card[data-tone='emerald'] { --tone: 52, 211, 153; }
-.home-studio-card[data-tone='blue'] { --tone: 96, 165, 250; }
-
-.home-studio-card:hover {
-  transform: translateY(-4px);
-  border-color: rgba(var(--tone), 0.45);
-  box-shadow: 0 18px 44px rgba(var(--tone), 0.14);
-}
-
-.home-studio-icon {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  font-size: 20px;
-  color: rgb(var(--tone));
-  background: rgba(var(--tone), 0.14);
-}
-
-.home-studio-card h3 { margin: 4px 0 0; font-size: 18px; }
-
-.home-studio-card p {
-  margin: 0;
-  flex: 1;
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: rgba(226, 232, 240, 0.62);
-}
-
-.home-studio-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: rgb(var(--tone));
-}
-
-.home-gallery-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
-}
-
-.home-gallery-card {
-  position: relative;
-  display: block;
-  border-radius: 14px;
-  overflow: hidden;
-  aspect-ratio: 4 / 3;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.5);
-}
-
-.home-gallery-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.28s ease;
-}
-
-.home-gallery-card:hover img { transform: scale(1.05); }
-
-.home-gallery-meta {
-  position: absolute;
-  inset: auto 0 0;
-  padding: 26px 12px 10px;
-  display: flex;
-  flex-direction: column;
-  background: linear-gradient(transparent, rgba(2, 6, 23, 0.86));
-}
-
-.home-gallery-meta strong {
-  font-size: 13.5px;
-  color: #f1f5f9;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.home-gallery-meta small { font-size: 11.5px; color: rgba(203, 213, 225, 0.72); }
-
-.home-gallery-skeleton {
-  aspect-ratio: 4 / 3;
-  border-radius: 14px;
-  background: linear-gradient(110deg, rgba(30, 41, 59, 0.6) 30%, rgba(51, 65, 85, 0.6) 50%, rgba(30, 41, 59, 0.6) 70%);
-  background-size: 200% 100%;
-  animation: home-skeleton-wave 1.4s ease infinite;
-}
-
-@keyframes home-skeleton-wave {
-  to { background-position: -200% 0; }
-}
-
-.home-gallery-empty {
-  display: grid;
-  place-items: center;
-  gap: 12px;
-  padding: 60px 20px;
-  border-radius: 18px;
-  border: 1px dashed rgba(148, 163, 184, 0.3);
-  color: rgba(226, 232, 240, 0.6);
-  text-align: center;
-}
-
-.home-gallery-empty i { font-size: 34px; }
-.home-gallery-empty p { margin: 0; }
-</style>
+<style src="./default-home/home-gallery.css"></style>
+<style src="@/features/home-motion/styles/home-motion.css"></style>

@@ -1,39 +1,111 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { listShareItems } from '@/services/shareGallery'
+import { useAuthStore } from '@/stores/auth'
+import ShareProgressiveImage from '@/features/share/components/ShareProgressiveImage.vue'
+import { useSharePageMotion } from '@/features/share/composables/useSharePageMotion'
 
+const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
+
+const pageRoot = ref(null)
+const feedRoot = ref(null)
+const detailRoot = ref(null)
+
+/* —— 作品列表：GET /api/gallery，cursor 分页做成前后翻页 —— */
 const items = ref([])
 const loading = ref(true)
-const loadingMore = ref(false)
-const cursor = ref(null)
-const errorMessage = ref('')
-const activeItem = ref(null)
+const error = ref('')
+const page = ref(1)
+const pageSize = 16
+const hasMore = ref(false)
+const pageCursors = ref([''])
+let listRequestId = 0
 
-async function loadPage({ append = false } = {}) {
-  if (append) {
-    if (!cursor.value || loadingMore.value) return
-    loadingMore.value = true
-  } else {
-    loading.value = true
-  }
-  errorMessage.value = ''
-  try {
-    const { items: pageItems, nextCursor } = await listShareItems({
-      limit: 24,
-      cursor: append ? cursor.value : '',
-    })
-    items.value = append ? [...items.value, ...pageItems] : pageItems
-    cursor.value = nextCursor
-  } catch (error) {
-    errorMessage.value = error?.message || '画廊读取失败'
-  } finally {
-    loading.value = false
-    loadingMore.value = false
+/* 首页精选轮播与统计取自第一页样本，翻页时保持稳定 */
+const spotlightItems = ref([])
+const seenItems = ref(new Map())
+
+const heroIndex = ref(0)
+const heroPaused = ref(false)
+const heroTransitioning = ref(false)
+let heroTimer = 0
+let heroTransitionTimer = 0
+
+const detailItem = ref(null)
+const detailOpen = ref(false)
+const detailClosing = ref(false)
+const detailMediaIndex = ref(0)
+
+const categoryStuck = ref(false)
+const categorySentinelRef = ref(null)
+let categoryStuckObserver = null
+
+const { playDetailLeave } = useSharePageMotion({
+  pageRef: pageRoot,
+  feedRef: feedRoot,
+  detailRef: detailRoot,
+  detailOpen,
+  loading,
+  items,
+})
+
+function normalizeItem(raw) {
+  const cover = raw?.coverUrl || raw?.mediaUrls?.[0] || ''
+  if (!raw?.id || !cover) return null
+  return {
+    id: String(raw.id),
+    title: String(raw.title || '').trim() || 'AI 作品',
+    cover,
+    mediaUrls: Array.isArray(raw.mediaUrls) && raw.mediaUrls.length ? raw.mediaUrls : [cover],
+    authorName: raw.author?.username || '社区创作者',
+    authorAvatar: raw.author?.avatarUrl || '',
+    createdAt: raw.createdAt || '',
   }
 }
 
-function itemCover(item) {
-  return item.coverUrl || item.mediaUrls?.[0] || ''
+const heroItems = computed(() => spotlightItems.value.slice(0, 5))
+const currentHero = computed(() => {
+  const rows = heroItems.value
+  return rows[heroIndex.value % Math.max(1, rows.length)] || null
+})
+const hotItems = computed(() => {
+  const pool = spotlightItems.value
+  return pool.length > 5 ? pool.slice(5, 10) : pool.slice(0, 5)
+})
+
+const galleryStats = computed(() => {
+  const rows = [...seenItems.value.values()]
+  return {
+    works: rows.length,
+    creators: new Set(rows.map((item) => item.authorName)).size,
+  }
+})
+
+const topCreators = computed(() => {
+  const map = new Map()
+  for (const item of seenItems.value.values()) {
+    const entry = map.get(item.authorName) || {
+      name: item.authorName,
+      avatar: item.authorAvatar,
+      workCount: 0,
+      latestAt: '',
+    }
+    entry.workCount += 1
+    if (!entry.avatar && item.authorAvatar) entry.avatar = item.authorAvatar
+    if (String(item.createdAt) > String(entry.latestAt)) entry.latestAt = item.createdAt
+    map.set(item.authorName, entry)
+  }
+  return [...map.values()].sort((a, b) => b.workCount - a.workCount).slice(0, 6)
+})
+
+function compactNumber(value = 0) {
+  const number = Number(value || 0)
+  if (number >= 10000) return `${(number / 10000).toFixed(number >= 100000 ? 0 : 1)}w`
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`
+  return String(number)
 }
 
 function formatDate(value) {
@@ -43,278 +115,563 @@ function formatDate(value) {
   return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-onMounted(() => loadPage())
+function shortDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+function authorInitial(item) {
+  return String(item?.authorName || '创')
+    .slice(0, 1)
+    .toUpperCase()
+}
+
+/* —— 列表加载 —— */
+async function loadItems() {
+  const requestId = ++listRequestId
+  loading.value = true
+  error.value = ''
+  try {
+    const cursor = String(pageCursors.value[page.value - 1] || '')
+    const data = await listShareItems({ limit: pageSize, cursor })
+    if (requestId !== listRequestId) return
+    const rows = (Array.isArray(data?.items) ? data.items : [])
+      .map(normalizeItem)
+      .filter(Boolean)
+    items.value = rows
+    hasMore.value = Boolean(data?.nextCursor)
+    const cursors = pageCursors.value.slice(0, page.value)
+    cursors[page.value] = String(data?.nextCursor || '')
+    pageCursors.value = cursors
+    const seen = new Map(seenItems.value)
+    rows.forEach((item) => seen.set(item.id, item))
+    seenItems.value = seen
+    if (page.value === 1 && !spotlightItems.value.length) {
+      spotlightItems.value = rows.slice(0, 10)
+    }
+    await nextTick()
+    openRouteDetailIfReady()
+  } catch (err) {
+    if (requestId !== listRequestId) return
+    error.value = err?.message || '画廊作品读取失败'
+  } finally {
+    if (requestId === listRequestId) loading.value = false
+  }
+}
+
+function scrollFeedIntoView(behavior = 'auto') {
+  const el = document.getElementById('share-feed')
+  if (!el) return
+  const reduceMotion =
+    typeof window !== 'undefined' &&
+    (document.documentElement.classList.contains('settings-no-animations') ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  el.scrollIntoView({
+    behavior: reduceMotion || behavior === 'auto' ? 'auto' : 'smooth',
+    block: 'start',
+  })
+}
+
+function changePage(nextPage) {
+  const normalized = Math.max(1, Number(nextPage || 1))
+  if (normalized === page.value || loading.value) return
+  if (normalized > page.value && !hasMore.value) return
+  if (normalized > 1 && !pageCursors.value[normalized - 1]) return
+  page.value = normalized
+  items.value = []
+  // 先瞬时回到列表顶，避免等接口完成后再 smooth 滚动打架
+  scrollFeedIntoView('auto')
+  void loadItems()
+}
+
+function refreshFeed() {
+  page.value = 1
+  hasMore.value = false
+  pageCursors.value = ['']
+  spotlightItems.value = []
+  items.value = []
+  void loadItems()
+}
+
+function goSubmit() {
+  if (!authStore.isAuthenticated) {
+    router.push({ name: 'auth', query: { mode: 'login', redirect: '/profile' } })
+    return
+  }
+  router.push('/profile')
+}
+
+function goCreate() {
+  router.push('/text-to-image')
+}
+
+/* —— 详情弹层 —— */
+function openRouteDetailIfReady() {
+  const itemId = String(route.query.item || '').trim()
+  if (!itemId || detailClosing.value || detailItem.value?.id === itemId) return
+  const candidates = [...spotlightItems.value, ...items.value, ...seenItems.value.values()]
+  const item = candidates.find((row) => String(row?.id || '') === itemId)
+  if (item) void openDetail(item)
+}
+
+async function openDetail(item) {
+  if (!item?.id || detailClosing.value) return
+  detailItem.value = item
+  detailMediaIndex.value = 0
+  detailOpen.value = true
+  document.body.classList.add('share-detail-open')
+  if (String(route.query.item || '') !== item.id) {
+    void router.replace({ query: { ...route.query, item: item.id } })
+  }
+}
+
+async function closeDetail() {
+  if (!detailOpen.value || detailClosing.value) return
+  detailClosing.value = true
+  try {
+    await playDetailLeave()
+  } finally {
+    detailOpen.value = false
+    detailItem.value = null
+    detailClosing.value = false
+    document.body.classList.remove('share-detail-open')
+    if (route.query.item) {
+      const nextQuery = { ...route.query }
+      delete nextQuery.item
+      void router.replace({ query: nextQuery })
+    }
+  }
+}
+
+/* —— 精选轮播 —— */
+function stepHero(offset) {
+  const length = heroItems.value.length
+  if (!length || length === 1) return
+  heroTransitioning.value = true
+  window.clearTimeout(heroTransitionTimer)
+  heroIndex.value = (heroIndex.value + offset + length) % length
+  heroTransitionTimer = window.setTimeout(() => {
+    heroTransitioning.value = false
+  }, 520)
+}
+
+function startHeroTimer() {
+  window.clearInterval(heroTimer)
+  heroTimer = window.setInterval(() => {
+    if (!heroPaused.value && !heroTransitioning.value && heroItems.value.length > 1) stepHero(1)
+  }, 6500)
+}
+
+/* —— 吸顶导航阴影 —— */
+function bindCategoryStuckObserver() {
+  categoryStuckObserver?.disconnect()
+  categoryStuckObserver = null
+  categoryStuck.value = false
+  if (typeof IntersectionObserver === 'undefined' || !categorySentinelRef.value) return
+
+  const headerOffset = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--app-header-offset'),
+  )
+  const stickyTop = (Number.isFinite(headerOffset) ? headerOffset : 82) + 6
+
+  categoryStuckObserver = new IntersectionObserver(
+    ([entry]) => {
+      categoryStuck.value = Boolean(entry) && entry.intersectionRatio < 1
+    },
+    {
+      root: null,
+      threshold: [1],
+      rootMargin: `-${stickyTop}px 0px 0px 0px`,
+    },
+  )
+  categoryStuckObserver.observe(categorySentinelRef.value)
+}
+
+function handleKeydown(event) {
+  if (event.key === 'Escape' && detailOpen.value) closeDetail()
+}
+
+watch(
+  () => route.query.item,
+  () => nextTick(() => openRouteDetailIfReady()),
+)
+
+onMounted(() => {
+  document.documentElement.classList.add('share-gallery-page')
+  void loadItems()
+  startHeroTimer()
+  window.addEventListener('keydown', handleKeydown)
+  nextTick(() => bindCategoryStuckObserver())
+})
+
+onBeforeUnmount(() => {
+  document.documentElement.classList.remove('share-gallery-page')
+  window.clearInterval(heroTimer)
+  window.clearTimeout(heroTransitionTimer)
+  window.removeEventListener('keydown', handleKeydown)
+  document.body.classList.remove('share-detail-open')
+  categoryStuckObserver?.disconnect()
+  categoryStuckObserver = null
+})
 </script>
 
 <template>
-  <div class="share-page">
-    <header class="share-head">
-      <p class="share-eyebrow">Community Gallery</p>
-      <h1>共享画廊</h1>
-      <p class="share-subtitle">创作者提交并通过审核的 AI 生成作品。</p>
-    </header>
+  <main ref="pageRoot" class="community-page">
+    <div class="community-atmosphere" aria-hidden="true"></div>
 
-    <div v-if="loading" class="share-grid">
-      <div v-for="n in 12" :key="n" class="share-skeleton"></div>
-    </div>
-
-    <template v-else>
-      <p v-if="errorMessage" class="share-error">
-        <i class="bi bi-exclamation-triangle"></i> {{ errorMessage }}
-        <button type="button" @click="loadPage()">重试</button>
-      </p>
-
-      <div v-else-if="items.length" class="share-grid">
-        <button
-          v-for="item in items"
-          :key="item.id"
-          type="button"
-          class="share-card"
-          @click="activeItem = item"
-        >
-          <img :src="itemCover(item)" :alt="item.title || 'AI 作品'" loading="lazy" />
-          <span class="share-card-meta">
-            <strong>{{ item.title || 'AI 作品' }}</strong>
-            <small>
-              <template v-if="item.author?.username">@{{ item.author.username }} · </template>
-              {{ formatDate(item.createdAt) }}
-            </small>
-          </span>
-        </button>
-      </div>
-
-      <div v-else class="share-empty">
-        <i class="bi bi-images"></i>
-        <p>画廊还没有作品，去工作台创作并投稿第一幅吧。</p>
-        <RouterLink to="/text-to-image" class="share-btn">开始创作</RouterLink>
-      </div>
-
-      <div v-if="cursor" class="share-more">
-        <button type="button" class="share-btn is-ghost" :disabled="loadingMore" @click="loadPage({ append: true })">
-          {{ loadingMore ? '加载中…' : '加载更多' }}
-        </button>
-      </div>
-    </template>
-
-    <!-- 大图预览 -->
-    <Teleport to="body">
-      <div v-if="activeItem" class="share-lightbox" @click.self="activeItem = null">
-        <div class="share-lightbox-panel">
-          <header>
-            <div>
-              <strong>{{ activeItem.title || 'AI 作品' }}</strong>
-              <small v-if="activeItem.author?.username">
-                <img
-                  v-if="activeItem.author?.avatarUrl"
-                  :src="activeItem.author.avatarUrl"
-                  alt=""
-                  class="share-author-avatar"
-                />
-                @{{ activeItem.author.username }} · {{ formatDate(activeItem.createdAt) }}
-              </small>
+    <section class="community-intro">
+      <div class="community-copy" data-share-motion>
+        <div class="community-copy__spine" aria-hidden="true">
+          <span>StarCloud Gallery</span>
+          <i></i>
+          <em>Vol.01</em>
+        </div>
+        <div class="community-copy__body">
+          <div class="community-copy__top">
+            <span class="community-eyebrow">StarCloudIsAI</span>
+            <h1>
+              <span class="community-copy__title">社区画廊</span>
+              <span class="community-copy__seal" aria-hidden="true">画</span>
+            </h1>
+            <p class="community-copy__lead">
+              灵感在此汇聚。浏览创作者分享并通过审核的 AI 作品，也把你的创作挂上展墙。
+            </p>
+            <div class="community-copy__actions">
+              <button type="button" class="is-primary" @click="scrollFeedIntoView('smooth')">
+                进入画廊<span aria-hidden="true">→</span>
+              </button>
+              <button type="button" class="is-text" @click="goSubmit">我要投稿</button>
             </div>
-            <button type="button" aria-label="关闭" @click="activeItem = null">
-              <i class="bi bi-x-lg"></i>
-            </button>
-          </header>
-          <div class="share-lightbox-media">
-            <img
-              v-for="(url, index) in activeItem.mediaUrls?.length ? activeItem.mediaUrls : [itemCover(activeItem)]"
-              :key="index"
-              :src="url"
-              :alt="`${activeItem.title || 'AI 作品'} ${index + 1}`"
-            />
+          </div>
+
+          <div class="community-copy__foot">
+            <div v-if="heroItems.length" class="community-copy__thumbs" aria-hidden="true">
+              <span
+                v-for="(item, index) in heroItems.slice(0, 3)"
+                :key="item.id"
+                class="community-copy__thumb"
+                :style="{ '--i': index }"
+              >
+                <ShareProgressiveImage :src="item.cover" :alt="item.title" eager />
+              </span>
+            </div>
+            <div class="community-stats is-comments-off" :class="{ 'is-loading': loading }">
+              <div>
+                <strong>{{ compactNumber(galleryStats.creators) }}+</strong>
+                <span>创作者</span>
+              </div>
+              <div>
+                <strong>{{ compactNumber(galleryStats.works) }}+</strong>
+                <span>作品</span>
+              </div>
+              <div>
+                <strong>6</strong>
+                <span>创作工坊</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      <div
+        class="community-featured"
+        :class="{ 'is-empty': !currentHero, 'is-transitioning': heroTransitioning }"
+        data-share-motion
+        role="button"
+        tabindex="0"
+        :aria-label="currentHero ? `查看精选作品：${currentHero.title}` : '等待精选作品'"
+        @mouseenter="heroPaused = true"
+        @mouseleave="heroPaused = false"
+        @click="currentHero && openDetail(currentHero)"
+        @keydown.enter.prevent="currentHero && openDetail(currentHero)"
+      >
+        <template v-if="currentHero">
+          <ShareProgressiveImage
+            :key="currentHero.id"
+            class="community-featured__image"
+            :src="currentHero.cover"
+            :alt="currentHero.title"
+            eager
+          />
+          <div class="community-featured__shade"></div>
+          <div class="community-featured__frame" aria-hidden="true"></div>
+          <div class="community-featured__meta" :key="`meta-${currentHero.id}`">
+            <span class="community-featured__index">
+              Featured {{ String(heroIndex + 1).padStart(2, '0') }}
+            </span>
+            <span class="community-featured__tag">{{ shortDate(currentHero.createdAt) }}</span>
+            <strong>{{ currentHero.title }}</strong>
+            <small>{{ currentHero.authorName }}</small>
+          </div>
+          <button
+            class="community-featured__arrow is-prev"
+            type="button"
+            aria-label="上一张"
+            @click.stop="stepHero(-1)"
+          >
+            <i class="bi bi-chevron-left"></i>
+          </button>
+          <button
+            class="community-featured__arrow is-next"
+            type="button"
+            aria-label="下一张"
+            @click.stop="stepHero(1)"
+          >
+            <i class="bi bi-chevron-right"></i>
+          </button>
+          <div class="community-featured__dots" @click.stop>
+            <button
+              v-for="(item, index) in heroItems"
+              :key="item.id"
+              type="button"
+              :class="{ 'is-active': index === heroIndex }"
+              :aria-label="`切换到 ${item.title}`"
+              @click="heroIndex !== index && stepHero(index - heroIndex)"
+            >
+              <span>{{ String(index + 1).padStart(2, '0') }}</span>
+            </button>
+          </div>
+        </template>
+        <div v-else class="community-featured__placeholder">
+          <i class="bi bi-images"></i><span>等待精选作品</span>
+        </div>
+      </div>
+
+      <aside class="community-hot-panel" data-share-motion>
+        <header>
+          <div>
+            <em>Board</em>
+            <strong>近期入馆</strong>
+          </div>
+          <button type="button" @click="scrollFeedIntoView('smooth')">完整馆藏 →</button>
+        </header>
+        <ol>
+          <li v-for="(item, index) in hotItems" :key="item.id" @click="openDetail(item)">
+            <b>{{ String(index + 1).padStart(2, '0') }}</b>
+            <ShareProgressiveImage :src="item.cover" alt="" />
+            <span>
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.authorName }}</small>
+            </span>
+            <em><i class="bi bi-calendar3"></i>{{ shortDate(item.createdAt) }}</em>
+          </li>
+        </ol>
+      </aside>
+    </section>
+
+    <section id="share-feed" class="community-body">
+      <div ref="categorySentinelRef" class="community-categories-sentinel" aria-hidden="true"></div>
+      <nav
+        class="community-categories"
+        :class="{ 'is-stuck': categoryStuck }"
+        aria-label="画廊导航"
+      >
+        <button type="button" class="is-active">
+          <i class="bi bi-clock"></i>最新入馆
+        </button>
+        <button type="button" :disabled="loading" @click="refreshFeed">
+          <i class="bi bi-arrow-clockwise" :class="{ spin: loading }"></i>刷新馆藏
+        </button>
+        <span class="community-categories__split" aria-hidden="true"></span>
+        <button type="button" @click="goSubmit"><i class="bi bi-plus-square"></i>我要投稿</button>
+      </nav>
+
+      <div class="community-main" data-share-motion>
+        <div class="community-feed-head">
+          <div>
+            <strong>最新入馆</strong>
+            <span>已收录 {{ galleryStats.works }}{{ hasMore ? '+' : '' }} 件</span>
+          </div>
+          <button type="button" :disabled="loading" @click="loadItems()">
+            <i class="bi bi-arrow-clockwise" :class="{ spin: loading }"></i>刷新
+          </button>
+        </div>
+
+        <div ref="feedRoot" class="community-feed-body" :class="{ 'is-loading': loading }">
+          <div
+            v-if="loading && !items.length"
+            class="community-grid"
+            aria-label="加载作品"
+            aria-busy="true"
+          >
+            <article
+              v-for="index in pageSize"
+              :key="`sk-${index}`"
+              class="community-card is-skeleton"
+            >
+              <div class="community-card__media"></div>
+              <footer><strong></strong><small></small></footer>
+            </article>
+          </div>
+          <div v-else-if="error" class="community-empty is-error">
+            <i class="bi bi-exclamation-circle"></i><strong>{{ error }}</strong
+            ><button type="button" @click="loadItems()">重新加载</button>
+          </div>
+          <div v-else-if="!items.length" class="community-empty">
+            <i class="bi bi-images"></i><strong>画廊还没有作品</strong
+            ><span>去工作台创作，并在个人中心把满意的一幅投稿进来。</span
+            ><button type="button" @click="goCreate">开始创作</button>
+          </div>
+          <div v-else class="community-grid" aria-label="社区作品" :aria-busy="loading">
+            <article
+              v-for="item in items"
+              :key="item.id"
+              class="community-card"
+              @click="openDetail(item)"
+            >
+              <div class="community-card__media">
+                <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+                <div class="community-card__overlay"><span>查看</span></div>
+              </div>
+              <footer>
+                <strong :title="item.title">{{ item.title }}</strong>
+                <div class="community-card__meta">
+                  <small>{{ item.authorName }}</small>
+                  <div class="community-card__actions">
+                    <button type="button" @click.stop="openDetail(item)">
+                      <i class="bi bi-calendar3"></i>{{ shortDate(item.createdAt) }}
+                    </button>
+                  </div>
+                </div>
+              </footer>
+            </article>
+          </div>
+        </div>
+
+        <nav v-if="hasMore || page > 1" class="community-pagination" aria-label="作品分页">
+          <button type="button" :disabled="loading || page <= 1" @click="changePage(page - 1)">
+            <i class="bi bi-chevron-left"></i><span>上一页</span>
+          </button>
+          <div class="community-pagination__meta">
+            <em>Page</em>
+            <strong>{{ String(page).padStart(2, '0') }}</strong>
+            <small>已收录 {{ galleryStats.works }}{{ hasMore ? '+' : '' }} 件作品</small>
+          </div>
+          <button type="button" :disabled="loading || !hasMore" @click="changePage(page + 1)">
+            <span>下一页</span><i class="bi bi-chevron-right"></i>
+          </button>
+        </nav>
+      </div>
+
+      <aside class="community-sidebar">
+        <section class="community-side-card community-side-card--creators">
+          <header>
+            <div>
+              <em>Creators</em>
+              <strong>活跃创作者</strong>
+            </div>
+          </header>
+          <ul class="community-creators">
+            <li v-for="creator in topCreators" :key="creator.name">
+              <span class="community-creator-avatar">{{ creator.name.slice(0, 1) }}</span>
+              <div>
+                <strong>{{ creator.name }}</strong>
+                <small
+                  >{{ creator.workCount }} 件作品<template v-if="creator.latestAt">
+                    · 最近 {{ shortDate(creator.latestAt) }}</template
+                  ></small
+                >
+              </div>
+              <span class="community-creator-badge">创作者</span>
+            </li>
+            <li v-if="!topCreators.length" class="community-creators__empty">
+              <div>
+                <strong>虚位以待</strong>
+                <small>第一位创作者就是你</small>
+              </div>
+            </li>
+          </ul>
+        </section>
+        <section class="community-side-card community-side-card--submit">
+          <header>
+            <div>
+              <em>Submit</em>
+              <strong>分享你的创作</strong>
+            </div>
+          </header>
+          <div class="community-submit">
+            <p>在任意工坊完成创作后，到「个人中心 · 我的作品」一键投稿，通过审核即挂上展墙。</p>
+            <div class="community-submit__actions">
+              <button type="button" class="is-primary" @click="goCreate">去创作</button>
+              <button type="button" @click="goSubmit">去投稿</button>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <Teleport to="body">
+      <div v-if="detailOpen && detailItem" ref="detailRoot" class="share-detail">
+        <div class="share-detail__scrim" aria-hidden="true" @click="closeDetail"></div>
+        <section
+          class="share-detail__panel"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="detailItem.title"
+        >
+          <button class="share-detail__close" type="button" aria-label="关闭" @click="closeDetail">
+            <i class="bi bi-x-lg"></i>
+          </button>
+          <div class="share-detail__visual">
+            <div class="share-detail__frame" aria-hidden="true"></div>
+            <ShareProgressiveImage
+              :key="detailItem.mediaUrls[detailMediaIndex] || detailItem.cover"
+              :src="detailItem.mediaUrls[detailMediaIndex] || detailItem.cover"
+              :alt="detailItem.title"
+              eager
+            />
+            <span class="share-detail__visual-mark">Artwork</span>
+            <div v-if="detailItem.mediaUrls.length > 1" class="share-detail__thumbs" @click.stop>
+              <button
+                v-for="(url, index) in detailItem.mediaUrls"
+                :key="url"
+                type="button"
+                :class="{ 'is-active': index === detailMediaIndex }"
+                :aria-label="`查看第 ${index + 1} 张`"
+                @click="detailMediaIndex = index"
+              >
+                <img :src="url" alt="" loading="lazy" />
+              </button>
+            </div>
+          </div>
+          <div class="share-detail__content">
+            <div class="share-detail__spine" aria-hidden="true">
+              <span>StarCloud Gallery</span>
+              <i></i>
+              <em>Detail</em>
+            </div>
+            <div class="share-detail__body">
+              <header class="share-detail__top">
+                <div class="share-detail__author">
+                  <span>{{ authorInitial(detailItem) }}</span>
+                  <div>
+                    <strong>{{ detailItem.authorName }}</strong>
+                    <small>AI 创作 · 社区投稿</small>
+                  </div>
+                </div>
+              </header>
+
+              <div class="share-detail__intro">
+                <em>Work</em>
+                <h2>{{ detailItem.title }}</h2>
+                <div class="share-detail__stats">
+                  <span
+                    ><i class="bi bi-calendar3"></i
+                    >{{ formatDate(detailItem.createdAt) || '未知日期' }} 入馆</span
+                  >
+                  <span
+                    ><i class="bi bi-images"></i>{{ detailItem.mediaUrls.length }} 张画面</span
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </Teleport>
-  </div>
+  </main>
 </template>
 
-<style scoped>
-.share-page {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: clamp(24px, 5vh, 48px) clamp(16px, 3vw, 32px) 80px;
-  color: var(--text-color, #f0f0f0);
-}
-
-.share-head { text-align: center; margin-bottom: 34px; }
-
-.share-eyebrow {
-  margin: 0 0 8px;
-  font-size: 12px;
-  letter-spacing: 0.3em;
-  text-transform: uppercase;
-  color: rgba(165, 180, 252, 0.8);
-}
-
-.share-head h1 { margin: 0 0 8px; font-size: clamp(28px, 4.4vw, 40px); }
-.share-subtitle { margin: 0; color: rgba(203, 213, 225, 0.6); }
-
-.share-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 16px;
-}
-
-.share-card {
-  position: relative;
-  display: block;
-  padding: 0;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 14px;
-  overflow: hidden;
-  aspect-ratio: 4 / 3;
-  background: rgba(15, 23, 42, 0.5);
-  cursor: zoom-in;
-}
-
-.share-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.28s ease;
-}
-
-.share-card:hover img { transform: scale(1.05); }
-
-.share-card-meta {
-  position: absolute;
-  inset: auto 0 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: 28px 12px 10px;
-  background: linear-gradient(transparent, rgba(2, 6, 23, 0.88));
-  text-align: left;
-}
-
-.share-card-meta strong {
-  max-width: 100%;
-  font-size: 13.5px;
-  color: #f1f5f9;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.share-card-meta small { font-size: 11.5px; color: rgba(203, 213, 225, 0.68); }
-
-.share-skeleton {
-  aspect-ratio: 4 / 3;
-  border-radius: 14px;
-  background: linear-gradient(110deg, rgba(30, 41, 59, 0.6) 30%, rgba(51, 65, 85, 0.6) 50%, rgba(30, 41, 59, 0.6) 70%);
-  background-size: 200% 100%;
-  animation: share-skeleton-wave 1.4s ease infinite;
-}
-
-@keyframes share-skeleton-wave { to { background-position: -200% 0; } }
-
-.share-error {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: center;
-  padding: 40px 0;
-  color: #fbbf24;
-}
-
-.share-error button {
-  border: 1px solid rgba(251, 191, 36, 0.4);
-  border-radius: 8px;
-  padding: 4px 14px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.share-empty {
-  display: grid;
-  place-items: center;
-  gap: 12px;
-  padding: 70px 20px;
-  border-radius: 18px;
-  border: 1px dashed rgba(148, 163, 184, 0.3);
-  color: rgba(226, 232, 240, 0.6);
-  text-align: center;
-}
-
-.share-empty i { font-size: 36px; }
-.share-empty p { margin: 0; }
-
-.share-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 24px;
-  border: none;
-  border-radius: 999px;
-  font-size: 14px;
-  font-weight: 600;
-  text-decoration: none;
-  color: #0b1020;
-  background: linear-gradient(120deg, #a5b4fc, #67e8f9);
-  cursor: pointer;
-}
-
-.share-btn.is-ghost {
-  color: rgba(226, 232, 240, 0.82);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: transparent;
-}
-
-.share-more { display: flex; justify-content: center; margin-top: 28px; }
-
-.share-lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 3600;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(2, 6, 23, 0.82);
-  backdrop-filter: blur(12px);
-}
-
-.share-lightbox-panel {
-  width: min(920px, 96vw);
-  max-height: 92vh;
-  overflow-y: auto;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: #0f172a;
-  padding: 18px 20px;
-  color: #f1f5f9;
-}
-
-.share-lightbox-panel header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.share-lightbox-panel header strong { display: block; font-size: 17px; }
-.share-lightbox-panel header small {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  color: rgba(203, 213, 225, 0.62);
-}
-
-.share-author-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
-
-.share-lightbox-panel header button {
-  border: none;
-  background: transparent;
-  color: rgba(226, 232, 240, 0.7);
-  font-size: 16px;
-  cursor: pointer;
-}
-
-.share-lightbox-media { display: grid; gap: 12px; }
-.share-lightbox-media img { width: 100%; border-radius: 10px; }
-</style>
+<style src="../features/share/styles/share-view.css"></style>
