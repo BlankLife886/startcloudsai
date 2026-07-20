@@ -1,0 +1,394 @@
+<template>
+  <main class="ziwei-page">
+    <section class="product-shell">
+      <aside class="input-rail">
+        <div class="rail-brand">
+          <span>紫微斗数</span>
+          <h1>专业排盘</h1>
+          <p>{{ ruleSet.label }} · {{ ruleSet.version }}</p>
+        </div>
+
+        <div class="rail-section">
+          <div class="section-title">
+            <span>01</span>
+            <h2>出生资料</h2>
+          </div>
+
+          <form class="form-grid" @submit.prevent="generateChart">
+            <div class="segmented" aria-label="历法">
+              <button
+                type="button"
+                :class="{ active: form.calendar === 'solar' }"
+                @click="form.calendar = 'solar'"
+              >
+                阳历
+              </button>
+              <button
+                type="button"
+                :class="{ active: form.calendar === 'lunar' }"
+                @click="form.calendar = 'lunar'"
+              >
+                农历
+              </button>
+            </div>
+
+            <label>
+              <span>出生日期</span>
+              <input
+                v-model.trim="form.birthDate"
+                type="text"
+                inputmode="numeric"
+                placeholder="YYYY-MM-DD"
+              />
+            </label>
+
+            <label v-if="form.calendar === 'lunar'" class="check-row">
+              <input v-model="form.isLeapMonth" type="checkbox" />
+              <span>农历闰月</span>
+            </label>
+
+            <label>
+              <span>出生时辰</span>
+              <select v-model="form.timeIndex">
+                <option value="" disabled>请选择时辰</option>
+                <option v-for="option in timeOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}时 {{ option.range }}
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <span>性别</span>
+              <select v-model="form.gender">
+                <option value="" disabled>请选择性别</option>
+                <option value="女">女</option>
+                <option value="男">男</option>
+              </select>
+            </label>
+
+            <label>
+              <span>出生地备注</span>
+              <input v-model.trim="form.birthplace" type="text" placeholder="城市/区县，可留空" />
+            </label>
+
+            <div class="form-duo">
+              <label>
+                <span>运限日期</span>
+                <input v-model="form.transitDate" type="date" />
+              </label>
+              <label>
+                <span>运限时辰</span>
+                <select v-model="form.transitTimeIndex">
+                  <option value="">不看流时</option>
+                  <option
+                    v-for="option in timeOptions"
+                    :key="`transit-${option.value}`"
+                    :value="option.value"
+                  >
+                    {{ option.label }}时
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <details class="advanced-options">
+              <summary>
+                <span>排盘参数</span>
+                <i class="bi bi-chevron-down"></i>
+              </summary>
+              <div class="advanced-grid">
+                <label>
+                  <span>年分界</span>
+                  <select v-model="form.yearDivide">
+                    <option value="normal">正月初一</option>
+                    <option value="exact">立春</option>
+                  </select>
+                </label>
+                <label>
+                  <span>晚子时</span>
+                  <select v-model="form.dayDivide">
+                    <option value="forward">按次日</option>
+                    <option value="current">按当日</option>
+                  </select>
+                </label>
+                <label class="check-row">
+                  <input v-model="form.fixLeap" type="checkbox" />
+                  <span>修正农历闰月</span>
+                </label>
+              </div>
+            </details>
+
+            <button class="primary-action full" type="submit" :disabled="!formReady">
+              <i class="bi bi-stars"></i>
+              生成命盘
+            </button>
+          </form>
+
+          <div v-if="submitted && chartError" class="error-state">{{ chartError }}</div>
+        </div>
+
+        <div class="rail-footnote">
+          <i class="bi bi-shield-check"></i>
+          <span>结果页会列出排盘引擎、规则集、输入标准化和当前宫位证据。</span>
+        </div>
+      </aside>
+
+      <section class="result-workbench">
+        <div class="workbench-top">
+          <div>
+            <span class="overline">{{ chart ? '本命盘已生成' : '等待输入' }}</span>
+            <h2>
+              {{
+                chart
+                  ? `${chart.fiveElementsClass} · 命主${chart.soul} · 身主${chart.body}`
+                  : '输入信息后生成完整十二宫盘'
+              }}
+            </h2>
+            <p>
+              {{
+                chart
+                  ? `${chart.solarDate} · ${chart.time} · ${chart.chineseDate}`
+                  : '出生日期、时辰、性别为必填；运限日期可选，出生地当前仅作备注。'
+              }}
+            </p>
+          </div>
+          <div v-if="chart" class="workbench-actions">
+            <button type="button" @click="downloadChartPreview">
+              <i class="bi bi-download"></i>
+              下载命盘
+            </button>
+            <button type="button" @click="activeTab = 'evidence'">
+              <i class="bi bi-journal-check"></i>
+              查看依据
+            </button>
+          </div>
+        </div>
+
+        <div v-if="!chart" class="empty-chart">
+          <div>
+            <i class="bi bi-stars"></i>
+            <strong>等待生成命盘</strong>
+            <span>出生日期、出生时辰、性别为必填项。</span>
+          </div>
+        </div>
+
+        <template v-else>
+          <div class="preview-stage">
+            <img class="chart-preview-image" :src="chartPreviewUrl" alt="紫微命盘图片" />
+          </div>
+
+          <div class="chart-meta-grid">
+            <article v-for="item in chartProfile" :key="item.label">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </article>
+          </div>
+
+          <div class="palace-picker">
+            <span>宫位选择</span>
+            <div>
+              <button
+                v-for="palace in palaceBoard"
+                :key="`nav-${palace.index}`"
+                type="button"
+                :class="{
+                  active: activePalace?.index === palace.index,
+                  body: palace.isBodyPalace,
+                  original: palace.isOriginalPalace,
+                }"
+                @click="selectPalace(palace)"
+              >
+                <strong>{{ palace.name }}</strong>
+                <small>{{ palace.heavenlyStem }}{{ palace.earthlyBranch }}</small>
+              </button>
+            </div>
+          </div>
+        </template>
+      </section>
+    </section>
+
+    <section v-if="chart" class="detail-panel">
+      <div class="report-head">
+        <div>
+          <span class="overline">专业解盘</span>
+          <h2>
+            {{
+              structureSummary?.headline ||
+              (activePalace ? `${activePalace.name}${formatStemBranch(activePalace)}` : '结构分析')
+            }}
+          </h2>
+          <p>
+            {{ selectedPalaceReport?.headline }}；所有判断均来自当前命盘字段、三方四正与四化落宫。
+          </p>
+        </div>
+        <div class="tabbar">
+          <button
+            v-for="tab in tabs"
+            :key="tab.id"
+            type="button"
+            :class="{ active: activeTab === tab.id }"
+            @click="activeTab = tab.id"
+          >
+            <i class="bi" :class="tab.icon"></i>
+            {{ tab.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="activeTab === 'overview'" class="tab-content overview-layout">
+        <article class="summary-block primary-summary">
+          <span>核心判断</span>
+          <h3>{{ structureSummary?.headline }}</h3>
+          <div class="report-points">
+            <p v-for="point in structureSummary?.points" :key="point">{{ point }}</p>
+          </div>
+        </article>
+
+        <article v-if="activePalace" class="highlight-card selected-palace-card">
+          <span>当前宫位深读</span>
+          <h3>{{ selectedPalaceReport?.headline }}</h3>
+          <div class="mini-tags">
+            <span v-for="tag in selectedPalaceTags" :key="tag">{{ tag }}</span>
+          </div>
+          <p>{{ selectedPalaceReport?.body }}</p>
+          <ul class="evidence-list">
+            <li v-for="line in selectedPalaceReport?.evidence" :key="line">{{ line }}</li>
+          </ul>
+        </article>
+
+        <div class="highlight-list">
+          <article v-for="item in resultHighlights" :key="item.label" class="highlight-card">
+            <span>{{ item.label }}</span>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.body }}</p>
+            <ul class="evidence-list compact">
+              <li v-for="line in item.evidence" :key="line">{{ line }}</li>
+            </ul>
+          </article>
+
+          <article v-if="horoscopeOverviewRows.length" class="highlight-card horoscope-summary">
+            <span>运限落宫</span>
+            <h3>{{ horoscope?.solarDate }} · {{ horoscope?.lunarDate }}</h3>
+            <div v-for="item in horoscopeOverviewRows" :key="item.label" class="horoscope-row">
+              <strong>{{ item.label }}{{ item.nominalAge ? ` ${item.nominalAge}` : '' }}</strong>
+              <p>
+                {{ item.branch }}落{{ item.palace }}，流曜：{{ item.stars }}；四化：{{
+                  item.mutagen
+                }}
+              </p>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div v-else-if="activeTab === 'themes'" class="tab-content theme-layout">
+        <article v-for="item in themeReports" :key="item.key" class="theme-card">
+          <div>
+            <span>{{ item.title }}</span>
+            <h3>{{ item.headline }}</h3>
+            <p>{{ item.body }}</p>
+          </div>
+          <div class="mini-tags">
+            <span v-for="tag in item.tags" :key="tag">{{ tag }}</span>
+          </div>
+          <ul class="evidence-list">
+            <li v-for="evidence in item.evidence" :key="evidence">{{ evidence }}</li>
+          </ul>
+        </article>
+      </div>
+
+      <div v-else-if="activeTab === 'palaces'" class="tab-content palace-table-panel">
+        <div class="palace-table">
+          <article
+            v-for="palace in palaceOverviewRows"
+            :key="`${palace.index}-${palace.name}`"
+            :class="{ active: activePalace?.index === palace.index }"
+            @click="selectPalace(palace)"
+          >
+            <div>
+              <strong>{{ palace.name }}</strong>
+              <span>{{ palace.heavenlyStem }}{{ palace.earthlyBranch }}</span>
+            </div>
+            <p>{{ palace.mainStars }}</p>
+            <small>{{ palace.minorText }}</small>
+            <small>{{ palace.mutagenText }}</small>
+            <em>{{ palace.decadalText }}</em>
+          </article>
+        </div>
+      </div>
+
+      <div v-else class="tab-content evidence-layout">
+        <article class="evidence-card">
+          <h3>排盘依据</h3>
+          <div class="assurance-list compact">
+            <article v-for="item in assuranceItems" :key="item.label" :class="item.tone">
+              <span>{{ item.status }}</span>
+              <strong>{{ item.label }}</strong>
+              <p>{{ item.body }}</p>
+            </article>
+          </div>
+          <dl>
+            <div v-for="item in evidenceRows" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
+            </div>
+          </dl>
+        </article>
+        <article class="evidence-card">
+          <h3>输入与标准化</h3>
+          <dl>
+            <div v-for="item in inputSummaryRows" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
+            </div>
+            <div>
+              <dt>阳历</dt>
+              <dd>{{ normalizedBirth?.solar }}</dd>
+            </div>
+            <div>
+              <dt>农历</dt>
+              <dd>{{ normalizedBirth?.lunar }}</dd>
+            </div>
+            <div>
+              <dt>干支</dt>
+              <dd>{{ normalizedBirth?.ganzhi }}</dd>
+            </div>
+            <div>
+              <dt>时辰</dt>
+              <dd>{{ normalizedBirth?.time }}</dd>
+            </div>
+            <div>
+              <dt>生肖/星座</dt>
+              <dd>{{ normalizedBirth?.zodiac }} / {{ normalizedBirth?.sign }}</dd>
+            </div>
+            <div>
+              <dt>出生地</dt>
+              <dd>{{ normalizedBirth?.birthplace }}</dd>
+            </div>
+          </dl>
+          <button class="secondary-action full" type="button" @click="saveSnapshot">
+            <i class="bi bi-bookmark-plus"></i>
+            保存快照
+          </button>
+        </article>
+        <article v-if="activePalace" class="evidence-card palace-ledger-card">
+          <h3>当前宫位证据</h3>
+          <dl>
+            <div v-for="item in selectedPalaceLedgerRows" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
+            </div>
+          </dl>
+        </article>
+      </div>
+    </section>
+
+    <section v-if="savedSnapshots.length" class="snapshot-strip">
+      <article v-for="snapshot in savedSnapshots" :key="snapshot.id">
+        <strong>{{ snapshot.title }}</strong>
+        <span>{{ snapshot.summary }}</span>
+        <small>{{ snapshot.id }} · {{ snapshot.createdAt }}</small>
+      </article>
+    </section>
+  </main>
+</template>

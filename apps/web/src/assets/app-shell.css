@@ -1,0 +1,927 @@
+/* 全局样式 */
+:root {
+  --primary-color: #4caf50;
+  --secondary-color: #2196f3;
+  --background-color: #060707;
+  --text-color: #f0f0f0;
+  --text-muted-color: rgba(240, 240, 240, 0.72);
+  --card-bg-color: #1e1e1e;
+  --navbar-bg-color: rgba(18, 18, 18, 0.9);
+  --border-color: #333;
+  --hover-color: #2c2c2c;
+  --app-header-offset: 82px;
+  --app-main-block-padding: 48px;
+  --app-bottom-floating-clearance: 112px;
+}
+
+body {
+  font-family: 'Rajdhani', 'Share Tech Mono', monospace, sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+html,
+#app {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body.download-session-locked {
+  overflow: hidden;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.app-container.app--share-gallery,
+.app-container.app--wallpaper-detail,
+.app-container.app--search-gallery {
+  overflow: visible;
+}
+
+.app-container.app--search-gallery {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(160, 139, 255, 0.12), transparent 22%),
+    linear-gradient(180deg, #f7f7ff 0%, #fff 48%, #fafaff 100%);
+}
+
+html.color-scheme-dark .app-container.app--search-gallery,
+html.color-scheme-dark.search-gallery-page .app-container.app--search-gallery {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(106, 79, 224, 0.16), transparent 28%),
+    linear-gradient(180deg, #0d0f18 0%, #12141f 52%, #0f111a 100%);
+}
+
+html.color-scheme-dark .main-content.main--search-gallery {
+  background: transparent;
+}
+
+.app-container.app--downloads-gallery,
+.app-container.app--favorites-gallery,
+.app-container.app--users-gallery,
+.app-container.app--author-gallery,
+.app-container.app--tags-gallery,
+.app-container.app--history-gallery {
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  /* 顶栏 fixed 后由 NavBar 写入 --app-header-offset，避免首屏被挡 */
+  padding-top: calc(var(--app-header-offset, 80px) + 0.5rem);
+  padding-bottom: 2rem;
+  overflow-x: clip;
+}
+
+.main-content.main--browse-dock {
+  padding-bottom: calc(2rem + var(--app-bottom-floating-clearance, 112px));
+}
+
+/* Share / 壁纸详情 / 更新说明：整页可滚，避免 overflow-x:clip 破坏 sticky */
+.main-content.main--share-gallery,
+.main-content.main--wallpaper-detail,
+.main-content.main--search-gallery,
+.main-content.main--updates-gallery {
+  padding-bottom: 0;
+  overflow: visible;
+}
+
+/* Share：顶栏贴齐，去掉默认 +0.5rem 白缝 */
+.main-content.main--share-gallery {
+  padding-top: var(--app-header-offset, 82px);
+  background: #f7f7ff;
+}
+
+.main-content.main--search-gallery.main--browse-dock {
+  padding-bottom: calc(2rem + var(--app-bottom-floating-clearance, 112px));
+  background: transparent;
+  overflow: visible;
+}
+
+.main-content.main--wallpaper-detail {
+  background: #f7f7ff;
+}
+
+html.color-scheme-dark .main-content.main--share-gallery,
+html.color-scheme-dark .main-content.main--wallpaper-detail,
+html.color-scheme-dark .main-content.main--updates-gallery {
+  background: #0d0f18;
+}
+
+/* 下载管理 / 收藏 / 关注作者 / 作者详情 / 收藏标签 / 浏览历史：整页不滚，仅内容区滚动 */
+.main-content.main--downloads-gallery,
+.main-content.main--favorites-gallery,
+.main-content.main--users-gallery,
+.main-content.main--author-gallery,
+.main-content.main--tags-gallery,
+.main-content.main--history-gallery {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #f7f7ff;
+}
+
+.main-content.main--downloads-gallery > *,
+.main-content.main--favorites-gallery > *,
+.main-content.main--users-gallery > *,
+.main-content.main--author-gallery > *,
+.main-content.main--tags-gallery > *,
+.main-content.main--history-gallery > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+html.color-scheme-dark .main-content.main--downloads-gallery,
+html.color-scheme-dark .main-content.main--favorites-gallery,
+html.color-scheme-dark .main-content.main--users-gallery,
+html.color-scheme-dark .main-content.main--author-gallery,
+html.color-scheme-dark .main-content.main--tags-gallery,
+html.color-scheme-dark .main-content.main--history-gallery {
+  background: #0d0f18;
+}
+
+.main-content.main--pricing-console {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  background: #0e1210;
+}
+
+.main-content.main--profile-console {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  background: #f7f7ff;
+}
+
+html.color-scheme-dark .main-content.main--profile-console {
+  background: #0d0f18;
+}
+
+.main-content.main--ziwei-console {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  background: #f7f7ff;
+}
+
+html.color-scheme-dark .main-content.main--ziwei-console {
+  background: #0d0f18;
+}
+
+.main-content.main--settings-console {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  background: #f7f7ff;
+}
+
+html.color-scheme-dark .main-content.main--settings-console {
+  background: #0d0f18;
+}
+
+.main-content.main--studio-console {
+  padding-top: var(--app-header-offset, 82px);
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #f7f7ff;
+}
+
+html.color-scheme-dark .main-content.main--studio-console {
+  background: #0d0f18;
+}
+
+.main-content.main--studio-console > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.main-content.main--no-header {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+@media (max-width: 920px) {
+  :root {
+    --app-header-offset: 56px;
+    --app-bottom-nav-offset: 62px;
+  }
+
+  .main-content:not(.main--no-header) {
+    padding-bottom: calc(1rem + var(--app-bottom-nav-offset, 62px));
+  }
+
+  .main-content.main--browse-dock {
+    padding-bottom: calc(
+      1rem + var(--app-bottom-nav-offset, 62px) + var(--app-bottom-floating-clearance, 144px)
+    );
+  }
+
+  .main-content.main--pricing-console,
+  .main-content.main--profile-console,
+  .main-content.main--ziwei-console,
+  .main-content.main--studio-console,
+  .main-content.main--downloads-gallery,
+  .main-content.main--favorites-gallery,
+  .main-content.main--users-gallery,
+  .main-content.main--author-gallery,
+  .main-content.main--tags-gallery,
+  .main-content.main--history-gallery {
+    padding-bottom: var(--app-bottom-nav-offset, 62px);
+  }
+
+  /* 设置页可用高度已扣底栏，main 不再额外 padding，避免裁切无法滚动 */
+  .main-content.main--settings-console {
+    padding-bottom: 0;
+  }
+
+  #back-to-top,
+  .back-to-top-btn {
+    margin-bottom: calc(var(--app-bottom-nav-offset, 62px) + 0.25rem) !important;
+  }
+}
+
+/* 回到顶部：硬边画廊风格 */
+#back-to-top,
+.back-to-top-btn {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  z-index: 1050;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #151a2d;
+  color: #fff;
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+#back-to-top.is-browse-dock,
+.back-to-top-btn.is-browse-dock {
+  bottom: calc(var(--app-bottom-floating-clearance, 112px) + 8px);
+}
+
+#back-to-top:hover,
+#back-to-top:focus-visible,
+.back-to-top-btn:hover,
+.back-to-top-btn:focus-visible {
+  background: #6a4fe0;
+  color: #fff;
+  outline: none;
+  box-shadow: 3px 3px 0 rgba(21, 26, 45, 0.55);
+}
+
+html.color-scheme-dark #back-to-top,
+html.color-scheme-dark .back-to-top-btn {
+  background: #f0ecff;
+  color: #151a2d;
+  box-shadow: 3px 3px 0 rgba(180, 160, 255, 0.5);
+}
+
+html.color-scheme-dark #back-to-top:hover,
+html.color-scheme-dark #back-to-top:focus-visible,
+html.color-scheme-dark .back-to-top-btn:hover,
+html.color-scheme-dark .back-to-top-btn:focus-visible {
+  background: #fff;
+  color: #151a2d;
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.45);
+}
+
+/* 主题按钮样式 */
+.theme-button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+}
+
+.theme-button:hover {
+  background-color: var(--secondary-color);
+  color: white;
+}
+
+/* 链接样式 */
+a {
+  color: var(--secondary-color);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--primary-color);
+}
+
+/* 卡片样式 */
+.theme-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  transition: transform 0.3s ease;
+}
+
+.theme-card:hover {
+  transform: translateY(-5px);
+}
+
+/* 导航栏样式 */
+.theme-navbar {
+  background-color: var(--navbar-bg-color);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* 页脚样式 */
+.theme-footer {
+  background-color: var(--card-bg-color);
+  color: var(--text-color);
+  padding: 2rem 0;
+  margin-top: 2rem;
+  border-top: 1px solid var(--border-color);
+}
+
+/* 标题样式 */
+.theme-title {
+  color: var(--primary-color);
+  font-weight: bold;
+}
+
+/* 链接样式 */
+.theme-link {
+  color: var(--text-color);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.theme-link:hover {
+  color: var(--primary-color);
+}
+
+.download-guard-modal,
+.download-lock-modal {
+  --dg-ink: #18203b;
+  --dg-muted: #79809a;
+  --dg-accent: #6a4fe0;
+  --dg-active: #151a2d;
+  --dg-surface: #ffffff;
+  --dg-line: rgba(21, 26, 45, 0.12);
+  --dg-field: rgba(21, 26, 45, 0.04);
+
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.download-guard-backdrop,
+.download-lock-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgba(12, 14, 22, 0.48);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.download-lock-backdrop {
+  cursor: default;
+}
+
+.download-guard-panel,
+.download-lock-panel {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0;
+  color: var(--dg-ink);
+  background: var(--dg-surface);
+  box-shadow:
+    0 0 0 1px rgba(21, 26, 45, 0.1),
+    8px 8px 0 rgba(106, 79, 224, 0.28);
+}
+
+.download-guard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--dg-line);
+}
+
+.download-guard-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.download-guard-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.7);
+  font-size: 1rem;
+}
+
+.download-guard-title,
+.download-lock-title {
+  margin: 0;
+  color: var(--dg-ink);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.download-guard-close {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 0;
+  color: var(--dg-muted);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+  cursor: pointer;
+}
+
+.download-guard-close:hover {
+  color: var(--dg-accent);
+  background: rgba(106, 79, 224, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.4);
+}
+
+.download-guard-body {
+  padding: 14px 16px 8px;
+}
+
+.download-guard-text,
+.download-lock-text {
+  margin: 0 0 10px;
+  color: var(--dg-ink);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.download-guard-hint {
+  margin: -2px 0 12px;
+  color: var(--dg-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.download-guard-count {
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.download-mode-field {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.download-mode-option {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 0;
+  color: var(--dg-ink);
+  background: var(--dg-field);
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.download-mode-option.active {
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+}
+
+.download-mode-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.download-name-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.download-name-field span {
+  color: var(--dg-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.download-name-field input {
+  min-height: 40px;
+  border: 0;
+  border-radius: 0;
+  background: var(--dg-field);
+  color: var(--dg-ink);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 0.9rem;
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+}
+
+.download-name-field input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.55);
+  background: rgba(106, 79, 224, 0.04);
+}
+
+.download-guard-actions,
+.download-lock-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--dg-line);
+}
+
+.download-modal-btn {
+  min-width: 92px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  color: var(--dg-accent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.35);
+  font-size: 0.86rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.download-modal-btn:hover:not(:disabled) {
+  background: rgba(106, 79, 224, 0.06);
+}
+
+.download-modal-btn.is-primary {
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+}
+
+.download-modal-btn.is-primary:hover:not(:disabled) {
+  background: #1c2238;
+}
+
+.download-modal-btn.is-danger {
+  color: #b03a3a;
+  box-shadow: inset 0 0 0 1px rgba(176, 58, 58, 0.4);
+}
+
+.download-modal-btn.is-danger:hover:not(:disabled) {
+  background: rgba(176, 58, 58, 0.06);
+}
+
+.download-modal-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.download-lock-progress {
+  position: relative;
+  height: 28px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: var(--dg-field);
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+}
+
+.download-lock-progress__bar {
+  height: 100%;
+  background: linear-gradient(90deg, #6a4fe0, #8568f7);
+  transition: width 0.2s ease;
+}
+
+.download-lock-progress__label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.download-lock-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--dg-muted);
+  font-size: 0.82rem;
+}
+
+.download-lock-status {
+  font-size: 0.95rem;
+}
+
+.download-lock-current {
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+  color: var(--dg-accent);
+}
+
+html.color-scheme-dark .download-guard-modal,
+html.color-scheme-dark .download-lock-modal {
+  --dg-ink: #e8eaf4;
+  --dg-muted: #9aa1b8;
+  --dg-accent: #cfc7ff;
+  --dg-active: #cfc7ff;
+  --dg-surface: #161925;
+  --dg-line: rgba(170, 178, 210, 0.16);
+  --dg-field: rgba(255, 255, 255, 0.05);
+}
+
+html.color-scheme-dark .download-guard-panel,
+html.color-scheme-dark .download-lock-panel {
+  box-shadow:
+    0 0 0 1px rgba(170, 178, 210, 0.14),
+    8px 8px 0 rgba(133, 104, 247, 0.35);
+}
+
+html.color-scheme-dark .download-guard-icon {
+  color: #12141f;
+  background: #cfc7ff;
+  box-shadow: 3px 3px 0 rgba(133, 104, 247, 0.7);
+}
+
+html.color-scheme-dark .download-modal-btn.is-primary {
+  color: #12141f;
+  background: #cfc7ff;
+  box-shadow: 3px 3px 0 rgba(133, 104, 247, 0.7);
+}
+
+html.color-scheme-dark .download-modal-btn.is-primary:hover:not(:disabled) {
+  background: #ddd7ff;
+}
+
+html.color-scheme-dark .download-mode-option.active {
+  color: #12141f;
+  background: #cfc7ff;
+}
+
+html.color-scheme-dark .download-lock-progress__bar {
+  background: linear-gradient(90deg, #8568f7, #cfc7ff);
+}
+
+/* 自定义滚动条 */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+html.is-page-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.34) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+html.is-page-scrolling ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(151, 255, 124, 0.68);
+}
+
+/* 设置页「关闭动效」：尽量压平过渡，避免大段动画拖慢交互 */
+html.settings-no-animations * {
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html.settings-no-animations * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  /* 图片揭幕特效保留：即使关闭全局动效也允许此类动画正常播放 */
+  html.settings-no-animations .reveal-motion {
+    animation-duration: var(--reveal-animation-duration, 0.5s) !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--reveal-transition-duration, 0.28s) !important;
+  }
+}
+
+/* 设置页「关闭模糊」：顶栏、下载锁层等去掉毛玻璃 */
+html.settings-no-blur .site-header .header-shell,
+html.settings-no-blur .theme-navbar,
+html.settings-no-blur .download-guard-panel,
+html.settings-no-blur .download-lock-panel,
+html.settings-no-blur .settings-save-dock-inner {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.app-bottom-floating-dock {
+  position: fixed;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  z-index: 1040;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  min-width: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 1;
+  transition:
+    opacity 0.36s ease,
+    transform 0.42s ease;
+}
+
+.app-bottom-floating-dock.is-dock-scroll-hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+  pointer-events: none;
+}
+
+.app-bottom-floating-dock-inner {
+  --dock-progress-color: #22c55e;
+  position: relative;
+  overflow: visible;
+  pointer-events: auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 0;
+  border: 1px solid rgba(21, 26, 45, 0.14);
+  background: rgba(247, 247, 255, 0.96);
+  box-shadow: 4px 4px 0 rgba(106, 79, 224, 0.55);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.color-scheme-dark .app-bottom-floating-dock-inner {
+  border-color: rgba(160, 139, 255, 0.22);
+  background: rgba(18, 20, 31, 0.96);
+  box-shadow: 4px 4px 0 rgba(106, 79, 224, 0.45);
+}
+
+/* API 搜索窗口占用：底栏左到右柔和色带 */
+.app-bottom-floating-dock-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--api-border-progress, 0) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--dock-progress-color) 26%, transparent) 0%,
+    color-mix(in srgb, var(--dock-progress-color) 10%, transparent) 76%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+  transition: width 0.42s cubic-bezier(0.25, 0.82, 0.25, 1);
+}
+
+.app-bottom-dock-slot {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.app-bottom-floating-dock-inner.is-api-border-ok {
+  --dock-progress-color: #22c55e;
+}
+
+.app-bottom-floating-dock-inner.is-api-border-info {
+  --dock-progress-color: #0ea5e9;
+}
+
+.app-bottom-floating-dock-inner.is-api-border-warning {
+  --dock-progress-color: #eab308;
+}
+
+.app-bottom-floating-dock-inner.is-api-border-danger {
+  --dock-progress-color: #ef4444;
+}
+
+html.settings-no-blur .app-bottom-floating-dock-inner {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+@media (max-width: 920px) {
+  :root {
+    /* 两行硬边底栏：摘要 + 工具/分页 */
+    --app-bottom-floating-clearance: 118px;
+  }
+
+  .app-bottom-floating-dock {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    bottom: calc(var(--app-bottom-nav-offset, 62px) + 8px);
+  }
+
+  .app-bottom-floating-dock.is-dock-scroll-hidden {
+    transform: translateY(10px);
+  }
+
+  .app-bottom-floating-dock-inner {
+    width: 100%;
+    padding: 8px;
+    border-radius: 0;
+    box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.55);
+  }
+
+  html.color-scheme-dark .app-bottom-floating-dock-inner {
+    box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.4);
+  }
+}

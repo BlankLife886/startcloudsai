@@ -1,0 +1,156 @@
+.wallpaper-grid-container {
+  margin-top: 0;
+  margin-bottom: 30px;
+}
+
+.wallpaper-grid {
+  --wallpaper-grid-gap: 14px;
+  margin-right: calc(var(--wallpaper-grid-gap) * -0.5);
+  margin-left: calc(var(--wallpaper-grid-gap) * -0.5);
+}
+
+.wallpaper-grid > div {
+  padding-right: calc(var(--wallpaper-grid-gap) * 0.5);
+  padding-left: calc(var(--wallpaper-grid-gap) * 0.5);
+  margin-bottom: var(--wallpaper-grid-gap);
+  content-visibility: auto;
+  contain-intrinsic-size: 280px;
+  contain: layout style;
+}
+
+.wallpaper-grid.is-progressive > div.is-priority {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+.wallpaper-grid-placeholder {
+  width: 100%;
+  min-height: 180px;
+  border-radius: 0;
+  background: linear-gradient(
+    100deg,
+    rgba(120, 128, 160, 0.1) 24%,
+    rgba(180, 186, 210, 0.18) 38%,
+    rgba(120, 128, 160, 0.1) 52%
+  );
+  background-size: 200% 100%;
+  animation: wallpaper-grid-placeholder 1.2s linear infinite;
+}
+
+.wallpaper-grid.grid-density-2 .wallpaper-grid-placeholder {
+  min-height: 500px;
+}
+.wallpaper-grid.grid-density-3 .wallpaper-grid-placeholder {
+  min-height: 400px;
+}
+.wallpaper-grid.grid-density-4 .wallpaper-grid-placeholder {
+  min-height: 300px;
+}
+.wallpaper-grid.grid-density-6 .wallpaper-grid-placeholder {
+  min-height: 180px;
+}
+.wallpaper-grid.grid-density-8 .wallpaper-grid-placeholder {
+  min-height: 150px;
+}
+
+.wallpaper-virtual-grid {
+  width: 100%;
+}
+
+.wallpaper-virtual-cell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  contain: layout style;
+}
+
+@keyframes wallpaper-grid-placeholder {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.wallpaper-masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.wallpaper-masonry-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.wallpaper-masonry-item {
+  margin-bottom: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 320px;
+  contain: layout paint style;
+}
+
+.wallpaper-masonry-item.is-priority {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+.wallpaper-masonry-item :deep(.wallpaper-card) {
+  margin-bottom: 0;
+}
+
+.wallpaper-masonry-placeholder {
+  width: 100%;
+  min-height: 220px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* 原始比例模式 */
+.wallpaper-grid.ratio-original .ratio-original {
+  height: auto !important;
+}
+
+.loading-more {
+  min-height: 56px;
+  margin-top: 8px;
+  margin-bottom: 24px;
+  pointer-events: none;
+}
+
+.no-wallpapers {
+  padding: 50px 0;
+}
+
+/* 自定义的8列布局类 */
+@media (min-width: 1200px) {
+  .col-xl-1-5 {
+    flex: 0 0 12.5%;
+    max-width: 12.5%;
+  }
+}
+
+@media (max-width: 1199px) {
+  .wallpaper-masonry {
+    gap: 12px;
+  }
+}
+
+@media (max-width: 991px) {
+  .wallpaper-masonry {
+    gap: 10px;
+  }
+}
+
+@media (max-width: 767px) {
+  .wallpaper-masonry {
+    gap: 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  .wallpaper-masonry-col:not(:first-child) {
+    display: none;
+  }
+}

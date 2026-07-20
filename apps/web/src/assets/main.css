@@ -1,0 +1,135 @@
+/* 导入字体 */
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
+
+/* 全局样式 */
+:root {
+  --primary-color: #4caf50;
+  --secondary-color: #2196f3;
+  --background-color: #060707;
+  --text-color: #f0f0f0;
+  --card-bg-color: #1e1e1e;
+  --navbar-bg-color: rgba(18, 18, 18, 0.9);
+  --border-color: #333;
+  --hover-color: #2c2c2c;
+}
+
+/* 基础样式 */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Rajdhani', 'Share Tech Mono', monospace, sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+#app {
+  width: 100%;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+/* 链接样式 */
+a {
+  color: var(--secondary-color);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+a:hover {
+  color: var(--primary-color);
+}
+
+/* 按钮样式 */
+.btn {
+  transition: all 0.3s ease;
+}
+
+.theme-button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+}
+
+.theme-button:hover {
+  background-color: var(--secondary-color);
+  color: white;
+}
+
+/* 卡片样式 */
+.theme-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.theme-card:hover {
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* 标题样式 */
+.theme-title {
+  color: var(--primary-color);
+  font-weight: bold;
+}
+
+/* 表单样式 */
+.form-control,
+.form-select {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+}
+
+.form-control:focus,
+.form-select:focus {
+  background-color: var(--card-bg-color);
+  border-color: var(--primary-color);
+  color: var(--text-color);
+  box-shadow: 0 0 0 0.25rem rgba(var(--primary-color-rgb), 0.25);
+}
+
+/* 返回顶部按钮（硬边画廊风格，细节以 App.vue 为准） */
+#back-to-top {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: none;
+  z-index: 1050;
+  width: 40px;
+  height: 40px;
+  border-radius: 0;
+  background-color: #151a2d;
+  color: #fff;
+  border: none;
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+#back-to-top:hover {
+  background-color: #6a4fe0;
+}
+
+/* 响应式容器 */
+.container-fluid {
+  width: 100%;
+  padding-right: 15px;
+  padding-left: 15px;
+  margin-right: auto;
+  margin-left: auto;
+}

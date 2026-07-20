@@ -1,0 +1,325 @@
+/* ==========================================================================
+   Wallpaper Atelier — Paper workspace
+   One continuous surface, hairline dividers, charcoal accent only on CTA.
+   Light default; html.color-scheme-dark for dark. Layout unchanged.
+   ========================================================================== */
+
+.wallpaper-atelier,
+.tech-studio-v3,
+.ai-studio-page {
+  color-scheme: light;
+
+  --studio-void: #ffffff;
+  --studio-ink: #f6f6f6;
+  --studio-ink-soft: #f4f4f5;
+  --studio-panel: #ffffff;
+  --studio-panel-solid: #ffffff;
+  --studio-panel-raised: #ffffff;
+
+  --studio-accent: #171717;
+  --studio-accent-rgb: 23, 23, 23;
+  --studio-accent-strong: #0a0a0a;
+  --studio-accent-soft: rgba(23, 23, 23, 0.06);
+
+  --studio-field: #f4f4f5;
+  --studio-field-strong: #ebebed;
+  --studio-on-accent: #ffffff;
+
+  --studio-border: rgba(15, 18, 28, 0.08);
+  --studio-border-soft: rgba(15, 18, 28, 0.05);
+  --studio-border-strong: rgba(15, 18, 28, 0.18);
+  --studio-text: #171717;
+  --studio-text-dim: #52525b;
+  --studio-text-faint: #a1a1aa;
+
+  --studio-radius-lg: 0;
+  --studio-radius: 0;
+  --studio-radius-sm: 6px;
+  --studio-top-height: 48px;
+  --left-width: 248px;
+  --right-width: 300px;
+  --studio-gap: 0;
+  --studio-glow: none;
+  --studio-shadow: none;
+  --studio-shadow-soft: none;
+  --ease-out: cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+
+html.color-scheme-dark .wallpaper-atelier,
+html.color-scheme-dark .tech-studio-v3,
+html.color-scheme-dark .ai-studio-page {
+  color-scheme: dark;
+
+  --studio-void: #0c0c0e;
+  --studio-ink: #141416;
+  --studio-ink-soft: #161618;
+  --studio-panel: #0c0c0e;
+  --studio-panel-solid: #141416;
+  --studio-panel-raised: #1a1a1d;
+
+  --studio-accent: #f4f4f5;
+  --studio-accent-rgb: 244, 244, 245;
+  --studio-accent-strong: #ffffff;
+  --studio-accent-soft: rgba(255, 255, 255, 0.08);
+
+  --studio-field: #161618;
+  --studio-field-strong: #1c1c1f;
+  --studio-on-accent: #0c0c0e;
+
+  --studio-border: rgba(255, 255, 255, 0.08);
+  --studio-border-soft: rgba(255, 255, 255, 0.05);
+  --studio-border-strong: rgba(255, 255, 255, 0.16);
+  --studio-text: rgba(255, 255, 255, 0.92);
+  --studio-text-dim: rgba(255, 255, 255, 0.55);
+  --studio-text-faint: rgba(255, 255, 255, 0.34);
+
+  --studio-shadow: none;
+  --studio-shadow-soft: none;
+}
+
+/* ── Page shell：整页同色，无浮卡缝隙 ─────────────────────────────────── */
+
+.wallpaper-atelier,
+.tech-studio-v3,
+.ai-studio-page {
+  position: relative;
+  isolation: isolate;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--studio-void);
+  color: var(--studio-text);
+  font-feature-settings: 'tnum' 1;
+}
+
+.wallpaper-atelier::before,
+.tech-studio-v3::before,
+.ai-studio-page::before,
+.wallpaper-atelier::after,
+.tech-studio-v3::after,
+.ai-studio-page::after {
+  content: none !important;
+  display: none !important;
+}
+
+.ai-studio-scrim,
+.studio-grid-bg {
+  display: none !important;
+}
+
+/* ── Shell + top bar ──────────────────────────────────────────────────── */
+
+.studio-shell {
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studio-top-bar {
+  flex-shrink: 0;
+  min-height: var(--studio-top-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--studio-border);
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+.studio-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.studio-brand-badge {
+  display: none;
+}
+
+.studio-brand strong {
+  color: var(--studio-text);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.studio-brand small {
+  color: var(--studio-text-faint);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.studio-top-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.studio-top-stats {
+  display: none;
+}
+
+.studio-top-stats span {
+  display: none;
+}
+
+.studio-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  color: var(--studio-text-faint);
+  font-size: 0.78rem;
+}
+
+.studio-status-chip .status-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--studio-text-faint);
+}
+
+.studio-status-chip.running {
+  border-color: transparent;
+  color: var(--studio-text);
+  background: transparent;
+}
+
+.studio-status-chip.running .status-pulse {
+  background: var(--studio-text);
+  box-shadow: none;
+  animation: studio-pulse 1.3s ease-in-out infinite;
+}
+
+.studio-inspector-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  background: transparent;
+  color: var(--studio-text-dim);
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.studio-inspector-toggle:hover {
+  border-color: var(--studio-border-strong);
+  background: var(--studio-ink-soft);
+  color: var(--studio-text);
+}
+
+/* ── Shared label：隐藏英文大写眉标，只留中文标题 ───────────────────── */
+
+.side-head > div > span,
+.reference-strip-head span,
+.side-history-head span,
+.timeline-rail-head span,
+.result-head span,
+.status-card > span {
+  display: none;
+}
+
+.side-head strong,
+.timeline-rail-head strong {
+  font-weight: 600;
+  font-size: 0.88rem;
+  letter-spacing: 0;
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+
+.studio-shell *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.studio-shell *::-webkit-scrollbar-thumb {
+  background: rgba(15, 18, 28, 0.12);
+  border-radius: 999px;
+}
+
+html.color-scheme-dark .studio-shell *::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.studio-shell *::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 18, 28, 0.28);
+}
+
+html.color-scheme-dark .studio-shell *::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* ── Focus + motion ───────────────────────────────────────────────────── */
+
+.studio-shell button:focus-visible,
+.studio-shell input:focus-visible,
+.studio-shell textarea:focus-visible,
+.studio-shell select:focus-visible {
+  outline: 2px solid rgba(var(--studio-accent-rgb), 0.35);
+  outline-offset: 1px;
+}
+
+@keyframes studio-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+}
+
+@media (max-width: 640px) {
+  .studio-top-bar {
+    padding: 0 12px;
+  }
+
+  .studio-brand small {
+    display: none;
+  }
+
+  .studio-inspector-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-status-chip.running .status-pulse {
+    animation: none;
+  }
+}

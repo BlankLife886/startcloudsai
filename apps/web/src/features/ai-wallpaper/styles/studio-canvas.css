@@ -1,0 +1,439 @@
+/* ==========================================================================
+   Wallpaper Atelier — Canvas
+   The preview stage is the visual anchor of the studio: large, quiet, and
+   dark, with floating tools instead of chrome. Reveal / breathe hooks pair
+   with useWallpaperStudioMotion.js (data-motion attributes + GSAP).
+   ========================================================================== */
+
+.preview-stage {
+  border: 0;
+  border-radius: 0;
+  background: var(--studio-ink-soft);
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.preview-stage:focus,
+.preview-stage:focus-visible {
+  outline: none;
+}
+
+.preview-stage:fullscreen {
+  border: 0;
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-void);
+}
+
+/* Legacy decorative corner frame — dropped in favor of a quiet, HUD-free
+   stage. Kept selector so no unstyled markup leaks through. */
+.preview-tech-frame {
+  display: none;
+}
+
+/* ── Breathing glow while a task is running ──────────────────────────── */
+
+.preview-stage.is-running-breathe {
+  animation: studio-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes studio-breathe {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px var(--studio-border-strong);
+  }
+}
+
+/* ── Floating tools：叠在画布上，不占位 ───────────────────────────────── */
+
+.canvas-tools {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 5;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  background: color-mix(in srgb, var(--studio-panel) 92%, transparent);
+  box-shadow: 0 1px 3px rgba(15, 18, 28, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.canvas-tools button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--studio-radius-sm) - 2px);
+  color: var(--studio-text-dim);
+  background: transparent;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.canvas-tools button:hover:not(:disabled) {
+  background: var(--studio-field);
+  color: var(--studio-text);
+}
+
+.canvas-tools button.active {
+  color: var(--studio-on-accent);
+  background: var(--studio-accent);
+}
+
+.canvas-tools button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.fullscreen-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  color: var(--studio-text-dim);
+  background: color-mix(in srgb, var(--studio-panel) 92%, transparent);
+  box-shadow: 0 1px 3px rgba(15, 18, 28, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.fullscreen-toggle:hover {
+  color: var(--studio-text);
+}
+
+/* ── Preview frame — media fills stage; tools overlay ─────────────────── */
+
+.preview-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  width: auto;
+  height: auto;
+  padding: 0;
+  box-sizing: border-box;
+  touch-action: none;
+  user-select: none;
+}
+
+.preview-media-wrap {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+  overflow: hidden;
+}
+
+.preview-frame img,
+.preview-frame video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+  border-radius: 0;
+  box-shadow: none;
+  transform-origin: center;
+  transition: transform 0.3s var(--ease-out);
+}
+
+.preview-frame.panning img,
+.preview-frame.panning video {
+  transition: none;
+}
+
+.preview-frame.zoomed img,
+.preview-frame.zoomed video {
+  cursor: grab;
+}
+
+.preview-stage:fullscreen .preview-frame {
+  padding: 0;
+}
+
+[data-reveal-target] {
+  z-index: 1;
+}
+
+/* [data-reveal-holdover] is the holdover element itself (an <img>), sized
+   and centered the same way as the incoming target media. */
+.preview-holdover,
+[data-reveal-holdover] {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  object-fit: contain;
+  object-position: center;
+  border-radius: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+/* Compatibility fallback if a holdover wrapper (rather than a bare <img>)
+   is ever used. */
+.result-holdover {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.result-holdover img {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.preview-stage.is-revealing {
+  box-shadow: inset 0 0 0 1px var(--studio-border-strong);
+}
+
+/* ── Compare mode — two contained figures side by side ───────────────── */
+
+.compare-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.compare-frame figure {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--studio-border-soft);
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-field);
+}
+
+.compare-frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  object-position: center;
+  box-shadow: none;
+}
+
+.compare-frame figcaption {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 4px 9px;
+  border-radius: var(--studio-radius-sm);
+  color: var(--studio-text);
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 0.68rem;
+  font-weight: 550;
+}
+
+/* ── Output strip + reference strip ──────────────────────────────────── */
+
+.output-strip,
+.canvas-reference-strip {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  max-width: min(88%, 620px);
+  gap: 6px;
+  padding: 6px;
+  overflow-x: auto;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-panel);
+  box-shadow: var(--studio-shadow-soft);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: translateX(-50%);
+}
+
+.canvas-reference-strip {
+  bottom: 64px;
+}
+
+.output-strip button {
+  position: relative;
+  flex: 0 0 auto;
+  width: 60px;
+  height: 42px;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-ink-soft);
+  cursor: pointer;
+}
+
+.output-strip button.active {
+  border-color: var(--studio-accent);
+}
+
+.output-strip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.output-strip span {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--studio-radius-sm);
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--studio-text);
+  font-size: 0.6rem;
+}
+
+.canvas-reference-strip span {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  color: var(--studio-text-dim);
+  font-size: 0.68rem;
+}
+
+.canvas-reference-strip button {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 32px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-ink-soft);
+  cursor: pointer;
+}
+
+.canvas-reference-strip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+
+.preview-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 56px 24px 32px;
+  color: var(--studio-text-dim);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.preview-empty i {
+  font-size: 2.2rem;
+  color: var(--studio-text-faint);
+}
+
+.preview-empty strong {
+  color: var(--studio-text);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.preview-empty span {
+  max-width: 28ch;
+  color: var(--studio-text-faint);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.preview-empty button {
+  margin-top: 4px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-sm);
+  color: var(--studio-text);
+  background: var(--studio-panel);
+  font-size: 0.84rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.preview-empty button:hover {
+  background: var(--studio-field);
+}
+
+@media (max-width: 640px) {
+  .preview-frame {
+    padding: 48px 12px 56px;
+  }
+
+  .compare-frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-stage.is-running-breathe {
+    animation: none;
+  }
+
+  .preview-frame img,
+  .preview-frame video {
+    transition: none;
+  }
+}

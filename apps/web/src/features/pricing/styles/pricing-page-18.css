@@ -1,0 +1,658 @@
+.pc-wallet-summary__row.is-total dd {
+  color: var(--pc-wallet-hot);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-shadow: 0 0 16px rgb(255 123 157 / 18%);
+}
+
+.pc-wallet-summary__warn {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--pc-warn);
+  background: var(--pc-warn-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pc-wallet-summary__fx {
+  margin: 0;
+  color: var(--pc-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pc-wallet-summary__pay-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--pc-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pc-wallet-pay-methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pc-wallet-pay-method {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 12px;
+  color: var(--pc-muted);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.pc-wallet-pay-method i {
+  font-size: 16px;
+}
+
+.pc-wallet-pay-method.is-unconfigured {
+  opacity: 0.72;
+  border: 1px dashed rgb(255 255 255 / 14%);
+}
+
+.pc-sub-plan__cta.is-unconfigured {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+@media (hover: hover) {
+  .pc-wallet-pay-method:hover:not(.is-active):not(.is-unconfigured) {
+    color: var(--pc-heading);
+    transform: translateY(-1px);
+    box-shadow:
+      var(--pc-panel-sunken),
+      inset 0 1px 0 rgb(255 255 255 / 8%);
+  }
+}
+
+.pc-wallet-pay-method.is-active {
+  color: var(--pc-primary);
+  background: linear-gradient(180deg, rgb(151 255 124 / 18%), rgb(151 255 124 / 8%) 100%);
+  box-shadow:
+    0 0 0 1px rgb(151 255 124 / 32%),
+    0 4px 14px rgb(151 255 124 / 12%),
+    inset 0 1px 0 rgb(255 255 255 / 16%);
+  transform: translateY(-1px);
+}
+
+.pc-wallet-pay-method.is-alipay.is-active {
+  color: #69b1ff;
+  background: linear-gradient(180deg, rgb(22 119 255 / 18%), rgb(22 119 255 / 8%) 100%);
+  box-shadow:
+    0 0 0 1px rgb(22 119 255 / 32%),
+    0 4px 14px rgb(22 119 255 / 12%),
+    inset 0 1px 0 rgb(255 255 255 / 14%);
+}
+
+.pc-sub-plan__cta--alipay {
+  color: #ffffff;
+  background: linear-gradient(180deg, #4096ff 0%, #1677ff 100%);
+  border-color: transparent;
+}
+
+.pc-sub-plan__cta--alipay:hover:not(:disabled) {
+  filter: brightness(1.03);
+}
+
+.pc-wallet-summary__cta {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
+  color: #0e1210;
+  background: linear-gradient(180deg, var(--pc-primary-strong) 0%, var(--pc-primary) 100%);
+  font-size: 15px;
+  font-weight: 750;
+  cursor: pointer;
+  box-shadow:
+    0 4px 14px rgb(0 0 0 / 28%),
+    0 0 18px rgb(151 255 124 / 14%),
+    inset 0 1px 0 rgb(255 255 255 / 28%);
+  transition:
+    transform 0.16s ease,
+    opacity 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
+}
+
+.pc-wallet-summary__cta:hover:not(:disabled) {
+  color: #0e1210;
+  background: linear-gradient(180deg, #c4ffae 0%, var(--pc-primary-strong) 100%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 32%),
+    0 0 22px rgb(151 255 124 / 20%),
+    inset 0 1px 0 rgb(255 255 255 / 32%);
+}
+
+.pc-wallet-summary__cta:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 2px 6px rgb(0 0 0 / 24%),
+    0 2px 8px rgb(0 0 0 / 22%);
+}
+
+.pc-wallet-summary__cta.is-alipay {
+  background: linear-gradient(180deg, #4096ff 0%, #1677ff 100%);
+  box-shadow:
+    0 4px 14px rgb(0 0 0 / 28%),
+    0 0 18px rgb(22 119 255 / 16%),
+    inset 0 1px 0 rgb(255 255 255 / 24%);
+}
+
+.pc-wallet-summary__cta.is-alipay:hover:not(:disabled) {
+  background: linear-gradient(180deg, #69b1ff 0%, #4096ff 100%);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 32%),
+    0 0 22px rgb(22 119 255 / 22%),
+    inset 0 1px 0 rgb(255 255 255 / 28%);
+}
+
+.pc-wallet-summary__legal {
+  margin: 0;
+  color: var(--pc-subtle);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pc-wallet-empty {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 36px 20px;
+  border: none;
+  border-radius: 16px;
+  color: var(--pc-muted);
+  background: linear-gradient(180deg, rgb(0 0 0 / 16%), rgb(255 255 255 / 2%) 100%);
+  box-shadow: var(--pc-panel-sunken);
+  text-align: center;
+}
+
+.pc-wallet-empty i {
+  font-size: 28px;
+  opacity: 0.72;
+}
+
+.pc-wallet-empty strong {
+  color: var(--pc-heading);
+  font-size: 16px;
+}
+
+.pc-wallet-empty p {
+  margin: 0;
+  max-width: 320px;
+  font-size: 13px;
+}
+
+.pc-wallet-orphan {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.pc-wallet-orphan__label {
+  margin: 0;
+  color: var(--pc-subtle);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pc-wallet-redeem {
+  display: flex;
+  justify-content: flex-start;
+  padding: 4px 0 8px;
+}
+
+.pc-wallet-redeem__card {
+  width: min(100%, 540px);
+  padding: 22px 22px 20px;
+  border-radius: 22px;
+  background:
+    radial-gradient(ellipse 88% 64% at 100% 0%, rgb(151 255 124 / 10%) 0%, transparent 58%),
+    var(--pc-surface-bg-raised);
+}
+
+.pc-wallet-redeem__head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.pc-wallet-redeem__head i {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid rgb(151 255 124 / 28%);
+  background: linear-gradient(180deg, rgb(151 255 124 / 18%), rgb(151 255 124 / 8%));
+  color: var(--pc-primary);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 14%),
+    0 3px 10px rgb(151 255 124 / 14%);
+  font-size: 18px;
+}
+
+.pc-wallet-redeem__head h3 {
+  margin: 0 0 6px;
+  color: var(--pc-heading);
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 0 rgb(255 255 255 / 8%);
+}
+
+.pc-wallet-redeem__head p {
+  margin: 0;
+  color: var(--pc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pc-wallet-redeem__head p strong {
+  color: var(--pc-heading);
+  font-weight: 700;
+}
+
+.pc-wallet-redeem__field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pc-wallet-redeem__field span {
+  color: var(--pc-subtle);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pc-wallet-redeem__field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 14px;
+  border: none;
+  border-radius: 14px;
+  color: var(--pc-heading);
+  font-family: var(--pc-mono);
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  transition:
+    box-shadow 0.16s ease,
+    background 0.16s ease;
+}
+
+.pc-wallet-redeem__field input::placeholder {
+  color: color-mix(in srgb, var(--pc-muted) 72%, transparent);
+  letter-spacing: 0.02em;
+}
+
+.pc-wallet-redeem__field input:focus {
+  outline: none;
+  background: linear-gradient(180deg, rgb(151 255 124 / 10%), rgb(151 255 124 / 4%) 100%);
+  box-shadow:
+    var(--pc-panel-sunken),
+    0 0 0 1px rgb(151 255 124 / 32%),
+    0 0 16px rgb(151 255 124 / 12%);
+}
+
+.pc-wallet-redeem__preview {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(151 255 124 / 14%), rgb(151 255 124 / 6%) 100%);
+  box-shadow:
+    var(--pc-panel-sunken),
+    inset 0 0 0 1px rgb(151 255 124 / 20%);
+}
+
+.pc-wallet-redeem__preview-label,
+.pc-wallet-redeem__preview-unit {
+  color: var(--pc-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pc-wallet-redeem__preview strong {
+  color: color-mix(in srgb, var(--pc-primary) 82%, var(--pc-heading));
+  font-size: 18px;
+  font-weight: 850;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-shadow: 0 0 14px rgb(151 255 124 / 16%);
+}
+
+.pc-wallet-redeem__cta {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--pc-primary-strong) 0%, var(--pc-primary) 100%);
+  color: #0e1210;
+  font-size: 14px;
+  font-weight: 750;
+  cursor: pointer;
+  box-shadow:
+    0 4px 14px rgb(0 0 0 / 28%),
+    0 0 18px rgb(151 255 124 / 14%),
+    inset 0 1px 0 rgb(255 255 255 / 28%);
+  transition:
+    transform 0.16s ease,
+    opacity 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
+}
+
+.pc-wallet-redeem__cta:hover:not(:disabled) {
+  color: #0e1210;
+  background: linear-gradient(180deg, #c4ffae 0%, var(--pc-primary-strong) 100%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 32%),
+    0 0 22px rgb(151 255 124 / 20%),
+    inset 0 1px 0 rgb(255 255 255 / 32%);
+}
+
+.pc-wallet-redeem__cta:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 2px 6px rgb(0 0 0 / 24%),
+    0 2px 8px rgb(0 0 0 / 22%);
+}
+
+a.pc-wallet-redeem__cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.pc-wallet-redeem__cta:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.pc-wallet-redeem__note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  color: var(--pc-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.pc-wallet-redeem__success {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(34 197 94 / 14%), rgb(34 197 94 / 6%) 100%);
+  box-shadow:
+    var(--pc-panel-sunken),
+    inset 0 0 0 1px rgb(34 197 94 / 22%);
+}
+
+.pc-wallet-redeem__success i {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 18px;
+  color: var(--pc-success);
+}
+
+.pc-wallet-redeem__success strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--pc-heading);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.pc-wallet-redeem__success p {
+  margin: 0;
+  color: var(--pc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pc-wallet-redeem__history-link {
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--pc-primary);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.pc-wallet-redeem__history-link:hover {
+  text-decoration: underline;
+}
+
+.pc-wallet-history {
+  display: grid;
+  gap: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pc-wallet-history__head {
+  display: grid;
+  gap: 12px;
+}
+
+.pc-wallet-reconcile {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  color: var(--pc-subtle);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pc-wallet-reconcile strong {
+  color: var(--pc-muted);
+  font-weight: 700;
+}
+
+.pc-wallet-history__section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--pc-wallet-card-divider);
+}
+
+.pc-wallet-history__section h3 {
+  margin: 0;
+  color: var(--pc-heading);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.pc-wallet-history__list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pc-wallet-history__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.pc-wallet-history__list li:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    var(--pc-panel-sunken),
+    inset 0 0 0 1px rgb(151 255 124 / 14%);
+}
+
+.pc-wallet-history__main {
+  min-width: 0;
+}
+
+.pc-wallet-history__main strong {
+  display: block;
+  color: var(--pc-heading);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.pc-wallet-history__main small {
+  display: block;
+  margin-top: 4px;
+  color: var(--pc-subtle);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pc-wallet-history__actions {
+  flex-shrink: 0;
+}
+
+.pc-wallet-history__amount {
+  flex-shrink: 0;
+  color: var(--pc-success);
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pc-wallet-history__amount.is-spend {
+  color: var(--pc-danger);
+}
+
+.pc-wallet-history__status {
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--pc-muted);
+  background: rgb(255 255 255 / 6%);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pc-wallet-history .pc-wallet-empty {
+  padding: 28px 18px;
+  border: 1px dashed var(--pc-wallet-card-ring);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 2%);
+}
+
+@media (max-width: 640px) {
+  .pc-wallet-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .pc-wallet-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pc-wallet-tabs__btn {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+
+  .pc-wallet-redeem__card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .pc-wallet-history__list li {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .pc-wallet-history__actions,
+  .pc-wallet-history__amount {
+    align-self: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-skeleton,
+  .pc-sub-plan--skeleton,
+  .pc-btn .spin {
+    animation: none;
+  }
+
+  .pc-wallet-tabs__indicator {
+    transition: none;
+  }
+
+  .pc-sub-plans__main-tabs-indicator,
+  .pc-sub-plans__toggle-indicator {
+    transition: none;
+  }
+
+  .pc-wallet-panel-enter-active,
+  .pc-wallet-panel-leave-active,
+  .pc-sub-plans-panel-enter-active,
+  .pc-sub-plans-panel-leave-active,
+  .pc-keys-modal-enter-active,
+  .pc-keys-modal-leave-active,
+  .pc-keys-edit-reveal-enter-active,
+  .pc-keys-edit-reveal-leave-active {
+    transition: none;
+  }
+
+  .pc-keys-edit-segment__indicator {
+    transition: none;
+  }
+
+  .pc-model-hero,
+  .pc-model-hero__icon,
+  .pc-model-hero__name,
+  .pc-model-hero__avail-pill {
+    transition: none;
+  }
+}

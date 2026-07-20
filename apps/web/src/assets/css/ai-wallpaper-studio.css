@@ -1,0 +1,535 @@
+/* AI 壁纸生成 Studio — 科技感视觉层（配合 AiWallpaperView.vue） */
+
+.tech-studio-v3 {
+  --studio-cyan: #3de8ff;
+  --studio-cyan-rgb: 61, 232, 255;
+  --studio-green: var(--primary-color, #4caf50);
+  --studio-green-rgb: var(--primary-color-rgb, 76, 175, 80);
+  --studio-panel: rgba(12, 16, 22, 0.72);
+  --studio-panel-border: rgba(var(--studio-cyan-rgb), 0.14);
+  --studio-glow: 0 0 24px rgba(var(--studio-cyan-rgb), 0.08);
+  --studio-top-height: 48px;
+  height: var(--studio-viewport-height, calc(100svh - var(--app-header-offset, 0px)));
+  max-height: var(--studio-viewport-height, calc(100svh - var(--app-header-offset, 0px)));
+  padding: 8px 12px 10px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 80% 50% at 12% -10%, rgba(var(--studio-cyan-rgb), 0.12), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 88% 0%, rgba(var(--studio-green-rgb), 0.08), transparent 50%),
+    linear-gradient(165deg, #0a0d12 0%, #0e1218 42%, #080b0f 100%);
+}
+
+.tech-studio-v3::before {
+  opacity: 0.18;
+  filter: saturate(1.15) contrast(1.05);
+}
+
+.tech-studio-v3::after {
+  background:
+    linear-gradient(90deg, rgba(6, 8, 12, 0.82) 0%, rgba(6, 8, 12, 0.35) 45%, rgba(6, 8, 12, 0.78) 100%),
+    linear-gradient(180deg, rgba(6, 8, 12, 0.55) 0%, rgba(6, 8, 12, 0.88) 100%);
+}
+
+.tech-studio-v3 .ai-studio-scrim {
+  background:
+    linear-gradient(rgba(var(--studio-cyan-rgb), 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--studio-cyan-rgb), 0.03) 1px, transparent 1px),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.012) 0,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 80px
+    );
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto;
+  opacity: 1;
+}
+
+.tech-studio-v3 .studio-grid-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 38%, rgba(var(--studio-cyan-rgb), 0.06), transparent 42%);
+}
+
+.tech-studio-v3 .studio-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── 顶栏 ── */
+.tech-studio-v3 .studio-top-bar {
+  flex-shrink: 0;
+  min-height: var(--studio-top-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border: 1px solid var(--studio-panel-border);
+  border-radius: 14px;
+  background: var(--studio-panel);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--studio-glow), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.tech-studio-v3 .studio-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tech-studio-v3 .studio-brand-badge {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.35);
+  background: rgba(var(--studio-cyan-rgb), 0.08);
+  color: var(--studio-cyan);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.tech-studio-v3 .studio-brand strong {
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tech-studio-v3 .studio-brand small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.tech-studio-v3 .studio-top-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tech-studio-v3 .studio-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tech-studio-v3 .studio-status-chip .status-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(var(--studio-green-rgb), 0.85);
+  box-shadow: 0 0 8px rgba(var(--studio-green-rgb), 0.5);
+}
+
+.tech-studio-v3 .studio-status-chip.running {
+  border-color: rgba(var(--studio-cyan-rgb), 0.35);
+  color: var(--studio-cyan);
+  background: rgba(var(--studio-cyan-rgb), 0.08);
+}
+
+.tech-studio-v3 .studio-status-chip.running .status-pulse {
+  background: var(--studio-cyan);
+  box-shadow: 0 0 10px rgba(var(--studio-cyan-rgb), 0.65);
+  animation: studio-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes studio-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+/* ── 工作区 ── */
+.tech-studio-v3 .ai-hero-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 侧栏玻璃面板 ── */
+.tech-studio-v3 .studio-side,
+.tech-studio-v3 .preview-stage,
+.tech-studio-v3 .prompt-dock {
+  border: 1px solid var(--studio-panel-border);
+  background: var(--studio-panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--studio-glow), 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+.tech-studio-v3 .studio-side {
+  border-radius: 14px;
+}
+
+.tech-studio-v3 .side-head span,
+.tech-studio-v3 .control-group > span,
+.tech-studio-v3 .status-card span,
+.tech-studio-v3 .reference-strip-head span,
+.tech-studio-v3 .side-history-head span {
+  color: rgba(var(--studio-cyan-rgb), 0.72);
+  font-size: 0.64rem;
+  letter-spacing: 0.12em;
+}
+
+.tech-studio-v3 .side-collapse {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tech-studio-v3 .side-collapse:hover {
+  border-color: rgba(var(--studio-cyan-rgb), 0.28);
+  background: rgba(var(--studio-cyan-rgb), 0.1);
+}
+
+/* ── 预览舞台 HUD ── */
+.tech-studio-v3 .preview-stage {
+  border-radius: 14px;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 42%, rgba(var(--studio-cyan-rgb), 0.04), transparent 60%),
+    rgba(4, 6, 10, 0.55);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--studio-cyan-rgb), 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 20px 50px rgba(0, 0, 0, 0.35);
+}
+
+.tech-studio-v3 .preview-tech-frame {
+  position: absolute;
+  inset: 12px;
+  z-index: 2;
+  pointer-events: none;
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.08);
+  border-radius: 10px;
+}
+
+.tech-studio-v3 .preview-tech-frame .corner {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-color: rgba(var(--studio-cyan-rgb), 0.55);
+  border-style: solid;
+  opacity: 0.85;
+}
+
+.tech-studio-v3 .preview-tech-frame .corner-tl {
+  top: -1px;
+  left: -1px;
+  border-width: 2px 0 0 2px;
+  border-radius: 4px 0 0 0;
+}
+
+.tech-studio-v3 .preview-tech-frame .corner-tr {
+  top: -1px;
+  right: -1px;
+  border-width: 2px 2px 0 0;
+  border-radius: 0 4px 0 0;
+}
+
+.tech-studio-v3 .preview-tech-frame .corner-bl {
+  bottom: -1px;
+  left: -1px;
+  border-width: 0 0 2px 2px;
+  border-radius: 0 0 0 4px;
+}
+
+.tech-studio-v3 .preview-tech-frame .corner-br {
+  bottom: -1px;
+  right: -1px;
+  border-width: 0 2px 2px 0;
+  border-radius: 0 0 4px 0;
+}
+
+.tech-studio-v3 .canvas-tools {
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.12);
+  background: rgba(8, 10, 14, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.tech-studio-v3 .canvas-tools button.active {
+  color: #0a1014;
+  background: linear-gradient(135deg, rgba(var(--studio-cyan-rgb), 0.95), rgba(var(--studio-green-rgb), 0.85));
+  box-shadow: 0 0 14px rgba(var(--studio-cyan-rgb), 0.25);
+}
+
+.tech-studio-v3 .fullscreen-toggle {
+  border-color: rgba(var(--studio-cyan-rgb), 0.2);
+  background: rgba(8, 10, 14, 0.72);
+}
+
+.tech-studio-v3 .preview-empty i {
+  color: rgba(var(--studio-cyan-rgb), 0.5);
+  filter: drop-shadow(0 0 12px rgba(var(--studio-cyan-rgb), 0.2));
+}
+
+.tech-studio-v3 .preview-empty button {
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.35);
+  color: #fff;
+  background: rgba(var(--studio-cyan-rgb), 0.12);
+}
+
+.tech-studio-v3 .preview-empty button:hover {
+  background: rgba(var(--studio-cyan-rgb), 0.22);
+}
+
+/* ── 素材卡 ── */
+.tech-studio-v3 .source-card {
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.12);
+  background:
+    linear-gradient(180deg, rgba(var(--studio-cyan-rgb), 0.06) 0%, rgba(255, 255, 255, 0.03) 100%);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.tech-studio-v3 .source-card:hover {
+  border-color: rgba(var(--studio-cyan-rgb), 0.32);
+  box-shadow: 0 0 20px rgba(var(--studio-cyan-rgb), 0.1);
+  transform: translateY(-1px);
+}
+
+.tech-studio-v3 .source-card span {
+  color: rgba(var(--studio-cyan-rgb), 0.65);
+}
+
+/* ── 工作流 ── */
+.tech-studio-v3 .workflow-strip {
+  position: relative;
+  border-color: rgba(var(--studio-cyan-rgb), 0.1);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.tech-studio-v3 .workflow-strip span.active {
+  color: #061018;
+  background: linear-gradient(135deg, rgba(var(--studio-cyan-rgb), 0.92), rgba(var(--studio-green-rgb), 0.78));
+  box-shadow: 0 0 16px rgba(var(--studio-cyan-rgb), 0.2);
+}
+
+/* ── 模块卡片 ── */
+.tech-studio-v3 .module-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tech-studio-v3 .module-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(var(--studio-cyan-rgb), 0.2);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tech-studio-v3 .module-card:hover::before,
+.tech-studio-v3 .module-card.active::before {
+  background: var(--studio-cyan);
+  box-shadow: 0 0 10px rgba(var(--studio-cyan-rgb), 0.55);
+}
+
+.tech-studio-v3 .module-card:hover,
+.tech-studio-v3 .module-card.active {
+  border-color: rgba(var(--studio-cyan-rgb), 0.22);
+  background: rgba(var(--studio-cyan-rgb), 0.06);
+}
+
+.tech-studio-v3 .module-card i {
+  color: var(--studio-cyan);
+  background: rgba(var(--studio-cyan-rgb), 0.1);
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.15);
+}
+
+.tech-studio-v3 .module-card span {
+  color: rgba(var(--studio-cyan-rgb), 0.55);
+}
+
+/* ── 状态 / 概览 ── */
+.tech-studio-v3 .control-overview,
+.tech-studio-v3 .side-summary,
+.tech-studio-v3 .status-card {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tech-studio-v3 .status-card {
+  border-color: rgba(var(--studio-green-rgb), 0.15);
+  background: rgba(var(--studio-green-rgb), 0.05);
+}
+
+/* ── 提示词 Dock ── */
+.tech-studio-v3 .prompt-dock {
+  border-radius: 14px;
+  background: rgba(8, 11, 16, 0.82);
+  box-shadow:
+    0 -8px 32px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(var(--studio-cyan-rgb), 0.08);
+}
+
+.tech-studio-v3 .prompt-presets button {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.tech-studio-v3 .prompt-presets button:hover {
+  border-color: rgba(var(--studio-cyan-rgb), 0.28);
+  background: rgba(var(--studio-cyan-rgb), 0.1);
+  color: #fff;
+}
+
+.tech-studio-v3 .prompt-composer textarea {
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.12);
+  background: rgba(0, 0, 0, 0.28);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tech-studio-v3 .prompt-composer textarea:focus {
+  border-color: rgba(var(--studio-cyan-rgb), 0.35);
+  box-shadow: 0 0 0 3px rgba(var(--studio-cyan-rgb), 0.08);
+}
+
+.tech-studio-v3 .generate-button {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.4);
+  color: #061018;
+  background: linear-gradient(135deg, #7af0ff 0%, var(--studio-green) 100%);
+  box-shadow:
+    0 0 24px rgba(var(--studio-cyan-rgb), 0.22),
+    0 8px 24px rgba(0, 0, 0, 0.25);
+  font-weight: 800;
+}
+
+.tech-studio-v3 .generate-button:not(:disabled):hover {
+  box-shadow:
+    0 0 32px rgba(var(--studio-cyan-rgb), 0.35),
+    0 12px 28px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+}
+
+.tech-studio-v3 .generate-button:disabled {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.35);
+  box-shadow: none;
+}
+
+/* ── 控制面板浮层 ── */
+.tech-studio-v3 .control-panel-layer {
+  background: rgba(4, 6, 10, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.tech-studio-v3 .control-panel-shell {
+  border-color: rgba(var(--studio-cyan-rgb), 0.18);
+  background: linear-gradient(165deg, rgba(16, 22, 30, 0.98) 0%, rgba(10, 13, 18, 0.98) 100%);
+  box-shadow:
+    0 0 40px rgba(var(--studio-cyan-rgb), 0.08),
+    0 28px 80px rgba(0, 0, 0, 0.5);
+}
+
+.tech-studio-v3 .control-panel-head span {
+  color: rgba(var(--studio-cyan-rgb), 0.65);
+  letter-spacing: 0.1em;
+}
+
+/* ── 素材选择器 ── */
+.tech-studio-v3 .source-picker-modal {
+  border-color: rgba(var(--studio-cyan-rgb), 0.16);
+  background: linear-gradient(180deg, rgba(14, 18, 24, 0.98), rgba(8, 10, 14, 0.98));
+  box-shadow: 0 0 48px rgba(var(--studio-cyan-rgb), 0.06);
+}
+
+.tech-studio-v3 .picker-search {
+  border: 1px solid rgba(var(--studio-cyan-rgb), 0.12);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.tech-studio-v3 .picker-search button {
+  background: linear-gradient(135deg, rgba(var(--studio-cyan-rgb), 0.85), rgba(var(--studio-green-rgb), 0.85));
+  color: #061018;
+}
+
+.tech-studio-v3 .source-picker-actions button.active {
+  border-color: rgba(var(--studio-cyan-rgb), 0.4);
+  background: rgba(var(--studio-cyan-rgb), 0.12);
+  color: var(--studio-cyan);
+}
+
+/* ── 历史条目 ── */
+.tech-studio-v3 .side-history-item.active {
+  border-color: rgba(var(--studio-green-rgb), 0.45);
+  background: rgba(var(--studio-green-rgb), 0.1);
+}
+
+.tech-studio-v3 .output-strip button.active {
+  border-color: var(--studio-cyan);
+  box-shadow: 0 0 12px rgba(var(--studio-cyan-rgb), 0.25);
+}
+
+@media (max-width: 920px) {
+  .tech-studio-v3 .studio-brand small {
+    display: none;
+  }
+
+  .tech-studio-v3 .studio-shell {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .tech-studio-v3 {
+    padding: 8px;
+  }
+
+  .tech-studio-v3 .studio-top-bar {
+    padding: 0 10px;
+  }
+
+  .tech-studio-v3 .studio-brand-badge {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tech-studio-v3 .studio-status-chip.running .status-pulse {
+    animation: none;
+  }
+}

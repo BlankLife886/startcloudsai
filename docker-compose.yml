@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: starclouds
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-starclouds}
+      POSTGRES_DB: starclouds
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U starclouds"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build: ./apps/server
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"]
+
+  worker:
+    build: ./apps/server
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["arq", "app.worker.WorkerSettings"]
+
+  web:
+    build: ./apps/web
+    restart: unless-stopped
+
+  admin:
+    build: ./apps/admin
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - server
+      - web
+      - admin
+
+volumes:
+  pg_data:
+  redis_data:

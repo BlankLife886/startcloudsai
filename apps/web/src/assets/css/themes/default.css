@@ -1,0 +1,265 @@
+/* 默认主题 CSS */
+
+:root.default-theme {
+  --default-primary: #4caf50;
+  --default-primary-variant: #388e3c;
+  --default-secondary: #2196f3;
+  --default-background: #121212;
+  --default-surface: #1e1e1e;
+  --default-error: #f44336;
+  --default-on-primary: #ffffff;
+  --default-on-secondary: #ffffff;
+  --default-on-background: #ffffff;
+  --default-on-surface: #ffffff;
+  --default-on-error: #ffffff;
+  --default-border: #333333;
+  --default-hover: #2c2c2c;
+  --default-card-bg: #1e1e1e;
+  --default-navbar-bg: rgba(18, 18, 18, 0.9);
+  --default-glow: 0 0 10px rgba(76, 175, 80, 0.3);
+
+  /* 兼容主题切换器使用的变量 */
+  --primary-color: var(--default-primary);
+  --primary-color-rgb: 76, 175, 80;
+  --secondary-color: var(--default-secondary);
+  --text-color: var(--default-on-background);
+  --text-muted-color: rgba(255, 255, 255, 0.76);
+  --bg-color: var(--default-background);
+  --card-bg-color: var(--default-card-bg);
+  --border-color: var(--default-border);
+  --glow: var(--default-glow);
+}
+
+/* 基础样式 */
+.default-theme body {
+  background-color: var(--default-background);
+  color: var(--default-on-background);
+}
+
+/* 导航栏样式 */
+.default-theme .navbar {
+  background-color: var(--default-navbar-bg) !important;
+  border-bottom: 1px solid var(--default-border) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+}
+
+.default-theme .navbar-brand,
+.default-theme .nav-link {
+  color: var(--default-on-background) !important;
+}
+
+.default-theme .navbar-brand:hover,
+.default-theme .nav-link:hover,
+.default-theme .nav-link.active {
+  color: var(--default-primary) !important;
+}
+
+/* 按钮样式 */
+.default-theme .btn-primary {
+  background-color: var(--default-primary) !important;
+  border-color: var(--default-primary) !important;
+  color: var(--default-on-primary) !important;
+}
+
+.default-theme .btn-primary:hover {
+  background-color: var(--default-primary-variant) !important;
+  border-color: var(--default-primary-variant) !important;
+}
+
+.default-theme .btn-outline-primary {
+  border-color: var(--default-primary) !important;
+  color: var(--default-primary) !important;
+}
+
+.default-theme .btn-outline-primary:hover {
+  background-color: var(--default-primary) !important;
+  color: var(--default-on-primary) !important;
+}
+
+/* 表单控件样式 */
+.default-theme .form-control {
+  background-color: var(--default-surface) !important;
+  border-color: var(--default-border) !important;
+  color: var(--default-on-surface) !important;
+}
+
+.default-theme .form-control:focus {
+  box-shadow: 0 0 0 0.25rem rgba(76, 175, 80, 0.25) !important;
+  border-color: var(--default-primary) !important;
+}
+
+/* 卡片样式 */
+.default-theme .card {
+  background-color: var(--default-surface) !important;
+  border: 1px solid var(--default-border) !important;
+}
+
+.default-theme .card-header {
+  background-color: rgba(30, 30, 30, 0.8) !important;
+  border-bottom: 1px solid var(--default-border) !important;
+}
+
+/* 壁纸卡片样式 */
+.default-theme .wallpaper-card {
+  border: none !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .default-theme .wallpaper-card:has(.wallpaper-link:hover),
+  .default-theme .wallpaper-card:has(.wallpaper-link:focus-within) {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  }
+}
+
+.default-theme .wallpaper-overlay {
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.6) 100%) !important;
+}
+
+/* 链接样式 */
+.default-theme a {
+  color: var(--default-primary);
+  text-decoration: none;
+}
+
+.default-theme a:hover {
+  color: var(--default-secondary);
+}
+
+/* 标题样式 */
+.default-theme h1,
+.default-theme h2,
+.default-theme h3,
+.default-theme h4,
+.default-theme h5,
+.default-theme h6 {
+  color: var(--default-on-background);
+}
+
+.default-theme .theme-title {
+  color: var(--default-primary);
+}
+
+/* 分隔线样式 */
+.default-theme hr {
+  border-color: var(--default-border);
+}
+
+/* 滚动条样式 */
+.default-theme ::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.default-theme ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.default-theme ::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+html.is-page-scrolling .default-theme ::-webkit-scrollbar-thumb,
+html.is-page-scrolling.default-theme ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.default-theme ::-webkit-scrollbar-thumb:hover {
+  background: rgba(151, 255, 124, 0.68);
+}
+
+/* 默认主题特有元素 */
+.default-theme .default-card {
+  background-color: var(--default-surface);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--default-border);
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.default-theme .default-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--default-glow);
+}
+
+.default-theme .default-section-title {
+  position: relative;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1.5rem;
+  font-weight: 600;
+  color: var(--default-primary);
+}
+
+.default-theme .default-section-title::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 50px;
+  height: 3px;
+  background: var(--default-primary);
+  border-radius: 3px;
+}
+
+.default-theme .default-badge {
+  background-color: var(--default-primary);
+  color: var(--default-on-primary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.default-theme .default-tag {
+  display: inline-block;
+  background-color: var(--default-surface);
+  color: var(--default-on-surface);
+  padding: 0.25rem 0.75rem;
+  border-radius: 16px;
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--default-border);
+  transition: all 0.3s ease;
+}
+
+.default-theme .default-tag:hover {
+  background-color: var(--default-primary);
+  color: var(--default-on-primary);
+  border-color: var(--default-primary);
+}
+
+/* 默认主题特殊效果 */
+.default-theme .default-gradient-bg {
+  background: linear-gradient(135deg, var(--default-primary) 0%, var(--default-secondary) 100%);
+  color: white;
+}
+
+.default-theme .default-glass {
+  background-color: rgba(30, 30, 30, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  border-radius: 8px;
+}
+
+/* 默认主题动画 */
+@keyframes default-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.default-theme .default-pulse {
+  animation: default-pulse 2s infinite;
+}

@@ -1,0 +1,212 @@
+/* Pricing console — visual polish + motion-friendly surfaces (profile-aligned) */
+
+.pricing-page {
+  --pc-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --pc-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --pc-ease-spring: cubic-bezier(0.34, 1.35, 0.64, 1);
+  background:
+    radial-gradient(ellipse 60% 50% at 8% -10%, rgba(151, 255, 124, 0.08), transparent 55%),
+    radial-gradient(ellipse 40% 40% at 100% 20%, rgba(84, 214, 196, 0.06), transparent 50%),
+    var(--pc-page);
+}
+
+.pricing-page::before,
+.pricing-page::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 999px;
+  filter: blur(48px);
+  opacity: 0.16;
+}
+
+.pricing-page::before {
+  width: 320px;
+  height: 320px;
+  top: -80px;
+  left: 6%;
+  background: var(--pc-primary);
+  animation: pc-ambient-drift 16s ease-in-out infinite alternate;
+}
+
+.pricing-page::after {
+  width: 260px;
+  height: 260px;
+  right: -60px;
+  bottom: 8%;
+  background: var(--pc-teal, #54d6c4);
+  animation: pc-ambient-drift 20s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes pc-ambient-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(12px, 18px, 0) scale(1.06);
+  }
+}
+
+.pricing-page .pc-sidebar,
+.pricing-page .pc-main {
+  border: none;
+  background: var(--pc-depth-rim);
+  box-shadow: var(--pc-depth-shell-shadow);
+  backdrop-filter: none;
+}
+
+.pricing-page .pc-sidebar__surface::before,
+.pricing-page .pc-sidebar__surface::after,
+.pricing-page .pc-main__surface::before {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.pricing-page .pc-section-head {
+  border-bottom: none;
+}
+
+.pricing-page .pc-section-heading h1 {
+  letter-spacing: -0.01em;
+}
+
+/* 切换分区：在 Vue 挂载新内容前先用 CSS 藏好，避免首帧闪烁 */
+.pricing-page--section-pending .pc-section-head,
+.pricing-page--section-pending .pc-section {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  pointer-events: none;
+}
+
+.pricing-page .pc-sidenav-link__label,
+.pricing-page .pc-sidenav-foot-link span {
+  transform-origin: left center;
+}
+
+.pricing-page .pc-sidenav-link__icon i,
+.pricing-page .pc-sidenav-foot-link i {
+  display: inline-block;
+  transform-origin: center;
+}
+
+.pricing-page .pc-card,
+.pricing-page .pc-overview-panel,
+.pricing-page .pc-sub-plan,
+.pricing-page .pc-dash-panel,
+.pricing-page .pc-overview-insight-card,
+.pricing-page .pc-wallet-summary,
+.pricing-page .pc-wallet-redeem__card {
+  border-color: rgb(0 0 0 / 42%);
+}
+
+.pricing-page .pc-overview-stat {
+  border: none;
+}
+
+.pricing-page .pc-btn {
+  transition:
+    transform 0.14s var(--pc-ease-spring),
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.pricing-page .pc-sidenav-link {
+  position: relative;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s var(--pc-ease-enter),
+    box-shadow 0.2s ease;
+}
+
+.pricing-page .pc-sidenav-link__icon {
+  display: grid;
+  place-items: center;
+}
+
+.pricing-page .pc-sub-plan__cta {
+  transition:
+    transform 0.16s var(--pc-ease-spring),
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+@media (hover: hover) {
+  .pricing-page .pc-sub-plan__cta:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgb(17 17 17 / 18%);
+  }
+}
+
+.pricing-page .pc-sub-plans__main-tab {
+  transition:
+    background 0.2s var(--pc-ease-enter),
+    color 0.2s ease,
+    box-shadow 0.2s var(--pc-ease-enter),
+    transform 0.16s var(--pc-ease-spring);
+}
+
+.pricing-page .pc-mobile-nav button,
+.pricing-page .pc-mobile-nav-link {
+  transition:
+    transform 0.16s var(--pc-ease-spring),
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.pricing-page:not(.pricing-page--ready) .pc-shell {
+  opacity: 1;
+}
+
+.pc-pay-modal__backdrop {
+  opacity: 0;
+}
+
+.pc-pay-modal__panel {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pricing-page::before,
+  .pricing-page::after {
+    animation: none;
+  }
+
+  .pricing-page--section-pending .pc-section-head,
+  .pricing-page--section-pending .pc-section {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  .pricing-page .pc-card,
+  .pricing-page .pc-overview-stat,
+  .pricing-page .pc-overview-panel,
+  .pricing-page .pc-settings-quick-item,
+  .pricing-page .pc-sub-plan,
+  .pricing-page .pc-dash-panel,
+  .pricing-page .pc-btn,
+  .pricing-page .pc-sidenav-link,
+  .pricing-page .pc-sidenav-foot-link,
+  .pricing-page .pc-sub-plan__cta,
+  .pricing-page .pc-sub-plans__main-tab,
+  .pricing-page .pc-mobile-nav button,
+  .pricing-page .pc-mobile-nav-link {
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .pricing-page:not(.pricing-page--ready) .pc-shell {
+    opacity: 1;
+  }
+
+  .pc-pay-modal__backdrop,
+  .pc-pay-modal__panel {
+    opacity: 1;
+  }
+}

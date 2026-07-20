@@ -1,0 +1,249 @@
+/* ==========================================================================
+   Wallpaper Atelier — Layout contract
+   高度链对齐 main--studio-console：页面用 height:100%，不用再减顶栏。
+   Desktop: left | (timeline + canvas + dock) | right
+   ========================================================================== */
+
+.ai-hero-workspace {
+  --collapsed-width: 48px;
+  --timeline-rail-width: 108px;
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--left-width) minmax(0, 1fr) var(--right-width);
+  gap: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.ai-hero-workspace.left-collapsed {
+  --left-width: var(--collapsed-width);
+}
+
+.ai-hero-workspace.right-collapsed {
+  --right-width: var(--collapsed-width);
+}
+
+/* ── Sides ────────────────────────────────────────────────────────────── */
+
+.studio-side {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  padding: 14px 14px 12px;
+  transition:
+    padding 0.28s var(--ease-out),
+    opacity 0.2s ease;
+}
+
+.left-side {
+  border-right: 1px solid var(--studio-border);
+}
+
+.right-side {
+  border-left: 1px solid var(--studio-border);
+}
+
+.left-side,
+.right-side {
+  width: auto;
+}
+
+.left-side input[type='file'] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.left-collapsed .left-side,
+.right-collapsed .right-side:not(.mobile-open) {
+  padding: 8px;
+  align-items: center;
+}
+
+.left-collapsed .left-side .side-head > div,
+.right-collapsed .right-side:not(.mobile-open) .side-head > div,
+.left-collapsed .left-side .side-panel-body,
+.right-collapsed .right-side:not(.mobile-open) .side-panel-body,
+.right-collapsed .right-side:not(.mobile-open) .studio-inspector {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  position: absolute;
+}
+
+.side-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+/* ── Canvas column：上画布（含时间线）下提示词，占满剩余高度 ─────────── */
+
+.canvas-column {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+  overflow: hidden;
+}
+
+.canvas-row {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--timeline-rail-width) minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+}
+
+.timeline-rail {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 8px;
+  overflow: hidden;
+  border-right: 1px solid var(--studio-border);
+}
+
+.timeline-rail-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.preview-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.prompt-dock {
+  flex: none;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
+/* ── Tablet ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 1023px) {
+  .ai-hero-workspace {
+    --left-width: 220px;
+    --right-width: 250px;
+    --timeline-rail-width: 88px;
+  }
+}
+
+/* ── Mobile: canvas first, sides collapse to sheets ──────────────────── */
+
+@media (max-width: 767px) {
+  .ai-hero-workspace {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .canvas-column {
+    order: -1;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .studio-side.left-side {
+    order: 0;
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 28vh;
+  }
+
+  .canvas-row {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .timeline-rail {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 88px;
+    height: auto;
+  }
+
+  .timeline-rail-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .timeline-item {
+    flex: 0 0 72px;
+    width: 72px;
+  }
+
+  .timeline-item-info,
+  .timeline-item-actions {
+    display: none;
+  }
+
+  .prompt-dock {
+    position: relative;
+    z-index: 6;
+  }
+
+  .studio-side.right-side {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 88;
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    max-height: min(74vh, 560px);
+    border-radius: var(--studio-radius-lg) var(--studio-radius-lg) 0 0;
+    transform: translateY(100%);
+    transition: transform 0.3s var(--ease-out);
+  }
+
+  .studio-side.right-side.mobile-open {
+    transform: translateY(0);
+  }
+
+  .right-collapsed .right-side {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-side,
+  .studio-side.right-side {
+    transition: none;
+  }
+}

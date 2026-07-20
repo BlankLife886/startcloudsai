@@ -1,0 +1,49 @@
+.dome-gallery-tile-placeholder {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(135deg, rgba(18, 30, 22, 0.94), rgba(10, 14, 12, 0.82)),
+    radial-gradient(circle at 30% 30%, rgba(116, 255, 172, 0.16), transparent 32%),
+    radial-gradient(circle at 72% 70%, rgba(96, 141, 255, 0.14), transparent 28%);
+}
+
+.dome-gallery-tile-placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 18%,
+    rgba(120, 255, 170, 0.08) 48%,
+    transparent 78%
+  );
+  transform: translateX(-140%);
+  opacity: 0;
+}
+
+.dome-gallery-tile-image {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.dome-gallery-tile-image.is-loaded {
+  opacity: 1;
+}
+
+.dome-gallery-tile.is-loaded .dome-gallery-tile-placeholder::after {
+  animation: none;
+  opacity: 0;
+}
+
+.dome-gallery-frame {
+  max-width: 100%;
+}
+
+@media (max-aspect-ratio: 1 / 1) {
+  .dome-gallery-frame {
+    width: 100%;
+    height: auto;
+  }
+}
