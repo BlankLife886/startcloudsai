@@ -17,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
+	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -24,21 +25,23 @@ import (
 )
 
 const (
-	typeCleanupSessions = "cron:cleanup_sessions"
-	typeReapZombies     = "cron:reap_zombies"
+	typeCleanupSessions   = "cron:cleanup_sessions"
+	typeReapZombies       = "cron:reap_zombies"
+	typeSyncPromptSources = "cron:sync_prompt_sources"
 
 	zombieRunningMinutes = 30
 )
 
 type Worker struct {
-	Cfg     *config.Config
-	St      *store.Store
-	Storage *storage.Storage
-	C2A     *c2a.Client
+	Cfg        *config.Config
+	St         *store.Store
+	Storage    *storage.Storage
+	C2A        *c2a.Client
+	PromptSync *promptsync.Engine
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client) *Worker {
-	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient}
+	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, PromptSync: promptsync.New(st)}
 }
 
 // Run 启动 Asynq server + PeriodicTaskManager，阻塞运行。
@@ -54,6 +57,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
+	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -78,6 +82,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 	return []*asynq.PeriodicTaskConfig{
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 
@@ -235,6 +240,11 @@ func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error
 		log.Printf("cleaned %d expired sessions", n)
 	}
 	return nil
+}
+
+// handleSyncPromptSources cron：每 30 分钟扫描到期的提示词数据源并同步。
+func (w *Worker) handleSyncPromptSources(ctx context.Context, _ *asynq.Task) error {
+	return w.PromptSync.SyncDue(ctx)
 }
 
 // handleReapZombies cron：每 10 分钟把 running 超过 30 分钟的任务判为 failed 并 release。

@@ -11,6 +11,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -25,6 +26,7 @@ type Server struct {
 	C2A          *c2a.Client
 	Queue        *taskflow.Queue
 	LoginLimiter *auth.LoginLimiter
+	PromptSync   *promptsync.Engine
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Server {
@@ -35,6 +37,7 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 		C2A:          c2aClient,
 		Queue:        queue,
 		LoginLimiter: auth.NewLoginLimiter(),
+		PromptSync:   promptsync.New(st),
 	}
 }
 
@@ -148,6 +151,11 @@ func (s *Server) Router() *gin.Engine {
 	admin.PATCH("/prompt-library/:id", s.adminOnly(s.adminPatchPrompt))
 	admin.DELETE("/prompt-library/:id", s.adminOnly(s.adminDeletePrompt))
 	admin.POST("/prompt-library/:id/cover", s.adminOnly(s.adminUploadPromptCover))
+	admin.GET("/prompt-sources", s.adminOnly(s.adminListPromptSources))
+	admin.POST("/prompt-sources", s.adminOnly(s.adminCreatePromptSource))
+	admin.PATCH("/prompt-sources/:id", s.adminOnly(s.adminPatchPromptSource))
+	admin.DELETE("/prompt-sources/:id", s.adminOnly(s.adminDeletePromptSource))
+	admin.POST("/prompt-sources/:id/sync", s.adminOnly(s.adminSyncPromptSource))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))

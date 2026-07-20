@@ -2,6 +2,8 @@
 package httpapi
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -177,10 +179,14 @@ func galleryCategoryDict(c *store.GalleryCategory) gin.H {
 	}
 }
 
-// promptCoverURL cover_key → /api/files/ 路径（prompt-covers/ 前缀公开可读）。
+// promptCoverURL cover_key → /api/files/ 路径（prompt-covers/ 前缀公开可读）；
+// 兼容历史迁移数据：cover_key 为完整 http(s) URL 时原样返回。
 func promptCoverURL(coverKey *string) *string {
 	if coverKey == nil || *coverKey == "" {
 		return nil
+	}
+	if strings.HasPrefix(*coverKey, "http://") || strings.HasPrefix(*coverKey, "https://") {
+		return coverKey
 	}
 	u := "/api/files/" + *coverKey
 	return &u
