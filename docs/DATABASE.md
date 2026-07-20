@@ -60,12 +60,30 @@
 | id | uuid PK | |
 | code | text UNIQUE | |
 | name | text | |
+| kind | text CHECK in ('topup','subscription') DEFAULT 'topup' | 充值包 / 订阅 |
 | price_cents | bigint | 售价 |
-| grant_cents | bigint | 入账金额 |
-| bonus_cents | bigint DEFAULT 0 | 赠送 |
+| grant_cents | bigint | topup：立即入账金额；subscription：0 |
+| bonus_cents | bigint DEFAULT 0 | topup 赠送 |
+| duration_days | int DEFAULT 0 | subscription：订阅时长（天） |
+| daily_grant_cents | bigint DEFAULT 0 | subscription：每日发放额度 |
 | features | jsonb DEFAULT '[]' | 展示用卖点 |
 | active | boolean DEFAULT true | |
 | sort | int DEFAULT 0 | |
+
+## subscriptions（订阅期）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| id | uuid PK | |
+| user_id | uuid FK | |
+| plan_id | uuid FK plans | |
+| order_id | uuid FK orders | 开通/续期订单 |
+| starts_at / ends_at | timestamptz | 续购同套餐 = ends_at 顺延 |
+| daily_grant_cents | bigint | 开通时快照 |
+| last_granted_date | date | 上次发放日（北京时间日界） |
+| status | text CHECK in ('active','expired') DEFAULT 'active' | |
+
+索引：`(status, ends_at)`、`(user_id, ends_at desc)`。每日发放 ledger 幂等键 `('grant','subscription_daily', subscriptionId/YYYY-MM-DD)`。Worker @every 10m 扫描发放并回收过期。
 
 ## orders
 

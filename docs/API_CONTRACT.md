@@ -71,9 +71,20 @@
 
 ## 套餐与订单
 
+> **商业模式（定稿）**：用户获得额度有三条途径——**订阅**（周期发放）、**充值包**（一次性入账）、**兑换码**（见 CDK 一节）。
+
+套餐分两种 `kind`：
+- `topup` 充值包：支付后立即入账 `grantCents + bonusCents`（现状行为）。
+- `subscription` 订阅：支付后创建/顺延订阅期（`durationDays`），**有效期内每天自动发放 `dailyGrantCents` 到钱包**（北京时间日界；ledger kind=grant, source_type=subscription_daily, source_id=`{subscriptionId}/{YYYY-MM-DD}` 幂等）。同一套餐续购 = ends_at 顺延。
+
+表 `subscriptions`：id / user_id / plan_id / order_id / starts_at / ends_at / daily_grant_cents / last_granted_date date / status('active','expired') / created_at。索引 `(status, ends_at)`、`(user_id, ends_at desc)`。Worker 定时（@every 10m）给 active 且当日未发放的订阅入账；过期置 expired。
+
+`plans` 增列：`kind`（默认 'topup'）、`duration_days int`、`daily_grant_cents bigint`（订阅型必填）。
+
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
-| `/api/plans` | GET | 上架套餐 `{id, code, name, priceCents, grantCents, bonusCents, features[], sort}` |
+| `/api/plans` | GET | 上架套餐 `{id, code, name, kind, priceCents, grantCents, bonusCents, durationDays, dailyGrantCents, features[], sort}` |
+| `/api/me/subscription` | GET | 当前订阅：`{active: bool, planName, endsAt, dailyGrantCents, grantedToday: bool}`；无订阅 `active: false` |
 | `/api/orders` | POST | `{planId}` → 创建订单 `{id, status: "pending", amountCents, payUrl?}` |
 | `/api/orders/{id}` | GET | 订单状态轮询 `{id, status: pending/paid/completed/failed/expired, ...}` |
 | `/api/orders` | GET | 我的订单分页 |
