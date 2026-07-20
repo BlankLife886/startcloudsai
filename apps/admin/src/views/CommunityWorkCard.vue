@@ -95,7 +95,7 @@ const isFeatured = computed(() => props.item.featured === true)
   background: var(--el-bg-color);
 
   &.is-featured {
-    border-color: color-mix(in srgb, var(--el-color-warning) 40%, var(--el-border-color-lighter));
+    border-color: color-mix(in srgb, var(--violet) 40%, var(--border));
   }
 }
 
@@ -141,7 +141,7 @@ const isFeatured = computed(() => props.item.featured === true)
   z-index: 2;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgb(217 119 6 / 92%);
+  background: color-mix(in srgb, var(--violet) 92%, transparent);
   color: #fff;
   font-size: 9px;
   font-weight: 700;
@@ -199,13 +199,18 @@ const isFeatured = computed(() => props.item.featured === true)
 .community-action {
   height: 26px;
   padding: 0;
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
-  background: var(--el-fill-color-blank);
-  color: var(--el-text-color-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
+  transition: background-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
 
   &:disabled {
     opacity: 0.42;
@@ -213,15 +218,15 @@ const isFeatured = computed(() => props.item.featured === true)
   }
 
   &.is-off {
-    border-color: #fde68a;
-    background: #fffbeb;
-    color: #b45309;
+    border-color: color-mix(in srgb, var(--violet) 35%, transparent);
+    background: var(--violet-soft);
+    color: var(--violet);
   }
 
   &.is-on {
-    border-color: #86efac;
-    background: #ecfdf5;
-    color: #15803d;
+    border-color: color-mix(in srgb, var(--success) 35%, transparent);
+    background: var(--success-soft);
+    color: var(--success);
   }
 }
 </style>

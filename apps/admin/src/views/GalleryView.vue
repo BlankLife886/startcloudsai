@@ -620,23 +620,22 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 .community-ops-page {
-  --community-accent: #7258e8;
-  --community-accent-rgb: 114 88 232;
-  --community-line: color-mix(in srgb, var(--community-accent) 18%, var(--el-border-color-lighter));
+  --community-accent: var(--accent);
+  --community-line: var(--border);
 
   display: grid;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
-  padding: 12px 16px 20px;
+  padding: 20px 24px 24px;
 }
 
 .ops-toolbar-panel {
   min-height: 52px;
   padding: 8px 10px;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  box-shadow: 5px 5px 0 rgb(var(--community-accent-rgb) / 6%);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .share-toolbar {
@@ -679,7 +678,9 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 0;
   min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--community-line);
+  border-radius: 10px;
 }
 
 .share-toolbar__aside {
@@ -700,9 +701,9 @@ onUnmounted(() => {
   padding: 0 14px;
   border: 0;
   border-right: 1px solid var(--community-line);
-  border-radius: 1px;
+  border-radius: 0;
   background: transparent;
-  color: var(--el-text-color-regular);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
@@ -715,12 +716,12 @@ onUnmounted(() => {
   }
 
   &:hover {
-    background: color-mix(in srgb, var(--community-accent) 5%, transparent);
-    color: var(--community-accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
   }
 
   &.is-active {
-    background: var(--community-accent);
+    background: var(--accent);
     color: #fff;
   }
 }
@@ -738,9 +739,9 @@ onUnmounted(() => {
   min-height: 280px;
   overflow: hidden;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  box-shadow: 4px 4px 0 rgb(var(--community-accent-rgb) / 5%);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   content-visibility: auto;
   contain-intrinsic-size: 280px;
 
@@ -1301,8 +1302,7 @@ onUnmounted(() => {
 
 /* 审核对话框（拒绝 / 违规） */
 .share-review-dialog {
-  --el-color-primary: #7258e8;
-  --community-dialog-line: color-mix(in srgb, #7258e8 18%, var(--el-border-color-lighter));
+  --community-dialog-line: var(--border);
 
   .share-review-dialog__header {
     display: flex;
@@ -1337,7 +1337,7 @@ onUnmounted(() => {
     place-items: center;
     width: 36px;
     height: 36px;
-    border-radius: 1px;
+    border-radius: 10px;
 
     &.is-reject {
       background: var(--el-color-danger-light-9);
@@ -1358,9 +1358,9 @@ onUnmounted(() => {
     margin-bottom: 14px;
     padding: 12px 14px;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 1px;
-    background: var(--el-bg-color);
-    box-shadow: 3px 3px 0 rgb(114 88 232 / 5%);
+    border-radius: 12px;
+    background: var(--surface-2);
+    box-shadow: var(--shadow-sm);
   }
 
   .share-review-dialog__summary-main {
@@ -1390,18 +1390,18 @@ onUnmounted(() => {
   .share-review-dialog__pill {
     flex: 0 0 auto;
     padding: 4px 10px;
-    border-radius: 1px;
+    border-radius: 999px;
     font-size: 11px;
     font-weight: 700;
 
     &.is-reject {
-      background: var(--el-color-danger-light-9);
-      color: var(--el-color-danger);
+      background: var(--danger-soft);
+      color: var(--danger);
     }
 
     &.is-violate {
-      background: var(--el-color-warning-light-9);
-      color: var(--el-color-warning-dark-2, #b45309);
+      background: var(--warning-soft);
+      color: var(--warning);
     }
   }
 
@@ -1411,10 +1411,10 @@ onUnmounted(() => {
     align-items: flex-start;
     margin-bottom: 14px;
     padding: 12px 14px;
-    border: 1px solid var(--el-color-danger-light-5);
-    border-radius: 1px;
-    background: var(--el-color-danger-light-9);
-    color: var(--el-color-danger);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    border-radius: 12px;
+    background: var(--danger-soft);
+    color: var(--danger);
 
     .el-icon {
       flex: 0 0 auto;
@@ -1468,10 +1468,10 @@ onUnmounted(() => {
     button {
       min-height: 28px;
       padding: 0 10px;
-      border: 1px solid var(--el-border-color-lighter);
-      border-radius: 1px;
-      background: var(--el-bg-color);
-      color: var(--el-text-color-regular);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--ink-2);
       font-size: 12px;
       font-weight: 650;
       cursor: pointer;
@@ -1489,15 +1489,15 @@ onUnmounted(() => {
     }
 
     &.is-reject button.is-active {
-      border-color: var(--el-color-danger-light-5);
-      background: var(--el-color-danger-light-9);
-      color: var(--el-color-danger);
+      border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+      background: var(--danger-soft);
+      color: var(--danger);
     }
 
     &.is-violate button.is-active {
-      border-color: var(--el-color-warning-light-5);
-      background: var(--el-color-warning-light-9);
-      color: var(--el-color-warning-dark-2, #b45309);
+      border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+      background: var(--warning-soft);
+      color: var(--warning);
     }
   }
 
@@ -1506,12 +1506,6 @@ onUnmounted(() => {
     justify-content: flex-end;
     gap: 8px;
     width: 100%;
-  }
-
-  .el-input__wrapper,
-  .el-textarea__inner,
-  .el-input-number {
-    border-radius: 1px;
   }
 }
 </style>

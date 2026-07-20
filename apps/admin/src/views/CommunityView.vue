@@ -750,23 +750,22 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .community-ops-page {
-  --community-accent: #7258e8;
-  --community-accent-rgb: 114 88 232;
-  --community-line: color-mix(in srgb, var(--community-accent) 18%, var(--el-border-color-lighter));
+  --community-accent: var(--accent);
+  --community-line: var(--border);
 
   display: grid;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
-  padding: 12px 16px 20px;
+  padding: 20px 24px 24px;
 }
 
 .ops-toolbar-panel {
   min-height: 52px;
   padding: 8px 10px;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  box-shadow: 5px 5px 0 rgb(var(--community-accent-rgb) / 6%);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .community-toolbar {
@@ -816,15 +815,15 @@ onMounted(() => {
   height: 34px;
   padding: 4px 10px;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  color: var(--el-text-color-secondary);
+  border-radius: 10px;
+  color: var(--ink-3);
   font-size: 12px;
-  background: var(--el-bg-color);
+  background: var(--surface);
 
   &.is-on {
-    border-color: color-mix(in srgb, var(--el-color-success) 30%, transparent);
-    background: color-mix(in srgb, var(--el-color-success) 8%, transparent);
-    color: var(--el-color-success);
+    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+    background: var(--success-soft);
+    color: var(--success);
   }
 
   &.is-limit :deep(.el-input-number) {
@@ -839,9 +838,9 @@ onMounted(() => {
   height: 34px;
   padding: 0 12px 0 10px;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  color: var(--el-text-color-regular);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink-2);
   font-size: 13px;
   font-weight: 600;
   line-height: 1;
@@ -856,7 +855,7 @@ onMounted(() => {
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
-    border-radius: 1px;
+    border-radius: 999px;
     background: color-mix(in srgb, currentColor 12%, transparent);
     color: inherit;
     font-size: 11px;
@@ -867,18 +866,18 @@ onMounted(() => {
   }
 
   &:hover {
-    border-color: color-mix(in srgb, var(--community-accent) 42%, transparent);
-    background: color-mix(in srgb, var(--community-accent) 7%, var(--el-bg-color));
-    color: var(--community-accent);
-    box-shadow: 3px 3px 0 rgb(var(--community-accent-rgb) / 8%);
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    box-shadow: var(--shadow-sm);
   }
 
   &.is-category {
-    color: var(--community-accent);
+    color: var(--accent-ink);
   }
 
   &.is-author {
-    color: var(--el-color-warning-dark-2, #b88230);
+    color: var(--warning);
   }
 }
 
@@ -887,10 +886,11 @@ onMounted(() => {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding: 10px;
+  padding: 12px;
   border: 1px solid var(--community-line);
-  background: var(--el-bg-color);
-  box-shadow: 5px 5px 0 rgb(var(--community-accent-rgb) / 5%);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .community-pane__bar {
@@ -915,17 +915,26 @@ onMounted(() => {
 .community-filter {
   min-height: 30px;
   padding: 0 11px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  color: var(--el-text-color-regular);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+
+  &:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
 
   &.is-active {
-    border-color: var(--community-accent);
-    background: var(--community-accent);
+    border-color: var(--accent);
+    background: var(--accent);
     color: #fff;
   }
 }
@@ -944,15 +953,15 @@ onMounted(() => {
   height: 34px;
   padding: 3px 3px 3px 10px;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
+  border-radius: 10px;
+  background: var(--surface-2);
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease;
 
   &:focus-within {
-    border-color: var(--community-accent);
-    box-shadow: 3px 3px 0 rgb(var(--community-accent-rgb) / 8%);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
 
   :deep(.el-input) {
@@ -1016,16 +1025,16 @@ onMounted(() => {
 
 .community-board :deep(.community-card) {
   border-color: var(--community-line);
-  border-radius: 1px;
-  box-shadow: 4px 4px 0 rgb(var(--community-accent-rgb) / 5%);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 .community-card-skeleton {
   overflow: hidden;
   border: 1px solid var(--community-line);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  box-shadow: 4px 4px 0 rgb(var(--community-accent-rgb) / 5%);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 
   > div {
     aspect-ratio: 4 / 3;
@@ -1091,8 +1100,7 @@ onMounted(() => {
 .community-config-editor-dialog,
 .community-authors-dialog,
 .community-edit-dialog {
-  --el-color-primary: #7258e8;
-  --community-dialog-line: color-mix(in srgb, #7258e8 18%, var(--el-border-color-lighter));
+  --community-dialog-line: var(--border);
 }
 
 .community-manage-dialog {
@@ -1125,17 +1133,17 @@ onMounted(() => {
   .cm-filter {
     min-height: 28px;
     padding: 0 12px;
-    border: 1px solid var(--el-border-color-lighter);
-    border-radius: 1px;
-    background: var(--el-bg-color);
-    color: var(--el-text-color-regular);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
     font-size: 12px;
     font-weight: 650;
     cursor: pointer;
 
     &.is-active {
       border-color: transparent;
-      background: #475569;
+      background: var(--accent);
       color: #fff;
     }
   }
@@ -1158,9 +1166,9 @@ onMounted(() => {
     justify-items: center;
     padding: 16px 12px 12px;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 1px;
-    background: var(--el-bg-color);
-    box-shadow: 3px 3px 0 rgb(114 88 232 / 5%);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
     text-align: center;
 
     &.is-off {
@@ -1186,7 +1194,7 @@ onMounted(() => {
     width: 24px;
     height: 24px;
     border: 0;
-    border-radius: 1px;
+    border-radius: 8px;
     background: transparent;
     color: var(--el-text-color-secondary);
 
@@ -1226,9 +1234,9 @@ onMounted(() => {
     width: 48px;
     height: 48px;
     border: 0;
-    border-radius: 1px;
-    background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-    color: var(--el-color-primary);
+    border-radius: 12px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
   }
 
   .cm-card__body {
@@ -1317,13 +1325,13 @@ onMounted(() => {
     gap: 12px;
     padding: 10px 12px;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 1px;
-    background: var(--el-bg-color);
-    box-shadow: 3px 3px 0 rgb(114 88 232 / 5%);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
 
     &.is-banned {
-      border-color: color-mix(in srgb, var(--el-color-danger) 30%, transparent);
-      background: color-mix(in srgb, var(--el-color-danger) 3%, var(--el-bg-color));
+      border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+      background: var(--danger-soft);
     }
   }
 
@@ -1333,8 +1341,8 @@ onMounted(() => {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background: linear-gradient(135deg, rgb(129 140 248 / 45%), rgb(56 189 248 / 35%));
-    color: #3730a3;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff;
     font-size: 12px;
     font-weight: 700;
   }
@@ -1397,7 +1405,7 @@ onMounted(() => {
     display: grid;
     place-items: center;
     overflow: hidden;
-    border-radius: 1px;
+    border-radius: 12px;
     background: var(--el-fill-color-light);
 
     img {
@@ -1424,7 +1432,7 @@ onMounted(() => {
 
     span {
       padding: 3px 8px;
-      border-radius: 1px;
+      border-radius: 999px;
       background: var(--el-fill-color-light);
       color: var(--el-text-color-secondary);
       font-size: 12px;

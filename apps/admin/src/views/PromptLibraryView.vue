@@ -19,18 +19,29 @@ interface PromptItem {
   createdAt?: string
 }
 
-const CATEGORY_OPTIONS = [
-  { value: 'all', label: '全部内容', icon: '▦', color: '#6d5dfc' },
-  { value: 'portrait', label: '人像人物', icon: '◉', color: '#ec4899' },
-  { value: 'photography', label: '摄影写实', icon: '◎', color: '#0ea5e9' },
-  { value: 'product', label: '产品商业', icon: '◇', color: '#f59e0b' },
-  { value: 'illustration', label: '插画动漫', icon: '✦', color: '#8b5cf6' },
-  { value: 'scene', label: '场景建筑', icon: '△', color: '#10b981' },
+interface CategoryOption {
+  value: string
+  label: string
+  icon: string
+  color: string
+}
+
+/**
+ * 内置分类与用户端文生图工作台（AiWallpaperStudio 的 PROMPT_CATEGORY_META）保持一致，
+ * 保证后台录入与用户端筛选联动；颜色取规范图表色序。
+ */
+const CATEGORY_OPTIONS: CategoryOption[] = [
+  { value: 'all', label: '全部内容', icon: '▦', color: '#6366f1' },
+  { value: 'portrait', label: '人像人物', icon: '◉', color: '#f472b6' },
+  { value: 'photography', label: '摄影写实', icon: '◎', color: '#38bdf8' },
+  { value: 'product', label: '产品商业', icon: '◇', color: '#fbbf24' },
+  { value: 'illustration', label: '插画动漫', icon: '✦', color: '#a78bfa' },
+  { value: 'scene', label: '场景建筑', icon: '△', color: '#34d399' },
   { value: 'design', label: '视觉设计', icon: '✣', color: '#6366f1' },
-  { value: 'game', label: '游戏美术', icon: '◆', color: '#ef4444' },
-  { value: 'typography', label: '文字排版', icon: 'T', color: '#64748b' },
+  { value: 'game', label: '游戏美术', icon: '◆', color: '#f87171' },
+  { value: 'typography', label: '文字排版', icon: 'T', color: '#94a3b8' },
   { value: 'other', label: '其他', icon: '·', color: '#94a3b8' },
-] as const
+]
 
 const query = ref('')
 const categoryFilter = ref('all')
@@ -88,8 +99,12 @@ function measureCover(item: PromptItem, event: Event) {
   if (width > 0 && height > 0) imageRatios[item.id] = width / height
 }
 
-function categoryMeta(value: string | undefined) {
-  return CATEGORY_OPTIONS.find((item) => item.value === (value ?? 'other')) ?? CATEGORY_OPTIONS[CATEGORY_OPTIONS.length - 1]!
+function categoryMeta(value: string | undefined): CategoryOption {
+  const key = value ?? 'other'
+  const found = CATEGORY_OPTIONS.find((item) => item.value === key)
+  if (found) return found
+  // 自建分类：以原始 key 展示，用中性色
+  return { value: key, label: key, icon: '·', color: '#94a3b8' }
 }
 
 function formatTime(value: string | undefined) {
@@ -417,11 +432,18 @@ onBeforeUnmount(() => {
         <div class="form-grid">
           <el-form-item label="名称"><el-input v-model="form.title" maxlength="80" /></el-form-item>
           <el-form-item label="内容分类">
-            <el-select v-model="form.category" style="width: 100%">
+            <el-select
+              v-model="form.category"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择或输入新分类 key"
+              style="width: 100%"
+            >
               <el-option
                 v-for="category in CATEGORY_OPTIONS.slice(1)"
                 :key="category.value"
-                :label="category.label"
+                :label="`${category.label}（${category.value}）`"
                 :value="category.value"
               />
             </el-select>
@@ -479,16 +501,16 @@ onBeforeUnmount(() => {
 
 <style scoped lang="scss">
 .prompt-library-page {
-  --library-accent: #6d5dfc;
-  --library-border: color-mix(in srgb, var(--el-border-color) 78%, transparent);
-  --library-muted: var(--el-text-color-secondary);
+  --library-accent: var(--accent);
+  --library-border: var(--border);
+  --library-muted: var(--ink-3);
   box-sizing: border-box;
   display: grid;
   gap: 12px;
-  padding: 12px 16px 20px;
+  padding: 20px 24px 24px;
   background:
-    radial-gradient(circle at 88% 4%, rgb(109 93 252 / 8%), transparent 28%),
-    var(--el-fill-color-lighter);
+    radial-gradient(circle at 88% 4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
+    var(--bg);
 }
 
 .library-header {
@@ -497,9 +519,10 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 12px;
-  background: var(--el-bg-color);
-  box-shadow: 0 6px 18px rgb(15 23 42 / 3.5%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .library-header__copy {
@@ -542,8 +565,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid var(--library-border);
   border-radius: 16px;
-  background: var(--el-bg-color);
-  box-shadow: 0 12px 36px rgb(30 41 59 / 5%);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .items-workspace {
@@ -599,14 +622,14 @@ onBeforeUnmount(() => {
     }
 
     &:hover {
-      background: var(--el-fill-color-light);
+      background: var(--surface-3);
       transform: translateX(2px);
     }
 
     &.is-active {
-      color: var(--library-accent);
+      color: var(--accent-ink);
       font-weight: 600;
-      background: rgb(109 93 252 / 9%);
+      background: var(--accent-soft);
     }
   }
 }
@@ -686,8 +709,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid var(--library-border);
   border-radius: 16px;
-  background: var(--el-bg-color);
-  box-shadow: 0 6px 20px rgb(30 41 59 / 4%);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   transition:
     transform 0.22s ease,
     box-shadow 0.22s ease,
@@ -695,8 +718,8 @@ onBeforeUnmount(() => {
     opacity 0.2s ease;
 
   &:hover {
-    border-color: rgb(109 93 252 / 35%);
-    box-shadow: 0 16px 36px rgb(30 41 59 / 10%);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: var(--shadow-lg);
     transform: translateY(-3px);
   }
 
@@ -748,13 +771,13 @@ onBeforeUnmount(() => {
   gap: 5px;
   color: var(--library-muted);
   background-image:
-    linear-gradient(45deg, rgb(109 93 252 / 4%) 25%, transparent 25%),
-    linear-gradient(-45deg, rgb(109 93 252 / 4%) 25%, transparent 25%);
+    linear-gradient(45deg, color-mix(in srgb, var(--accent) 4%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--accent) 4%, transparent) 25%, transparent 25%);
   background-size: 24px 24px;
 
   .el-icon {
     font-size: 28px;
-    color: #a7a0e8;
+    color: var(--accent-ink);
   }
 
   span {
@@ -922,13 +945,13 @@ onBeforeUnmount(() => {
   }
 
   span {
-    color: #0369a1;
-    background: rgb(14 165 233 / 8%);
+    color: var(--info);
+    background: var(--info-soft);
   }
 
   em {
-    color: #6959d9;
-    background: rgb(109 93 252 / 8%);
+    color: var(--accent-ink);
+    background: var(--accent-soft);
   }
 }
 
@@ -959,7 +982,7 @@ onBeforeUnmount(() => {
   margin: -6px 0 20px;
   padding: 13px 15px;
   border-radius: 12px;
-  background: rgb(109 93 252 / 7%);
+  background: var(--accent-soft);
 
   > span {
     display: grid;
@@ -967,8 +990,8 @@ onBeforeUnmount(() => {
     height: 38px;
     place-items: center;
     border-radius: 10px;
-    color: #6d5dfc;
-    background: rgb(109 93 252 / 10%);
+    color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   div {
@@ -1012,15 +1035,15 @@ onBeforeUnmount(() => {
     transition: 0.15s ease;
 
     &:hover {
-      border-color: rgb(109 93 252 / 40%);
-      color: var(--library-accent);
+      border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+      color: var(--accent-ink);
     }
 
     &.is-active {
-      border-color: var(--library-accent);
-      color: var(--library-accent);
+      border-color: var(--accent);
+      color: var(--accent-ink);
       font-weight: 650;
-      background: rgb(109 93 252 / 9%);
+      background: var(--accent-soft);
     }
   }
 }

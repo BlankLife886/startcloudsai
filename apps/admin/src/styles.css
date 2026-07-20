@@ -1,22 +1,11 @@
+/* 页面级通用工具类（颜色一律引用 theme.css 令牌） */
+
 * {
   box-sizing: border-box;
 }
 
-html,
-body,
-#app {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: #f5f7fa;
-  color: #303133;
-}
-
 .page {
-  padding: 16px;
+  padding: 24px 28px;
 }
 
 .page-header {
@@ -28,8 +17,9 @@ body,
 }
 
 .page-header .title {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
+  letter-spacing: -0.02em;
   margin-right: auto;
 }
 
@@ -52,7 +42,7 @@ body,
   position: relative;
   height: 8px;
   border-radius: 4px;
-  background: #ebeef5;
+  background: var(--surface-3);
   overflow: hidden;
 }
 
@@ -62,16 +52,16 @@ body,
   top: 0;
   height: 100%;
   border-radius: 4px;
-  background: #67c23a;
+  background: var(--success);
   transition: width 0.3s;
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
 
 .text-muted {
-  color: #909399;
+  color: var(--ink-3);
   font-size: 12px;
 }

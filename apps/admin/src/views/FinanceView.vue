@@ -4,6 +4,7 @@ import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { fenToYuan, formatTime, ledgerKindLabel, shortId } from '@/utils'
 import EChart, { type EChartOption } from '@/components/EChart.vue'
+import { chartBase, CHART_COLORS } from '@/chartTheme'
 
 interface DailyAmount {
   date: string
@@ -53,28 +54,31 @@ const trendOption = computed<EChartOption>(() => {
   const dates = [...new Set([...revenue.map((d) => d.date), ...spend.map((d) => d.date)])].sort()
   const revenueMap = new Map(revenue.map((d) => [d.date, d.amountCents / 100]))
   const spendMap = new Map(spend.map((d) => [d.date, d.amountCents / 100]))
+  const base = chartBase()
   return {
-    tooltip: { trigger: 'axis', valueFormatter: (value) => `${value ?? 0} 元` },
-    legend: { data: ['收入', '消耗'], top: 0 },
+    color: base.color,
+    tooltip: { trigger: 'axis', valueFormatter: (value) => `${value ?? 0} 元`, ...base.tooltip },
+    legend: { data: ['收入', '消耗'], top: 0, textStyle: base.legendText },
     grid: { left: 48, right: 16, top: 32, bottom: 24 },
-    xAxis: { type: 'category', data: dates },
-    yAxis: { type: 'value' },
+    xAxis: { type: 'category', data: dates, axisLabel: base.axisLabel, axisLine: base.axisLine },
+    yAxis: { type: 'value', axisLabel: base.axisLabel, splitLine: base.splitLine },
     series: [
       {
         name: '收入',
         type: 'line',
         smooth: true,
         data: dates.map((d) => revenueMap.get(d) ?? 0),
-        itemStyle: { color: '#409eff' },
-        lineStyle: { color: '#409eff' },
+        itemStyle: { color: CHART_COLORS[0] },
+        lineStyle: { color: CHART_COLORS[0] },
+        areaStyle: { color: 'rgba(99, 102, 241, 0.08)' },
       },
       {
         name: '消耗',
         type: 'line',
         smooth: true,
         data: dates.map((d) => spendMap.get(d) ?? 0),
-        itemStyle: { color: '#e6a23c' },
-        lineStyle: { color: '#e6a23c' },
+        itemStyle: { color: CHART_COLORS[3] },
+        lineStyle: { color: CHART_COLORS[3] },
       },
     ],
   }
@@ -132,8 +136,8 @@ onMounted(() => {
     <div v-loading="summaryLoading">
       <div class="cards">
         <el-card v-for="card in totalCards" :key="card.label" shadow="never">
-          <div class="stat-value">{{ card.value }}</div>
           <div class="stat-label">{{ card.label }}</div>
+          <div class="stat-value tnum">{{ card.value }}</div>
         </el-card>
       </div>
 
@@ -228,21 +232,22 @@ onMounted(() => {
 }
 
 .stat-value {
+  margin-top: 6px;
   font-size: 26px;
   font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .stat-label {
-  margin-top: 4px;
-  color: #909399;
+  color: var(--ink-3);
   font-size: 13px;
 }
 
 .delta-pos {
-  color: #67c23a;
+  color: var(--success);
 }
 
 .delta-neg {
-  color: #e6a23c;
+  color: var(--warning);
 }
 </style>

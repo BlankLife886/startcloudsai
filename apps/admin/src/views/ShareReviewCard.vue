@@ -124,10 +124,10 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   min-width: 0;
   height: 100%;
   overflow: hidden;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 1px;
-  background: var(--el-bg-color);
-  box-shadow: 4px 4px 0 rgb(114 88 232 / 5%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   transition:
     transform 0.2s ease,
     box-shadow 0.2s ease,
@@ -140,7 +140,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
     width: 100%;
     height: 2px;
     content: '';
-    background: #7258e8;
+    background: var(--accent);
     pointer-events: none;
   }
 
@@ -162,8 +162,8 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
 
   &:hover {
     transform: translateY(-1px);
-    border-color: color-mix(in srgb, #7258e8 42%, transparent);
-    box-shadow: 5px 5px 0 rgb(114 88 232 / 8%);
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    box-shadow: var(--shadow-md);
   }
 }
 
@@ -207,7 +207,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
     bottom: 8px;
     z-index: 1;
     padding: 3px 8px;
-    border-radius: 1px;
+    border-radius: 999px;
     background: rgb(15 23 42 / 62%);
     color: #fff;
     font-size: 10px;
@@ -224,7 +224,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   left: 8px;
   z-index: 2;
   padding: 3px 8px;
-  border-radius: 1px;
+  border-radius: 999px;
   background: rgb(15 23 42 / 66%);
   color: #fff;
   font-size: 10px;
@@ -265,9 +265,9 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 1px;
-  background: linear-gradient(135deg, var(--el-color-primary-light-7), var(--el-color-primary-light-5));
-  color: var(--el-color-primary);
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
   font-size: 11px;
   font-weight: 700;
 }
@@ -304,7 +304,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
 
   span {
     padding: 2px 7px;
-    border-radius: 1px;
+    border-radius: 999px;
     background: var(--el-fill-color-light);
     color: var(--el-text-color-secondary);
     font-size: 11px;
@@ -316,9 +316,9 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   margin: 0;
   overflow: hidden;
   padding: 6px 8px;
-  border-radius: 1px;
-  background: var(--el-color-warning-light-9);
-  color: var(--el-color-warning-dark-2, #b45309);
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: var(--warning);
   font-size: 11px;
   line-height: 1.35;
   white-space: nowrap;
@@ -336,7 +336,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   min-height: 32px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 1px;
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -351,27 +351,26 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   }
 
   &.is-approve {
-    border-color: #86efac;
-    background: linear-gradient(180deg, #ecfdf5, #dcfce7);
-    color: #15803d;
+    border-color: color-mix(in srgb, var(--success) 35%, transparent);
+    background: var(--success-soft);
+    color: var(--success);
   }
 
   &.is-reject {
-    border-color: #fecaca;
-    background: #fff1f2;
-    color: #b91c1c;
+    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+    background: var(--danger-soft);
+    color: var(--danger);
   }
 
   &.is-violate {
-    border-color: #fde68a;
-    background: #fffbeb;
-    color: #b45309;
+    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+    background: var(--warning-soft);
+    color: var(--warning);
   }
 
   &:not(:disabled):hover {
     transform: translateY(-1px);
-    filter: brightness(0.98);
-    box-shadow: 0 6px 14px rgb(15 23 42 / 8%);
+    box-shadow: var(--shadow-md);
   }
 }
 </style>

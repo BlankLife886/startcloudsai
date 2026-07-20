@@ -331,8 +331,9 @@ async function forceFail(task: AdminTask) {
 
 <style scoped>
 .detail-pre {
-  background: #f5f7fa;
-  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   padding: 10px;
   white-space: pre-wrap;
   word-break: break-all;
@@ -353,8 +354,8 @@ h4 {
 .thumb {
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 4px;
-  background: #f0f2f5;
+  border-radius: 10px;
+  background: var(--surface-3);
 }
 
 .detail-actions {

@@ -595,8 +595,9 @@ async function copyPassword() {
 }
 
 .count-card {
-  background: #f5f7fa;
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   padding: 10px 12px;
   text-align: center;
 }
@@ -604,20 +605,21 @@ async function copyPassword() {
 .count-value {
   font-size: 20px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .count-label {
   margin-top: 2px;
-  color: #909399;
+  color: var(--ink-3);
   font-size: 12px;
 }
 
 .delta-pos {
-  color: #67c23a;
+  color: var(--success);
 }
 
 .delta-neg {
-  color: #e6a23c;
+  color: var(--warning);
 }
 
 .reset-result {

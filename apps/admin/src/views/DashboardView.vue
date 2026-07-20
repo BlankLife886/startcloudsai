@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { request } from '@/request'
 import { fenToYuan, formatTime, taskTypeLabel } from '@/utils'
 import EChart, { type EChartOption } from '@/components/EChart.vue'
+import { chartBase, CHART_COLORS } from '@/chartTheme'
 
 interface DailyTaskStat {
   date: string
@@ -59,42 +60,55 @@ const cards = computed(() => {
 })
 
 /** 近7日任务量 + 成功数折线 */
-const taskLineOption = computed<EChartOption>(() => ({
-  tooltip: { trigger: 'axis' },
-  legend: { data: ['任务量', '成功数'], top: 0 },
-  grid: { left: 40, right: 16, top: 32, bottom: 24 },
-  xAxis: { type: 'category', data: taskDaily.value.map((d) => d.date) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [
-    { name: '任务量', type: 'line', smooth: true, data: taskDaily.value.map((d) => d.total) },
-    {
-      name: '成功数',
-      type: 'line',
-      smooth: true,
-      data: taskDaily.value.map((d) => d.succeeded),
-      itemStyle: { color: '#67c23a' },
-      lineStyle: { color: '#67c23a' },
-    },
-  ],
-}))
+const taskLineOption = computed<EChartOption>(() => {
+  const base = chartBase()
+  return {
+    color: base.color,
+    tooltip: { trigger: 'axis', ...base.tooltip },
+    legend: { data: ['任务量', '成功数'], top: 0, textStyle: base.legendText },
+    grid: { left: 40, right: 16, top: 32, bottom: 24 },
+    xAxis: { type: 'category', data: taskDaily.value.map((d) => d.date), axisLabel: base.axisLabel, axisLine: base.axisLine },
+    yAxis: { type: 'value', minInterval: 1, axisLabel: base.axisLabel, splitLine: base.splitLine },
+    series: [
+      {
+        name: '任务量',
+        type: 'line',
+        smooth: true,
+        data: taskDaily.value.map((d) => d.total),
+        areaStyle: { color: 'rgba(99, 102, 241, 0.08)' },
+      },
+      {
+        name: '成功数',
+        type: 'line',
+        smooth: true,
+        data: taskDaily.value.map((d) => d.succeeded),
+        itemStyle: { color: CHART_COLORS[2] },
+        lineStyle: { color: CHART_COLORS[2] },
+      },
+    ],
+  }
+})
 
 /** 近30日收入柱状（分 → 元） */
 const revenueBarOption = computed<EChartOption>(() => {
   const daily = finance.value?.revenueDaily ?? []
+  const base = chartBase()
   return {
+    color: base.color,
     tooltip: {
       trigger: 'axis',
       valueFormatter: (value) => `${value ?? 0} 元`,
+      ...base.tooltip,
     },
     grid: { left: 48, right: 16, top: 16, bottom: 24 },
-    xAxis: { type: 'category', data: daily.map((d) => d.date) },
-    yAxis: { type: 'value' },
+    xAxis: { type: 'category', data: daily.map((d) => d.date), axisLabel: base.axisLabel, axisLine: base.axisLine },
+    yAxis: { type: 'value', axisLabel: base.axisLabel, splitLine: base.splitLine },
     series: [
       {
         name: '收入（元）',
         type: 'bar',
         data: daily.map((d) => d.amountCents / 100),
-        itemStyle: { color: '#409eff' },
+        itemStyle: { color: CHART_COLORS[0], borderRadius: [4, 4, 0, 0] },
       },
     ],
   }
@@ -104,16 +118,19 @@ const revenueBarOption = computed<EChartOption>(() => {
 const typePieOption = computed<EChartOption>(() => {
   const dist = stats.value?.typeDistribution ?? {}
   const data = Object.entries(dist).map(([type, count]) => ({ name: taskTypeLabel(type), value: count }))
+  const base = chartBase()
   return {
-    tooltip: { trigger: 'item' },
-    legend: { orient: 'vertical', left: 0, top: 'middle' },
+    color: base.color,
+    tooltip: { trigger: 'item', ...base.tooltip },
+    legend: { orient: 'vertical', left: 0, top: 'middle', textStyle: base.legendText },
     series: [
       {
         name: '任务类型',
         type: 'pie',
         radius: ['40%', '68%'],
         center: ['58%', '50%'],
-        label: { formatter: '{b}: {c}' },
+        itemStyle: { borderRadius: 4 },
+        label: { formatter: '{b}: {c}', color: base.legendText.color },
         data,
       },
     ],
@@ -156,8 +173,8 @@ onMounted(load)
 
     <div class="cards">
       <el-card v-for="card in cards" :key="card.label" shadow="never" class="stat-card">
-        <div class="stat-value">{{ card.value }}</div>
         <div class="stat-label">{{ card.label }}</div>
+        <div class="stat-value tnum">{{ card.value }}</div>
       </el-card>
     </div>
 
@@ -192,13 +209,14 @@ onMounted(load)
 }
 
 .stat-value {
+  margin-top: 6px;
   font-size: 26px;
   font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .stat-label {
-  margin-top: 4px;
-  color: #909399;
+  color: var(--ink-3);
   font-size: 13px;
 }
 
