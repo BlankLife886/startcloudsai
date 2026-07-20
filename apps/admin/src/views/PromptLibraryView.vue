@@ -1,7 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { CollectionTag, Delete, EditPen, Picture, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ElCheckbox, ElMessage, ElMessageBox, type CheckboxValueType } from 'element-plus'
+import {
+  CollectionTag,
+  CopyDocument,
+  Delete,
+  EditPen,
+  Link,
+  Picture,
+  Plus,
+  Refresh,
+  Search,
+  WarningFilled,
+} from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { TASK_TYPES, taskTypeLabel } from '@/utils'
@@ -17,6 +28,35 @@ interface PromptItem {
   sort: number
   active: boolean
   createdAt?: string
+  /** 远程源导入的词条携带来源 id（契约 v4，后端未返回时为空） */
+  sourceId?: string | null
+}
+
+interface PromptSource {
+  id: string
+  name: string
+  sourceUrl: string
+  format: 'json' | 'markdown' | 'html'
+  taskType: string
+  defaultTags: string[]
+  enabled: boolean
+  autoSyncEnabled: boolean
+  syncIntervalMinutes: number
+  nextSyncAt?: string | null
+  itemCount: number
+  lastSyncedAt?: string | null
+  lastSyncDurationMs?: number | null
+  lastError?: string | null
+  createdAt?: string
+}
+
+interface SourceSyncResult {
+  imported: number
+  updated: number
+  unchanged: number
+  failed: number
+  durationMs: number
+  itemCount: number
 }
 
 interface CategoryOption {
@@ -251,10 +291,202 @@ async function remove(item: PromptItem) {
   await refresh()
 }
 
+/* ============ 数据源管理（契约 v4：/api/admin/prompt-sources） ============ */
+
+interface FormatMeta {
+  label: string
+  color: string
+}
+
+/** json / markdown / html 各一色（取主题令牌，明暗主题自适应） */
+const FORMAT_META: Record<PromptSource['format'], FormatMeta> = {
+  json: { label: 'JSON', color: 'var(--info)' },
+  markdown: { label: 'Markdown', color: 'var(--violet)' },
+  html: { label: 'HTML', color: 'var(--warning)' },
+}
+
+function formatMeta(format: string): FormatMeta {
+  return FORMAT_META[format as PromptSource['format']] ?? { label: format.toUpperCase(), color: 'var(--ink-3)' }
+}
+
+const sources = ref<PromptSource[]>([])
+const sourcesLoading = ref(false)
+const sourcesDrawerOpen = ref(false)
+const syncingSourceId = ref('')
+
+async function loadSources(silent = false) {
+  sourcesLoading.value = true
+  try {
+    const data = await request<PromptSource[] | Page<PromptSource>>('/api/admin/prompt-sources', { silent })
+    sources.value = normalizeList(data).items
+  } catch {
+    // 错误提示由 request 统一处理（silent 时静默，页头徽标保持旧值）
+  } finally {
+    sourcesLoading.value = false
+  }
+}
+
+function openSourcesDrawer() {
+  sourcesDrawerOpen.value = true
+  void loadSources()
+}
+
+/** ISO 时间 → 相对时间（源卡片"上次同步"用） */
+function relativeTime(value: string | null | undefined): string {
+  if (!value) return '尚未同步'
+  const time = new Date(value).getTime()
+  if (Number.isNaN(time)) return '未知时间'
+  const diff = Date.now() - time
+  if (diff < 60_000) return '刚刚'
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  return formatTime(value)
+}
+
+function intervalLabel(minutes: number | undefined): string {
+  const value = Number(minutes) || 360
+  if (value < 60) return `每 ${value} 分钟`
+  if (value % 1440 === 0) return `每 ${value / 1440} 天`
+  if (value % 60 === 0) return `每 ${value / 60} 小时`
+  return `每 ${value} 分钟`
+}
+
+async function copySourceUrl(source: PromptSource) {
+  try {
+    await navigator.clipboard.writeText(source.sourceUrl)
+    ElMessage.success('源地址已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择复制')
+  }
+}
+
+/** 启停开关：即改即存，失败回滚 */
+async function toggleSource(source: PromptSource, enabled: boolean) {
+  source.enabled = enabled
+  try {
+    await request(`/api/admin/prompt-sources/${source.id}`, { method: 'PATCH', body: { enabled } })
+  } catch {
+    source.enabled = !enabled
+  }
+}
+
+async function syncSource(source: PromptSource) {
+  syncingSourceId.value = source.id
+  try {
+    const result = await request<SourceSyncResult>(`/api/admin/prompt-sources/${source.id}/sync`, {
+      method: 'POST',
+    })
+    const failedText = result.failed ? `，失败 ${result.failed} 条` : ''
+    ElMessage.success(`同步完成：新增 ${result.imported} 条、更新 ${result.updated} 条${failedText}`)
+    await Promise.all([loadSources(), refresh()])
+  } catch {
+    // 错误提示由 request 统一弹出；重新拉取以展示 lastError
+    await loadSources(true)
+  } finally {
+    syncingSourceId.value = ''
+  }
+}
+
+async function removeSource(source: PromptSource) {
+  const purgeItems = ref(false)
+  await ElMessageBox({
+    title: '删除数据源',
+    type: 'warning',
+    showCancelButton: true,
+    confirmButtonText: '确认删除',
+    cancelButtonText: '取消',
+    message: () =>
+      h('div', { class: 'source-delete-confirm' }, [
+        h('p', null, `确认删除「${source.name}」？删除后该源的自动同步随之停止。`),
+        h(
+          ElCheckbox,
+          {
+            modelValue: purgeItems.value,
+            'onUpdate:modelValue': (value: CheckboxValueType) => {
+              purgeItems.value = Boolean(value)
+            },
+          },
+          { default: () => `连带删除该源已导入的 ${source.itemCount} 条词条` },
+        ),
+      ]),
+  })
+  await request(`/api/admin/prompt-sources/${source.id}`, {
+    method: 'DELETE',
+    query: purgeItems.value ? { purgeItems: 1 } : undefined,
+  })
+  ElMessage.success(purgeItems.value ? '数据源与已导入词条已删除' : '数据源已删除')
+  await Promise.all([loadSources(), refresh()])
+}
+
+/* 新建 / 编辑数据源对话框 */
+const sourceEditorOpen = ref(false)
+const sourceSaving = ref(false)
+const editingSourceId = ref('')
+const sourceForm = reactive({
+  name: '',
+  sourceUrl: '',
+  format: 'json' as PromptSource['format'],
+  taskType: 't2i',
+  defaultTagsText: '',
+  syncIntervalMinutes: 360,
+  autoSyncEnabled: true,
+})
+
+function openSourceEditor(source: PromptSource | null = null) {
+  editingSourceId.value = source?.id ?? ''
+  sourceForm.name = source?.name ?? ''
+  sourceForm.sourceUrl = source?.sourceUrl ?? ''
+  sourceForm.format = source?.format ?? 'json'
+  sourceForm.taskType = source?.taskType ?? 't2i'
+  sourceForm.defaultTagsText = Array.isArray(source?.defaultTags) ? source.defaultTags.join('\n') : ''
+  sourceForm.syncIntervalMinutes = source?.syncIntervalMinutes ?? 360
+  sourceForm.autoSyncEnabled = source?.autoSyncEnabled !== false
+  sourceEditorOpen.value = true
+}
+
+async function saveSource() {
+  if (!sourceForm.name.trim() || !sourceForm.sourceUrl.trim()) {
+    ElMessage.warning('请填写数据源名称和源地址')
+    return
+  }
+  sourceSaving.value = true
+  try {
+    const body = {
+      name: sourceForm.name.trim(),
+      sourceUrl: sourceForm.sourceUrl.trim(),
+      format: sourceForm.format,
+      taskType: sourceForm.taskType,
+      defaultTags: sourceForm.defaultTagsText
+        .split('\n')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      syncIntervalMinutes: sourceForm.syncIntervalMinutes,
+      autoSyncEnabled: sourceForm.autoSyncEnabled,
+    }
+    if (editingSourceId.value) {
+      await request(`/api/admin/prompt-sources/${editingSourceId.value}`, { method: 'PATCH', body })
+    } else {
+      await request('/api/admin/prompt-sources', { method: 'POST', body: { ...body, enabled: true } })
+    }
+    ElMessage.success('数据源已保存')
+    sourceEditorOpen.value = false
+    await loadSources()
+  } catch {
+    // 错误提示由 request 统一处理
+  } finally {
+    sourceSaving.value = false
+  }
+}
+
 onMounted(() => {
   updateGridColumnCount()
   window.addEventListener('resize', updateGridColumnCount, { passive: true })
   void reset()
+  void loadSources(true)
 })
 
 onBeforeUnmount(() => {
@@ -274,6 +506,9 @@ onBeforeUnmount(() => {
       </div>
       <div class="library-header__actions">
         <el-tag type="success" effect="light" round size="small">已加载 {{ items.length }} 条内容</el-tag>
+        <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
+          <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
+        </el-badge>
         <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
       </div>
@@ -356,6 +591,10 @@ onBeforeUnmount(() => {
                     </div>
                     <span class="category-badge" :style="{ '--category-color': categoryMeta(item.category).color }">
                       {{ categoryMeta(item.category).label }}
+                    </span>
+                    <span v-if="item.sourceId" class="sync-badge" title="来自远程数据源，同步时会自动更新">
+                      <el-icon><Link /></el-icon>
+                      同步
                     </span>
                     <span class="prompt-cover__overlay">
                       <span class="prompt-cover__prompt">{{ item.prompt }}</span>
@@ -494,6 +733,160 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="editorOpen = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存提示词</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="sourcesDrawerOpen" title="提示词数据源" size="560px" class="sources-drawer">
+      <div class="sources-panel">
+        <div class="sources-panel__head">
+          <div>
+            <strong>外部数据源</strong>
+            <span>同步 JSON / Markdown / HTML 远程源，导入词条自动更新</span>
+          </div>
+          <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
+        </div>
+
+        <div v-loading="sourcesLoading" class="source-list">
+          <article
+            v-for="source in sources"
+            :key="source.id"
+            class="source-card"
+            :class="{ 'is-disabled': !source.enabled }"
+          >
+            <header class="source-card__head">
+              <div class="source-card__title">
+                <strong :title="source.name">{{ source.name }}</strong>
+                <span class="format-badge" :style="{ '--format-color': formatMeta(source.format).color }">
+                  {{ formatMeta(source.format).label }}
+                </span>
+              </div>
+              <el-switch
+                :model-value="source.enabled"
+                size="small"
+                @change="toggleSource(source, Boolean($event))"
+              />
+            </header>
+
+            <button class="source-card__url" type="button" title="点击复制源地址" @click="copySourceUrl(source)">
+              <span>{{ source.sourceUrl }}</span>
+              <el-icon><CopyDocument /></el-icon>
+            </button>
+
+            <div class="source-card__meta">
+              <span class="is-strong">{{ source.itemCount ?? 0 }} 条词条</span>
+              <span>{{ taskTypeLabel(source.taskType) }}</span>
+              <span>
+                {{ source.lastSyncedAt ? `${relativeTime(source.lastSyncedAt)}同步` : '尚未同步'
+                }}<template v-if="source.lastSyncedAt && source.lastSyncDurationMs != null">
+                  · {{ source.lastSyncDurationMs }}ms</template
+                >
+              </span>
+              <span :class="source.autoSyncEnabled ? 'is-auto' : ''">
+                {{ source.autoSyncEnabled ? `自动同步 · ${intervalLabel(source.syncIntervalMinutes)}` : '仅手动同步' }}
+              </span>
+            </div>
+
+            <div v-if="source.lastError" class="source-card__error">
+              <el-icon><WarningFilled /></el-icon>
+              <span :title="source.lastError">{{ source.lastError }}</span>
+            </div>
+
+            <footer class="source-card__actions">
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :icon="Refresh"
+                :loading="syncingSourceId === source.id"
+                @click="syncSource(source)"
+              >
+                立即同步
+              </el-button>
+              <el-button size="small" :icon="EditPen" @click="openSourceEditor(source)">编辑</el-button>
+              <el-tooltip content="删除数据源" placement="top">
+                <el-button size="small" type="danger" text :icon="Delete" @click="removeSource(source)" />
+              </el-tooltip>
+            </footer>
+          </article>
+
+          <div v-if="!sourcesLoading && !sources.length" class="sources-empty">
+            <el-icon><Link /></el-icon>
+            <strong>还没有数据源</strong>
+            <span>接入 JSON / Markdown / HTML 远程源，批量导入提示词</span>
+            <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-dialog
+      v-model="sourceEditorOpen"
+      :title="editingSourceId ? '编辑数据源' : '新建数据源'"
+      width="560px"
+      destroy-on-close
+      class="prompt-editor-dialog"
+    >
+      <div class="dialog-intro">
+        <span><el-icon :size="18"><Link /></el-icon></span>
+        <div>
+          <strong>提示词数据源</strong>
+          <small>同步只影响该源导入的词条，不会改动手工创建的提示词。</small>
+        </div>
+      </div>
+      <el-form label-position="top" class="editor-form">
+        <div class="form-grid">
+          <el-form-item label="名称"><el-input v-model="sourceForm.name" maxlength="100" /></el-form-item>
+          <el-form-item label="源格式">
+            <el-select v-model="sourceForm.format" style="width: 100%">
+              <el-option label="JSON" value="json" />
+              <el-option label="Markdown" value="markdown" />
+              <el-option label="HTML" value="html" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="源地址">
+          <el-input v-model="sourceForm.sourceUrl" placeholder="https://.../prompts.json 或 README.md" />
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="导入到功能">
+            <el-select v-model="sourceForm.taskType" style="width: 100%">
+              <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="默认标签（每行一个）">
+            <el-input
+              v-model="sourceForm.defaultTagsText"
+              type="textarea"
+              :rows="2"
+              placeholder="将附加到该源的所有词条"
+            />
+          </el-form-item>
+        </div>
+        <div class="form-grid">
+          <el-form-item label="自动同步">
+            <el-switch v-model="sourceForm.autoSyncEnabled" active-text="定时拉取" inactive-text="仅手动" />
+          </el-form-item>
+          <el-form-item label="同步间隔">
+            <el-select
+              v-model="sourceForm.syncIntervalMinutes"
+              :disabled="!sourceForm.autoSyncEnabled"
+              style="width: 100%"
+            >
+              <el-option label="每 30 分钟" :value="30" />
+              <el-option label="每 1 小时" :value="60" />
+              <el-option label="每 3 小时" :value="180" />
+              <el-option label="每 6 小时" :value="360" />
+              <el-option label="每 12 小时" :value="720" />
+              <el-option label="每天" :value="1440" />
+              <el-option label="每 3 天" :value="4320" />
+              <el-option label="每周" :value="10080" />
+            </el-select>
+          </el-form-item>
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="sourceEditorOpen = false">取消</el-button>
+        <el-button type="primary" :loading="sourceSaving" @click="saveSource">保存数据源</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1113,6 +1506,257 @@ onBeforeUnmount(() => {
   }
 }
 
+/* ============ 数据源管理 ============ */
+.sources-entry-badge {
+  :deep(.el-badge__content) {
+    border: 0;
+    background: var(--accent);
+  }
+}
+
+/* 词库卡片：远程源词条角标（叠在封面图上，两主题都用暖色浅底） */
+.sync-badge {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #9a6700;
+  font-size: 11px;
+  line-height: 1;
+  background: rgb(255 248 219 / 92%);
+  backdrop-filter: blur(10px);
+
+  .el-icon {
+    font-size: 10px;
+  }
+}
+
+.sources-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.sources-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+
+  > div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 14px;
+  }
+
+  span {
+    color: var(--library-muted);
+    font-size: 12px;
+  }
+}
+
+.source-list {
+  display: grid;
+  gap: 12px;
+  min-height: 200px;
+  align-content: start;
+}
+
+.source-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 15px;
+  border: 1px solid var(--library-border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    opacity 0.2s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: var(--shadow-md);
+  }
+
+  &.is-disabled {
+    opacity: 0.62;
+  }
+
+  &.is-disabled:hover {
+    opacity: 1;
+  }
+}
+
+.source-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.source-card__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+
+  strong {
+    overflow: hidden;
+    color: var(--el-text-color-primary);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.format-badge {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--format-color);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--format-color) 12%, transparent);
+}
+
+.source-card__url {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--library-muted);
+  font-size: 11px;
+  text-align: left;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: 0.15s ease;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .el-icon {
+    flex-shrink: 0;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  &:hover {
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+
+    .el-icon {
+      opacity: 1;
+    }
+  }
+}
+
+.source-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+
+  span {
+    padding: 3px 8px;
+    border-radius: 6px;
+    color: var(--ink-2);
+    font-size: 10px;
+    background: var(--surface-3);
+
+    &.is-strong {
+      color: var(--accent-ink);
+      font-weight: 650;
+      background: var(--accent-soft);
+    }
+
+    &.is-auto {
+      color: var(--success);
+      background: var(--success-soft);
+    }
+  }
+}
+
+.source-card__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 11px;
+  background: var(--danger-soft);
+
+  .el-icon {
+    flex-shrink: 0;
+  }
+
+  span {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+.source-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--library-border);
+
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+}
+
+.sources-empty {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--library-muted);
+  border: 1px dashed var(--library-border);
+  border-radius: 14px;
+
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--el-text-color-primary);
+  }
+
+  span {
+    font-size: 12px;
+  }
+}
+
 @media (max-width: 1500px) {
   .prompt-toolbar {
     flex-wrap: wrap;
@@ -1178,5 +1822,17 @@ onBeforeUnmount(() => {
   .type-checkboxes {
     grid-template-columns: 1fr 1fr;
   }
+}
+</style>
+
+<style lang="scss">
+/* 非 scoped：抽屉面板与 MessageBox 内容渲染在组件作用域之外 */
+.sources-drawer {
+  max-width: 94vw;
+}
+
+.source-delete-confirm p {
+  margin: 0 0 10px;
+  line-height: 1.6;
 }
 </style>

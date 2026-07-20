@@ -2,7 +2,7 @@
 
 `apps/web` 是星空云绘用户端，基于 Vue 3 + Vite + Pinia。面向普通用户提供 AI 图像创作（文生图、插画染色、UI 设计稿、超高清模型图、游戏设计、AI 拼图）、共享画廊、钱包充值与个人中心。
 
-后端为 `apps/server`（FastAPI），接口契约见 `docs/API_CONTRACT.md`。所有请求统一走 `/api` 前缀，鉴权使用 HttpOnly Cookie。
+后端为 `apps/server`（Go 后端（Gin）），接口契约见 `docs/API_CONTRACT.md`。所有请求统一走 `/api` 前缀，鉴权使用 HttpOnly Cookie。
 
 ## 本地开发
 
@@ -28,7 +28,7 @@ docker build -t starcloudsai-web .
 docker run -p 8080:80 starcloudsai-web
 ```
 
-镜像用 node:22-alpine 构建，nginx:alpine 托管 `dist`（SPA fallback 到 index.html，配置见 `nginx.conf`）。生产环境由外层 gateway 将 `/api` 反代到 FastAPI。
+镜像用 node:22-alpine 构建，nginx:alpine 托管 `dist`（SPA fallback 到 index.html，配置见 `nginx.conf`）。生产环境由外层 gateway 将 `/api` 反代到 Go 后端（Gin）。
 
 ## 主要页面
 

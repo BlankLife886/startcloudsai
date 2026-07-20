@@ -170,6 +170,29 @@
 
 **数据库增补**：`gallery_categories` 表；`gallery_submissions` 加 `featured bool default false`、`category_id uuid FK null`、`sort int default 0`；`users` 加 `submission_banned_until timestamptz null`；`prompt_library` 表。
 
+### 提示词库数据源（v4 增补）
+
+表 `prompt_sources`：id text（内置源用固定 slug 如 banana-prompt-quicker，自建源用 uuid 字符串）/ name / source_url / format('json'|'markdown'|'html') / task_type（导入到哪类，默认 t2i）/ default_tags jsonb / enabled / auto_sync_enabled / sync_interval_minutes（默认 360）/ next_sync_at / item_count / last_synced_at / last_sync_duration_ms / last_error / created_at。
+`prompt_library` 加列：source_id text default ''、source_item_key text default ''；partial unique index (source_id, source_item_key)（两者非空时）。手工词条 source_id 为空，不受同步影响。
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/admin/prompt-sources` | GET/POST | 源列表 / 新建（name、sourceUrl、format、taskType、defaultTags、syncIntervalMinutes、enabled、autoSyncEnabled） |
+| `/api/admin/prompt-sources/{id}` | PATCH/DELETE | 修改 / 删除（`?purgeItems=1` 时连带删除该源词条） |
+| `/api/admin/prompt-sources/{id}/sync` | POST | 立即同步 → `{imported, updated, unchanged, failed, durationMs, itemCount}` |
+
+同步语义：抓取 source_url → 按 format 解析出 `{itemKey, title, prompt, tags[], imageUrl, category?}` 列表 → 按 (source_id, item_key) upsert：新增写入（category 缺省 'other'，cover_key 直接存远程 imageUrl，active=true）；已存在则更新 title/prompt/tags/cover，**保留**已有 category（非 other 时）、active、sort。远程封面 URL 存在 cover_key 里，序列化时 http(s) 开头原样返回。
+Worker 定时（@every 30m）扫描 enabled+autoSync 且 next_sync_at 到期的源自动同步。
+迁移 seed 内置 6 个源（walleven 同款：banana-prompt-quicker / awesome-gpt-image / awesome-gpt4o-image / youmind-gpt-image-2 / youmind-nano-banana-pro / davidwu-gpt-image-2）。
+分类回填：`apps/server/scripts/backfill-prompt-categories.sql`（由旧库导出的 source_item_key → category 映射），同步后执行一次即可让分类与旧后台一致。
+
+**序列化对齐基准（v4 定稿）**：
+- 源对象响应一律 camelCase：`{id, name, sourceUrl, format, taskType, defaultTags[], enabled, builtin, autoSyncEnabled, syncIntervalMinutes, itemCount, lastSyncedAt, lastSyncDurationMs, lastError, createdAt}`。
+- `GET /api/admin/prompt-sources` 返回 `{items: [...]}`（与 plans/announcements 一致，不分页）。
+- `GET /api/admin/prompt-library` 词条序列化增加 `sourceId`（空串 = 手工词条）。
+- 同步整体失败走统一错误格式；部分失败返回 200 且 `failed > 0`。
+- seed 的 6 个内置源带 `builtin: true`：可编辑、可停用，**不可删除**（DELETE 返回 422 `builtin_source_protected`）。
+
 ### 后台接口字段补充定义（联调对齐基准）
 
 - `GET /api/admin/stats` 响应：`{totalUsers, newUsersToday, taskDaily: [{date, total, succeeded}](近7日), revenueCents(近30日), walletBalanceCents(全站可用余额合计), runningTasks}`。
