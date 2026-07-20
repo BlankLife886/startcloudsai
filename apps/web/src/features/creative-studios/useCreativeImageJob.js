@@ -13,6 +13,8 @@ import {
 } from '@/services/aiWallpaper'
 import { extractServerJobOutputs } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
 import { resolvePublicModelCreditCost } from '@/features/ai-shared/resolveWallpaperCreditCost'
+import { useInsufficientCreditsPrompt } from '@/composables/useInsufficientCreditsPrompt'
+import { formatPriceCents, getFeatureUnitPriceCents } from '@/services/pricing'
 import { fetchAuthenticatedMediaBlob } from '@/services/authenticatedMedia'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { normalizeGptImageOutputSize } from '@/services/aiImageOutputSize'
@@ -49,6 +51,9 @@ export function useCreativeImageJob(options = {}) {
   let cancelRequested = false
   const activeJobIds = new Set()
   const featureKey = String(options.featureKey || 'ai.optimize')
+  const creditsPrompt = useInsufficientCreditsPrompt()
+  // 服务端任务单价（分/张），null 表示读取失败（提交按钮附近显示「以服务端结算为准」）
+  const unitPriceCents = ref(null)
   const jobKindPrefix = String(options.jobKindPrefix || 'image')
   // 可选的子类型集合（如游戏工作台的 character/prop…），任务 kind 会带上子类型，
   // 让历史记录能按子类型归类展示。
@@ -151,6 +156,11 @@ export function useCreativeImageJob(options = {}) {
   })
 
   async function initialize() {
+    void getFeatureUnitPriceCents(featureKey)
+      .then((value) => {
+        unitPriceCents.value = value
+      })
+      .catch(() => null)
     await Promise.all([
       runtimeConfigStore.loadRuntimeConfig().catch(() => null),
       authStore.initAuth().catch(() => null),
@@ -233,6 +243,8 @@ export function useCreativeImageJob(options = {}) {
     const jobKind = buildJobKind(input.kindVariant, sourceUrl ? 'edit' : 'generation')
     const response = await createServerAiJob({
       kind: jobKind,
+      // 每个任务一个幂等键，经适配层映射为服务端 idempotencyKey
+      clientRequestId: crypto.randomUUID(),
       prompt: String(input.prompt || '').trim(),
       input: {
         source: options.source || 'creative-studio',
@@ -393,6 +405,7 @@ export function useCreativeImageJob(options = {}) {
         error.value = ''
         return []
       }
+      creditsPrompt.handleCreditError(caught)
       error.value = sanitizeCreativeError(caught?.message || '图片生成失败')
       return []
     } finally {
@@ -456,6 +469,7 @@ export function useCreativeImageJob(options = {}) {
             }
           } catch (caught) {
             markProgress(index, cancelRequested ? 'cancelled' : 'failed')
+            creditsPrompt.handleCreditError(caught)
             failures.push({ index, item, message: sanitizeCreativeError(caught?.message || '生成失败') })
           } finally {
             completedCount += 1
@@ -492,6 +506,7 @@ export function useCreativeImageJob(options = {}) {
         error.value = ''
         return { outputs: [], items: [], failures, groupId }
       }
+      creditsPrompt.handleCreditError(caught)
       error.value = sanitizeCreativeError(caught?.message || '批量生成失败')
       return { outputs: [], items: [], failures, groupId }
     } finally {
@@ -673,14 +688,21 @@ export function useCreativeImageJob(options = {}) {
   }
 
   function formatCostEstimate(count = 1) {
+    const units = Math.max(1, Number(count) || 1)
+    // 优先展示服务端真实单价（分/张）
+    if (unitPriceCents.value != null) {
+      const total = formatPriceCents(unitPriceCents.value * units)
+      return units > 1
+        ? `预计 ${total}（${formatPriceCents(unitPriceCents.value)} / 张 × ${units}）`
+        : `${formatPriceCents(unitPriceCents.value)} / 张`
+    }
     const model = selectedModel.value
     if (!model) return ''
-    const units = Math.max(1, Number(count) || 1)
     const credits = Number(model.creditCost || 0) * units
     const usd = Number(model.userPriceUsd || 0) * units
     if (credits > 0) return `预计 ${credits} 积分`
     if (usd > 0) return `预计 $${usd.toFixed(4)}`
-    return '按实际消耗计费'
+    return '费用以服务端结算为准'
   }
 
   // 蒙版局部修正：以某张输出为源图，只重绘涂抹区域，其余保持不变。
@@ -728,6 +750,7 @@ export function useCreativeImageJob(options = {}) {
         error.value = ''
         return []
       }
+      creditsPrompt.handleCreditError(caught)
       error.value = sanitizeCreativeError(caught?.message || '局部修正失败')
       return []
     } finally {
@@ -754,6 +777,8 @@ export function useCreativeImageJob(options = {}) {
 
   return {
     authStore,
+    creditsPrompt,
+    unitPriceCents,
     modelId,
     models,
     selectedModel,

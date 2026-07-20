@@ -1,3 +1,5 @@
+import { getFeatureUnitPriceCents } from '@/services/pricing'
+
 /** 站内 AI 工坊功能（非 OpenAI 兼容 API 调用）的公开模型标识 */
 export const STUDIO_PUBLIC_MODEL_KEYS = new Set([
   'walleven-image-edit',
@@ -126,19 +128,37 @@ export async function fetchStudioCreditAccountSnapshot() {
   }
 }
 
-/** 打开积分确认弹窗前补齐账户余额与今日/本月消耗（刷新后仍准确） */
+/**
+ * 打开费用确认弹窗前补齐：
+ * 1. 服务端任务单价（GET /api/meta/pricing，5 分钟缓存）→ unitPriceCents/totalPriceCents；
+ *    单价拉取失败时置 serverPricingUnavailable，弹窗显示「以服务端结算为准」且不禁用确认。
+ * 2. 账户余额与今日/本月消耗（刷新后仍准确）。
+ */
 export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
-  if (snapshot?.billingMode !== 'credits') return snapshot
+  let enriched = { ...snapshot }
+  try {
+    const unitPriceCents = await getFeatureUnitPriceCents(snapshot?.featureKey)
+    if (unitPriceCents != null) {
+      const count = Math.max(1, Number(snapshot?.count || 1))
+      enriched.unitPriceCents = unitPriceCents
+      enriched.totalPriceCents = unitPriceCents * count
+    } else {
+      enriched.serverPricingUnavailable = true
+    }
+  } catch {
+    enriched.serverPricingUnavailable = true
+  }
+  if (snapshot?.billingMode !== 'credits') return enriched
   try {
     const server = await fetchStudioCreditAccountSnapshot()
     return {
-      ...snapshot,
+      ...enriched,
       creditAvailable: server.creditAvailable,
       dayCost: server.dayCost,
       monthCost: server.monthCost,
       usageSource: server.usageSource,
     }
   } catch {
-    return snapshot
+    return enriched
   }
 }

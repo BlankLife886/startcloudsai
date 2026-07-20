@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import { readImageFile } from '@/features/design-workshop/imageWorkshop'
 import { useCanvasDeck } from '@/features/creative-studios/useCanvasDeck'
@@ -255,6 +256,7 @@ const STYLE_OPTIONS = [
 
 const {
   authStore,
+  creditsPrompt,
   modelId, models, status, error, running, cancelling, historyLoading, historyHasMore,
   outputs, activeOutput, outputJobIds, outputKinds, batchProgress,
   initialize, generate: generateImage, cancel: cancelGeneration,
@@ -1319,6 +1321,13 @@ function assetStatusLabel(statusValue) {
       :submitting="submittingShare"
       @close="publishOpen = false"
       @submit="submitPublish"
+    />
+
+    <InsufficientCreditsDialog
+      :show="creditsPrompt.dialogOpen.value"
+      :required="creditsPrompt.requiredCredits.value"
+      :available="creditsPrompt.availableCredits.value"
+      @close="creditsPrompt.closePrompt"
     />
   </main>
 </template>

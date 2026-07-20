@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { defineAsyncComponent } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSelect.vue'
+import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import { createLocalUpscaledImage } from '@/features/ai-wallpaper/services/localImageUpscale'
 import { uploadAiInputFile } from '@/services/aiWallpaper'
@@ -23,6 +24,7 @@ import { prefersReducedMotion } from '@/lib/anime'
 
 const {
   authStore,
+  creditsPrompt,
   modelId, models, status, error, running, cancelling, historyLoading, historyHasMore,
   outputs, activeOutput,
   outputJobIds, outputGroups, batchProgress,
@@ -1745,6 +1747,13 @@ function refreshHistory() {
         </div>
       </Transition>
     </Teleport>
+
+    <InsufficientCreditsDialog
+      :show="creditsPrompt.dialogOpen.value"
+      :required="creditsPrompt.requiredCredits.value"
+      :available="creditsPrompt.availableCredits.value"
+      @close="creditsPrompt.closePrompt"
+    />
   </main>
 </template>
 

@@ -189,6 +189,16 @@ function lookupKeyForUrl(url) {
   return ''
 }
 
+function createInputImageLostError() {
+  const error = new Error('参考图已失效，请重新上传')
+  error.code = 'input_image_lost'
+  return error
+}
+
+/**
+ * URL → R2 key。解析失败（blob: 刷新后失效、过期 URL 等）时抛出
+ * code='input_image_lost' 的错误并阻断提交，避免参考图静默丢失。
+ */
 async function resolveInputKeyForUrl(url) {
   const known = lookupKeyForUrl(url)
   if (known) return known
@@ -197,7 +207,7 @@ async function resolveInputKeyForUrl(url) {
   // 未知来源（data: / blob: / 过期 URL）：拉取后重新上传拿 key
   try {
     const response = await fetch(value)
-    if (!response.ok) return ''
+    if (!response.ok) throw new Error(`参考图读取失败（${response.status}）`)
     const blob = await response.blob()
     const file = new File([blob], `reference-${Date.now()}.png`, {
       type: blob.type || 'image/png',
@@ -207,7 +217,7 @@ async function resolveInputKeyForUrl(url) {
     registerUrlKey(value, uploaded.key)
     return uploaded.key
   } catch {
-    return ''
+    throw createInputImageLostError()
   }
 }
 
@@ -296,6 +306,7 @@ export async function createServerAiJob(payload = {}) {
   )
   const maskUrl = String(input.maskUrl || legacyParams.maskUrl || '').trim()
 
+  // 任一参考图/蒙版解析失败都会抛 input_image_lost，阻断本次提交
   const inputKeys = []
   for (const url of sourceUrls) {
     const key = await resolveInputKeyForUrl(url)

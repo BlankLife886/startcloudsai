@@ -9,7 +9,6 @@ import { useWallpaperModels } from '@/features/ai-wallpaper/composables/useWallp
 import { useWallpaperTasks } from '@/features/ai-wallpaper/composables/useWallpaperTasks'
 import { WALLPAPER_INSPECTOR_TABS } from '@/features/ai-wallpaper/composables/wallpaperStudioConstants'
 import { getDisplayImageUrl } from '@/services/aiWallpaper'
-import { mergeCloudAiWallpaperState } from '@/services/aiWallpaperState'
 import { resolveAiFeatureRuntimeConfig } from '@/config/aiFeatureSettings'
 import notificationService from '@/services/notification'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
@@ -160,6 +159,7 @@ export function useAiWallpaperStudioState() {
     studioProvider: models.studioProvider,
     studioBudgetGuard,
     ensureWallpaperBudgetAvailable,
+    onCreditError: creditsPrompt.handleCreditError,
     ensureUploadUrl: inputs.ensureUploadUrl,
     canCreateTask,
     autoSaveConfig,

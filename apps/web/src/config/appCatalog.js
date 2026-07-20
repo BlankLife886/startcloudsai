@@ -10,7 +10,7 @@ export const APP_CATALOG = [
   {
     id: 'site-ios',
     name: '星空云绘',
-    tagline: 'iOS 客户端 · 壁纸浏览与 AI 创作',
+    tagline: 'iOS 客户端 · AI 创作与共享画廊',
     href: '',
     scope: 'site',
     type: 'app',
@@ -25,7 +25,7 @@ export const APP_CATALOG = [
   {
     id: 'site-android',
     name: '星空云绘',
-    tagline: 'Android 客户端 · 壁纸浏览与 AI 创作',
+    tagline: 'Android 客户端 · AI 创作与共享画廊',
     href: '',
     scope: 'site',
     type: 'app',
@@ -40,7 +40,7 @@ export const APP_CATALOG = [
   {
     id: 'site-wechat-mp',
     name: '星空云绘小程序',
-    tagline: '微信小程序 · 轻量浏览与收藏',
+    tagline: '微信小程序 · 轻量创作与画廊浏览',
     href: '',
     scope: 'site',
     type: 'miniprogram',

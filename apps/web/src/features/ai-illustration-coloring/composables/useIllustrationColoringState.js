@@ -204,6 +204,8 @@ export function useIllustrationColoringState() {
   const serverJobPollInFlight = new Set()
   const serverJobPollGeneration = new Map()
   const sessionStartedJobs = new Set()
+  // 轮询请求统一挂在该控制器上，组件卸载时 abort，避免残留请求回写状态
+  const pollAbortController = new AbortController()
 
   const featureConfig = computed(() => ({
     ...(runtimeConfigStore.getFeatureConfig(ILLUSTRATION_COLORING_FEATURE_KEY) || {}),
@@ -1829,7 +1831,9 @@ export function useIllustrationColoringState() {
       // state machine in the browser: it used to reset its timer and keep a
       // stalled task visually "running" after the server had stopped making
       // progress.
-      const response = await getServerAiJob(item.serverJobId)
+      const response = await getServerAiJob(item.serverJobId, {
+        signal: pollAbortController.signal,
+      })
       if (!pollIsCurrent()) return
       const job = response.job || {}
       const status = job.status || item.status
@@ -2897,6 +2901,7 @@ export function useIllustrationColoringState() {
   onBeforeUnmount(() => {
     disposed = true
     handleBeforeUnload()
+    pollAbortController.abort()
     stopAllServerJobPolling()
     revokeSourceBlob()
     revokeAllReferenceBlobs()

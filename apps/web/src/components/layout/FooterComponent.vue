@@ -177,8 +177,6 @@ function onLinkClick(link, event) {
           <span>All rights reserved</span>
         </div>
         <div class="footer-bottom__right">
-          <span>壁纸图源 Wallhaven</span>
-          <span class="footer-dot" aria-hidden="true"></span>
           <button type="button" class="footer-text-btn" @click="reportIssue">反馈</button>
         </div>
       </div>

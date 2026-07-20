@@ -329,7 +329,7 @@ const storageService = {
    * @returns {Promise<boolean>} 是否成功导入
    */
   importData(file, key) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       try {
         if (!file || file.type !== 'application/json') {
           console.error('导入数据失败: 文件类型不正确')

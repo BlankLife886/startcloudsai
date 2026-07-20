@@ -3,12 +3,15 @@ import { fetchStudioCreditAccountSnapshot } from '@/features/ai-shared/studioUsa
 import { useAuthStore } from '@/stores/auth'
 
 export const INSUFFICIENT_CREDITS_CODE = 'INSUFFICIENT_CREDITS'
+/** 新契约后端余额不足错误码（apiClient 抛出的 ApiError.code） */
+export const INSUFFICIENT_BALANCE_CODE = 'insufficient_balance'
 
 export function isInsufficientCreditsError(error) {
   if (!error) return false
   if (error.code === INSUFFICIENT_CREDITS_CODE) return true
+  if (error.code === INSUFFICIENT_BALANCE_CODE) return true
   const message = String(error.message || error || '')
-  return /积分余额不足|积分不足|insufficient.*credit/i.test(message)
+  return /积分余额不足|积分不足|余额不足|insufficient.*(credit|balance)/i.test(message)
 }
 
 export function useInsufficientCreditsPrompt() {

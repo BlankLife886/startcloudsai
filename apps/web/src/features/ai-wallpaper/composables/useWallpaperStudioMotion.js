@@ -64,7 +64,7 @@ export function useWallpaperStudioMotion({
     })
   }
 
-  function syncBreathe(running) {
+  function syncBreathe(_running) {
     const stage = stageRef?.value
     if (!stage) return
     breatheTween?.kill?.()

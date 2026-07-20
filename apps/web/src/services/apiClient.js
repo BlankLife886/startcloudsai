@@ -24,6 +24,16 @@ export function isApiError(error, code = '') {
   return code ? error.code === code : true
 }
 
+/**
+ * 401（auth_required）全局处理回调：在应用入口注册（清会话 + 提示 + 跳登录）。
+ * 由回调自行判断此前是否为已登录态，避免公开页匿名请求误触发跳转。
+ */
+let unauthorizedHandler = null
+
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
+
 export function buildApiPath(path, query = null) {
   const normalized = path.startsWith('/') ? path : `/${path}`
   const url = `${API_PREFIX}${normalized}`
@@ -87,10 +97,18 @@ export async function apiRequest(path, options = {}) {
 
   const payload = await parsePayload(response)
   if (!response.ok || !payload || payload.success !== true) {
-    throw new ApiError(String(payload?.error || `${fallbackMessage}（${response.status}）`), {
+    const error = new ApiError(String(payload?.error || `${fallbackMessage}（${response.status}）`), {
       code: String(payload?.code || (response.status >= 500 ? 'internal_error' : 'request_failed')),
       status: response.status,
     })
+    if (response.status === 401 && error.code === 'auth_required' && unauthorizedHandler) {
+      try {
+        unauthorizedHandler(error)
+      } catch {
+        /* 处理器异常不影响原错误抛出 */
+      }
+    }
+    throw error
   }
   return payload.data
 }

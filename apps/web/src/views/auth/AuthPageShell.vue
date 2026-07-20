@@ -12,10 +12,10 @@ useAuthPageMotion(pageRef)
 const props = defineProps({
   kicker: { type: String, default: '登录' },
   titleMain: { type: String, default: '星空云绘' },
-  titleAccent: { type: String, default: '壁纸工作台' },
+  titleAccent: { type: String, default: 'AI 创作平台' },
   lead: {
     type: String,
-    default: '登录后同步你的搜索偏好、收藏壁纸、下载队列与 AI 创作记录。',
+    default: '登录后同步你的 AI 创作记录、云端任务进度与共享画廊作品。',
   },
   panelTitle: { type: String, default: '账号登录' },
   panelSubtitle: { type: String, default: '' },
@@ -92,38 +92,31 @@ function authModeQuery(mode) {
         <p data-auth-hero class="auth-hero-lead">{{ lead }}</p>
         <ul class="auth-hero-features" aria-label="账号职责">
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-search"></i></span>
-            <div class="auth-hero-feature__body">
-              <strong>壁纸搜索</strong>
-              <p>保存 Wallhaven 搜索偏好、筛选条件与浏览记录</p>
-            </div>
-          </li>
-          <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-heart"></i></span>
-            <div class="auth-hero-feature__body">
-              <strong>收藏与合集</strong>
-              <p>同步收藏壁纸、收藏夹结构与作者/标签入口</p>
-            </div>
-          </li>
-          <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-download"></i></span>
-            <div class="auth-hero-feature__body">
-              <strong>下载队列</strong>
-              <p>记录批量下载配置、失败任务与处理图下载偏好</p>
-            </div>
-          </li>
-          <li data-auth-feature class="auth-hero-feature">
             <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-stars"></i></span>
             <div class="auth-hero-feature__body">
-              <strong>AI 创作</strong>
-              <p>管理 AI 壁纸、插画上色、图转模型与拼图任务</p>
+              <strong>六大创作工作台</strong>
+              <p>文生图、插画染色、UI 设计稿、模型图、游戏设计与 AI 拼图</p>
             </div>
           </li>
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-key"></i></span>
+            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-cloud-arrow-up"></i></span>
             <div class="auth-hero-feature__body">
-              <strong>资源与 API</strong>
-              <p>查看套餐、API Key、模型用量与账号资源</p>
+              <strong>云端任务</strong>
+              <p>任务队列云端执行，历史记录与创作产物跨设备同步</p>
+            </div>
+          </li>
+          <li data-auth-feature class="auth-hero-feature">
+            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-images"></i></span>
+            <div class="auth-hero-feature__body">
+              <strong>共享画廊</strong>
+              <p>一键投稿作品到社区画廊，浏览官方精选与分类展墙</p>
+            </div>
+          </li>
+          <li data-auth-feature class="auth-hero-feature">
+            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-wallet2"></i></span>
+            <div class="auth-hero-feature__body">
+              <strong>钱包与套餐</strong>
+              <p>按张计费透明可查，充值套餐与兑换码即时入账</p>
             </div>
           </li>
         </ul>

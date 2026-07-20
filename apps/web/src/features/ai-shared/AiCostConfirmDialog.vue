@@ -20,26 +20,46 @@ function isCreditBilling(cost) {
 
 const isCredits = computed(() => isCreditBilling(props.cost))
 const unitCost = computed(() => Math.max(0, Number(props.cost?.unitCost || 0)))
-const unitCostPerUnit = computed(() =>
-  Math.max(0, Number(props.cost?.unitCostPerUnit ?? props.cost?.unitCost ?? 0)),
-)
 const imageCount = computed(() => Math.max(1, Number(props.cost?.count || 1)))
+// 服务端真实单价（分）：来自 GET /api/meta/pricing，为 null 表示读取失败
+const unitPriceCents = computed(() => {
+  const value = props.cost?.unitPriceCents
+  return Number.isFinite(Number(value)) && value !== null && value !== undefined
+    ? Math.max(0, Number(value))
+    : null
+})
+const hasServerPricing = computed(() => unitPriceCents.value != null)
+const totalPriceCents = computed(() =>
+  hasServerPricing.value
+    ? Math.max(0, Number(props.cost?.totalPriceCents ?? unitPriceCents.value * imageCount.value))
+    : null,
+)
+function formatYuan(cents) {
+  return `¥${(Number(cents || 0) / 100).toFixed(2)}`
+}
+// creditAvailable 语义 = 钱包可用余额（元）
 const creditAvailable = computed(() => {
   const value = props.cost?.creditAvailable
   if (value === undefined || value === null || value === '') return null
   return Math.max(0, Number(value || 0))
 })
+const totalCostYuan = computed(() => {
+  if (hasServerPricing.value) return totalPriceCents.value / 100
+  return unitCost.value
+})
 const creditRemaining = computed(() => {
   if (creditAvailable.value == null) return null
-  return Math.max(0, creditAvailable.value - unitCost.value)
+  return Math.max(0, creditAvailable.value - totalCostYuan.value)
 })
 const creditInsufficient = computed(
-  () => creditAvailable.value != null && unitCost.value > 0 && creditAvailable.value + 1e-9 < unitCost.value,
+  () =>
+    creditAvailable.value != null &&
+    totalCostYuan.value > 0 &&
+    creditAvailable.value + 1e-9 < totalCostYuan.value,
 )
 const featureLabel = computed(() => String(props.cost?.featureLabel || '本次 AI 功能').trim())
-const confirmDisabled = computed(
-  () => isCredits.value && (unitCost.value <= 0 || creditInsufficient.value),
-)
+// 单价读取失败不禁用确认（以服务端结算为准）；仅在明确余额不足时禁用
+const confirmDisabled = computed(() => isCredits.value && creditInsufficient.value)
 </script>
 
 <template>
@@ -56,11 +76,11 @@ const confirmDisabled = computed(
       </div>
       <div class="ai-cost-confirm-copy">
         <h5 id="ai-cost-confirm-title">
-          {{ isCredits ? '确认壁纸积分扣除' : '确认本次 AI 费用' }}
+          {{ isCredits ? '确认本次生成费用' : '确认本次 AI 费用' }}
         </h5>
         <p v-if="isCredits">
           <strong>{{ featureLabel }}</strong> 将从
-          <strong>壁纸积分</strong> 中扣除，不会使用价格页的 API 美元余额。确认后将提交生成任务。
+          <strong>钱包余额</strong> 中冻结并按张结算，确认后将提交生成任务。
         </p>
         <p v-else>生成前请确认预计美元费用，避免误触产生额外调用。</p>
       </div>
@@ -69,10 +89,12 @@ const confirmDisabled = computed(
         <div class="ai-cost-confirm-item highlight">
           <span>预计扣除</span>
           <div class="ai-cost-confirm-value">
-            <strong v-if="isCredits">{{ formatAmount(unitCost) }} 积分</strong>
-            <strong v-else>${{ Number(unitCost || 0).toFixed(4) }}</strong>
-            <small v-if="isCredits && imageCount > 1">
-              {{ formatAmount(unitCostPerUnit) }} 积分/张 × {{ imageCount }} 张
+            <strong v-if="hasServerPricing">{{ formatYuan(totalPriceCents) }}</strong>
+            <strong v-else-if="isCredits && unitCost > 0">{{ formatAmount(unitCost) }} 积分</strong>
+            <strong v-else-if="!isCredits">${{ Number(unitCost || 0).toFixed(4) }}</strong>
+            <strong v-else>以服务端结算为准</strong>
+            <small v-if="hasServerPricing">
+              {{ formatYuan(unitPriceCents) }} / 张 × {{ imageCount }} 张
             </small>
           </div>
         </div>
@@ -81,7 +103,7 @@ const confirmDisabled = computed(
           <div class="ai-cost-confirm-item">
             <span>当前可用</span>
             <strong>
-              {{ creditAvailable == null ? '—' : `${formatAmount(creditAvailable)} 积分` }}
+              {{ creditAvailable == null ? '—' : `¥${formatAmount(creditAvailable)}` }}
             </strong>
           </div>
           <div class="ai-cost-confirm-item" :class="{ danger: creditInsufficient }">
@@ -91,8 +113,8 @@ const confirmDisabled = computed(
                 creditAvailable == null
                   ? '—'
                   : creditInsufficient
-                    ? '积分不足'
-                    : `${formatAmount(creditRemaining)} 积分`
+                    ? '余额不足'
+                    : `¥${formatAmount(creditRemaining)}`
               }}
             </strong>
           </div>
@@ -110,18 +132,11 @@ const confirmDisabled = computed(
         </template>
       </div>
 
-      <p v-if="isCredits && unitCost <= 0" class="ai-cost-confirm-warn">
-        当前模型未配置积分消耗，请联系管理员在后台「功能配置」中设置后再试。
+      <p v-if="isCredits && !hasServerPricing" class="ai-cost-confirm-warn">
+        暂时读取不到单价，本次费用以服务端结算为准。
       </p>
       <p v-else-if="isCredits && creditInsufficient" class="ai-cost-confirm-warn">
-        可用积分不足。请前往「价格页 → 钱包」用美元余额兑换壁纸积分后再试。
-      </p>
-
-      <p v-if="isCredits && creditAvailable != null" class="ai-cost-confirm-footnote">
-        {{
-          cost?.usageSource === 'server' ? '账户统计' : '本机统计（仅供参考）'
-        }}：今日已用 {{ formatAmount(cost?.dayCost) }} · 本月已用
-        {{ formatAmount(cost?.monthCost) }} 积分
+        钱包余额不足。请前往「价格页」充值后再试。
       </p>
 
       <div class="ai-cost-confirm-actions">

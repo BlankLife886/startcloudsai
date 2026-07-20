@@ -20,7 +20,32 @@ import { createApp } from 'vue'
 
 import App from './App.vue'
 import router from './router'
+import { setUnauthorizedHandler } from './services/apiClient'
+import { createLoginRedirectQuery } from './services/authRedirect'
+import notificationService from './services/notification'
 import { useAppearanceStore } from './stores/appearance'
+import { useAuthStore } from './stores/auth'
+
+/**
+ * 401（auth_required）全局处理：仅当此前是已登录态才清会话并跳登录，
+ * 画廊等公开页的匿名 401 不会误触发。
+ */
+function registerUnauthorizedHandler() {
+  setUnauthorizedHandler(() => {
+    const authStore = useAuthStore()
+    if (!authStore.isAuthenticated) return
+    authStore.resetAuthState()
+    notificationService.warning('登录已过期，请重新登录')
+    const current = router.currentRoute.value
+    if (current.name === 'auth') return
+    router
+      .push({
+        path: '/auth',
+        query: { mode: 'login', ...createLoginRedirectQuery(current.fullPath) },
+      })
+      .catch(() => {})
+  })
+}
 
 function bootstrapApp() {
   const app = createApp(App)
@@ -30,6 +55,7 @@ function bootstrapApp() {
   app.use(router)
 
   useAppearanceStore().applyToDocument()
+  registerUnauthorizedHandler()
 
   app.mount('#app')
 }

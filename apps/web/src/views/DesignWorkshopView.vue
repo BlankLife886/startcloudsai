@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import { useCreativeImageJob } from '@/features/creative-studios/useCreativeImageJob'
 import { useStudioMotion } from '@/features/creative-studios/useStudioMotion'
 import { downloadAuthenticatedMedia } from '@/services/authenticatedMedia'
@@ -79,6 +80,7 @@ const BRIEF_EXAMPLES = [
 const COUNT_OPTIONS = [1, 2, 3, 4]
 
 const {
+  creditsPrompt,
   modelId,
   models,
   status,
@@ -89,6 +91,7 @@ const {
   activeOutput,
   initialize,
   generate: generateImage,
+  formatCostEstimate,
 } = useCreativeImageJob({
   source: 'ui-design-workshop',
   featureKey: 'ai.uiDesign',
@@ -123,6 +126,7 @@ const styleOption = computed(
   () => STYLE_OPTIONS.find((item) => item.id === styleId.value) || STYLE_OPTIONS[0],
 )
 const hasReference = computed(() => Boolean(inputFile.value || iterationSource.value))
+const costLabel = computed(() => formatCostEstimate(imageCount.value))
 const activeVersionIndex = computed(() => outputs.value.indexOf(activeOutput.value))
 const activeVersionLabel = computed(() =>
   activeVersionIndex.value >= 0 ? `V${outputs.value.length - activeVersionIndex.value}` : '',
@@ -447,6 +451,7 @@ function selectOutput(output) {
           <i class="bi" :class="running ? 'bi-arrow-repeat spin' : 'bi-stars'" aria-hidden="true"></i>
           {{ running ? status || '生成中…' : hasReference ? '重绘设计稿' : '生成设计稿' }}
         </button>
+        <p v-if="costLabel" class="dws-cost">{{ costLabel }}</p>
       </aside>
 
       <section class="dws-stage" data-studio-enter>
@@ -550,6 +555,13 @@ function selectOutput(output) {
         </div>
       </Transition>
     </Teleport>
+
+    <InsufficientCreditsDialog
+      :show="creditsPrompt.dialogOpen.value"
+      :required="creditsPrompt.requiredCredits.value"
+      :available="creditsPrompt.availableCredits.value"
+      @close="creditsPrompt.closePrompt"
+    />
   </main>
 </template>
 
@@ -1027,6 +1039,13 @@ function selectOutput(output) {
 
 .dws-generate:hover:not(:disabled) {
   filter: brightness(1.08);
+}
+
+.dws-cost {
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: 0.74rem;
+  color: rgba(226, 232, 240, 0.55);
 }
 
 .dws-generate:active:not(:disabled) {

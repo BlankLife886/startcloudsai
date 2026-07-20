@@ -255,6 +255,7 @@ export async function submitIllustrationColoringJob({
   referenceImageUrls = [],
   referenceStrength = 'balanced',
   onStatus = null,
+  signal = undefined,
 }) {
   const { jobId } = await createIllustrationColoringJob({
     sourceUrl,
@@ -270,6 +271,7 @@ export async function submitIllustrationColoringJob({
     onStatus,
     intervalMs: COLORING_JOB_POLL_INTERVAL_MS,
     maxPolls: COLORING_JOB_MAX_POLLS,
+    signal,
   })
 
   const output =

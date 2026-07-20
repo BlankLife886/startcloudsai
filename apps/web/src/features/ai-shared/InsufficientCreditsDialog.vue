@@ -18,12 +18,7 @@ function formatCredits(value = 0) {
 
 function goRecharge() {
   emit('close')
-  router.push({ name: 'pricing', query: { section: 'wallet' } })
-}
-
-function goProfileUsage() {
-  emit('close')
-  router.push({ name: 'profile', query: { tab: 'studio-usage' } })
+  router.push({ path: '/pricing', query: { section: 'wallet' } })
 }
 </script>
 
@@ -33,18 +28,19 @@ function goProfileUsage() {
       <div class="insufficient-credits-icon">
         <i class="bi bi-coin"></i>
       </div>
-      <h3>壁纸积分不足</h3>
-      <p>
-        本次需要 <strong>{{ formatCredits(required) }}</strong> 积分，当前可用
-        <strong>{{ formatCredits(available) }}</strong> 积分。
+      <h3>钱包余额不足</h3>
+      <p v-if="required > 0">
+        本次预计需要 <strong>¥{{ formatCredits(required) }}</strong
+        >，当前可用 <strong>¥{{ formatCredits(available) }}</strong
+        >。
       </p>
+      <p v-else>当前钱包余额不足以提交本次任务。</p>
       <p class="insufficient-credits-hint">
-        请前往 <strong>价格页 → 钱包</strong>，用美元余额兑换壁纸积分后再试。
+        请前往 <strong>价格页</strong> 充值或使用兑换码入账后再试。
       </p>
       <div class="insufficient-credits-actions">
         <button type="button" class="ghost" @click="emit('close')">稍后再说</button>
-        <button type="button" class="ghost" @click="goProfileUsage">查看用量</button>
-        <button type="button" class="primary" @click="goRecharge">去兑换积分</button>
+        <button type="button" class="primary" @click="goRecharge">去充值</button>
       </div>
     </section>
   </div>

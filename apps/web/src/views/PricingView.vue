@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
-import { getWallet, listWalletLedger } from '@/services/meApi'
+import { getWallet, listWalletLedger, redeemWalletCode } from '@/services/meApi'
 import { getTaskPricing } from '@/services/metaApi'
 import { createOrder, formatCents, getOrder, listOrders, listPlans } from '@/services/billingApi'
 import { TASK_TYPE_LABELS } from '@/services/tasksApi'
@@ -33,6 +33,18 @@ const ordersCursor = ref(null)
 const ledger = ref([])
 const ledgerLoading = ref(false)
 const ledgerCursor = ref(null)
+
+// ---- 兑换码 ----
+const redeemCode = ref('')
+const redeeming = ref(false)
+
+const REDEEM_ERROR_MESSAGES = {
+  code_invalid: '兑换码不存在，请检查后重试',
+  code_redeemed: '该兑换码已被使用',
+  code_expired: '兑换码已过期',
+  code_disabled: '兑换码已停用',
+  rate_limited: '尝试过于频繁，请稍后再试',
+}
 
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const availableCents = computed(() =>
@@ -186,6 +198,43 @@ function dismissActiveOrder() {
   activeOrder.value = null
 }
 
+function onRedeemInput(event) {
+  // 自动大写，保持 SC-XXXX-XXXX-XXXX 输入体验
+  redeemCode.value = String(event.target.value || '').toUpperCase()
+}
+
+async function submitRedeem() {
+  if (!isAuthenticated.value) {
+    goLogin()
+    return
+  }
+  const code = redeemCode.value.trim().toUpperCase()
+  if (!code) {
+    notificationService.info('请输入兑换码（格式 SC-XXXX-XXXX-XXXX）')
+    return
+  }
+  if (redeeming.value) return
+  redeeming.value = true
+  try {
+    const result = await redeemWalletCode(code)
+    notificationService.success(`已入账 ${formatCents(result?.grantCents || 0)}`)
+    redeemCode.value = ''
+    await Promise.all([refreshWallet(), loadLedger()])
+  } catch (error) {
+    const mapped = REDEEM_ERROR_MESSAGES[error?.code]
+    if (mapped) {
+      notificationService.error(mapped)
+    } else if (error?.status === 404) {
+      // 后端尚未部署兑换接口（code_invalid 之外的 404）
+      notificationService.info('兑换功能即将开放，敬请期待')
+    } else {
+      notificationService.error(error?.message || '兑换失败，请稍后再试')
+    }
+  } finally {
+    redeeming.value = false
+  }
+}
+
 onMounted(async () => {
   await authStore.initAuth().catch(() => null)
   void getTaskPricing()
@@ -218,35 +267,60 @@ onBeforeUnmount(() => stopOrderPolling())
       <p>按任务张数计费，充值套餐即时入账，余额永不过期。</p>
     </header>
 
-    <!-- 顶部：钱包 + 单价表 -->
+    <!-- 顶部：钱包 + 兑换码 + 单价表 -->
     <section class="pricing-top">
-      <article class="wallet-card">
-        <header>
-          <span class="wallet-card-label"><i class="bi bi-wallet2"></i> 钱包余额</span>
-          <button
-            v-if="isAuthenticated"
-            type="button"
-            class="wallet-refresh"
-            :disabled="walletLoading"
-            @click="refreshWallet"
-          >
-            <i class="bi" :class="walletLoading ? 'bi-arrow-repeat spin' : 'bi-arrow-repeat'"></i>
-          </button>
-        </header>
-        <template v-if="isAuthenticated">
-          <strong class="wallet-balance">{{ formatCents(availableCents) }}</strong>
-          <div class="wallet-meta">
-            <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
-            <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
-              冻结中 {{ formatCents(wallet?.frozenCents || 0) }}
-            </span>
-          </div>
-        </template>
-        <template v-else>
-          <strong class="wallet-balance is-muted">登录后查看</strong>
-          <button type="button" class="pricing-btn is-primary" @click="goLogin">登录 / 注册</button>
-        </template>
-      </article>
+      <div class="pricing-top-left">
+        <article class="wallet-card">
+          <header>
+            <span class="wallet-card-label"><i class="bi bi-wallet2"></i> 钱包余额</span>
+            <button
+              v-if="isAuthenticated"
+              type="button"
+              class="wallet-refresh"
+              :disabled="walletLoading"
+              @click="refreshWallet"
+            >
+              <i class="bi" :class="walletLoading ? 'bi-arrow-repeat spin' : 'bi-arrow-repeat'"></i>
+            </button>
+          </header>
+          <template v-if="isAuthenticated">
+            <strong class="wallet-balance">{{ formatCents(availableCents) }}</strong>
+            <div class="wallet-meta">
+              <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
+              <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
+                冻结中 {{ formatCents(wallet?.frozenCents || 0) }}
+              </span>
+            </div>
+          </template>
+          <template v-else>
+            <strong class="wallet-balance is-muted">登录后查看</strong>
+            <button type="button" class="pricing-btn is-primary" @click="goLogin">登录 / 注册</button>
+          </template>
+        </article>
+
+        <article class="redeem-card">
+          <header>
+            <span class="wallet-card-label"><i class="bi bi-ticket-perforated"></i> 兑换码</span>
+          </header>
+          <form class="redeem-form" @submit.prevent="submitRedeem">
+            <input
+              :value="redeemCode"
+              type="text"
+              class="redeem-input"
+              placeholder="SC-XXXX-XXXX-XXXX"
+              maxlength="20"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="兑换码"
+              @input="onRedeemInput"
+            />
+            <button type="submit" class="pricing-btn is-primary" :disabled="redeeming">
+              {{ redeeming ? '兑换中…' : '兑换' }}
+            </button>
+          </form>
+          <p class="redeem-hint">输入兑换码后金额即时入账钱包。</p>
+        </article>
+      </div>
 
       <article class="price-table-card">
         <header>
@@ -397,7 +471,14 @@ onBeforeUnmount(() => stopOrderPolling())
   .pricing-top { grid-template-columns: 1fr; }
 }
 
+.pricing-top-left {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
 .wallet-card,
+.redeem-card,
 .price-table-card,
 .plan-card,
 .record-card {
@@ -408,6 +489,7 @@ onBeforeUnmount(() => stopOrderPolling())
 }
 
 .wallet-card > header,
+.redeem-card > header,
 .price-table-card > header {
   display: flex;
   justify-content: space-between;
@@ -448,6 +530,44 @@ onBeforeUnmount(() => stopOrderPolling())
 }
 
 .wallet-meta .is-frozen { color: #fbbf24; }
+
+.redeem-card > header { margin-bottom: 10px; }
+.redeem-card i { margin-right: 6px; }
+
+.redeem-form {
+  display: flex;
+  gap: 8px;
+}
+
+.redeem-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  font-size: 14px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.redeem-input::placeholder {
+  color: rgba(148, 163, 184, 0.45);
+  text-transform: none;
+}
+
+.redeem-input:focus {
+  outline: none;
+  border-color: rgba(165, 180, 252, 0.6);
+}
+
+.redeem-hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: rgba(203, 213, 225, 0.55);
+}
 
 .price-table { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 22px; }
 

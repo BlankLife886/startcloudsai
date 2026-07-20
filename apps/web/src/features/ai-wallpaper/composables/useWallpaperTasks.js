@@ -100,6 +100,8 @@ export function useWallpaperTasks(deps = {}) {
     inspectorTab = ref('output'),
     syncState = syncAiWallpaperState,
     notify = notificationService,
+    // 提交失败时的余额不足回调：返回 true 表示已弹出余额不足引导
+    onCreditError = null,
     createServerAiJobRequest = createServerAiJob,
     tasksKey = AI_WALLPAPER_TASKS_KEY,
     studioDraftKey = AI_WALLPAPER_STUDIO_DRAFT_KEY,
@@ -432,6 +434,8 @@ export function useWallpaperTasks(deps = {}) {
     sessionTaskIds.add(String(taskId))
     return {
       id: taskId,
+      // 每次点击生成一个幂等键，经适配层映射为服务端 idempotencyKey
+      clientRequestId: crypto.randomUUID(),
       batchId: String(overrides.batchId || ''),
       batchIndex: Math.max(0, Number(overrides.batchIndex || 0)),
       batchSize: Math.max(1, Number(overrides.batchSize || 1)),
@@ -888,6 +892,7 @@ export function useWallpaperTasks(deps = {}) {
       }
       const response = await createServerAiJobRequest({
         kind: task.kind,
+        clientRequestId: task.clientRequestId || crypto.randomUUID(),
         prompt: task.prompt,
         input: {
           sourceUrl,
@@ -1053,7 +1058,10 @@ export function useWallpaperTasks(deps = {}) {
             finishedAt: Date.now(),
           })
           appendLog(taskId, '提交失败')
-          if (!silentNotifications) notify.error(error?.message || '云端 AI 任务创建失败')
+          const creditHandled = typeof onCreditError === 'function' && onCreditError(error)
+          if (!creditHandled && !silentNotifications) {
+            notify.error(error?.message || '云端 AI 任务创建失败')
+          }
         }
       }
     } finally {

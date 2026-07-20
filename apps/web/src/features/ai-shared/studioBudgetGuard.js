@@ -113,6 +113,7 @@ export function createStudioBudgetGuard({
       count: units,
       dayCost,
       monthCost,
+      featureKey,
       featureLabel: studioFeatureLabel(featureKey),
     }
   }

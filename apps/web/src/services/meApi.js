@@ -18,6 +18,18 @@ export async function getWallet({ signal } = {}) {
   return apiGet('/me/wallet', { signal, fallbackMessage: '钱包读取失败' })
 }
 
+/**
+ * 兑换码入账：POST /api/me/wallet/redeem → { grantCents, balanceCents }。
+ * 错误码：code_invalid / code_redeemed / code_expired / code_disabled / rate_limited。
+ */
+export async function redeemWalletCode(code) {
+  return apiPost(
+    '/me/wallet/redeem',
+    { code: String(code || '').trim().toUpperCase() },
+    { fallbackMessage: '兑换失败' },
+  )
+}
+
 /** 钱包账本（cursor 分页）。 */
 export async function listWalletLedger({ limit = 20, cursor = '', signal } = {}) {
   const data = await apiGet('/me/wallet/ledger', {
