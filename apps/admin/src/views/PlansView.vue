@@ -8,9 +8,13 @@ interface AdminPlan {
   id: string
   code: string
   name: string
+  /** topup 充值包 | subscription 订阅（周期每日发放） */
+  kind?: 'topup' | 'subscription'
   priceCents: number
   grantCents: number
   bonusCents: number
+  durationDays?: number
+  dailyGrantCents?: number
   features: string[]
   active?: boolean
   sort: number
@@ -38,9 +42,12 @@ const submitting = ref(false)
 const form = reactive({
   code: '',
   name: '',
+  kind: 'topup' as 'topup' | 'subscription',
   priceYuan: 0,
   grantYuan: 0,
   bonusYuan: 0,
+  durationDays: 30,
+  dailyGrantYuan: 0,
   featuresText: '',
   active: true,
   sort: 0,
@@ -51,9 +58,12 @@ function openCreate() {
   Object.assign(form, {
     code: '',
     name: '',
+    kind: 'topup',
     priceYuan: 0,
     grantYuan: 0,
     bonusYuan: 0,
+    durationDays: 30,
+    dailyGrantYuan: 0,
     featuresText: '',
     active: true,
     sort: 0,
@@ -66,9 +76,12 @@ function openEdit(plan: AdminPlan) {
   Object.assign(form, {
     code: plan.code,
     name: plan.name,
+    kind: plan.kind ?? 'topup',
     priceYuan: fenToYuanNumber(plan.priceCents),
     grantYuan: fenToYuanNumber(plan.grantCents),
     bonusYuan: fenToYuanNumber(plan.bonusCents),
+    durationDays: plan.durationDays || 30,
+    dailyGrantYuan: fenToYuanNumber(plan.dailyGrantCents),
     featuresText: (plan.features ?? []).join('\n'),
     active: plan.active ?? true,
     sort: plan.sort,
@@ -81,12 +94,19 @@ async function submit() {
     ElMessage.warning('请填写套餐 code 与名称')
     return
   }
+  if (form.kind === 'subscription' && (form.durationDays < 1 || yuanToFen(form.dailyGrantYuan) < 1)) {
+    ElMessage.warning('订阅套餐需填写时长（≥1 天）与每日发放金额（> 0）')
+    return
+  }
   const body = {
     code: form.code.trim(),
     name: form.name.trim(),
+    kind: form.kind,
     priceCents: yuanToFen(form.priceYuan),
-    grantCents: yuanToFen(form.grantYuan),
-    bonusCents: yuanToFen(form.bonusYuan),
+    grantCents: form.kind === 'subscription' ? 0 : yuanToFen(form.grantYuan),
+    bonusCents: form.kind === 'subscription' ? 0 : yuanToFen(form.bonusYuan),
+    durationDays: form.kind === 'subscription' ? form.durationDays : 0,
+    dailyGrantCents: form.kind === 'subscription' ? yuanToFen(form.dailyGrantYuan) : 0,
     features: form.featuresText
       .split('\n')
       .map((line) => line.trim())
@@ -135,16 +155,28 @@ async function removePlan(plan: AdminPlan) {
             <div class="empty-sub">点击右上角「新建套餐」创建第一个套餐</div>
           </el-empty>
         </template>
-        <el-table-column prop="code" label="Code" width="120" />
-        <el-table-column prop="name" label="名称" min-width="140" />
+        <el-table-column prop="code" label="Code" width="110" />
+        <el-table-column prop="name" label="名称" min-width="130" />
+        <el-table-column label="类型" width="90">
+          <template #default="{ row }">
+            <el-tag :type="(row.kind ?? 'topup') === 'subscription' ? 'warning' : 'info'" size="small">
+              {{ (row.kind ?? 'topup') === 'subscription' ? '订阅' : '充值包' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="价格（元）" width="100" align="right" class-name="col-num">
           <template #default="{ row }">{{ fenToYuan(row.priceCents) }}</template>
         </el-table-column>
-        <el-table-column label="入账（元）" width="100" align="right" class-name="col-num">
-          <template #default="{ row }">{{ fenToYuan(row.grantCents) }}</template>
-        </el-table-column>
-        <el-table-column label="赠送（元）" width="100" align="right" class-name="col-num">
-          <template #default="{ row }">{{ fenToYuan(row.bonusCents) }}</template>
+        <el-table-column label="权益" min-width="150">
+          <template #default="{ row }">
+            <span v-if="(row.kind ?? 'topup') === 'subscription'">
+              {{ row.durationDays }} 天 · 每日 ¥{{ fenToYuan(row.dailyGrantCents ?? 0) }}
+            </span>
+            <span v-else>
+              入账 ¥{{ fenToYuan(row.grantCents) }}
+              <template v-if="row.bonusCents > 0"> + 赠 ¥{{ fenToYuan(row.bonusCents) }}</template>
+            </span>
+          </template>
         </el-table-column>
         <el-table-column label="卖点" min-width="200">
           <template #default="{ row }">
@@ -178,18 +210,38 @@ async function removePlan(plan: AdminPlan) {
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如：基础套餐" />
         </el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="form.kind" :disabled="!!editingId">
+            <el-radio-button value="topup">充值包（立即入账）</el-radio-button>
+            <el-radio-button value="subscription">订阅（每日发放）</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="价格（元）">
           <el-input-number v-model="form.priceYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
           <span class="text-muted" style="margin-left: 8px">= {{ yuanToFen(form.priceYuan) }} 分</span>
         </el-form-item>
-        <el-form-item label="入账（元）">
-          <el-input-number v-model="form.grantYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
-          <span class="text-muted" style="margin-left: 8px">支付后入账到钱包的金额</span>
-        </el-form-item>
-        <el-form-item label="赠送（元）">
-          <el-input-number v-model="form.bonusYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
-          <span class="text-muted" style="margin-left: 8px">额外赠送金额</span>
-        </el-form-item>
+        <template v-if="form.kind === 'topup'">
+          <el-form-item label="入账（元）">
+            <el-input-number v-model="form.grantYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">支付后入账到钱包的金额</span>
+          </el-form-item>
+          <el-form-item label="赠送（元）">
+            <el-input-number v-model="form.bonusYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">额外赠送金额</span>
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="时长（天）" required>
+            <el-input-number v-model="form.durationDays" :min="1" :max="3650" :step="1" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">续购自动顺延到期日</span>
+          </el-form-item>
+          <el-form-item label="每日发放（元）" required>
+            <el-input-number v-model="form.dailyGrantYuan" :min="0" :max="10000" :precision="2" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">
+              有效期内每天自动入账，合计 ≈ ¥{{ (form.dailyGrantYuan * form.durationDays).toFixed(2) }}
+            </span>
+          </el-form-item>
+        </template>
         <el-form-item label="卖点">
           <el-input v-model="form.featuresText" type="textarea" :rows="3" placeholder="一行一条卖点" />
         </el-form-item>
