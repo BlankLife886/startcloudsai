@@ -507,7 +507,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: grid;
   gap: 12px;
-  padding: 20px 24px 24px;
+  padding: 24px 28px;
   background:
     radial-gradient(circle at 88% 4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
     var(--bg);

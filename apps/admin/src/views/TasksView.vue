@@ -138,100 +138,109 @@ async function forceFail(task: AdminTask) {
 
 <template>
   <div class="page">
-    <div class="filter-bar">
-      <el-select v-model="filters.type" placeholder="任务类型" clearable style="width: 150px" @change="reset">
-        <el-option v-for="(label, value) in TASK_TYPE_LABELS" :key="value" :label="label" :value="value" />
-      </el-select>
-      <el-select v-model="filters.status" placeholder="状态" clearable style="width: 120px" @change="reset">
-        <el-option v-for="(label, value) in TASK_STATUS_LABELS" :key="value" :label="label" :value="value" />
-      </el-select>
-      <el-input
-        v-model="filters.user"
-        placeholder="用户（ID / 邮箱）"
-        clearable
-        style="width: 200px"
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-input
-        v-model="filters.errorCode"
-        placeholder="错误码（当前页过滤）"
-        clearable
-        style="width: 180px"
-      />
-      <el-button type="primary" @click="reset">查询</el-button>
-    </div>
+    <PageCard title="任务监控" subtitle="全站生成任务的运行状态与人工干预">
+      <div class="filter-bar">
+        <el-select v-model="filters.type" placeholder="任务类型" size="small" clearable style="width: 150px" @change="reset">
+          <el-option v-for="(label, value) in TASK_TYPE_LABELS" :key="value" :label="label" :value="value" />
+        </el-select>
+        <el-select v-model="filters.status" placeholder="状态" size="small" clearable style="width: 120px" @change="reset">
+          <el-option v-for="(label, value) in TASK_STATUS_LABELS" :key="value" :label="label" :value="value" />
+        </el-select>
+        <el-input
+          v-model="filters.user"
+          placeholder="用户（ID / 邮箱）"
+          size="small"
+          clearable
+          style="width: 200px"
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <el-input
+          v-model="filters.errorCode"
+          placeholder="错误码（当前页过滤）"
+          size="small"
+          clearable
+          style="width: 180px"
+        />
+        <el-button type="primary" size="small" @click="reset">查询</el-button>
+        <el-button size="small" @click="filters.type = ''; filters.status = ''; filters.user = ''; filters.errorCode = ''; reset()">
+          重置
+        </el-button>
+      </div>
 
-    <el-table v-loading="loading" :data="displayItems" size="small">
-      <template #empty>
-        <el-empty description="暂无任务" :image-size="60" />
-      </template>
-      <el-table-column label="任务ID" width="110">
-        <template #default="{ row }">
-          <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
+      <el-table v-loading="loading" :data="displayItems" size="small">
+        <template #empty>
+          <el-empty description="暂无任务" :image-size="60">
+            <div class="empty-sub">调整筛选条件后重新查询</div>
+          </el-empty>
         </template>
-      </el-table-column>
-      <el-table-column label="类型" width="120">
-        <template #default="{ row }">{{ taskTypeLabel(row.type) }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
-          <el-tag :type="TASK_STATUS_TAG[row.status] ?? 'info'" size="small">
-            {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="用户" min-width="160">
-        <template #default="{ row }">{{ taskUser(row as AdminTask) }}</template>
-      </el-table-column>
-      <el-table-column label="错误码" width="130">
-        <template #default="{ row }">
-          <span v-if="row.errorCode" class="mono" :title="row.errorMessage ?? ''">{{ row.errorCode }}</span>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="count" label="张数" width="70" />
-      <el-table-column label="费用（元）" width="100">
-        <template #default="{ row }">{{ fenToYuan(row.costCents) }}</template>
-      </el-table-column>
-      <el-table-column label="创建时间" width="170">
-        <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="openDetail(row as AdminTask)">详情</el-button>
-          <el-button
-            v-if="row.status === 'failed'"
-            size="small"
-            type="warning"
-            plain
-            @click="requeue(row as AdminTask)"
-          >
-            重新入队
-          </el-button>
-          <el-button
-            v-if="row.status === 'queued'"
-            size="small"
-            type="warning"
-            plain
-            @click="cancel(row as AdminTask)"
-          >
-            取消
-          </el-button>
-          <el-button
-            v-if="row.status === 'running'"
-            size="small"
-            type="danger"
-            plain
-            @click="forceFail(row as AdminTask)"
-          >
-            强制失败
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column label="任务ID" width="110">
+          <template #default="{ row }">
+            <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="120">
+          <template #default="{ row }">{{ taskTypeLabel(row.type) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="TASK_STATUS_TAG[row.status] ?? 'info'" size="small">
+              {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="用户" min-width="160">
+          <template #default="{ row }">{{ taskUser(row as AdminTask) }}</template>
+        </el-table-column>
+        <el-table-column label="错误码" width="130">
+          <template #default="{ row }">
+            <span v-if="row.errorCode" class="mono" :title="row.errorMessage ?? ''">{{ row.errorCode }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="count" label="张数" width="70" align="right" class-name="col-num" />
+        <el-table-column label="费用（元）" width="100" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.costCents) }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="openDetail(row as AdminTask)">详情</el-button>
+            <el-button
+              v-if="row.status === 'failed'"
+              size="small"
+              type="warning"
+              plain
+              @click="requeue(row as AdminTask)"
+            >
+              重新入队
+            </el-button>
+            <el-button
+              v-if="row.status === 'queued'"
+              size="small"
+              type="warning"
+              plain
+              @click="cancel(row as AdminTask)"
+            >
+              取消
+            </el-button>
+            <el-button
+              v-if="row.status === 'running'"
+              size="small"
+              type="danger"
+              plain
+              @click="forceFail(row as AdminTask)"
+            >
+              强制失败
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+    </PageCard>
 
     <el-drawer v-model="detailVisible" title="任务详情" size="480px">
       <template v-if="detail">

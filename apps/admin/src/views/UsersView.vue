@@ -246,77 +246,83 @@ async function copyPassword() {
 
 <template>
   <div class="page">
-    <div class="filter-bar">
-      <el-input
-        v-model="filters.search"
-        placeholder="搜索邮箱 / 用户名"
-        clearable
-        style="width: 240px"
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-select v-model="filters.status" placeholder="状态" clearable style="width: 120px" @change="reset">
-        <el-option label="正常" value="active" />
-        <el-option label="已封禁" value="banned" />
-      </el-select>
-      <el-button type="primary" @click="reset">查询</el-button>
-    </div>
+    <PageCard title="用户列表" subtitle="查看与管理全部注册用户，点击行查看详情">
+      <div class="filter-bar">
+        <el-input
+          v-model="filters.search"
+          placeholder="搜索邮箱 / 用户名"
+          size="small"
+          clearable
+          style="width: 240px"
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <el-select v-model="filters.status" placeholder="状态" size="small" clearable style="width: 120px" @change="reset">
+          <el-option label="正常" value="active" />
+          <el-option label="已封禁" value="banned" />
+        </el-select>
+        <el-button type="primary" size="small" @click="reset">查询</el-button>
+        <el-button size="small" @click="filters.search = ''; filters.status = ''; reset()">重置</el-button>
+      </div>
 
-    <el-table
-      v-loading="loading"
-      :data="items"
-      size="small"
-      row-class-name="row-clickable"
-      @row-click="(row: AdminUser) => openDrawer(row)"
-    >
-      <template #empty>
-        <el-empty description="暂无用户" :image-size="60" />
-      </template>
-      <el-table-column prop="email" label="邮箱" min-width="200">
-        <template #default="{ row }">
-          <el-link type="primary" :underline="false" @click.stop="openDrawer(row as AdminUser)">
-            {{ row.email }}
-          </el-link>
+      <el-table
+        v-loading="loading"
+        :data="items"
+        size="small"
+        row-class-name="row-clickable"
+        @row-click="(row: AdminUser) => openDrawer(row)"
+      >
+        <template #empty>
+          <el-empty description="暂无用户" :image-size="60">
+            <div class="empty-sub">调整筛选条件后重新查询</div>
+          </el-empty>
         </template>
-      </el-table-column>
-      <el-table-column prop="username" label="用户名" min-width="120">
-        <template #default="{ row }">{{ row.username || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="角色" width="90">
-        <template #default="{ row }">
-          <el-tag v-if="row.role === 'admin'" type="danger" size="small">管理员</el-tag>
-          <span v-else>用户</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.status === 'banned' ? 'danger' : 'success'" size="small">
-            {{ row.status === 'banned' ? '已封禁' : '正常' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="余额（元）" width="110">
-        <template #default="{ row }">{{ fenToYuan(row.balanceCents) }}</template>
-      </el-table-column>
-      <el-table-column label="注册时间" width="170">
-        <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click.stop="openAdjust(row as AdminUser)">调整余额</el-button>
-          <el-button
-            size="small"
-            :type="row.status === 'banned' ? 'success' : 'danger'"
-            plain
-            @click.stop="toggleBan(row as AdminUser)"
-          >
-            {{ row.status === 'banned' ? '解封' : '封禁' }}
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column prop="email" label="邮箱" min-width="200">
+          <template #default="{ row }">
+            <el-link type="primary" :underline="false" @click.stop="openDrawer(row as AdminUser)">
+              {{ row.email }}
+            </el-link>
+          </template>
+        </el-table-column>
+        <el-table-column prop="username" label="用户名" min-width="120">
+          <template #default="{ row }">{{ row.username || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="角色" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.role === 'admin'" type="danger" size="small">管理员</el-tag>
+            <span v-else>用户</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'banned' ? 'danger' : 'success'" size="small">
+              {{ row.status === 'banned' ? '已封禁' : '正常' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="余额（元）" width="110" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.balanceCents) }}</template>
+        </el-table-column>
+        <el-table-column label="注册时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click.stop="openAdjust(row as AdminUser)">调整余额</el-button>
+            <el-button
+              size="small"
+              :type="row.status === 'banned' ? 'success' : 'danger'"
+              plain
+              @click.stop="toggleBan(row as AdminUser)"
+            >
+              {{ row.status === 'banned' ? '解封' : '封禁' }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+    </PageCard>
 
     <!-- 调整余额 -->
     <el-dialog v-model="adjustVisible" title="调整余额" width="440px">

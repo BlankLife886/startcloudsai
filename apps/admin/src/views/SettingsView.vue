@@ -117,76 +117,82 @@ async function testC2a() {
 
 <template>
   <div v-loading="loading" class="page">
-    <el-card shadow="never" style="max-width: 640px">
-      <template #header>任务单价（元 / 张）</template>
-      <el-form label-width="140px">
-        <el-form-item v-for="type in priceTypes" :key="type" :label="taskTypeLabel(type)">
-          <el-input-number
-            v-model="form.taskPricesYuan[type]"
-            :min="0"
-            :precision="2"
-            :step="0.1"
-            style="width: 160px"
-          />
-          <span class="text-muted" style="margin-left: 8px">
-            = {{ yuanToFen(form.taskPricesYuan[type]) }} 分
-          </span>
-        </el-form-item>
-      </el-form>
-    </el-card>
+    <div class="settings-stack">
+      <PageCard title="任务单价（元 / 张）" subtitle="按任务类型计费，保存后立即生效">
+        <el-form label-width="140px">
+          <el-form-item v-for="type in priceTypes" :key="type" :label="taskTypeLabel(type)">
+            <el-input-number
+              v-model="form.taskPricesYuan[type]"
+              :min="0"
+              :precision="2"
+              :step="0.1"
+              style="width: 160px"
+            />
+            <span class="text-muted" style="margin-left: 8px">
+              = {{ yuanToFen(form.taskPricesYuan[type]) }} 分
+            </span>
+          </el-form-item>
+        </el-form>
+      </PageCard>
 
-    <el-card shadow="never" style="max-width: 640px; margin-top: 16px">
-      <template #header>任务模型</template>
-      <el-form label-width="140px">
-        <el-form-item label="默认模型" required>
-          <el-input
-            v-model="form.taskModelDefault"
-            placeholder="如 gpt-image-2"
-            style="width: 260px"
-          />
-          <span class="text-muted" style="margin-left: 8px">未单独配置的类型使用此模型</span>
-        </el-form-item>
-        <el-form-item v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)">
-          <el-input
-            v-model="form.taskModelOverrides[type]"
-            :placeholder="`留空 = 用默认（${form.taskModelDefault || '未设置'}）`"
-            clearable
-            style="width: 260px"
-          />
-        </el-form-item>
-      </el-form>
-    </el-card>
+      <PageCard title="任务模型" subtitle="默认模型兜底，可按类型单独覆盖">
+        <el-form label-width="140px">
+          <el-form-item label="默认模型" required>
+            <el-input
+              v-model="form.taskModelDefault"
+              placeholder="如 gpt-image-2"
+              style="width: 260px"
+            />
+            <span class="text-muted" style="margin-left: 8px">未单独配置的类型使用此模型</span>
+          </el-form-item>
+          <el-form-item v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)">
+            <el-input
+              v-model="form.taskModelOverrides[type]"
+              :placeholder="`留空 = 用默认（${form.taskModelDefault || '未设置'}）`"
+              clearable
+              style="width: 260px"
+            />
+          </el-form-item>
+        </el-form>
+      </PageCard>
 
-    <el-card shadow="never" style="max-width: 640px; margin-top: 16px">
-      <template #header>运营配置</template>
-      <el-form label-width="140px">
-        <el-form-item label="用户并发上限">
-          <el-input-number v-model="form.userMaxRunningTasks" :min="1" :step="1" style="width: 160px" />
-          <span class="text-muted" style="margin-left: 8px">单用户同时运行任务数</span>
-        </el-form-item>
-        <el-form-item label="开放注册">
-          <el-switch v-model="form.registrationEnabled" />
-        </el-form-item>
-        <el-form-item label="注册赠送（元）">
-          <el-input-number v-model="form.signupBonusYuan" :min="0" :precision="2" style="width: 160px" />
-          <span class="text-muted" style="margin-left: 8px">
-            = {{ yuanToFen(form.signupBonusYuan) }} 分
-          </span>
-        </el-form-item>
-      </el-form>
-      <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
-    </el-card>
+      <PageCard title="运营配置" subtitle="注册开关、赠送金额与并发限制">
+        <el-form label-width="140px">
+          <el-form-item label="用户并发上限">
+            <el-input-number v-model="form.userMaxRunningTasks" :min="1" :step="1" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">单用户同时运行任务数</span>
+          </el-form-item>
+          <el-form-item label="开放注册">
+            <el-switch v-model="form.registrationEnabled" />
+          </el-form-item>
+          <el-form-item label="注册赠送（元）">
+            <el-input-number v-model="form.signupBonusYuan" :min="0" :precision="2" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">
+              = {{ yuanToFen(form.signupBonusYuan) }} 分
+            </span>
+          </el-form-item>
+        </el-form>
+        <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
+      </PageCard>
 
-    <el-card shadow="never" style="max-width: 640px; margin-top: 16px">
-      <template #header>chatgpt2api 连通性</template>
-      <el-button :loading="testing" @click="testC2a">测试连通</el-button>
-      <el-alert
-        v-if="testResult"
-        :type="testResult.ok ? 'success' : 'error'"
-        :title="testResult.message"
-        :closable="false"
-        style="margin-top: 12px"
-      />
-    </el-card>
+      <PageCard title="chatgpt2api 连通性" subtitle="检查生成服务是否可用">
+        <el-button :loading="testing" @click="testC2a">测试连通</el-button>
+        <el-alert
+          v-if="testResult"
+          :type="testResult.ok ? 'success' : 'error'"
+          :title="testResult.message"
+          :closable="false"
+          style="margin-top: 12px"
+        />
+      </PageCard>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.settings-stack {
+  display: grid;
+  gap: 16px;
+  max-width: 680px;
+}
+</style>

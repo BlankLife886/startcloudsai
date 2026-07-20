@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, type Component } from 'vue'
+import { Coin, RefreshLeft, TrendCharts, Wallet } from '@element-plus/icons-vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { fenToYuan, formatTime, ledgerKindLabel, shortId } from '@/utils'
@@ -37,13 +38,45 @@ async function loadSummary() {
   }
 }
 
-const totalCards = computed(() => {
+interface FinanceCard {
+  label: string
+  value: string
+  caption: string
+  icon: Component
+  tone: 'accent' | 'success' | 'warning' | 'danger' | 'info' | 'violet'
+}
+
+const totalCards = computed<FinanceCard[]>(() => {
   const t = summary.value?.totals
   return [
-    { label: `近${days.value}日收入（元）`, value: t ? fenToYuan(t.revenueCents) : '-' },
-    { label: `近${days.value}日消耗（元）`, value: t ? fenToYuan(t.spendCents) : '-' },
-    { label: `近${days.value}日入账（元）`, value: t ? fenToYuan(t.grantCents) : '-' },
-    { label: `近${days.value}日退款（元）`, value: t ? fenToYuan(t.refundCents) : '-' },
+    {
+      label: `近${days.value}日收入（元）`,
+      value: t ? fenToYuan(t.revenueCents) : '-',
+      caption: '已支付订单合计',
+      icon: Coin,
+      tone: 'success',
+    },
+    {
+      label: `近${days.value}日消耗（元）`,
+      value: t ? fenToYuan(t.spendCents) : '-',
+      caption: '任务扣费合计',
+      icon: TrendCharts,
+      tone: 'warning',
+    },
+    {
+      label: `近${days.value}日入账（元）`,
+      value: t ? fenToYuan(t.grantCents) : '-',
+      caption: '钱包入账（含赠送）',
+      icon: Wallet,
+      tone: 'violet',
+    },
+    {
+      label: `近${days.value}日退款（元）`,
+      value: t ? fenToYuan(t.refundCents) : '-',
+      caption: '退款与费用返还',
+      icon: RefreshLeft,
+      tone: 'danger',
+    },
   ]
 })
 
@@ -134,26 +167,34 @@ onMounted(() => {
     </div>
 
     <div v-loading="summaryLoading">
-      <div class="cards">
-        <el-card v-for="card in totalCards" :key="card.label" shadow="never">
-          <div class="stat-label">{{ card.label }}</div>
-          <div class="stat-value tnum">{{ card.value }}</div>
-        </el-card>
+      <div class="kpi-grid">
+        <StatCard
+          v-for="card in totalCards"
+          :key="card.label"
+          :label="card.label"
+          :value="card.value"
+          :caption="card.caption"
+          :icon="card.icon"
+          :tone="card.tone"
+        />
       </div>
 
-      <el-card shadow="never" style="margin-bottom: 16px">
-        <template #header>收入 / 消耗趋势（元）</template>
+      <PageCard title="收入 / 消耗趋势（元）" subtitle="订单入账与任务扣费按日对比" style="margin-bottom: 16px">
         <EChart v-if="hasTrend" :option="trendOption" />
-        <el-empty v-else description="暂无数据" :image-size="60" />
-      </el-card>
+        <div v-else class="card-empty" style="min-height: 280px">
+          <el-empty description="暂无数据" :image-size="60">
+            <div class="empty-sub">当前时间范围内没有资金流水</div>
+          </el-empty>
+        </div>
+      </PageCard>
     </div>
 
-    <el-card shadow="never">
-      <template #header>全站账本流水</template>
+    <PageCard title="全站账本流水" subtitle="全站钱包账本明细，可按类型 / 来源 / 用户筛选">
       <div class="filter-bar">
         <el-input
           v-model="filters.kind"
           placeholder="kind（如 admin_adjust）"
+          size="small"
           clearable
           style="width: 180px"
           @keyup.enter="reset"
@@ -162,6 +203,7 @@ onMounted(() => {
         <el-input
           v-model="filters.sourceType"
           placeholder="来源类型（如 order / task）"
+          size="small"
           clearable
           style="width: 180px"
           @keyup.enter="reset"
@@ -170,17 +212,23 @@ onMounted(() => {
         <el-input
           v-model="filters.user"
           placeholder="用户（ID / 邮箱）"
+          size="small"
           clearable
           style="width: 200px"
           @keyup.enter="reset"
           @clear="reset"
         />
-        <el-button type="primary" @click="reset">查询</el-button>
+        <el-button type="primary" size="small" @click="reset">查询</el-button>
+        <el-button size="small" @click="filters.kind = ''; filters.sourceType = ''; filters.user = ''; reset()">
+          重置
+        </el-button>
       </div>
 
       <el-table v-loading="loading" :data="items" size="small">
         <template #empty>
-          <el-empty description="暂无流水" :image-size="60" />
+          <el-empty description="暂无流水" :image-size="60">
+            <div class="empty-sub">调整筛选条件后重新查询</div>
+          </el-empty>
         </template>
         <el-table-column label="时间" width="160">
           <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
@@ -195,14 +243,14 @@ onMounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="变动（元）" width="110" align="right">
+        <el-table-column label="变动（元）" width="110" align="right" class-name="col-num">
           <template #default="{ row }">
             <span :class="row.deltaCents >= 0 ? 'delta-pos' : 'delta-neg'">
               {{ row.deltaCents >= 0 ? '+' : '' }}{{ fenToYuan(row.deltaCents) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="余额（元）" width="110" align="right">
+        <el-table-column label="余额（元）" width="110" align="right" class-name="col-num">
           <template #default="{ row }">{{ fenToYuan(row.balanceAfterCents) }}</template>
         </el-table-column>
         <el-table-column label="来源" width="150">
@@ -219,28 +267,22 @@ onMounted(() => {
       </el-table>
 
       <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
-    </el-card>
+    </PageCard>
   </div>
 </template>
 
 <style scoped>
-.cards {
+.kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
   margin-bottom: 16px;
 }
 
-.stat-value {
-  margin-top: 6px;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.stat-label {
-  color: var(--ink-3);
-  font-size: 13px;
+@media (max-width: 1100px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .delta-pos {

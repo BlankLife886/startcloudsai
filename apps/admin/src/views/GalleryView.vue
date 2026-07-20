@@ -626,7 +626,7 @@ onUnmounted(() => {
   display: grid;
   gap: 12px;
   min-width: 0;
-  padding: 20px 24px 24px;
+  padding: 24px 28px;
 }
 
 .ops-toolbar-panel {

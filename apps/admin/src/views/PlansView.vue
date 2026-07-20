@@ -124,48 +124,51 @@ async function removePlan(plan: AdminPlan) {
 
 <template>
   <div class="page">
-    <div class="page-header">
-      <span class="title">套餐管理</span>
-      <el-button type="primary" @click="openCreate">新建套餐</el-button>
-    </div>
-
-    <el-table v-loading="loading" :data="plans" size="small">
-      <template #empty>
-        <el-empty description="暂无套餐" :image-size="60" />
+    <PageCard title="套餐管理" subtitle="用户端充值套餐的定价与上下架">
+      <template #actions>
+        <el-button type="primary" size="small" @click="openCreate">新建套餐</el-button>
       </template>
-      <el-table-column prop="code" label="Code" width="120" />
-      <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column label="价格（元）" width="100">
-        <template #default="{ row }">{{ fenToYuan(row.priceCents) }}</template>
-      </el-table-column>
-      <el-table-column label="入账（元）" width="100">
-        <template #default="{ row }">{{ fenToYuan(row.grantCents) }}</template>
-      </el-table-column>
-      <el-table-column label="赠送（元）" width="100">
-        <template #default="{ row }">{{ fenToYuan(row.bonusCents) }}</template>
-      </el-table-column>
-      <el-table-column label="卖点" min-width="200">
-        <template #default="{ row }">
-          <el-tag v-for="f in row.features ?? []" :key="f" size="small" style="margin-right: 4px">
-            {{ f }}
-          </el-tag>
+
+      <el-table v-loading="loading" :data="plans" size="small">
+        <template #empty>
+          <el-empty description="暂无套餐" :image-size="60">
+            <div class="empty-sub">点击右上角「新建套餐」创建第一个套餐</div>
+          </el-empty>
         </template>
-      </el-table-column>
-      <el-table-column label="上架" width="80">
-        <template #default="{ row }">
-          <el-tag :type="(row.active ?? true) ? 'success' : 'info'" size="small">
-            {{ (row.active ?? true) ? '上架' : '下架' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="sort" label="排序" width="70" />
-      <el-table-column label="操作" width="140" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="openEdit(row as AdminPlan)">编辑</el-button>
-          <el-button size="small" type="danger" plain @click="removePlan(row as AdminPlan)">下架</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column prop="code" label="Code" width="120" />
+        <el-table-column prop="name" label="名称" min-width="140" />
+        <el-table-column label="价格（元）" width="100" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.priceCents) }}</template>
+        </el-table-column>
+        <el-table-column label="入账（元）" width="100" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.grantCents) }}</template>
+        </el-table-column>
+        <el-table-column label="赠送（元）" width="100" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.bonusCents) }}</template>
+        </el-table-column>
+        <el-table-column label="卖点" min-width="200">
+          <template #default="{ row }">
+            <el-tag v-for="f in row.features ?? []" :key="f" size="small" style="margin-right: 4px">
+              {{ f }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="上架" width="80">
+          <template #default="{ row }">
+            <el-tag :type="(row.active ?? true) ? 'success' : 'info'" size="small">
+              {{ (row.active ?? true) ? '上架' : '下架' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="sort" label="排序" width="70" align="right" class-name="col-num" />
+        <el-table-column label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="openEdit(row as AdminPlan)">编辑</el-button>
+            <el-button size="small" type="danger" plain @click="removePlan(row as AdminPlan)">下架</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </PageCard>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑套餐' : '新建套餐'" width="520px">
       <el-form label-width="100px">

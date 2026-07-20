@@ -195,65 +195,71 @@ onMounted(() => {
   <div class="page">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="公告" name="announcements">
-        <div class="page-header">
-          <span class="title">全站公告</span>
-          <el-button type="primary" @click="openAnnCreate">发布公告</el-button>
-        </div>
-        <el-table v-loading="annLoading" :data="announcements" size="small">
-          <template #empty>
-            <el-empty description="暂无公告" :image-size="60" />
+        <PageCard title="全站公告" subtitle="展示在用户端顶部的运营公告">
+          <template #actions>
+            <el-button type="primary" size="small" @click="openAnnCreate">发布公告</el-button>
           </template>
-          <el-table-column prop="title" label="标题" min-width="180" />
-          <el-table-column prop="body" label="内容" min-width="280" show-overflow-tooltip />
-          <el-table-column label="状态" width="90">
-            <template #default="{ row }">
-              <el-tag :type="(row.active ?? true) ? 'success' : 'info'" size="small">
-                {{ (row.active ?? true) ? '生效中' : '已停用' }}
-              </el-tag>
+          <el-table v-loading="annLoading" :data="announcements" size="small">
+            <template #empty>
+              <el-empty description="暂无公告" :image-size="60">
+                <div class="empty-sub">点击右上角「发布公告」创建第一条公告</div>
+              </el-empty>
             </template>
-          </el-table-column>
-          <el-table-column label="创建时间" width="170">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" @click="openAnnEdit(row as Announcement)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="removeAnn(row as Announcement)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+            <el-table-column prop="title" label="标题" min-width="180" />
+            <el-table-column prop="body" label="内容" min-width="280" show-overflow-tooltip />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="(row.active ?? true) ? 'success' : 'info'" size="small">
+                  {{ (row.active ?? true) ? '生效中' : '已停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="170">
+              <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="openAnnEdit(row as Announcement)">编辑</el-button>
+                <el-button size="small" type="danger" plain @click="removeAnn(row as Announcement)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </PageCard>
       </el-tab-pane>
 
       <el-tab-pane label="更新说明" name="changelog">
-        <div class="page-header">
-          <span class="title">更新说明</span>
-          <el-button type="primary" @click="openLogCreate">新增条目</el-button>
-        </div>
-        <el-table v-loading="logLoading" :data="changelog" size="small">
-          <template #empty>
-            <el-empty description="暂无更新说明" :image-size="60" />
+        <PageCard title="更新说明" subtitle="用户端「更新说明」页的版本条目">
+          <template #actions>
+            <el-button type="primary" size="small" @click="openLogCreate">新增条目</el-button>
           </template>
-          <el-table-column prop="version" label="版本" width="100" />
-          <el-table-column prop="date" label="日期" width="120" />
-          <el-table-column label="类型" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.tag === 'feature' ? 'primary' : 'success'" size="small">
-                {{ TAG_LABELS[row.tag] ?? row.tag }}
-              </el-tag>
+          <el-table v-loading="logLoading" :data="changelog" size="small">
+            <template #empty>
+              <el-empty description="暂无更新说明" :image-size="60">
+                <div class="empty-sub">点击右上角「新增条目」发布第一条更新说明</div>
+              </el-empty>
             </template>
-          </el-table-column>
-          <el-table-column prop="title" label="标题" min-width="160" />
-          <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
-          <el-table-column label="条目数" width="80">
-            <template #default="{ row }">{{ row.items?.length ?? 0 }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" @click="openLogEdit(row as ChangelogEntry)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="removeLog(row as ChangelogEntry)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+            <el-table-column prop="version" label="版本" width="100" />
+            <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column label="类型" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.tag === 'feature' ? 'primary' : 'success'" size="small">
+                  {{ TAG_LABELS[row.tag] ?? row.tag }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="title" label="标题" min-width="160" />
+            <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
+            <el-table-column label="条目数" width="80" align="right" class-name="col-num">
+              <template #default="{ row }">{{ row.items?.length ?? 0 }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="openLogEdit(row as ChangelogEntry)">编辑</el-button>
+                <el-button size="small" type="danger" plain @click="removeLog(row as ChangelogEntry)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </PageCard>
       </el-tab-pane>
     </el-tabs>
 

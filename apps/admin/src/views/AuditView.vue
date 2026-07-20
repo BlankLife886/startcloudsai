@@ -55,72 +55,79 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
 
 <template>
   <div class="page">
-    <div class="filter-bar">
-      <el-input
-        v-model="filters.admin"
-        placeholder="管理员邮箱"
-        clearable
-        style="width: 220px"
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-input
-        v-model="filters.path"
-        placeholder="path 关键字（如 /users）"
-        clearable
-        style="width: 220px"
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-button type="primary" @click="reset">查询</el-button>
-    </div>
+    <PageCard title="审计日志" subtitle="管理员敏感操作的完整记录，展开行可查看 detail">
+      <div class="filter-bar">
+        <el-input
+          v-model="filters.admin"
+          placeholder="管理员邮箱"
+          size="small"
+          clearable
+          style="width: 220px"
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <el-input
+          v-model="filters.path"
+          placeholder="path 关键字（如 /users）"
+          size="small"
+          clearable
+          style="width: 220px"
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <el-button type="primary" size="small" @click="reset">查询</el-button>
+        <el-button size="small" @click="filters.admin = ''; filters.path = ''; reset()">重置</el-button>
+      </div>
 
-    <el-table v-loading="loading" :data="items" size="small" row-key="id">
-      <template #empty>
-        <el-empty description="暂无审计记录" :image-size="60" />
-      </template>
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <div class="expand-body">
-            <template v-if="detailJson(row as AuditLog)">
-              <pre class="detail-pre mono">{{ detailJson(row as AuditLog) }}</pre>
-            </template>
-            <span v-else class="text-muted">无 detail</span>
-          </div>
+      <el-table v-loading="loading" :data="items" size="small" row-key="id">
+        <template #empty>
+          <el-empty description="暂无审计记录" :image-size="60">
+            <div class="empty-sub">调整筛选条件后重新查询</div>
+          </el-empty>
         </template>
-      </el-table-column>
-      <el-table-column label="时间" width="170">
-        <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-      </el-table-column>
-      <el-table-column prop="adminEmail" label="管理员" min-width="180" />
-      <el-table-column label="操作" min-width="140">
-        <template #default="{ row }">{{ row.action || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="请求" min-width="240">
-        <template #default="{ row }">
-          <el-tag :type="METHOD_TAG[row.method] ?? 'info'" size="small">{{ row.method }}</el-tag>
-          <span class="mono" style="margin-left: 6px">{{ row.path }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="目标" width="110">
-        <template #default="{ row }">
-          <span v-if="row.targetId" class="mono" :title="row.targetId">{{ shortId(row.targetId) }}</span>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态码" width="90">
-        <template #default="{ row }">
-          <el-tag :type="statusTag(row.status)" size="small">{{ row.status }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="IP" width="140">
-        <template #default="{ row }">
-          <span class="mono">{{ row.ip || '-' }}</span>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="expand-body">
+              <template v-if="detailJson(row as AuditLog)">
+                <pre class="detail-pre mono">{{ detailJson(row as AuditLog) }}</pre>
+              </template>
+              <span v-else class="text-muted">无 detail</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column prop="adminEmail" label="管理员" min-width="180" />
+        <el-table-column label="操作" min-width="140">
+          <template #default="{ row }">{{ row.action || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="请求" min-width="240">
+          <template #default="{ row }">
+            <el-tag :type="METHOD_TAG[row.method] ?? 'info'" size="small">{{ row.method }}</el-tag>
+            <span class="mono" style="margin-left: 6px">{{ row.path }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="目标" width="110">
+          <template #default="{ row }">
+            <span v-if="row.targetId" class="mono" :title="row.targetId">{{ shortId(row.targetId) }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态码" width="90">
+          <template #default="{ row }">
+            <el-tag :type="statusTag(row.status)" size="small">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="IP" width="140">
+          <template #default="{ row }">
+            <span class="mono">{{ row.ip || '-' }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+    </PageCard>
   </div>
 </template>
 

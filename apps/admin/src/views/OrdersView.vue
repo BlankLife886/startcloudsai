@@ -57,67 +57,73 @@ async function complete(order: AdminOrder) {
 
 <template>
   <div class="page">
-    <div class="filter-bar">
-      <el-select v-model="filters.status" placeholder="订单状态" clearable style="width: 130px" @change="reset">
-        <el-option v-for="(label, value) in ORDER_STATUS_LABELS" :key="value" :label="label" :value="value" />
-      </el-select>
-      <el-input
-        v-model="filters.search"
-        placeholder="搜索用户邮箱 / 订单号"
-        clearable
-        style="width: 220px"
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-button type="primary" @click="reset">查询</el-button>
-    </div>
+    <PageCard title="订单列表" subtitle="全站充值订单，支持人工补单">
+      <div class="filter-bar">
+        <el-select v-model="filters.status" placeholder="订单状态" size="small" clearable style="width: 130px" @change="reset">
+          <el-option v-for="(label, value) in ORDER_STATUS_LABELS" :key="value" :label="label" :value="value" />
+        </el-select>
+        <el-input
+          v-model="filters.search"
+          placeholder="搜索用户邮箱 / 订单号"
+          size="small"
+          clearable
+          style="width: 220px"
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <el-button type="primary" size="small" @click="reset">查询</el-button>
+        <el-button size="small" @click="filters.status = ''; filters.search = ''; reset()">重置</el-button>
+      </div>
 
-    <el-table v-loading="loading" :data="items" size="small">
-      <template #empty>
-        <el-empty description="暂无订单" :image-size="60" />
-      </template>
-      <el-table-column label="订单ID" width="110">
-        <template #default="{ row }">
-          <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
+      <el-table v-loading="loading" :data="items" size="small">
+        <template #empty>
+          <el-empty description="暂无订单" :image-size="60">
+            <div class="empty-sub">调整筛选条件后重新查询</div>
+          </el-empty>
         </template>
-      </el-table-column>
-      <el-table-column label="用户" min-width="180">
-        <template #default="{ row }">{{ orderUser(row as AdminOrder) }}</template>
-      </el-table-column>
-      <el-table-column label="套餐" min-width="140">
-        <template #default="{ row }">{{ orderPlan(row as AdminOrder) }}</template>
-      </el-table-column>
-      <el-table-column label="金额（元）" width="110">
-        <template #default="{ row }">{{ fenToYuan(row.amountCents) }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="100">
-        <template #default="{ row }">
-          <el-tag :type="ORDER_STATUS_TAG[row.status] ?? 'info'" size="small">
-            {{ ORDER_STATUS_LABELS[row.status] ?? row.status }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="创建时间" width="170">
-        <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-      </el-table-column>
-      <el-table-column label="支付时间" width="170">
-        <template #default="{ row }">{{ formatTime(row.paidAt) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="110" fixed="right">
-        <template #default="{ row }">
-          <el-button
-            v-if="canComplete(row as AdminOrder)"
-            size="small"
-            type="warning"
-            plain
-            @click="complete(row as AdminOrder)"
-          >
-            人工补单
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column label="订单ID" width="110">
+          <template #default="{ row }">
+            <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="用户" min-width="180">
+          <template #default="{ row }">{{ orderUser(row as AdminOrder) }}</template>
+        </el-table-column>
+        <el-table-column label="套餐" min-width="140">
+          <template #default="{ row }">{{ orderPlan(row as AdminOrder) }}</template>
+        </el-table-column>
+        <el-table-column label="金额（元）" width="110" align="right" class-name="col-num">
+          <template #default="{ row }">{{ fenToYuan(row.amountCents) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="ORDER_STATUS_TAG[row.status] ?? 'info'" size="small">
+              {{ ORDER_STATUS_LABELS[row.status] ?? row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="支付时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.paidAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="canComplete(row as AdminOrder)"
+              size="small"
+              type="warning"
+              plain
+              @click="complete(row as AdminOrder)"
+            >
+              人工补单
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
 
-    <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+    </PageCard>
   </div>
 </template>

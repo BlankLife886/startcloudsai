@@ -6,7 +6,7 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import * as echarts from 'echarts/core'
 import { LineChart, BarChart, PieChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { ComposeOption } from 'echarts/core'
 import type { LineSeriesOption, BarSeriesOption, PieSeriesOption } from 'echarts/charts'
@@ -14,9 +14,19 @@ import type {
   GridComponentOption,
   TooltipComponentOption,
   LegendComponentOption,
+  TitleComponentOption,
 } from 'echarts/components'
 
-echarts.use([LineChart, BarChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+echarts.use([
+  LineChart,
+  BarChart,
+  PieChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  TitleComponent,
+  CanvasRenderer,
+])
 
 export type EChartOption = ComposeOption<
   | LineSeriesOption
@@ -25,6 +35,7 @@ export type EChartOption = ComposeOption<
   | GridComponentOption
   | TooltipComponentOption
   | LegendComponentOption
+  | TitleComponentOption
 >
 
 const props = defineProps<{
