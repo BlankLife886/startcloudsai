@@ -24,6 +24,8 @@ const defaultCategories = [
 ]
 const categories = ref(defaultCategories)
 const controlledTags = ref([])
+// 分类来自公开分类接口时值为分类 id，提交时作为 categoryId 上报；回退内置分类时不上报
+const serverCategoriesLoaded = ref(false)
 let categoriesLoaded = false
 
 const form = reactive({
@@ -47,12 +49,13 @@ watch(
       const data = await getShareOverview().catch(() => null)
       if (Array.isArray(data?.categories) && data.categories.length) {
         categories.value = data.categories.map((item) => ({ value: item.key, label: item.label }))
+        serverCategoriesLoaded.value = true
       }
       controlledTags.value = Array.isArray(data?.tags) ? data.tags.filter((item) => item.enabled !== false) : []
     }
     form.title = props.title || props.styleLabel || 'AI 创作'
     form.description = ''
-    form.category = props.defaultCategory || 'illustration'
+    form.category = serverCategoriesLoaded.value ? '' : props.defaultCategory || 'illustration'
     const suggested = [props.styleLabel, ...props.suggestedTags]
       .map((label) => controlledTags.value.find((item) => item.label === label)?.label || '')
       .filter(Boolean)
@@ -72,7 +75,12 @@ function submit() {
     title: form.title.trim(),
     description: form.description.trim(),
     tags: form.tags.slice(0, 8),
+    categoryId: serverCategoriesLoaded.value ? form.category : '',
   })
+}
+
+function toggleCategory(value) {
+  form.category = form.category === value ? '' : value
 }
 
 function toggleTag(label) {
@@ -94,7 +102,7 @@ function toggleTag(label) {
           <div class="share-publish-form">
             <label class="is-wide"><span>作品标题</span><input v-model="form.title" maxlength="120" placeholder="给作品起一个容易被发现的名字" /></label>
             <label class="is-wide"><span>作品描述</span><textarea v-model="form.description" rows="3" maxlength="600" placeholder="介绍灵感、画面或创作过程（可选）"></textarea></label>
-            <div class="share-publish-categories is-wide"><span>作品分类</span><div><button v-for="item in categories" :key="item.value" type="button" :class="{ 'is-selected': form.category === item.value }" @click="form.category = item.value">{{ item.label }}</button></div></div>
+            <div class="share-publish-categories is-wide"><span>作品分类（可选）</span><div><button v-for="item in categories" :key="item.value" type="button" :class="{ 'is-selected': form.category === item.value }" @click="toggleCategory(item.value)">{{ item.label }}</button></div></div>
             <div class="share-publish-tags is-wide"><span>作品标签</span><div><button v-for="item in controlledTags" :key="item.key" type="button" :class="{ 'is-selected': form.tags.includes(item.label) }" :disabled="!form.tags.includes(item.label) && form.tags.length >= 8" @click="toggleTag(item.label)"># {{ item.label }}</button><small v-if="!controlledTags.length">后台暂未配置可用标签</small></div></div>
           </div>
           <div class="share-publish-controls">

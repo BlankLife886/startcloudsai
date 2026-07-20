@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { listShareItems } from '@/services/shareGallery'
+import { listGalleryCategories, listShareItems } from '@/services/shareGallery'
 import { useAuthStore } from '@/stores/auth'
 import ShareProgressiveImage from '@/features/share/components/ShareProgressiveImage.vue'
 import { useSharePageMotion } from '@/features/share/composables/useSharePageMotion'
@@ -27,6 +27,13 @@ let listRequestId = 0
 /* 首页精选轮播与统计取自第一页样本，翻页时保持稳定 */
 const spotlightItems = ref([])
 const seenItems = ref(new Map())
+
+/* 精选轮播优先用 ?featured=1 数据，不足 3 件时回退第一页样本 */
+const featuredItems = ref([])
+
+/* 分类筛选：GET /api/gallery/categories，选中后带 ?category= 重新拉列表 */
+const categories = ref([])
+const activeCategory = ref('')
 
 const heroIndex = ref(0)
 const heroPaused = ref(false)
@@ -63,16 +70,27 @@ function normalizeItem(raw) {
     authorName: raw.author?.username || '社区创作者',
     authorAvatar: raw.author?.avatarUrl || '',
     createdAt: raw.createdAt || '',
+    featured: Boolean(raw.featured),
+    categoryName: String(raw.category?.name || '').trim(),
   }
 }
 
-const heroItems = computed(() => spotlightItems.value.slice(0, 5))
+const activeCategoryName = computed(
+  () => categories.value.find((item) => item.id === activeCategory.value)?.name || '',
+)
+
+/* 精选数量达标时轮播/榜单优先展示精选作品 */
+const spotlightSource = computed(() =>
+  featuredItems.value.length >= 3 ? featuredItems.value : spotlightItems.value,
+)
+
+const heroItems = computed(() => spotlightSource.value.slice(0, 5))
 const currentHero = computed(() => {
   const rows = heroItems.value
   return rows[heroIndex.value % Math.max(1, rows.length)] || null
 })
 const hotItems = computed(() => {
-  const pool = spotlightItems.value
+  const pool = spotlightSource.value
   return pool.length > 5 ? pool.slice(5, 10) : pool.slice(0, 5)
 })
 
@@ -128,6 +146,38 @@ function authorInitial(item) {
     .toUpperCase()
 }
 
+/* —— 分类与精选 —— */
+async function loadCategories() {
+  categories.value = await listGalleryCategories().catch(() => [])
+}
+
+async function loadFeatured() {
+  try {
+    const data = await listShareItems({ limit: 10, featured: true })
+    const rows = (Array.isArray(data?.items) ? data.items : [])
+      .map(normalizeItem)
+      .filter(Boolean)
+    // 不足 3 件时不启用精选轮播，沿用第一页样本
+    featuredItems.value = rows.length >= 3 ? rows : []
+    const seen = new Map(seenItems.value)
+    rows.forEach((item) => seen.set(item.id, item))
+    seenItems.value = seen
+  } catch {
+    featuredItems.value = []
+  }
+}
+
+function selectCategory(categoryId) {
+  const normalized = String(categoryId || '')
+  if (activeCategory.value === normalized) return
+  activeCategory.value = normalized
+  page.value = 1
+  hasMore.value = false
+  pageCursors.value = ['']
+  items.value = []
+  void loadItems()
+}
+
 /* —— 列表加载 —— */
 async function loadItems() {
   const requestId = ++listRequestId
@@ -135,7 +185,7 @@ async function loadItems() {
   error.value = ''
   try {
     const cursor = String(pageCursors.value[page.value - 1] || '')
-    const data = await listShareItems({ limit: pageSize, cursor })
+    const data = await listShareItems({ limit: pageSize, cursor, category: activeCategory.value })
     if (requestId !== listRequestId) return
     const rows = (Array.isArray(data?.items) ? data.items : [])
       .map(normalizeItem)
@@ -148,7 +198,7 @@ async function loadItems() {
     const seen = new Map(seenItems.value)
     rows.forEach((item) => seen.set(item.id, item))
     seenItems.value = seen
-    if (page.value === 1 && !spotlightItems.value.length) {
+    if (page.value === 1 && !activeCategory.value && !spotlightItems.value.length) {
       spotlightItems.value = rows.slice(0, 10)
     }
     await nextTick()
@@ -190,9 +240,10 @@ function refreshFeed() {
   page.value = 1
   hasMore.value = false
   pageCursors.value = ['']
-  spotlightItems.value = []
+  if (!activeCategory.value) spotlightItems.value = []
   items.value = []
   void loadItems()
+  void loadFeatured()
 }
 
 function goSubmit() {
@@ -298,9 +349,16 @@ watch(
   () => nextTick(() => openRouteDetailIfReady()),
 )
 
+// 轮播数据源切换（精选到位/刷新）时回到第一张，避免指示点越界
+watch(spotlightSource, () => {
+  heroIndex.value = 0
+})
+
 onMounted(() => {
   document.documentElement.classList.add('share-gallery-page')
   void loadItems()
+  void loadFeatured()
+  void loadCategories()
   startHeroTimer()
   window.addEventListener('keydown', handleKeydown)
   nextTick(() => bindCategoryStuckObserver())
@@ -468,8 +526,21 @@ onBeforeUnmount(() => {
         :class="{ 'is-stuck': categoryStuck }"
         aria-label="画廊导航"
       >
-        <button type="button" class="is-active">
-          <i class="bi bi-clock"></i>最新入馆
+        <button
+          type="button"
+          :class="{ 'is-active': !activeCategory }"
+          @click="selectCategory('')"
+        >
+          <i class="bi bi-grid"></i>全部
+        </button>
+        <button
+          v-for="category in categories"
+          :key="category.id"
+          type="button"
+          :class="{ 'is-active': activeCategory === category.id }"
+          @click="selectCategory(category.id)"
+        >
+          {{ category.name }}
         </button>
         <button type="button" :disabled="loading" @click="refreshFeed">
           <i class="bi bi-arrow-clockwise" :class="{ spin: loading }"></i>刷新馆藏
@@ -481,7 +552,7 @@ onBeforeUnmount(() => {
       <div class="community-main" data-share-motion>
         <div class="community-feed-head">
           <div>
-            <strong>最新入馆</strong>
+            <strong>{{ activeCategoryName || '最新入馆' }}</strong>
             <span>已收录 {{ galleryStats.works }}{{ hasMore ? '+' : '' }} 件</span>
           </div>
           <button type="button" :disabled="loading" @click="loadItems()">
@@ -510,8 +581,13 @@ onBeforeUnmount(() => {
             ><button type="button" @click="loadItems()">重新加载</button>
           </div>
           <div v-else-if="!items.length" class="community-empty">
-            <i class="bi bi-images"></i><strong>画廊还没有作品</strong
-            ><span>去工作台创作，并在个人中心把满意的一幅投稿进来。</span
+            <i class="bi bi-images"></i
+            ><strong>{{ activeCategory ? '该分类暂时没有作品' : '画廊还没有作品' }}</strong
+            ><span>{{
+              activeCategory
+                ? '切换其他分类，或成为这个分类的第一位创作者。'
+                : '去工作台创作，并在个人中心把满意的一幅投稿进来。'
+            }}</span
             ><button type="button" @click="goCreate">开始创作</button>
           </div>
           <div v-else class="community-grid" aria-label="社区作品" :aria-busy="loading">
@@ -523,6 +599,9 @@ onBeforeUnmount(() => {
             >
               <div class="community-card__media">
                 <ShareProgressiveImage :src="item.cover" :alt="item.title" />
+                <span v-if="item.categoryName" class="community-card__category">{{
+                  item.categoryName
+                }}</span>
                 <div class="community-card__overlay"><span>查看</span></div>
               </div>
               <footer>

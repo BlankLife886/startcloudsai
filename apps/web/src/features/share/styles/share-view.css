@@ -995,7 +995,8 @@ html.settings-no-animations [data-share-motion] { opacity: 1; }
 }
 .community-card:hover .community-card__overlay { opacity: 1; }
 .community-card:hover .community-card__overlay span { transform: translateY(0); }
-.community-card__featured {
+.community-card__featured,
+.community-card__category {
   position: absolute;
   z-index: 2;
   top: 10px;
@@ -1010,6 +1011,13 @@ html.settings-no-animations [data-share-motion] { opacity: 1; }
   font-weight: 700;
   letter-spacing: 0.16em;
   box-shadow: none;
+}
+.community-card__category {
+  left: auto;
+  right: 10px;
+  letter-spacing: 0.08em;
+  background: rgba(106, 79, 224, 0.62);
+  border-color: rgba(255, 255, 255, 0.42);
 }
 .community-card footer {
   min-height: 0;

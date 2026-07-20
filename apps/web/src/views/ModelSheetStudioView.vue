@@ -377,7 +377,7 @@ async function loadPromptEntries(reset = false) {
   promptLoading.value = true
   try {
     const nextPage = reset ? 1 : promptPage.value + 1
-    const response = await listPromptLibrary('text-to-image', { pageNumber: nextPage, pageSize: 24 })
+    const response = await listPromptLibrary('model_sheet', { pageNumber: nextPage, pageSize: 24 })
     const incoming = Array.isArray(response?.items) ? response.items : []
     promptItems.value = reset
       ? incoming

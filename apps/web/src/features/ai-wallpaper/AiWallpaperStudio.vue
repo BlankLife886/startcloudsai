@@ -13,6 +13,7 @@ import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
   T2I_OUTPUT_FORMAT_OPTIONS,
+  T2I_PROMPT_LIBRARY,
   T2I_QUALITY_OPTIONS,
   T2I_RESOLUTION_OPTIONS,
 } from './composables/wallpaperStudioConstants'
@@ -885,10 +886,11 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
   if (reset) promptLibraryLoading.value = true
   else promptLibraryLoadingMore.value = true
   try {
-    const response = await listPromptLibrary('text-to-image', {
+    const response = await listPromptLibrary('t2i', {
       pageNumber: nextPage,
       pageSize: 24,
       category: promptCategoryFilter.value,
+      fallbackItems: T2I_PROMPT_LIBRARY,
     })
     const incoming = Array.isArray(response?.items) ? response.items : []
     managedPromptLibrary.value = reset

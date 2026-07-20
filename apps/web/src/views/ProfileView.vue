@@ -11,7 +11,7 @@ import {
   updateProfile,
 } from '@/services/meApi'
 import { deleteTask, listTasks, TASK_TYPE_LABELS } from '@/services/tasksApi'
-import { submitShareItem } from '@/services/shareGallery'
+import { listGalleryCategories, submitShareItem } from '@/services/shareGallery'
 import { formatCents } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 
@@ -50,6 +50,11 @@ const taskTypeFilter = ref('')
 const previewTask = ref(null)
 const deletingTaskId = ref('')
 const submittingTaskId = ref('')
+
+// ---- 投稿到画廊对话框 ----
+const submitDialog = reactive({ open: false, task: null, title: '', categoryId: '' })
+const galleryCategories = ref([])
+let galleryCategoriesRequested = false
 
 // ---- 我的投稿 ----
 const submissions = ref([])
@@ -194,15 +199,44 @@ async function removeTask(task) {
   }
 }
 
-async function submitToGallery(task) {
+function openSubmitDialog(task) {
   if (submittingTaskId.value) return
-  const title = window.prompt('给作品起个标题：', task.prompt?.slice(0, 40) || 'AI 作品')
-  if (title === null) return
+  submitDialog.task = task
+  submitDialog.title = task.prompt?.slice(0, 40) || 'AI 作品'
+  submitDialog.categoryId = ''
+  submitDialog.open = true
+  if (!galleryCategoriesRequested) {
+    galleryCategoriesRequested = true
+    listGalleryCategories()
+      .then((items) => {
+        galleryCategories.value = items
+      })
+      .catch(() => {
+        galleryCategories.value = []
+      })
+  }
+}
+
+function closeSubmitDialog() {
+  if (submittingTaskId.value) return
+  submitDialog.open = false
+  submitDialog.task = null
+}
+
+async function submitToGallery() {
+  const task = submitDialog.task
+  if (!task || submittingTaskId.value) return
   submittingTaskId.value = task.id
   try {
-    await submitShareItem({ taskId: task.id, title: title.trim() || 'AI 作品' })
+    await submitShareItem({
+      taskId: task.id,
+      title: submitDialog.title.trim() || 'AI 作品',
+      categoryId: submitDialog.categoryId,
+    })
     notificationService.success('已提交审核，可在「我的投稿」查看进度')
     submissionsLoaded.value = false
+    submitDialog.open = false
+    submitDialog.task = null
   } catch (error) {
     notificationService.error(error?.message || '投稿失败')
   } finally {
@@ -398,7 +432,7 @@ onMounted(async () => {
               v-if="task.status === 'succeeded' && task.outputUrls?.length"
               type="button"
               :disabled="submittingTaskId === task.id"
-              @click="submitToGallery(task)"
+              @click="openSubmitDialog(task)"
             >
               <i class="bi bi-send"></i> 投稿
             </button>
@@ -526,6 +560,58 @@ onMounted(async () => {
         </form>
       </div>
     </section>
+
+    <!-- 投稿到画廊 -->
+    <Teleport to="body">
+      <div v-if="submitDialog.open" class="work-preview-backdrop" @click.self="closeSubmitDialog">
+        <div class="submit-dialog-panel" role="dialog" aria-modal="true" aria-label="投稿到画廊">
+          <header>
+            <strong>投稿到画廊</strong>
+            <button type="button" aria-label="关闭" @click="closeSubmitDialog">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </header>
+          <img
+            v-if="submitDialog.task?.outputUrls?.length"
+            class="submit-dialog-cover"
+            :src="submitDialog.task.outputUrls[0]"
+            alt=""
+          />
+          <label>
+            <span>作品标题</span>
+            <input
+              v-model="submitDialog.title"
+              maxlength="120"
+              placeholder="给作品起一个容易被发现的名字"
+              @keydown.enter.prevent="submitToGallery"
+            />
+          </label>
+          <label>
+            <span>作品分类（可选）</span>
+            <select v-model="submitDialog.categoryId">
+              <option value="">暂不分类</option>
+              <option v-for="category in galleryCategories" :key="category.id" :value="category.id">
+                {{ category.name }}
+              </option>
+            </select>
+          </label>
+          <footer>
+            <button type="button" class="profile-btn is-ghost" @click="closeSubmitDialog">
+              取消
+            </button>
+            <button
+              type="button"
+              class="profile-btn is-primary"
+              :disabled="Boolean(submittingTaskId) || !submitDialog.title.trim()"
+              @click="submitToGallery"
+            >
+              <i class="bi" :class="submittingTaskId ? 'bi-arrow-repeat spin' : 'bi-send'"></i>
+              {{ submittingTaskId ? '提交中…' : '提交审核' }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 产物大图预览 -->
     <Teleport to="body">
@@ -942,4 +1028,67 @@ onMounted(async () => {
 .work-preview-media { display: grid; gap: 12px; }
 .work-preview-media img { width: 100%; border-radius: 10px; }
 .work-preview-prompt { margin: 14px 0 0; font-size: 13.5px; color: rgba(203, 213, 225, 0.68); }
+
+.submit-dialog-panel {
+  width: min(440px, 96vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #0f172a;
+  padding: 18px 20px 20px;
+}
+
+.submit-dialog-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.submit-dialog-panel header strong { font-size: 16px; }
+
+.submit-dialog-panel header button {
+  border: none;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+}
+
+.submit-dialog-cover {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+.submit-dialog-panel label { display: grid; gap: 6px; }
+.submit-dialog-panel label span { font-size: 12.5px; color: rgba(203, 213, 225, 0.6); }
+
+.submit-dialog-panel input,
+.submit-dialog-panel select {
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(2, 6, 23, 0.5);
+  color: inherit;
+  outline: none;
+}
+
+.submit-dialog-panel input:focus,
+.submit-dialog-panel select:focus { border-color: rgba(165, 180, 252, 0.55); }
+.submit-dialog-panel select option { color: #e2e8f0; background: #0f172a; }
+
+.submit-dialog-panel footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.submit-dialog-panel .spin { animation: submit-dialog-spin 1s linear infinite; }
+
+@keyframes submit-dialog-spin {
+  to { transform: rotate(360deg); }
+}
 </style>
