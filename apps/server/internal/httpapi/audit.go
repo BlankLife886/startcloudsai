@@ -144,13 +144,14 @@ func auditDetail(body []byte) []byte {
 	return out
 }
 
-// sanitizeAuditValue 递归把字段名含 password/secret 的值替换为 "***"。
+// sanitizeAuditValue 递归把字段名含 password/secret/apikey/token 的值替换为 "***"。
 func sanitizeAuditValue(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			lower := strings.ToLower(k)
-			if strings.Contains(lower, "password") || strings.Contains(lower, "secret") {
+			lower := strings.ReplaceAll(strings.ToLower(k), "_", "")
+			if strings.Contains(lower, "password") || strings.Contains(lower, "secret") ||
+				strings.Contains(lower, "apikey") || strings.Contains(lower, "token") {
 				t[k] = "***"
 			} else {
 				t[k] = sanitizeAuditValue(val)

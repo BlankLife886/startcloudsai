@@ -1081,6 +1081,21 @@ var settingsCamel = map[string]string{
 	"submission_enabled":     "submissionEnabled",
 	"auto_approve":           "autoApprove",
 	"daily_limit":            "dailyLimit",
+	"c2a_base_url":           "c2aBaseUrl",
+	"c2a_api_key":            "c2aApiKey",
+	"c2a_timeout_secs":       "c2aTimeoutSecs",
+}
+
+// maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
+func maskSecret(v string) string {
+	if v == "" {
+		return ""
+	}
+	r := []rune(v)
+	if len(r) <= 4 {
+		return "****"
+	}
+	return "****" + string(r[len(r)-4:])
 }
 
 var settingsSnake = func() map[string]string {
@@ -1101,6 +1116,14 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		camel := settingsCamel[k]
 		if camel == "" {
 			camel = k
+		}
+		if k == "c2a_api_key" {
+			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
+			var plain string
+			_ = json.Unmarshal(v, &plain)
+			masked, _ := json.Marshal(maskSecret(plain))
+			out[camel] = json.RawMessage(masked)
+			continue
 		}
 		out[camel] = v
 	}
@@ -1181,6 +1204,35 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "taskModels: 格式不正确", 422))
 				return
 			}
+		case "c2a_base_url":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "c2aBaseUrl: 格式不正确", 422))
+				return
+			}
+			v = strings.TrimRight(strings.TrimSpace(v), "/")
+			if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+				fail(c, apperr.E("validation_error", "c2aBaseUrl: 须以 http:// 或 https:// 开头", 422))
+				return
+			}
+			normalized, _ := json.Marshal(v)
+			raw = normalized
+		case "c2a_api_key":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "c2aApiKey: 格式不正确", 422))
+				return
+			}
+			// 掩码值 = 前端原样回传未修改的 Key，跳过更新
+			if strings.HasPrefix(v, "****") {
+				continue
+			}
+		case "c2a_timeout_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 600 {
+				fail(c, apperr.E("validation_error", "c2aTimeoutSecs: 须在 0-600 之间（0 = 使用默认）", 422))
+				return
+			}
 		}
 		updates[snake] = raw
 	}
@@ -1206,7 +1258,27 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
-	result, err := s.C2A.ListModels(c.Request.Context())
+	// 可选 body：用表单中尚未保存的值测试；缺省用「后台设置 → 环境变量」的生效配置
+	var override struct {
+		BaseURL string `json:"baseUrl"`
+		APIKey  string `json:"apiKey"`
+	}
+	_ = c.ShouldBindJSON(&override)
+
+	ctx := c.Request.Context()
+	resolved, rerr := settings.ResolveC2A(ctx, s.St.Pool, s.Cfg.C2ABaseURL, s.Cfg.C2AAPIKey, s.Cfg.C2ATimeoutSecs)
+	if rerr != nil {
+		fail(c, rerr)
+		return
+	}
+	if v := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); v != "" {
+		resolved.BaseURL = v
+	}
+	if v := strings.TrimSpace(override.APIKey); v != "" && !strings.HasPrefix(v, "****") {
+		resolved.APIKey = v
+	}
+	client := c2a.New(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs)
+	result, err := client.ListModels(ctx)
 	if err != nil {
 		msg := err.Error()
 		r := []rune(msg)

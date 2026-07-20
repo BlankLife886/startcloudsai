@@ -105,16 +105,30 @@ func (w *Worker) loadInputImagesB64(ctx context.Context, inputKeys []string) ([]
 	return images, nil
 }
 
+// upstreamClient 每次任务执行时解析生效配置（后台设置优先，环境变量兜底），
+// 使后台修改 chatgpt2api 地址/Key 即时生效，无需重启 Worker。
+func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
+	resolved, err := settings.ResolveC2A(
+		ctx, w.St.Pool, w.Cfg.C2ABaseURL, w.Cfg.C2AAPIKey, w.Cfg.C2ATimeoutSecs,
+	)
+	if err != nil {
+		// 配置读取失败时退回启动时的客户端，任务仍可执行
+		return w.C2A
+	}
+	return c2a.New(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs)
+}
+
 func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model string) ([]string, error) {
+	client := w.upstreamClient(ctx)
 	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 	if len(task.InputKeys) > 0 {
 		inputs, err := w.loadInputImagesB64(ctx, task.InputKeys)
 		if err != nil {
 			return nil, err
 		}
-		return w.C2A.EditImages(ctx, finalPrompt, model, task.Count, inputs, size)
+		return client.EditImages(ctx, finalPrompt, model, task.Count, inputs, size)
 	}
-	return w.C2A.GenerateImages(ctx, finalPrompt, model, task.Count, size)
+	return client.GenerateImages(ctx, finalPrompt, model, task.Count, size)
 }
 
 func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage string) error {

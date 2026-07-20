@@ -21,6 +21,10 @@ var Defaults = map[string]json.RawMessage{
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),
 	"daily_limit":        json.RawMessage(`0`),
+	// chatgpt2api 上游（空 = 使用环境变量）
+	"c2a_base_url":     json.RawMessage(`""`),
+	"c2a_api_key":      json.RawMessage(`""`),
+	"c2a_timeout_secs": json.RawMessage(`0`),
 }
 
 // AllowedKeys 后台可读写的配置键。
@@ -136,4 +140,49 @@ func TaskModel(ctx context.Context, q store.Q, taskType string) (string, error) 
 		return m, nil
 	}
 	return "gpt-image-2", nil
+}
+
+// C2AConfig chatgpt2api 生效配置。
+type C2AConfig struct {
+	BaseURL     string
+	APIKey      string
+	TimeoutSecs int
+}
+
+// ResolveC2A 返回生效的 chatgpt2api 配置：后台设置非空则覆盖环境变量默认值。
+func ResolveC2A(ctx context.Context, q store.Q, envBaseURL, envAPIKey string, envTimeoutSecs int) (C2AConfig, error) {
+	cfg := C2AConfig{BaseURL: envBaseURL, APIKey: envAPIKey, TimeoutSecs: envTimeoutSecs}
+	readString := func(key string) (string, error) {
+		raw, err := Get(ctx, q, key)
+		if err != nil {
+			return "", err
+		}
+		var v string
+		if raw != nil {
+			_ = json.Unmarshal(raw, &v)
+		}
+		return v, nil
+	}
+	if v, err := readString("c2a_base_url"); err != nil {
+		return cfg, err
+	} else if v != "" {
+		cfg.BaseURL = v
+	}
+	if v, err := readString("c2a_api_key"); err != nil {
+		return cfg, err
+	} else if v != "" {
+		cfg.APIKey = v
+	}
+	rawTimeout, err := Get(ctx, q, "c2a_timeout_secs")
+	if err != nil {
+		return cfg, err
+	}
+	var timeout int
+	if rawTimeout != nil {
+		_ = json.Unmarshal(rawTimeout, &timeout)
+	}
+	if timeout > 0 {
+		cfg.TimeoutSecs = timeout
+	}
+	return cfg, nil
 }

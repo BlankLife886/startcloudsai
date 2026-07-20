@@ -14,6 +14,11 @@ interface AdminSettings {
   signupBonusCents?: number
   /** 任务模型：default 兜底 + 按类型可选覆盖（v2 增补） */
   taskModels?: Record<string, string>
+  /** chatgpt2api 上游（空 = 使用服务器环境变量默认值） */
+  c2aBaseUrl?: string
+  /** 只回传掩码（****xxxx）；提交掩码或空 = 不修改 */
+  c2aApiKey?: string
+  c2aTimeoutSecs?: number
 }
 
 const loading = ref(false)
@@ -30,7 +35,13 @@ const form = reactive({
   taskModelDefault: '',
   /** 各类型模型覆盖，空串 = 使用 default */
   taskModelOverrides: {} as Record<string, string>,
+  c2aBaseUrl: '',
+  c2aApiKey: '',
+  c2aTimeoutSecs: 0,
 })
+
+/** 服务端返回的 Key 掩码（空串表示后台未配置过，走环境变量） */
+const c2aKeyMask = ref('')
 
 async function load() {
   loading.value = true
@@ -49,6 +60,10 @@ async function load() {
     const overrides: Record<string, string> = {}
     for (const type of TASK_TYPES) overrides[type] = models[type] ?? ''
     form.taskModelOverrides = overrides
+    form.c2aBaseUrl = settings.c2aBaseUrl ?? ''
+    form.c2aTimeoutSecs = settings.c2aTimeoutSecs ?? 0
+    c2aKeyMask.value = settings.c2aApiKey ?? ''
+    form.c2aApiKey = ''
   } finally {
     loading.value = false
   }
@@ -69,18 +84,31 @@ async function save() {
     const model = form.taskModelOverrides[type]?.trim()
     if (model) taskModels[type] = model
   }
+  const baseUrl = form.c2aBaseUrl.trim()
+  if (baseUrl && !/^https?:\/\//.test(baseUrl)) {
+    ElMessage.warning('chatgpt2api 地址须以 http:// 或 https:// 开头')
+    return
+  }
   saving.value = true
   try {
-    await request('/api/admin/settings', {
+    const body: Record<string, unknown> = {
+      taskPrices,
+      userMaxRunningTasks: form.userMaxRunningTasks,
+      registrationEnabled: form.registrationEnabled,
+      signupBonusCents: yuanToFen(form.signupBonusYuan),
+      taskModels,
+      c2aBaseUrl: baseUrl,
+      c2aTimeoutSecs: form.c2aTimeoutSecs,
+    }
+    // 只有输入了新 Key 才提交；留空 = 不修改
+    const newKey = form.c2aApiKey.trim()
+    if (newKey) body.c2aApiKey = newKey
+    const settings = await request<AdminSettings>('/api/admin/settings', {
       method: 'PUT',
-      body: {
-        taskPrices,
-        userMaxRunningTasks: form.userMaxRunningTasks,
-        registrationEnabled: form.registrationEnabled,
-        signupBonusCents: yuanToFen(form.signupBonusYuan),
-        taskModels,
-      },
+      body,
     })
+    c2aKeyMask.value = settings.c2aApiKey ?? ''
+    form.c2aApiKey = ''
     ElMessage.success('设置已保存')
   } finally {
     saving.value = false
@@ -95,9 +123,13 @@ async function testC2a() {
   testing.value = true
   testResult.value = null
   try {
+    // 带上表单当前值：可以在保存前先验证新配置
+    const body: Record<string, string> = {}
+    if (form.c2aBaseUrl.trim()) body.baseUrl = form.c2aBaseUrl.trim()
+    if (form.c2aApiKey.trim()) body.apiKey = form.c2aApiKey.trim()
     const data = await request<{ models?: string[]; modelCount?: number }>(
       '/api/admin/settings/test-c2a',
-      { method: 'POST', silent: true },
+      { method: 'POST', body, silent: true },
     )
     const count = data.modelCount ?? data.models?.length
     testResult.value = {
@@ -175,8 +207,35 @@ async function testC2a() {
         <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
       </PageCard>
 
-      <PageCard title="chatgpt2api 连通性" subtitle="检查生成服务是否可用">
-        <el-button :loading="testing" @click="testC2a">测试连通</el-button>
+      <PageCard title="chatgpt2api 服务" subtitle="图片生成上游配置，保存后新任务立即使用新配置，无需重启">
+        <el-form label-width="140px">
+          <el-form-item label="服务地址">
+            <el-input
+              v-model="form.c2aBaseUrl"
+              placeholder="如 http://your-server:3000（留空 = 使用服务器环境变量）"
+              clearable
+              style="width: 380px"
+            />
+          </el-form-item>
+          <el-form-item label="API Key">
+            <el-input
+              v-model="form.c2aApiKey"
+              type="password"
+              show-password
+              :placeholder="c2aKeyMask ? `已配置（${c2aKeyMask}），输入新值可替换` : '留空 = 使用服务器环境变量'"
+              style="width: 380px"
+            />
+          </el-form-item>
+          <el-form-item label="请求超时（秒）">
+            <el-input-number v-model="form.c2aTimeoutSecs" :min="0" :max="600" style="width: 160px" />
+            <span class="text-muted" style="margin-left: 8px">0 = 使用默认（180 秒）</span>
+          </el-form-item>
+        </el-form>
+        <div class="c2a-actions">
+          <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
+          <el-button :loading="testing" @click="testC2a">测试连通</el-button>
+          <span class="text-muted">测试会使用上方表单当前填写的值（未填则用已保存配置）</span>
+        </div>
         <el-alert
           v-if="testResult"
           :type="testResult.ok ? 'success' : 'error'"
@@ -194,5 +253,11 @@ async function testC2a() {
   display: grid;
   gap: 16px;
   max-width: 680px;
+}
+
+.c2a-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 </style>
