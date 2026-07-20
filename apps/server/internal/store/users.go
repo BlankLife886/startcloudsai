@@ -75,6 +75,11 @@ func UpdateUserAdmin(ctx context.Context, q Q, id uuid.UUID, status, role *strin
 	return err
 }
 
+func UpdateUserPassword(ctx context.Context, q Q, id uuid.UUID, passwordHash string) error {
+	_, err := q.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+	return err
+}
+
 func TouchLastLogin(ctx context.Context, q Q, id uuid.UUID, at time.Time) error {
 	_, err := q.Exec(ctx, `UPDATE users SET last_login_at = $2 WHERE id = $1`, id, at)
 	return err

@@ -183,6 +183,26 @@ func TaskDailySince(ctx context.Context, q Q, since time.Time) (map[string]TaskD
 	return out, rows.Err()
 }
 
+// TaskTypeCountsSince 近 N 日全站任务量按类型聚合。
+func TaskTypeCountsSince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
+	rows, err := q.Query(ctx,
+		`SELECT type, count(*) FROM tasks WHERE created_at >= $1 GROUP BY type`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var k string
+		var n int64
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
 // --- 状态机条件更新（返回是否抢到迁移） ---
 
 func ClaimTask(ctx context.Context, q Q, id uuid.UUID, startedAt time.Time) (bool, error) {

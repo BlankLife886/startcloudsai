@@ -159,6 +159,22 @@
 | highlight | boolean DEFAULT false | |
 | sort | int | |
 
+## admin_audit_logs
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| id | uuid PK | |
+| admin_id | uuid FK users | |
+| admin_email | text | 快照 |
+| method / path | text | |
+| action | text | 从 method+path 归纳，如 `plans.create` |
+| target_id | text | 路径中的资源 id（如有） |
+| status | int | 响应状态码 |
+| ip | text | |
+| detail | jsonb | 请求体摘要（敏感字段脱敏） |
+
+索引：`(created_at desc)`、`(admin_id, created_at desc)`。
+
 ## app_settings
 
 | 列 | 类型 | 说明 |

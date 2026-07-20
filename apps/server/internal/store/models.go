@@ -11,6 +11,7 @@ var (
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
 	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
+	LedgerKinds        = []string{"grant", "spend", "freeze", "release", "refund", "admin_adjust"}
 )
 
 func Contains(list []string, v string) bool {
@@ -158,6 +159,20 @@ type ChangelogEntry struct {
 	CreatedAt time.Time
 }
 
+type AdminAuditLog struct {
+	ID         uuid.UUID
+	AdminID    *uuid.UUID
+	AdminEmail string
+	Method     string
+	Path       string
+	Action     string
+	TargetID   *string
+	Status     int
+	IP         *string
+	Detail     []byte // jsonb 原文，可为 nil
+	CreatedAt  time.Time
+}
+
 // CursorKey 实现 (created_at, id) 倒序分页游标。
 func (u *User) CursorKey() (time.Time, uuid.UUID)              { return u.CreatedAt, u.ID }
 func (e *LedgerEntry) CursorKey() (time.Time, uuid.UUID)       { return e.CreatedAt, e.ID }
@@ -165,3 +180,4 @@ func (t *Task) CursorKey() (time.Time, uuid.UUID)              { return t.Create
 func (o *Order) CursorKey() (time.Time, uuid.UUID)             { return o.CreatedAt, o.ID }
 func (s *GallerySubmission) CursorKey() (time.Time, uuid.UUID) { return s.CreatedAt, s.ID }
 func (n *Notification) CursorKey() (time.Time, uuid.UUID)      { return n.CreatedAt, n.ID }
+func (l *AdminAuditLog) CursorKey() (time.Time, uuid.UUID)     { return l.CreatedAt, l.ID }

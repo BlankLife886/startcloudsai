@@ -112,9 +112,25 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 
 // CancelTask 仅 queued 可取消：条件更新 + release，单事务。
 func CancelTask(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) (*store.Task, error) {
+	return cancelTask(ctx, st, &userID, taskID, false)
+}
+
+// AdminCancelTask 管理员取消任意用户的 queued 任务：同用户端语义（放开属主校验），并通知任务属主。
+func AdminCancelTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
+	return cancelTask(ctx, st, nil, taskID, true)
+}
+
+// cancelTask owner 非 nil 时校验属主；notify 为 true 时给任务属主发通知。
+func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, notify bool) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
-		t, err := store.GetUserTask(ctx, tx, userID, taskID)
+		var t *store.Task
+		var err error
+		if owner != nil {
+			t, err = store.GetUserTask(ctx, tx, *owner, taskID)
+		} else {
+			t, err = store.GetTask(ctx, tx, taskID)
+		}
 		if err != nil {
 			return err
 		}
@@ -129,9 +145,40 @@ func CancelTask(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) 
 			return apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
 		}
 		if t.CostCents > 0 {
-			if _, err := wallet.ReleaseForTask(ctx, tx, userID, taskID, t.CostCents, strPtr("任务取消解冻")); err != nil {
+			if _, err := wallet.ReleaseForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("任务取消解冻")); err != nil {
 				return err
 			}
+		}
+		if notify {
+			body := fmt.Sprintf("你的「%s」任务已被管理员取消，费用已退回。", t.Type)
+			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", "任务已取消", &body); err != nil {
+				return err
+			}
+		}
+		task, err = store.GetTask(ctx, tx, taskID)
+		return err
+	})
+	return task, err
+}
+
+// ForceFailTask 管理员把卡死的 running 任务强制置为 failed：
+// 条件 UPDATE running→failed + release（幂等键沿用 task 代数规则）+ 通知，单事务。
+func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
+	var task *store.Task
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		t, err := store.GetTask(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if t == nil {
+			return apperr.E("task_not_found", "任务不存在", 404)
+		}
+		won, err := MarkFailed(ctx, tx, t, "admin_force_failed", "管理员强制失败", "running")
+		if err != nil {
+			return err
+		}
+		if !won {
+			return apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)
 		}
 		task, err = store.GetTask(ctx, tx, taskID)
 		return err

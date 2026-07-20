@@ -12,6 +12,8 @@ interface AdminSettings {
   userMaxRunningTasks?: number
   registrationEnabled?: boolean
   signupBonusCents?: number
+  /** 任务模型：default 兜底 + 按类型可选覆盖（v2 增补） */
+  taskModels?: Record<string, string>
 }
 
 const loading = ref(false)
@@ -25,6 +27,9 @@ const form = reactive({
   userMaxRunningTasks: 3,
   registrationEnabled: true,
   signupBonusYuan: 0,
+  taskModelDefault: '',
+  /** 各类型模型覆盖，空串 = 使用 default */
+  taskModelOverrides: {} as Record<string, string>,
 })
 
 async function load() {
@@ -39,6 +44,11 @@ async function load() {
     form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 3
     form.registrationEnabled = settings.registrationEnabled ?? true
     form.signupBonusYuan = fenToYuanNumber(settings.signupBonusCents)
+    const models = settings.taskModels ?? {}
+    form.taskModelDefault = models.default ?? ''
+    const overrides: Record<string, string> = {}
+    for (const type of TASK_TYPES) overrides[type] = models[type] ?? ''
+    form.taskModelOverrides = overrides
   } finally {
     loading.value = false
   }
@@ -47,8 +57,18 @@ async function load() {
 onMounted(load)
 
 async function save() {
+  if (!form.taskModelDefault.trim()) {
+    ElMessage.warning('请填写默认任务模型')
+    return
+  }
   const taskPrices: Record<string, number> = {}
   for (const type of priceTypes.value) taskPrices[type] = yuanToFen(form.taskPricesYuan[type])
+  // 留空的类型不写入 taskModels，运行时回落到 default
+  const taskModels: Record<string, string> = { default: form.taskModelDefault.trim() }
+  for (const type of TASK_TYPES) {
+    const model = form.taskModelOverrides[type]?.trim()
+    if (model) taskModels[type] = model
+  }
   saving.value = true
   try {
     await request('/api/admin/settings', {
@@ -58,6 +78,7 @@ async function save() {
         userMaxRunningTasks: form.userMaxRunningTasks,
         registrationEnabled: form.registrationEnabled,
         signupBonusCents: yuanToFen(form.signupBonusYuan),
+        taskModels,
       },
     })
     ElMessage.success('设置已保存')
@@ -110,6 +131,28 @@ async function testC2a() {
           <span class="text-muted" style="margin-left: 8px">
             = {{ yuanToFen(form.taskPricesYuan[type]) }} 分
           </span>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <el-card shadow="never" style="max-width: 640px; margin-top: 16px">
+      <template #header>任务模型</template>
+      <el-form label-width="140px">
+        <el-form-item label="默认模型" required>
+          <el-input
+            v-model="form.taskModelDefault"
+            placeholder="如 gpt-image-2"
+            style="width: 260px"
+          />
+          <span class="text-muted" style="margin-left: 8px">未单独配置的类型使用此模型</span>
+        </el-form-item>
+        <el-form-item v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)">
+          <el-input
+            v-model="form.taskModelOverrides[type]"
+            :placeholder="`留空 = 用默认（${form.taskModelDefault || '未设置'}）`"
+            clearable
+            style="width: 260px"
+          />
         </el-form-item>
       </el-form>
     </el-card>

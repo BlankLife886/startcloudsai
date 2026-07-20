@@ -90,3 +90,21 @@ func RevenueSince(ctx context.Context, q Q, since time.Time) (int64, error) {
 		`SELECT COALESCE(SUM(amount_cents), 0) FROM orders WHERE status = 'completed' AND created_at >= $1`, since).Scan(&n)
 	return n, err
 }
+
+// RevenueDailySince 已完成订单按天收入（UTC 日期 → 分，按下单时间）。
+func RevenueDailySince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
+	rows, err := q.Query(ctx,
+		`SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day, COALESCE(SUM(amount_cents), 0)
+		 FROM orders WHERE status = 'completed' AND created_at >= $1 GROUP BY day`, since)
+	if err != nil {
+		return nil, err
+	}
+	return scanDailyCents(rows)
+}
+
+// CountOrdersByUser 用户订单总数。
+func CountOrdersByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id = $1`, userID).Scan(&n)
+	return n, err
+}

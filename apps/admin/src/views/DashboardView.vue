@@ -1,29 +1,40 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { request } from '@/request'
-import { fenToYuan, formatTime } from '@/utils'
+import { fenToYuan, formatTime, taskTypeLabel } from '@/utils'
+import EChart, { type EChartOption } from '@/components/EChart.vue'
 
 interface DailyTaskStat {
   date: string
   total: number
   succeeded: number
-  failed?: number
 }
 
-/**
- * /api/admin/stats 契约未给出具体字段名，按以下形状假定（见 README 契约疑问）：
- * 缺失字段时卡片显示 -，近7日表格为空态。
- */
 interface AdminStats {
   totalUsers?: number
   newUsersToday?: number
   taskDaily?: DailyTaskStat[]
   revenueCents?: number
   walletBalanceCents?: number
+  runningTasks?: number
+  /** 近30日各类型任务数（v2 增补） */
+  typeDistribution?: Record<string, number>
+}
+
+interface DailyAmount {
+  date: string
+  amountCents: number
+}
+
+interface FinanceSummary {
+  revenueDaily?: DailyAmount[]
+  spendDaily?: DailyAmount[]
+  totals?: { revenueCents: number; spendCents: number; grantCents: number; refundCents: number }
 }
 
 const loading = ref(false)
 const stats = ref<AdminStats | null>(null)
+const finance = ref<FinanceSummary | null>(null)
 const loadedAt = ref('')
 
 const taskDaily = computed(() => stats.value?.taskDaily ?? [])
@@ -34,15 +45,12 @@ const tasks7dRate = computed(() =>
   tasks7dTotal.value > 0 ? Math.round((tasks7dSucceeded.value / tasks7dTotal.value) * 100) : 0,
 )
 
-function dayRate(d: DailyTaskStat): number {
-  return d.total > 0 ? Math.round((d.succeeded / d.total) * 100) : 0
-}
-
 const cards = computed(() => {
   const s = stats.value
   return [
     { label: '总用户数', value: s?.totalUsers ?? '-' },
     { label: '今日新增用户', value: s?.newUsersToday ?? '-' },
+    { label: '运行中任务', value: s?.runningTasks ?? '-' },
     { label: '近7日任务量', value: taskDaily.value.length ? tasks7dTotal.value : '-' },
     { label: '近7日成功率', value: taskDaily.value.length ? `${tasks7dRate.value}%` : '-' },
     { label: '近30日收入（元）', value: s?.revenueCents !== undefined ? fenToYuan(s.revenueCents) : '-' },
@@ -50,10 +58,85 @@ const cards = computed(() => {
   ]
 })
 
+/** 近7日任务量 + 成功数折线 */
+const taskLineOption = computed<EChartOption>(() => ({
+  tooltip: { trigger: 'axis' },
+  legend: { data: ['任务量', '成功数'], top: 0 },
+  grid: { left: 40, right: 16, top: 32, bottom: 24 },
+  xAxis: { type: 'category', data: taskDaily.value.map((d) => d.date) },
+  yAxis: { type: 'value', minInterval: 1 },
+  series: [
+    { name: '任务量', type: 'line', smooth: true, data: taskDaily.value.map((d) => d.total) },
+    {
+      name: '成功数',
+      type: 'line',
+      smooth: true,
+      data: taskDaily.value.map((d) => d.succeeded),
+      itemStyle: { color: '#67c23a' },
+      lineStyle: { color: '#67c23a' },
+    },
+  ],
+}))
+
+/** 近30日收入柱状（分 → 元） */
+const revenueBarOption = computed<EChartOption>(() => {
+  const daily = finance.value?.revenueDaily ?? []
+  return {
+    tooltip: {
+      trigger: 'axis',
+      valueFormatter: (value) => `${value ?? 0} 元`,
+    },
+    grid: { left: 48, right: 16, top: 16, bottom: 24 },
+    xAxis: { type: 'category', data: daily.map((d) => d.date) },
+    yAxis: { type: 'value' },
+    series: [
+      {
+        name: '收入（元）',
+        type: 'bar',
+        data: daily.map((d) => d.amountCents / 100),
+        itemStyle: { color: '#409eff' },
+      },
+    ],
+  }
+})
+
+/** 近30日任务类型分布饼图 */
+const typePieOption = computed<EChartOption>(() => {
+  const dist = stats.value?.typeDistribution ?? {}
+  const data = Object.entries(dist).map(([type, count]) => ({ name: taskTypeLabel(type), value: count }))
+  return {
+    tooltip: { trigger: 'item' },
+    legend: { orient: 'vertical', left: 0, top: 'middle' },
+    series: [
+      {
+        name: '任务类型',
+        type: 'pie',
+        radius: ['40%', '68%'],
+        center: ['58%', '50%'],
+        label: { formatter: '{b}: {c}' },
+        data,
+      },
+    ],
+  }
+})
+
+const hasTypeDistribution = computed(
+  () => Object.keys(stats.value?.typeDistribution ?? {}).length > 0,
+)
+
 async function load() {
   loading.value = true
   try {
-    stats.value = await request<AdminStats>('/api/admin/stats')
+    const [statsData, financeData] = await Promise.all([
+      request<AdminStats>('/api/admin/stats'),
+      // 财务汇总接口（v2）不可用时不阻塞仪表盘其余部分
+      request<FinanceSummary>('/api/admin/finance/summary', {
+        query: { days: 30 },
+        silent: true,
+      }).catch(() => null),
+    ])
+    stats.value = statsData
+    finance.value = financeData
     loadedAt.value = formatTime(new Date().toISOString())
   } finally {
     loading.value = false
@@ -78,26 +161,24 @@ onMounted(load)
       </el-card>
     </div>
 
-    <el-card shadow="never">
-      <template #header>近7日任务</template>
-      <el-table :data="taskDaily" size="small">
-        <template #empty>
-          <el-empty description="暂无数据" :image-size="60" />
-        </template>
-        <el-table-column prop="date" label="日期" width="140" />
-        <el-table-column prop="total" label="任务量" width="100" />
-        <el-table-column prop="succeeded" label="成功" width="100" />
-        <el-table-column label="成功率">
-          <template #default="{ row }">
-            <div class="rate-cell">
-              <div class="bar">
-                <div class="bar-inner" :style="{ width: `${dayRate(row as DailyTaskStat)}%` }" />
-              </div>
-              <span class="rate-text">{{ dayRate(row as DailyTaskStat) }}%</span>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+    <div class="charts">
+      <el-card shadow="never">
+        <template #header>近7日任务量 / 成功数</template>
+        <EChart v-if="taskDaily.length" :option="taskLineOption" />
+        <el-empty v-else description="暂无数据" :image-size="60" />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>任务类型分布（近30日）</template>
+        <EChart v-if="hasTypeDistribution" :option="typePieOption" />
+        <el-empty v-else description="暂无数据" :image-size="60" />
+      </el-card>
+    </div>
+
+    <el-card shadow="never" style="margin-top: 12px">
+      <template #header>近30日收入（元）</template>
+      <EChart v-if="finance?.revenueDaily?.length" :option="revenueBarOption" />
+      <el-empty v-else description="暂无数据" :image-size="60" />
     </el-card>
   </div>
 </template>
@@ -105,7 +186,7 @@ onMounted(load)
 <style scoped>
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -121,20 +202,15 @@ onMounted(load)
   font-size: 13px;
 }
 
-.rate-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.charts {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 12px;
 }
 
-.rate-cell .bar {
-  flex: 1;
-  max-width: 240px;
-}
-
-.rate-text {
-  width: 40px;
-  font-size: 12px;
-  color: #606266;
+@media (max-width: 1100px) {
+  .charts {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

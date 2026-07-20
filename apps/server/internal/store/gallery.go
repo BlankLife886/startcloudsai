@@ -59,6 +59,13 @@ func DeleteSubmissionByTaskID(ctx context.Context, q Q, taskID uuid.UUID) error 
 	return err
 }
 
+// CountSubmissionsByUser 用户投稿总数。
+func CountSubmissionsByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM gallery_submissions WHERE user_id = $1`, userID).Scan(&n)
+	return n, err
+}
+
 // ReviewSubmission 更新审核结果。
 func ReviewSubmission(ctx context.Context, q Q, id uuid.UUID, status string, rejectReason *string, reviewedBy uuid.UUID, reviewedAt time.Time) error {
 	_, err := q.Exec(ctx,

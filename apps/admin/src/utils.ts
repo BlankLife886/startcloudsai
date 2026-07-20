@@ -77,6 +77,22 @@ export const ORDER_STATUS_TAG: Record<string, 'info' | 'primary' | 'success' | '
   expired: 'info',
 }
 
+/** 账本 kind → 中文（契约未穷举，未知 kind 原样展示） */
+export const LEDGER_KIND_LABELS: Record<string, string> = {
+  admin_adjust: '人工调整',
+  order_grant: '充值入账',
+  grant: '入账',
+  signup_bonus: '注册赠送',
+  task_spend: '任务消耗',
+  spend: '消耗',
+  task_refund: '任务退款',
+  refund: '退款',
+}
+
+export function ledgerKindLabel(kind: string): string {
+  return LEDGER_KIND_LABELS[kind] ?? kind
+}
+
 export const SUBMISSION_STATUS_LABELS: Record<string, string> = {
   pending: '待审核',
   approved: '已通过',

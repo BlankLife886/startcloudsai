@@ -67,7 +67,7 @@
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/api/uploads` | POST | multipart `file`（≤15MB，png/jpg/webp）→ `{key, url}` |
-| `/api/files/{key:path}` | GET | 302 重定向到 R2 presigned URL（校验属主：uploads/tasks 前缀须为本人，gallery 公开） |
+| `/api/files/{key:path}` | GET | 302 重定向到 R2 presigned URL（校验属主：uploads/tasks 前缀须为本人；gallery 已过审公开；**role=admin 可读任意 key**） |
 
 ## 套餐与订单
 
@@ -119,6 +119,25 @@
 | `/api/admin/changelog` | GET/POST，`/{id}` PATCH/DELETE | 更新说明管理 |
 | `/api/admin/settings` | GET/PUT | 运营配置（任务单价、用户并发上限、注册开关等） |
 | `/api/admin/settings/test-c2a` | POST | 测试 chatgpt2api 连通性（调 `/v1/models`） |
+
+### 后台扩展接口（v2 增补）
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/admin/users/{id}` | GET | 用户详情：`{user, wallet: {balanceCents, frozenCents}, counts: {orders, tasksTotal, tasksSucceeded, tasksFailed, tasksRunning, submissions}}` |
+| `/api/admin/users/{id}/ledger` | GET | 该用户账本流水（cursor 分页，条目同 `/api/me/wallet/ledger`） |
+| `/api/admin/users/{id}/reset-password` | POST | `{newPassword}`（≥8位），同时使该用户所有 session 失效 |
+| `/api/admin/ledger` | GET | 全站账本流水，`?kind=&sourceType=&user=`（user 同任务筛选语义），条目额外带 `userEmail` |
+| `/api/admin/finance/summary` | GET | `?days=30`（7-90）→ `{revenueDaily: [{date, amountCents}], spendDaily: [{date, amountCents}], totals: {revenueCents, spendCents, grantCents, refundCents}}`（spend=任务结算，grant=全部入账，refund=解冻退还） |
+| `/api/admin/tasks/{id}/cancel` | POST | 取消 queued 任务并解冻（同用户端语义，管理员可操作任何人） |
+| `/api/admin/tasks/{id}/force-fail` | POST | 把卡死的 running 任务强制置为 failed 并解冻（errorCode=admin_force_failed） |
+| `/api/admin/audit-logs` | GET | 操作审计分页：`{id, adminEmail, method, path, action, targetId, status, ip, createdAt, detail}`，`?admin=&path=` 筛选 |
+
+**stats 增补字段**：`typeDistribution: {t2i: n, ...}`（近30日各类型任务数）。
+
+**审计规则**：所有 `/api/admin/*` 的非 GET 请求成功与否都写 `admin_audit_logs`（记录 method/path/状态码/目标 id/请求体摘要，密码等敏感字段脱敏为 `***`）。
+
+**settings 增补**：`taskModels` 支持按类型覆盖（`{"default": "gpt-image-2", "coloring": "..."}`），后台设置页可编辑。
 
 ### 后台接口字段补充定义（联调对齐基准）
 

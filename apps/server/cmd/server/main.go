@@ -68,8 +68,12 @@ func runServe(cfg *config.Config) error {
 
 	c2aClient := c2a.New(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs)
 	server := httpapi.New(cfg, st, stg, c2aClient, queue)
-	log.Println("serving on :8000")
-	return server.Router().Run(":8000")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
+	}
+	log.Println("serving on :" + port)
+	return server.Router().Run(":" + port)
 }
 
 func runWorker(cfg *config.Config) error {

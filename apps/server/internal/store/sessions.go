@@ -42,6 +42,15 @@ func DeleteSessionByTokenHash(ctx context.Context, q Q, tokenHash string) error 
 	return err
 }
 
+// DeleteSessionsByUser 使该用户所有 session 失效，返回清理条数。
+func DeleteSessionsByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	tag, err := q.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // DeleteExpiredSessions 返回清理条数。
 func DeleteExpiredSessions(ctx context.Context, q Q, now time.Time) (int64, error) {
 	tag, err := q.Exec(ctx, `DELETE FROM sessions WHERE expires_at < $1`, now)

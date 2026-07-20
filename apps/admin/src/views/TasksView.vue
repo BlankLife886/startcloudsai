@@ -34,7 +34,7 @@ interface AdminTask {
   finishedAt: string | null
 }
 
-const filters = reactive({ type: '', status: '', user: '' })
+const filters = reactive({ type: '', status: '', user: '', errorCode: '' })
 
 const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<AdminTask>(
   (cursor) =>
@@ -43,10 +43,22 @@ const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePage
     }),
 )
 
+/** 错误码为纯前端过滤（仅当前页），后端契约暂无该筛选参数 */
+const displayItems = computed(() => {
+  const keyword = filters.errorCode.trim().toLowerCase()
+  if (!keyword) return items.value
+  return items.value.filter((task) => (task.errorCode ?? '').toLowerCase().includes(keyword))
+})
+
 onMounted(reset)
 
 function taskUser(task: AdminTask): string {
   return task.userEmail ?? task.user?.email ?? task.userId ?? '-'
+}
+
+/** 输入图直接走文件网关（302 到 R2 presigned URL） */
+function fileUrl(key: string): string {
+  return `/api/files/${key}`
 }
 
 // 详情抽屉
@@ -58,12 +70,14 @@ const detailParams = computed(() => {
   return params && Object.keys(params).length > 0 ? JSON.stringify(params, null, 2) : ''
 })
 
+const detailInputUrls = computed(() => (detail.value?.inputKeys ?? []).map(fileUrl))
+
 function openDetail(task: AdminTask) {
   detail.value = task
   detailVisible.value = true
 }
 
-const requeueing = ref(false)
+const acting = ref(false)
 
 async function requeue(task: AdminTask) {
   await ElMessageBox.confirm(
@@ -71,14 +85,53 @@ async function requeue(task: AdminTask) {
     '重新入队',
     { type: 'warning', confirmButtonText: '重新入队', cancelButtonText: '取消' },
   )
-  requeueing.value = true
+  acting.value = true
   try {
     await request(`/api/admin/tasks/${task.id}/requeue`, { method: 'POST' })
     ElMessage.success('已重新入队')
     detailVisible.value = false
     refresh()
   } finally {
-    requeueing.value = false
+    acting.value = false
+  }
+}
+
+async function cancel(task: AdminTask) {
+  await ElMessageBox.confirm(
+    `确认取消排队中任务 ${task.id}？取消后将解冻退还该任务费用。`,
+    '取消任务',
+    { type: 'warning', confirmButtonText: '取消任务', cancelButtonText: '返回' },
+  )
+  acting.value = true
+  try {
+    await request(`/api/admin/tasks/${task.id}/cancel`, { method: 'POST' })
+    ElMessage.success('已取消并解冻费用')
+    detailVisible.value = false
+    refresh()
+  } finally {
+    acting.value = false
+  }
+}
+
+async function forceFail(task: AdminTask) {
+  await ElMessageBox.confirm(
+    `确认将运行中任务 ${task.id} 强制置为失败？将解冻并退还该任务冻结的费用（errorCode=admin_force_failed）。仅用于卡死任务，若任务仍在正常执行请勿操作。`,
+    '强制失败',
+    {
+      type: 'error',
+      confirmButtonText: '强制失败',
+      confirmButtonClass: 'el-button--danger',
+      cancelButtonText: '取消',
+    },
+  )
+  acting.value = true
+  try {
+    await request(`/api/admin/tasks/${task.id}/force-fail`, { method: 'POST' })
+    ElMessage.success('已强制失败并解冻退款')
+    detailVisible.value = false
+    refresh()
+  } finally {
+    acting.value = false
   }
 }
 </script>
@@ -100,10 +153,16 @@ async function requeue(task: AdminTask) {
         @keyup.enter="reset"
         @clear="reset"
       />
+      <el-input
+        v-model="filters.errorCode"
+        placeholder="错误码（当前页过滤）"
+        clearable
+        style="width: 180px"
+      />
       <el-button type="primary" @click="reset">查询</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="items" size="small">
+    <el-table v-loading="loading" :data="displayItems" size="small">
       <template #empty>
         <el-empty description="暂无任务" :image-size="60" />
       </template>
@@ -122,8 +181,14 @@ async function requeue(task: AdminTask) {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="用户" min-width="180">
+      <el-table-column label="用户" min-width="160">
         <template #default="{ row }">{{ taskUser(row as AdminTask) }}</template>
+      </el-table-column>
+      <el-table-column label="错误码" width="130">
+        <template #default="{ row }">
+          <span v-if="row.errorCode" class="mono" :title="row.errorMessage ?? ''">{{ row.errorCode }}</span>
+          <span v-else>-</span>
+        </template>
       </el-table-column>
       <el-table-column prop="count" label="张数" width="70" />
       <el-table-column label="费用（元）" width="100">
@@ -132,7 +197,7 @@ async function requeue(task: AdminTask) {
       <el-table-column label="创建时间" width="170">
         <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openDetail(row as AdminTask)">详情</el-button>
           <el-button
@@ -143,6 +208,24 @@ async function requeue(task: AdminTask) {
             @click="requeue(row as AdminTask)"
           >
             重新入队
+          </el-button>
+          <el-button
+            v-if="row.status === 'queued'"
+            size="small"
+            type="warning"
+            plain
+            @click="cancel(row as AdminTask)"
+          >
+            取消
+          </el-button>
+          <el-button
+            v-if="row.status === 'running'"
+            size="small"
+            type="danger"
+            plain
+            @click="forceFail(row as AdminTask)"
+          >
+            强制失败
           </el-button>
         </template>
       </el-table-column>
@@ -183,6 +266,22 @@ async function requeue(task: AdminTask) {
             :description="detail.errorMessage ?? ''" />
         </template>
 
+        <template v-if="detailInputUrls.length">
+          <h4>输入图（{{ detailInputUrls.length }}）</h4>
+          <div class="thumbs">
+            <el-image
+              v-for="(url, i) in detailInputUrls"
+              :key="url"
+              :src="url"
+              :preview-src-list="detailInputUrls"
+              :initial-index="i"
+              fit="cover"
+              class="thumb"
+              preview-teleported
+            />
+          </div>
+        </template>
+
         <template v-if="detail.outputUrls?.length">
           <h4>产物（{{ detail.outputUrls.length }}）</h4>
           <div class="thumbs">
@@ -199,8 +298,31 @@ async function requeue(task: AdminTask) {
           </div>
         </template>
 
-        <div v-if="detail.status === 'failed'" style="margin-top: 16px">
-          <el-button type="warning" :loading="requeueing" @click="requeue(detail)">重新入队</el-button>
+        <div class="detail-actions">
+          <el-button
+            v-if="detail.status === 'failed'"
+            type="warning"
+            :loading="acting"
+            @click="requeue(detail)"
+          >
+            重新入队
+          </el-button>
+          <el-button
+            v-if="detail.status === 'queued'"
+            type="warning"
+            :loading="acting"
+            @click="cancel(detail)"
+          >
+            取消任务
+          </el-button>
+          <el-button
+            v-if="detail.status === 'running'"
+            type="danger"
+            :loading="acting"
+            @click="forceFail(detail)"
+          >
+            强制失败
+          </el-button>
         </div>
       </template>
     </el-drawer>
@@ -233,5 +355,11 @@ h4 {
   aspect-ratio: 1;
   border-radius: 4px;
   background: #f0f2f5;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
 }
 </style>

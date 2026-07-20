@@ -65,6 +65,15 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	byType, err := store.TaskTypeCountsSince(ctx, s.St.Pool, monthAgo)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	typeDistribution := gin.H{}
+	for _, t := range store.TaskTypes {
+		typeDistribution[t] = byType[t]
+	}
 	ok(c, gin.H{
 		"totalUsers":         totalUsers,
 		"newUsersToday":      newUsersToday,
@@ -72,6 +81,7 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		"taskDaily":          taskDaily,
 		"revenueCents":       revenue,
 		"walletBalanceCents": balanceTotal,
+		"typeDistribution":   typeDistribution,
 	})
 }
 

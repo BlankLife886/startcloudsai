@@ -5,10 +5,12 @@ import {
   Odometer,
   User,
   Tickets,
+  Coin,
   Goods,
   Monitor,
   Picture,
   Document,
+  List,
   Setting,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -21,10 +23,12 @@ const menus = [
   { path: '/', label: '仪表盘', icon: Odometer },
   { path: '/users', label: '用户管理', icon: User },
   { path: '/orders', label: '订单', icon: Tickets },
+  { path: '/finance', label: '财务', icon: Coin },
   { path: '/plans', label: '套餐', icon: Goods },
   { path: '/tasks', label: '任务监控', icon: Monitor },
   { path: '/gallery', label: '画廊审核', icon: Picture },
   { path: '/content', label: '内容管理', icon: Document },
+  { path: '/audit', label: '审计日志', icon: List },
   { path: '/settings', label: '系统设置', icon: Setting },
 ]
 

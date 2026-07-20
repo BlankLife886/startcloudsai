@@ -70,6 +70,7 @@ func (s *Server) requireAdmin(c *gin.Context) (*store.User, error) {
 }
 
 // adminOnly 包装后台 handler：先校验管理员，再执行。
+// 校验通过的管理员写入 context，供审计中间件归属操作者。
 func (s *Server) adminOnly(h func(c *gin.Context, admin *store.User)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		admin, err := s.requireAdmin(c)
@@ -77,6 +78,7 @@ func (s *Server) adminOnly(h func(c *gin.Context, admin *store.User)) gin.Handle
 			fail(c, err)
 			return
 		}
+		c.Set(ctxAdminUserKey, admin)
 		h(c, admin)
 	}
 }
