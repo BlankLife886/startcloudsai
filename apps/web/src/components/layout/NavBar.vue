@@ -71,27 +71,13 @@ function bindChromeResizeObservers() {
 
 const homeLink = { to: '/', label: '首页', icon: 'bi-house-door-fill' }
 
-const ziweiLink = { to: '/ziwei', label: '紫微斗数', icon: 'bi-stars' }
-
 const shareLink = { to: '/share', label: '画廊', icon: 'bi-images' }
 
 const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-currency-dollar' }
 
 const toolLinks = [
-  ziweiLink,
-  { to: '/trends', label: '时事热点', icon: 'bi-radar' },
-  { to: '/bookmarks', label: '书签管理', icon: 'bi-bookmarks-fill' },
   { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
   { to: '/updates', label: '更新说明', icon: 'bi-megaphone-fill' },
-]
-
-const wallpaperLinks = [
-  { to: '/search', label: '浏览壁纸', icon: 'bi-grid-3x3-gap-fill' },
-  { to: '/downloads', label: '下载管理', icon: 'bi-download', feature: 'download' },
-  { to: '/favorites', label: '我的收藏', icon: 'bi-heart-fill', feature: 'favorite' },
-  { to: '/users', label: '关注作者', icon: 'bi-people-fill' },
-  { to: '/tags', label: '收藏标签', icon: 'bi-tags-fill' },
-  { to: '/history', label: '浏览历史', icon: 'bi-clock-history', feature: 'history' },
 ]
 
 const aiLinks = [
@@ -107,7 +93,6 @@ const aiLinks = [
     icon: 'bi-brush-fill',
     feature: 'ai.illustrationColoring',
   },
-  { to: '/ai-image-to-3d', label: '图转模型', icon: 'bi-box', feature: 'ai.imageToModel' },
   { to: '/design-workshop', label: 'UI 设计稿', icon: 'bi-bezier2', feature: 'ai.uiDesign' },
   {
     to: '/model-sheet',
@@ -121,38 +106,21 @@ const aiLinks = [
 
 const routePrefetchers = {
   '/updates': () => import('@/views/UpdatesView.vue'),
-  '/search': () => import('@/views/SearchView.vue'),
-  '/downloads': () => import('@/views/DownloadsView.vue'),
-  '/favorites': () => import('@/views/FavoritesView.vue'),
-  '/users': () => import('@/views/UsersView.vue'),
-  '/tags': () => import('@/views/TagsView.vue'),
-  '/history': () => import('@/views/HistoryView.vue'),
   '/share': () => import('@/views/ShareView.vue'),
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
   '/ai-illustration-coloring': () => import('@/views/AiIllustrationColoringView.vue'),
-  '/ai-image-to-3d': () => import('@/views/AiImageTo3DView.vue'),
   '/ai-puzzle': () => import('@/views/AiPuzzleView.vue'),
   '/design-workshop': () => import('@/views/DesignWorkshopView.vue'),
   '/model-sheet': () => import('@/views/ModelSheetStudioView.vue'),
   '/game-art': () => import('@/views/GameArtStudioView.vue'),
-  '/ziwei': () => import('@/views/ZiweiReportView.vue'),
   '/pricing': () => import('@/views/PricingView.vue'),
-  '/bookmarks': () => import('@/views/BookmarksView.vue'),
-  '/trends': () => import('@/views/TrendsView.vue'),
   '/app-space': () => import('@/views/AppSpaceView.vue'),
   '/auth': () => import('@/views/auth/AuthAccountView.vue'),
   '/profile': () => import('@/views/ProfileView.vue'),
-  '/settings': () => import('@/views/SettingsView.vue'),
 }
 const prefetchedRoutes = new Set()
 
 const dropdownGroupDefs = {
-  wallpaper: {
-    name: 'wallpaper',
-    label: '壁纸',
-    icon: 'bi-grid-3x3-gap-fill',
-    links: wallpaperLinks,
-  },
   ai: {
     name: 'ai',
     label: 'AI',
@@ -167,26 +135,18 @@ const dropdownGroupDefs = {
   },
 }
 
-/** 顶栏顺序：首页 → AI 各工作台（一级平铺） → 价格 → 画廊 → 壁纸 → 工具（含紫微斗数） */
+/** 顶栏顺序：首页 → AI 各工作台（一级平铺） → 价格 → 画廊 → 工具 */
 const NAV_ORDER = [
   { type: 'home' },
   ...aiLinks.map((link) => ({ type: 'link', link })),
   { type: 'link', link: pricingLink },
   { type: 'link', link: shareLink },
-  { type: 'group', key: 'wallpaper' },
   { type: 'group', key: 'tools' },
 ]
 
-/** 移动端底部 Tab：首页 / 壁纸 / AI / 价格 / 我的 */
+/** 移动端底部 Tab：首页 / 画廊 / AI / 价格 / 我的 */
 const BOTTOM_TAB_DEFS = [
   { id: 'home', label: '首页', icon: 'bi-house-door-fill', kind: 'link', link: homeLink },
-  {
-    id: 'wallpaper',
-    label: '壁纸',
-    icon: 'bi-grid-3x3-gap-fill',
-    kind: 'group',
-    groupKey: 'wallpaper',
-  },
   { id: 'share', label: '画廊', icon: 'bi-images', kind: 'link', link: shareLink },
   { id: 'ai', label: 'AI', icon: 'bi-cpu-fill', kind: 'group', groupKey: 'ai' },
   { id: 'pricing', label: '价格', icon: 'bi-currency-dollar', kind: 'link', link: pricingLink },
@@ -224,7 +184,6 @@ const navItems = computed(() => {
 })
 
 const mobileSheetTitle = computed(() => {
-  if (mobileSheetKind.value === 'wallpaper') return '壁纸'
   if (mobileSheetKind.value === 'ai') return 'AI 功能'
   if (mobileSheetKind.value === 'mine') return '我的'
   return ''
@@ -241,10 +200,6 @@ const mobileSheetLinks = computed(() => {
     icon: link.icon,
     disabled: isLinkDisabled(link),
   })
-
-  if (kind === 'wallpaper') {
-    return wallpaperLinks.filter((link) => isLinkVisible(link)).map(toCell)
-  }
 
   if (kind === 'ai') {
     return aiLinks.filter((link) => isLinkVisible(link)).map(toCell)
@@ -272,15 +227,6 @@ const mobileSheetLinks = computed(() => {
       })
     }
     toolLinks.filter((link) => isLinkVisible(link)).forEach((link) => cells.push(toCell(link)))
-    if (settingsVisible.value) {
-      cells.push({
-        id: 'settings',
-        to: '/settings',
-        label: '设置',
-        icon: 'bi-gear',
-        disabled: settingsDisabled.value,
-      })
-    }
 
     return cells
   }
@@ -302,11 +248,9 @@ const bottomTabs = computed(() =>
 )
 
 const profileVisible = computed(() => isLinkVisible({ to: '/profile' }))
-const settingsVisible = computed(() => isLinkVisible({ to: '/settings' }))
 const authVisible = computed(() => isLinkVisible({ to: '/auth' }))
 const authDisabled = computed(() => isLinkDisabled({ to: '/auth' }))
 const profileDisabled = computed(() => isLinkDisabled({ to: '/profile' }))
-const settingsDisabled = computed(() => isLinkDisabled({ to: '/settings' }))
 const loginRoute = computed(() => ({
   name: 'auth',
   query: {
@@ -398,10 +342,9 @@ function openMobileSheet(kind) {
   mobileSheetKind.value = kind
   menuOpen.value = true
 
-  if (kind === 'wallpaper') prefetchLinks(wallpaperLinks)
   if (kind === 'ai') prefetchLinks(aiLinks)
   if (kind === 'mine') {
-    prefetchLinks([...toolLinks, { to: '/auth' }, { to: '/profile' }, { to: '/settings' }])
+    prefetchLinks([...toolLinks, { to: '/auth' }, { to: '/profile' }])
   }
 
   syncBodyScrollLock()
@@ -410,10 +353,9 @@ function openMobileSheet(kind) {
 function isBottomTabActive(tab) {
   if (tab.kind === 'mine') {
     if (mobileSheetKind.value === 'mine') return true
-    if (isRouteActive('/settings') || isRouteActive('/profile') || route.path.startsWith('/auth')) {
+    if (isRouteActive('/profile') || route.path.startsWith('/auth')) {
       return true
     }
-    if (isRouteActive('/ziwei')) return true
     return toolLinks.some((link) => isLinkVisible(link) && isRouteActive(link.to))
   }
 
@@ -539,7 +481,6 @@ function normalizePrefetchPath(to) {
   if (to.path) return String(to.path).split('?')[0].split('#')[0]
   if (to.name === 'auth') return '/auth'
   if (to.name === 'profile') return '/profile'
-  if (to.name === 'settings') return '/settings'
   return ''
 }
 
@@ -867,22 +808,6 @@ onBeforeUnmount(() => {
               </router-link>
             </template>
 
-            <router-link
-              v-if="settingsVisible"
-              to="/settings"
-              class="tool-icon"
-              :class="{
-                disabled: settingsDisabled,
-                active: isRouteActive('/settings'),
-              }"
-              :aria-disabled="settingsDisabled"
-              :title="settingsDisabled ? linkDisabledReason({ to: '/settings' }) : '设置'"
-              @click="settingsDisabled ? handleDisabledLinkClick($event) : closeMenu()"
-              @focus="prefetchRoute('/settings')"
-              @pointerenter="prefetchRoute('/settings')"
-            >
-              <i class="bi bi-gear" aria-hidden="true"></i>
-            </router-link>
           </div>
         </div>
       </div>

@@ -1,71 +1,57 @@
-# Walleven Web
+# StarCloudIsAI Web（星空云绘用户端）
 
-`apps/web` 是 Walleven 用户端，基于 Vue 3 + Vite + Pinia。它面向普通用户提供 Wallhaven 壁纸搜索、预览、收藏、下载、设置、AI 壁纸处理和平台 Key 使用入口。
+`apps/web` 是星空云绘用户端，基于 Vue 3 + Vite + Pinia。面向普通用户提供 AI 图像创作（文生图、插画染色、UI 设计稿、超高清模型图、游戏设计、AI 拼图）、共享画廊、钱包充值与个人中心。
+
+后端为 `apps/server`（FastAPI），接口契约见 `docs/API_CONTRACT.md`。所有请求统一走 `/api` 前缀，鉴权使用 HttpOnly Cookie。
 
 ## 本地开发
 
 ```bash
-pnpm --filter @walleven/web dev
+npm install
+npm run dev        # http://localhost:3102，/api 代理到 http://localhost:8000
 ```
 
-默认地址：
+如需指向其他后端，设置 `VITE_API_PROXY_TARGET`。
 
-```text
-http://localhost:3002
-```
-
-构建：
+构建与检查：
 
 ```bash
-pnpm --filter @walleven/web build
-pnpm --filter @walleven/web build:pages
+npm run build           # 产物输出到 dist/
+npm run check:imports   # 静态检查是否存在悬空 import
+npm run lint
 ```
 
-E2E：
+## Docker 部署
 
 ```bash
-pnpm --filter @walleven/web test:e2e
+docker build -t starcloudsai-web .
+docker run -p 8080:80 starcloudsai-web
 ```
+
+镜像用 node:22-alpine 构建，nginx:alpine 托管 `dist`（SPA fallback 到 index.html，配置见 `nginx.conf`）。生产环境由外层 gateway 将 `/api` 反代到 FastAPI。
 
 ## 主要页面
 
-- `/`：首页，展示热门/最新/推荐入口。
-- `/search`：Wallhaven 搜索工作台。
-- `/wallpaper/:id`：壁纸详情。
-- `/favorites`、`/history`、`/downloads`：收藏、浏览历史和下载记录。
-- `/settings`：主题、搜索、下载、性能、AI、云同步和 secrets 设置。
-- `/profile`：用户中心（需登录）。
-- `/auth/login`、`/auth/register`、`/auth/forgot-password`、`/auth/reset-password`：独立登录注册与找回密码流程。
-- `/pricing`：套餐、模型价格和用户 OpenAI-compatible Key 入口。
-- `/ai-wallpaper`：AI 壁纸工作台。
-- `/ai-image-to-3d`：图转模型入口。
-- `/ai-puzzle`：本地拼图/拼贴工具。
-- `/users`、`/tags`、`/updates`、`/app-space`：作者、标签、更新说明和应用空间。
+- `/`：首页（AI 创作入口 + 画廊精选）。
+- `/text-to-image`：文生图工作台。
+- `/ai-illustration-coloring`：插画染色。
+- `/design-workshop`：UI 设计稿。
+- `/model-sheet`：超高清模型图。
+- `/game-art`：游戏设计素材。
+- `/ai-puzzle`：AI 拼图。
+- `/share`：共享画廊（公开已过审作品）。
+- `/pricing`：钱包余额、创作单价、充值套餐、订单与账本。
+- `/profile`：个人中心（数据总览、我的作品、我的投稿、通知、账号设置，需登录）。
+- `/app-space`、`/updates`：应用空间与更新说明。
+- `/auth`：登录 / 注册（邮箱 + 密码）。
 
-## 核心模块
+## 服务层结构
 
-- `src/services/api.js`：统一 API client、CSRF、用户端请求。
-- `src/services/runtimeConfig.js`：后台 runtime config 和客户端策略。
-- `src/stores/*`：认证、设置、收藏、历史、下载、运行时配置。
-- `src/features/search/*`：搜索请求、URL 状态、批量动作、预览交互。
-- `src/components/wallpaper/fullscreen-preview/*`：全屏预览、canvas-safe 图片加载、滤镜、裁切、AI、样机、下载。
-- `src/features/ai-wallpaper/*`：AI 壁纸页面状态和生成工作流。
-- `src/features/ai-puzzle/*`：本地拼图编辑器和 PNG 导出。
-
-## API 和环境
-
-开发时 Vite proxy 会把 `/api/*` 转发到本地 Worker。生产构建通常使用：
-
-```bash
-VITE_API_BASE_URL=/api
-VITE_BROWSER_DOWNLOADS=true
-```
-
-AI 临时上传默认走 `${VITE_API_BASE_URL}/ai-temp-upload`，也可以用 `VITE_AI_TEMP_UPLOAD_URL` 覆盖。
-
-## 数据边界
-
-- 登录用户的 settings/favorites/history 会同步到后端。
-- Wallhaven API Key、AI provider key 等敏感设置通过 `/api/user/secrets/*` 进入后端加密存储。
-- 游客状态会限制 NSFW、Wallhaven API Key、云同步和部分 AI 能力。
-- 下载由浏览器下载管理器处理，页面不能直接写入用户指定本地目录。
+- `src/services/apiClient.js`：统一 fetch 封装（`{success,data}` 解析、带 code 的 ApiError、AbortSignal）。
+- `src/services/tasksApi.js`：任务契约（createTask / getTask / listTasks / cancelTask / deleteTask / uploadFile / waitForTask，2s 轮询）。
+- `src/services/aiWallpaper.js`：旧「job」链路 → 新「task」契约的适配层，三套工作台组合式函数经由它访问网络。
+- `src/services/auth.js` + `src/stores/auth.js`：认证（/api/auth/*）。
+- `src/services/meApi.js`：个人中心（资料 / 总览 / 钱包 / 账本 / 通知 / 我的投稿）。
+- `src/services/billingApi.js`：套餐与订单。
+- `src/services/metaApi.js`：单价 / 更新说明 / 公告。
+- `src/services/shareGallery.js`：画廊列表与投稿。

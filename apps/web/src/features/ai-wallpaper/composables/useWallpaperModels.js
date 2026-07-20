@@ -473,7 +473,8 @@ export function useWallpaperModels(deps = {}) {
     [activePublicModelOptions, outputType],
     ([models]) => {
       if (!models.some((model) => model.id === selectedPublicModel.value)) {
-        selectedPublicModel.value = ''
+        // 自动选中第一个可用模型（新后端只有「标准模型」占位）
+        selectedPublicModel.value = models[0]?.id || ''
       }
     },
     { immediate: true },

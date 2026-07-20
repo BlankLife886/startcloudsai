@@ -14,12 +14,9 @@ import { resolveAiFeatureRuntimeConfig } from '@/config/aiFeatureSettings'
 import notificationService from '@/services/notification'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from '@/services/aiWallpaperState'
-import { useFavoritesStore } from '@/stores/favorites'
-import { useHistoryStore } from '@/stores/history'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
-import { useUserStore } from '@/stores/user'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -29,10 +26,11 @@ import { useRouter } from 'vue-router'
 export function useAiWallpaperStudioState() {
   const settingsStore = useSettingsStore()
   const runtimeConfigStore = useRuntimeConfigStore()
-  const favoritesStore = useFavoritesStore()
-  const historyStore = useHistoryStore()
+  // Wallhaven 收藏/历史/关注作者来源已下线；inputs 组合式函数对空 store 优雅降级。
+  const favoritesStore = null
+  const historyStore = null
   const authStore = useAuthStore()
-  const userStore = useUserStore()
+  const userStore = null
   const router = useRouter()
   const { isMobile } = useStudioLayout()
 
@@ -394,13 +392,7 @@ export function useAiWallpaperStudioState() {
       models.studioGatewayBaseUrl.value = config.baseUrl
       executionMode.value = 'server'
       privacyMode.value = settingsStore.getSetting('ai_enable_privacy_mode', privacyMode.value)
-      favoritesStore.initFavorites().catch(() => {})
-      historyStore.initHistory()
-      userStore.initUserData()
-      await Promise.all([
-        mergeCloudAiWallpaperState().catch(() => null),
-        models.syncCapabilityKitFromServer(),
-      ])
+      await models.syncCapabilityKitFromServer()
       models.ensureRuntimeProviderAndModels()
       // 云端合并只写入本地存储：任务要重载一次，否则内存里的旧任务列表
       // 会在稍后回写时覆盖掉云端合并结果。草稿不在云端负载里，无需重载

@@ -1,28 +1,11 @@
-import { buildApiUrl } from './api'
-import { getClientId } from './clientIdentity'
-import { clientLogHeaders } from './clientLogHeaders'
-import { fetchHomeBootstrap } from './homeBootstrap'
+import { getActiveAnnouncements } from './metaApi'
 
 export async function fetchRuntimeAnnouncements() {
-  const payload = await fetchHomeBootstrap()
-  return Array.isArray(payload.announcements) ? payload.announcements : []
+  return getActiveAnnouncements().catch(() => [])
 }
 
-export async function recordAnnouncementEvent(announcement, eventType) {
-  if (!announcement?.id) return
-  const clientId = getClientId()
-  await fetch(buildApiUrl(`/client/bootstrap/announcements/${encodeURIComponent(announcement.id)}/${eventType}`), {
-    method: 'POST',
-    credentials: 'include',
-    headers: clientLogHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify({
-      clientId,
-      version: announcement.version,
-    }),
-  }).catch(() => {})
-}
+/** 新后端不统计公告曝光/点击事件，保留空实现兼容旧调用。 */
+export async function recordAnnouncementEvent() {}
 
 export function shouldShowAnnouncement(announcement) {
   if (!announcement?.id) return false

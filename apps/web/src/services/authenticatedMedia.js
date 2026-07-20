@@ -1,5 +1,5 @@
-import { clientLogHeaders } from '@/services/clientLogHeaders'
-import { getAuthToken, getCsrfToken } from '@/services/auth'
+// 新后端产物为短期 presigned URL 或 /api/files/{key} 站内地址，
+// 鉴权靠 HttpOnly Cookie，无需附加 Authorization 头。
 
 const mediaCache = new Map()
 const inFlightMediaFetches = new Map()
@@ -215,35 +215,18 @@ function scheduleMediaCacheTrim() {
 
 export function isAuthenticatedAiMediaUrl(value = '') {
   const url = String(value || '')
-  return (
-    /\/api\/client\/business\/ai\/jobs\/[^/]+\/media\/(source|result|original-result)(?:\?|$)/i.test(
-      url,
-    ) ||
-    /\/api\/client\/business\/ai\/jobs\/[^/]+\/upscale-experiments\/[^/]+\/(?:2K|4K|8K)\/media(?:\?|$)/i.test(
-      url,
-    ) ||
-    /\/api\/client\/share\/mine\/[^/]+\/media(?:\?|$)/i.test(url)
-  )
+  return /\/api\/files\//i.test(url)
 }
 
 export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
   const url = String(value || '').trim()
   if (!url) throw new Error('没有可读取的图片')
 
-  const protectedMedia = isAuthenticatedAiMediaUrl(url)
-  const token = protectedMedia ? getAuthToken() : ''
-  const csrfToken = protectedMedia ? getCsrfToken() : ''
   const response = await fetch(url, {
     method: 'GET',
     credentials: 'include',
     cache: options.cache || 'default',
     signal: options.signal,
-    headers: protectedMedia
-      ? clientLogHeaders({
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-        })
-      : undefined,
   })
   if (!response.ok) throw new Error(`任务图片读取失败(${response.status})`)
 

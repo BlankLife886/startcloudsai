@@ -7,6 +7,7 @@ import {
 } from '@/config/changelog'
 import { useUpdatesPageMotion } from '@/features/updates/composables/useUpdatesPageMotion'
 import { fetchRuntimeAnnouncements } from '@/services/announcements'
+import { getRemoteChangelog } from '@/services/metaApi'
 import { useAppearanceStore } from '@/stores/appearance'
 import '@/features/updates/styles/updates-page.css'
 
@@ -17,6 +18,8 @@ const pageReady = ref(false)
 const announcementsLoading = ref(false)
 const announcements = ref([])
 const activeTag = ref('all')
+// 优先使用后台维护的远端更新说明，失败时回退到本地 changelog.js
+const changelogEntries = ref(CHANGELOG)
 
 const timeline = computed(() => {
   const fromAnnouncements = announcements.value
@@ -32,7 +35,7 @@ const timeline = computed(() => {
       highlight: Number(item.priority || 0) >= 80,
     }))
 
-  const merged = [...fromAnnouncements, ...CHANGELOG]
+  const merged = [...fromAnnouncements, ...changelogEntries.value]
   return merged.sort((a, b) => getTime(b.date) - getTime(a.date))
 })
 
@@ -70,10 +73,13 @@ const groupedEntries = computed(() => {
 })
 
 const stats = computed(() => ({
-  total: CHANGELOG.length,
-  features: CHANGELOG.filter((item) => item.tag === 'feature').length,
-  experience: CHANGELOG.filter((item) => item.tag === 'experience').length,
-  latest: CHANGELOG.find((item) => item.highlight)?.version || CHANGELOG[0]?.version || '-',
+  total: changelogEntries.value.length,
+  features: changelogEntries.value.filter((item) => item.tag === 'feature').length,
+  experience: changelogEntries.value.filter((item) => item.tag === 'experience').length,
+  latest:
+    changelogEntries.value.find((item) => item.highlight)?.version ||
+    changelogEntries.value[0]?.version ||
+    '-',
 }))
 
 const recentVersions = computed(() => {
@@ -111,9 +117,21 @@ onBeforeMount(() => {
 
 onMounted(async () => {
   void loadAnnouncements()
+  void loadRemoteChangelog()
   await nextTick()
   pageReady.value = true
 })
+
+async function loadRemoteChangelog() {
+  try {
+    const remote = await getRemoteChangelog()
+    if (Array.isArray(remote) && remote.length) {
+      changelogEntries.value = remote
+    }
+  } catch {
+    // 保持本地 changelog 回退
+  }
+}
 
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('updates-gallery-page')

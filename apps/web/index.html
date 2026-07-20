@@ -3,19 +3,19 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>星空云绘（StarCloudIsAI）- AI 创作与壁纸工作台</title>
-    <meta name="description" content="星空云绘（StarCloudIsAI）是集壁纸浏览、收藏与 AI 图像创作为一体的创作工作台。">
-    <meta name="keywords" content="Wallhaven,壁纸,高清壁纸,壁纸下载,收藏,批量下载,4K壁纸">
+    <title>星空云绘（StarCloudIsAI）- AI 图像创作工作台</title>
+    <meta name="description" content="星空云绘（StarCloudIsAI）是一站式 AI 图像创作工作台：文生图、插画染色、UI 设计稿、超高清模型图、游戏设计与 AI 拼图。">
+    <meta name="keywords" content="AI绘画,文生图,插画上色,UI设计稿,游戏美术,AI拼图,StarCloudIsAI">
     <meta name="author" content="StarCloudIsAI">
     <meta name="application-name" content="星空云绘">
     <meta name="theme-color" content="#7568F4">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="星空云绘 · StarCloudIsAI">
-    <meta property="og:title" content="星空云绘（StarCloudIsAI）- AI 创作与壁纸工作台">
-    <meta property="og:description" content="更清爽的 Wallhaven 壁纸工作台，支持搜索、收藏、历史回看与批量下载。">
+    <meta property="og:title" content="星空云绘（StarCloudIsAI）- AI 图像创作工作台">
+    <meta property="og:description" content="文生图、插画染色、UI 设计稿、模型图、游戏素材与拼图，一站式 AI 创作平台。">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="星空云绘（StarCloudIsAI）- AI 创作与壁纸工作台">
-    <meta name="twitter:description" content="更清爽的 Wallhaven 壁纸工作台，支持搜索、收藏、历史回看与批量下载。">
+    <meta name="twitter:title" content="星空云绘（StarCloudIsAI）- AI 图像创作工作台">
+    <meta name="twitter:description" content="文生图、插画染色、UI 设计稿、模型图、游戏素材与拼图，一站式 AI 创作平台。">
     <link rel="icon" type="image/svg+xml" href="/brand/starcloud-logo.svg">
     <link rel="apple-touch-icon" href="/brand/starcloud-logo.png">
     <style>
@@ -26,69 +26,9 @@
         min-height: 100%;
         background: #060908;
       }
-      html[data-pricing-route='1'],
-      html[data-pricing-route='1'] body,
-      html[data-pricing-route='1'] #app {
-        background: #0e1210;
-      }
-      .pricing-static-boot {
-        display: none;
-      }
-      html[data-pricing-route='1'] .pricing-static-boot {
-        box-sizing: border-box;
-        display: grid;
-        min-height: 100svh;
-        padding: 94px 12px 12px;
-        grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
-        gap: 12px;
-      }
-      .pricing-static-boot__panel {
-        min-width: 0;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 18px;
-        background: #121713;
-      }
-      .pricing-static-boot__panel::before,
-      .pricing-static-boot__panel::after {
-        content: '';
-        display: block;
-        height: 16px;
-        margin: 24px;
-        border-radius: 8px;
-        background: linear-gradient(90deg, #19201b 25%, #222b25 50%, #19201b 75%);
-        background-size: 200% 100%;
-        animation: pricing-static-shimmer 1.4s ease-in-out infinite;
-      }
-      .pricing-static-boot__panel::after {
-        height: min(52svh, 480px);
-        margin-top: 36px;
-      }
-      @keyframes pricing-static-shimmer {
-        to { background-position: -200% 0; }
-      }
-      @media (max-width: 1023px) {
-        html[data-pricing-route='1'] .pricing-static-boot { grid-template-columns: 1fr; }
-        .pricing-static-boot__panel:first-child { display: none; }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .pricing-static-boot__panel::before,
-        .pricing-static-boot__panel::after { animation: none; }
-      }
     </style>
-    <script>
-      ;(() => {
-        const path = window.location.pathname.replace(/\/+$/, '') || '/'
-        if (path === '/pricing' || path.startsWith('/pricing/')) {
-          document.documentElement.dataset.pricingRoute = '1'
-        }
-      })()
-    </script>
   </head>
   <body>
-    <div id="pricing-static-boot" class="pricing-static-boot" aria-hidden="true">
-      <div class="pricing-static-boot__panel"></div>
-      <div class="pricing-static-boot__panel"></div>
-    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
   </body>

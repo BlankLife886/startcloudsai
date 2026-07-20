@@ -2,7 +2,7 @@ import { createServerAiJob, extractMediaOutput, waitForServerAiJob } from '@/ser
 import {
   DEFAULT_COLORING_STYLE_CATEGORIES,
   DEFAULT_COLORING_STYLE_PRESETS,
-} from '@walleven/shared/illustration-coloring-styles'
+} from '@/config/shared/illustrationColoringStyles'
 
 export const ILLUSTRATION_COLORING_FEATURE_KEY = 'ai.illustrationColoring'
 export const ILLUSTRATION_COLORING_PUBLIC_MODEL = 'walleven-illustration-coloring'

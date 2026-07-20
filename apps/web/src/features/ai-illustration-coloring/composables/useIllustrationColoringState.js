@@ -12,9 +12,9 @@ import { createLoginRedirectQuery } from '@/services/authRedirect'
 import {
   fetchImageBlobForAi,
   uploadAiTempBlob,
-} from '@/components/wallpaper/fullscreen-preview/features/ai/aiImageIO'
-import { pickPreviewSourceImageUrl } from '@/components/wallpaper/fullscreen-preview/features/ai/aiSourcePicker'
-import { normalizeImageOutput } from '@/components/wallpaper/fullscreen-preview/features/ai/aiPreviewUtils'
+} from '@/features/ai-shared/aiImageIO'
+import { pickPreviewSourceImageUrl } from '@/features/ai-shared/aiSourcePicker'
+import { normalizeImageOutput } from '@/features/ai-shared/aiPreviewUtils'
 import {
   cancelServerAiJob,
   deleteServerAiJob,

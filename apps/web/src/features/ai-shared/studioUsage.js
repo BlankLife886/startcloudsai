@@ -112,20 +112,16 @@ export function summarizeStudioCreditSpendFromLedger(ledgerRows = [], referenceD
 }
 
 export async function fetchStudioCreditAccountSnapshot() {
-  const { getClientResourceSummary } = await import('@/services/aiWallpaper')
-  const data = await getClientResourceSummary({ scope: 'studio' })
-  const summary = data?.summary || {}
-  const account = summary.credits?.account || {}
-  const creditAvailable = Number(
-    account.availableBalance ??
-      Math.max(0, Number(account.balance || 0) - Number(account.frozenBalance || 0)),
+  const { getWallet } = await import('@/services/meApi')
+  const wallet = await getWallet()
+  const creditAvailable = Math.max(
+    0,
+    (Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0)) / 100,
   )
-  const ledger = Array.isArray(summary.credits?.ledger) ? summary.credits.ledger : []
-  const spend = summarizeStudioCreditSpendFromLedger(ledger)
   return {
     creditAvailable,
-    dayCost: spend.dayCost,
-    monthCost: spend.monthCost,
+    dayCost: 0,
+    monthCost: 0,
     usageSource: 'server',
   }
 }

@@ -1,9 +1,8 @@
 <script setup>
-import AiCostConfirmDialog from '@/components/wallpaper/fullscreen-preview/features/ai/AiCostConfirmDialog.vue'
-import InsufficientCreditsDialog from '@/components/profile/InsufficientCreditsDialog.vue'
+import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
+import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { gsap } from 'gsap'
-import ColoringFavoritePicker from './components/ColoringFavoritePicker.vue'
 import ColoringFrameMedia from './components/ColoringFrameMedia.vue'
 import ColoringSettingsDialog from './components/ColoringSettingsDialog.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
@@ -1092,16 +1091,6 @@ watch([sourcePreview, displayResultUrl], async () => {
                 >
                   <i class="bi bi-upload"></i>
                 </button>
-                <button
-                  type="button"
-                  class="coloring-source-tool"
-                  :disabled="controlsLocked || sourceUploading"
-                  title="从收藏选择"
-                  aria-label="从收藏选择"
-                  @click="openFavoritePicker"
-                >
-                  <i class="bi bi-heart"></i>
-                </button>
               </div>
             </div>
 
@@ -2051,12 +2040,6 @@ watch([sourcePreview, displayResultUrl], async () => {
         </div>
       </section>
     </div>
-
-    <ColoringFavoritePicker
-      :open="favoritePickerOpen"
-      @close="closeFavoritePicker"
-      @select="applyFavoriteWallpaper"
-    />
 
     <ColoringSettingsDialog
       :show="settingsOpen"

@@ -1,9 +1,3 @@
-import {
-  fetchClientStateQuietly,
-  getCloudSyncConflictStrategy,
-  scheduleClientStatePushQuietly,
-  shouldApplyRemoteClientState,
-} from '@/services/clientState'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 
@@ -267,55 +261,12 @@ function mergeAiWallpaperPayload(remotePayload = {}, localPayload = {}) {
   }
 }
 
+/** 云同步已下线：本地状态即最终状态，保留函数签名兼容旧调用。 */
 export function syncAiWallpaperState() {
-  return scheduleClientStatePushQuietly('aiWallpaper', () => readLocalAiWallpaperState())
+  return null
 }
 
-export async function mergeCloudAiWallpaperState(options = {}) {
-  const remoteState = await fetchClientStateQuietly('aiWallpaper')
-  const strategy = options.conflictStrategy || getCloudSyncConflictStrategy()
-  const localPayload = readLocalAiWallpaperState()
-
-  if (remoteState?.payload) {
-    const shouldApplyRemote =
-      strategy === 'merge' ||
-      (strategy !== 'local' &&
-        (options.forceRemote || shouldApplyRemoteClientState('aiWallpaper', remoteState.updatedAt)))
-
-    if (shouldApplyRemote) {
-      const remoteNormalized = normalizeAiWallpaperPayload(remoteState.payload)
-      const nextPayload =
-        strategy === 'merge'
-          ? mergeAiWallpaperPayload(remoteState.payload, localPayload)
-          : {
-              ...remoteNormalized,
-              tasks: mergeTasks(remoteNormalized.tasks, localPayload.tasks),
-              usageLedger: mergeUsageLedger(remoteNormalized.usageLedger, localPayload.usageLedger),
-              capabilityKit: mergeCapabilityKit(remoteNormalized.capabilityKit, localPayload.capabilityKit),
-              previewHistory: mergeRecordArrays(
-                remoteNormalized.previewHistory,
-                localPayload.previewHistory,
-                (item) => item.id || item.url,
-                MAX_PREVIEW_HISTORY,
-              ),
-              previewRecipes: mergeRecordArrays(
-                remoteNormalized.previewRecipes,
-                localPayload.previewRecipes,
-                (item) => item.id || item.name,
-                MAX_PREVIEW_RECIPES,
-              ),
-            }
-      writeLocalAiWallpaperState(nextPayload)
-      if (strategy === 'merge' || options.pushAfterMerge !== false) {
-        return syncAiWallpaperState()
-      }
-      return nextPayload
-    }
-  }
-
-  if (strategy === 'local' || options.pushWhenEmpty === true || options.forcePush === true || !remoteState?.payload) {
-    return syncAiWallpaperState()
-  }
-
-  return null
+/** 云同步已下线：不再从云端合并，直接返回本地状态。 */
+export async function mergeCloudAiWallpaperState() {
+  return readLocalAiWallpaperState()
 }

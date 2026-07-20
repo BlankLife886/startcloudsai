@@ -1,59 +1,10 @@
-import { fetchAuthConfig } from '@/services/auth'
-import { computed, onMounted, ref } from 'vue'
+import { ref } from 'vue'
 
 export function useAuthPage() {
   const pageRef = ref(null)
-  const authConfigReady = ref(false)
-  const authConfig = ref({
-    turnstileSiteKey: '',
-    turnstileEnabled: false,
-    requireEmailVerification: true,
-    oauthProviders: [],
-  })
-  const turnstileToken = ref('')
-  const turnstileRef = ref(null)
-
-  const turnstileRequired = computed(
-    () => authConfigReady.value && Boolean(authConfig.value.turnstileEnabled),
-  )
-  const turnstileSiteKey = computed(() => authConfig.value.turnstileSiteKey || '')
-  const oauthProviders = computed(() => authConfig.value.oauthProviders || [])
-
-  async function loadAuthConfig() {
-    try {
-      authConfig.value = await fetchAuthConfig()
-    } finally {
-      authConfigReady.value = true
-    }
-  }
-
-  function resetTurnstile() {
-    turnstileToken.value = ''
-    turnstileRef.value?.reset?.()
-  }
-
-  function ensureTurnstileReady() {
-    if (!authConfigReady.value) return false
-    if (!turnstileRequired.value) return true
-    return Boolean(turnstileToken.value)
-  }
-
-  onMounted(async () => {
-    await loadAuthConfig()
-  })
 
   return {
     pageRef,
-    authConfig,
-    authConfigReady,
-    turnstileToken,
-    turnstileRef,
-    turnstileRequired,
-    turnstileSiteKey,
-    oauthProviders,
-    loadAuthConfig,
-    resetTurnstile,
-    ensureTurnstileReady,
   }
 }
 

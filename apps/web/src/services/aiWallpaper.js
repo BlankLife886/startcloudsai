@@ -1,7 +1,20 @@
-import { buildApiUrl, proxyWallhavenImageUrl } from '@/services/api'
-import { getApiData, getApiErrorMessage, isApiSuccess } from '@/services/apiResponse'
-import { getAuthToken, getCsrfToken } from '@/services/auth'
-import { clientLogHeaders } from '@/services/clientLogHeaders'
+/**
+ * 旧「AI 任务（job）」服务层 → 新「任务（task）」契约的适配层。
+ *
+ * 三套旧任务链路（文生图 useWallpaperTasks、插画染色 useIllustrationColoringState、
+ * 创意工作台 useCreativeImageJob）都通过本文件的 createServerAiJob / waitForServerAiJob /
+ * listServerAiJobs 等函数访问网络。这里把它们统一映射到 /api/tasks，
+ * 上层组合式函数无需大改。
+ */
+import {
+  cancelTask,
+  createTask,
+  deleteTask,
+  getTask,
+  listTasks,
+  uploadFile,
+  waitForTask,
+} from '@/services/tasksApi'
 
 const SUPPORTED_ASPECTS = [
   '1:1',
@@ -16,7 +29,7 @@ const SUPPORTED_ASPECTS = [
   '21:9',
   '9:21',
 ]
-const STALE_RUNNING_JOB_MS = 5 * 60 * 1000
+
 export function nearestAspectLabel(width, height) {
   const w = Number(width) || 0
   const h = Number(height) || 0
@@ -38,12 +51,7 @@ export function normalizeAiOutput(raw) {
   if (!value) return ''
   if (value.startsWith('data:')) return value
   if (/^https?:\/\//i.test(value)) return value
-  const embeddedDataUrl = value.match(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/i)?.[0]
-  if (embeddedDataUrl) return embeddedDataUrl
-  const embeddedUrl = value.match(
-    /https?:\/\/[^\s"'<>)]*\.(?:png|jpe?g|webp|gif)(?:[^\s"'<>)]*)?/i,
-  )?.[0]
-  if (embeddedUrl) return embeddedUrl
+  if (value.startsWith('/api/')) return value
   if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/.test(value)) {
     return `data:image/png;base64,${value}`
   }
@@ -51,143 +59,27 @@ export function normalizeAiOutput(raw) {
 }
 
 export function extractMediaOutput(payload) {
-  const data = payload?.data || {}
-  const firstChoice = Array.isArray(payload?.choices) ? payload.choices[0] : null
-  const firstDataChoice = Array.isArray(data?.choices) ? data.choices[0] : null
-  const choiceContent = firstChoice?.message?.content || firstDataChoice?.message?.content || ''
-  const candidates = [
-    ...(Array.isArray(choiceContent)
-      ? choiceContent.map((item) => item?.image_url?.url || item?.url || item?.text || '')
-      : [choiceContent]),
-    data?.url,
-    data?.output,
-    data?.output_url,
-    data?.result,
-    data?.result_url,
-    data?.video_url,
-    data?.image_url,
-    data?.b64_json,
-    data?.image?.url,
-    data?.image?.image_url,
-    data?.image?.b64_json,
-    payload?.output,
-    payload?.url,
-    payload?.result,
-    payload?.result_url,
-  ]
-  const lists = [
-    Array.isArray(data) ? data : [],
-    Array.isArray(data?.outputs) ? data.outputs : [],
-    Array.isArray(data?.output) ? data.output : [],
-    Array.isArray(data?.images) ? data.images : [],
-    Array.isArray(data?.videos) ? data.videos : [],
-    Array.isArray(payload?.outputs) ? payload.outputs : [],
-  ]
-  for (const list of lists) {
-    const first = list[0]
-    if (typeof first === 'string') candidates.push(first)
-    candidates.push(
-      first?.url,
-      first?.video_url,
-      first?.image_url,
-      first?.imageUrl,
-      first?.b64_json,
-      first?.output,
-      first?.result,
-    )
-    addStructuredMediaCandidates(candidates, first)
-  }
-  addStructuredMediaCandidates(candidates, payload?.output)
-  addStructuredMediaCandidates(candidates, data?.output)
-  addStructuredMediaCandidates(candidates, payload?.outputs)
-  addStructuredMediaCandidates(candidates, data?.outputs)
-  const found = candidates.find((item) => typeof item === 'string' && item.trim())
-  return normalizeAiOutput(found)
+  return extractMediaOutputs(payload)[0] || ''
 }
 
 export function extractMediaOutputs(payload) {
-  const candidates = []
-  const data = payload?.data || {}
-  const choiceLists = [
-    Array.isArray(payload?.choices) ? payload.choices : [],
-    Array.isArray(data?.choices) ? data.choices : [],
+  if (!payload) return []
+  if (typeof payload === 'string') return [normalizeAiOutput(payload)].filter(Boolean)
+  const lists = [
+    Array.isArray(payload?.outputs) ? payload.outputs : [],
+    Array.isArray(payload?.outputUrls) ? payload.outputUrls : [],
+    Array.isArray(payload?.images) ? payload.images : [],
   ]
-  for (const choices of choiceLists) {
-    for (const choice of choices) {
-      addStructuredMediaCandidates(candidates, choice?.message?.content)
-      addStructuredMediaCandidates(candidates, choice?.image_url)
-      addStructuredMediaCandidates(candidates, choice?.url)
-      addStructuredMediaCandidates(candidates, choice?.b64_json)
+  const candidates = [payload?.url, payload?.output, payload?.result]
+  for (const list of lists) {
+    for (const item of list) {
+      if (typeof item === 'string') candidates.push(item)
+      else if (item && typeof item === 'object') candidates.push(item.url, item.image_url)
     }
   }
-  addStructuredMediaCandidates(candidates, payload)
   return Array.from(
-    new Set(
-      candidates
-        .map((item) => normalizeAiOutput(item))
-        .filter(Boolean),
-    ),
+    new Set(candidates.map((item) => normalizeAiOutput(item)).filter(Boolean)),
   )
-}
-
-function addStructuredMediaCandidates(candidates, value, depth = 0) {
-  if (depth > 4 || value === null || value === undefined) return
-  if (typeof value === 'string') {
-    candidates.push(value)
-    return
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item) => addStructuredMediaCandidates(candidates, item, depth + 1))
-    return
-  }
-  if (typeof value !== 'object') return
-  candidates.push(
-    value.url,
-    value.image_url,
-    value.imageUrl,
-    value.video_url,
-    value.videoUrl,
-    value.b64_json,
-    value.b64Json,
-    value.output_url,
-    value.outputUrl,
-    value.result_url,
-    value.resultUrl,
-    value.result,
-    value.image?.url,
-    value.image?.image_url,
-    value.image?.imageUrl,
-    value.image?.b64_json,
-    value.image?.b64Json,
-  )
-  addStructuredMediaCandidates(candidates, value.image_url, depth + 1)
-  addStructuredMediaCandidates(candidates, value.imageUrl, depth + 1)
-  addStructuredMediaCandidates(candidates, value.content, depth + 1)
-  addStructuredMediaCandidates(candidates, value.output, depth + 1)
-  addStructuredMediaCandidates(candidates, value.outputs, depth + 1)
-  addStructuredMediaCandidates(candidates, value.data, depth + 1)
-  addStructuredMediaCandidates(candidates, value.images, depth + 1)
-  addStructuredMediaCandidates(candidates, value.image_urls, depth + 1)
-  addStructuredMediaCandidates(candidates, value.imageUrls, depth + 1)
-  addStructuredMediaCandidates(candidates, value.media, depth + 1)
-  addStructuredMediaCandidates(candidates, value.files, depth + 1)
-  addStructuredMediaCandidates(candidates, value.artifacts, depth + 1)
-  addStructuredMediaCandidates(candidates, value.providerPayload, depth + 1)
-}
-
-export function getPredictionResultUrl(payload) {
-  if (typeof payload?.urls?.get === 'string') return payload.urls.get
-  if (typeof payload?.data?.urls?.get === 'string') return payload.data.urls.get
-  if (Array.isArray(payload?.data?.urls) && typeof payload.data.urls[0]?.get === 'string') {
-    return payload.data.urls[0].get
-  }
-  if (typeof payload?.data?.result_url === 'string') return payload.data.result_url
-  if (typeof payload?.result_url === 'string') return payload.result_url
-  return ''
-}
-
-export function isWallhavenImageUrl(url) {
-  return /(^https?:\/\/)?([a-z0-9-]+\.)?(wallhaven\.cc|whvn\.cc)\//i.test(String(url || ''))
 }
 
 export function getBestWallpaperSource(wallpaper = {}) {
@@ -203,8 +95,7 @@ export function getBestWallpaperSource(wallpaper = {}) {
 }
 
 export function getDisplayImageUrl(wallpaper = {}) {
-  const source = wallpaper.thumbs?.large || wallpaper.thumbnail || getBestWallpaperSource(wallpaper)
-  return proxyWallhavenImageUrl(source)
+  return wallpaper.thumbs?.large || wallpaper.thumbnail || getBestWallpaperSource(wallpaper)
 }
 
 export function blobToDataUrl(blob) {
@@ -231,7 +122,7 @@ export function loadImageSize(src) {
       resolve(value)
     }
     const timer = setTimeout(() => done({ width: 0, height: 0 }), 12000)
-    if (/^https?:\/\//i.test(src) && !isWallhavenImageUrl(src)) img.crossOrigin = 'anonymous'
+    if (/^https?:\/\//i.test(src)) img.crossOrigin = 'anonymous'
     img.referrerPolicy = 'no-referrer'
     img.onload = () => done({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 })
     img.onerror = () => done({ width: 0, height: 0 })
@@ -239,496 +130,319 @@ export function loadImageSize(src) {
   })
 }
 
-export async function uploadAiInputFile(
-  file,
-  { featureKey = 'ai.wallpaperGeneration' } = {},
-) {
+// ---------------------------------------------------------------------------
+// kind → 新任务类型映射
+// ---------------------------------------------------------------------------
+
+const KIND_TYPE_RULES = [
+  [/^illustration-coloring/, 'coloring'],
+  [/^ui-design/, 'ui_design'],
+  [/^ultra-reference/, 'model_sheet'],
+  [/^game-art/, 'game_art'],
+  [/^(puzzle|collage)/, 'puzzle'],
+  [/^wallpaper/, 't2i'],
+]
+
+export function mapJobKindToTaskType(kind = '') {
+  const value = String(kind || '').trim().toLowerCase()
+  for (const [pattern, type] of KIND_TYPE_RULES) {
+    if (pattern.test(value)) return type
+  }
+  return 't2i'
+}
+
+const DEFAULT_KIND_BY_TYPE = {
+  t2i: 'wallpaper-image-generation',
+  coloring: 'illustration-coloring',
+  ui_design: 'ui-design-generation',
+  model_sheet: 'ultra-reference-generation',
+  game_art: 'game-art-generation',
+  puzzle: 'puzzle-generation',
+}
+
+// ---------------------------------------------------------------------------
+// URL ↔ R2 key 注册表：新契约用 inputKeys 传参考图，
+// 前端展示用 URL；这里维护双向映射，让「用历史产物当参考图」直接命中 key。
+// ---------------------------------------------------------------------------
+
+const urlKeyRegistry = new Map()
+
+/** 供外部上传逻辑登记 URL → R2 key 映射。 */
+export function registerUploadedUrl(url, key) {
+  registerUrlKey(url, key)
+}
+
+function registerUrlKey(url, key) {
+  const normalizedUrl = String(url || '').trim()
+  const normalizedKey = String(key || '').trim()
+  if (!normalizedUrl || !normalizedKey) return
+  urlKeyRegistry.set(normalizedUrl, normalizedKey)
+}
+
+function lookupKeyForUrl(url) {
+  const value = String(url || '').trim()
+  if (!value) return ''
+  if (urlKeyRegistry.has(value)) return urlKeyRegistry.get(value)
+  // /api/files/{key} 形式的站内地址可直接还原 key
+  const match = value.match(/\/api\/files\/(.+?)(?:\?|$)/)
+  if (match) return decodeURIComponent(match[1])
+  return ''
+}
+
+async function resolveInputKeyForUrl(url) {
+  const known = lookupKeyForUrl(url)
+  if (known) return known
+  const value = String(url || '').trim()
+  if (!value) return ''
+  // 未知来源（data: / blob: / 过期 URL）：拉取后重新上传拿 key
+  try {
+    const response = await fetch(value)
+    if (!response.ok) return ''
+    const blob = await response.blob()
+    const file = new File([blob], `reference-${Date.now()}.png`, {
+      type: blob.type || 'image/png',
+    })
+    const uploaded = await uploadFile(file)
+    registerUrlKey(uploaded.url, uploaded.key)
+    registerUrlKey(value, uploaded.key)
+    return uploaded.key
+  } catch {
+    return ''
+  }
+}
+
+// ---------------------------------------------------------------------------
+// task → 旧 job 形状映射
+// ---------------------------------------------------------------------------
+
+const STATUS_TO_LEGACY = {
+  queued: 'queued',
+  running: 'running',
+  succeeded: 'completed',
+  failed: 'failed',
+  canceled: 'cancelled',
+}
+
+function taskToLegacyJob(task = {}) {
+  const outputUrls = Array.isArray(task.outputUrls) ? task.outputUrls.filter(Boolean) : []
+  const outputKeys = Array.isArray(task.outputKeys) ? task.outputKeys : []
+  outputUrls.forEach((url, index) => {
+    if (outputKeys[index]) registerUrlKey(url, outputKeys[index])
+  })
+  const params = task.params && typeof task.params === 'object' ? task.params : {}
+  return {
+    id: task.id,
+    taskId: task.id,
+    kind: String(params._kind || DEFAULT_KIND_BY_TYPE[task.type] || task.type || ''),
+    type: task.type,
+    status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
+    prompt: task.prompt || '',
+    input: params,
+    params,
+    count: Number(task.count || 1),
+    inputKeys: Array.isArray(task.inputKeys) ? task.inputKeys : [],
+    outputKeys,
+    resultMediaUrl: outputUrls[0] || '',
+    resultMediaUrls: outputUrls,
+    error: task.errorMessage || '',
+    errorCode: task.errorCode || '',
+    costCents: Number(task.costCents || 0),
+    estimatedCostUsd: Number(task.costCents || 0) / 100,
+    createdAt: task.createdAt || '',
+    startedAt: task.startedAt || '',
+    finishedAt: task.finishedAt || '',
+    updatedAt: task.finishedAt || task.startedAt || task.createdAt || '',
+  }
+}
+
+function legacyResultFromTask(task = {}) {
+  const outputs = Array.isArray(task.outputUrls) ? task.outputUrls.filter(Boolean) : []
+  return { outputs }
+}
+
+// ---------------------------------------------------------------------------
+// 旧接口签名（供三套任务链路继续调用）
+// ---------------------------------------------------------------------------
+
+/** 上传参考图，返回可展示 URL（内部登记 URL→key 供 createServerAiJob 使用）。 */
+export async function uploadAiInputFile(file, _options = {}) {
   if (!file) throw new Error('请先选择一张图片')
-  const formData = new FormData()
-  formData.append('file', file, file.name || `ai-wallpaper-${Date.now()}.jpg`)
-  formData.append('featureKey', String(featureKey || 'ai.wallpaperGeneration'))
-  const endpoint = buildApiUrl('/ai-temp-upload')
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: clientLogHeaders(),
-    body: formData,
-  })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok || !isApiSuccess(payload, response.status)) {
-    throw new Error(getApiErrorMessage(payload, `临时上传失败（${response.status}）`))
+  const uploaded = await uploadFile(file)
+  registerUrlKey(uploaded.url, uploaded.key)
+  return uploaded.url
+}
+
+/** 创建任务：旧 job payload → 新 createTask 契约。 */
+export async function createServerAiJob(payload = {}) {
+  const kind = String(payload.kind || '').trim()
+  const type = mapJobKindToTaskType(kind)
+  const input = payload.input && typeof payload.input === 'object' ? payload.input : {}
+  const legacyParams = payload.params && typeof payload.params === 'object' ? payload.params : {}
+  const count = Math.max(
+    1,
+    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, 4),
+  )
+
+  const sourceUrls = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.sourceUrls) ? input.sourceUrls : []),
+        input.sourceUrl,
+        ...(Array.isArray(input.referenceImageUrls) ? input.referenceImageUrls : []),
+      ]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    ),
+  )
+  const maskUrl = String(input.maskUrl || legacyParams.maskUrl || '').trim()
+
+  const inputKeys = []
+  for (const url of sourceUrls) {
+    const key = await resolveInputKeyForUrl(url)
+    if (key && !inputKeys.includes(key)) inputKeys.push(key)
   }
-  const data = getApiData(payload)
-  const url = String(data?.url || '').trim()
-  if (!url) throw new Error('临时上传未返回可用 URL')
-  return url
-}
-
-function aiJobHeaders(extraHeaders = {}) {
-  const token = getAuthToken()
-  const csrfToken = getCsrfToken()
-  return clientLogHeaders({
-    ...extraHeaders,
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-  })
-}
-
-async function readAiJobResponse(response, fallbackMessage) {
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok || !isApiSuccess(payload, response.status)) {
-    const error = new Error(
-      getApiErrorMessage(payload, `${fallbackMessage}（${response.status}）`),
-    )
-    error.responseReceived = true
-    error.httpStatus = Number(response.status || 0)
-    error.apiCode = String(payload?.code || payload?.error?.code || '')
-    error.retryable = payload?.retryable === true
-    throw error
+  let maskKey = ''
+  if (maskUrl) {
+    maskKey = await resolveInputKeyForUrl(maskUrl)
+    if (maskKey && !inputKeys.includes(maskKey)) inputKeys.push(maskKey)
   }
-  return getApiData(payload)
-}
 
-export async function createServerAiJob(payload) {
-  const response = await fetch(buildApiUrl('/client/business/ai/jobs'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: aiJobHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify(payload || {}),
+  const task = await createTask({
+    type,
+    prompt: String(payload.prompt || '').trim(),
+    params: {
+      ...legacyParams,
+      ...input,
+      count,
+      _kind: kind,
+      ...(maskKey ? { maskKey } : {}),
+    },
+    inputKeys,
+    count,
+    idempotencyKey: String(payload.clientRequestId || '').trim() || undefined,
   })
-  return readAiJobResponse(response, 'AI 任务创建失败')
+  return { job: taskToLegacyJob(task) }
 }
 
 export async function listServerAiJobs(limit = 30, options = {}) {
-  const params = new URLSearchParams()
-  params.set('limit', String(limit))
   const kind = String(options.kind || '').trim()
-  if (kind) params.set('kind', kind)
-  const cursor = String(options.cursor || '').trim()
-  if (cursor) params.set('cursor', cursor)
-  if (options.excludeFailed) params.set('excludeFailed', '1')
-  const response = await fetch(buildApiUrl(`/client/business/ai/jobs?${params.toString()}`), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
+  const type = kind ? mapJobKindToTaskType(kind.split(',')[0]) : ''
+  const { items, nextCursor } = await listTasks({
+    type,
+    limit,
+    cursor: String(options.cursor || '').trim(),
   })
-  return readAiJobResponse(response, 'AI 任务读取失败')
+  let jobs = items.map((task) => taskToLegacyJob(task))
+  if (options.excludeFailed) {
+    jobs = jobs.filter((job) => !['failed', 'cancelled'].includes(job.status))
+  }
+  return {
+    jobs,
+    pagination: {
+      nextCursor: nextCursor || '',
+      hasMore: Boolean(nextCursor),
+    },
+  }
 }
 
 export async function getServerAiJob(jobId, options = {}) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/ai/jobs/${encodeURIComponent(jobId)}`),
-    {
-      method: 'GET',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-      signal: options.signal,
-    },
-  )
-  return readAiJobResponse(response, 'AI 任务状态读取失败')
+  const task = await getTask(jobId, { signal: options.signal })
+  return { job: taskToLegacyJob(task) }
 }
 
 export async function getServerAiJobResult(jobId, options = {}) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/ai/jobs/${encodeURIComponent(jobId)}/result`),
-    {
-      method: 'GET',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-      signal: options.signal,
-    },
-  )
-  return readAiJobResponse(response, 'AI 任务结果读取失败')
-}
-
-export async function replaceServerAiJobResultWithLocalUpscale(
-  jobId,
-  file,
-  { targetWidth, targetHeight, resolutionScale, signal } = {},
-) {
-  if (!jobId) throw new Error('AI 任务 ID 无效')
-  if (!file) throw new Error('缺少高清图片文件')
-  const formData = new FormData()
-  formData.append('file', file, file.name || `wallpaper-${Date.now()}.jpg`)
-  formData.append('targetWidth', String(Math.max(0, Number(targetWidth || 0))))
-  formData.append('targetHeight', String(Math.max(0, Number(targetHeight || 0))))
-  formData.append('resolutionScale', String(resolutionScale || ''))
-  const response = await fetch(
-    buildApiUrl(
-      `/client/business/ai/jobs/${encodeURIComponent(jobId)}/result-media/local-upscale`,
-    ),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-      body: formData,
-      signal,
-    },
-  )
-  return readAiJobResponse(response, '高清结果保存失败')
-}
-
-export async function listCloudUpscaleProviders(options = {}) {
-  const response = await fetch(buildApiUrl('/client/business/ai/upscale-providers'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-    signal: options.signal,
-  })
-  return readAiJobResponse(response, '云端超清方案读取失败')
-}
-
-export async function listServerAiUpscaleExperiments(jobId, options = {}) {
-  if (!jobId) throw new Error('AI 任务 ID 无效')
-  const response = await fetch(
-    buildApiUrl(
-      `/client/business/ai/jobs/${encodeURIComponent(jobId)}/upscale-experiments`,
-    ),
-    {
-      method: 'GET',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-      signal: options.signal,
-    },
-  )
-  return readAiJobResponse(response, '云端超清实验读取失败')
-}
-
-export async function createServerAiUpscaleExperiment(jobId, input = {}, options = {}) {
-  if (!jobId) throw new Error('AI 任务 ID 无效')
-  const response = await fetch(
-    buildApiUrl(
-      `/client/business/ai/jobs/${encodeURIComponent(jobId)}/upscale-experiments`,
-    ),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        provider: input.provider,
-        target: input.target,
-        prompt: input.prompt,
-      }),
-      signal: options.signal,
-    },
-  )
-  return readAiJobResponse(response, '云端超清实验失败')
+  const task = await getTask(jobId, { signal: options.signal })
+  return { job: taskToLegacyJob(task), result: legacyResultFromTask(task) }
 }
 
 export async function deleteServerAiJob(jobId) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/ai/jobs/${encodeURIComponent(jobId)}`),
-    {
-      method: 'DELETE',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-    },
-  )
-  return readAiJobResponse(response, 'AI 任务删除失败')
+  await deleteTask(jobId)
+  return { deleted: true }
 }
 
-export async function runServerAiJob(jobId, options = {}) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/ai/jobs/${encodeURIComponent(jobId)}/run`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-      signal: options.signal,
-    },
-  )
-  return readAiJobResponse(response, 'AI 任务执行失败')
-}
-
-export async function waitForServerAiJob(
-  jobId,
-  { onStatus = null, intervalMs = 3000, maxPolls = 100, runInline = false, signal = undefined } = {},
-) {
-  if (!jobId) throw new Error('AI 任务 ID 无效')
-  if (runInline) {
-    if (typeof onStatus === 'function') onStatus('正在启动服务端 AI 执行...')
-    await runServerAiJob(jobId)
-  }
-
-  for (let index = 0; index < maxPolls; index += 1) {
-    const response = await getServerAiJob(jobId, { signal })
-    const job = response.job || {}
-    const status = String(job.status || '').toLowerCase()
-    if (typeof onStatus === 'function') {
-      onStatus(formatServerAiJobStatus(status))
-    }
-    if (status === 'completed' || status === 'done') {
-      const resultResponse = await getServerAiJobResult(jobId)
-      return { job, result: resultResponse.result }
-    }
-    if (status === 'waiting_provider') {
-      await runServerAiJob(jobId).catch(() => null)
-    }
-    if (status === 'running' && isStaleRunningJob(job)) {
-      await runServerAiJob(jobId).catch(() => null)
-    }
-    if (['failed', 'paused', 'cancelled', 'canceled'].includes(status)) {
-      throw new Error(formatServerAiJobTerminalError(status, job.error))
-    }
-    await new Promise((resolve) => setTimeout(resolve, Math.max(500, Number(intervalMs) || 3000)))
-  }
-
-  throw new Error('AI 任务等待超时，请稍后在任务列表查看结果')
-}
-
-function isStaleRunningJob(job) {
-  const updatedAt = Date.parse(job?.updatedAt || job?.updated_at || '')
-  if (!Number.isFinite(updatedAt)) return false
-  return Date.now() - updatedAt > STALE_RUNNING_JOB_MS
-}
-
-function formatServerAiJobTerminalError(status, error) {
-  const message = String(error || '').trim()
-  if (status === 'paused') {
-    if (/provider_timeout|our_fetch_timeout|network connection lost|连接中断|传输中断/i.test(message)) {
-      return '图片服务连接超时或中断，任务已安全暂停且不会自动重复提交。请切换模型后重新生成。'
-    }
-    return message || '图片任务已暂停，系统不会自动重复提交。请切换模型后重新生成。'
-  }
-  if (status === 'failed') return message || 'AI 任务执行失败'
-  return message || 'AI 任务已取消'
+/** 新契约任务由服务端队列自动执行，run 是无操作占位。 */
+export async function runServerAiJob(jobId) {
+  const task = await getTask(jobId)
+  return { job: taskToLegacyJob(task) }
 }
 
 export async function cancelServerAiJob(jobId) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/ai/jobs/${encodeURIComponent(jobId)}/cancel`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders(),
+  const task = await cancelTask(jobId)
+  const job = taskToLegacyJob(task)
+  return { cancelled: job.status === 'cancelled', job }
+}
+
+/**
+ * 轮询任务直到终态（统一 2s 间隔，支持 AbortSignal）。
+ * 成功返回 { job, result }；失败/取消抛错，保持旧行为。
+ */
+export async function waitForServerAiJob(
+  jobId,
+  { onStatus = null, maxPolls = 450, signal = undefined } = {},
+) {
+  if (!jobId) throw new Error('AI 任务 ID 无效')
+  // 轮询统一 2s 间隔（无视旧调用方各自的 intervalMs 配置）
+  const interval = 2000
+  const task = await waitForTask(jobId, {
+    signal,
+    intervalMs: interval,
+    maxWaitMs: interval * Math.max(1, Number(maxPolls) || 450),
+    onUpdate: (current) => {
+      if (typeof onStatus === 'function') {
+        onStatus(formatServerAiJobStatus(String(current?.status || '').toLowerCase()))
+      }
     },
-  )
-  return readAiJobResponse(response, 'AI 任务取消失败')
-}
-
-export async function getClientResourceSummary(options = {}) {
-  const scope = String(options.scope || 'usage')
-    .trim()
-    .toLowerCase()
-  const url = new URL(buildApiUrl('/client/business/resources'), window.location.origin)
-  if (scope) url.searchParams.set('scope', scope)
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    credentials: 'include',
-    // 双保险：即使 API 响应头仍允许缓存，也强制绕过浏览器缓存，保证余额实时。
-    cache: 'no-store',
-    headers: aiJobHeaders(),
   })
-  return readAiJobResponse(response, '资源用量读取失败')
-}
-
-export async function getClientReferralSummary() {
-  const response = await fetch(buildApiUrl('/client/business/referrals'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, '推荐计划读取失败')
-}
-
-export async function redeemClientWalletCode(payload = {}) {
-  const response = await fetch(buildApiUrl('/client/business/wallet/redeem'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: aiJobHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload),
-  })
-  return readAiJobResponse(response, '兑换失败')
-}
-
-export async function exchangeClientWalletUsd(payload = {}) {
-  const response = await fetch(buildApiUrl('/client/business/wallet/exchange'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: aiJobHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload),
-  })
-  return readAiJobResponse(response, '兑换积分失败')
-}
-
-export async function getClientCommercePlans() {
-  const response = await fetch(buildApiUrl('/client/business/plans'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, '套餐读取失败')
-}
-
-export async function getClientPricingPublicModels(options = {}) {
-  const includeAvailability = options.includeAvailability === true
-  const url = new URL(buildApiUrl('/client/business/pricing/public-models'), window.location.origin)
-  if (includeAvailability) {
-    url.searchParams.set('availability', '1')
+  const job = taskToLegacyJob(task)
+  if (task.status === 'succeeded') {
+    return { job, result: legacyResultFromTask(task) }
   }
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, '公开模型目录读取失败')
+  if (task.status === 'canceled') {
+    throw new Error(task.errorMessage || 'AI 任务已取消')
+  }
+  throw new Error(task.errorMessage || 'AI 任务执行失败')
 }
 
-export async function getClientPricingSettings() {
-  const response = await fetch(buildApiUrl('/client/business/pricing/settings'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, '价格页设置读取失败')
+/**
+ * 本地超清结果不再回传服务端（新后端任务产物只读）。
+ * 返回本地 blob URL 供当前会话展示与下载；刷新后回退到服务端原图。
+ */
+export async function replaceServerAiJobResultWithLocalUpscale(jobId, file) {
+  const task = await getTask(jobId).catch(() => null)
+  const job = task ? taskToLegacyJob(task) : null
+  const localUrl = file ? URL.createObjectURL(file) : ''
+  if (job && localUrl) {
+    return {
+      job: {
+        ...job,
+        originalResultMediaUrl: job.resultMediaUrl,
+        resultMediaUrl: localUrl,
+        resultMediaUrls: [localUrl, ...job.resultMediaUrls.slice(1)],
+      },
+      persisted: false,
+    }
+  }
+  return { job, persisted: false }
 }
 
-export async function getClientCheckoutOrder(id) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/checkout/orders/${encodeURIComponent(id)}`),
-    {
-      method: 'GET',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-    },
-  )
-  return readAiJobResponse(response, '订单读取失败')
+/** 云端超清方案已下线：返回空目录，超清面板自动隐藏云端选项。 */
+export async function listCloudUpscaleProviders() {
+  return { providers: [] }
 }
 
-export async function createClientCheckoutOrder(payload = {}) {
-  const response = await fetch(buildApiUrl('/client/business/checkout/orders'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: aiJobHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify(payload),
-  })
-  return readAiJobResponse(response, '订单创建失败')
+export async function listServerAiUpscaleExperiments() {
+  return { experiments: [] }
 }
 
-export async function confirmClientCheckoutOrder(id, payload = {}) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/checkout/orders/${encodeURIComponent(id)}/confirm`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders({
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify(payload),
-    },
-  )
-  return readAiJobResponse(response, '订单确认失败')
-}
-
-export async function captureClientPayPalCheckout(id, payload = {}) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/checkout/orders/${encodeURIComponent(id)}/paypal/capture`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders({
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify(payload),
-    },
-  )
-  return readAiJobResponse(response, 'PayPal 扣款失败')
-}
-
-export async function cancelClientCheckoutOrder(id) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/checkout/orders/${encodeURIComponent(id)}/cancel`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders({
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify({}),
-    },
-  )
-  return readAiJobResponse(response, '订单取消失败')
-}
-
-export async function confirmClientAlipayCheckout(id) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/checkout/orders/${encodeURIComponent(id)}/alipay/confirm`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders({
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify({}),
-    },
-  )
-  return readAiJobResponse(response, '支付宝入账确认失败')
-}
-
-export async function listClientApiKeys() {
-  const response = await fetch(buildApiUrl('/client/business/api-keys'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, 'API Key 读取失败')
-}
-
-export async function createClientApiKey(payload = {}) {
-  const response = await fetch(buildApiUrl('/client/business/api-keys'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: aiJobHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify(payload),
-  })
-  return readAiJobResponse(response, 'API Key 创建失败')
-}
-
-export async function updateClientApiKey(id, payload = {}) {
-  const response = await fetch(buildApiUrl(`/client/business/api-keys/${encodeURIComponent(id)}`), {
-    method: 'PUT',
-    credentials: 'include',
-    headers: aiJobHeaders({
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify(payload),
-  })
-  return readAiJobResponse(response, 'API Key 保存失败')
-}
-
-export async function resetClientApiKey(id) {
-  const response = await fetch(
-    buildApiUrl(`/client/business/api-keys/${encodeURIComponent(id)}/reset`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: aiJobHeaders(),
-    },
-  )
-  return readAiJobResponse(response, 'API Key 重置失败')
-}
-
-export async function revokeClientApiKey(id) {
-  const response = await fetch(buildApiUrl(`/client/business/api-keys/${encodeURIComponent(id)}`), {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: aiJobHeaders(),
-  })
-  return readAiJobResponse(response, 'API Key 注销失败')
+export async function createServerAiUpscaleExperiment() {
+  throw new Error('云端超清实验暂未开放')
 }
 
 function formatServerAiJobStatus(status) {
   if (status === 'running') return '云端 AI 正在执行...'
   if (status === 'queued') return '云端 AI 排队中...'
-  if (status === 'waiting_provider') return '云端 AI 正在处理结果...'
-  if (status === 'completed' || status === 'done') return '云端 AI 已完成，正在读取结果...'
+  if (status === 'succeeded') return '云端 AI 已完成，正在读取结果...'
   if (status === 'failed') return '云端 AI 执行失败'
-  if (status === 'paused') return '云端 AI 已安全暂停'
-  if (status === 'cancelled' || status === 'canceled') return '云端 AI 已取消'
+  if (status === 'canceled') return '云端 AI 已取消'
   return '正在同步云端 AI 状态...'
 }

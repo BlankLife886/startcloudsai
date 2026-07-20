@@ -1,157 +1,53 @@
-import { buildApiUrl } from '@/services/apiBase'
-import { clientLogHeaders } from '@/services/clientLogHeaders'
-import { getApiData, getApiErrorMessage, isApiSuccess } from '@/services/apiResponse'
-import { getAuthToken, getCsrfToken } from '@/services/auth'
+/**
+ * 画廊 API（新契约 /api/gallery*）。
+ * 公开列表 + 投稿 + 我的投稿；旧的评论/收藏/浏览统计接口已随后端下线。
+ */
+import { apiGet, apiPost } from './apiClient'
+export { deleteMyGallerySubmission, listMyGallerySubmissions } from './meApi'
 
-function authHeaders(extra = {}) {
-  const token = getAuthToken()
-  const csrfToken = getCsrfToken()
-  return clientLogHeaders({
-    ...extra,
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+/**
+ * 公开已过审作品（cursor 分页）。
+ * @returns {Promise<{items: Array<{id,title,coverUrl,mediaUrls,author,createdAt}>, nextCursor: string|null}>}
+ */
+export async function listShareItems({ limit = 20, cursor = '', signal } = {}) {
+  const data = await apiGet('/gallery', {
+    query: { limit, cursor },
+    signal,
+    fallbackMessage: '画廊读取失败',
   })
-}
-
-async function readResponse(response, fallback) {
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok || !isApiSuccess(payload, response.status)) {
-    throw new Error(getApiErrorMessage(payload, fallback))
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    nextCursor: data?.nextCursor || null,
   }
-  return getApiData(payload)
 }
 
-export async function listShareItems({
-  page = 1,
-  pageSize = 16,
-  category = '',
-  sort = 'recommended',
-  favoritesOnly = false,
-  cursor = '',
-  includeTotal = true,
-} = {}) {
-  const params = new URLSearchParams()
-  params.set('page', String(page))
-  params.set('pageSize', String(pageSize))
-  params.set('sort', sort)
-  params.set('pagination', 'cursor')
-  params.set('includeTotal', includeTotal ? '1' : '0')
-  if (category) params.set('category', category)
-  if (favoritesOnly) params.set('favorites', 'mine')
-  if (cursor) params.set('cursor', cursor)
-  const response = await fetch(buildApiUrl(`/client/share/items?${params.toString()}`), {
-    method: 'GET',
-    credentials: 'include',
-    headers: authHeaders(),
-  })
-  return readResponse(response, '共享内容读取失败')
-}
-
+/** 社区概览：新契约无该接口，返回空目录（投稿弹窗回退到内置分类）。 */
 export async function getShareOverview() {
-  const response = await fetch(buildApiUrl('/client/share/overview'), {
-    method: 'GET',
-    credentials: 'include',
-    headers: authHeaders(),
-  })
-  return readResponse(response, '社区概览读取失败')
+  return { categories: [], tags: [], items: [] }
 }
 
-export async function listMyShareAssets({ page = 1, pageSize = 48 } = {}) {
-  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
-  const response = await fetch(buildApiUrl(`/client/share/mine?${params.toString()}`), {
-    method: 'GET',
-    credentials: 'include',
-    headers: authHeaders(),
-  })
-  return readResponse(response, '我的资产读取失败')
+/**
+ * 我的共享资产（旧接口形状：{ items, pagination }）。
+ * 新契约映射到「我的画廊投稿」，字段尽量对齐旧模板使用。
+ */
+export async function listMyShareAssets({ pageSize = 48 } = {}) {
+  const { listMyGallerySubmissions } = await import('./meApi')
+  const { items } = await listMyGallerySubmissions({ limit: pageSize })
+  return {
+    items: items.map((item) => ({
+      ...item,
+      kind: String(item.kind || item.taskType || ''),
+      coverUrl: item.coverUrl || item.mediaUrls?.[0] || '',
+    })),
+    pagination: { hasMore: false },
+  }
 }
 
-export async function toggleShareFavorite(itemId) {
-  const response = await fetch(
-    buildApiUrl(`/client/share/items/${encodeURIComponent(itemId)}/favorite`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: '{}',
-    },
+/** 把自己的成功任务投稿到画廊（后端校验产物仍在）。兼容旧调用的 jobId 字段。 */
+export async function submitShareItem({ taskId = '', jobId = '', title = '' } = {}) {
+  return apiPost(
+    '/gallery/submissions',
+    { taskId: String(taskId || jobId), title: String(title || '').trim() },
+    { fallbackMessage: '投稿失败' },
   )
-  return readResponse(response, '收藏失败')
-}
-
-export async function recordShareView(itemId) {
-  const response = await fetch(buildApiUrl(`/client/share/items/${encodeURIComponent(itemId)}/view`), {
-    method: 'POST',
-    credentials: 'include',
-    headers: clientLogHeaders({ 'Content-Type': 'application/json' }),
-    body: '{}',
-  })
-  return readResponse(response, '浏览记录失败')
-}
-
-export async function listShareComments(itemId, { page = 1, pageSize = 12 } = {}) {
-  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
-  const response = await fetch(
-    buildApiUrl(`/client/share/items/${encodeURIComponent(itemId)}/comments?${params.toString()}`),
-    { method: 'GET', credentials: 'include', headers: authHeaders() },
-  )
-  return readResponse(response, '评论读取失败')
-}
-
-export async function createShareComment(itemId, content) {
-  const response = await fetch(
-    buildApiUrl(`/client/share/items/${encodeURIComponent(itemId)}/comments`),
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ content }),
-    },
-  )
-  return readResponse(response, '评论发布失败')
-}
-
-export async function deleteShareComment(commentId) {
-  const response = await fetch(buildApiUrl(`/client/share/comments/${encodeURIComponent(commentId)}`), {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: authHeaders(),
-  })
-  return readResponse(response, '评论删除失败')
-}
-
-export async function submitShareItem({
-  jobId,
-  title = '',
-  styleLabel = '',
-  description = '',
-  category = 'other',
-  tags = [],
-  commentsEnabled = true,
-  allowDownload = false,
-  allowRemix = false,
-  allowRepost = false,
-  licenseCode = 'all-rights-reserved',
-  publishPrompt = false,
-}) {
-  const response = await fetch(buildApiUrl('/client/share/submissions'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      jobId,
-      title,
-      styleLabel,
-      description,
-      category,
-      tags,
-      commentsEnabled,
-      allowDownload,
-      allowRemix,
-      allowRepost,
-      licenseCode,
-      publishPrompt,
-    }),
-  })
-  return readResponse(response, '提交共享审核失败')
 }

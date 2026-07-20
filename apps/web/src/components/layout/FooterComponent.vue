@@ -10,21 +10,21 @@ const runtimeConfigStore = useRuntimeConfigStore()
 
 const footerGroups = [
   {
-    title: '产品',
+    title: '创作',
     links: [
-      { label: 'Share 社区', to: '/share' },
       { label: '文生图', to: '/text-to-image' },
-      { label: '插画上色', to: '/ai-illustration-coloring' },
-      { label: '紫微斗数', to: '/ziwei' },
-      { label: '模型价格', to: '/pricing' },
+      { label: '插画染色', to: '/ai-illustration-coloring' },
+      { label: 'UI 设计稿', to: '/design-workshop' },
+      { label: '超高清模型图', to: '/model-sheet' },
+      { label: '游戏设计', to: '/game-art' },
+      { label: 'AI 拼图', to: '/ai-puzzle' },
     ],
   },
   {
     title: '发现',
     links: [
-      { label: '找壁纸', to: '/search' },
-      { label: '随便看看', to: '/random' },
-      { label: '最近看过', to: '/history' },
+      { label: '共享画廊', to: '/share' },
+      { label: '应用空间', to: '/app-space' },
       { label: '更新说明', to: '/updates' },
     ],
   },
@@ -32,18 +32,13 @@ const footerGroups = [
     title: '账户',
     links: [
       { label: '个人中心', to: '/profile' },
-      { label: '收藏夹', to: '/favorites' },
-      { label: '下载记录', to: '/downloads' },
-      { label: '关注的人', to: '/users' },
-      { label: '常用标签', to: '/tags' },
+      { label: '价格与套餐', to: '/pricing' },
     ],
   },
   {
     title: '支持',
     links: [
-      { label: '偏好设置', to: '/settings' },
       { label: '问题反馈', action: 'feedback' },
-      { label: 'Wallhaven', href: 'https://wallhaven.cc', external: true },
     ],
   },
 ]

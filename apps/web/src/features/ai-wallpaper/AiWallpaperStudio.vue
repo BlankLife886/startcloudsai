@@ -1,6 +1,6 @@
 <script setup>
-import AiCostConfirmDialog from '@/components/wallpaper/fullscreen-preview/features/ai/AiCostConfirmDialog.vue'
-import InsufficientCreditsDialog from '@/components/profile/InsufficientCreditsDialog.vue'
+import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
+import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import AspectRatioSelect from './components/AspectRatioSelect.vue'

@@ -1,1287 +1,945 @@
 <script setup>
-import WallpaperPreview from '@/components/wallpaper/WallpaperFullscreenPreview.vue'
-import { useFavoritesStore } from '@/stores/favorites'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useHistoryStore } from '@/stores/history'
-import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
-import { useSettingsStore } from '@/stores/settings'
-import { useUserStore } from '@/stores/user'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import {
+  deleteMyGallerySubmission,
+  getOverview,
+  listMyGallerySubmissions,
+  listNotifications,
+  markNotificationsRead,
+  updateProfile,
+} from '@/services/meApi'
+import { deleteTask, listTasks, TASK_TYPE_LABELS } from '@/services/tasksApi'
+import { submitShareItem } from '@/services/shareGallery'
+import { formatCents } from '@/services/billingApi'
+import notificationService from '@/services/notification'
 
-import ActivitySummary from '@/components/profile/ActivitySummary.vue'
-import CollectionsManager from '@/components/profile/CollectionsManager.vue'
-import DownloadHistory from '@/components/profile/DownloadHistory.vue'
-import ProfileAiAnalysis from '@/components/profile/ProfileAiAnalysis.vue'
-import ProfileColoringHistory from '@/components/profile/ProfileColoringHistory.vue'
-import ProfileIdentityPanel from '@/components/profile/ProfileIdentityPanel.vue'
-import ProfileStudioUsage from '@/components/profile/ProfileStudioUsage.vue'
-import ProfileWorkspaceHub from '@/components/profile/ProfileWorkspaceHub.vue'
-import StatsAnalytics from '@/components/profile/StatsAnalytics.vue'
-import UserProfileCard from '@/components/profile/UserProfileCard.vue'
-import { buildProfileContinueCards } from '@/features/profile/profileHub'
-import { useProfilePageMotion } from '@/features/profile/composables/useProfilePageMotion'
-import { normalizeClientResourceSummary } from '@/features/pricing/pricingMoney.js'
-import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
-import { insightsApi } from '@/services/api'
-import { getClientCommercePlans, getClientResourceSummary } from '@/services/aiWallpaper'
-import { isCloudSyncEnabled } from '@/services/clientState'
-import '@/styles/profile-console.css'
-
-const favoritesStore = useFavoritesStore()
-const authStore = useAuthStore()
-const historyStore = useHistoryStore()
-const userStore = useUserStore()
-const settingsStore = useSettingsStore()
-const runtimeConfigStore = useRuntimeConfigStore()
-const route = useRoute()
 const router = useRouter()
-const { availableUsd, applyWalletFromSummary, refreshWalletBalance } = useClientWalletBalance()
+const authStore = useAuthStore()
 
-const activeTab = ref('overview')
-const isEditing = ref(false)
-const sidebarVisible = ref(false)
-const pageLoaded = ref(false)
-const pageRef = ref(null)
-const insights = ref(null)
-const insightsLoading = ref(false)
-const insightsError = ref('')
-const insightsAuthRequired = ref(false)
-const hubLoading = ref(false)
-const resourceSummary = ref({})
-const planCurrent = ref(null)
-
-const previewWallpaper = ref(null)
-const showPreview = ref(false)
-const previewIndex = ref(-1)
-
-const tabTransition = ref(false)
-const { playSection } = useProfilePageMotion({ pageRef, ready: pageLoaded })
-
-const navigationItems = [
-  {
-    id: 'overview',
-    label: '概览',
-    icon: 'bi-house-heart',
-    title: '我的空间',
-    description: '最近画面、创作入口与账户概览。',
-    group: 'space',
-  },
-  {
-    id: 'collections',
-    label: '收藏夹',
-    icon: 'bi-folder-heart',
-    title: '我的收藏夹',
-    description: '按主题整理灵感，快速管理不同视觉方向。',
-    group: 'library',
-  },
-  {
-    id: 'activity',
-    label: '活动足迹',
-    icon: 'bi-activity',
-    title: '活动足迹',
-    description: '最近浏览、收藏和关注行为的时间线。',
-    group: 'library',
-  },
-  {
-    id: 'downloads',
-    label: '下载',
-    icon: 'bi-download',
-    title: '下载记录',
-    description: '本地下载路径、最近任务与完整下载管理。',
-    group: 'library',
-  },
-  {
-    id: 'coloring-history',
-    label: '染色作品',
-    icon: 'bi-brush-fill',
-    title: '染色作品',
-    description: '插画染色历史，可提交到 Share 社区。',
-    group: 'create',
-  },
-  {
-    id: 'studio-usage',
-    label: 'AI 用量',
-    icon: 'bi-coin',
-    title: 'AI 功能用量',
-    description: '积分余额、消耗与扣减记录。',
-    group: 'create',
-  },
-  {
-    id: 'stats',
-    label: '审美统计',
-    icon: 'bi-bar-chart',
-    title: '审美统计',
-    description: '用数据看清你的审美偏好和浏览节奏。',
-    group: 'taste',
-  },
-  {
-    id: 'recommend',
-    label: '智能推荐',
-    icon: 'bi-compass',
-    title: '智能推荐',
-    description: '根据收藏和浏览画像，生成标签与壁纸推荐。',
-    group: 'taste',
-  },
-  {
-    id: 'ai',
-    label: 'AI 洞察',
-    icon: 'bi-stars',
-    title: 'AI 洞察',
-    description: '基于个人数据生成更深层的视觉偏好分析。',
-    group: 'taste',
-  },
+const TABS = [
+  { id: 'works', label: '我的作品', icon: 'bi-images' },
+  { id: 'submissions', label: '我的投稿', icon: 'bi-send-check' },
+  { id: 'notifications', label: '通知', icon: 'bi-bell' },
+  { id: 'account', label: '账号设置', icon: 'bi-person-gear' },
 ]
+const activeTab = ref('works')
 
-const profileLayout = computed(() => runtimeConfigStore.getPageLayout('profile') || {})
-const searchLayout = computed(() => runtimeConfigStore.getPageLayout('search') || {})
-const previewLayout = computed(() => searchLayout.value.preview || {})
-
-function isPreviewToolVisible(key) {
-  return previewLayout.value?.enabled !== false && previewLayout.value?.[key]?.enabled !== false
-}
-
-const isPreviewEnabled = computed(
-  () => searchLayout.value?.preview?.enabled !== false && previewLayout.value?.enabled !== false,
-)
-const previewEnabledActions = computed(() => ({
-  favorite: isPreviewToolVisible('favorite'),
-  mockup: isPreviewToolVisible('mockup'),
-  rotate: isPreviewToolVisible('rotate'),
-  fit: isPreviewToolVisible('fit'),
-  info: isPreviewToolVisible('info'),
-  compare: isPreviewToolVisible('compare'),
-  crop: isPreviewToolVisible('crop'),
-  decompose: isPreviewToolVisible('decompose'),
-  filters: isPreviewToolVisible('filters'),
-  ai: isPreviewToolVisible('ai'),
-  download: runtimeConfigStore.canUse('download') && isPreviewToolVisible('download'),
-  fullscreen: isPreviewToolVisible('fullscreen'),
-}))
-const profileSectionEnabled = computed(() => ({
-  favorites:
-    runtimeConfigStore.canUse('favorite') && profileLayout.value?.favorites?.enabled !== false,
-  history: runtimeConfigStore.canUse('history') && profileLayout.value?.history?.enabled !== false,
-  downloads:
-    runtimeConfigStore.canUse('download') && profileLayout.value?.downloads?.enabled !== false,
-  sync: runtimeConfigStore.canUse('sync') && profileLayout.value?.sync?.enabled !== false,
-  aiRecords:
-    runtimeConfigStore.canUse('ai.optimize') && profileLayout.value?.aiRecords?.enabled !== false,
-}))
-
-const visibleNavigationItems = computed(() =>
-  navigationItems.filter((item) => {
-    if (item.id === 'overview') return true
-    if (item.id === 'collections') return profileSectionEnabled.value.favorites
-    if (item.id === 'activity') {
-      return profileSectionEnabled.value.favorites || profileSectionEnabled.value.history
-    }
-    if (item.id === 'downloads') return profileSectionEnabled.value.downloads
-    if (item.id === 'stats') {
-      return profileSectionEnabled.value.favorites || profileSectionEnabled.value.history
-    }
-    if (item.id === 'recommend' || item.id === 'ai') return profileSectionEnabled.value.aiRecords
-    if (item.id === 'studio-usage' || item.id === 'coloring-history')
-      return authStore.isAuthenticated
-    return true
-  }),
-)
-
-const navigationGroups = computed(() =>
-  [
-    {
-      id: 'space',
-      label: '空间',
-      items: visibleNavigationItems.value.filter((item) => item.group === 'space'),
-    },
-    {
-      id: 'library',
-      label: '灵感库',
-      items: visibleNavigationItems.value.filter((item) => item.group === 'library'),
-    },
-    {
-      id: 'create',
-      label: '创作台',
-      items: visibleNavigationItems.value.filter((item) => item.group === 'create'),
-    },
-    {
-      id: 'taste',
-      label: '审美画像',
-      items: visibleNavigationItems.value.filter((item) => item.group === 'taste'),
-    },
-  ].filter((group) => group.items.length > 0),
-)
-
-const cloudSyncEnabled = computed(() => isCloudSyncEnabled())
-const downloadCount = computed(() => Number(settingsStore.settings.download_count || 0))
-const hubWalletUsd = availableUsd
-
-const profileDisplayName = computed(
-  () =>
-    authStore.displayName ||
-    settingsStore.settings.display_name ||
-    settingsStore.settings.username ||
-    '创作者',
-)
-
-const userStats = computed(() => ({
-  favorites: favoritesStore.favoritesCount,
-  collections: favoritesStore.collections.length,
-  history: historyStore.historyCount,
-}))
-
-const activeTabMeta = computed(
-  () =>
-    visibleNavigationItems.value.find((item) => item.id === activeTab.value) ||
-    visibleNavigationItems.value[0] ||
-    navigationItems[0],
-)
-
-const continueCards = computed(() =>
-  buildProfileContinueCards({ favoritesCount: userStats.value.favorites }),
-)
-
-const categoryLabels = {
-  general: '一般',
-  anime: '动漫',
-  people: '人物',
-}
-
-const recentWallpapers = computed(() => {
-  const merged = []
-  if (profileSectionEnabled.value.favorites) {
-    merged.push(
-      ...favoritesStore.favorites.map((item) => ({
-        ...item,
-        profile_source: '收藏',
-        profile_time: item.favorited_at || item.created_at || item.added_at,
-      })),
-    )
-  }
-  if (profileSectionEnabled.value.history) {
-    merged.push(
-      ...historyStore.history.map((item) => ({
-        ...item,
-        profile_source: '浏览',
-        profile_time: item.viewed_at || item.updated_at,
-      })),
-    )
-  }
-
-  const seen = new Set()
-  return merged
-    .filter((item) => item?.id && !seen.has(item.id) && seen.add(item.id))
-    .sort((a, b) => new Date(b.profile_time || 0) - new Date(a.profile_time || 0))
-    .slice(0, 8)
+// ---- 总览 ----
+const overview = ref(null)
+const unreadCount = computed(() => Number(overview.value?.unreadNotifications || 0))
+const taskStats = computed(() => overview.value?.taskStats || {})
+const successRate = computed(() => {
+  const total = Number(taskStats.value.total || 0)
+  if (!total) return '—'
+  return `${Math.round((Number(taskStats.value.succeeded || 0) / total) * 100)}%`
+})
+const typeStatRows = computed(() => {
+  const byType = overview.value?.taskStatsByType || {}
+  return Object.entries(TASK_TYPE_LABELS)
+    .map(([type, label]) => ({ type, label, count: Number(byType[type] || 0) }))
+    .filter((row) => row.count > 0)
 })
 
-const previewWallpapers = computed(() => {
-  const merged = [...recentWallpapers.value]
-  if (profileSectionEnabled.value.favorites) merged.push(...favoritesStore.favorites)
-  if (profileSectionEnabled.value.history) merged.push(...historyStore.history)
+// ---- 我的作品（任务列表） ----
+const tasks = ref([])
+const tasksLoading = ref(false)
+const tasksCursor = ref(null)
+const taskTypeFilter = ref('')
+const previewTask = ref(null)
+const deletingTaskId = ref('')
+const submittingTaskId = ref('')
 
-  const seen = new Set()
-  return merged.filter((item) => {
-    if (!item?.id || seen.has(String(item.id))) return false
-    seen.add(String(item.id))
-    return true
-  })
-})
+// ---- 我的投稿 ----
+const submissions = ref([])
+const submissionsLoading = ref(false)
+const submissionsCursor = ref(null)
+const submissionsLoaded = ref(false)
 
-const previewInListContext = computed(
-  () => showPreview.value && previewIndex.value >= 0 && previewWallpapers.value.length > 1,
-)
+// ---- 通知 ----
+const notifications = ref([])
+const notificationsLoading = ref(false)
+const notificationsCursor = ref(null)
+const notificationsLoaded = ref(false)
 
-const colorPalette = computed(() => {
-  const colorCount = {}
-  favoritesStore.favorites.forEach((item) => {
-    if (!Array.isArray(item.colors)) return
-    item.colors.forEach((color) => {
-      colorCount[color] = (colorCount[color] || 0) + 1
+// ---- 账号设置 ----
+const profileForm = reactive({ username: '', saving: false })
+const passwordForm = reactive({ old: '', next: '', confirm: '', saving: false })
+
+const TASK_STATUS_LABELS = {
+  queued: '排队中',
+  running: '生成中',
+  succeeded: '已完成',
+  failed: '失败',
+  canceled: '已取消',
+}
+
+const SUBMISSION_STATUS_LABELS = {
+  pending: '审核中',
+  approved: '已通过',
+  rejected: '已拒绝',
+  removed: '已下架',
+}
+
+function formatTime(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+async function loadOverview() {
+  try {
+    overview.value = await getOverview()
+  } catch {
+    /* 静默失败 */
+  }
+}
+
+async function loadTasks({ append = false } = {}) {
+  if (tasksLoading.value) return
+  tasksLoading.value = true
+  try {
+    const { items, nextCursor } = await listTasks({
+      type: taskTypeFilter.value,
+      limit: 12,
+      cursor: append ? tasksCursor.value || '' : '',
     })
-  })
-  return Object.entries(colorCount)
-    .map(([color, count]) => ({ color, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6)
-})
+    tasks.value = append ? [...tasks.value, ...items] : items
+    tasksCursor.value = nextCursor
+  } catch (error) {
+    notificationService.error(error?.message || '任务列表读取失败')
+  } finally {
+    tasksLoading.value = false
+  }
+}
 
-const categoryProfile = computed(() => {
-  const total = favoritesStore.favorites.length || 1
-  const counts = favoritesStore.favorites.reduce((acc, item) => {
-    const key = item.category || 'other'
-    acc[key] = (acc[key] || 0) + 1
-    return acc
-  }, {})
-  return Object.entries(counts)
-    .map(([key, count]) => ({
-      key,
-      label: categoryLabels[key] || '其他',
-      count,
-      ratio: Math.round((count / total) * 100),
+function setTaskFilter(type) {
+  if (taskTypeFilter.value === type) return
+  taskTypeFilter.value = type
+  tasksCursor.value = null
+  void loadTasks()
+}
+
+async function loadSubmissions({ append = false } = {}) {
+  if (submissionsLoading.value) return
+  submissionsLoading.value = true
+  try {
+    const { items, nextCursor } = await listMyGallerySubmissions({
+      limit: 12,
+      cursor: append ? submissionsCursor.value || '' : '',
+    })
+    submissions.value = append ? [...submissions.value, ...items] : items
+    submissionsCursor.value = nextCursor
+    submissionsLoaded.value = true
+  } catch (error) {
+    notificationService.error(error?.message || '投稿列表读取失败')
+  } finally {
+    submissionsLoading.value = false
+  }
+}
+
+async function loadNotifications({ append = false } = {}) {
+  if (notificationsLoading.value) return
+  notificationsLoading.value = true
+  try {
+    const { items, nextCursor } = await listNotifications({
+      limit: 15,
+      cursor: append ? notificationsCursor.value || '' : '',
+    })
+    notifications.value = append ? [...notifications.value, ...items] : items
+    notificationsCursor.value = nextCursor
+    notificationsLoaded.value = true
+  } catch (error) {
+    notificationService.error(error?.message || '通知读取失败')
+  } finally {
+    notificationsLoading.value = false
+  }
+}
+
+function switchTab(tabId) {
+  activeTab.value = tabId
+  if (tabId === 'submissions' && !submissionsLoaded.value) void loadSubmissions()
+  if (tabId === 'notifications' && !notificationsLoaded.value) void loadNotifications()
+}
+
+async function markAllRead() {
+  try {
+    await markNotificationsRead()
+    notifications.value = notifications.value.map((item) => ({
+      ...item,
+      readAt: item.readAt || new Date().toISOString(),
     }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 4)
-})
-
-const weeklyActivity = computed(() => {
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-  const recentViews = historyStore.history.filter(
-    (item) => new Date(item.viewed_at || 0).getTime() >= weekAgo,
-  ).length
-  const recentFavorites = favoritesStore.favorites.filter(
-    (item) => new Date(item.favorited_at || item.created_at || 0).getTime() >= weekAgo,
-  ).length
-  return {
-    views: recentViews,
-    favorites: recentFavorites,
-    total: recentViews + recentFavorites,
-  }
-})
-
-const profileCompleteness = computed(() => {
-  const settings = settingsStore.settings || {}
-  const fields = [
-    settings.username,
-    settings.display_name,
-    settings.bio,
-    settings.avatar_url,
-    settings.location,
-    settings.website,
-    settings.social_links?.github ||
-      settings.social_links?.twitter ||
-      settings.social_links?.instagram,
-  ]
-  const filled = fields.filter(Boolean).length
-  return Math.round((filled / fields.length) * 100)
-})
-
-const topCollections = computed(() =>
-  [...favoritesStore.collections].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 3),
-)
-
-const collectionHealth = computed(() => {
-  const collections = favoritesStore.collections
-  const totalCollections = collections.length
-  const emptyCollections = collections.filter((collection) => !collection.count).length
-  return {
-    totalCollections,
-    emptyCollections,
-  }
-})
-
-const insightProfile = computed(() => insights.value?.profile || null)
-const autoTags = computed(() => insights.value?.tags || insightProfile.value?.tags || [])
-const insightRecommendations = computed(() => insights.value?.recommendations || [])
-const insightSearches = computed(
-  () => insights.value?.querySuggestions || insights.value?.suggestedSearches || [],
-)
-const insightClusters = computed(() => insights.value?.clusters || [])
-const insightStats = computed(() => insightProfile.value?.totals || null)
-const publicProfilePath = computed(() => {
-  const username = settingsStore.settings.username || settingsStore.settings.display_name || ''
-  return username ? `/user/${encodeURIComponent(username)}` : ''
-})
-const publicProfileUrl = computed(() => {
-  if (!publicProfilePath.value) return ''
-  if (typeof window === 'undefined') return publicProfilePath.value
-  return new URL(publicProfilePath.value, window.location.origin).href
-})
-
-function getNavBadge(id) {
-  if (id === 'collections') return userStats.value.collections || ''
-  if (id === 'activity') return weeklyActivity.value.total || ''
-  if (id === 'downloads') return downloadCount.value || ''
-  if (id === 'recommend') return autoTags.value.length || ''
-  return ''
-}
-
-function getWallpaperThumb(wallpaper) {
-  return (
-    wallpaper?.thumbnail || wallpaper?.thumbs?.small || wallpaper?.thumbs?.large || wallpaper?.path
-  )
-}
-
-function formatProfileTime(value) {
-  if (!value) return '刚刚'
-  const diff = Date.now() - new Date(value).getTime()
-  const minutes = Math.floor(diff / 60000)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-  if (days > 0) return `${days}天前`
-  if (hours > 0) return `${hours}小时前`
-  if (minutes > 0) return `${minutes}分钟前`
-  return '刚刚'
-}
-
-const overviewTrajectory = computed(() =>
-  recentWallpapers.value.slice(0, 8).map((wallpaper, index) => ({
-    wallpaper,
-    index: index + 1,
-    thumb: getWallpaperThumb(wallpaper),
-    source: wallpaper.profile_source,
-    time: formatProfileTime(wallpaper.profile_time),
-  })),
-)
-
-const sectionPulse = computed(() => {
-  if (activeTab.value === 'collections') {
-    return { value: collectionHealth.value.totalCollections, label: '收藏夹' }
-  }
-  if (activeTab.value === 'activity') {
-    return { value: weeklyActivity.value.total, label: '本周动态' }
-  }
-  if (activeTab.value === 'downloads') {
-    return { value: downloadCount.value, label: '累计下载' }
-  }
-  if (activeTab.value === 'stats') {
-    return { value: colorPalette.value.length || 0, label: '色板' }
-  }
-  if (activeTab.value === 'recommend') {
-    return { value: autoTags.value.length || '—', label: '画像标签' }
-  }
-  if (activeTab.value === 'studio-usage') {
-    return { value: 'AI', label: '用量' }
-  }
-  return null
-})
-
-watch(
-  visibleNavigationItems,
-  (items) => {
-    if (!items.some((item) => item.id === activeTab.value)) {
-      activeTab.value = items[0]?.id || 'overview'
-    }
-    syncRouteTab()
-  },
-  { immediate: true },
-)
-
-watch(
-  () => route.query.tab,
-  () => syncRouteTab(),
-)
-
-watch(
-  () => route.path,
-  (path) => {
-    if (path === '/profile' && authStore.isAuthenticated) {
-      void refreshWalletBalance({ force: true })
-    }
-  },
-)
-
-watch(
-  () => authStore.isAuthenticated,
-  (isAuthenticated) => {
-    if (!isAuthenticated) {
-      if (route.query.tab === 'account') {
-        replaceProfileAccountUrl()
-        router.replace('/profile').catch(() => {})
-      }
-      resourceSummary.value = {}
-      planCurrent.value = null
-      return
-    }
-    void loadWorkspaceHub()
-    syncRouteTab()
-  },
-)
-
-const mobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 1024 : false)
-
-function setActiveTab(tab) {
-  if (!visibleNavigationItems.value.some((item) => item.id === tab)) {
-    activeTab.value = visibleNavigationItems.value[0]?.id || 'overview'
-    return
-  }
-  if (activeTab.value === tab) return
-
-  activeTab.value = tab
-  tabTransition.value = true
-  const body = document.querySelector('.profile-console__body')
-  if (body) body.scrollTop = 0
-  window.requestAnimationFrame(() => {
-    tabTransition.value = false
-  })
-  void nextTick(() => playSection({ soft: false }))
-
-  if (mobileViewport.value) toggleSidebar(false)
-
-  if (tab === 'recommend' || tab === 'overview') void loadInsights()
-}
-
-function openContinueCard(card) {
-  if (card?.tab) {
-    setActiveTab(card.tab)
-    return
-  }
-  if (card?.to) router.push(card.to)
-}
-
-function toggleSidebar(forceState = null) {
-  sidebarVisible.value = forceState !== null ? forceState : !sidebarVisible.value
-}
-
-function toggleEditMode() {
-  isEditing.value = !isEditing.value
-}
-
-function handleSaveProfile() {
-  isEditing.value = false
-}
-
-function handleCancelEdit() {
-  isEditing.value = false
-}
-
-async function loadWorkspaceHub() {
-  if (!authStore.isAuthenticated) return
-  hubLoading.value = true
-  try {
-    const [resourcesResult, plansResult] = await Promise.allSettled([
-      getClientResourceSummary(),
-      getClientCommercePlans(),
-    ])
-    if (resourcesResult.status === 'fulfilled' && resourcesResult.value?.summary) {
-      resourceSummary.value = normalizeClientResourceSummary(resourcesResult.value.summary)
-      applyWalletFromSummary(resourceSummary.value)
-    }
-    if (plansResult.status === 'fulfilled') {
-      planCurrent.value = plansResult.value?.current || null
-    }
+    if (overview.value) overview.value = { ...overview.value, unreadNotifications: 0 }
+    notificationService.success('已全部标记为已读')
   } catch (error) {
-    console.error('加载账号工作台失败:', error)
-  } finally {
-    hubLoading.value = false
+    notificationService.error(error?.message || '操作失败')
   }
 }
 
-async function loadInsights(force = false) {
-  if (insightsLoading.value) return
-  if (insights.value && !force) return
-
-  insightsLoading.value = true
-  insightsError.value = ''
-  insightsAuthRequired.value = false
-
+async function removeTask(task) {
+  if (deletingTaskId.value) return
+  if (!window.confirm('删除后任务记录与产物都会移除，确定删除？')) return
+  deletingTaskId.value = task.id
   try {
-    await authStore.initAuth().catch(() => null)
-    if (!authStore.isAuthenticated) {
-      insightsAuthRequired.value = true
-      return
-    }
-
-    const [autoTagsResult, recommendationsResult] = await Promise.all([
-      insightsApi.getAutoTags(),
-      insightsApi.getRecommendations(18),
-    ])
-    insights.value = {
-      ...autoTagsResult,
-      ...recommendationsResult,
-      tags: autoTagsResult?.tags || recommendationsResult?.profile?.tags || [],
-      clusters: autoTagsResult?.clusters || [],
-      suggestedSearches: autoTagsResult?.suggestedSearches || [],
-    }
+    await deleteTask(task.id)
+    tasks.value = tasks.value.filter((item) => item.id !== task.id)
+    if (previewTask.value?.id === task.id) previewTask.value = null
+    notificationService.success('任务已删除')
   } catch (error) {
-    if (error?.response?.status === 401 || error?.response?.status === 403) {
-      insightsAuthRequired.value = true
-      insightsError.value = ''
-    } else {
-      insightsError.value = error?.message || '加载推荐画像失败'
-    }
+    notificationService.error(error?.message || '删除失败')
   } finally {
-    insightsLoading.value = false
+    deletingTaskId.value = ''
   }
 }
 
-function goLoginForInsights() {
-  router.push({
-    name: 'auth',
-    query: { mode: 'login', redirect: '/profile?tab=recommend' },
-  })
+async function submitToGallery(task) {
+  if (submittingTaskId.value) return
+  const title = window.prompt('给作品起个标题：', task.prompt?.slice(0, 40) || 'AI 作品')
+  if (title === null) return
+  submittingTaskId.value = task.id
+  try {
+    await submitShareItem({ taskId: task.id, title: title.trim() || 'AI 作品' })
+    notificationService.success('已提交审核，可在「我的投稿」查看进度')
+    submissionsLoaded.value = false
+  } catch (error) {
+    notificationService.error(error?.message || '投稿失败')
+  } finally {
+    submittingTaskId.value = ''
+  }
 }
 
-function openInsightSearch(item) {
-  const query = item?.query || item?.name || item?.label || ''
-  const routeQuery = { page: 1, sorting: 'favorites', order: 'desc' }
-  if (query) routeQuery.query = query
-  if (item?.color) routeQuery.color = String(item.color).replace('#', '')
-  router.push({ name: 'search', query: routeQuery })
+async function removeSubmission(submission) {
+  if (!window.confirm('确定撤回/删除该投稿？')) return
+  try {
+    await deleteMyGallerySubmission(submission.id)
+    submissions.value = submissions.value.filter((item) => item.id !== submission.id)
+    notificationService.success('投稿已删除')
+  } catch (error) {
+    notificationService.error(error?.message || '删除失败')
+  }
 }
 
-function openPublicProfile() {
-  if (publicProfilePath.value) router.push(publicProfilePath.value)
-  else toggleEditMode()
-}
-
-function syncRouteTab() {
-  const requestedTab = String(route.query.tab || '').trim()
-  if (!requestedTab) return
-  if (requestedTab === 'account') {
-    replaceProfileAccountUrl()
-    router.replace('/profile').catch(() => {})
+async function saveUsername() {
+  const username = profileForm.username.trim()
+  if (!username) {
+    notificationService.warning('用户名不能为空')
     return
   }
-  if (visibleNavigationItems.value.some((item) => item.id === requestedTab)) {
-    activeTab.value = requestedTab
+  profileForm.saving = true
+  try {
+    await updateProfile({ username })
+    authStore.patchUser({ username })
+    notificationService.success('用户名已更新')
+  } catch (error) {
+    notificationService.error(error?.message || '保存失败')
+  } finally {
+    profileForm.saving = false
   }
 }
 
-function replaceProfileAccountUrl() {
-  if (typeof window === 'undefined') return
-  if (window.location.pathname === '/profile' && window.location.search.includes('tab=account')) {
-    window.history.replaceState(window.history.state, '', '/profile')
+async function savePassword() {
+  if (!passwordForm.old || !passwordForm.next) {
+    notificationService.warning('请填写旧密码和新密码')
+    return
+  }
+  if (passwordForm.next.length < 8) {
+    notificationService.warning('新密码至少 8 位')
+    return
+  }
+  if (passwordForm.next !== passwordForm.confirm) {
+    notificationService.warning('两次输入的新密码不一致')
+    return
+  }
+  passwordForm.saving = true
+  try {
+    await updateProfile({ password: { old: passwordForm.old, new: passwordForm.next } })
+    passwordForm.old = ''
+    passwordForm.next = ''
+    passwordForm.confirm = ''
+    notificationService.success('密码已更新')
+  } catch (error) {
+    notificationService.error(error?.message || '密码修改失败')
+  } finally {
+    passwordForm.saving = false
   }
 }
 
-function previewImage(wallpaper) {
-  if (!wallpaper || !isPreviewEnabled.value) return
-  const list = previewWallpapers.value
-  const index = list.findIndex((item) => String(item.id) === String(wallpaper?.id))
-
-  if (index >= 0) {
-    previewIndex.value = index
-    previewWallpaper.value = list[index]
-  } else {
-    previewIndex.value = -1
-    previewWallpaper.value = wallpaper
-  }
-  showPreview.value = true
+async function handleLogout() {
+  await authStore.logout()
+  router.push('/')
 }
 
-function closePreview() {
-  showPreview.value = false
-  previewWallpaper.value = null
-  previewIndex.value = -1
-}
-
-function setPreviewByIndex(index) {
-  const list = previewWallpapers.value
-  if (!list.length) return
-  const nextIndex = (index + list.length) % list.length
-  previewIndex.value = nextIndex
-  previewWallpaper.value = list[nextIndex]
-}
-
-function onPreviewNext() {
-  setPreviewByIndex(previewIndex.value + 1)
-}
-
-function onPreviewPrevious() {
-  setPreviewByIndex(previewIndex.value - 1)
-}
-
-function handleResize() {
-  mobileViewport.value = window.innerWidth < 1024
-  if (window.innerWidth >= 1024) sidebarVisible.value = false
-}
-
-onMounted(() => {
-  syncRouteTab()
-  if (activeTab.value === 'recommend') void loadInsights()
-
-  Promise.allSettled([
-    authStore.initAuth(),
-    runtimeConfigStore.loadRuntimeConfig(),
-    favoritesStore.initFavorites(),
-    historyStore.initHistory(),
-    userStore.initUserData(),
-    settingsStore.initSettings(),
-    loadWorkspaceHub(),
-  ]).then((results) => {
-    const failed = results.find((result) => result.status === 'rejected')
-    if (failed) console.error('初始化个人中心数据失败:', failed.reason)
-    syncRouteTab()
-    pageLoaded.value = true
-    if (activeTab.value === 'overview') void loadInsights()
-  })
-
-  window.addEventListener('resize', handleResize)
-  handleResize()
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
+onMounted(async () => {
+  await authStore.initAuth().catch(() => null)
+  profileForm.username = authStore.user?.username || ''
+  void loadOverview()
+  void loadTasks()
 })
 </script>
 
 <template>
-  <div
-    ref="pageRef"
-    class="profile-console"
-    :class="{ 'page-loaded': pageLoaded, 'is-ready': pageLoaded }"
-  >
-    <div class="profile-console__ambient profile-console__ambient--a" aria-hidden="true"></div>
-    <div class="profile-console__ambient profile-console__ambient--b" aria-hidden="true"></div>
-    <div class="profile-console__ambient profile-console__ambient--stars" aria-hidden="true"></div>
+  <div class="profile-page">
+    <!-- 账号信息卡 -->
+    <section class="profile-hero">
+      <div class="profile-identity">
+        <span class="profile-avatar">
+          <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
+          <i v-else class="bi bi-person-fill"></i>
+        </span>
+        <div>
+          <h1>{{ authStore.displayName }}</h1>
+          <p>{{ authStore.user?.email }}</p>
+          <small>注册于 {{ formatTime(authStore.user?.createdAt) }}</small>
+        </div>
+      </div>
+      <button type="button" class="profile-btn is-ghost" @click="handleLogout">
+        <i class="bi bi-box-arrow-right"></i> 退出登录
+      </button>
+    </section>
 
-    <div
-      v-if="mobileViewport && sidebarVisible"
-      class="profile-console__backdrop"
-      @click="toggleSidebar(false)"
-    ></div>
+    <!-- 数据总览 -->
+    <section class="profile-stats">
+      <article>
+        <span>可用余额</span>
+        <strong>{{
+          formatCents(
+            Math.max(
+              0,
+              Number(overview?.wallet?.balanceCents || 0) - Number(overview?.wallet?.frozenCents || 0),
+            ),
+          )
+        }}</strong>
+        <RouterLink to="/pricing">去充值 <i class="bi bi-arrow-right"></i></RouterLink>
+      </article>
+      <article>
+        <span>任务总数</span>
+        <strong>{{ taskStats.total ?? '—' }}</strong>
+        <small>进行中 {{ taskStats.running || 0 }}</small>
+      </article>
+      <article>
+        <span>成功率</span>
+        <strong>{{ successRate }}</strong>
+        <small>成功 {{ taskStats.succeeded || 0 }} / 失败 {{ taskStats.failed || 0 }}</small>
+      </article>
+      <article>
+        <span>未读通知</span>
+        <strong>{{ unreadCount }}</strong>
+        <button type="button" class="profile-link-btn" @click="switchTab('notifications')">查看通知</button>
+      </article>
+    </section>
 
-    <div class="profile-console__shell">
-      <aside class="profile-console__aside" :class="{ 'is-open': sidebarVisible }">
+    <div v-if="typeStatRows.length" class="profile-type-stats">
+      <span v-for="row in typeStatRows" :key="row.type" class="profile-type-chip">
+        {{ row.label }} × {{ row.count }}
+      </span>
+    </div>
+
+    <!-- Tab 导航 -->
+    <nav class="profile-tabs">
+      <button
+        v-for="tab in TABS"
+        :key="tab.id"
+        type="button"
+        :class="{ 'is-active': activeTab === tab.id }"
+        @click="switchTab(tab.id)"
+      >
+        <i class="bi" :class="tab.icon"></i>
+        {{ tab.label }}
+        <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
+      </button>
+    </nav>
+
+    <!-- 我的作品 -->
+    <section v-show="activeTab === 'works'" class="profile-panel">
+      <div class="works-filter">
         <button
-          v-if="mobileViewport"
           type="button"
-          class="profile-console__aside-close"
-          aria-label="关闭菜单"
-          @click="toggleSidebar(false)"
-        >
-          <i class="bi bi-x-lg"></i>
-        </button>
+          :class="{ 'is-active': taskTypeFilter === '' }"
+          @click="setTaskFilter('')"
+        >全部</button>
+        <button
+          v-for="(label, type) in TASK_TYPE_LABELS"
+          :key="type"
+          type="button"
+          :class="{ 'is-active': taskTypeFilter === type }"
+          @click="setTaskFilter(type)"
+        >{{ label }}</button>
+      </div>
 
-        <ProfileIdentityPanel
-          :balance-usd="hubWalletUsd"
-          :sync-enabled="cloudSyncEnabled"
-          :completeness="profileCompleteness"
-          :public-profile-path="publicProfilePath"
-          :bio="settingsStore.settings.bio || ''"
-          @edit="toggleEditMode"
-          @open-public="openPublicProfile"
-        />
-
-        <div
-          v-for="group in navigationGroups"
-          :key="group.id"
-          class="profile-console__nav-group"
-          data-pf-rail
-        >
-          <span class="profile-console__nav-label">{{ group.label }}</span>
-          <nav class="profile-console__nav" :aria-label="group.label">
+      <div v-if="tasks.length" class="works-grid">
+        <article v-for="task in tasks" :key="task.id" class="work-card">
+          <button
+            type="button"
+            class="work-cover"
+            :disabled="!task.outputUrls?.length"
+            @click="previewTask = task"
+          >
+            <img
+              v-if="task.outputUrls?.length"
+              :src="task.outputUrls[0]"
+              :alt="task.prompt || 'AI 作品'"
+              loading="lazy"
+            />
+            <span v-else class="work-cover-placeholder">
+              <i class="bi" :class="task.status === 'failed' ? 'bi-x-circle' : 'bi-hourglass-split'"></i>
+              {{ TASK_STATUS_LABELS[task.status] || task.status }}
+            </span>
+          </button>
+          <div class="work-meta">
+            <span class="work-type">{{ TASK_TYPE_LABELS[task.type] || task.type }}</span>
+            <span class="work-status" :data-status="task.status">{{ TASK_STATUS_LABELS[task.status] || task.status }}</span>
+          </div>
+          <p class="work-prompt" :title="task.prompt">{{ task.prompt || '（无提示词）' }}</p>
+          <small>{{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}</small>
+          <div class="work-actions">
             <button
-              v-for="item in group.items"
-              :key="item.id"
+              v-if="task.status === 'succeeded' && task.outputUrls?.length"
               type="button"
-              class="profile-console__nav-item"
-              :class="{ 'is-active': activeTab === item.id }"
-              @click="setActiveTab(item.id)"
+              :disabled="submittingTaskId === task.id"
+              @click="submitToGallery(task)"
             >
-              <i class="bi" :class="item.icon"></i>
-              <span>{{ item.label }}</span>
-              <small v-if="getNavBadge(item.id)" class="profile-console__nav-badge">
-                {{ getNavBadge(item.id) }}
-              </small>
+              <i class="bi bi-send"></i> 投稿
             </button>
-          </nav>
-        </div>
+            <button
+              type="button"
+              class="is-danger"
+              :disabled="deletingTaskId === task.id"
+              @click="removeTask(task)"
+            >
+              <i class="bi bi-trash3"></i> 删除
+            </button>
+          </div>
+        </article>
+      </div>
+      <p v-else-if="!tasksLoading" class="profile-empty">还没有创作记录，去工作台生成第一张图吧。</p>
 
-        <div class="profile-rail-foot" data-pf-rail>
-          <button
-            type="button"
-            class="profile-rail-foot__link"
-            @click="router.push({ name: 'settings' })"
-          >
-            <i class="bi bi-sliders"></i>
-            应用设置
+      <button
+        v-if="tasksCursor"
+        type="button"
+        class="profile-btn is-ghost"
+        :disabled="tasksLoading"
+        @click="loadTasks({ append: true })"
+      >
+        {{ tasksLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </section>
+
+    <!-- 我的投稿 -->
+    <section v-show="activeTab === 'submissions'" class="profile-panel">
+      <ul v-if="submissions.length" class="submission-list">
+        <li v-for="submission in submissions" :key="submission.id">
+          <img
+            v-if="submission.coverUrl || submission.mediaUrls?.length"
+            :src="submission.coverUrl || submission.mediaUrls[0]"
+            alt=""
+            loading="lazy"
+          />
+          <div class="submission-body">
+            <strong>{{ submission.title || 'AI 作品' }}</strong>
+            <small>{{ formatTime(submission.createdAt) }}</small>
+            <p v-if="submission.rejectReason" class="submission-reason">原因：{{ submission.rejectReason }}</p>
+          </div>
+          <span class="submission-status" :data-status="submission.status">
+            {{ SUBMISSION_STATUS_LABELS[submission.status] || submission.status }}
+          </span>
+          <button type="button" class="submission-remove" title="撤回/删除" @click="removeSubmission(submission)">
+            <i class="bi bi-trash3"></i>
           </button>
-          <button
-            type="button"
-            class="profile-rail-foot__link"
-            @click="router.push({ name: 'pricing' })"
-          >
-            <i class="bi bi-wallet2"></i>
-            钱包与套餐
+        </li>
+      </ul>
+      <p v-else-if="submissionsLoaded && !submissionsLoading" class="profile-empty">
+        还没有投稿，在「我的作品」里把成功任务投稿到画廊吧。
+      </p>
+      <button
+        v-if="submissionsCursor"
+        type="button"
+        class="profile-btn is-ghost"
+        :disabled="submissionsLoading"
+        @click="loadSubmissions({ append: true })"
+      >
+        {{ submissionsLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </section>
+
+    <!-- 通知 -->
+    <section v-show="activeTab === 'notifications'" class="profile-panel">
+      <div class="notifications-toolbar">
+        <button type="button" class="profile-btn is-ghost" @click="markAllRead">
+          <i class="bi bi-check2-all"></i> 全部已读
+        </button>
+      </div>
+      <ul v-if="notifications.length" class="notification-list">
+        <li v-for="item in notifications" :key="item.id" :class="{ 'is-unread': !item.readAt }">
+          <span class="notification-dot" aria-hidden="true"></span>
+          <div>
+            <strong>{{ item.title }}</strong>
+            <p v-if="item.body">{{ item.body }}</p>
+            <small>{{ formatTime(item.createdAt) }}</small>
+          </div>
+        </li>
+      </ul>
+      <p v-else-if="notificationsLoaded && !notificationsLoading" class="profile-empty">暂无通知。</p>
+      <button
+        v-if="notificationsCursor"
+        type="button"
+        class="profile-btn is-ghost"
+        :disabled="notificationsLoading"
+        @click="loadNotifications({ append: true })"
+      >
+        {{ notificationsLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </section>
+
+    <!-- 账号设置 -->
+    <section v-show="activeTab === 'account'" class="profile-panel">
+      <div class="account-forms">
+        <form class="account-form" @submit.prevent="saveUsername">
+          <h3><i class="bi bi-person-badge"></i> 修改用户名</h3>
+          <label>
+            <span>用户名</span>
+            <input v-model="profileForm.username" maxlength="24" placeholder="输入新的用户名" />
+          </label>
+          <button type="submit" class="profile-btn is-primary" :disabled="profileForm.saving">
+            {{ profileForm.saving ? '保存中…' : '保存' }}
           </button>
-        </div>
-      </aside>
+        </form>
 
-      <main class="profile-console__main">
-        <header v-if="mobileViewport" class="profile-console__mobile-bar">
-          <button
-            type="button"
-            class="profile-console__menu-btn"
-            aria-label="打开菜单"
-            @click="toggleSidebar()"
-          >
-            <i class="bi bi-list"></i>
+        <form class="account-form" @submit.prevent="savePassword">
+          <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
+          <label>
+            <span>当前密码</span>
+            <input v-model="passwordForm.old" type="password" autocomplete="current-password" />
+          </label>
+          <label>
+            <span>新密码（至少 8 位）</span>
+            <input v-model="passwordForm.next" type="password" autocomplete="new-password" />
+          </label>
+          <label>
+            <span>确认新密码</span>
+            <input v-model="passwordForm.confirm" type="password" autocomplete="new-password" />
+          </label>
+          <button type="submit" class="profile-btn is-primary" :disabled="passwordForm.saving">
+            {{ passwordForm.saving ? '保存中…' : '更新密码' }}
           </button>
-          <div class="profile-console__mobile-title">
-            <strong>{{ activeTab === 'overview' ? `你好，${profileDisplayName}` : activeTabMeta.title }}</strong>
-            <small>{{ activeTabMeta.description }}</small>
-          </div>
-        </header>
+        </form>
+      </div>
+    </section>
 
-        <div
-          v-if="mobileViewport"
-          class="profile-console__tabs"
-          role="tablist"
-          aria-label="个人中心标签"
-        >
-          <button
-            v-for="item in visibleNavigationItems"
-            :key="`tab-${item.id}`"
-            type="button"
-            role="tab"
-            class="profile-console__tab"
-            :class="{ 'is-active': activeTab === item.id }"
-            :aria-selected="activeTab === item.id"
-            @click="setActiveTab(item.id)"
-          >
-            <i class="bi" :class="item.icon"></i>
-            {{ item.label }}
-          </button>
-        </div>
-
-        <div class="profile-console__body" :class="{ 'is-transitioning': tabTransition }">
-          <!-- Overview -->
-          <div v-if="activeTab === 'overview'" class="profile-console__section profile-lounge">
-            <header class="profile-lounge__hero" data-pf-motion>
-              <p class="profile-lounge__eyebrow">我的空间</p>
-              <h2 class="profile-lounge__hello">你好，{{ profileDisplayName }}</h2>
-              <p class="profile-lounge__lead">
-                从最近的画面继续。收藏、染色、壁纸与社区都在这里。
-              </p>
-            </header>
-
-            <section class="profile-lounge__gallery" data-pf-motion aria-label="最近画面">
-              <div class="profile-lounge__gallery-head">
-                <div>
-                  <h3>最近画面</h3>
-                  <p>
-                    {{
-                      overviewTrajectory.length
-                        ? `${overviewTrajectory.length} 条近期动态`
-                        : '还没有画面足迹'
-                    }}
-                  </p>
-                </div>
-                <button
-                  v-if="overviewTrajectory.length"
-                  type="button"
-                  class="profile-lounge__link"
-                  @click="setActiveTab('activity')"
-                >
-                  查看活动
-                  <i class="bi bi-arrow-right"></i>
-                </button>
-              </div>
-
-              <div v-if="overviewTrajectory.length" class="profile-lounge__shots">
-                <button
-                  v-for="item in overviewTrajectory"
-                  :key="item.wallpaper.id"
-                  type="button"
-                  class="profile-lounge__shot"
-                  data-pf-shot
-                  @click="previewImage(item.wallpaper)"
-                >
-                  <img
-                    :src="item.thumb"
-                    :alt="item.wallpaper.id"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                  <span>{{ item.source }} · {{ item.time }}</span>
-                </button>
-              </div>
-              <div v-else class="profile-lounge__empty">
-                <i class="bi bi-images"></i>
-                <div>
-                  <strong>还没有最近画面</strong>
-                  <p>去浏览或收藏几张壁纸，这里会变成你的私人画廊入口。</p>
-                </div>
-                <button
-                  type="button"
-                  class="profile-lounge__btn profile-lounge__btn--primary"
-                  @click="router.push({ name: 'search' })"
-                >
-                  去浏览壁纸
-                </button>
-              </div>
-
-              <div
-                v-if="categoryProfile.length || colorPalette.length"
-                class="profile-taste-strip"
-                data-pf-motion
-              >
-                <div v-if="categoryProfile.length" class="profile-taste-strip__cats">
-                  <span
-                    v-for="item in categoryProfile.slice(0, 3)"
-                    :key="item.key"
-                    class="profile-taste-strip__cat"
-                  >
-                    {{ item.label }} {{ item.ratio }}%
-                  </span>
-                </div>
-                <div v-if="colorPalette.length" class="profile-taste-strip__colors">
-                  <span
-                    v-for="item in colorPalette"
-                    :key="item.color"
-                    :style="{ backgroundColor: item.color }"
-                    :title="`${item.color} · ${item.count}`"
-                  ></span>
-                </div>
-                <button
-                  type="button"
-                  class="profile-taste-strip__link"
-                  @click="setActiveTab('recommend')"
-                >
-                  智能推荐
-                  <i class="bi bi-arrow-right"></i>
-                </button>
-              </div>
-            </section>
-
-            <section class="profile-continue" data-pf-motion aria-label="继续创作">
-              <div class="profile-continue__head">
-                <h3>继续创作</h3>
-                <p>连接全站核心能力</p>
-              </div>
-              <div class="profile-continue__grid">
-                <button
-                  v-for="card in continueCards"
-                  :key="card.id"
-                  type="button"
-                  class="profile-continue__card"
-                  :data-tone="card.tone"
-                  @click="openContinueCard(card)"
-                >
-                  <span class="profile-continue__icon"><i class="bi" :class="card.icon"></i></span>
-                  <strong>{{ card.label }}</strong>
-                  <small>{{ card.desc }}</small>
-                </button>
-              </div>
-            </section>
-
-            <div data-pf-motion>
-              <ProfileWorkspaceHub
-                :loading="hubLoading"
-                :resource-summary="resourceSummary"
-                :plan-current="planCurrent"
-                :sync-enabled="cloudSyncEnabled"
-                :download-count="downloadCount"
-                :downloads-enabled="profileSectionEnabled.downloads"
-              />
-            </div>
-          </div>
-
-          <!-- Collections -->
-          <div
-            v-if="activeTab === 'collections' && profileSectionEnabled.favorites"
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Library</span>
-                <h2 class="profile-section-intro__title">我的收藏夹</h2>
-                <p class="profile-section-intro__desc">
-                  {{ userStats.collections }} 个主题 · {{ userStats.favorites }} 张收藏
-                  <template v-if="collectionHealth.emptyCollections">
-                    · {{ collectionHealth.emptyCollections }} 个待补充
-                  </template>
-                </p>
-              </div>
-              <div v-if="topCollections[0]" class="profile-section-intro__pulse">
-                <strong>{{ topCollections[0].count || 0 }}</strong>
-                <small>最大：{{ topCollections[0].name }}</small>
-              </div>
-            </header>
-            <CollectionsManager :limit="12" @preview-wallpaper="previewImage" />
-          </div>
-
-          <!-- Activity -->
-          <div
-            v-if="
-              activeTab === 'activity' &&
-              (profileSectionEnabled.favorites || profileSectionEnabled.history)
-            "
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Activity</span>
-                <h2 class="profile-section-intro__title">活动足迹</h2>
-                <p class="profile-section-intro__desc">
-                  本周 {{ weeklyActivity.views }} 浏览 · {{ weeklyActivity.favorites }} 收藏
-                </p>
-              </div>
-              <div v-if="sectionPulse" class="profile-section-intro__pulse">
-                <strong>{{ sectionPulse.value }}</strong>
-                <small>{{ sectionPulse.label }}</small>
-              </div>
-            </header>
-
-            <div v-if="recentWallpapers.length" class="profile-activity-rail" data-pf-motion>
-              <button
-                v-for="wallpaper in recentWallpapers.slice(0, 8)"
-                :key="wallpaper.id"
-                type="button"
-                data-pf-shot
-                @click="previewImage(wallpaper)"
-              >
-                <img :src="getWallpaperThumb(wallpaper)" :alt="wallpaper.id" />
-                <span>{{ wallpaper.profile_source }}</span>
-              </button>
-            </div>
-
-            <ActivitySummary :limit="20" @preview-wallpaper="previewImage" />
-          </div>
-
-          <!-- Downloads -->
-          <div
-            v-if="activeTab === 'downloads' && profileSectionEnabled.downloads"
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Downloads</span>
-                <h2 class="profile-section-intro__title">下载记录</h2>
-                <p class="profile-section-intro__desc">
-                  最近下载与保存路径。完整批量任务请前往下载管理页。
-                </p>
-              </div>
-              <button
-                type="button"
-                class="profile-section-intro__action"
-                @click="router.push({ name: 'downloads' })"
-              >
-                <i class="bi bi-box-arrow-up-right"></i>
-                完整下载页
-              </button>
-            </header>
-            <DownloadHistory :limit="8" @preview-wallpaper="previewImage" />
-          </div>
-
-          <!-- Stats -->
-          <div
-            v-if="
-              activeTab === 'stats' &&
-              (profileSectionEnabled.favorites || profileSectionEnabled.history)
-            "
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Taste</span>
-                <h2 class="profile-section-intro__title">审美统计</h2>
-                <p class="profile-section-intro__desc">
-                  用收藏与浏览数据看清你的审美偏好。
-                </p>
-              </div>
-              <div v-if="sectionPulse" class="profile-section-intro__pulse">
-                <strong>{{ sectionPulse.value }}</strong>
-                <small>{{ sectionPulse.label }}</small>
-              </div>
-            </header>
-
-            <div class="profile-taste-preview" data-pf-motion>
-              <div v-if="categoryProfile.length" class="profile-taste-preview__bars">
-                <div v-for="item in categoryProfile" :key="item.key">
-                  <span>{{ item.label }}</span>
-                  <div><em :style="{ width: `${item.ratio}%` }"></em></div>
-                  <strong>{{ item.ratio }}%</strong>
-                </div>
-              </div>
-              <div v-if="colorPalette.length" class="profile-taste-preview__colors">
-                <span
-                  v-for="item in colorPalette"
-                  :key="item.color"
-                  :style="{ backgroundColor: item.color }"
-                  :title="`${item.color} · ${item.count}`"
-                ></span>
-              </div>
-            </div>
-
-            <StatsAnalytics />
-          </div>
-
-          <!-- Recommend -->
-          <div
-            v-if="activeTab === 'recommend' && profileSectionEnabled.aiRecords"
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Recommend</span>
-                <h2 class="profile-section-intro__title">智能推荐</h2>
-                <p class="profile-section-intro__desc">
-                  根据收藏与浏览画像，生成标签与壁纸推荐。
-                </p>
-              </div>
-              <div class="profile-section-intro__actions">
-                <button
-                  type="button"
-                  class="profile-section-intro__action"
-                  :disabled="insightsLoading"
-                  @click="loadInsights(true)"
-                >
-                  <i class="bi bi-arrow-clockwise"></i>
-                  刷新
-                </button>
-                <button
-                  type="button"
-                  class="profile-section-intro__action"
-                  @click="openPublicProfile"
-                >
-                  <i class="bi bi-person-badge"></i>
-                  公开主页
-                </button>
-              </div>
-            </header>
-
-            <section class="insight-panel" data-pf-motion>
-              <div v-if="insightsLoading" class="profile-empty-note">
-                <i class="bi bi-arrow-repeat spin"></i>
-                <span>正在从云端收藏和浏览记录生成推荐画像。</span>
-              </div>
-              <div v-else-if="insightsAuthRequired" class="profile-empty-note insight-login-note">
-                <i class="bi bi-person-lock"></i>
-                <span>登录后可读取云端收藏、浏览历史和集合，生成推荐画像。</span>
-                <button type="button" class="mini-action" @click="goLoginForInsights">
-                  <i class="bi bi-box-arrow-in-right"></i>
-                  <span>去登录</span>
-                </button>
-              </div>
-              <div v-else-if="insightsError" class="profile-empty-note">
-                <i class="bi bi-exclamation-triangle"></i>
-                <span>{{ insightsError }}</span>
-              </div>
-              <div v-else-if="!insights" class="profile-empty-note">
-                <i class="bi bi-cloud-check"></i>
-                <span>打开后会读取云端收藏、历史和集合，生成标签画像与推荐壁纸。</span>
-              </div>
-              <div v-else class="insight-grid">
-                <div class="insight-summary">
-                  <div>
-                    <strong>{{ insightStats?.favorites || 0 }}</strong>
-                    <span>收藏样本</span>
-                  </div>
-                  <div>
-                    <strong>{{ insightStats?.history || 0 }}</strong>
-                    <span>浏览样本</span>
-                  </div>
-                  <div>
-                    <strong>{{ autoTags.length }}</strong>
-                    <span>标签</span>
-                  </div>
-                </div>
-
-                <div class="insight-tags">
-                  <button
-                    v-for="tag in autoTags.slice(0, 14)"
-                    :key="tag.name"
-                    type="button"
-                    @click="openInsightSearch(tag)"
-                  >
-                    <span>{{ tag.name }}</span>
-                    <em>{{ tag.count }}</em>
-                  </button>
-                </div>
-
-                <div v-if="insightClusters.length" class="insight-clusters">
-                  <div v-for="cluster in insightClusters" :key="cluster.id">
-                    <strong>{{ cluster.label }}</strong>
-                    <span>{{
-                      cluster.tags
-                        .map((tag) => tag.name)
-                        .slice(0, 5)
-                        .join(' / ')
-                    }}</span>
-                  </div>
-                </div>
-
-                <div class="insight-searches">
-                  <button
-                    v-for="item in insightSearches.slice(0, 10)"
-                    :key="`${item.source}-${item.label}`"
-                    type="button"
-                    @click="openInsightSearch(item)"
-                  >
-                    <span
-                      v-if="item.color"
-                      class="color-dot"
-                      :style="{ backgroundColor: item.color }"
-                    ></span>
-                    <i v-else class="bi bi-search"></i>
-                    <span>{{ item.label }}</span>
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <section v-if="insightRecommendations.length" class="recommendation-strip" data-pf-motion>
-              <button
-                v-for="item in insightRecommendations.slice(0, 12)"
-                :key="item.wallpaper.id"
-                type="button"
-                data-pf-shot
-                @click="previewImage(item.wallpaper)"
-              >
-                <img :src="getWallpaperThumb(item.wallpaper)" :alt="item.wallpaper.id" />
-                <span>{{ item.wallpaper.id }}</span>
-                <small>{{ item.reasons?.[0] || '画像相似' }}</small>
-              </button>
-            </section>
-
-            <section v-if="publicProfileUrl" class="public-profile-note" data-pf-motion>
-              <i class="bi bi-globe2"></i>
-              <div>
-                <strong>公开主页地址</strong>
-                <span>{{ publicProfileUrl }}</span>
-              </div>
-            </section>
-          </div>
-
-          <!-- AI -->
-          <div
-            v-if="activeTab === 'ai' && profileSectionEnabled.aiRecords"
-            class="profile-console__section profile-console__section--ai"
-          >
-            <ProfileAiAnalysis />
-          </div>
-
-          <!-- Studio usage -->
-          <div
-            v-if="activeTab === 'studio-usage' && authStore.isAuthenticated"
-            class="profile-console__section"
-          >
-            <header class="profile-section-intro" data-pf-motion>
-              <div>
-                <span class="profile-section-intro__kicker">Usage</span>
-                <h2 class="profile-section-intro__title">AI 功能用量</h2>
-                <p class="profile-section-intro__desc">积分余额、消耗与扣减记录。</p>
-              </div>
-            </header>
-            <ProfileStudioUsage />
-          </div>
-
-          <!-- Coloring -->
-          <div
-            v-if="activeTab === 'coloring-history' && authStore.isAuthenticated"
-            class="profile-console__section"
-          >
-            <ProfileColoringHistory />
-          </div>
-        </div>
-      </main>
-    </div>
-
-    <div v-if="isEditing" class="profile-edit-host">
-      <UserProfileCard
-        :is-editing="isEditing"
-        @edit="toggleEditMode"
-        @save="handleSaveProfile"
-        @cancel="handleCancelEdit"
-      />
-    </div>
-
+    <!-- 产物大图预览 -->
     <Teleport to="body">
-      <WallpaperPreview
-        v-if="isPreviewEnabled && showPreview"
-        :wallpaper="previewWallpaper"
-        :show="showPreview"
-        :enabled-actions="previewEnabledActions"
-        :in-collection="previewInListContext"
-        :collection-index="previewIndex >= 0 ? previewIndex : 0"
-        :collection-total="previewWallpapers.length"
-        @close="closePreview"
-        @next="onPreviewNext"
-        @previous="onPreviewPrevious"
-      />
+      <div v-if="previewTask" class="work-preview-backdrop" @click.self="previewTask = null">
+        <div class="work-preview-panel">
+          <header>
+            <strong>{{ TASK_TYPE_LABELS[previewTask.type] || previewTask.type }}</strong>
+            <button type="button" aria-label="关闭" @click="previewTask = null"><i class="bi bi-x-lg"></i></button>
+          </header>
+          <div class="work-preview-media">
+            <a
+              v-for="(url, index) in previewTask.outputUrls"
+              :key="index"
+              :href="url"
+              target="_blank"
+              rel="noopener"
+            >
+              <img :src="url" :alt="`产物 ${index + 1}`" />
+            </a>
+          </div>
+          <p class="work-preview-prompt">{{ previewTask.prompt }}</p>
+        </div>
+      </div>
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.profile-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: clamp(24px, 5vh, 44px) clamp(16px, 3vw, 32px) 80px;
+  color: var(--text-color, #f0f0f0);
+}
+
+.profile-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: linear-gradient(150deg, rgba(99, 102, 241, 0.1), rgba(15, 23, 42, 0.55) 60%);
+}
+
+.profile-identity { display: flex; align-items: center; gap: 16px; }
+
+.profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  overflow: hidden;
+  font-size: 28px;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.16);
+}
+
+.profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.profile-identity h1 { margin: 0; font-size: 22px; }
+.profile-identity p { margin: 2px 0 0; font-size: 13.5px; color: rgba(203, 213, 225, 0.66); }
+.profile-identity small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
+
+.profile-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.profile-stats article {
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.5);
+  display: grid;
+  gap: 4px;
+}
+
+.profile-stats span { font-size: 12.5px; color: rgba(203, 213, 225, 0.58); }
+.profile-stats strong { font-size: 24px; }
+.profile-stats small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
+.profile-stats a,
+.profile-link-btn {
+  font-size: 12.5px;
+  color: #a5b4fc;
+  text-decoration: none;
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile-type-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+.profile-type-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: rgba(226, 232, 240, 0.75);
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.profile-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 28px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  overflow-x: auto;
+}
+
+.profile-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: rgba(203, 213, 225, 0.62);
+  font-size: 14.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.profile-tabs button.is-active { color: #e0e7ff; border-bottom-color: #a5b4fc; }
+
+.profile-tabs em {
+  font-style: normal;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  color: #0b1020;
+  background: #fbbf24;
+}
+
+.profile-panel { padding-top: 20px; }
+
+.works-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+
+.works-filter button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: transparent;
+  color: rgba(203, 213, 225, 0.7);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.works-filter button.is-active {
+  border-color: rgba(165, 180, 252, 0.6);
+  color: #e0e7ff;
+  background: rgba(99, 102, 241, 0.16);
+}
+
+.works-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.work-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.work-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: none;
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 0;
+  cursor: zoom-in;
+  background: rgba(30, 41, 59, 0.6);
+}
+
+.work-cover:disabled { cursor: default; }
+.work-cover img { width: 100%; height: 100%; object-fit: cover; }
+
+.work-cover-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  height: 100%;
+  font-size: 13px;
+  color: rgba(203, 213, 225, 0.55);
+}
+
+.work-meta { display: flex; justify-content: space-between; align-items: center; }
+.work-type { font-size: 12px; color: #a5b4fc; }
+
+.work-status {
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.work-status[data-status='succeeded'] { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.work-status[data-status='failed'] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+.work-status[data-status='running'],
+.work-status[data-status='queued'] { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+
+.work-prompt {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.72);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.work-card small { font-size: 11.5px; color: rgba(148, 163, 184, 0.5); }
+
+.work-actions { display: flex; gap: 8px; }
+
+.work-actions button {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: transparent;
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.work-actions button:hover:not(:disabled) { border-color: rgba(165, 180, 252, 0.5); }
+.work-actions .is-danger { color: #f87171; }
+.work-actions .is-danger:hover:not(:disabled) { border-color: rgba(248, 113, 113, 0.5); }
+
+.submission-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+
+.submission-list li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.submission-list img { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; }
+.submission-body { flex: 1; min-width: 0; }
+.submission-body strong { display: block; font-size: 14.5px; }
+.submission-body small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
+.submission-reason { margin: 4px 0 0; font-size: 12.5px; color: #f87171; }
+
+.submission-status {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.submission-status[data-status='pending'] { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.submission-status[data-status='approved'] { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.submission-status[data-status='rejected'],
+.submission-status[data-status='removed'] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+
+.submission-remove {
+  border: none;
+  background: transparent;
+  color: rgba(203, 213, 225, 0.5);
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.submission-remove:hover { color: #f87171; }
+
+.notifications-toolbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+
+.notification-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+
+.notification-list li {
+  display: flex;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.notification-list li.is-unread { border-color: rgba(165, 180, 252, 0.35); background: rgba(99, 102, 241, 0.08); }
+
+.notification-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.3);
+}
+
+.notification-list li.is-unread .notification-dot { background: #a5b4fc; }
+.notification-list strong { font-size: 14px; }
+.notification-list p { margin: 3px 0 0; font-size: 13px; color: rgba(203, 213, 225, 0.66); }
+.notification-list small { font-size: 11.5px; color: rgba(148, 163, 184, 0.5); }
+
+.account-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+.account-form {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.account-form h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.account-form label { display: grid; gap: 6px; }
+.account-form label span { font-size: 12.5px; color: rgba(203, 213, 225, 0.6); }
+
+.account-form input {
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(2, 6, 23, 0.5);
+  color: inherit;
+  outline: none;
+}
+
+.account-form input:focus { border-color: rgba(165, 180, 252, 0.55); }
+
+.profile-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.profile-btn.is-primary {
+  border: none;
+  color: #0b1020;
+  background: linear-gradient(120deg, #a5b4fc, #67e8f9);
+}
+
+.profile-btn.is-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.profile-btn.is-ghost {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: transparent;
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.profile-empty { padding: 30px 0; color: rgba(203, 213, 225, 0.5); font-size: 14px; }
+
+.work-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3600;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.8);
+  backdrop-filter: blur(10px);
+}
+
+.work-preview-panel {
+  width: min(880px, 96vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #0f172a;
+  padding: 18px 20px;
+}
+
+.work-preview-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.work-preview-panel header button {
+  border: none;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+}
+
+.work-preview-media { display: grid; gap: 12px; }
+.work-preview-media img { width: 100%; border-radius: 10px; }
+.work-preview-prompt { margin: 14px 0 0; font-size: 13.5px; color: rgba(203, 213, 225, 0.68); }
+</style>

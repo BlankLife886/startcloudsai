@@ -20,9 +20,7 @@ import { createApp } from 'vue'
 
 import App from './App.vue'
 import router from './router'
-import { initUserActionTracking } from './services/userActionLogger'
 import { useAppearanceStore } from './stores/appearance'
-import { useRuntimeConfigStore } from './stores/runtimeConfig'
 
 function bootstrapApp() {
   const app = createApp(App)
@@ -32,16 +30,8 @@ function bootstrapApp() {
   app.use(router)
 
   useAppearanceStore().applyToDocument()
-  void useRuntimeConfigStore().refreshRuntimeConfigInBackground()
 
   app.mount('#app')
-
-  void router.isReady().then(() => {
-    document.getElementById('pricing-static-boot')?.remove()
-    initUserActionTracking(router, {
-      isEnabled: () => useRuntimeConfigStore().canUse('userActionLog'),
-    })
-  })
 }
 
 bootstrapApp()

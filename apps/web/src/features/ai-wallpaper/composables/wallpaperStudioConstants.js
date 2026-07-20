@@ -142,13 +142,6 @@ export const WALLPAPER_SKILL_OPTIONS = BUILTIN_WALLPAPER_SKILLS
 
 export const WALLPAPER_DEFAULT_MCP_OPTIONS = [
   {
-    id: 'wallhaven-source',
-    name: 'Wallhaven Source',
-    icon: 'bi-images',
-    endpoint: 'wallhaven://search',
-    description: '检索本站图片与标签素材',
-  },
-  {
     id: 'local-assets',
     name: 'Local Assets',
     icon: 'bi-folder2-open',

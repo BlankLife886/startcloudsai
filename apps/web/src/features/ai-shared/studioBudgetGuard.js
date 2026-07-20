@@ -6,7 +6,10 @@ import {
   readFeatureCreditCost,
 } from '@/features/ai-shared/resolveWallpaperCreditCost'
 import { getAiUsageCostWindow } from '@/services/aiUsageLedger'
-import { formatUsd } from '@/features/pricing/pricingMoney.js'
+function formatUsd(value) {
+  const amount = Number(value || 0)
+  return `$${amount.toFixed(amount >= 1 ? 2 : 4)}`
+}
 import { studioFeatureLabel } from '@/features/ai-shared/studioUsage'
 
 function resolveModelBilling(
