@@ -30,10 +30,11 @@ export const useAuthStore = defineStore('auth', {
         this.loaded = true
       }
     },
-    async login(email: string, password: string) {
+    async login(email: string, password: string, options: { silent?: boolean } = {}) {
       const data = await request<{ user: User }>('/api/auth/login', {
         method: 'POST',
         body: { email, password },
+        silent: options.silent,
       })
       this.user = data.user
       this.loaded = true
