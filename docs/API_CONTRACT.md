@@ -120,6 +120,16 @@
 | `/api/admin/settings` | GET/PUT | 运营配置（任务单价、用户并发上限、注册开关等） |
 | `/api/admin/settings/test-c2a` | POST | 测试 chatgpt2api 连通性（调 `/v1/models`） |
 
+### 后台接口字段补充定义（联调对齐基准）
+
+- `GET /api/admin/stats` 响应：`{totalUsers, newUsersToday, taskDaily: [{date, total, succeeded}](近7日), revenueCents(近30日), walletBalanceCents(全站可用余额合计), runningTasks}`。
+- `GET /api/admin/users` 查询参数：`?search=`（匹配 email/username）`&status=`。
+- `GET /api/admin/tasks` 查询参数：`?type=&status=&user=`（user 接受用户 id 或邮箱）。
+- 套餐上架字段统一为 **`active: boolean`**（与数据库一致；admin 端如用 enabled 需改为 active）。公告生效字段同样为 `active`。
+- `GET/PUT /api/admin/settings` 响应/请求体：`{taskPrices: {type: cents}, userMaxRunningTasks, registrationEnabled, signupBonusCents}`（注意是 `signupBonusCents`）。
+- `POST /api/admin/settings/test-c2a` 成功响应：`{ok: true, modelCount, models: [id...]（最多前20个）}`；失败走统一错误格式。
+- 订单列表项携带 `userEmail` 与 `planName` 扁平字段；任务列表项携带 `userEmail`。
+
 ## 错误码约定
 
 `auth_required` `admin_required` `invalid_credentials` `email_exists` `insufficient_balance`
