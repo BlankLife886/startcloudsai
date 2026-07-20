@@ -90,6 +90,18 @@
 | `/api/me/gallery/submissions` | GET | 我的投稿及审核状态 |
 | `/api/me/gallery/submissions/{id}` | DELETE | 撤回/删除投稿 |
 
+## 兑换码 CDK（v5 增补）
+
+表 `redemption_codes`：id uuid / code text UNIQUE（格式 `SC-XXXX-XXXX-XXXX`，字符集去易混 `0O1IL`）/ grant_cents bigint CHECK(>0) / batch_id text / note text / status CHECK in ('active','redeemed','disabled') DEFAULT 'active' / expires_at timestamptz null / redeemed_by uuid FK null / redeemed_at / created_by uuid / created_at。索引：`(batch_id)`、`(status, created_at desc)`。
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/me/wallet/redeem` | POST | `{code}` → 成功 `{grantCents, balanceCents}`。兑换 = 条件更新 `status='active' AND (expires_at IS NULL OR expires_at > now())` → redeemed + redeemed_by/at，同事务钱包入账（ledger kind=grant, source_type=redeem_code, source_id=code_id 幂等）。错误码：`code_invalid`(404) / `code_redeemed`(409) / `code_expired`(410) / `code_disabled`(410) / `rate_limited`(429)。**防爆破**：单用户 1 小时内 10 次失败尝试即锁 1 小时（复用限流器模式），失败不区分"不存在/已兑"以外的细节泄漏节奏 |
+| `/api/admin/redemption-codes/generate` | POST | `{count(1-1000), grantCents(>0), expiresAt?, note?}` → `{batchId, grantCents, codes: ["SC-..."...]}`（明文码仅生成时返回一次） |
+| `/api/admin/redemption-codes` | GET | `?status=&batchId=&search=`（search 匹配完整 code）cursor 分页：`{id, code, grantCents, batchId, note, status, expiresAt, redeemedBy, redeemedByEmail, redeemedAt, createdAt}` |
+| `/api/admin/redemption-codes/{id}/disable` | POST | 仅 active 可禁用（条件更新） |
+| `/api/admin/redemption-codes/batches` | GET | 批次汇总：`{batchId, note, grantCents, total, redeemed, disabled, createdAt}` 列表（近100批） |
+
 ## 元信息 meta
 
 | 接口 | 方法 | 说明 |

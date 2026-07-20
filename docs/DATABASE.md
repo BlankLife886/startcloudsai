@@ -159,6 +159,23 @@
 | highlight | boolean DEFAULT false | |
 | sort | int | |
 
+## redemption_codes（兑换码）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| id | uuid PK | |
+| code | text UNIQUE NOT NULL | `SC-XXXX-XXXX-XXXX`，字符集去易混 0O1IL |
+| grant_cents | bigint CHECK (> 0) | 面值 |
+| batch_id | text NOT NULL | 生成批次 |
+| note | text | |
+| status | text CHECK in ('active','redeemed','disabled') DEFAULT 'active' | 过期在兑换时判定 |
+| expires_at | timestamptz | NULL = 永久有效 |
+| redeemed_by | uuid FK users | |
+| redeemed_at | timestamptz | |
+| created_by | uuid FK users | 生成的管理员 |
+
+索引：`(batch_id)`、`(status, created_at desc)`。兑换 = 条件更新 + 钱包入账同事务，ledger 幂等键 `('grant','redeem_code',code_id)`。
+
 ## admin_audit_logs
 
 | 列 | 类型 | 说明 |
