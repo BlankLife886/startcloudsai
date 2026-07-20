@@ -161,6 +161,8 @@ func TestSettleOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark succeeded: %v", err)
 	}
+	// M4 解耦：通知由调用方在事务提交后发（抢到迁移才发，重放不发）
+	taskflow.NotifyTaskSucceeded(ctx, st.Pool, task, 1)
 
 	w := getWallet(t, st, user.ID)
 	if w.BalanceCents != 80 || w.FrozenCents != 0 {

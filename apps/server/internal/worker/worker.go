@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +23,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
@@ -28,8 +31,10 @@ const (
 	typeCleanupSessions   = "cron:cleanup_sessions"
 	typeReapZombies       = "cron:reap_zombies"
 	typeSyncPromptSources = "cron:sync_prompt_sources"
+	typeSubscriptionTick  = "cron:subscription_tick"
 
 	zombieRunningMinutes = 30
+	staleQueuedMinutes   = 10
 )
 
 type Worker struct {
@@ -37,11 +42,12 @@ type Worker struct {
 	St         *store.Store
 	Storage    *storage.Storage
 	C2A        *c2a.Client
+	Queue      *taskflow.Queue
 	PromptSync *promptsync.Engine
 }
 
-func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client) *Worker {
-	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, PromptSync: promptsync.New(st)}
+func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Worker {
+	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue, PromptSync: promptsync.New(st)}
 }
 
 // Run 启动 Asynq server + PeriodicTaskManager，阻塞运行。
@@ -58,6 +64,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
+	mux.HandleFunc(typeSubscriptionTick, w.handleSubscriptionTick)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -83,6 +90,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 10m", Task: asynq.NewTask(typeSubscriptionTick, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 
@@ -137,14 +145,35 @@ func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model strin
 }
 
 func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage string) error {
-	return w.St.Tx(ctx, func(tx pgx.Tx) error {
-		task, err := store.GetTask(ctx, tx, taskID)
-		if err != nil || task == nil {
+	var task *store.Task
+	won := false
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		t, err := store.GetTask(ctx, tx, taskID)
+		if err != nil || t == nil {
 			return err
 		}
-		_, err = taskflow.MarkFailed(ctx, tx, task, errorCode, errorMessage, "running")
+		task = t
+		won, err = taskflow.MarkFailed(ctx, tx, t, errorCode, errorMessage, "running")
 		return err
 	})
+	if err == nil && won {
+		// M4：通知在主事务提交后尽力而为
+		taskflow.NotifyTaskFailed(ctx, w.St.Pool, task)
+	}
+	return err
+}
+
+// urlPattern H1 脱敏：过滤上游错误文案中的 URL，避免泄漏内部地址。
+var urlPattern = regexp.MustCompile(`https?://\S+`)
+
+// sanitizeUpstreamMessage 保留上游业务错误 message，但去掉其中的 URL。
+func sanitizeUpstreamMessage(msg string) string {
+	cleaned := strings.TrimSpace(urlPattern.ReplaceAllString(msg, ""))
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if cleaned == "" {
+		return "生成服务返回错误，请稍后重试"
+	}
+	return cleaned
 }
 
 func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
@@ -184,20 +213,23 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		imagesB64, callErr = w.callUpstream(ctx, task, model)
 	}
 	if callErr != nil {
+		// H1：error_message 只落用户可读文案，原始错误进日志（带 task_id）
 		var upErr *c2a.UpstreamError
 		switch {
 		case errors.As(callErr, &netErr):
-			errorCode, errorMessage = "upstream_unreachable", callErr.Error()
+			errorCode, errorMessage = "upstream_unreachable", "生成服务暂时不可用，请稍后重试"
 		case errors.As(callErr, &upErr):
-			errorCode, errorMessage = "upstream_error", callErr.Error()
+			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(upErr.Message)
 		default:
-			log.Printf("task %s unexpected error: %v", taskID, callErr)
-			errorCode, errorMessage = "internal_error", callErr.Error()
+			errorCode, errorMessage = "internal_error", "任务执行失败，请稍后重试"
 		}
+		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
 		imagesB64 = nil
 	}
 
 	if imagesB64 != nil {
+		var succeeded *store.Task
+		outputCount := 0
 		storeErr := func() error {
 			outputKeys := make([]string, 0, len(imagesB64))
 			for i, b64 := range imagesB64 {
@@ -211,20 +243,28 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 				}
 				outputKeys = append(outputKeys, key)
 			}
+			outputCount = len(outputKeys)
 			return w.St.Tx(ctx, func(tx pgx.Tx) error {
 				dbTask, gerr := store.GetTask(ctx, tx, taskID)
 				if gerr != nil || dbTask == nil {
 					return gerr
 				}
-				_, merr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, time.Now().UTC())
+				won, merr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, time.Now().UTC())
+				if won {
+					succeeded = dbTask
+				}
 				return merr
 			})
 		}()
 		if storeErr == nil {
+			if succeeded != nil {
+				// M4：通知在主事务提交后尽力而为
+				taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, outputCount)
+			}
 			return nil
 		}
 		log.Printf("task %s failed to store outputs: %v", taskID, storeErr)
-		errorCode, errorMessage = "storage_error", storeErr.Error()
+		errorCode, errorMessage = "storage_error", "图片保存失败，请重试"
 	}
 
 	return w.markFailed(ctx, taskID, errorCode, errorMessage)
@@ -247,7 +287,10 @@ func (w *Worker) handleSyncPromptSources(ctx context.Context, _ *asynq.Task) err
 	return w.PromptSync.SyncDue(ctx)
 }
 
-// handleReapZombies cron：每 10 分钟把 running 超过 30 分钟的任务判为 failed 并 release。
+// handleReapZombies cron：每 10 分钟做两种回收——
+//  1. running 超过 30 分钟的任务判为 failed 并 release；
+//  2. queued 超过 10 分钟的任务（入队丢失/Redis 异常）重新入队一次，
+//     再失败则 failed + release（C1 兜底）。
 func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 	threshold := time.Now().UTC().Add(-zombieRunningMinutes * time.Minute)
 	zombieIDs, err := store.ListZombieTaskIDs(ctx, w.St.Pool, threshold)
@@ -255,6 +298,7 @@ func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 		return err
 	}
 	for _, taskID := range zombieIDs {
+		var reaped *store.Task
 		err := w.St.Tx(ctx, func(tx pgx.Tx) error {
 			task, gerr := store.GetTask(ctx, tx, taskID)
 			if gerr != nil || task == nil || task.StartedAt == nil {
@@ -265,13 +309,45 @@ func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 				return merr
 			}
 			if won {
+				reaped = task
 				log.Printf("reaped zombie task %s", taskID)
 			}
 			return nil
 		})
 		if err != nil {
 			log.Printf("failed to reap zombie task %s: %v", taskID, err)
+			continue
+		}
+		if reaped != nil {
+			taskflow.NotifyTaskFailed(ctx, w.St.Pool, reaped)
 		}
 	}
+
+	return w.reapStaleQueued(ctx)
+}
+
+// reapStaleQueued C1 第二种扫描：queued 超时的任务补一次入队（Asynq 同 task_id
+// 重复入队无害），入队仍失败则 failed + release。
+func (w *Worker) reapStaleQueued(ctx context.Context) error {
+	threshold := time.Now().UTC().Add(-staleQueuedMinutes * time.Minute)
+	staleIDs, err := store.ListStaleQueuedTaskIDs(ctx, w.St.Pool, threshold)
+	if err != nil {
+		return err
+	}
+	for _, taskID := range staleIDs {
+		if err := w.Queue.EnqueueRunTask(ctx, taskID.String()); err != nil {
+			log.Printf("stale queued task %s re-enqueue failed, marking failed: %v", taskID, err)
+			if _, ferr := taskflow.FailQueuedEnqueue(ctx, w.St, taskID); ferr != nil {
+				log.Printf("stale queued task %s compensation failed: %v", taskID, ferr)
+			}
+			continue
+		}
+		log.Printf("re-enqueued stale queued task %s", taskID)
+	}
 	return nil
+}
+
+// handleSubscriptionTick cron：每 10 分钟回收过期订阅并发放当日额度。
+func (w *Worker) handleSubscriptionTick(ctx context.Context, _ *asynq.Task) error {
+	return subscription.Tick(ctx, w.St, time.Now())
 }

@@ -20,24 +20,26 @@ import (
 var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, "PUT": true}
 
 type Server struct {
-	Cfg          *config.Config
-	St           *store.Store
-	Storage      *storage.Storage
-	C2A          *c2a.Client
-	Queue        *taskflow.Queue
-	LoginLimiter *auth.LoginLimiter
-	PromptSync   *promptsync.Engine
+	Cfg           *config.Config
+	St            *store.Store
+	Storage       *storage.Storage
+	C2A           *c2a.Client
+	Queue         *taskflow.Queue
+	LoginLimiter  *auth.LoginLimiter
+	RedeemLimiter *auth.LoginLimiter
+	PromptSync    *promptsync.Engine
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Server {
 	return &Server{
-		Cfg:          cfg,
-		St:           st,
-		Storage:      stg,
-		C2A:          c2aClient,
-		Queue:        queue,
-		LoginLimiter: auth.NewLoginLimiter(),
-		PromptSync:   promptsync.New(st),
+		Cfg:           cfg,
+		St:            st,
+		Storage:       stg,
+		C2A:           c2aClient,
+		Queue:         queue,
+		LoginLimiter:  auth.NewLoginLimiter(),
+		RedeemLimiter: auth.NewRedeemLimiter(),
+		PromptSync:    promptsync.New(st),
 	}
 }
 
@@ -46,6 +48,11 @@ func (s *Server) Router() *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
+	// C3：只信任 TRUSTED_PROXIES（默认 compose 内网网段）设置的 X-Forwarded-For，
+	// 防止公网伪造来源 IP 绕过限流/污染审计日志
+	if err := r.SetTrustedProxies(s.Cfg.TrustedProxiesList()); err != nil {
+		log.Printf("invalid TRUSTED_PROXIES %q: %v", s.Cfg.TrustedProxies, err)
+	}
 	r.HandleMethodNotAllowed = true
 	r.Use(gin.Logger())
 	r.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
@@ -74,6 +81,8 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/wallet", s.myWallet)
 	api.GET("/me/wallet/ledger", s.myLedger)
+	api.POST("/me/wallet/redeem", s.redeemCode)
+	api.GET("/me/subscription", s.mySubscription)
 	api.GET("/me/notifications", s.myNotifications)
 	api.POST("/me/notifications/read", s.markNotificationsRead)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
@@ -134,6 +143,10 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/tasks/:id/cancel", s.adminOnly(s.adminCancelTask))
 	admin.POST("/tasks/:id/force-fail", s.adminOnly(s.adminForceFailTask))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
+	admin.POST("/redemption-codes/generate", s.adminOnly(s.adminGenerateRedemptionCodes))
+	admin.GET("/redemption-codes", s.adminOnly(s.adminListRedemptionCodes))
+	admin.POST("/redemption-codes/:id/disable", s.adminOnly(s.adminDisableRedemptionCode))
+	admin.GET("/redemption-codes/batches", s.adminOnly(s.adminRedemptionBatches))
 	admin.GET("/gallery/submissions", s.adminOnly(s.adminSubmissions))
 	admin.POST("/gallery/submissions/:id/review", s.adminOnly(s.adminReviewSubmission))
 	admin.POST("/gallery/submissions/:id/curate", s.adminOnly(s.adminCurateSubmission))

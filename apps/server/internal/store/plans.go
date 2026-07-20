@@ -7,11 +7,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const planCols = `id, code, name, price_cents, grant_cents, bonus_cents, features, active, sort, created_at`
+const planCols = `id, code, name, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, sort, created_at`
 
 func scanPlan(row pgx.Row) (*Plan, error) {
 	var p Plan
-	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.PriceCents, &p.GrantCents, &p.BonusCents, &p.Features, &p.Active, &p.Sort, &p.CreatedAt)
+	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.Kind, &p.PriceCents, &p.GrantCents, &p.BonusCents,
+		&p.DurationDays, &p.DailyGrantCents, &p.Features, &p.Active, &p.Sort, &p.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -37,18 +38,22 @@ func InsertPlan(ctx context.Context, q Q, p *Plan) (*Plan, error) {
 	if p.Features == nil {
 		p.Features = []string{}
 	}
+	if p.Kind == "" {
+		p.Kind = "topup"
+	}
 	return scanPlan(q.QueryRow(ctx,
-		`INSERT INTO plans (code, name, price_cents, grant_cents, bonus_cents, features, active, sort)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+planCols,
-		p.Code, p.Name, p.PriceCents, p.GrantCents, p.BonusCents, p.Features, p.Active, p.Sort))
+		`INSERT INTO plans (code, name, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, sort)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING `+planCols,
+		p.Code, p.Name, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents, p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Sort))
 }
 
 // UpdatePlan 全量回写（调用方先取出并修改字段）。
 func UpdatePlan(ctx context.Context, q Q, p *Plan) error {
 	_, err := q.Exec(ctx,
-		`UPDATE plans SET code = $2, name = $3, price_cents = $4, grant_cents = $5, bonus_cents = $6,
-		 features = $7, active = $8, sort = $9 WHERE id = $1`,
-		p.ID, p.Code, p.Name, p.PriceCents, p.GrantCents, p.BonusCents, p.Features, p.Active, p.Sort)
+		`UPDATE plans SET code = $2, name = $3, kind = $4, price_cents = $5, grant_cents = $6, bonus_cents = $7,
+		 duration_days = $8, daily_grant_cents = $9, features = $10, active = $11, sort = $12 WHERE id = $1`,
+		p.ID, p.Code, p.Name, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
+		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Sort)
 	return err
 }
 

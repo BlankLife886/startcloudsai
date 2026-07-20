@@ -45,6 +45,21 @@ func NewLoginLimiter() *LoginLimiter {
 	}
 }
 
+// NewRedeemLimiter 兑换码防爆破：单用户 1 小时内失败 10 次锁 1 小时
+// （key 用用户 id，IP 维度不启用——调用方传空串）。
+func NewRedeemLimiter() *LoginLimiter {
+	return &LoginLimiter{
+		emails:        make(map[string]*limitEntry),
+		ips:           make(map[string]*limitEntry),
+		nowFunc:       time.Now,
+		emailMaxFails: 10,
+		emailLockDur:  time.Hour,
+		ipMaxFails:    100,
+		ipLockDur:     time.Hour,
+		window:        time.Hour,
+	}
+}
+
 // Check 返回 nil 表示允许尝试登录；否则返回剩余锁定时长。
 func (l *LoginLimiter) Check(email, ip string) (time.Duration, bool) {
 	l.mu.Lock()

@@ -86,14 +86,17 @@ func ledgerDict(e *store.LedgerEntry) gin.H {
 
 func planDict(p *store.Plan, includeAdmin bool) gin.H {
 	d := gin.H{
-		"id":         p.ID.String(),
-		"code":       p.Code,
-		"name":       p.Name,
-		"priceCents": p.PriceCents,
-		"grantCents": p.GrantCents,
-		"bonusCents": p.BonusCents,
-		"features":   nonNilStrings(p.Features),
-		"sort":       p.Sort,
+		"id":              p.ID.String(),
+		"code":            p.Code,
+		"name":            p.Name,
+		"kind":            p.Kind,
+		"priceCents":      p.PriceCents,
+		"grantCents":      p.GrantCents,
+		"bonusCents":      p.BonusCents,
+		"durationDays":    p.DurationDays,
+		"dailyGrantCents": p.DailyGrantCents,
+		"features":        nonNilStrings(p.Features),
+		"sort":            p.Sort,
 	}
 	if includeAdmin {
 		d["active"] = p.Active

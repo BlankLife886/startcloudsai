@@ -110,7 +110,7 @@
 | `/api/me/wallet/redeem` | POST | `{code}` → 成功 `{grantCents, balanceCents}`。兑换 = 条件更新 `status='active' AND (expires_at IS NULL OR expires_at > now())` → redeemed + redeemed_by/at，同事务钱包入账（ledger kind=grant, source_type=redeem_code, source_id=code_id 幂等）。错误码：`code_invalid`(404) / `code_redeemed`(409) / `code_expired`(410) / `code_disabled`(410) / `rate_limited`(429)。**防爆破**：单用户 1 小时内 10 次失败尝试即锁 1 小时（复用限流器模式），失败不区分"不存在/已兑"以外的细节泄漏节奏 |
 | `/api/admin/redemption-codes/generate` | POST | `{count(1-1000), grantCents(>0), expiresAt?, note?}` → `{batchId, grantCents, codes: ["SC-..."...]}`（明文码仅生成时返回一次） |
 | `/api/admin/redemption-codes` | GET | `?status=&batchId=&search=`（search 匹配完整 code）cursor 分页：`{id, code, grantCents, batchId, note, status, expiresAt, redeemedBy, redeemedByEmail, redeemedAt, createdAt}` |
-| `/api/admin/redemption-codes/{id}/disable` | POST | 仅 active 可禁用（条件更新） |
+| `/api/admin/redemption-codes/{id}/disable` | POST | 仅 active 可禁用（条件更新）；非 active 返回 409 `code_not_active` |
 | `/api/admin/redemption-codes/batches` | GET | 批次汇总：`{batchId, note, grantCents, total, redeemed, disabled, createdAt}` 列表（近100批） |
 
 ## 元信息 meta

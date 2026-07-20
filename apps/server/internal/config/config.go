@@ -2,6 +2,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ type Config struct {
 	AppEnv         string
 	AppSecret      string
 	AllowedOrigins string
+	TrustedProxies string
 
 	DatabaseURL string
 	RedisURL    string
@@ -49,11 +51,32 @@ func getenvInt(key string, def int) int {
 	return def
 }
 
+// weakSecrets 已知的弱默认密钥（模板/示例值），生产环境禁止使用。
+var weakSecrets = map[string]bool{
+	"":                          true,
+	"dev-secret-change-me":      true,
+	"change-me-random-64-chars": true,
+}
+
+// validateSecret 生产环境弱密钥直接拒绝启动；开发环境仅告警。
+func validateSecret(appEnv, secret string) {
+	weak := weakSecrets[secret] || len(secret) < 32
+	if !weak {
+		return
+	}
+	if appEnv == "production" {
+		log.Fatal("APP_SECRET 未设置或过弱（须为 ≥32 位随机字符串且非模板默认值），生产环境拒绝启动")
+	}
+	log.Printf("警告：APP_SECRET 过弱（仅开发环境允许），上线前请设置 ≥32 位随机字符串")
+}
+
 func Load() *Config {
-	return &Config{
+	cfg := &Config{
 		AppEnv:         getenv("APP_ENV", "development"),
 		AppSecret:      getenv("APP_SECRET", "dev-secret-change-me"),
 		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080"),
+		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
+		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
 
 		DatabaseURL: getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
 		RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"),
@@ -75,6 +98,8 @@ func Load() *Config {
 		SessionTTLDays:    30,
 		UploadMaxBytes:    15 * 1024 * 1024,
 	}
+	validateSecret(cfg.AppEnv, cfg.AppSecret)
+	return cfg
 }
 
 // AllowedOriginsList 返回去掉尾部斜杠的 Origin 白名单。
@@ -84,6 +109,18 @@ func (c *Config) AllowedOriginsList() []string {
 		o = strings.TrimRight(strings.TrimSpace(o), "/")
 		if o != "" {
 			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// TrustedProxiesList 返回可信代理 CIDR 列表（空串 = 不信任任何代理）。
+func (c *Config) TrustedProxiesList() []string {
+	var out []string
+	for _, p := range strings.Split(c.TrustedProxies, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
 		}
 	}
 	return out

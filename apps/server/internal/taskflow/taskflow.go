@@ -4,6 +4,7 @@ package taskflow
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -162,7 +163,8 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 }
 
 // ForceFailTask 管理员把卡死的 running 任务强制置为 failed：
-// 条件 UPDATE running→failed + release（幂等键沿用 task 代数规则）+ 通知，单事务。
+// 条件 UPDATE running→failed + release（幂等键沿用 task 代数规则），单事务；
+// 通知在事务提交后尽力而为（M4 解耦）。
 func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
@@ -183,10 +185,14 @@ func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*sto
 		task, err = store.GetTask(ctx, tx, taskID)
 		return err
 	})
+	if err == nil && task != nil {
+		NotifyTaskFailed(ctx, st.Pool, task)
+	}
 	return task, err
 }
 
-// MarkSucceeded running→succeeded + settle + 通知，同事务。返回是否抢到状态迁移。
+// MarkSucceeded running→succeeded + settle，同事务。返回是否抢到状态迁移。
+// 通知已解耦：调用方在事务提交后调用 NotifyTaskSucceeded（尽力而为）。
 func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys []string, finishedAt time.Time) (bool, error) {
 	ok, err := store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, finishedAt)
 	if err != nil || !ok {
@@ -197,14 +203,11 @@ func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys 
 			return false, err
 		}
 	}
-	body := fmt.Sprintf("你的「%s」任务已生成 %d 张图片。", task.Type, len(outputKeys))
-	if err := store.InsertNotification(ctx, q, &task.UserID, "task", "任务已完成", &body); err != nil {
-		return false, err
-	}
 	return true, nil
 }
 
-// MarkFailed fromStatus→failed + release + 通知，同事务。返回是否抢到状态迁移。
+// MarkFailed fromStatus→failed + release，同事务。返回是否抢到状态迁移。
+// 通知已解耦：调用方在事务提交后调用 NotifyTaskFailed（尽力而为）。
 func MarkFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus string) (bool, error) {
 	msg := []rune(errorMessage)
 	if len(msg) > 2000 {
@@ -219,10 +222,43 @@ func MarkFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 			return false, err
 		}
 	}
+	return true, nil
+}
+
+// NotifyTaskSucceeded 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
+func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, imageCount int) {
+	body := fmt.Sprintf("你的「%s」任务已生成 %d 张图片。", task.Type, imageCount)
+	if err := store.InsertNotification(ctx, q, &task.UserID, "task", "任务已完成", &body); err != nil {
+		log.Printf("notify task %s succeeded: %v", task.ID, err)
+	}
+}
+
+// NotifyTaskFailed 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
+func NotifyTaskFailed(ctx context.Context, q store.Q, task *store.Task) {
 	body := fmt.Sprintf("你的「%s」任务执行失败，费用已退回。", task.Type)
 	if err := store.InsertNotification(ctx, q, &task.UserID, "task", "任务失败", &body); err != nil {
+		log.Printf("notify task %s failed: %v", task.ID, err)
+	}
+}
+
+// FailQueuedEnqueue C1 入队失败补偿：条件更新 queued→failed（enqueue_failed）+ release，
+// 单事务；事务提交后尽力而为通知属主。返回是否抢到迁移。
+func FailQueuedEnqueue(ctx context.Context, st *store.Store, taskID uuid.UUID) (bool, error) {
+	var task *store.Task
+	won := false
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		t, err := store.GetTask(ctx, tx, taskID)
+		if err != nil || t == nil {
+			return err
+		}
+		task = t
+		won, err = MarkFailed(ctx, tx, t, "enqueue_failed", "任务入队失败，费用已退回，请重试", "queued")
+		return err
+	})
+	if err != nil || !won {
 		return false, err
 	}
+	NotifyTaskFailed(ctx, st.Pool, task)
 	return true, nil
 }
 

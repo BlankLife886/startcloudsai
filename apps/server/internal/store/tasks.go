@@ -268,8 +268,18 @@ func DeleteTask(ctx context.Context, q Q, id uuid.UUID) error {
 
 // ListZombieTaskIDs 找出 running 且 started_at 早于阈值的任务。
 func ListZombieTaskIDs(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
-	rows, err := q.Query(ctx,
+	return listTaskIDs(ctx, q,
 		`SELECT id FROM tasks WHERE status = 'running' AND started_at < $1`, before)
+}
+
+// ListStaleQueuedTaskIDs 找出 queued 且 created_at 早于阈值的任务（入队丢失回收）。
+func ListStaleQueuedTaskIDs(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
+	return listTaskIDs(ctx, q,
+		`SELECT id FROM tasks WHERE status = 'queued' AND created_at < $1`, before)
+}
+
+func listTaskIDs(ctx context.Context, q Q, sql string, args ...any) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}

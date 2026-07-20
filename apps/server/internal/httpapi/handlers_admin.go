@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -166,8 +167,9 @@ func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
 }
 
 type walletAdjustIn struct {
-	DeltaCents *int64 `json:"deltaCents"`
-	Reason     string `json:"reason"`
+	DeltaCents     *int64  `json:"deltaCents"`
+	Reason         string  `json:"reason"`
+	IdempotencyKey *string `json:"idempotencyKey"` // 可选：缺省随机（保持兼容）
 }
 
 func (s *Server) adminWalletAdjust(c *gin.Context, _ *store.User) {
@@ -203,10 +205,18 @@ func (s *Server) adminWalletAdjust(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "调整金额不能为 0", 422))
 		return
 	}
+	sourceID := uuid.NewString()
+	if body.IdempotencyKey != nil && *body.IdempotencyKey != "" {
+		if len([]rune(*body.IdempotencyKey)) > 128 {
+			fail(c, apperr.E("validation_error", "idempotencyKey: 长度不能超过 128", 422))
+			return
+		}
+		sourceID = *body.IdempotencyKey
+	}
 	var entry *store.LedgerEntry
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var aerr error
-		entry, aerr = wallet.AdminAdjust(ctx, tx, userID, *body.DeltaCents, uuid.NewString(), body.Reason)
+		entry, aerr = wallet.AdminAdjust(ctx, tx, userID, *body.DeltaCents, sourceID, body.Reason)
 		return aerr
 	})
 	if err != nil {
@@ -336,14 +346,33 @@ func (s *Server) adminListPlans(c *gin.Context, _ *store.User) {
 }
 
 type planIn struct {
-	Code       string   `json:"code"`
-	Name       string   `json:"name"`
-	PriceCents *int64   `json:"priceCents"`
-	GrantCents *int64   `json:"grantCents"`
-	BonusCents *int64   `json:"bonusCents"`
-	Features   []string `json:"features"`
-	Active     *bool    `json:"active"`
-	Sort       *int     `json:"sort"`
+	Code            string   `json:"code"`
+	Name            string   `json:"name"`
+	Kind            *string  `json:"kind"`
+	PriceCents      *int64   `json:"priceCents"`
+	GrantCents      *int64   `json:"grantCents"`
+	BonusCents      *int64   `json:"bonusCents"`
+	DurationDays    *int     `json:"durationDays"`
+	DailyGrantCents *int64   `json:"dailyGrantCents"`
+	Features        []string `json:"features"`
+	Active          *bool    `json:"active"`
+	Sort            *int     `json:"sort"`
+}
+
+// validatePlanKind kind=subscription 时 durationDays 与 dailyGrantCents 必须为正。
+func validatePlanKind(kind string, durationDays int, dailyGrantCents int64) error {
+	if kind != "topup" && kind != "subscription" {
+		return apperr.E("validation_error", "kind: 须为 topup/subscription", 422)
+	}
+	if kind == "subscription" {
+		if durationDays <= 0 {
+			return apperr.E("validation_error", "durationDays: 订阅套餐须为正整数", 422)
+		}
+		if dailyGrantCents <= 0 {
+			return apperr.E("validation_error", "dailyGrantCents: 订阅套餐须为正整数", 422)
+		}
+	}
+	return nil
 }
 
 func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
@@ -376,6 +405,30 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		}
 		bonus = *body.BonusCents
 	}
+	kind := "topup"
+	if body.Kind != nil {
+		kind = *body.Kind
+	}
+	durationDays := 0
+	if body.DurationDays != nil {
+		if *body.DurationDays < 0 {
+			fail(c, apperr.E("validation_error", "durationDays: 须为非负整数", 422))
+			return
+		}
+		durationDays = *body.DurationDays
+	}
+	dailyGrant := int64(0)
+	if body.DailyGrantCents != nil {
+		if *body.DailyGrantCents < 0 {
+			fail(c, apperr.E("validation_error", "dailyGrantCents: 须为非负整数", 422))
+			return
+		}
+		dailyGrant = *body.DailyGrantCents
+	}
+	if err := validatePlanKind(kind, durationDays, dailyGrant); err != nil {
+		fail(c, err)
+		return
+	}
 	active := true
 	if body.Active != nil {
 		active = *body.Active
@@ -395,14 +448,17 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		return
 	}
 	plan, err := store.InsertPlan(ctx, s.St.Pool, &store.Plan{
-		Code:       body.Code,
-		Name:       body.Name,
-		PriceCents: *body.PriceCents,
-		GrantCents: *body.GrantCents,
-		BonusCents: bonus,
-		Features:   body.Features,
-		Active:     active,
-		Sort:       sortVal,
+		Code:            body.Code,
+		Name:            body.Name,
+		Kind:            kind,
+		PriceCents:      *body.PriceCents,
+		GrantCents:      *body.GrantCents,
+		BonusCents:      bonus,
+		DurationDays:    durationDays,
+		DailyGrantCents: dailyGrant,
+		Features:        body.Features,
+		Active:          active,
+		Sort:            sortVal,
 	})
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {
@@ -416,14 +472,17 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 }
 
 type planPatchIn struct {
-	Code       Opt[string]   `json:"code"`
-	Name       Opt[string]   `json:"name"`
-	PriceCents Opt[int64]    `json:"priceCents"`
-	GrantCents Opt[int64]    `json:"grantCents"`
-	BonusCents Opt[int64]    `json:"bonusCents"`
-	Features   Opt[[]string] `json:"features"`
-	Active     Opt[bool]     `json:"active"`
-	Sort       Opt[int]      `json:"sort"`
+	Code            Opt[string]   `json:"code"`
+	Name            Opt[string]   `json:"name"`
+	Kind            Opt[string]   `json:"kind"`
+	PriceCents      Opt[int64]    `json:"priceCents"`
+	GrantCents      Opt[int64]    `json:"grantCents"`
+	BonusCents      Opt[int64]    `json:"bonusCents"`
+	DurationDays    Opt[int]      `json:"durationDays"`
+	DailyGrantCents Opt[int64]    `json:"dailyGrantCents"`
+	Features        Opt[[]string] `json:"features"`
+	Active          Opt[bool]     `json:"active"`
+	Sort            Opt[int]      `json:"sort"`
 }
 
 func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
@@ -445,11 +504,15 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "name: 长度须在 1-128 之间", 422))
 		return
 	}
-	for name, v := range map[string]Opt[int64]{"priceCents": body.PriceCents, "grantCents": body.GrantCents, "bonusCents": body.BonusCents} {
+	for name, v := range map[string]Opt[int64]{"priceCents": body.PriceCents, "grantCents": body.GrantCents, "bonusCents": body.BonusCents, "dailyGrantCents": body.DailyGrantCents} {
 		if v.Valid && v.Value < 0 {
 			fail(c, apperr.E("validation_error", name+": 须为非负整数", 422))
 			return
 		}
+	}
+	if body.DurationDays.Valid && body.DurationDays.Value < 0 {
+		fail(c, apperr.E("validation_error", "durationDays: 须为非负整数", 422))
+		return
 	}
 	ctx := c.Request.Context()
 	plan, err := store.GetPlan(ctx, s.St.Pool, planID)
@@ -478,6 +541,9 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.Name.Valid {
 		plan.Name = body.Name.Value
 	}
+	if body.Kind.Valid {
+		plan.Kind = body.Kind.Value
+	}
 	if body.PriceCents.Valid {
 		plan.PriceCents = body.PriceCents.Value
 	}
@@ -487,6 +553,12 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.BonusCents.Valid {
 		plan.BonusCents = body.BonusCents.Value
 	}
+	if body.DurationDays.Valid {
+		plan.DurationDays = body.DurationDays.Value
+	}
+	if body.DailyGrantCents.Valid {
+		plan.DailyGrantCents = body.DailyGrantCents.Value
+	}
 	if body.Features.Valid {
 		plan.Features = body.Features.Value
 	}
@@ -495,6 +567,11 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	}
 	if body.Sort.Valid {
 		plan.Sort = body.Sort.Value
+	}
+	// patch 后按最终值整体校验 kind 组合
+	if err := validatePlanKind(plan.Kind, plan.DurationDays, plan.DailyGrantCents); err != nil {
+		fail(c, err)
+		return
 	}
 	if err := store.UpdatePlan(ctx, s.St.Pool, plan); err != nil {
 		fail(c, err)
@@ -597,7 +674,12 @@ func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 		return
 	}
 	if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
-		fail(c, err)
+		// C1 补偿：重跑入队失败 → queued→failed + 解冻，返回 500 让管理员重试
+		log.Printf("task %s requeue enqueue failed, compensating: %v", task.ID, err)
+		if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
+			log.Printf("task %s requeue compensation failed (queued reaper will pick up): %v", task.ID, cerr)
+		}
+		fail(c, apperr.E("enqueue_failed", "任务入队失败，费用已退回，请重试", 500))
 		return
 	}
 	ok(c, adminTaskDict(task, nil))

@@ -66,16 +66,49 @@ type LedgerEntry struct {
 }
 
 type Plan struct {
-	ID         uuid.UUID
-	Code       string
-	Name       string
-	PriceCents int64
-	GrantCents int64
-	BonusCents int64
-	Features   []string
-	Active     bool
-	Sort       int
-	CreatedAt  time.Time
+	ID              uuid.UUID
+	Code            string
+	Name            string
+	Kind            string // topup 充值包 / subscription 订阅
+	PriceCents      int64
+	GrantCents      int64
+	BonusCents      int64
+	DurationDays    int   // subscription：订阅时长（天）
+	DailyGrantCents int64 // subscription：每日发放额度
+	Features        []string
+	Active          bool
+	Sort            int
+	CreatedAt       time.Time
+}
+
+// Subscription 订阅期（续购同套餐 = ends_at 顺延）。
+type Subscription struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	PlanID          uuid.UUID
+	OrderID         *uuid.UUID
+	StartsAt        time.Time
+	EndsAt          time.Time
+	DailyGrantCents int64
+	LastGrantedDate *time.Time // date 列，仅日期部分（北京时间日界）
+	Status          string     // active / expired
+	CreatedAt       time.Time
+}
+
+// RedemptionCode 兑换码；RedeemedByEmail 仅后台列表 JOIN users 时填充。
+type RedemptionCode struct {
+	ID              uuid.UUID
+	Code            string
+	GrantCents      int64
+	BatchID         string
+	Note            *string
+	Status          string // active / redeemed / disabled
+	ExpiresAt       *time.Time
+	RedeemedBy      *uuid.UUID
+	RedeemedAt      *time.Time
+	CreatedBy       *uuid.UUID
+	CreatedAt       time.Time
+	RedeemedByEmail *string
 }
 
 type Order struct {
@@ -220,3 +253,4 @@ func (n *Notification) CursorKey() (time.Time, uuid.UUID)      { return n.Create
 func (l *AdminAuditLog) CursorKey() (time.Time, uuid.UUID)     { return l.CreatedAt, l.ID }
 func (p *PromptEntry) CursorKey() (time.Time, uuid.UUID)       { return p.CreatedAt, p.ID }
 func (a *GalleryAuthor) CursorKey() (time.Time, uuid.UUID)     { return a.CreatedAt, a.UserID }
+func (r *RedemptionCode) CursorKey() (time.Time, uuid.UUID)    { return r.CreatedAt, r.ID }

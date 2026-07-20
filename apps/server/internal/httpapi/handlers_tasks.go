@@ -97,8 +97,18 @@ func (s *Server) createTask(c *gin.Context) {
 	}
 	if created {
 		if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
-			fail(c, err)
+			// C1 补偿：入队失败立即 queued→failed + 解冻，返回 500 让用户重试
+			log.Printf("task %s enqueue failed, compensating: %v", task.ID, err)
+			if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
+				log.Printf("task %s enqueue compensation failed (queued reaper will pick up): %v", task.ID, cerr)
+			}
+			fail(c, apperr.E("enqueue_failed", "任务入队失败，费用已退回，请重试", 500))
 			return
+		}
+	} else if task.Status == "queued" {
+		// 幂等重试命中已有 queued 任务：补一次入队（Asynq 同 task_id 重复入队无害）
+		if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
+			log.Printf("task %s idempotent re-enqueue failed (queued reaper will pick up): %v", task.ID, err)
 		}
 	}
 	ok(c, taskDict(task, s.outputURLsFor(c, task)))
