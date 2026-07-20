@@ -617,7 +617,7 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		return
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListSubmissions(ctx, s.St.Pool, nil, status, limit, cursor)
+	rows, err := store.ListSubmissions(ctx, s.St.Pool, store.SubmissionFilter{Status: status}, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
@@ -1078,6 +1078,9 @@ var settingsCamel = map[string]string{
 	"registration_enabled":   "registrationEnabled",
 	"task_models":            "taskModels",
 	"free_daily_cents":       "freeDailyCents",
+	"submission_enabled":     "submissionEnabled",
+	"auto_approve":           "autoApprove",
+	"daily_limit":            "dailyLimit",
 }
 
 var settingsSnake = func() map[string]string {
@@ -1160,16 +1163,16 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "userMaxRunningTasks: 须在 1-100 之间", 422))
 				return
 			}
-		case "signup_bonus_cents", "free_daily_cents":
+		case "signup_bonus_cents", "free_daily_cents", "daily_limit":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
 				fail(c, apperr.E("validation_error", camel+": 须为非负整数", 422))
 				return
 			}
-		case "registration_enabled":
+		case "registration_enabled", "submission_enabled", "auto_approve":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
-				fail(c, apperr.E("validation_error", "registrationEnabled: 须为布尔值", 422))
+				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
 				return
 			}
 		case "task_models":

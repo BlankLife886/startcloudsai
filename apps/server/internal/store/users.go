@@ -16,11 +16,11 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-const userCols = `id, email, username, password_hash, avatar_url, role, status, last_login_at, created_at`
+const userCols = `id, email, username, password_hash, avatar_url, role, status, last_login_at, submission_banned_until, created_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Role, &u.Status, &u.LastLoginAt, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +77,12 @@ func UpdateUserAdmin(ctx context.Context, q Q, id uuid.UUID, status, role *strin
 
 func UpdateUserPassword(ctx context.Context, q Q, id uuid.UUID, passwordHash string) error {
 	_, err := q.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
+	return err
+}
+
+// UpdateSubmissionBan 设置/解除禁投截止时间（nil 为解除）。
+func UpdateSubmissionBan(ctx context.Context, q Q, id uuid.UUID, until *time.Time) error {
+	_, err := q.Exec(ctx, `UPDATE users SET submission_banned_until = $2 WHERE id = $1`, id, until)
 	return err
 }
 

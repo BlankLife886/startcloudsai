@@ -90,6 +90,8 @@ func (s *Server) getFile(c *gin.Context) {
 
 	allowed := false
 	switch {
+	case strings.HasPrefix(key, "prompt-covers/"):
+		allowed = true // 提示词封面公开可读
 	case user != nil && user.Role == "admin":
 		allowed = true
 	case user != nil && (strings.HasPrefix(key, "uploads/"+user.ID.String()+"/") ||

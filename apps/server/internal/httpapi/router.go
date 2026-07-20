@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
@@ -18,15 +19,23 @@ import (
 var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, "PUT": true}
 
 type Server struct {
-	Cfg     *config.Config
-	St      *store.Store
-	Storage *storage.Storage
-	C2A     *c2a.Client
-	Queue   *taskflow.Queue
+	Cfg          *config.Config
+	St           *store.Store
+	Storage      *storage.Storage
+	C2A          *c2a.Client
+	Queue        *taskflow.Queue
+	LoginLimiter *auth.LoginLimiter
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Server {
-	return &Server{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue}
+	return &Server{
+		Cfg:          cfg,
+		St:           st,
+		Storage:      stg,
+		C2A:          c2aClient,
+		Queue:        queue,
+		LoginLimiter: auth.NewLoginLimiter(),
+	}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -87,7 +96,11 @@ func (s *Server) Router() *gin.Engine {
 
 	// gallery
 	api.GET("/gallery", s.publicGallery)
+	api.GET("/gallery/categories", s.publicGalleryCategories)
 	api.POST("/gallery/submissions", s.submitGallery)
+
+	// prompts（提示词库，公开）
+	api.GET("/prompts", s.publicPrompts)
 
 	// meta
 	api.GET("/meta/pricing", s.pricing)
@@ -120,6 +133,21 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
 	admin.GET("/gallery/submissions", s.adminOnly(s.adminSubmissions))
 	admin.POST("/gallery/submissions/:id/review", s.adminOnly(s.adminReviewSubmission))
+	admin.POST("/gallery/submissions/:id/curate", s.adminOnly(s.adminCurateSubmission))
+	admin.POST("/gallery/submissions/:id/violation", s.adminOnly(s.adminSubmissionViolation))
+	admin.POST("/gallery/users/:id/unban", s.adminOnly(s.adminUnbanGalleryUser))
+	admin.GET("/gallery/categories", s.adminOnly(s.adminGalleryCategories))
+	admin.POST("/gallery/categories", s.adminOnly(s.adminCreateGalleryCategory))
+	admin.PATCH("/gallery/categories/:id", s.adminOnly(s.adminPatchGalleryCategory))
+	admin.DELETE("/gallery/categories/:id", s.adminOnly(s.adminDeleteGalleryCategory))
+	admin.GET("/gallery/settings", s.adminOnly(s.adminGetGallerySettings))
+	admin.PUT("/gallery/settings", s.adminOnly(s.adminPutGallerySettings))
+	admin.GET("/gallery/authors", s.adminOnly(s.adminGalleryAuthors))
+	admin.GET("/prompt-library", s.adminOnly(s.adminListPrompts))
+	admin.POST("/prompt-library", s.adminOnly(s.adminCreatePrompt))
+	admin.PATCH("/prompt-library/:id", s.adminOnly(s.adminPatchPrompt))
+	admin.DELETE("/prompt-library/:id", s.adminOnly(s.adminDeletePrompt))
+	admin.POST("/prompt-library/:id/cover", s.adminOnly(s.adminUploadPromptCover))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))

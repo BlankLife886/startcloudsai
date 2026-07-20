@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -40,8 +43,21 @@ func (s *Server) publicGallery(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	filter := store.SubmissionFilter{Status: "approved"}
+	if raw := c.Query("category"); raw != "" {
+		categoryID, perr := uuid.Parse(raw)
+		if perr != nil {
+			fail(c, apperr.E("validation_error", "category: 无效的 UUID", 422))
+			return
+		}
+		filter.CategoryID = &categoryID
+	}
+	if raw := c.Query("featured"); raw != "" {
+		featured := raw == "1" || raw == "true"
+		filter.Featured = &featured
+	}
 	ctx := c.Request.Context()
-	rows, err := store.ListSubmissions(ctx, s.St.Pool, nil, "approved", limit, cursor)
+	rows, err := store.ListSubmissions(ctx, s.St.Pool, filter, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
@@ -55,6 +71,11 @@ func (s *Server) publicGallery(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	categories, err := s.categoriesFor(ctx, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
 		author := users[sub.UserID]
@@ -62,20 +83,62 @@ func (s *Server) publicGallery(c *gin.Context) {
 		if author != nil {
 			authorDict = gin.H{"id": author.ID.String(), "username": author.Username, "avatarUrl": author.AvatarURL}
 		}
+		var categoryDict any
+		if sub.CategoryID != nil {
+			if cat := categories[*sub.CategoryID]; cat != nil {
+				categoryDict = gin.H{"id": cat.ID.String(), "name": cat.Name}
+			}
+		}
 		return gin.H{
 			"id":        sub.ID.String(),
 			"title":     sub.Title,
 			"coverUrl":  s.presignSafe(c, sub.CoverKey),
 			"mediaUrls": s.mediaURLsFor(c, sub.MediaKeys),
 			"author":    authorDict,
+			"featured":  sub.Featured,
+			"category":  categoryDict,
 			"createdAt": isoValue(sub.CreatedAt),
 		}
 	}))
 }
 
+// categoriesFor 批量取投稿引用的分类。
+func (s *Server) categoriesFor(ctx context.Context, rows []*store.GallerySubmission) (map[uuid.UUID]*store.GalleryCategory, error) {
+	out := map[uuid.UUID]*store.GalleryCategory{}
+	for _, sub := range rows {
+		if sub.CategoryID == nil {
+			continue
+		}
+		if _, seen := out[*sub.CategoryID]; seen {
+			continue
+		}
+		cat, err := store.GetGalleryCategory(ctx, s.St.Pool, *sub.CategoryID)
+		if err != nil {
+			return nil, err
+		}
+		out[*sub.CategoryID] = cat
+	}
+	return out, nil
+}
+
+// publicGalleryCategories 公开返回启用分类。
+func (s *Server) publicGalleryCategories(c *gin.Context) {
+	rows, err := store.ListGalleryCategories(c.Request.Context(), s.St.Pool, true)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, cat := range rows {
+		items = append(items, gin.H{"id": cat.ID.String(), "name": cat.Name, "sort": cat.Sort})
+	}
+	ok(c, gin.H{"items": items})
+}
+
 type gallerySubmitIn struct {
-	TaskID string  `json:"taskId"`
-	Title  *string `json:"title"`
+	TaskID     string  `json:"taskId"`
+	Title      *string `json:"title"`
+	CategoryID *string `json:"categoryId"`
 }
 
 func (s *Server) submitGallery(c *gin.Context) {
@@ -99,6 +162,59 @@ func (s *Server) submitGallery(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	now := time.Now().UTC()
+
+	// 社区投稿门槛：禁投 → 总开关 → 每日限额
+	if user.SubmissionBannedUntil != nil && user.SubmissionBannedUntil.After(now) {
+		fail(c, apperr.E("submission_banned", "你已被禁止投稿，解禁时间："+isoValue(*user.SubmissionBannedUntil), 403))
+		return
+	}
+	enabled, err := settings.GetBool(ctx, s.St.Pool, "submission_enabled")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !enabled {
+		fail(c, apperr.E("submission_disabled", "投稿功能已关闭", 403))
+		return
+	}
+	dailyLimit, err := settings.GetInt(ctx, s.St.Pool, "daily_limit")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if dailyLimit > 0 {
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		count, cerr := store.CountSubmissionsByUserSince(ctx, s.St.Pool, user.ID, todayStart)
+		if cerr != nil {
+			fail(c, cerr)
+			return
+		}
+		if count >= dailyLimit {
+			fail(c, apperr.E("submission_daily_limit", "今日投稿数已达上限", 429))
+			return
+		}
+	}
+
+	var categoryID *uuid.UUID
+	if body.CategoryID != nil && *body.CategoryID != "" {
+		parsed, perr := uuid.Parse(*body.CategoryID)
+		if perr != nil {
+			fail(c, apperr.E("validation_error", "categoryId: 无效的 UUID", 422))
+			return
+		}
+		category, gerr := store.GetGalleryCategory(ctx, s.St.Pool, parsed)
+		if gerr != nil {
+			fail(c, gerr)
+			return
+		}
+		if category == nil || !category.Active {
+			fail(c, apperr.E("validation_error", "categoryId: 分类不存在或未启用", 422))
+			return
+		}
+		categoryID = &parsed
+	}
+
 	task, err := store.GetUserTask(ctx, s.St.Pool, user.ID, taskID)
 	if err != nil {
 		fail(c, err)
@@ -121,8 +237,17 @@ func (s *Server) submitGallery(c *gin.Context) {
 		fail(c, apperr.E("submission_not_allowed", "该任务已投稿过", 409))
 		return
 	}
+	status := "pending"
+	autoApprove, err := settings.GetBool(ctx, s.St.Pool, "auto_approve")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if autoApprove {
+		status = "approved"
+	}
 	coverKey := task.OutputKeys[0]
-	submission, err := store.InsertSubmission(ctx, s.St.Pool, user.ID, taskID, body.Title, &coverKey, task.OutputKeys)
+	submission, err := store.InsertSubmission(ctx, s.St.Pool, user.ID, taskID, body.Title, &coverKey, task.OutputKeys, categoryID, status)
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("submission_not_allowed", "该任务已投稿过", 409))
@@ -145,7 +270,7 @@ func (s *Server) mySubmissions(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListSubmissions(c.Request.Context(), s.St.Pool, &user.ID, "", limit, cursor)
+	rows, err := store.ListSubmissions(c.Request.Context(), s.St.Pool, store.SubmissionFilter{UserID: &user.ID}, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return

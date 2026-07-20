@@ -145,6 +145,11 @@ func notificationDict(n *store.Notification, globalReadAt *string) gin.H {
 }
 
 func submissionDict(s *store.GallerySubmission, mediaURLs []string) gin.H {
+	var categoryID *string
+	if s.CategoryID != nil {
+		v := s.CategoryID.String()
+		categoryID = &v
+	}
 	return gin.H{
 		"id":           s.ID.String(),
 		"taskId":       s.TaskID.String(),
@@ -155,8 +160,49 @@ func submissionDict(s *store.GallerySubmission, mediaURLs []string) gin.H {
 		"mediaUrls":    nonNilStrings(mediaURLs),
 		"rejectReason": s.RejectReason,
 		"reviewedAt":   iso(s.ReviewedAt),
+		"featured":     s.Featured,
+		"categoryId":   categoryID,
+		"sort":         s.Sort,
 		"createdAt":    isoValue(s.CreatedAt),
 	}
+}
+
+func galleryCategoryDict(c *store.GalleryCategory) gin.H {
+	return gin.H{
+		"id":        c.ID.String(),
+		"name":      c.Name,
+		"sort":      c.Sort,
+		"active":    c.Active,
+		"createdAt": isoValue(c.CreatedAt),
+	}
+}
+
+// promptCoverURL cover_key → /api/files/ 路径（prompt-covers/ 前缀公开可读）。
+func promptCoverURL(coverKey *string) *string {
+	if coverKey == nil || *coverKey == "" {
+		return nil
+	}
+	u := "/api/files/" + *coverKey
+	return &u
+}
+
+func promptDict(p *store.PromptEntry, includeAdmin bool) gin.H {
+	d := gin.H{
+		"id":       p.ID.String(),
+		"title":    p.Title,
+		"prompt":   p.Prompt,
+		"taskType": p.TaskType,
+		"category": p.Category,
+		"tags":     nonNilStrings(p.Tags),
+		"coverUrl": promptCoverURL(p.CoverKey),
+	}
+	if includeAdmin {
+		d["coverKey"] = p.CoverKey
+		d["sort"] = p.Sort
+		d["active"] = p.Active
+		d["createdAt"] = isoValue(p.CreatedAt)
+	}
+	return d
 }
 
 func announcementDict(a *store.Announcement) gin.H {

@@ -17,6 +17,10 @@ var Defaults = map[string]json.RawMessage{
 	"registration_enabled":   json.RawMessage(`true`),
 	"task_models":            json.RawMessage(`{"default": "gpt-image-2"}`),
 	"free_daily_cents":       json.RawMessage(`0`),
+	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
+	"submission_enabled": json.RawMessage(`true`),
+	"auto_approve":       json.RawMessage(`false`),
+	"daily_limit":        json.RawMessage(`0`),
 }
 
 // AllowedKeys 后台可读写的配置键。

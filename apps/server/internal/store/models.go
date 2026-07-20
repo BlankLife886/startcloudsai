@@ -24,15 +24,16 @@ func Contains(list []string, v string) bool {
 }
 
 type User struct {
-	ID           uuid.UUID
-	Email        string
-	Username     string
-	PasswordHash string
-	AvatarURL    *string
-	Role         string
-	Status       string
-	LastLoginAt  *time.Time
-	CreatedAt    time.Time
+	ID                    uuid.UUID
+	Email                 string
+	Username              string
+	PasswordHash          string
+	AvatarURL             *string
+	Role                  string
+	Status                string
+	LastLoginAt           *time.Time
+	SubmissionBannedUntil *time.Time
+	CreatedAt             time.Time
 }
 
 type Session struct {
@@ -123,7 +124,43 @@ type GallerySubmission struct {
 	RejectReason *string
 	ReviewedBy   *uuid.UUID
 	ReviewedAt   *time.Time
+	Featured     bool
+	CategoryID   *uuid.UUID
+	Sort         int
 	CreatedAt    time.Time
+}
+
+type GalleryCategory struct {
+	ID        uuid.UUID
+	Name      string
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+}
+
+type PromptEntry struct {
+	ID        uuid.UUID
+	Title     string
+	Prompt    string
+	TaskType  string
+	Category  *string
+	Tags      []string
+	CoverKey  *string
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+}
+
+// GalleryAuthor 创作者聚合行（按用户分组统计投稿）。
+type GalleryAuthor struct {
+	UserID      uuid.UUID
+	Email       string
+	Username    string
+	Submissions int64
+	Approved    int64
+	Removed     int64
+	BannedUntil *time.Time
+	CreatedAt   time.Time // 用户创建时间，作分页游标
 }
 
 type Notification struct {
@@ -181,3 +218,5 @@ func (o *Order) CursorKey() (time.Time, uuid.UUID)             { return o.Create
 func (s *GallerySubmission) CursorKey() (time.Time, uuid.UUID) { return s.CreatedAt, s.ID }
 func (n *Notification) CursorKey() (time.Time, uuid.UUID)      { return n.CreatedAt, n.ID }
 func (l *AdminAuditLog) CursorKey() (time.Time, uuid.UUID)     { return l.CreatedAt, l.ID }
+func (p *PromptEntry) CursorKey() (time.Time, uuid.UUID)       { return p.CreatedAt, p.ID }
+func (a *GalleryAuthor) CursorKey() (time.Time, uuid.UUID)     { return a.CreatedAt, a.UserID }

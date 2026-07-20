@@ -75,6 +75,8 @@ func buildAuditEntry(admin *store.User, method, path, targetID string, status in
 }
 
 // auditAction 从 method+path 归纳动作名：资源段.动词。
+// 资源段取离末尾最近的非 id 段（嵌套路径归属子资源，如
+// POST /api/admin/gallery/submissions/:id/violation → submissions.violation）。
 // POST /api/admin/plans → plans.create；PATCH/PUT → .update；DELETE → .delete；
 // 末段为动词（非 id）时直接采用，如 POST /api/admin/tasks/:id/requeue → tasks.requeue。
 func auditAction(method, path string) string {
@@ -83,10 +85,23 @@ func auditAction(method, path string) string {
 		return strings.ToLower(method)
 	}
 	segs := strings.Split(trimmed, "/")
-	resource := segs[0]
 	last := segs[len(segs)-1]
 	if len(segs) > 1 && !isUUIDSegment(last) {
+		resource := segs[0]
+		for i := len(segs) - 2; i >= 0; i-- {
+			if !isUUIDSegment(segs[i]) {
+				resource = segs[i]
+				break
+			}
+		}
 		return resource + "." + last
+	}
+	resource := segs[0]
+	for i := len(segs) - 1; i >= 0; i-- {
+		if !isUUIDSegment(segs[i]) {
+			resource = segs[i]
+			break
+		}
 	}
 	switch method {
 	case "POST":

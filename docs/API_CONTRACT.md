@@ -139,6 +139,37 @@
 
 **settings 增补**：`taskModels` 支持按类型覆盖（`{"default": "gpt-image-2", "coloring": "..."}`），后台设置页可编辑。
 
+### 社区运营接口（v3 增补）
+
+**提示词库**（表 prompt_library：id/title/prompt/task_type/category/tags jsonb/cover_key/sort/active/created_at）：
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/prompts` | GET | 公开：`?type=&category=&limit=&cursor=`，仅 active，item `{id, title, prompt, taskType, category, tags[], coverUrl}` |
+| `/api/admin/prompt-library` | GET/POST | 管理列表（含 inactive，`?type=&category=&search=`）/ 新建 |
+| `/api/admin/prompt-library/{id}` | PATCH/DELETE | 修改（含 sort/active）/ 删除 |
+| `/api/admin/prompt-library/{id}/cover` | POST | multipart 上传封面图 → 存 R2 `prompt-covers/{id}.{ext}`，返回 `{coverUrl}` |
+
+**社区管理**：
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/admin/gallery/categories` | GET/POST，`/{id}` PATCH/DELETE | 分类 CRUD：`{id, name, sort, active}`；删除时投稿的 categoryId 置 NULL |
+| `/api/admin/gallery/submissions/{id}/curate` | POST | `{featured?: bool, categoryId?: uuid\|null, sort?: int}` 策展（精选/归类/排序） |
+| `/api/admin/gallery/settings` | GET/PUT | `{submissionEnabled, autoApprove, dailyLimit}`（存 app_settings） |
+| `/api/admin/gallery/authors` | GET | 创作者聚合：`{userId, email, username, submissions, approved, removed, bannedUntil}`，`?search=` |
+
+**投稿审核增强**：
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/admin/gallery/submissions/{id}/violation` | POST | `{reason, banDays: 0-365, deleteMedia?: bool}` → status=removed + 用户 `submission_banned_until`（banDays=0 只下架）+ 通知用户；deleteMedia 时删 R2 产物 |
+| `/api/admin/gallery/users/{id}/unban` | POST | 解除禁投 |
+
+**公开画廊增补**：`GET /api/gallery` 支持 `?category=` 与 `?featured=1`；item 增加 `featured`、`category: {id, name} \| null`。`GET /api/gallery/categories` 公开返回 active 分类。用户投稿 `POST /api/gallery/submissions` 增加可选 `categoryId`，提交时校验 `submission_banned_until` 与 `submissionEnabled`/`dailyLimit`（错误码 `submission_banned` / `submission_disabled` / `submission_daily_limit`）；`autoApprove` 开启时直接 approved。
+
+**数据库增补**：`gallery_categories` 表；`gallery_submissions` 加 `featured bool default false`、`category_id uuid FK null`、`sort int default 0`；`users` 加 `submission_banned_until timestamptz null`；`prompt_library` 表。
+
 ### 后台接口字段补充定义（联调对齐基准）
 
 - `GET /api/admin/stats` 响应：`{totalUsers, newUsersToday, taskDaily: [{date, total, succeeded}](近7日), revenueCents(近30日), walletBalanceCents(全站可用余额合计), runningTasks}`。

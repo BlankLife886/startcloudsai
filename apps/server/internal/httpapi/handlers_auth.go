@@ -175,13 +175,20 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "email: 邮箱格式不正确", 422))
 		return
 	}
+	email := strings.ToLower(body.Email)
+	clientIP := c.ClientIP()
+	if remain, allowed := s.LoginLimiter.Check(email, clientIP); !allowed {
+		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
+		return
+	}
 	ctx := c.Request.Context()
-	user, err := store.GetUserByEmail(ctx, s.St.Pool, strings.ToLower(body.Email))
+	user, err := store.GetUserByEmail(ctx, s.St.Pool, email)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	if user == nil || !auth.VerifyPassword(body.Password, user.PasswordHash) {
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("invalid_credentials", "邮箱或密码错误", 401))
 		return
 	}
@@ -189,6 +196,7 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, apperr.E("invalid_credentials", "账号已被禁用", 403))
 		return
 	}
+	s.LoginLimiter.Success(email)
 	var token string
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		if terr := store.TouchLastLogin(ctx, tx, user.ID, time.Now().UTC()); terr != nil {
