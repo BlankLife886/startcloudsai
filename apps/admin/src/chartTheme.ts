@@ -15,6 +15,14 @@ function token(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 
+/** #rrggbb → rgba(...)，非法值原样兜底为主色 */
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!m) return `rgba(99, 102, 241, ${alpha})`
+  const n = parseInt(m[1], 16)
+  return `rgba(${(n >> 16) & 0xff}, ${(n >> 8) & 0xff}, ${n & 0xff}, ${alpha})`
+}
+
 /**
  * 图表基础样式。内部读取 isDark，使调用方的 computed 在主题切换时自动重算。
  */
@@ -26,6 +34,8 @@ export function chartBase() {
   const surface = token('--surface')
   return {
     color: [...CHART_COLORS],
+    /** 折线图面积填充：主题色低透明度（跟随明暗主题的 --accent） */
+    areaStyle: { color: withAlpha(token('--accent'), 0.08) },
     tooltip: {
       backgroundColor: surface,
       borderColor: border,

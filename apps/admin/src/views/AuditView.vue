@@ -19,11 +19,14 @@ interface AuditLog {
 
 const filters = reactive({ admin: '', path: '' })
 
-const { items, loading, hasPrev, hasNext, reset, next, prev } = usePagedList<AuditLog>((cursor) =>
-  request<Page<AuditLog>>('/api/admin/audit-logs', {
-    query: { admin: filters.admin, path: filters.path, limit: 20, cursor },
-  }),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, retry } =
+  usePagedList<AuditLog>(
+    (cursor) =>
+      request<Page<AuditLog>>('/api/admin/audit-logs', {
+        query: { admin: filters.admin, path: filters.path, limit: 20, cursor },
+      }),
+    () => filters,
+  )
 
 onMounted(reset)
 
@@ -78,6 +81,8 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
         <el-button type="primary" size="small" @click="reset">查询</el-button>
         <el-button size="small" @click="filters.admin = ''; filters.path = ''; reset()">重置</el-button>
       </div>
+
+      <ListError :error="error" :loading="loading" @retry="retry" />
 
       <el-table v-loading="loading" :data="items" size="small" row-key="id">
         <template #empty>

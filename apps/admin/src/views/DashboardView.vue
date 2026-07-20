@@ -143,7 +143,7 @@ const taskLineOption = computed<EChartOption>(() => {
         type: 'line',
         smooth: true,
         data: taskDaily.value.map((d) => d.total),
-        areaStyle: { color: 'rgba(99, 102, 241, 0.08)' },
+        areaStyle: base.areaStyle,
       },
       {
         name: '成功数',

@@ -28,12 +28,14 @@ interface AdminUser {
 
 const filters = reactive({ search: '', status: '' })
 
-const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<AdminUser>(
-  (cursor) =>
-    request<Page<AdminUser>>('/api/admin/users', {
-      query: { search: filters.search, status: filters.status, limit: 20, cursor },
-    }),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+  usePagedList<AdminUser>(
+    (cursor) =>
+      request<Page<AdminUser>>('/api/admin/users', {
+        query: { search: filters.search, status: filters.status, limit: 20, cursor },
+      }),
+    () => filters,
+  )
 
 onMounted(reset)
 
@@ -146,22 +148,28 @@ const loadedTabs = new Set<string>()
 const overviewLoading = ref(false)
 const overview = ref<UserDetail | null>(null)
 
-const ledgerList = usePagedList<LedgerEntry>((cursor) =>
-  request<Page<LedgerEntry>>(`/api/admin/users/${drawerUser.value?.id}/ledger`, {
-    query: { limit: 20, cursor },
-  }),
+const ledgerList = usePagedList<LedgerEntry>(
+  (cursor) =>
+    request<Page<LedgerEntry>>(`/api/admin/users/${drawerUser.value?.id}/ledger`, {
+      query: { limit: 20, cursor },
+    }),
+  () => drawerUser.value?.id ?? '',
 )
 
-const orderList = usePagedList<UserOrder>((cursor) =>
-  request<Page<UserOrder>>('/api/admin/orders', {
-    query: { search: drawerUser.value?.email, limit: 20, cursor },
-  }),
+const orderList = usePagedList<UserOrder>(
+  (cursor) =>
+    request<Page<UserOrder>>('/api/admin/orders', {
+      query: { search: drawerUser.value?.email, limit: 20, cursor },
+    }),
+  () => drawerUser.value?.email ?? '',
 )
 
-const taskList = usePagedList<UserTask>((cursor) =>
-  request<Page<UserTask>>('/api/admin/tasks', {
-    query: { user: drawerUser.value?.id, limit: 20, cursor },
-  }),
+const taskList = usePagedList<UserTask>(
+  (cursor) =>
+    request<Page<UserTask>>('/api/admin/tasks', {
+      query: { user: drawerUser.value?.id, limit: 20, cursor },
+    }),
+  () => drawerUser.value?.id ?? '',
 )
 
 async function loadOverview() {
@@ -265,6 +273,8 @@ async function copyPassword() {
         <el-button size="small" @click="filters.search = ''; filters.status = ''; reset()">重置</el-button>
       </div>
 
+      <ListError :error="error" :loading="loading" @retry="retry" />
+
       <el-table
         v-loading="loading"
         :data="items"
@@ -331,8 +341,17 @@ async function copyPassword() {
       </p>
       <el-form label-width="90px">
         <el-form-item label="金额（元）" required>
-          <el-input-number v-model="adjustForm.deltaYuan" :precision="2" :step="1" style="width: 200px" />
-          <div class="text-muted">正数入账、负数扣减；实际写入 {{ adjustCents }} 分，记入钱包账本</div>
+          <el-input-number
+            v-model="adjustForm.deltaYuan"
+            :min="-100000"
+            :max="100000"
+            :precision="2"
+            :step="1"
+            style="width: 200px"
+          />
+          <div class="text-muted">
+            正数入账、负数扣减，单次范围 ±100000 元；实际写入 {{ adjustCents }} 分，记入钱包账本
+          </div>
         </el-form-item>
         <el-form-item label="原因" required>
           <el-input v-model="adjustForm.reason" type="textarea" :rows="2" placeholder="必填，例如：活动补偿" />

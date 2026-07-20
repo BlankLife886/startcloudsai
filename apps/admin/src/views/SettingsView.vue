@@ -164,6 +164,7 @@ async function testC2a() {
             <el-input-number
               v-model="form.taskPricesYuan[type]"
               :min="0"
+              :max="100000"
               :precision="2"
               :step="0.1"
               controls-position="right"
@@ -231,6 +232,7 @@ async function testC2a() {
             <el-input-number
               v-model="form.signupBonusYuan"
               :min="0"
+              :max="100000"
               :precision="2"
               :step="0.5"
               controls-position="right"

@@ -89,17 +89,21 @@ const typeFilter = ref('all')
 const statusFilter = ref('all')
 let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
 
-const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<PromptItem>((cursor) =>
-  request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
-    query: {
-      type: typeFilter.value === 'all' ? '' : typeFilter.value,
-      category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
-      search: query.value.trim(),
-      limit: 24,
-      cursor,
-    },
-  }).then(normalizeList),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+  usePagedList<PromptItem>(
+    (cursor) =>
+      request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+        query: {
+          type: typeFilter.value === 'all' ? '' : typeFilter.value,
+          category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
+          search: query.value.trim(),
+          limit: 24,
+          cursor,
+        },
+      }).then(normalizeList),
+    // 启停/封面筛选（statusFilter）为纯前端过滤，不参与翻页参数快照
+    () => ({ type: typeFilter.value, category: categoryFilter.value, search: query.value.trim() }),
+  )
 
 /** 启停/封面筛选（契约无该查询参数，作用于当前页） */
 const visibleItems = computed(() => {
@@ -562,6 +566,8 @@ onBeforeUnmount(() => {
             </div>
             <el-button type="primary" :icon="Plus" @click="openEditor()">新增内容</el-button>
           </div>
+
+          <ListError :error="error" :loading="loading" @retry="retry" />
 
           <div v-loading="loading" class="prompt-grid">
             <template v-if="visibleItems.length">
@@ -1514,7 +1520,7 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 词库卡片：远程源词条角标（叠在封面图上，两主题都用暖色浅底） */
+/* 词库卡片：远程源词条角标（叠在封面图上，跟随主题的 accent 令牌） */
 .sync-badge {
   position: absolute;
   top: 11px;
@@ -1524,10 +1530,10 @@ onBeforeUnmount(() => {
   gap: 3px;
   padding: 5px 8px;
   border-radius: 999px;
-  color: #9a6700;
+  color: var(--accent-ink);
   font-size: 11px;
   line-height: 1;
-  background: rgb(255 248 219 / 92%);
+  background: color-mix(in srgb, var(--accent-soft) 92%, transparent);
   backdrop-filter: blur(10px);
 
   .el-icon {

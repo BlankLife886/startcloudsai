@@ -22,12 +22,14 @@ interface AdminOrder {
 
 const filters = reactive({ status: '', search: '' })
 
-const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<AdminOrder>(
-  (cursor) =>
-    request<Page<AdminOrder>>('/api/admin/orders', {
-      query: { status: filters.status, search: filters.search, limit: 20, cursor },
-    }),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+  usePagedList<AdminOrder>(
+    (cursor) =>
+      request<Page<AdminOrder>>('/api/admin/orders', {
+        query: { status: filters.status, search: filters.search, limit: 20, cursor },
+      }),
+    () => filters,
+  )
 
 onMounted(reset)
 
@@ -74,6 +76,8 @@ async function complete(order: AdminOrder) {
         <el-button type="primary" size="small" @click="reset">查询</el-button>
         <el-button size="small" @click="filters.status = ''; filters.search = ''; reset()">重置</el-button>
       </div>
+
+      <ListError :error="error" :loading="loading" @retry="retry" />
 
       <el-table v-loading="loading" :data="items" size="small">
         <template #empty>

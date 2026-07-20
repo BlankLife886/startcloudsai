@@ -103,7 +103,7 @@ const trendOption = computed<EChartOption>(() => {
         data: dates.map((d) => revenueMap.get(d) ?? 0),
         itemStyle: { color: CHART_COLORS[0] },
         lineStyle: { color: CHART_COLORS[0] },
-        areaStyle: { color: 'rgba(99, 102, 241, 0.08)' },
+        areaStyle: base.areaStyle,
       },
       {
         name: '消耗',
@@ -136,7 +136,7 @@ interface AdminLedgerEntry {
 
 const filters = reactive({ kind: '', sourceType: '', user: '' })
 
-const { items, loading, hasPrev, hasNext, reset, next, prev } = usePagedList<AdminLedgerEntry>(
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, retry } = usePagedList<AdminLedgerEntry>(
   (cursor) =>
     request<Page<AdminLedgerEntry>>('/api/admin/ledger', {
       query: {
@@ -147,6 +147,7 @@ const { items, loading, hasPrev, hasNext, reset, next, prev } = usePagedList<Adm
         cursor,
       },
     }),
+  () => filters,
 )
 
 onMounted(() => {
@@ -223,6 +224,8 @@ onMounted(() => {
           重置
         </el-button>
       </div>
+
+      <ListError :error="error" :loading="loading" @retry="retry" />
 
       <el-table v-loading="loading" :data="items" size="small">
         <template #empty>

@@ -46,6 +46,7 @@ declare module 'vue' {
     ElTabs: typeof import('element-plus/es')['ElTabs']
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
+    ListError: typeof import('./components/ListError.vue')['default']
     PageCard: typeof import('./components/PageCard.vue')['default']
     ProgressiveImage: typeof import('./components/ProgressiveImage.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

@@ -36,12 +36,15 @@ interface AdminTask {
 
 const filters = reactive({ type: '', status: '', user: '', errorCode: '' })
 
-const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<AdminTask>(
-  (cursor) =>
-    request<Page<AdminTask>>('/api/admin/tasks', {
-      query: { type: filters.type, status: filters.status, user: filters.user, limit: 20, cursor },
-    }),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+  usePagedList<AdminTask>(
+    (cursor) =>
+      request<Page<AdminTask>>('/api/admin/tasks', {
+        query: { type: filters.type, status: filters.status, user: filters.user, limit: 20, cursor },
+      }),
+    // errorCode 为纯前端过滤，不影响后端参数，不参与翻页参数快照
+    () => ({ type: filters.type, status: filters.status, user: filters.user }),
+  )
 
 /** 错误码为纯前端过滤（仅当前页），后端契约暂无该筛选参数 */
 const displayItems = computed(() => {
@@ -167,6 +170,8 @@ async function forceFail(task: AdminTask) {
           重置
         </el-button>
       </div>
+
+      <ListError :error="error" :loading="loading" @retry="retry" />
 
       <el-table v-loading="loading" :data="displayItems" size="small">
         <template #empty>

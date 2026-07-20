@@ -266,7 +266,7 @@ const hasNote = computed(() => Boolean(String(props.item.reason || '').trim()))
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
   color: #fff;
   font-size: 11px;
   font-weight: 700;

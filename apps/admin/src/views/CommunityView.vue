@@ -57,11 +57,13 @@ const workOperating = ref('')
 const {
   items: works,
   loading,
+  error: worksError,
   hasPrev,
   hasNext,
   reset: reloadWorks,
   next,
   prev,
+  retry: retryWorks,
 } = usePagedList<CommunityWork>((cursor) =>
   request<CommunityWork[] | Page<CommunityWork>>('/api/admin/gallery/submissions', {
     query: { status: 'approved', limit: 24, cursor },
@@ -459,6 +461,8 @@ onMounted(() => {
           </label>
         </div>
       </div>
+
+      <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
 
       <div v-loading="loading && works.length > 0" class="community-pane__scroll">
         <div v-if="loading && !works.length" class="community-board" aria-label="正在加载作品">
@@ -1341,7 +1345,7 @@ onMounted(() => {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
     color: #fff;
     font-size: 12px;
     font-weight: 700;

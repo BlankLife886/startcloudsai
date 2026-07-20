@@ -19,6 +19,7 @@ import {
   Setting,
   Sunny,
   SwitchButton,
+  Ticket,
   Tickets,
   User,
 } from '@element-plus/icons-vue'
@@ -56,6 +57,7 @@ const NAV_GROUPS = [
     title: '资金',
     items: [
       { path: '/finance', label: '财务', icon: Coin },
+      { path: '/codes', label: '兑换码', icon: Ticket },
       { path: '/audit', label: '审计日志', icon: List },
     ],
   },
@@ -476,7 +478,7 @@ async function submitPassword() {
   height: 32px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -626,7 +628,7 @@ async function submitPassword() {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
   color: #fff;
   font-size: 11px;
   font-weight: 600;

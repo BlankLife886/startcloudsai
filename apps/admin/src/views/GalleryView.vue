@@ -37,11 +37,14 @@ const statusFilters = [
   { label: '全部', value: '', type: 'info' },
 ] as const
 
-const { items, loading, hasPrev, hasNext, reset, next, prev, refresh } = usePagedList<AdminSubmission>((cursor) =>
-  request<AdminSubmission[] | Page<AdminSubmission>>('/api/admin/gallery/submissions', {
-    query: { status: status.value, limit: 12, cursor },
-  }).then(normalizeList),
-)
+const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+  usePagedList<AdminSubmission>(
+    (cursor) =>
+      request<AdminSubmission[] | Page<AdminSubmission>>('/api/admin/gallery/submissions', {
+        query: { status: status.value, limit: 12, cursor },
+      }).then(normalizeList),
+    () => status.value,
+  )
 
 function setStatusFilter(value: string) {
   if (status.value === value) return
@@ -306,6 +309,8 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <ListError :error="error" :loading="loading" @retry="retry" />
 
     <el-empty v-if="!loading && !items.length" description="当前没有待处理的投稿" />
 

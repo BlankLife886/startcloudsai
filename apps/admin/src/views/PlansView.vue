@@ -179,15 +179,15 @@ async function removePlan(plan: AdminPlan) {
           <el-input v-model="form.name" placeholder="如：基础套餐" />
         </el-form-item>
         <el-form-item label="价格（元）">
-          <el-input-number v-model="form.priceYuan" :min="0" :precision="2" style="width: 160px" />
+          <el-input-number v-model="form.priceYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
           <span class="text-muted" style="margin-left: 8px">= {{ yuanToFen(form.priceYuan) }} 分</span>
         </el-form-item>
         <el-form-item label="入账（元）">
-          <el-input-number v-model="form.grantYuan" :min="0" :precision="2" style="width: 160px" />
+          <el-input-number v-model="form.grantYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
           <span class="text-muted" style="margin-left: 8px">支付后入账到钱包的金额</span>
         </el-form-item>
         <el-form-item label="赠送（元）">
-          <el-input-number v-model="form.bonusYuan" :min="0" :precision="2" style="width: 160px" />
+          <el-input-number v-model="form.bonusYuan" :min="0" :max="100000" :precision="2" style="width: 160px" />
           <span class="text-muted" style="margin-left: 8px">额外赠送金额</span>
         </el-form-item>
         <el-form-item label="卖点">

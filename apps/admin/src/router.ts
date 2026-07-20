@@ -30,6 +30,7 @@ const router = createRouter({
         { path: 'users', component: () => import('@/views/UsersView.vue'), meta: { title: '用户管理' } },
         { path: 'orders', component: () => import('@/views/OrdersView.vue'), meta: { title: '订单' } },
         { path: 'finance', component: () => import('@/views/FinanceView.vue'), meta: { title: '财务' } },
+        { path: 'codes', component: () => import('@/views/CodesView.vue'), meta: { title: '兑换码' } },
         { path: 'plans', component: () => import('@/views/PlansView.vue'), meta: { title: '套餐' } },
         { path: 'tasks', component: () => import('@/views/TasksView.vue'), meta: { title: '任务监控' } },
         {
