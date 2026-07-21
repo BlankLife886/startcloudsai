@@ -19,6 +19,19 @@ export async function getWallet({ signal } = {}) {
 }
 
 /**
+ * 当前订阅：{ active, planName, endsAt, dailyGrantCents, grantedToday }。
+ * 后端订阅接口尚未上线时返回 null（404 优雅降级，调用方隐藏订阅现状条）。
+ */
+export async function getMySubscription({ signal } = {}) {
+  try {
+    return await apiGet('/me/subscription', { signal, fallbackMessage: '订阅状态读取失败' })
+  } catch (error) {
+    if (error?.status === 404) return null
+    throw error
+  }
+}
+
+/**
  * 兑换码入账：POST /api/me/wallet/redeem → { grantCents, balanceCents }。
  * 错误码：code_invalid / code_redeemed / code_expired / code_disabled / rate_limited。
  */

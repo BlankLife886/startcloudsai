@@ -1,30 +1,44 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import {
   deleteMyGallerySubmission,
+  getMySubscription,
   getOverview,
+  getWallet,
   listMyGallerySubmissions,
   listNotifications,
+  listWalletLedger,
   markNotificationsRead,
+  redeemWalletCode,
   updateProfile,
 } from '@/services/meApi'
 import { deleteTask, listTasks, TASK_TYPE_LABELS } from '@/services/tasksApi'
 import { listGalleryCategories, submitShareItem } from '@/services/shareGallery'
-import { formatCents } from '@/services/billingApi'
+import { formatCents, getOrder, listOrders } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
+const TAB_IDS = ['works', 'submissions', 'orders', 'wallet', 'notifications', 'account']
 const TABS = [
-  { id: 'works', label: '我的作品', icon: 'bi-images' },
-  { id: 'submissions', label: '我的投稿', icon: 'bi-send-check' },
-  { id: 'notifications', label: '通知', icon: 'bi-bell' },
-  { id: 'account', label: '账号设置', icon: 'bi-person-gear' },
+  { id: 'works', label: '我的作品', mono: 'Works', icon: 'bi-images' },
+  { id: 'submissions', label: '我的投稿', mono: 'Gallery', icon: 'bi-send-check' },
+  { id: 'orders', label: '订单', mono: 'Orders', icon: 'bi-receipt' },
+  { id: 'wallet', label: '钱包', mono: 'Wallet', icon: 'bi-wallet2' },
+  { id: 'notifications', label: '通知', mono: 'Inbox', icon: 'bi-bell' },
+  { id: 'account', label: '账号设置', mono: 'Account', icon: 'bi-person-gear' },
 ]
-const activeTab = ref('works')
+
+function resolveTab(value) {
+  const tab = String(value || '').trim()
+  return TAB_IDS.includes(tab) ? tab : 'works'
+}
+
+const activeTab = ref(resolveTab(route.query.tab))
 
 // ---- 总览 ----
 const overview = ref(null)
@@ -41,6 +55,10 @@ const typeStatRows = computed(() => {
     .map(([type, label]) => ({ type, label, count: Number(byType[type] || 0) }))
     .filter((row) => row.count > 0)
 })
+
+// ---- 订阅（接口 404 时为 null，不显示徽标） ----
+const subscription = ref(null)
+const hasActiveSubscription = computed(() => subscription.value?.active === true)
 
 // ---- 我的作品（任务列表） ----
 const tasks = ref([])
@@ -61,12 +79,47 @@ const submissions = ref([])
 const submissionsLoading = ref(false)
 const submissionsCursor = ref(null)
 const submissionsLoaded = ref(false)
+const submissionsError = ref('')
+
+// ---- 订单 ----
+const orders = ref([])
+const ordersLoading = ref(false)
+const ordersCursor = ref(null)
+const ordersLoaded = ref(false)
+const ordersError = ref('')
+const activeOrder = ref(null)
+let orderPollTimer = null
+
+// ---- 钱包 ----
+const wallet = ref(null)
+const walletLoading = ref(false)
+const walletError = ref('')
+const walletLoaded = ref(false)
+const ledger = ref([])
+const ledgerLoading = ref(false)
+const ledgerCursor = ref(null)
+const ledgerError = ref('')
+const redeemCode = ref('')
+const redeeming = ref(false)
+
+const REDEEM_ERROR_MESSAGES = {
+  code_invalid: '兑换码不存在，请检查后重试',
+  code_redeemed: '该兑换码已被使用',
+  code_expired: '兑换码已过期',
+  code_disabled: '兑换码已停用',
+  rate_limited: '尝试过于频繁，请稍后再试',
+}
+
+const availableCents = computed(() =>
+  Math.max(0, Number(wallet.value?.balanceCents || 0) - Number(wallet.value?.frozenCents || 0)),
+)
 
 // ---- 通知 ----
 const notifications = ref([])
 const notificationsLoading = ref(false)
 const notificationsCursor = ref(null)
 const notificationsLoaded = ref(false)
+const notificationsError = ref('')
 
 // ---- 账号设置 ----
 const profileForm = reactive({ username: '', saving: false })
@@ -87,6 +140,34 @@ const SUBMISSION_STATUS_LABELS = {
   removed: '已下架',
 }
 
+const ORDER_STATUS_LABELS = {
+  pending: '等待支付',
+  paid: '已支付',
+  completed: '已完成',
+  failed: '失败',
+  expired: '已过期',
+}
+
+const LEDGER_KIND_LABELS = {
+  order_grant: '套餐入账',
+  grant: '入账',
+  task_freeze: '任务冻结',
+  task_settle: '任务结算',
+  task_release: '任务解冻',
+  admin_adjust: '人工调整',
+  free_daily: '每日赠送',
+  redeem: '兑换码入账',
+  subscription_grant: '订阅每日发放',
+}
+
+function orderStatusLabel(status) {
+  return ORDER_STATUS_LABELS[status] || status || '未知'
+}
+
+function ledgerKindLabel(kind) {
+  return LEDGER_KIND_LABELS[kind] || kind || '变动'
+}
+
 function formatTime(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -94,11 +175,26 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatDay(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleDateString('zh-CN')
+}
+
 async function loadOverview() {
   try {
     overview.value = await getOverview()
   } catch {
     /* 静默失败 */
+  }
+}
+
+async function loadSubscription() {
+  try {
+    subscription.value = await getMySubscription()
+  } catch {
+    /* 静默失败：不显示会员徽标 */
   }
 }
 
@@ -130,6 +226,7 @@ function setTaskFilter(type) {
 async function loadSubmissions({ append = false } = {}) {
   if (submissionsLoading.value) return
   submissionsLoading.value = true
+  submissionsError.value = ''
   try {
     const { items, nextCursor } = await listMyGallerySubmissions({
       limit: 12,
@@ -139,15 +236,129 @@ async function loadSubmissions({ append = false } = {}) {
     submissionsCursor.value = nextCursor
     submissionsLoaded.value = true
   } catch (error) {
-    notificationService.error(error?.message || '投稿列表读取失败')
+    submissionsError.value = error?.message || '投稿列表读取失败'
+    if (!append) notificationService.error(submissionsError.value)
   } finally {
     submissionsLoading.value = false
+  }
+}
+
+async function loadOrders({ append = false } = {}) {
+  if (ordersLoading.value) return
+  ordersLoading.value = true
+  ordersError.value = ''
+  try {
+    const { items, nextCursor } = await listOrders({
+      limit: 12,
+      cursor: append ? ordersCursor.value || '' : '',
+    })
+    orders.value = append ? [...orders.value, ...items] : items
+    ordersCursor.value = nextCursor
+    ordersLoaded.value = true
+    const pending = orders.value.find((item) => item.status === 'pending')
+    if (pending) startOrderPolling(pending.id)
+  } catch (error) {
+    ordersError.value = error?.message || '订单列表读取失败'
+  } finally {
+    ordersLoading.value = false
+  }
+}
+
+function stopOrderPolling() {
+  if (orderPollTimer) {
+    clearInterval(orderPollTimer)
+    orderPollTimer = null
+  }
+}
+
+function startOrderPolling(orderId) {
+  if (!orderId) return
+  stopOrderPolling()
+  orderPollTimer = setInterval(async () => {
+    try {
+      const order = await getOrder(orderId)
+      activeOrder.value = order
+      const index = orders.value.findIndex((item) => item.id === order.id)
+      if (index >= 0) orders.value[index] = { ...orders.value[index], ...order }
+      if (['completed', 'failed', 'expired'].includes(order?.status)) {
+        stopOrderPolling()
+        if (order.status === 'completed') {
+          notificationService.success('订单已完成，余额已入账')
+          await Promise.all([loadOverview(), loadWallet(), loadLedger()])
+        }
+      }
+    } catch {
+      /* 下一轮重试 */
+    }
+  }, 3000)
+}
+
+async function loadWallet() {
+  walletLoading.value = true
+  walletError.value = ''
+  try {
+    wallet.value = await getWallet()
+    walletLoaded.value = true
+  } catch (error) {
+    walletError.value = error?.message || '钱包读取失败'
+  } finally {
+    walletLoading.value = false
+  }
+}
+
+async function loadLedger({ append = false } = {}) {
+  if (ledgerLoading.value) return
+  ledgerLoading.value = true
+  ledgerError.value = ''
+  try {
+    const { items, nextCursor } = await listWalletLedger({
+      limit: 15,
+      cursor: append ? ledgerCursor.value || '' : '',
+    })
+    ledger.value = append ? [...ledger.value, ...items] : items
+    ledgerCursor.value = nextCursor
+  } catch (error) {
+    ledgerError.value = error?.message || '账本读取失败'
+  } finally {
+    ledgerLoading.value = false
+  }
+}
+
+function onRedeemInput(event) {
+  redeemCode.value = String(event.target.value || '').toUpperCase()
+}
+
+async function submitRedeem() {
+  const code = redeemCode.value.trim().toUpperCase()
+  if (!code) {
+    notificationService.info('请输入兑换码（格式 SC-XXXX-XXXX-XXXX）')
+    return
+  }
+  if (redeeming.value) return
+  redeeming.value = true
+  try {
+    const result = await redeemWalletCode(code)
+    notificationService.success(`已入账 ${formatCents(result?.grantCents || 0)}`)
+    redeemCode.value = ''
+    await Promise.all([loadWallet(), loadLedger(), loadOverview()])
+  } catch (error) {
+    const mapped = REDEEM_ERROR_MESSAGES[error?.code]
+    if (mapped) {
+      notificationService.error(mapped)
+    } else if (error?.status === 404) {
+      notificationService.info('兑换功能即将开放，敬请期待')
+    } else {
+      notificationService.error(error?.message || '兑换失败，请稍后再试')
+    }
+  } finally {
+    redeeming.value = false
   }
 }
 
 async function loadNotifications({ append = false } = {}) {
   if (notificationsLoading.value) return
   notificationsLoading.value = true
+  notificationsError.value = ''
   try {
     const { items, nextCursor } = await listNotifications({
       limit: 15,
@@ -157,17 +368,43 @@ async function loadNotifications({ append = false } = {}) {
     notificationsCursor.value = nextCursor
     notificationsLoaded.value = true
   } catch (error) {
-    notificationService.error(error?.message || '通知读取失败')
+    notificationsError.value = error?.message || '通知读取失败'
+    if (!append) notificationService.error(notificationsError.value)
   } finally {
     notificationsLoading.value = false
   }
 }
 
-function switchTab(tabId) {
-  activeTab.value = tabId
+function ensureTabData(tabId) {
   if (tabId === 'submissions' && !submissionsLoaded.value) void loadSubmissions()
+  if (tabId === 'orders' && !ordersLoaded.value) void loadOrders()
+  if (tabId === 'wallet' && !walletLoaded.value) {
+    void loadWallet()
+    void loadLedger()
+  }
   if (tabId === 'notifications' && !notificationsLoaded.value) void loadNotifications()
 }
+
+function switchTab(tabId) {
+  const next = resolveTab(tabId)
+  activeTab.value = next
+  ensureTabData(next)
+  const query = { ...route.query }
+  if (next === 'works') delete query.tab
+  else query.tab = next
+  router.replace({ query }).catch(() => null)
+}
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const next = resolveTab(tab)
+    if (next !== activeTab.value) {
+      activeTab.value = next
+      ensureTabData(next)
+    }
+  },
+)
 
 async function markAllRead() {
   try {
@@ -309,69 +546,103 @@ onMounted(async () => {
   await authStore.initAuth().catch(() => null)
   profileForm.username = authStore.user?.username || ''
   void loadOverview()
+  void loadSubscription()
   void loadTasks()
+  ensureTabData(activeTab.value)
 })
+
+onBeforeUnmount(() => stopOrderPolling())
 </script>
 
 <template>
-  <div class="profile-page">
-    <!-- 账号信息卡 -->
-    <section class="profile-hero">
-      <div class="profile-identity">
-        <span class="profile-avatar">
-          <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
-          <i v-else class="bi bi-person-fill"></i>
-        </span>
-        <div>
-          <h1>{{ authStore.displayName }}</h1>
-          <p>{{ authStore.user?.email }}</p>
-          <small>注册于 {{ formatTime(authStore.user?.createdAt) }}</small>
+  <div class="pp-page">
+    <div class="pp-atmosphere" aria-hidden="true"></div>
+
+    <!-- 馆主档案页头 -->
+    <header class="pp-masthead">
+      <div class="pp-masthead__spine" aria-hidden="true">
+        <span>Curator Profile</span>
+        <i></i>
+        <em>SC</em>
+      </div>
+      <div class="pp-masthead__body">
+        <p class="pp-eyebrow">StarCloud Curator <i></i> 馆主档案</p>
+        <h1 class="pp-name">
+          <span class="pp-avatar">
+            <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
+            <i v-else class="bi bi-person-fill"></i>
+          </span>
+          <span class="pp-name__text">{{ authStore.displayName }}</span>
+          <span v-if="hasActiveSubscription" class="pp-member" :title="subscription.planName || '订阅会员'">
+            <i class="bi bi-patch-check-fill" aria-hidden="true"></i>
+            {{ subscription.planName || '会员' }} · 至 {{ formatDay(subscription.endsAt) }}
+          </span>
+        </h1>
+        <div class="pp-idline">
+          <span>{{ authStore.user?.email }}</span>
+          <i aria-hidden="true"></i>
+          <span>注册于 {{ formatTime(authStore.user?.createdAt) }}</span>
+        </div>
+        <div class="pp-masthead__actions">
+          <button type="button" class="pp-btn is-ghost" @click="switchTab('account')">
+            <i class="bi bi-pencil-square"></i> 编辑资料 / 改密
+          </button>
+          <button type="button" class="pp-btn is-text" @click="handleLogout">
+            <i class="bi bi-box-arrow-right"></i> 退出登录
+          </button>
         </div>
       </div>
-      <button type="button" class="profile-btn is-ghost" @click="handleLogout">
-        <i class="bi bi-box-arrow-right"></i> 退出登录
-      </button>
-    </section>
+    </header>
 
-    <!-- 数据总览 -->
-    <section class="profile-stats">
+    <!-- 四张数据卡 -->
+    <section class="pp-stats" aria-label="账号数据">
       <article>
-        <span>可用余额</span>
-        <strong>{{
+        <span class="pp-stats__label">Balance · 可用余额</span>
+        <strong class="pp-stats__value is-gold">{{
           formatCents(
             Math.max(
               0,
-              Number(overview?.wallet?.balanceCents || 0) - Number(overview?.wallet?.frozenCents || 0),
+              Number(overview?.wallet?.balanceCents || 0) -
+                Number(overview?.wallet?.frozenCents || 0),
             ),
           )
         }}</strong>
-        <RouterLink to="/pricing">去充值 <i class="bi bi-arrow-right"></i></RouterLink>
+        <div class="pp-stats__actions">
+          <button type="button" class="pp-stats__foot is-link" @click="switchTab('wallet')">
+            钱包 / 兑换码 →
+          </button>
+          <RouterLink class="pp-stats__foot" to="/pricing">去充值 →</RouterLink>
+        </div>
       </article>
       <article>
-        <span>任务总数</span>
-        <strong>{{ taskStats.total ?? '—' }}</strong>
-        <small>进行中 {{ taskStats.running || 0 }}</small>
+        <span class="pp-stats__label">Tasks · 任务总数</span>
+        <strong class="pp-stats__value">{{ taskStats.total ?? '—' }}</strong>
+        <small class="pp-stats__foot">进行中 {{ taskStats.running || 0 }}</small>
       </article>
       <article>
-        <span>成功率</span>
-        <strong>{{ successRate }}</strong>
-        <small>成功 {{ taskStats.succeeded || 0 }} / 失败 {{ taskStats.failed || 0 }}</small>
+        <span class="pp-stats__label">Rate · 成功率</span>
+        <strong class="pp-stats__value">{{ successRate }}</strong>
+        <small class="pp-stats__foot">
+          成功 {{ taskStats.succeeded || 0 }} / 失败 {{ taskStats.failed || 0 }}
+        </small>
       </article>
       <article>
-        <span>未读通知</span>
-        <strong>{{ unreadCount }}</strong>
-        <button type="button" class="profile-link-btn" @click="switchTab('notifications')">查看通知</button>
+        <span class="pp-stats__label">Inbox · 未读通知</span>
+        <strong class="pp-stats__value">{{ unreadCount }}</strong>
+        <button type="button" class="pp-stats__foot is-link" @click="switchTab('notifications')">
+          查看通知 →
+        </button>
       </article>
     </section>
 
-    <div v-if="typeStatRows.length" class="profile-type-stats">
-      <span v-for="row in typeStatRows" :key="row.type" class="profile-type-chip">
+    <div v-if="typeStatRows.length" class="pp-type-chips">
+      <span v-for="row in typeStatRows" :key="row.type" class="pp-type-chip">
         {{ row.label }} × {{ row.count }}
       </span>
     </div>
 
     <!-- Tab 导航 -->
-    <nav class="profile-tabs">
+    <nav class="pp-tabs" aria-label="个人中心分区">
       <button
         v-for="tab in TABS"
         :key="tab.id"
@@ -379,34 +650,40 @@ onMounted(async () => {
         :class="{ 'is-active': activeTab === tab.id }"
         @click="switchTab(tab.id)"
       >
-        <i class="bi" :class="tab.icon"></i>
-        {{ tab.label }}
-        <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
+        <small>{{ tab.mono }}</small>
+        <span>
+          {{ tab.label }}
+          <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
+        </span>
       </button>
     </nav>
 
     <!-- 我的作品 -->
-    <section v-show="activeTab === 'works'" class="profile-panel">
-      <div class="works-filter">
+    <section v-show="activeTab === 'works'" class="pp-panel">
+      <div class="pp-works-filter">
         <button
           type="button"
           :class="{ 'is-active': taskTypeFilter === '' }"
           @click="setTaskFilter('')"
-        >全部</button>
+        >
+          全部
+        </button>
         <button
           v-for="(label, type) in TASK_TYPE_LABELS"
           :key="type"
           type="button"
           :class="{ 'is-active': taskTypeFilter === type }"
           @click="setTaskFilter(type)"
-        >{{ label }}</button>
+        >
+          {{ label }}
+        </button>
       </div>
 
-      <div v-if="tasks.length" class="works-grid">
-        <article v-for="task in tasks" :key="task.id" class="work-card">
+      <div v-if="tasks.length" class="pp-works-grid">
+        <article v-for="(task, index) in tasks" :key="task.id" class="pp-work">
           <button
             type="button"
-            class="work-cover"
+            class="pp-work__cover"
             :disabled="!task.outputUrls?.length"
             @click="previewTask = task"
           >
@@ -416,18 +693,26 @@ onMounted(async () => {
               :alt="task.prompt || 'AI 作品'"
               loading="lazy"
             />
-            <span v-else class="work-cover-placeholder">
-              <i class="bi" :class="task.status === 'failed' ? 'bi-x-circle' : 'bi-hourglass-split'"></i>
+            <span v-else class="pp-work__placeholder">
+              <i
+                class="bi"
+                :class="task.status === 'failed' ? 'bi-x-circle' : 'bi-hourglass-split'"
+              ></i>
               {{ TASK_STATUS_LABELS[task.status] || task.status }}
             </span>
+            <span class="pp-work__mark">No.{{ String(index + 1).padStart(2, '0') }}</span>
           </button>
-          <div class="work-meta">
-            <span class="work-type">{{ TASK_TYPE_LABELS[task.type] || task.type }}</span>
-            <span class="work-status" :data-status="task.status">{{ TASK_STATUS_LABELS[task.status] || task.status }}</span>
+          <div class="pp-work__meta">
+            <span class="pp-work__type">{{ TASK_TYPE_LABELS[task.type] || task.type }}</span>
+            <span class="pp-work__status" :data-status="task.status">
+              {{ TASK_STATUS_LABELS[task.status] || task.status }}
+            </span>
           </div>
-          <p class="work-prompt" :title="task.prompt">{{ task.prompt || '（无提示词）' }}</p>
-          <small>{{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}</small>
-          <div class="work-actions">
+          <p class="pp-work__prompt" :title="task.prompt">{{ task.prompt || '（无提示词）' }}</p>
+          <small class="pp-work__caption">
+            {{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}
+          </small>
+          <div class="pp-work__actions">
             <button
               v-if="task.status === 'succeeded' && task.outputUrls?.length"
               type="button"
@@ -447,12 +732,12 @@ onMounted(async () => {
           </div>
         </article>
       </div>
-      <p v-else-if="!tasksLoading" class="profile-empty">还没有创作记录，去工作台生成第一张图吧。</p>
+      <p v-else-if="!tasksLoading" class="pp-empty">还没有创作记录，去工作台生成第一张图吧。</p>
 
       <button
         v-if="tasksCursor"
         type="button"
-        class="profile-btn is-ghost"
+        class="pp-btn is-ghost pp-load-more"
         :disabled="tasksLoading"
         @click="loadTasks({ append: true })"
       >
@@ -461,8 +746,8 @@ onMounted(async () => {
     </section>
 
     <!-- 我的投稿 -->
-    <section v-show="activeTab === 'submissions'" class="profile-panel">
-      <ul v-if="submissions.length" class="submission-list">
+    <section v-show="activeTab === 'submissions'" class="pp-panel">
+      <ul v-if="submissions.length" class="pp-submission-list">
         <li v-for="submission in submissions" :key="submission.id">
           <img
             v-if="submission.coverUrl || submission.mediaUrls?.length"
@@ -470,26 +755,33 @@ onMounted(async () => {
             alt=""
             loading="lazy"
           />
-          <div class="submission-body">
+          <div class="pp-submission__body">
             <strong>{{ submission.title || 'AI 作品' }}</strong>
             <small>{{ formatTime(submission.createdAt) }}</small>
-            <p v-if="submission.rejectReason" class="submission-reason">原因：{{ submission.rejectReason }}</p>
+            <p v-if="submission.rejectReason" class="pp-submission__reason">
+              原因：{{ submission.rejectReason }}
+            </p>
           </div>
-          <span class="submission-status" :data-status="submission.status">
+          <span class="pp-submission__status" :data-status="submission.status">
             {{ SUBMISSION_STATUS_LABELS[submission.status] || submission.status }}
           </span>
-          <button type="button" class="submission-remove" title="撤回/删除" @click="removeSubmission(submission)">
+          <button
+            type="button"
+            class="pp-submission__remove"
+            title="撤回/删除"
+            @click="removeSubmission(submission)"
+          >
             <i class="bi bi-trash3"></i>
           </button>
         </li>
       </ul>
-      <p v-else-if="submissionsLoaded && !submissionsLoading" class="profile-empty">
+      <p v-else-if="submissionsLoaded && !submissionsLoading" class="pp-empty">
         还没有投稿，在「我的作品」里把成功任务投稿到画廊吧。
       </p>
       <button
         v-if="submissionsCursor"
         type="button"
-        class="profile-btn is-ghost"
+        class="pp-btn is-ghost pp-load-more"
         :disabled="submissionsLoading"
         @click="loadSubmissions({ append: true })"
       >
@@ -497,16 +789,183 @@ onMounted(async () => {
       </button>
     </section>
 
+    <!-- 订单 -->
+    <section v-show="activeTab === 'orders'" class="pp-panel">
+      <header class="pp-panel-head">
+        <div>
+          <h2>我的订单</h2>
+          <p>订阅与充值订单状态，待支付订单会自动刷新。</p>
+        </div>
+        <RouterLink class="pp-btn is-ghost" to="/pricing">去价格页购买</RouterLink>
+      </header>
+
+      <div v-if="ordersLoading && !ordersLoaded" class="pp-skel-list" aria-hidden="true">
+        <div v-for="n in 4" :key="n" class="pp-skel-row"></div>
+      </div>
+
+      <div v-else-if="ordersError && !orders.length" class="pp-state is-error">
+        <strong>订单加载失败</strong>
+        <p>{{ ordersError }}</p>
+        <button type="button" class="pp-btn is-ghost" @click="loadOrders()">重试</button>
+      </div>
+
+      <ul v-else-if="orders.length" class="pp-order-list">
+        <li v-for="order in orders" :key="order.id">
+          <div class="pp-order__main">
+            <strong class="pp-order__amount">{{ formatCents(order.amountCents) }}</strong>
+            <span class="pp-order__status" :data-status="order.status">
+              {{ orderStatusLabel(order.status) }}
+            </span>
+          </div>
+          <div class="pp-order__meta">
+            <span>{{ order.planName || order.planId || '套餐订单' }}</span>
+            <span>{{ formatTime(order.createdAt) }}</span>
+          </div>
+          <p v-if="order.id === activeOrder?.id && activeOrder.status === 'pending'" class="pp-order__hint">
+            正在等待支付结果，完成后将自动入账…
+          </p>
+        </li>
+      </ul>
+
+      <div v-else-if="ordersLoaded" class="pp-state">
+        <strong>还没有订单</strong>
+        <p>去价格页购买订阅或充值包后，记录会出现在这里。</p>
+        <RouterLink class="pp-btn is-primary" to="/pricing">去看看套餐</RouterLink>
+      </div>
+
+      <button
+        v-if="ordersCursor"
+        type="button"
+        class="pp-btn is-ghost pp-load-more"
+        :disabled="ordersLoading"
+        @click="loadOrders({ append: true })"
+      >
+        {{ ordersLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </section>
+
+    <!-- 钱包：余额 + 兑换码 + 账本 -->
+    <section v-show="activeTab === 'wallet'" class="pp-panel">
+      <header class="pp-panel-head">
+        <div>
+          <h2>钱包</h2>
+          <p>余额、兑换码入账与资金明细。</p>
+        </div>
+        <button
+          type="button"
+          class="pp-btn is-ghost"
+          :disabled="walletLoading"
+          @click="
+            () => {
+              void loadWallet()
+              void loadLedger()
+            }
+          "
+        >
+          <i class="bi bi-arrow-repeat" :class="{ spin: walletLoading || ledgerLoading }"></i>
+          刷新
+        </button>
+      </header>
+
+      <div v-if="walletLoading && !walletLoaded" class="pp-skel-list" aria-hidden="true">
+        <div class="pp-skel-card"></div>
+        <div class="pp-skel-row"></div>
+      </div>
+
+      <div v-else-if="walletError && !wallet" class="pp-state is-error">
+        <strong>钱包加载失败</strong>
+        <p>{{ walletError }}</p>
+        <button type="button" class="pp-btn is-ghost" @click="loadWallet()">重试</button>
+      </div>
+
+      <template v-else>
+        <div class="pp-wallet-hero">
+          <div>
+            <span class="pp-wallet-hero__label">Available · 可用余额</span>
+            <strong class="pp-wallet-hero__amount">{{ formatCents(availableCents) }}</strong>
+            <div class="pp-wallet-hero__meta">
+              <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
+              <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
+                冻结 {{ formatCents(wallet?.frozenCents || 0) }}
+              </span>
+            </div>
+          </div>
+          <RouterLink class="pp-btn is-primary" to="/pricing">去充值</RouterLink>
+        </div>
+
+        <div class="pp-redeem">
+          <div class="pp-redeem__head">
+            <h3>兑换码</h3>
+            <p>持有兑换码可在此入账，格式 SC-XXXX-XXXX-XXXX。</p>
+          </div>
+          <form class="pp-redeem__form" @submit.prevent="submitRedeem">
+            <input
+              :value="redeemCode"
+              type="text"
+              class="pp-redeem__input"
+              placeholder="SC-XXXX-XXXX-XXXX"
+              maxlength="20"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="兑换码"
+              @input="onRedeemInput"
+            />
+            <button type="submit" class="pp-btn is-primary" :disabled="redeeming">
+              {{ redeeming ? '兑换中…' : '兑换' }}
+            </button>
+          </form>
+        </div>
+
+        <div class="pp-ledger">
+          <div class="pp-ledger__head">
+            <h3>账本明细</h3>
+            <span v-if="ledgerError" class="pp-ledger__error">{{ ledgerError }}</span>
+          </div>
+
+          <div v-if="ledgerLoading && !ledger.length" class="pp-skel-list" aria-hidden="true">
+            <div v-for="n in 5" :key="n" class="pp-skel-row"></div>
+          </div>
+
+          <ul v-else-if="ledger.length" class="pp-ledger-list">
+            <li v-for="entry in ledger" :key="entry.id">
+              <div class="pp-ledger__main">
+                <span>{{ ledgerKindLabel(entry.kind) }}</span>
+                <strong :class="Number(entry.deltaCents) >= 0 ? 'is-income' : 'is-spend'">
+                  {{ Number(entry.deltaCents) >= 0 ? '+' : '' }}{{ formatCents(entry.deltaCents) }}
+                </strong>
+              </div>
+              <small>
+                {{ formatTime(entry.createdAt) }} · 余额 {{ formatCents(entry.balanceAfterCents) }}
+                <template v-if="entry.reason"> · {{ entry.reason }}</template>
+              </small>
+            </li>
+          </ul>
+
+          <p v-else-if="!ledgerLoading" class="pp-empty">暂无余额变动记录。</p>
+
+          <button
+            v-if="ledgerCursor"
+            type="button"
+            class="pp-btn is-ghost pp-load-more"
+            :disabled="ledgerLoading"
+            @click="loadLedger({ append: true })"
+          >
+            {{ ledgerLoading ? '加载中…' : '加载更多' }}
+          </button>
+        </div>
+      </template>
+    </section>
+
     <!-- 通知 -->
-    <section v-show="activeTab === 'notifications'" class="profile-panel">
-      <div class="notifications-toolbar">
-        <button type="button" class="profile-btn is-ghost" @click="markAllRead">
+    <section v-show="activeTab === 'notifications'" class="pp-panel">
+      <div class="pp-notify-toolbar">
+        <button type="button" class="pp-btn is-ghost" @click="markAllRead">
           <i class="bi bi-check2-all"></i> 全部已读
         </button>
       </div>
-      <ul v-if="notifications.length" class="notification-list">
+      <ul v-if="notifications.length" class="pp-notify-list">
         <li v-for="item in notifications" :key="item.id" :class="{ 'is-unread': !item.readAt }">
-          <span class="notification-dot" aria-hidden="true"></span>
+          <span class="pp-notify-dot" aria-hidden="true"></span>
           <div>
             <strong>{{ item.title }}</strong>
             <p v-if="item.body">{{ item.body }}</p>
@@ -514,11 +973,11 @@ onMounted(async () => {
           </div>
         </li>
       </ul>
-      <p v-else-if="notificationsLoaded && !notificationsLoading" class="profile-empty">暂无通知。</p>
+      <p v-else-if="notificationsLoaded && !notificationsLoading" class="pp-empty">暂无通知。</p>
       <button
         v-if="notificationsCursor"
         type="button"
-        class="profile-btn is-ghost"
+        class="pp-btn is-ghost pp-load-more"
         :disabled="notificationsLoading"
         @click="loadNotifications({ append: true })"
       >
@@ -527,20 +986,20 @@ onMounted(async () => {
     </section>
 
     <!-- 账号设置 -->
-    <section v-show="activeTab === 'account'" class="profile-panel">
-      <div class="account-forms">
-        <form class="account-form" @submit.prevent="saveUsername">
+    <section v-show="activeTab === 'account'" class="pp-panel">
+      <div class="pp-account-forms">
+        <form class="pp-account-form" @submit.prevent="saveUsername">
           <h3><i class="bi bi-person-badge"></i> 修改用户名</h3>
           <label>
             <span>用户名</span>
             <input v-model="profileForm.username" maxlength="24" placeholder="输入新的用户名" />
           </label>
-          <button type="submit" class="profile-btn is-primary" :disabled="profileForm.saving">
+          <button type="submit" class="pp-btn is-primary" :disabled="profileForm.saving">
             {{ profileForm.saving ? '保存中…' : '保存' }}
           </button>
         </form>
 
-        <form class="account-form" @submit.prevent="savePassword">
+        <form class="pp-account-form" @submit.prevent="savePassword">
           <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
           <label>
             <span>当前密码</span>
@@ -554,7 +1013,7 @@ onMounted(async () => {
             <span>确认新密码</span>
             <input v-model="passwordForm.confirm" type="password" autocomplete="new-password" />
           </label>
-          <button type="submit" class="profile-btn is-primary" :disabled="passwordForm.saving">
+          <button type="submit" class="pp-btn is-primary" :disabled="passwordForm.saving">
             {{ passwordForm.saving ? '保存中…' : '更新密码' }}
           </button>
         </form>
@@ -563,8 +1022,8 @@ onMounted(async () => {
 
     <!-- 投稿到画廊 -->
     <Teleport to="body">
-      <div v-if="submitDialog.open" class="work-preview-backdrop" @click.self="closeSubmitDialog">
-        <div class="submit-dialog-panel" role="dialog" aria-modal="true" aria-label="投稿到画廊">
+      <div v-if="submitDialog.open" class="pp-backdrop" @click.self="closeSubmitDialog">
+        <div class="pp-dialog" role="dialog" aria-modal="true" aria-label="投稿到画廊">
           <header>
             <strong>投稿到画廊</strong>
             <button type="button" aria-label="关闭" @click="closeSubmitDialog">
@@ -573,7 +1032,7 @@ onMounted(async () => {
           </header>
           <img
             v-if="submitDialog.task?.outputUrls?.length"
-            class="submit-dialog-cover"
+            class="pp-dialog__cover"
             :src="submitDialog.task.outputUrls[0]"
             alt=""
           />
@@ -596,12 +1055,10 @@ onMounted(async () => {
             </select>
           </label>
           <footer>
-            <button type="button" class="profile-btn is-ghost" @click="closeSubmitDialog">
-              取消
-            </button>
+            <button type="button" class="pp-btn is-ghost" @click="closeSubmitDialog">取消</button>
             <button
               type="button"
-              class="profile-btn is-primary"
+              class="pp-btn is-primary"
               :disabled="Boolean(submittingTaskId) || !submitDialog.title.trim()"
               @click="submitToGallery"
             >
@@ -615,13 +1072,15 @@ onMounted(async () => {
 
     <!-- 产物大图预览 -->
     <Teleport to="body">
-      <div v-if="previewTask" class="work-preview-backdrop" @click.self="previewTask = null">
-        <div class="work-preview-panel">
+      <div v-if="previewTask" class="pp-backdrop" @click.self="previewTask = null">
+        <div class="pp-preview">
           <header>
             <strong>{{ TASK_TYPE_LABELS[previewTask.type] || previewTask.type }}</strong>
-            <button type="button" aria-label="关闭" @click="previewTask = null"><i class="bi bi-x-lg"></i></button>
+            <button type="button" aria-label="关闭" @click="previewTask = null">
+              <i class="bi bi-x-lg"></i>
+            </button>
           </header>
-          <div class="work-preview-media">
+          <div class="pp-preview__media">
             <a
               v-for="(url, index) in previewTask.outputUrls"
               :key="index"
@@ -632,7 +1091,7 @@ onMounted(async () => {
               <img :src="url" :alt="`产物 ${index + 1}`" />
             </a>
           </div>
-          <p class="work-preview-prompt">{{ previewTask.prompt }}</p>
+          <p class="pp-preview__prompt">{{ previewTask.prompt }}</p>
         </div>
       </div>
     </Teleport>
@@ -640,455 +1099,1217 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.profile-page {
-  max-width: 1100px;
+/* —— 个人中心 · 深色美术馆语言（与价格页同一套 token） —— */
+.pp-page {
+  --pp-ink: #eceaf2;
+  --pp-muted: rgba(214, 218, 235, 0.58);
+  --pp-faint: rgba(214, 218, 235, 0.34);
+  --pp-line: rgba(226, 201, 143, 0.14);
+  --pp-hairline: rgba(255, 255, 255, 0.08);
+  --pp-gold: #e2c98f;
+  --pp-cyan: #8fd8d2;
+  --pp-danger: #e08585;
+  --pp-serif: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
+  --pp-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: clamp(24px, 5vh, 44px) clamp(16px, 3vw, 32px) 80px;
-  color: var(--text-color, #f0f0f0);
+  padding: clamp(28px, 5vh, 52px) clamp(18px, 3.4vw, 40px) 72px;
+  color: var(--pp-ink);
 }
 
-.profile-hero {
+.pp-atmosphere {
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 auto;
+  height: min(56vh, 540px);
+  background:
+    radial-gradient(ellipse 46% 52% at 20% 8%, rgba(226, 201, 143, 0.06), transparent 70%),
+    radial-gradient(ellipse 30% 38% at 82% 24%, rgba(143, 216, 210, 0.05), transparent 72%);
+  mask-image: linear-gradient(180deg, #000 42%, transparent);
+}
+
+.pp-page > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* —— 馆主档案页头 —— */
+.pp-masthead {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 18px;
+  padding-bottom: clamp(22px, 4vh, 32px);
+  border-bottom: 1px solid var(--pp-line);
+}
+
+.pp-masthead__spine {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: space-between;
+  padding: 4px 0 2px;
+  color: var(--pp-faint);
+  font-family: var(--pp-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.pp-masthead__spine i {
+  flex: 1;
+  width: 1px;
+  margin: 12px 0;
+  background: linear-gradient(180deg, transparent, rgba(226, 201, 143, 0.5), transparent);
+}
+
+.pp-masthead__spine em {
+  font-style: normal;
+  color: var(--pp-gold);
+}
+
+.pp-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  color: var(--pp-gold);
+  font-family: var(--pp-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.pp-eyebrow i {
+  width: 42px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(226, 201, 143, 0.6), transparent);
+}
+
+.pp-name {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
-  flex-wrap: wrap;
-  padding: 22px;
-  border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: linear-gradient(150deg, rgba(99, 102, 241, 0.1), rgba(15, 23, 42, 0.55) 60%);
+  margin: 0;
 }
 
-.profile-identity { display: flex; align-items: center; gap: 16px; }
+.pp-name__text {
+  font-family: var(--pp-serif);
+  font-size: clamp(1.8rem, 4.4vw, 2.8rem);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.15;
+}
 
-.profile-avatar {
+.pp-avatar {
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
+  width: clamp(52px, 6vw, 64px);
+  aspect-ratio: 1;
   overflow: hidden;
-  font-size: 28px;
-  color: #a5b4fc;
-  background: rgba(99, 102, 241, 0.16);
+  border: 1px solid rgba(226, 201, 143, 0.4);
+  color: var(--pp-gold);
+  font-size: 1.5rem;
+  background: rgba(226, 201, 143, 0.06);
 }
 
-.profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.profile-identity h1 { margin: 0; font-size: 22px; }
-.profile-identity p { margin: 2px 0 0; font-size: 13.5px; color: rgba(203, 213, 225, 0.66); }
-.profile-identity small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
+.pp-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 
-.profile-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 14px;
+.pp-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid rgba(226, 201, 143, 0.4);
+  color: var(--pp-gold);
+  font-family: var(--pp-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.pp-idline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--pp-muted);
+  font-size: 0.84rem;
+}
+
+.pp-idline i {
+  width: 26px;
+  height: 1px;
+  background: var(--pp-hairline);
+}
+
+.pp-masthead__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-top: 18px;
 }
 
-.profile-stats article {
-  padding: 16px 18px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.5);
+/* —— 数据卡 —— */
+.pp-stats {
   display: grid;
-  gap: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-top: clamp(20px, 4vh, 30px);
 }
 
-.profile-stats span { font-size: 12.5px; color: rgba(203, 213, 225, 0.58); }
-.profile-stats strong { font-size: 24px; }
-.profile-stats small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
-.profile-stats a,
-.profile-link-btn {
-  font-size: 12.5px;
-  color: #a5b4fc;
+.pp-stats article {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 18px 20px;
+  border: 1px solid var(--pp-hairline);
+  border-top: 2px solid rgba(226, 201, 143, 0.34);
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.pp-stats__label {
+  color: var(--pp-faint);
+  font-family: var(--pp-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pp-stats__value {
+  font-family: var(--pp-serif);
+  font-size: clamp(1.5rem, 2.6vw, 1.9rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-stats__value.is-gold {
+  color: var(--pp-gold);
+}
+
+.pp-stats__foot {
+  font-size: 0.76rem;
+  color: var(--pp-faint);
   text-decoration: none;
+}
+
+a.pp-stats__foot,
+.pp-stats__foot.is-link {
   border: none;
   background: none;
   padding: 0;
   text-align: left;
+  color: var(--pp-gold);
   cursor: pointer;
 }
 
-.profile-type-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-
-.profile-type-chip {
-  padding: 4px 12px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  color: rgba(226, 232, 240, 0.75);
-  background: rgba(148, 163, 184, 0.12);
+.pp-stats__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 
-.profile-tabs {
+.pp-type-chips {
   display: flex;
-  gap: 6px;
-  margin-top: 28px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.pp-type-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--pp-hairline);
+  color: var(--pp-muted);
+  font-family: var(--pp-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+/* —— Tab —— */
+.pp-tabs {
+  display: flex;
+  gap: 0;
+  margin-top: clamp(28px, 5vh, 40px);
+  border-bottom: 1px solid var(--pp-hairline);
   overflow-x: auto;
 }
 
-.profile-tabs button {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 11px 16px;
+.pp-tabs button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 10px 20px 12px 0;
+  margin-right: 26px;
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
-  color: rgba(203, 213, 225, 0.62);
-  font-size: 14.5px;
+  color: var(--pp-muted);
   cursor: pointer;
   white-space: nowrap;
+  text-align: left;
 }
 
-.profile-tabs button.is-active { color: #e0e7ff; border-bottom-color: #a5b4fc; }
+.pp-tabs button small {
+  color: var(--pp-faint);
+  font-family: var(--pp-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
 
-.profile-tabs em {
+.pp-tabs button span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--pp-serif);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.pp-tabs button.is-active {
+  color: var(--pp-ink);
+  border-bottom-color: var(--pp-gold);
+}
+
+.pp-tabs button.is-active small {
+  color: var(--pp-gold);
+}
+
+.pp-tabs em {
   font-style: normal;
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 999px;
-  font-size: 11px;
+  font-family: var(--pp-mono);
+  font-size: 0.66rem;
   line-height: 18px;
   text-align: center;
-  color: #0b1020;
-  background: #fbbf24;
+  color: #16130a;
+  background: var(--pp-gold);
 }
 
-.profile-panel { padding-top: 20px; }
+.pp-panel {
+  padding-top: 22px;
+}
 
-.works-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+/* —— 我的作品 —— */
+.pp-works-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
 
-.works-filter button {
+.pp-works-filter button {
   padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--pp-hairline);
   background: transparent;
-  color: rgba(203, 213, 225, 0.7);
-  font-size: 13px;
+  color: var(--pp-muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
   cursor: pointer;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease;
 }
 
-.works-filter button.is-active {
-  border-color: rgba(165, 180, 252, 0.6);
-  color: #e0e7ff;
-  background: rgba(99, 102, 241, 0.16);
+.pp-works-filter button.is-active {
+  border-color: rgba(226, 201, 143, 0.55);
+  color: var(--pp-gold);
+  background: rgba(226, 201, 143, 0.06);
 }
 
-.works-grid {
+.pp-works-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
   gap: 16px;
 }
 
-.work-card {
+.pp-work {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--pp-hairline);
+  background: rgba(255, 255, 255, 0.014);
+  transition:
+    border-color 0.25s ease,
+    transform 0.25s ease;
 }
 
-.work-cover {
+.pp-work:hover {
+  border-color: rgba(226, 201, 143, 0.36);
+  transform: translateY(-2px);
+}
+
+.pp-work__cover {
   position: relative;
   display: block;
   width: 100%;
   aspect-ratio: 4 / 3;
   border: none;
-  border-radius: 10px;
   overflow: hidden;
   padding: 0;
   cursor: zoom-in;
-  background: rgba(30, 41, 59, 0.6);
+  background: rgba(0, 0, 0, 0.32);
 }
 
-.work-cover:disabled { cursor: default; }
-.work-cover img { width: 100%; height: 100%; object-fit: cover; }
+.pp-work__cover:disabled {
+  cursor: default;
+}
 
-.work-cover-placeholder {
+.pp-work__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.4s ease;
+}
+
+.pp-work:hover .pp-work__cover img {
+  transform: scale(1.03);
+}
+
+.pp-work__mark {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 8px;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.5);
+  font-family: var(--pp-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+}
+
+.pp-work__placeholder {
   display: grid;
   place-items: center;
   gap: 6px;
   height: 100%;
-  font-size: 13px;
-  color: rgba(203, 213, 225, 0.55);
+  font-size: 0.8rem;
+  color: var(--pp-faint);
 }
 
-.work-meta { display: flex; justify-content: space-between; align-items: center; }
-.work-type { font-size: 12px; color: #a5b4fc; }
-
-.work-status {
-  font-size: 11.5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
+.pp-work__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-.work-status[data-status='succeeded'] { color: #34d399; background: rgba(52, 211, 153, 0.12); }
-.work-status[data-status='failed'] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
-.work-status[data-status='running'],
-.work-status[data-status='queued'] { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.pp-work__type {
+  color: var(--pp-gold);
+  font-family: var(--pp-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+}
 
-.work-prompt {
+.pp-work__status {
+  font-family: var(--pp-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border: 1px solid var(--pp-hairline);
+  color: var(--pp-muted);
+}
+
+.pp-work__status[data-status='succeeded'] {
+  color: var(--pp-cyan);
+  border-color: rgba(143, 216, 210, 0.3);
+}
+
+.pp-work__status[data-status='failed'] {
+  color: var(--pp-danger);
+  border-color: rgba(224, 133, 133, 0.3);
+}
+
+.pp-work__status[data-status='running'],
+.pp-work__status[data-status='queued'] {
+  color: #f0b453;
+  border-color: rgba(240, 180, 83, 0.3);
+}
+
+.pp-work__prompt {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: rgba(226, 232, 240, 0.72);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--pp-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.work-card small { font-size: 11.5px; color: rgba(148, 163, 184, 0.5); }
-
-.work-actions { display: flex; gap: 8px; }
-
-.work-actions button {
-  flex: 1;
-  padding: 7px 0;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: transparent;
-  color: rgba(226, 232, 240, 0.78);
-  font-size: 12.5px;
-  cursor: pointer;
+.pp-work__caption {
+  font-family: var(--pp-mono);
+  font-size: 0.66rem;
+  color: var(--pp-faint);
 }
 
-.work-actions button:hover:not(:disabled) { border-color: rgba(165, 180, 252, 0.5); }
-.work-actions .is-danger { color: #f87171; }
-.work-actions .is-danger:hover:not(:disabled) { border-color: rgba(248, 113, 113, 0.5); }
+.pp-work__actions {
+  display: flex;
+  gap: 8px;
+}
 
-.submission-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.pp-work__actions button {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid var(--pp-hairline);
+  background: transparent;
+  color: var(--pp-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease;
+}
 
-.submission-list li {
+.pp-work__actions button:hover:not(:disabled) {
+  border-color: rgba(226, 201, 143, 0.45);
+  color: var(--pp-gold);
+}
+
+.pp-work__actions .is-danger {
+  color: var(--pp-danger);
+}
+
+.pp-work__actions .is-danger:hover:not(:disabled) {
+  border-color: rgba(224, 133, 133, 0.5);
+  color: var(--pp-danger);
+}
+
+/* —— 投稿列表 —— */
+.pp-submission-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.pp-submission-list li {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.5);
+  padding: 12px 14px;
+  border: 1px solid var(--pp-hairline);
+  background: rgba(255, 255, 255, 0.014);
 }
 
-.submission-list img { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; }
-.submission-body { flex: 1; min-width: 0; }
-.submission-body strong { display: block; font-size: 14.5px; }
-.submission-body small { font-size: 12px; color: rgba(148, 163, 184, 0.55); }
-.submission-reason { margin: 4px 0 0; font-size: 12.5px; color: #f87171; }
+.pp-submission-list img {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+}
 
-.submission-status {
+.pp-submission__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.pp-submission__body strong {
+  display: block;
+  font-size: 0.9rem;
+  letter-spacing: 0.03em;
+}
+
+.pp-submission__body small {
+  font-family: var(--pp-mono);
+  font-size: 0.68rem;
+  color: var(--pp-faint);
+}
+
+.pp-submission__reason {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--pp-danger);
+}
+
+.pp-submission__status {
   flex-shrink: 0;
-  font-size: 12px;
-  padding: 3px 11px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
+  font-family: var(--pp-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border: 1px solid var(--pp-hairline);
+  color: var(--pp-muted);
 }
 
-.submission-status[data-status='pending'] { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
-.submission-status[data-status='approved'] { color: #34d399; background: rgba(52, 211, 153, 0.12); }
-.submission-status[data-status='rejected'],
-.submission-status[data-status='removed'] { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+.pp-submission__status[data-status='pending'] {
+  color: #f0b453;
+  border-color: rgba(240, 180, 83, 0.3);
+}
 
-.submission-remove {
+.pp-submission__status[data-status='approved'] {
+  color: var(--pp-cyan);
+  border-color: rgba(143, 216, 210, 0.3);
+}
+
+.pp-submission__status[data-status='rejected'],
+.pp-submission__status[data-status='removed'] {
+  color: var(--pp-danger);
+  border-color: rgba(224, 133, 133, 0.3);
+}
+
+.pp-submission__remove {
   border: none;
   background: transparent;
-  color: rgba(203, 213, 225, 0.5);
+  color: var(--pp-faint);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 0.95rem;
 }
 
-.submission-remove:hover { color: #f87171; }
+.pp-submission__remove:hover {
+  color: var(--pp-danger);
+}
 
-.notifications-toolbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+/* —— 通知 —— */
+.pp-notify-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
 
-.notification-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.pp-notify-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
 
-.notification-list li {
+.pp-notify-list li {
   display: flex;
   gap: 12px;
-  padding: 13px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(15, 23, 42, 0.45);
+  padding: 13px 15px;
+  border: 1px solid var(--pp-hairline);
+  background: rgba(255, 255, 255, 0.01);
 }
 
-.notification-list li.is-unread { border-color: rgba(165, 180, 252, 0.35); background: rgba(99, 102, 241, 0.08); }
+.pp-notify-list li.is-unread {
+  border-color: rgba(226, 201, 143, 0.3);
+  background: rgba(226, 201, 143, 0.03);
+}
 
-.notification-dot {
+.pp-notify-dot {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   margin-top: 7px;
-  border-radius: 50%;
-  background: rgba(148, 163, 184, 0.3);
+  transform: rotate(45deg);
+  background: rgba(255, 255, 255, 0.16);
 }
 
-.notification-list li.is-unread .notification-dot { background: #a5b4fc; }
-.notification-list strong { font-size: 14px; }
-.notification-list p { margin: 3px 0 0; font-size: 13px; color: rgba(203, 213, 225, 0.66); }
-.notification-list small { font-size: 11.5px; color: rgba(148, 163, 184, 0.5); }
+.pp-notify-list li.is-unread .pp-notify-dot {
+  background: var(--pp-gold);
+}
 
-.account-forms {
+.pp-notify-list strong {
+  font-size: 0.88rem;
+  letter-spacing: 0.03em;
+}
+
+.pp-notify-list p {
+  margin: 3px 0 0;
+  font-size: 0.8rem;
+  color: var(--pp-muted);
+  line-height: 1.6;
+}
+
+.pp-notify-list small {
+  font-family: var(--pp-mono);
+  font-size: 0.66rem;
+  color: var(--pp-faint);
+}
+
+/* —— 账号设置 —— */
+.pp-account-forms {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 18px;
 }
 
-.account-form {
+.pp-account-form {
   display: grid;
   gap: 12px;
-  padding: 20px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.5);
+  padding: 22px;
+  border: 1px solid var(--pp-hairline);
+  border-top: 2px solid rgba(226, 201, 143, 0.34);
+  background: rgba(255, 255, 255, 0.014);
 }
 
-.account-form h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
-.account-form label { display: grid; gap: 6px; }
-.account-form label span { font-size: 12.5px; color: rgba(203, 213, 225, 0.6); }
+.pp-account-form h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--pp-serif);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
 
-.account-form input {
+.pp-account-form h3 i {
+  color: var(--pp-gold);
+}
+
+.pp-account-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.pp-account-form label span {
+  font-size: 0.76rem;
+  color: var(--pp-faint);
+  letter-spacing: 0.04em;
+}
+
+.pp-account-form input {
   padding: 10px 12px;
-  border-radius: 9px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(2, 6, 23, 0.5);
+  border: 1px solid var(--pp-hairline);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.28);
   color: inherit;
   outline: none;
 }
 
-.account-form input:focus { border-color: rgba(165, 180, 252, 0.55); }
+.pp-account-form input:focus {
+  border-color: rgba(226, 201, 143, 0.5);
+}
 
-.profile-btn {
+/* —— 按钮 —— */
+.pp-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   padding: 9px 18px;
-  border-radius: 10px;
-  font-size: 14px;
+  border-radius: 0;
+  font-size: 0.84rem;
   font-weight: 600;
+  letter-spacing: 0.08em;
   cursor: pointer;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
 }
 
-.profile-btn.is-primary {
-  border: none;
-  color: #0b1020;
-  background: linear-gradient(120deg, #a5b4fc, #67e8f9);
+.pp-btn.is-primary {
+  border: 1px solid var(--pp-gold);
+  background: var(--pp-gold);
+  color: #16130a;
 }
 
-.profile-btn.is-primary:disabled { opacity: 0.55; cursor: not-allowed; }
-
-.profile-btn.is-ghost {
-  border: 1px solid rgba(148, 163, 184, 0.28);
+.pp-btn.is-primary:hover:not(:disabled) {
   background: transparent;
-  color: rgba(226, 232, 240, 0.78);
+  color: var(--pp-gold);
 }
 
-.profile-empty { padding: 30px 0; color: rgba(203, 213, 225, 0.5); font-size: 14px; }
+.pp-btn.is-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
-.work-preview-backdrop {
+.pp-btn.is-ghost {
+  border: 1px solid var(--pp-hairline);
+  background: transparent;
+  color: var(--pp-muted);
+}
+
+.pp-btn.is-ghost:hover:not(:disabled) {
+  border-color: rgba(226, 201, 143, 0.45);
+  color: var(--pp-gold);
+}
+
+.pp-btn.is-text {
+  border: none;
+  background: transparent;
+  color: var(--pp-faint);
+  padding: 9px 4px;
+}
+
+.pp-btn.is-text:hover {
+  color: var(--pp-danger);
+}
+
+.pp-load-more {
+  margin-top: 18px;
+}
+
+.pp-empty {
+  padding: 30px 0;
+  color: var(--pp-faint);
+  font-size: 0.86rem;
+}
+
+.pp-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.pp-panel-head h2 {
+  margin: 0;
+  font-family: var(--pp-serif);
+  font-size: 1.2rem;
+  letter-spacing: 0.06em;
+}
+
+.pp-panel-head p {
+  margin: 6px 0 0;
+  color: var(--pp-muted);
+  font-size: 0.82rem;
+}
+
+.pp-state {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 28px 22px;
+  border: 1px dashed rgba(226, 201, 143, 0.24);
+  background: rgba(226, 201, 143, 0.02);
+}
+
+.pp-state strong {
+  font-family: var(--pp-serif);
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+}
+
+.pp-state p {
+  margin: 0;
+  color: var(--pp-muted);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+
+.pp-state.is-error {
+  border-color: rgba(224, 133, 133, 0.35);
+  background: rgba(224, 133, 133, 0.04);
+}
+
+.pp-skel-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pp-skel-row,
+.pp-skel-card {
+  min-height: 64px;
+  border: 1px solid var(--pp-hairline);
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0.02) 30%,
+    rgba(255, 255, 255, 0.05) 50%,
+    rgba(255, 255, 255, 0.02) 70%
+  );
+  background-size: 200% 100%;
+  animation: pp-skel 1.4s ease infinite;
+}
+
+.pp-skel-card {
+  min-height: 120px;
+}
+
+@keyframes pp-skel {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.pp-order-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.pp-order-list li {
+  padding: 16px 18px;
+  border: 1px solid var(--pp-hairline);
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.pp-order__main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.pp-order__amount {
+  font-family: var(--pp-serif);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--pp-gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-order__status {
+  padding: 3px 10px;
+  border: 1px solid var(--pp-hairline);
+  font-family: var(--pp-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--pp-muted);
+}
+
+.pp-order__status[data-status='pending'] {
+  color: #f0b453;
+  border-color: rgba(240, 180, 83, 0.35);
+}
+
+.pp-order__status[data-status='paid'] {
+  color: var(--pp-gold);
+  border-color: rgba(226, 201, 143, 0.35);
+}
+
+.pp-order__status[data-status='completed'] {
+  color: var(--pp-cyan);
+  border-color: rgba(143, 216, 210, 0.35);
+}
+
+.pp-order__status[data-status='failed'],
+.pp-order__status[data-status='expired'] {
+  color: var(--pp-danger);
+  border-color: rgba(224, 133, 133, 0.35);
+}
+
+.pp-order__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 8px;
+  color: var(--pp-faint);
+  font-size: 0.76rem;
+}
+
+.pp-order__hint {
+  margin: 10px 0 0;
+  color: #f0b453;
+  font-size: 0.78rem;
+}
+
+.pp-wallet-hero {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 22px 22px 20px;
+  border: 1px solid var(--pp-hairline);
+  border-left: 2px solid var(--pp-gold);
+  background: linear-gradient(150deg, rgba(226, 201, 143, 0.05), rgba(255, 255, 255, 0.012) 55%);
+}
+
+.pp-wallet-hero__label {
+  display: block;
+  color: var(--pp-faint);
+  font-family: var(--pp-mono);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.pp-wallet-hero__amount {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--pp-serif);
+  font-size: clamp(2rem, 4vw, 2.6rem);
+  font-weight: 700;
+  color: var(--pp-gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-wallet-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--pp-muted);
+  font-size: 0.8rem;
+}
+
+.pp-wallet-hero__meta .is-frozen {
+  color: #f0b453;
+}
+
+.pp-redeem {
+  margin-top: 18px;
+  padding: 20px 22px;
+  border: 1px solid var(--pp-hairline);
+  border-left: 2px solid rgba(143, 216, 210, 0.55);
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.pp-redeem__head h3 {
+  margin: 0;
+  font-family: var(--pp-serif);
+  font-size: 1.02rem;
+  letter-spacing: 0.05em;
+}
+
+.pp-redeem__head p {
+  margin: 6px 0 0;
+  color: var(--pp-muted);
+  font-size: 0.8rem;
+}
+
+.pp-redeem__form {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pp-redeem__input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 14px;
+  border: 1px solid var(--pp-hairline);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.28);
+  color: inherit;
+  font-family: var(--pp-mono);
+  font-size: 0.86rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pp-redeem__input::placeholder {
+  color: var(--pp-faint);
+  text-transform: none;
+}
+
+.pp-redeem__input:focus {
+  outline: none;
+  border-color: rgba(226, 201, 143, 0.5);
+}
+
+.pp-ledger {
+  margin-top: 22px;
+}
+
+.pp-ledger__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pp-ledger__head h3 {
+  margin: 0;
+  font-family: var(--pp-serif);
+  font-size: 1.02rem;
+  letter-spacing: 0.05em;
+}
+
+.pp-ledger__error {
+  color: var(--pp-danger);
+  font-size: 0.76rem;
+}
+
+.pp-ledger-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--pp-hairline);
+}
+
+.pp-ledger-list li {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.pp-ledger__main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.88rem;
+}
+
+.pp-ledger-list small {
+  display: block;
+  margin-top: 4px;
+  color: var(--pp-faint);
+  font-size: 0.74rem;
+}
+
+.is-income {
+  color: var(--pp-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.is-spend {
+  color: var(--pp-danger);
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 弹层 —— */
+.pp-backdrop {
   position: fixed;
   inset: 0;
   z-index: 3600;
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(2, 6, 23, 0.8);
+  background: rgba(4, 5, 10, 0.82);
   backdrop-filter: blur(10px);
 }
 
-.work-preview-panel {
+.pp-preview {
   width: min(880px, 96vw);
   max-height: 92vh;
   overflow-y: auto;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: #0f172a;
+  border: 1px solid rgba(226, 201, 143, 0.22);
+  background: #0f111a;
   padding: 18px 20px;
 }
 
-.work-preview-panel header {
+.pp-preview header,
+.pp-dialog header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 14px;
 }
 
-.work-preview-panel header button {
+.pp-preview header strong,
+.pp-dialog header strong {
+  font-family: var(--pp-serif);
+  font-size: 1.02rem;
+  letter-spacing: 0.06em;
+}
+
+.pp-preview header button,
+.pp-dialog header button {
   border: none;
   background: transparent;
-  color: rgba(226, 232, 240, 0.7);
+  color: var(--pp-muted);
   cursor: pointer;
 }
 
-.work-preview-media { display: grid; gap: 12px; }
-.work-preview-media img { width: 100%; border-radius: 10px; }
-.work-preview-prompt { margin: 14px 0 0; font-size: 13.5px; color: rgba(203, 213, 225, 0.68); }
+.pp-preview__media {
+  display: grid;
+  gap: 12px;
+}
 
-.submit-dialog-panel {
+.pp-preview__media img {
+  width: 100%;
+}
+
+.pp-preview__prompt {
+  margin: 14px 0 0;
+  font-size: 0.82rem;
+  color: var(--pp-muted);
+  line-height: 1.7;
+}
+
+.pp-dialog {
   width: min(440px, 96vw);
   max-height: 92vh;
   overflow-y: auto;
   display: grid;
   gap: 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: #0f172a;
+  border: 1px solid rgba(226, 201, 143, 0.22);
+  background: #0f111a;
   padding: 18px 20px 20px;
 }
 
-.submit-dialog-panel header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.pp-dialog header {
+  margin-bottom: 0;
 }
 
-.submit-dialog-panel header strong { font-size: 16px; }
-
-.submit-dialog-panel header button {
-  border: none;
-  background: transparent;
-  color: rgba(226, 232, 240, 0.7);
-  cursor: pointer;
-}
-
-.submit-dialog-cover {
+.pp-dialog__cover {
   width: 100%;
   max-height: 220px;
   object-fit: cover;
-  border-radius: 10px;
 }
 
-.submit-dialog-panel label { display: grid; gap: 6px; }
-.submit-dialog-panel label span { font-size: 12.5px; color: rgba(203, 213, 225, 0.6); }
+.pp-dialog label {
+  display: grid;
+  gap: 6px;
+}
 
-.submit-dialog-panel input,
-.submit-dialog-panel select {
+.pp-dialog label span {
+  font-size: 0.76rem;
+  color: var(--pp-faint);
+}
+
+.pp-dialog input,
+.pp-dialog select {
   padding: 10px 12px;
-  border-radius: 9px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(2, 6, 23, 0.5);
+  border: 1px solid var(--pp-hairline);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.28);
   color: inherit;
   outline: none;
 }
 
-.submit-dialog-panel input:focus,
-.submit-dialog-panel select:focus { border-color: rgba(165, 180, 252, 0.55); }
-.submit-dialog-panel select option { color: #e2e8f0; background: #0f172a; }
+.pp-dialog input:focus,
+.pp-dialog select:focus {
+  border-color: rgba(226, 201, 143, 0.5);
+}
 
-.submit-dialog-panel footer {
+.pp-dialog select option {
+  color: #eceaf2;
+  background: #0f111a;
+}
+
+.pp-dialog footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
 }
 
-.submit-dialog-panel .spin { animation: submit-dialog-spin 1s linear infinite; }
+.spin {
+  animation: pp-spin 1s linear infinite;
+}
 
-@keyframes submit-dialog-spin {
-  to { transform: rotate(360deg); }
+@keyframes pp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* —— 响应式 —— */
+@media (max-width: 640px) {
+  .pp-masthead {
+    grid-template-columns: 1fr;
+  }
+
+  .pp-masthead__spine {
+    display: none;
+  }
+
+  .pp-redeem__form {
+    flex-direction: column;
+  }
+
+  .pp-tabs button {
+    margin-right: 18px;
+    padding-right: 4px;
+  }
 }
 </style>

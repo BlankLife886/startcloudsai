@@ -102,19 +102,15 @@
   color: var(--t2i-ink);
 }
 
-.t2i-side-tabs button.is-disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 .t2i-model {
   position: relative;
 }
 
-.t2i-model-trigger {
+/* 固定模型标识（站内只有 GPT Image 2，不可切换） */
+.t2i-model-badge {
   width: 100%;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 18px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   min-height: 60px;
@@ -124,16 +120,18 @@
   background: var(--t2i-panel-2);
   color: var(--t2i-ink);
   text-align: left;
-  cursor: pointer;
 }
 
-.t2i-model-trigger:hover,
-.t2i-model-trigger.is-open {
-  border-color: rgba(255, 255, 255, 0.16);
-}
-
-.t2i-model-trigger:disabled {
-  cursor: progress;
+.t2i-model-fixed-tag {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 213, 106, 0.28);
+  border-radius: 999px;
+  color: #ffd56a;
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .t2i-model-icon {
@@ -194,7 +192,6 @@
   height: 8px;
 }
 
-.t2i-model-menu,
 .t2i-library-panel {
   position: absolute;
   z-index: 30;
@@ -208,12 +205,6 @@
   overflow: auto;
 }
 
-.t2i-model-menu {
-  inset: calc(100% + 8px) 0 auto;
-  max-height: 260px;
-}
-
-.t2i-model-menu button,
 .t2i-library-panel button {
   border: 0;
   border-radius: 12px;
@@ -224,8 +215,6 @@
   cursor: pointer;
 }
 
-.t2i-model-menu button:hover,
-.t2i-model-menu button.is-on,
 .t2i-library-panel button:hover {
   background: rgba(var(--t2i-accent-rgb), 0.16);
   color: var(--t2i-ink);

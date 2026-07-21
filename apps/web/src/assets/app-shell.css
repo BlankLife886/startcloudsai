@@ -166,18 +166,16 @@ html.color-scheme-dark .main-content.main--history-gallery {
   padding-top: var(--app-header-offset, 82px);
   padding-bottom: 0;
   overflow: hidden;
-  background: #0e1210;
+  background: #0c0e16;
 }
 
+/* 个人中心是深色美术馆页面：底色固定深色。
+   （此前浅色模式下底色为 #f7f7ff，深色半透明卡片叠上去整页发灰） */
 .main-content.main--profile-console {
   padding-top: var(--app-header-offset, 82px);
   padding-bottom: 0;
   overflow: hidden;
-  background: #f7f7ff;
-}
-
-html.color-scheme-dark .main-content.main--profile-console {
-  background: #0d0f18;
+  background: #0c0e16;
 }
 
 .main-content.main--ziwei-console {

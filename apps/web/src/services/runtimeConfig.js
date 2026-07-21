@@ -5,13 +5,14 @@
  */
 
 /**
- * 新后端不再下发模型目录：模型由服务端按任务类型调度（默认 gpt-image-2）。
- * 这里给每个工作台提供一个「标准模型」占位，保证旧模型选择逻辑自动选中即可用。
+ * 新后端不再下发模型目录：站内统一由 GPT Image 2 生成（服务端调度）。
+ * 这里给每个工作台提供唯一模型项，保证旧模型选择逻辑自动选中即可用；
+ * 各工作台 UI 不再渲染选择器，仅展示固定的「GPT Image 2」标识。
  */
 const STANDARD_PUBLIC_MODEL = {
   id: 'standard',
-  label: '标准模型（服务端调度）',
-  description: '由服务端按任务类型选择最优模型',
+  label: 'GPT Image 2',
+  description: '站内统一生成模型，由服务端调度',
   capabilities: ['textToImage', 'imageToImage', 'image.edit'],
   billingMode: 'wallet',
   userPriceUsd: 0,

@@ -58,9 +58,6 @@ const {
   isPageLoading,
   requestCreateTask,
   canCreateTask,
-  activePublicModelOptions,
-  selectedPublicModel,
-  currentPublicModel,
   superResolutionFeatureEnabled,
   skillOptions,
   selectedSkills,
@@ -71,7 +68,6 @@ const {
   createUpscaleTask,
   createMaskedEditTask,
   createHint,
-  formatPublicModelCost,
   taskStatusLabel,
   elapsedLabel,
   formatTaskElapsed,
@@ -100,7 +96,6 @@ const {
 } = useAiWallpaperStudioState()
 
 const referenceInputRef = ref(null)
-const modelMenuOpen = ref(false)
 const skillPanelOpen = ref(false)
 const customSkillName = ref('')
 const customSkillPrompt = ref('')
@@ -209,7 +204,6 @@ const effectiveOutputFormatOptions = computed(() =>
     : T2I_OUTPUT_FORMAT_OPTIONS,
 )
 
-const modelOptions = computed(() => activePublicModelOptions.value || [])
 const sortedTasks = computed(() =>
   (tasks.value || [])
     .map((task, index) => ({
@@ -256,14 +250,6 @@ const failedOrPausedTaskCount = computed(
     ).length,
 )
 const promptLength = computed(() => String(prompt.value || '').length)
-const currentModelLabel = computed(() => {
-  const model = currentPublicModel.value
-  if (!model) return '选择模型'
-  return model.label || model.name || model.id
-})
-const currentModelCost = computed(() =>
-  currentPublicModel.value ? formatPublicModelCost(currentPublicModel.value) : '',
-)
 const lightboxZoomLabel = computed(() => `${Math.round(lightboxZoom.value * 100)}%`)
 const lightboxImageStyle = computed(() => ({
   transform: `translate3d(${lightboxPanX.value}px, ${lightboxPanY.value}px, 0) scale(${lightboxZoom.value})`,
@@ -2036,23 +2022,7 @@ async function confirmClearFailedTasks() {
   }
 }
 
-function selectModel(modelId) {
-  const nextId = String(modelId || '').trim()
-  if (!nextId) return
-  selectedPublicModel.value = nextId
-  modelMenuOpen.value = false
-  const model = modelOptions.value.find((item) => item.id === nextId)
-  notificationService.success(`已切换模型：${model?.label || model?.name || nextId}`)
-}
-
-function modelOptionLabel(model) {
-  const name = model.label || model.name || model.id
-  const cost = formatPublicModelCost(model)
-  return cost ? `${name} · ${cost}` : name
-}
-
 function closeMenus() {
-  modelMenuOpen.value = false
   skillPanelOpen.value = false
   lightboxUpscaleMenuOpen.value = false
 }
@@ -2081,38 +2051,20 @@ function setMainTab(tab) {
     <aside class="t2i-sidebar" aria-label="生成设置" @click.stop>
       <div class="t2i-side-tabs">
         <button type="button" class="is-active">图片生成</button>
-        <button type="button" class="is-disabled" disabled title="即将支持">视频创作</button>
       </div>
 
       <div class="t2i-model">
-        <button
-          type="button"
-          class="t2i-model-trigger"
-          :class="{ 'is-open': modelMenuOpen, 'is-loading': isPageLoading }"
-          :disabled="isPageLoading"
-          @click="modelMenuOpen = !modelMenuOpen"
-        >
+        <div class="t2i-model-badge" :class="{ 'is-loading': isPageLoading }" aria-label="生成模型">
           <span class="t2i-model-icon"><i class="bi bi-stars"></i></span>
           <span v-if="isPageLoading" class="t2i-model-copy t2i-model-skeleton" aria-hidden="true">
             <span></span>
             <span></span>
           </span>
           <span v-else class="t2i-model-copy">
-            <strong>{{ currentModelLabel }}</strong>
-            <small>{{ currentModelCost || '点击切换模型' }}</small>
+            <strong>GPT Image 2</strong>
+            <small>站内统一生成模型</small>
           </span>
-          <i class="bi bi-chevron-down"></i>
-        </button>
-        <div v-if="modelMenuOpen && modelOptions.length" class="t2i-model-menu">
-          <button
-            v-for="model in modelOptions"
-            :key="model.id"
-            type="button"
-            :class="{ 'is-on': model.id === selectedPublicModel }"
-            @click="selectModel(model.id)"
-          >
-            {{ modelOptionLabel(model) }}
-          </button>
+          <span class="t2i-model-fixed-tag" aria-hidden="true">Model</span>
         </div>
       </div>
 
