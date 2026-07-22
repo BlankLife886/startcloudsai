@@ -1,4 +1,4 @@
-// 后台扩展接口（v2 增补）：用户详情/用户账本/重置密码/全站账本/财务汇总/
+// 后台扩展接口（v2 增补）：用户详情/用户账本/全站账本/财务汇总/
 // 任务 cancel+force-fail/审计日志。
 package httpapi
 
@@ -10,10 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
-	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
@@ -32,7 +30,7 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if user == nil {
+	if user == nil || user.Role != "user" {
 		fail(c, apperr.E("not_found", "用户不存在", 404))
 		return
 	}
@@ -56,6 +54,16 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	assets, err := store.CountUserAssets(ctx, s.St.Pool, userID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	sessions, err := store.GetUserSessionSummary(ctx, s.St.Pool, userID, time.Now().UTC())
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	var tasksTotal int64
 	for _, n := range byStatus {
 		tasksTotal += n
@@ -67,13 +75,22 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 	ok(c, gin.H{
 		"user":   adminUserDict(user, nil),
 		"wallet": walletOut,
+		"security": gin.H{
+			"activeSessions":       sessions.ActiveCount,
+			"lastSessionIp":        sessions.LastIP,
+			"lastSessionUserAgent": sessions.LastUserAgent,
+			"lastSessionAt":        iso(sessions.LastCreatedAt),
+			"lastSessionExpiresAt": iso(sessions.LastExpiresAt),
+		},
 		"counts": gin.H{
 			"orders":         orders,
 			"tasksTotal":     tasksTotal,
 			"tasksSucceeded": byStatus["succeeded"],
 			"tasksFailed":    byStatus["failed"],
 			"tasksRunning":   byStatus["running"] + byStatus["queued"],
+			"tasksCanceled":  byStatus["canceled"],
 			"submissions":    submissions,
+			"assets":         assets,
 		},
 	})
 }
@@ -105,56 +122,6 @@ func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, buildPage(rows, limit, ledgerDict))
-}
-
-type resetPasswordIn struct {
-	NewPassword string `json:"newPassword"`
-}
-
-func (s *Server) adminResetPassword(c *gin.Context, _ *store.User) {
-	userID, err := parseUUIDParam(c, "id")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var body resetPasswordIn
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	if len(body.NewPassword) < 8 || len(body.NewPassword) > 128 {
-		fail(c, apperr.E("validation_error", "newPassword: 长度须在 8-128 之间", 422))
-		return
-	}
-	ctx := c.Request.Context()
-	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if user == nil {
-		fail(c, apperr.E("not_found", "用户不存在", 404))
-		return
-	}
-	passwordHash, err := auth.HashPassword(body.NewPassword)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var revoked int64
-	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if terr := store.UpdateUserPassword(ctx, tx, userID, passwordHash); terr != nil {
-			return terr
-		}
-		var derr error
-		revoked, derr = store.DeleteSessionsByUser(ctx, tx, userID)
-		return derr
-	})
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ok(c, gin.H{"revokedSessions": revoked})
 }
 
 // ---------- ledger（全站） ----------

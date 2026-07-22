@@ -23,8 +23,7 @@ const routes = [
     component: DefaultHomeLayout,
     meta: {
       title: `首页 - ${siteName}`,
-      description:
-        '星空云绘是一座云上创作馆：AI 生成图像、社区画廊分享创作，一站完成。',
+      description: '星空云绘是一座云上创作馆：AI 生成图像、社区画廊分享创作，一站完成。',
     },
   },
   {
@@ -117,9 +116,8 @@ const routes = [
     meta: {
       title: `价格与套餐 - ${siteName}`,
       titleLabel: '价格',
-      icon: 'bi-currency-dollar',
-      description: '查看创作单价、钱包余额、套餐与订单。',
-      hideSiteFooter: true,
+      icon: 'bi-credit-card-2-front-fill',
+      description: '查看星空云绘创作单价、套餐方案与支付接入状态。',
     },
   },
   {
@@ -160,7 +158,7 @@ const routes = [
     component: () => import('../views/auth/AuthAccountView.vue'),
     meta: {
       title: `账号中心 - ${siteName}`,
-      description: '登录或注册星空云绘账号。',
+      description: '通过 GitHub 或邮箱密码登录星空云绘账号。',
       immersive: true,
     },
   },
@@ -202,9 +200,47 @@ const router = createRouter({
     if (savedPosition) {
       return savedPosition
     }
-
-    return { top: 0, behavior: 'smooth' }
+    if (to.path === from.path && to.hash === from.hash) return false
+    if (to.hash) return { el: to.hash, top: 16, behavior: 'smooth' }
+    return { top: 0 }
   },
+})
+
+const assetReloadKey = 'starclouds:asset-version-reload'
+const assetLoadErrorPattern =
+  /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|Importing a module script failed|Unable to preload CSS/i
+
+function recoverFromStaleAssetVersion(error, targetPath = '') {
+  if (typeof window === 'undefined' || !assetLoadErrorPattern.test(String(error?.message || error || ''))) {
+    return false
+  }
+
+  const path = targetPath || `${window.location.pathname}${window.location.search}${window.location.hash}`
+  const now = Date.now()
+  let previous = null
+  try {
+    previous = JSON.parse(window.sessionStorage.getItem(assetReloadKey) || 'null')
+  } catch {
+    previous = null
+  }
+
+  // 同一路径 30 秒内最多自动恢复一次，避免资源服务确实异常时无限刷新。
+  if (previous?.path === path && now - Number(previous.at || 0) < 30_000) return false
+  window.sessionStorage.setItem(assetReloadKey, JSON.stringify({ path, at: now }))
+  window.location.replace(path)
+  return true
+}
+
+// Vite 会在动态分包或其 CSS 预加载失败时发出该事件。Docker 镜像更新后，
+// 已打开的旧页面仍可能引用上一版 hash 文件；自动刷新即可取得新 index。
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (event) => {
+    if (recoverFromStaleAssetVersion(event?.payload || event)) event.preventDefault()
+  })
+}
+
+router.onError((error, to) => {
+  recoverFromStaleAssetVersion(error, to?.fullPath)
 })
 
 const initialNavigationPath =
@@ -311,7 +347,10 @@ function resolveRuntimeConfigRedirect(to, runtimeConfigStore) {
   if (routeConfig.enabled === false) {
     return {
       name: 'access-limited',
-      query: { reason: routeConfig.message || '当前页面暂未开放', type: routeConfig.fallbackType || 'hidden' },
+      query: {
+        reason: routeConfig.message || '当前页面暂未开放',
+        type: routeConfig.fallbackType || 'hidden',
+      },
       replace: true,
     }
   }

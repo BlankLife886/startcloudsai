@@ -1,8 +1,17 @@
 <script setup>
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import { navigationTarget } from './router'
 import NotificationContainer from './components/common/NotificationContainer.vue'
+import ClientLocaleBridge from './components/common/ClientLocaleBridge.vue'
 import FooterComponent from './components/layout/FooterComponent.vue'
 import NavBar from './components/layout/NavBar.vue'
 import { useAuthStore } from './stores/auth'
@@ -37,11 +46,7 @@ const showSiteFooter = computed(() => {
   if (pendingName && pendingName !== 'home') return false
   if (pendingPath !== '/' && pendingPath !== '') return false
   if (route.meta?.hideSiteFooter) return false
-  if (
-    isPricingConsoleRoute.value ||
-    isProfileConsoleRoute.value ||
-    isStudioConsoleRoute.value
-  ) {
+  if (isPricingConsoleRoute.value || isProfileConsoleRoute.value || isStudioConsoleRoute.value) {
     return false
   }
   return route.name === 'home'
@@ -50,6 +55,7 @@ const showSiteFooter = computed(() => {
 const showBackToTop = ref(false)
 let pageScrollbarTimer = null
 let scrollFrameId = 0
+let pageResizeObserver = null
 
 function applyPreferenceHtmlClasses() {
   if (typeof document === 'undefined') return
@@ -62,6 +68,16 @@ watch(
   () => settingsStore.settings,
   () => applyPreferenceHtmlClasses(),
   { deep: true, immediate: true },
+)
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (typeof window === 'undefined') return
+    void nextTick().then(() => {
+      window.requestAnimationFrame(() => updateScrollUi(false))
+    })
+  },
 )
 
 onMounted(() => {
@@ -85,6 +101,12 @@ onMounted(() => {
   })
 
   window.addEventListener('scroll', handleScroll, { passive: true })
+  window.addEventListener('resize', handleScroll, { passive: true })
+  if (typeof ResizeObserver !== 'undefined') {
+    pageResizeObserver = new ResizeObserver(() => updateScrollUi(false))
+    pageResizeObserver.observe(document.body)
+  }
+  updateScrollUi(false)
 })
 
 onBeforeUnmount(() => {
@@ -97,8 +119,13 @@ onBeforeUnmount(() => {
     scrollFrameId = 0
   }
   window.removeEventListener('scroll', handleScroll)
+  window.removeEventListener('resize', handleScroll)
+  pageResizeObserver?.disconnect()
+  pageResizeObserver = null
   if (typeof document !== 'undefined') {
-    document.documentElement.classList.remove('is-page-scrolling')
+    const root = document.documentElement
+    root.classList.remove('is-page-scrolling', 'is-page-scrolled', 'has-page-scroll')
+    root.style.removeProperty('--page-scroll-ratio')
   }
 })
 
@@ -110,23 +137,34 @@ function handleScroll() {
   })
 }
 
-function updateScrollUi() {
-  document.documentElement.classList.add('is-page-scrolling')
-  if (pageScrollbarTimer) {
-    window.clearTimeout(pageScrollbarTimer)
-  }
-  pageScrollbarTimer = window.setTimeout(() => {
-    document.documentElement.classList.remove('is-page-scrolling')
-    pageScrollbarTimer = null
-  }, 900)
+function updateScrollUi(markScrolling = true) {
+  const root = document.documentElement
+  const scrollTop = Math.max(0, window.scrollY || root.scrollTop || 0)
+  const maxScroll = Math.max(0, root.scrollHeight - window.innerHeight)
+  const ratio = maxScroll > 0 ? Math.min(1, scrollTop / maxScroll) : 0
 
-  showBackToTop.value = window.scrollY > 300
+  root.style.setProperty('--page-scroll-ratio', ratio.toFixed(4))
+  root.classList.toggle('has-page-scroll', maxScroll > 24)
+  root.classList.toggle('is-page-scrolled', scrollTop > 10)
+
+  if (markScrolling) {
+    root.classList.add('is-page-scrolling')
+    if (pageScrollbarTimer) window.clearTimeout(pageScrollbarTimer)
+    pageScrollbarTimer = window.setTimeout(() => {
+      root.classList.remove('is-page-scrolling')
+      pageScrollbarTimer = null
+    }, 700)
+  }
+
+  showBackToTop.value = scrollTop > Math.min(360, window.innerHeight * 0.55)
 }
 
 function scrollToTop() {
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const animationsDisabled = document.documentElement.classList.contains('settings-no-animations')
   window.scrollTo({
     top: 0,
-    behavior: 'smooth',
+    behavior: prefersReducedMotion || animationsDisabled ? 'auto' : 'smooth',
   })
 }
 </script>
@@ -141,6 +179,9 @@ function scrollToTop() {
   >
     <!-- 导航栏 -->
     <NavBar v-if="showAppChrome" />
+    <div v-if="showAppChrome" class="page-scroll-progress" aria-hidden="true">
+      <i></i>
+    </div>
 
     <!-- 主内容区域 -->
     <main
@@ -161,21 +202,23 @@ function scrollToTop() {
     <FooterComponent v-if="showSiteFooter" />
 
     <!-- 回到顶部按钮 -->
-    <button
-      v-if="showAppChrome"
-      id="back-to-top"
-      type="button"
-      class="back-to-top-btn"
-      aria-label="回到顶部"
-      title="回到顶部"
-      @click="scrollToTop"
-      :style="{ display: showBackToTop ? 'inline-flex' : 'none' }"
-    >
-      <i class="bi bi-arrow-up" aria-hidden="true"></i>
-    </button>
+    <Transition name="backtop">
+      <button
+        v-if="showAppChrome && showBackToTop"
+        id="back-to-top"
+        type="button"
+        class="back-to-top-btn"
+        aria-label="回到顶部"
+        title="回到顶部"
+        @click="scrollToTop"
+      >
+        <i class="bi bi-arrow-up" aria-hidden="true"></i>
+      </button>
+    </Transition>
 
     <!-- 全局通知容器 -->
     <NotificationContainer />
+    <ClientLocaleBridge />
     <AnnouncementCenter v-if="showAppChrome" />
   </div>
 </template>

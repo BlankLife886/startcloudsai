@@ -5,10 +5,8 @@ import { ElMessage } from 'element-plus'
 import {
   Bell,
   ChatDotRound,
-  Coin,
   CollectionTag,
   Document,
-  Goods,
   List,
   Lock,
   MagicStick,
@@ -20,7 +18,6 @@ import {
   Sunny,
   SwitchButton,
   Ticket,
-  Tickets,
   User,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -40,8 +37,6 @@ const NAV_GROUPS = [
     title: '业务',
     items: [
       { path: '/users', label: '用户管理', icon: User },
-      { path: '/orders', label: '订单', icon: Tickets },
-      { path: '/plans', label: '套餐', icon: Goods },
       { path: '/tasks', label: '任务监控', icon: Monitor },
     ],
   },
@@ -56,7 +51,6 @@ const NAV_GROUPS = [
   {
     title: '资金',
     items: [
-      { path: '/finance', label: '财务', icon: Coin },
       { path: '/codes', label: '兑换码', icon: Ticket },
       { path: '/audit', label: '审计日志', icon: List },
     ],
@@ -171,8 +165,8 @@ async function submitPassword() {
     ElMessage.warning('请输入旧密码')
     return
   }
-  if (passwordForm.next.length < 8) {
-    ElMessage.warning('新密码至少 8 位')
+  if (passwordForm.next.length < 12) {
+    ElMessage.warning('管理员密码至少 12 位')
     return
   }
   if (passwordForm.next !== passwordForm.confirm) {
@@ -181,9 +175,9 @@ async function submitPassword() {
   }
   passwordSubmitting.value = true
   try {
-    await request('/api/me/profile', {
-      method: 'PATCH',
-      body: { password: { old: passwordForm.old, new: passwordForm.next } },
+    await request('/api/admin/auth/password', {
+	  method: 'PATCH',
+	  body: { old: passwordForm.old, new: passwordForm.next },
     })
     passwordOpen.value = false
     ElMessage.success('密码已修改，请重新登录')
@@ -304,7 +298,7 @@ async function submitPassword() {
         </div>
       </header>
 
-      <main class="content">
+      <main class="content" :class="{ 'content--workspace': route.path === '/prompt-library' }">
         <div :key="route.path" class="anim-fade-up content-inner">
           <router-view />
         </div>
@@ -341,8 +335,14 @@ async function submitPassword() {
 
 <style scoped>
 .layout {
+  position: fixed;
+  inset: 0;
   display: flex;
-  height: 100%;
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
   background: var(--bg);
 }
 
@@ -351,7 +351,9 @@ async function submitPassword() {
   display: flex;
   flex-direction: column;
   width: 236px;
+  min-height: 0;
   flex-shrink: 0;
+  overflow: hidden;
   background: var(--surface);
   border-right: 1px solid var(--border);
 }
@@ -395,6 +397,8 @@ async function submitPassword() {
 .nav {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 12px;
   display: grid;
   gap: 20px;
@@ -526,6 +530,8 @@ async function submitPassword() {
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .topbar {
@@ -645,11 +651,23 @@ async function submitPassword() {
 /* ---- 内容区 ---- */
 .content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.content.content--workspace {
+  overflow: hidden;
 }
 
 .content-inner {
   min-height: 100%;
+}
+
+.content--workspace .content-inner {
+  height: 100%;
+  min-height: 0;
 }
 
 /* ---- 通知面板 ---- */

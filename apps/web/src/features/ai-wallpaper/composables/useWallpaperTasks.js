@@ -265,6 +265,39 @@ export function useWallpaperTasks(deps = {}) {
   // serverJobId），会在胶片条上留下空白的 pending 占位。因此：不属于本会话
   // 创建的直接判失败；本会话内的留一个短宽限期（覆盖提交请求在途的窗口）。
   const GHOST_SUBMIT_GRACE_MS = 3 * 60 * 1000
+
+  function isLegacyObjectStorageUrl(value) {
+    const raw = String(value || '').trim()
+    if (!/^https?:\/\//i.test(raw)) return false
+    try {
+      const parsed = new URL(raw)
+      return (
+        parsed.hostname.endsWith('.r2.cloudflarestorage.com') ||
+        parsed.searchParams.has('X-Amz-Signature') ||
+        parsed.searchParams.has('X-Amz-Credential')
+      )
+    } catch {
+      return false
+    }
+  }
+
+  function migratePersistedTaskMedia(task) {
+    if (!task?.serverJobId) return { task, changed: false }
+    let changed = false
+    const migrated = { ...task }
+    for (const field of ['outputs', 'originalOutputs', 'thumbnailOutputs']) {
+      if (!Array.isArray(task[field])) continue
+      const next = task[field].filter((url) => !isLegacyObjectStorageUrl(url))
+      if (next.length !== task[field].length) changed = true
+      migrated[field] = next
+    }
+    if (isLegacyObjectStorageUrl(task.originalOutputUrl)) {
+      migrated.originalOutputUrl = ''
+      changed = true
+    }
+    return { task: changed ? migrated : task, changed }
+  }
+
   function reconcileGhostTasks(list) {
     const now = Date.now()
     let changed = false
@@ -272,7 +305,11 @@ export function useWallpaperTasks(deps = {}) {
       const busy = ['queued', 'running', 'waiting_provider'].includes(String(task?.status || ''))
       if (!busy || task.serverJobId) return task
       const created = Number(task.startedAt) || Date.parse(String(task.createdAt || '')) || 0
-      if (sessionTaskIds.has(String(task?.id || '')) && created && now - created < GHOST_SUBMIT_GRACE_MS)
+      if (
+        sessionTaskIds.has(String(task?.id || '')) &&
+        created &&
+        now - created < GHOST_SUBMIT_GRACE_MS
+      )
         return task
       changed = true
       return {
@@ -291,10 +328,16 @@ export function useWallpaperTasks(deps = {}) {
       const filtered = (Array.isArray(raw) ? raw : []).filter(
         (task) => !looksLikeIllustrationColoringTask(task),
       )
-      const { next, changed } = reconcileGhostTasks(filtered)
+      let mediaMigrated = false
+      const stableMediaTasks = filtered.map((task) => {
+        const migrated = migratePersistedTaskMedia(task)
+        mediaMigrated = mediaMigrated || migrated.changed
+        return migrated.task
+      })
+      const { next, changed } = reconcileGhostTasks(stableMediaTasks)
       tasks.value = next
       taskMutationVersion += 1
-      if (changed || tasks.value.length !== (Array.isArray(raw) ? raw.length : 0)) {
+      if (mediaMigrated || changed || tasks.value.length !== (Array.isArray(raw) ? raw.length : 0)) {
         persistTasks({ immediate: true })
       }
     } catch {
@@ -552,7 +595,8 @@ export function useWallpaperTasks(deps = {}) {
     if (!sourceTask || !normalizedSourceUrl) throw new Error('没有可用于局部编辑的原图')
     if (!(maskFile instanceof File) || !maskFile.size) throw new Error('局部编辑蒙版无效')
     if (!normalizedPrompt) throw new Error('请描述蒙版区域需要修改成什么')
-    if (!String(imageDispatchModel.value || '').trim()) throw new Error('请先选择支持局部编辑的图片模型')
+    if (!String(imageDispatchModel.value || '').trim())
+      throw new Error('请先选择支持局部编辑的图片模型')
 
     const sourceBlob = await fetchAuthenticatedMediaBlob(normalizedSourceUrl, { cache: 'no-store' })
     const sourceExtension = /png/i.test(sourceBlob.type)
@@ -574,7 +618,10 @@ export function useWallpaperTasks(deps = {}) {
     const outputSize =
       sourceTask.upstreamOutputSize ||
       sourceTask.outputSize ||
-      resolveT2iOutputSize(sourceTask.aspectRatio || aspectRatio.value, sourceTask.resolutionScale || '2K')
+      resolveT2iOutputSize(
+        sourceTask.aspectRatio || aspectRatio.value,
+        sourceTask.resolutionScale || '2K',
+      )
     Object.assign(task, {
       kind: 'wallpaper-image-mask-edit',
       type: 'image',
@@ -762,6 +809,8 @@ export function useWallpaperTasks(deps = {}) {
           taskId,
           {
             outputs: [versionedResultUrl, ...serverResultUrls.slice(1)],
+            originalOutputs: [versionedResultUrl, ...serverResultUrls.slice(1)],
+            thumbnailOutputs: [versionedResultUrl, ...serverResultUrls.slice(1)],
             outputSize: `${result.targetWidth}x${result.targetHeight}`,
             upstreamOutputSize:
               task.upstreamOutputSize || `${result.sourceWidth}x${result.sourceHeight}`,
@@ -1034,7 +1083,8 @@ export function useWallpaperTasks(deps = {}) {
           task.isSuperResolution ? '已提交 2 倍超分任务，原图会继续保留' : 'AI 任务已提交云端处理',
         )
       }
-      refreshServerAiJobs()
+      // 创建响应和当前任务轮询已经包含所需状态。此处若全量刷新任务列表，
+      // 服务端会为历史图片生成新签名 URL，导致所有已显示图片释放缓存并闪黑。
     } catch (error) {
       const cancelRequested = pendingCancelTaskIds.delete(taskId)
       const removeRequested = pendingRemoveTaskIds.delete(taskId)
@@ -1137,26 +1187,43 @@ export function useWallpaperTasks(deps = {}) {
       }
 
       if (status === 'completed' || status === 'paused') {
-        const jobResultUrls = (
+        const jobThumbnailUrls = (
           Array.isArray(job.resultMediaUrls) ? job.resultMediaUrls : [job.resultMediaUrl]
+        )
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+        const jobOriginalUrls = (
+          Array.isArray(job.originalMediaUrls)
+            ? job.originalMediaUrls
+            : [job.originalMediaUrl || job.originalResultMediaUrl]
         )
           .map((item) => String(item || '').trim())
           .filter(Boolean)
         const existingOutputs = [...(Array.isArray(task.outputs) ? task.outputs : [])]
           .map((item) => String(item || '').trim())
           .filter(Boolean)
-        let outputs = jobResultUrls.length ? [...jobResultUrls] : [...existingOutputs]
+        const existingOriginalOutputs = [
+          ...(Array.isArray(task.originalOutputs) ? task.originalOutputs : existingOutputs),
+        ]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+        const existingThumbnailOutputs = [
+          ...(Array.isArray(task.thumbnailOutputs) ? task.thumbnailOutputs : existingOutputs),
+        ]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+        let outputs = jobOriginalUrls.length ? [...jobOriginalUrls] : [...existingOriginalOutputs]
         try {
           const resultResponse = await getServerAiJobResult(task.serverJobId, {
             signal: controller.signal,
           })
           if (disposed || controller.signal.aborted) return
           const extractedOutputs = extractServerJobOutputs(resultResponse.result)
-          const stableOutputCount = jobResultUrls.length
+          const stableOutputCount = jobOriginalUrls.length
           outputs = [
             ...outputs,
             ...extractedOutputs.slice(stableOutputCount),
-            ...existingOutputs.slice(Math.max(stableOutputCount, extractedOutputs.length)),
+            ...existingOriginalOutputs.slice(Math.max(stableOutputCount, extractedOutputs.length)),
           ]
         } catch (error) {
           if (error?.name === 'AbortError') throw error
@@ -1165,7 +1232,21 @@ export function useWallpaperTasks(deps = {}) {
         outputs = Array.from(
           new Set(outputs.map((item) => String(item || '').trim()).filter(Boolean)),
         )
-        patch.outputs = outputs.length ? outputs : task.outputs
+        const thumbnailOutputs = Array.from(
+          new Set(
+            (jobThumbnailUrls.length ? jobThumbnailUrls : existingThumbnailOutputs)
+              .map((item) => String(item || '').trim())
+              .filter(Boolean),
+          ),
+        )
+        const displayOutputs = outputs.length ? outputs : thumbnailOutputs
+        patch.outputs = displayOutputs.length ? displayOutputs : task.outputs
+        patch.originalOutputs = displayOutputs.length
+          ? displayOutputs
+          : task.originalOutputs || task.outputs
+        patch.thumbnailOutputs = thumbnailOutputs.length
+          ? thumbnailOutputs
+          : task.thumbnailOutputs || displayOutputs
         patch.finishedAt =
           Date.parse(String(job.finishedAt || '')) ||
           (Number(job.durationMs || 0) > 0 && task.startedAt
@@ -1658,11 +1739,15 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   function resolveJobDisplayModel(job) {
+    const recordedModel = String(job?.model || '').trim()
+    const recordedOption = publicModelOptions.value.find((item) => item.id === recordedModel)
+    if (recordedOption) return recordedOption.label
+    if (recordedModel) return recordedModel
     const gatewayModelId = String(job?.gatewayModelId || '').trim()
     const model = publicModelOptions.value.find((item) => item.id === gatewayModelId)
     if (model) return model.label
     if (gatewayModelId && !gatewayModelId.includes(':')) return gatewayModelId
-    return String(job?.model || '').trim() || '未知模型'
+    return ''
   }
 
   function clearTaskTimers() {

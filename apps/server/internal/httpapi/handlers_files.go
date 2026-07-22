@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -67,12 +70,28 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
 		return
 	}
-	key := "uploads/" + user.ID.String() + "/" + uuid.NewString() + "." + ext
+	thumbnail, err := media.ThumbnailJPEG(data, 512)
+	if err != nil {
+		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
+		return
+	}
+	fileID := uuid.NewString()
+	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
+	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s.jpg", user.ID, fileID)
 	if err := s.Storage.UploadBytes(c.Request.Context(), key, data, contentType); err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"key": key, "url": "/api/files/" + key})
+	if err := s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail, "image/jpeg"); err != nil {
+		_ = s.Storage.DeleteKeys(c.Request.Context(), []string{key})
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{
+		"key": key, "url": "/api/files/" + key,
+		"thumbnailKey": thumbnailKey, "thumbnailUrl": "/api/files/" + thumbnailKey,
+		"contentType": contentType, "sizeBytes": len(data),
+	})
 }
 
 func (s *Server) getFile(c *gin.Context) {
@@ -87,12 +106,17 @@ func (s *Server) getFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	admin, err := s.currentAdminAccount(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 
 	allowed := false
 	switch {
 	case strings.HasPrefix(key, "prompt-covers/"):
 		allowed = true // 提示词封面公开可读
-	case user != nil && user.Role == "admin":
+	case admin != nil:
 		allowed = true
 	case user != nil && (strings.HasPrefix(key, "uploads/"+user.ID.String()+"/") ||
 		strings.HasPrefix(key, "tasks/"+user.ID.String()+"/")):
@@ -113,10 +137,25 @@ func (s *Server) getFile(c *gin.Context) {
 		fail(c, apperr.E("not_found", "文件不存在", 404))
 		return
 	}
-	url, err := s.Storage.PresignGet(ctx, key)
+	// 受保护文件统一由应用服务转发。此前这里 302 到 R2 的预签名地址，
+	// 会把“用户是否能直连对象存储”变成图片能否展示的额外前提；在代理、
+	// 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
+	// 空白的情况。服务端本身已经能访问 R2（上传也走同一连接），因此在完成
+	// 权限校验后由服务端读取并返回，交付链路会更稳定。
+	data, err := s.Storage.GetBytesLimit(ctx, key, 32<<20)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.Redirect(302, url)
+	if len(data) == 0 {
+		fail(c, apperr.E("not_found", "文件不存在", 404))
+		return
+	}
+	contentType := http.DetectContentType(data)
+	if strings.HasSuffix(strings.ToLower(key), ".webp") {
+		contentType = "image/webp"
+	}
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, contentType, data)
 }

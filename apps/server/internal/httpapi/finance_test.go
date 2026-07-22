@@ -46,7 +46,7 @@ func TestFinanceSummaryAggregation(t *testing.T) {
 		t.Fatalf("force running: %v", err)
 	}
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		_, merr := taskflow.MarkSucceeded(ctx, tx, settled, []string{"tasks/x/0.png"}, time.Now().UTC())
+		_, merr := taskflow.MarkSucceeded(ctx, tx, settled, []string{"tasks/x/0.png"}, nil, time.Now().UTC())
 		return merr
 	}); err != nil {
 		t.Fatalf("mark succeeded: %v", err)

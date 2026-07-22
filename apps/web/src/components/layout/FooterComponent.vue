@@ -31,15 +31,13 @@ const footerGroups = [
   {
     title: '账户',
     links: [
-      { label: '个人中心', to: '/profile' },
       { label: '价格与套餐', to: '/pricing' },
+      { label: '个人中心', to: '/profile' },
     ],
   },
   {
     title: '支持',
-    links: [
-      { label: '问题反馈', action: 'feedback' },
-    ],
+    links: [{ label: '问题反馈', action: 'feedback' }],
   },
 ]
 
@@ -139,19 +137,10 @@ function onLinkClick(link, event) {
             <h2>{{ group.title }}</h2>
             <ul>
               <li v-for="link in group.links" :key="link.label">
-                <a
-                  v-if="link.external"
-                  :href="link.href"
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <a v-if="link.external" :href="link.href" target="_blank" rel="noreferrer">
                   {{ link.label }}
                 </a>
-                <button
-                  v-else-if="link.action"
-                  type="button"
-                  @click="onLinkClick(link, $event)"
-                >
+                <button v-else-if="link.action" type="button" @click="onLinkClick(link, $event)">
                   {{ link.label }}
                 </button>
                 <router-link
@@ -209,8 +198,7 @@ function onLinkClick(link, event) {
   background:
     radial-gradient(circle at 10% 0%, rgba(133, 104, 247, 0.08), transparent 28%),
     radial-gradient(circle at 90% 100%, rgba(151, 177, 255, 0.07), transparent 30%),
-    linear-gradient(180deg, rgba(247, 245, 255, 0.5) 0%, transparent 36%),
-    var(--ft-bg);
+    linear-gradient(180deg, rgba(247, 245, 255, 0.5) 0%, transparent 36%), var(--ft-bg);
 }
 
 .site-footer.is-dark {
@@ -227,8 +215,7 @@ function onLinkClick(link, event) {
   --ft-primary-bg: #eceaf7;
   background:
     radial-gradient(circle at 12% 0%, rgba(106, 79, 224, 0.16), transparent 30%),
-    radial-gradient(circle at 88% 100%, rgba(88, 120, 220, 0.1), transparent 32%),
-    var(--ft-bg);
+    radial-gradient(circle at 88% 100%, rgba(88, 120, 220, 0.1), transparent 32%), var(--ft-bg);
 }
 
 .footer-shell {

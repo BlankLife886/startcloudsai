@@ -29,6 +29,9 @@ type User struct {
 	Username              string
 	PasswordHash          string
 	AvatarURL             *string
+	Bio                   string
+	Location              string
+	WebsiteURL            string
 	Role                  string
 	Status                string
 	LastLoginAt           *time.Time
@@ -36,9 +39,50 @@ type User struct {
 	CreatedAt             time.Time
 }
 
+type UserAsset struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Title        string
+	FileKey      string
+	ThumbnailKey string
+	ContentType  string
+	SizeBytes    int64
+	CreatedAt    time.Time
+}
+
+func (a *UserAsset) CursorKey() (time.Time, uuid.UUID) { return a.CreatedAt, a.ID }
+
 type Session struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
+	TokenHash string
+	ExpiresAt time.Time
+	IP        *string
+	UserAgent *string
+	CreatedAt time.Time
+}
+
+type UserSessionSummary struct {
+	ActiveCount   int64
+	LastIP        *string
+	LastUserAgent *string
+	LastCreatedAt *time.Time
+	LastExpiresAt *time.Time
+}
+
+type AdminAccount struct {
+	ID           uuid.UUID
+	Email        string
+	Username     string
+	PasswordHash string
+	Status       string
+	LastLoginAt  *time.Time
+	CreatedAt    time.Time
+}
+
+type AdminSession struct {
+	ID        uuid.UUID
+	AdminID   uuid.UUID
 	TokenHash string
 	ExpiresAt time.Time
 	IP        *string
@@ -130,12 +174,14 @@ type Task struct {
 	ID             uuid.UUID
 	UserID         uuid.UUID
 	Type           string
+	Model          string
 	Status         string
 	Prompt         string
 	Params         map[string]any
 	Count          int
 	InputKeys      []string
 	OutputKeys     []string
+	ThumbnailKeys  []string
 	CostCents      int64
 	IdempotencyKey *string
 	ErrorCode      *string
@@ -160,6 +206,7 @@ type GallerySubmission struct {
 	Featured     bool
 	CategoryID   *uuid.UUID
 	Sort         int
+	Tags         []string
 	CreatedAt    time.Time
 }
 
@@ -189,6 +236,7 @@ type GalleryAuthor struct {
 	UserID      uuid.UUID
 	Email       string
 	Username    string
+	AvatarURL   *string
 	Submissions int64
 	Approved    int64
 	Removed     int64

@@ -6,9 +6,30 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	MinUserPasswordBytes  = 8
+	MinAdminPasswordBytes = 12
+	MaxPasswordBytes      = 72 // bcrypt only processes passwords up to 72 bytes
+)
+
+func ValidateUserPassword(password string) error {
+	if len([]byte(password)) < MinUserPasswordBytes || len([]byte(password)) > MaxPasswordBytes {
+		return errors.New("password length must be 8-72 bytes")
+	}
+	return nil
+}
+
+func ValidateAdminPassword(password string) error {
+	if len([]byte(password)) < MinAdminPasswordBytes || len([]byte(password)) > MaxPasswordBytes {
+		return errors.New("admin password length must be 12-72 bytes")
+	}
+	return nil
+}
 
 func HashPassword(password string) (string, error) {
 	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

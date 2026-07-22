@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,6 +17,14 @@ func scanAuditLog(row pgx.Row) (*AdminAuditLog, error) {
 		return nil, err
 	}
 	return &l, nil
+}
+
+func DeleteAuditLogsBefore(ctx context.Context, q Q, before time.Time) (int64, error) {
+	tag, err := q.Exec(ctx, `DELETE FROM admin_audit_logs WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func InsertAuditLog(ctx context.Context, q Q, l *AdminAuditLog) error {

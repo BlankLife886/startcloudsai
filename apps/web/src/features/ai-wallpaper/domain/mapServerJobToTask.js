@@ -103,28 +103,43 @@ function mergePersistedOutputs(persistedOutputs = [], fallbackOutputs = []) {
   return Array.from(new Set([...persistedOutputs, ...supplements].filter(Boolean)))
 }
 
-/** 远端 Job 映射为本地 Task，尽量保留 prompt 与输入信息 */
-export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null } = {}) {
-  const isVideo = String(job?.kind || '').includes('video')
-  const input = job?.input || job?.params || {}
-  const persistedResultUrl = pickPersistableUrl(job?.resultMediaUrl)
-  const persistedResultUrls = Array.from(
+function persistableUrlList(list = [], single = '') {
+  return Array.from(
     new Set(
-      (Array.isArray(job?.resultMediaUrls) ? job.resultMediaUrls : [])
+      [...(Array.isArray(list) ? list : []), single]
         .map((item) => pickPersistableUrl(item))
         .filter(Boolean),
     ),
   )
+}
+
+/** 远端 Job 映射为本地 Task，尽量保留 prompt 与输入信息 */
+export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null } = {}) {
+  const isVideo = String(job?.kind || '').includes('video')
+  const input = job?.input || job?.params || {}
+  const persistedResultUrls = persistableUrlList(job?.resultMediaUrls, job?.resultMediaUrl)
+  const persistedOriginalUrls = persistableUrlList(
+    job?.originalMediaUrls || job?.originalResultMediaUrls,
+    job?.originalMediaUrl || job?.originalResultMediaUrl,
+  )
   const existingOutputs = Array.isArray(existingTask?.outputs)
     ? existingTask.outputs.filter(Boolean)
     : []
-  // 结果媒体是服务端持久化的稳定地址，优先于可能过期的上游 URL 或旧本地快照。
-  const stableOutputs = persistedResultUrls.length
-    ? persistedResultUrls
-    : persistedResultUrl
-      ? [persistedResultUrl]
-      : []
-  const seededOutputs = mergePersistedOutputs(stableOutputs, existingOutputs)
+  const existingOriginalOutputs = Array.isArray(existingTask?.originalOutputs)
+    ? existingTask.originalOutputs.filter(Boolean)
+    : existingOutputs
+  const existingThumbnailOutputs = Array.isArray(existingTask?.thumbnailOutputs)
+    ? existingTask.thumbnailOutputs.filter(Boolean)
+    : existingOutputs
+  const hasDedicatedThumbnails = Array.isArray(job?.thumbnailKeys)
+    ? job.thumbnailKeys.length > 0
+    : existingTask?.hasDedicatedThumbnails === true
+  // 只有明确存在 thumbnailKeys 时才把 resultMediaUrls 当缩略图；禁止用原图兜底列表。
+  const originalOutputs = mergePersistedOutputs(persistedOriginalUrls, existingOriginalOutputs)
+  const thumbnailOutputs = hasDedicatedThumbnails
+    ? mergePersistedOutputs(persistedResultUrls, existingThumbnailOutputs)
+    : []
+  const seededOutputs = originalOutputs.length ? originalOutputs : thumbnailOutputs
   const outputSizeFields = resolveTaskOutputSizeFields(job, existingTask || {})
   return {
     id: existingTask?.id || `server-${job.id}`,
@@ -234,6 +249,9 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
     skillIds: input.skillIds || job?.params?.skillIds || existingTask?.skillIds || [],
     mcpServers: existingTask?.mcpServers || [],
     outputs: seededOutputs,
+    originalOutputs: seededOutputs,
+    thumbnailOutputs,
+    hasDedicatedThumbnails,
     shareSubmitted: job?.shareSubmitted === true || existingTask?.shareSubmitted === true,
     shareSubmissionStatus: String(
       job?.shareSubmissionStatus || existingTask?.shareSubmissionStatus || '',
@@ -266,31 +284,53 @@ export async function hydrateServerJobTaskOutputs(task = {}, job = null) {
     .toLowerCase()
   if (!isCompletedJobStatus(status) && status !== 'paused') return task
   const existingOutputs = Array.isArray(task.outputs) ? task.outputs.filter(Boolean) : []
+  const existingOriginalOutputs = Array.isArray(task.originalOutputs)
+    ? task.originalOutputs.filter(Boolean)
+    : existingOutputs
+  const existingThumbnailOutputs = Array.isArray(task.thumbnailOutputs)
+    ? task.thumbnailOutputs.filter(Boolean)
+    : existingOutputs
   const expectedOutputCount = Math.max(
     1,
     Number(task.count || job?.input?.count || job?.params?.count || 1),
   )
-  if (existingOutputs.length >= expectedOutputCount) return task
-
-  const persistedResultUrls = Array.from(
-    new Set(
-      (Array.isArray(job?.resultMediaUrls) ? job.resultMediaUrls : [job?.resultMediaUrl])
-        .map((item) => pickPersistableUrl(item))
-        .filter(Boolean),
-    ),
+  const persistedResultUrls = persistableUrlList(job?.resultMediaUrls, job?.resultMediaUrl)
+  const persistedOriginalUrls = persistableUrlList(
+    job?.originalMediaUrls || job?.originalResultMediaUrls,
+    job?.originalMediaUrl || job?.originalResultMediaUrl,
   )
-  if (persistedResultUrls.length) {
-    const merged = mergePersistedOutputs(persistedResultUrls, existingOutputs)
-    if (merged.length >= expectedOutputCount) return { ...task, outputs: merged }
+  const hasDedicatedThumbnails = Array.isArray(job?.thumbnailKeys)
+    ? job.thumbnailKeys.length > 0
+    : task?.hasDedicatedThumbnails === true
+  const thumbnailOutputs = hasDedicatedThumbnails
+    ? mergePersistedOutputs(persistedResultUrls, existingThumbnailOutputs)
+    : []
+  const directOriginalOutputs = mergePersistedOutputs(
+    persistedOriginalUrls,
+    existingOriginalOutputs,
+  )
+  if (directOriginalOutputs.length >= expectedOutputCount) {
+    return {
+      ...task,
+      outputs: directOriginalOutputs,
+      originalOutputs: directOriginalOutputs,
+      thumbnailOutputs,
+      hasDedicatedThumbnails,
+    }
   }
 
   try {
     const resultResponse = await getServerAiJobResult(task.serverJobId)
     const extractedOutputs = extractServerJobOutputs(resultResponse.result)
-    const stableOutputs = persistedResultUrls.length ? persistedResultUrls : existingOutputs
-    const outputs = mergePersistedOutputs(stableOutputs, extractedOutputs)
+    const outputs = mergePersistedOutputs(directOriginalOutputs, extractedOutputs)
     if (outputs.length) {
-      return { ...task, outputs }
+      return {
+        ...task,
+        outputs,
+        originalOutputs: outputs,
+        thumbnailOutputs,
+        hasDedicatedThumbnails,
+      }
     }
   } catch {
     // 结果尚未就绪或读取失败，保留任务等待下一轮轮询

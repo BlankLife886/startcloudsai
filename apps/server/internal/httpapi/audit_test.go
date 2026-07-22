@@ -75,15 +75,22 @@ func TestAuditDetailSanitizeAndTruncate(t *testing.T) {
 	if auditDetail(nil) != nil || auditDetail([]byte("  ")) != nil {
 		t.Fatal("空 body 应返回 nil detail")
 	}
+
+	// 非法 JSON 只记录元数据，绝不回落到可能包含凭据的原文。
+	invalid := auditDetail([]byte(`{"password":"leaked"`))
+	if strings.Contains(string(invalid), "leaked") || !strings.Contains(string(invalid), `"invalidJson":true`) {
+		t.Fatalf("非法 JSON 摘要不安全: %s", invalid)
+	}
 }
 
 func TestAuditLogInsertAndList(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
-	admin, err := store.InsertUser(ctx, st.Pool, "admin@test.dev", "admin", "x", "admin", nil)
+	adminAccount, err := store.UpsertAdminAccount(ctx, st.Pool, "admin@test.dev", "admin", "x")
 	if err != nil {
 		t.Fatalf("insert admin: %v", err)
 	}
+	admin := adminAccountAsUser(adminAccount)
 
 	entry := buildAuditEntry(admin, "POST", "/api/admin/plans", "", 200, "127.0.0.1",
 		[]byte(`{"code":"basic","name":"基础包","secretKey":"hush"}`))

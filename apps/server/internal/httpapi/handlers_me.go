@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,9 +20,27 @@ type passwordChange struct {
 }
 
 type profilePatch struct {
-	Username  Opt[string]         `json:"username"`
-	AvatarURL Opt[string]         `json:"avatarUrl"`
-	Password  Opt[passwordChange] `json:"password"`
+	Username   Opt[string]         `json:"username"`
+	AvatarURL  Opt[string]         `json:"avatarUrl"`
+	Bio        Opt[string]         `json:"bio"`
+	Location   Opt[string]         `json:"location"`
+	WebsiteURL Opt[string]         `json:"websiteUrl"`
+	Password   Opt[passwordChange] `json:"password"`
+}
+
+func normalizeProfileWebsite(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", true
+	}
+	if len([]rune(value)) > 300 {
+		return "", false
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return "", false
+	}
+	return value, true
 }
 
 func (s *Server) patchProfile(c *gin.Context) {
@@ -39,9 +58,40 @@ func (s *Server) patchProfile(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "username: 长度须在 1-64 之间", 422))
 		return
 	}
-	if body.Password.Valid && (len(body.Password.Value.New) < 6 || len(body.Password.Value.New) > 128) {
-		fail(c, apperr.E("validation_error", "password.new: 长度须在 6-128 之间", 422))
+	if body.Bio.Valid && len([]rune(strings.TrimSpace(body.Bio.Value))) > 280 {
+		fail(c, apperr.E("validation_error", "bio: 长度不能超过 280 个字符", 422))
 		return
+	}
+	if body.Location.Valid && len([]rune(strings.TrimSpace(body.Location.Value))) > 80 {
+		fail(c, apperr.E("validation_error", "location: 长度不能超过 80 个字符", 422))
+		return
+	}
+	websiteURL := ""
+	if body.WebsiteURL.Valid {
+		var valid bool
+		websiteURL, valid = normalizeProfileWebsite(body.WebsiteURL.Value)
+		if !valid {
+			fail(c, apperr.E("validation_error", "websiteUrl: 请输入完整的 http/https 地址", 422))
+			return
+		}
+	}
+	if body.Password.Valid {
+		if !auth.VerifyPassword(body.Password.Value.Old, user.PasswordHash) {
+			fail(c, apperr.E("invalid_credentials", "原密码错误", 422))
+			return
+		}
+		if auth.ValidateUserPassword(body.Password.Value.New) != nil {
+			fail(c, apperr.E("validation_error", "password.new: 长度须在 8-72 字节之间", 422))
+			return
+		}
+	}
+	if body.AvatarURL.Valid && body.AvatarURL.Value != "" {
+		avatar := strings.TrimSpace(body.AvatarURL.Value)
+		allowedPrefix := "/api/files/uploads/" + user.ID.String() + "/"
+		if len(avatar) > 2048 || !strings.HasPrefix(avatar, allowedPrefix) {
+			fail(c, apperr.E("validation_error", "avatarUrl: 仅允许使用自己上传的站内图片", 422))
+			return
+		}
 	}
 
 	var username *string
@@ -54,28 +104,60 @@ func (s *Server) patchProfile(c *gin.Context) {
 	if body.AvatarURL.Valid {
 		var v *string
 		if body.AvatarURL.Value != "" {
-			av := body.AvatarURL.Value
+			av := strings.TrimSpace(body.AvatarURL.Value)
 			v = &av
 		}
 		avatarURL = &v
 		user.AvatarURL = v
 	}
+	var bio *string
+	if body.Bio.Valid {
+		v := strings.TrimSpace(body.Bio.Value)
+		bio = &v
+		user.Bio = v
+	}
+	var location *string
+	if body.Location.Valid {
+		v := strings.TrimSpace(body.Location.Value)
+		location = &v
+		user.Location = v
+	}
+	var website *string
+	if body.WebsiteURL.Valid {
+		website = &websiteURL
+		user.WebsiteURL = websiteURL
+	}
+	ctx := c.Request.Context()
 	var passwordHash *string
 	if body.Password.Valid {
-		if !auth.VerifyPassword(body.Password.Value.Old, user.PasswordHash) {
-			fail(c, apperr.E("invalid_credentials", "原密码错误", 400))
+		hash, hashErr := auth.HashPassword(body.Password.Value.New)
+		if hashErr != nil {
+			fail(c, hashErr)
 			return
 		}
-		h, herr := auth.HashPassword(body.Password.Value.New)
-		if herr != nil {
-			fail(c, herr)
-			return
-		}
-		passwordHash = &h
+		passwordHash = &hash
 	}
-	if err := store.UpdateUserProfile(c.Request.Context(), s.St.Pool, user.ID, username, avatarURL, passwordHash); err != nil {
+	var newSessionToken string
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if txErr := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, passwordHash); txErr != nil {
+			return txErr
+		}
+		if passwordHash == nil {
+			return nil
+		}
+		if _, txErr := store.DeleteSessionsByUser(ctx, tx, user.ID); txErr != nil {
+			return txErr
+		}
+		var txErr error
+		newSessionToken, txErr = s.createSession(c, tx, user.ID)
+		return txErr
+	})
+	if err != nil {
 		fail(c, err)
 		return
+	}
+	if newSessionToken != "" {
+		s.setSessionCookie(c, newSessionToken)
 	}
 	ok(c, gin.H{"user": userDict(user)})
 }
@@ -124,7 +206,7 @@ func (s *Server) overview(c *gin.Context) {
 	}
 	recentTasks := make([]gin.H, 0, len(recent))
 	for _, t := range recent {
-		recentTasks = append(recentTasks, taskDict(t, nil))
+		recentTasks = append(recentTasks, taskDict(t, nil, nil))
 	}
 	ok(c, gin.H{
 		"wallet": gin.H{"balanceCents": wallet.BalanceCents, "frozenCents": wallet.FrozenCents},

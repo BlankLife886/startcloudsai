@@ -77,9 +77,7 @@ export function extractMediaOutputs(payload) {
       else if (item && typeof item === 'object') candidates.push(item.url, item.image_url)
     }
   }
-  return Array.from(
-    new Set(candidates.map((item) => normalizeAiOutput(item)).filter(Boolean)),
-  )
+  return Array.from(new Set(candidates.map((item) => normalizeAiOutput(item)).filter(Boolean)))
 }
 
 export function getBestWallpaperSource(wallpaper = {}) {
@@ -144,7 +142,9 @@ const KIND_TYPE_RULES = [
 ]
 
 export function mapJobKindToTaskType(kind = '') {
-  const value = String(kind || '').trim().toLowerCase()
+  const value = String(kind || '')
+    .trim()
+    .toLowerCase()
   for (const [pattern, type] of KIND_TYPE_RULES) {
     if (pattern.test(value)) return type
   }
@@ -235,8 +235,18 @@ const STATUS_TO_LEGACY = {
 
 function taskToLegacyJob(task = {}) {
   const outputUrls = Array.isArray(task.outputUrls) ? task.outputUrls.filter(Boolean) : []
+  const thumbnailUrls = Array.isArray(task.thumbnailUrls)
+    ? task.thumbnailUrls.filter(Boolean)
+    : outputUrls
+  const originalUrls = Array.isArray(task.originalUrls)
+    ? task.originalUrls.filter(Boolean)
+    : outputUrls
   const outputKeys = Array.isArray(task.outputKeys) ? task.outputKeys : []
-  outputUrls.forEach((url, index) => {
+  const thumbnailKeys = Array.isArray(task.thumbnailKeys) ? task.thumbnailKeys : []
+  thumbnailUrls.forEach((url, index) => {
+    if (thumbnailKeys[index]) registerUrlKey(url, thumbnailKeys[index])
+  })
+  originalUrls.forEach((url, index) => {
     if (outputKeys[index]) registerUrlKey(url, outputKeys[index])
   })
   const params = task.params && typeof task.params === 'object' ? task.params : {}
@@ -245,6 +255,8 @@ function taskToLegacyJob(task = {}) {
     taskId: task.id,
     kind: String(params._kind || DEFAULT_KIND_BY_TYPE[task.type] || task.type || ''),
     type: task.type,
+    model: String(task.model || params.modelHint || '').trim(),
+    gatewayModelId: String(params.publicModelKey || '').trim(),
     status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
     prompt: task.prompt || '',
     input: params,
@@ -252,8 +264,11 @@ function taskToLegacyJob(task = {}) {
     count: Number(task.count || 1),
     inputKeys: Array.isArray(task.inputKeys) ? task.inputKeys : [],
     outputKeys,
-    resultMediaUrl: outputUrls[0] || '',
-    resultMediaUrls: outputUrls,
+    thumbnailKeys,
+    resultMediaUrl: thumbnailUrls[0] || outputUrls[0] || '',
+    resultMediaUrls: thumbnailUrls.length ? thumbnailUrls : outputUrls,
+    originalMediaUrl: originalUrls[0] || '',
+    originalMediaUrls: originalUrls,
     error: task.errorMessage || '',
     errorCode: task.errorCode || '',
     costCents: Number(task.costCents || 0),
@@ -266,7 +281,12 @@ function taskToLegacyJob(task = {}) {
 }
 
 function legacyResultFromTask(task = {}) {
-  const outputs = Array.isArray(task.outputUrls) ? task.outputUrls.filter(Boolean) : []
+  const originals = Array.isArray(task.originalUrls) ? task.originalUrls.filter(Boolean) : []
+  const outputs = originals.length
+    ? originals
+    : Array.isArray(task.outputUrls)
+      ? task.outputUrls.filter(Boolean)
+      : []
   return { outputs }
 }
 
@@ -426,7 +446,7 @@ export async function replaceServerAiJobResultWithLocalUpscale(jobId, file) {
     return {
       job: {
         ...job,
-        originalResultMediaUrl: job.resultMediaUrl,
+        originalResultMediaUrl: job.originalMediaUrl || job.resultMediaUrl,
         resultMediaUrl: localUrl,
         resultMediaUrls: [localUrl, ...job.resultMediaUrls.slice(1)],
       },

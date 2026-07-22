@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"log"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,16 +13,13 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-// presignSafe presign 失败时返回 nil（对应 Python 的 _presign_safe）。
+// presignSafe 保留旧调用签名，但返回站内文件地址。公开画廊的文件权限仍由
+// getFile 中的 IsPublicGalleryKey 校验，客户端无需直接访问对象存储。
 func (s *Server) presignSafe(c *gin.Context, key *string) *string {
 	if key == nil || *key == "" {
 		return nil
 	}
-	u, err := s.Storage.PresignGet(c.Request.Context(), *key)
-	if err != nil {
-		log.Printf("presign failed for key %s: %v", *key, err)
-		return nil
-	}
+	u := "/api/files/" + strings.TrimLeft(strings.TrimSpace(*key), "/")
 	return &u
 }
 
@@ -97,6 +94,7 @@ func (s *Server) publicGallery(c *gin.Context) {
 			"author":    authorDict,
 			"featured":  sub.Featured,
 			"category":  categoryDict,
+			"tags":      nonNilStrings(sub.Tags),
 			"createdAt": isoValue(sub.CreatedAt),
 		}
 	}))
@@ -247,6 +245,9 @@ func (s *Server) submitGallery(c *gin.Context) {
 		status = "approved"
 	}
 	coverKey := task.OutputKeys[0]
+	if len(task.ThumbnailKeys) > 0 {
+		coverKey = task.ThumbnailKeys[0]
+	}
 	submission, err := store.InsertSubmission(ctx, s.St.Pool, user.ID, taskID, body.Title, &coverKey, task.OutputKeys, categoryID, status)
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {

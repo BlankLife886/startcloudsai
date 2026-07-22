@@ -11,6 +11,7 @@ export interface CommunityWork {
   featured?: boolean
   category?: { id: string; name: string } | null
   sort?: number
+  tags?: string[]
   createdAt: string
 }
 </script>
@@ -18,7 +19,7 @@ export interface CommunityWork {
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CollectionTag, Delete, Plus, Rank, Search, User } from '@element-plus/icons-vue'
+import { Check, CollectionTag, Delete, Plus, Rank, Search, User } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import { request, normalizeList, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
@@ -42,17 +43,19 @@ interface CommunityAuthor {
   userId: string
   email: string
   username: string | null
+  avatarUrl: string | null
   submissions: number
   approved: number
   removed: number
   bannedUntil: string | null
 }
 
-/* ---------- 作品策展区 ---------- */
+/* ---------- 作品管理 ---------- */
 
 const workQuery = ref('')
 const workFilter = ref('all') // all | featured | 分类 id
 const workOperating = ref('')
+const workOrderSaving = ref(false)
 
 const {
   items: works,
@@ -66,22 +69,95 @@ const {
   retry: retryWorks,
 } = usePagedList<CommunityWork>((cursor) =>
   request<CommunityWork[] | Page<CommunityWork>>('/api/admin/gallery/submissions', {
-    query: { status: 'approved', limit: 24, cursor },
+    query: { status: 'approved', limit: 100, cursor },
   }).then(normalizeList),
 )
 
-/** 分类/精选/搜索为本页内筛选（契约的投稿列表仅支持 status 查询） */
+const orderedWorks = computed(() =>
+  [...works.value].sort((a, b) => {
+    const aSort = a.sort ?? 0
+    const bSort = b.sort ?? 0
+    if (aSort > 0 || bSort > 0) return (aSort || Number.MAX_SAFE_INTEGER) - (bSort || Number.MAX_SAFE_INTEGER)
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  }),
+)
+
+/** 分类/精选/搜索为当前加载范围内筛选。 */
 const visibleWorks = computed(() => {
-  let list = works.value
+  let list = orderedWorks.value
   if (workFilter.value === 'featured') list = list.filter((item) => item.featured)
   else if (workFilter.value !== 'all') list = list.filter((item) => item.category?.id === workFilter.value)
   const keyword = workQuery.value.trim().toLowerCase()
   if (keyword) {
     list = list.filter((item) =>
-      [item.title, item.author?.username ?? '', item.userEmail ?? ''].join(' ').toLowerCase().includes(keyword),
+      [item.title, item.author?.username ?? '', item.userEmail ?? '', ...(item.tags ?? [])]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword),
     )
   }
   return list
+})
+
+const workDragList = ref<CommunityWork[]>([])
+const canDragWorks = computed(
+  () => workFilter.value === 'all' && !workQuery.value.trim() && !hasPrev.value && !hasNext.value && !workOrderSaving.value,
+)
+
+watch(
+  visibleWorks,
+  (list) => {
+    workDragList.value = [...list]
+  },
+  { immediate: true },
+)
+
+async function persistWorkOrder() {
+  if (!canDragWorks.value) return
+  const ordered = [...workDragList.value]
+  const sortByID = new Map(ordered.map((item, index) => [item.id, (index + 1) * 10]))
+  works.value = works.value.map((item) => ({ ...item, sort: sortByID.get(item.id) ?? item.sort }))
+  workOrderSaving.value = true
+  try {
+    await request('/api/admin/gallery/submissions/reorder', {
+      method: 'POST',
+      body: { ids: ordered.map((item) => item.id) },
+    })
+    ElMessage.success('作品顺序已更新')
+  } catch {
+    await reloadWorks()
+  } finally {
+    workOrderSaving.value = false
+  }
+}
+
+const selectedWorkIds = ref<Set<string>>(new Set())
+const selectedCount = computed(() => selectedWorkIds.value.size)
+const allVisibleSelected = computed(
+  () => visibleWorks.value.length > 0 && visibleWorks.value.every((item) => selectedWorkIds.value.has(item.id)),
+)
+
+function setWorkSelected(item: CommunityWork, selected: boolean) {
+  const next = new Set(selectedWorkIds.value)
+  if (selected) next.add(item.id)
+  else next.delete(item.id)
+  selectedWorkIds.value = next
+}
+
+function toggleSelectVisible() {
+  const next = new Set(selectedWorkIds.value)
+  if (allVisibleSelected.value) visibleWorks.value.forEach((item) => next.delete(item.id))
+  else visibleWorks.value.forEach((item) => next.add(item.id))
+  selectedWorkIds.value = next
+}
+
+function clearSelection() {
+  selectedWorkIds.value = new Set()
+}
+
+watch(works, (list) => {
+  const valid = new Set(list.map((item) => item.id))
+  selectedWorkIds.value = new Set([...selectedWorkIds.value].filter((id) => valid.has(id)))
 })
 
 function categoryLabelOf(item: CommunityWork) {
@@ -100,18 +176,18 @@ function openPreview(item: CommunityWork) {
   previewVisible.value = true
 }
 
-/* ---------- 策展（精选 / 归类 / 排序） ---------- */
+/* ---------- 作品详情 ---------- */
 
 const editOpen = ref(false)
 const editSaving = ref(false)
 const editTarget = ref<CommunityWork | null>(null)
-const editForm = reactive({ featured: false, categoryId: '', sort: 0 })
+const editForm = reactive({ featured: false, categoryId: '', tags: [] as string[] })
 
 function openEdit(item: CommunityWork) {
   editTarget.value = item
   editForm.featured = item.featured === true
   editForm.categoryId = item.category?.id ?? ''
-  editForm.sort = item.sort ?? 0
+  editForm.tags = [...(item.tags ?? [])]
   editOpen.value = true
 }
 
@@ -119,9 +195,22 @@ function mergeWork(id: string, patch: Partial<CommunityWork>) {
   works.value = works.value.map((row) => (row.id === id ? { ...row, ...patch } : row))
 }
 
+function cleanTagValues(values: string[]) {
+  const seen = new Set<string>()
+  return values
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLocaleLowerCase()
+      if (!value || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
 async function saveCurate() {
   const target = editTarget.value
   if (!target || editSaving.value) return
+  const tags = cleanTagValues(editForm.tags)
   editSaving.value = true
   try {
     await request(`/api/admin/gallery/submissions/${target.id}/curate`, {
@@ -129,19 +218,96 @@ async function saveCurate() {
       body: {
         featured: editForm.featured,
         categoryId: editForm.categoryId || null,
-        sort: editForm.sort,
+        tags,
       },
     })
     const category = categories.value.find((row) => row.id === editForm.categoryId)
     mergeWork(target.id, {
       featured: editForm.featured,
-      sort: editForm.sort,
       category: category ? { id: category.id, name: category.name } : null,
+      tags,
     })
     editOpen.value = false
-    ElMessage.success('作品策展信息已更新')
+    ElMessage.success('作品详情已更新')
   } finally {
     editSaving.value = false
+  }
+}
+
+/* ---------- 批量编辑 ---------- */
+
+const batchOpen = ref(false)
+const batchSaving = ref(false)
+const batchForm = reactive({
+  setFeatured: false,
+  featured: true,
+  setCategory: false,
+  categoryId: '',
+  setTags: false,
+  tagMode: 'add' as 'replace' | 'add' | 'remove',
+  tags: [] as string[],
+})
+
+function openBatchEdit() {
+  if (!selectedCount.value) return
+  batchForm.setFeatured = false
+  batchForm.featured = true
+  batchForm.setCategory = false
+  batchForm.categoryId = ''
+  batchForm.setTags = false
+  batchForm.tagMode = 'add'
+  batchForm.tags = []
+  batchOpen.value = true
+}
+
+function mergeLocalTags(current: string[] = [], changed: string[], mode: 'replace' | 'add' | 'remove') {
+  if (mode === 'replace') return [...changed]
+  const keys = new Set(changed.map((tag) => tag.toLocaleLowerCase()))
+  if (mode === 'remove') return current.filter((tag) => !keys.has(tag.toLocaleLowerCase()))
+  const next = [...current]
+  const seen = new Set(current.map((tag) => tag.toLocaleLowerCase()))
+  changed.forEach((tag) => {
+    const key = tag.toLocaleLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      next.push(tag)
+    }
+  })
+  return next
+}
+
+async function saveBatchEdit() {
+  if (batchSaving.value) return
+  if (!batchForm.setFeatured && !batchForm.setCategory && !batchForm.setTags) {
+    ElMessage.warning('请至少选择一项要更新的内容')
+    return
+  }
+  const ids = [...selectedWorkIds.value]
+  const tags = cleanTagValues(batchForm.tags)
+  const body: Record<string, unknown> = { ids }
+  if (batchForm.setFeatured) body.featured = batchForm.featured
+  if (batchForm.setCategory) body.categoryId = batchForm.categoryId || null
+  if (batchForm.setTags) {
+    body.tags = tags
+    body.tagMode = batchForm.tagMode
+  }
+  batchSaving.value = true
+  try {
+    await request('/api/admin/gallery/submissions/batch-curate', { method: 'POST', body })
+    const category = categories.value.find((row) => row.id === batchForm.categoryId)
+    works.value = works.value.map((item) => {
+      if (!selectedWorkIds.value.has(item.id)) return item
+      const patch: Partial<CommunityWork> = {}
+      if (batchForm.setFeatured) patch.featured = batchForm.featured
+      if (batchForm.setCategory) patch.category = category ? { id: category.id, name: category.name } : null
+      if (batchForm.setTags) patch.tags = mergeLocalTags(item.tags, tags, batchForm.tagMode)
+      return { ...item, ...patch }
+    })
+    batchOpen.value = false
+    clearSelection()
+    ElMessage.success(`已更新 ${ids.length} 个作品`)
+  } finally {
+    batchSaving.value = false
   }
 }
 
@@ -303,6 +469,17 @@ const authorsLoading = ref(false)
 const authorQuery = ref('')
 const unbanning = ref('')
 
+const authorSummary = computed(() => ({
+  creators: authors.value.length,
+  submissions: authors.value.reduce((sum, item) => sum + item.submissions, 0),
+  approved: authors.value.reduce((sum, item) => sum + item.approved, 0),
+  banned: authors.value.filter(isBanned).length,
+}))
+
+function authorInitial(row: CommunityAuthor) {
+  return (row.username || row.email || '?').trim().slice(0, 1).toUpperCase()
+}
+
 async function loadAuthors() {
   authorsLoading.value = true
   try {
@@ -457,8 +634,23 @@ onMounted(() => {
         <div class="community-bar-aside">
           <label class="community-search">
             <el-icon class="community-search__icon" :size="15"><Search /></el-icon>
-            <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱" />
+            <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱或标签" />
           </label>
+        </div>
+      </div>
+
+      <div class="community-selection-bar" :class="{ 'has-selection': selectedCount > 0 }">
+        <div class="community-selection-bar__left">
+          <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
+            {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
+          </el-checkbox>
+          <span v-if="selectedCount">已选 {{ selectedCount }} 个作品</span>
+          <span v-else-if="canDragWorks" class="is-hint">拖动卡片右上角手柄调整展示顺序</span>
+          <span v-else class="is-hint">清除筛选并加载全部作品后可拖动排序</span>
+        </div>
+        <div v-if="selectedCount" class="community-selection-bar__actions">
+          <el-button text @click="clearSelection">取消选择</el-button>
+          <el-button type="primary" :icon="Check" @click="openBatchEdit">批量编辑</el-button>
         </div>
       </div>
 
@@ -474,18 +666,32 @@ onMounted(() => {
 
         <el-empty v-else-if="!visibleWorks.length" description="当前筛选下暂无作品" />
 
-        <div v-else class="community-board">
-          <CommunityWorkCard
-            v-for="item in visibleWorks"
-            :key="item.id"
-            :item="item"
-            :operating="workOperating === item.id"
-            :category-label="categoryLabelOf(item)"
-            @edit="openEdit"
-            @feature="toggleFeatured"
-            @preview="openPreview"
-          />
-        </div>
+        <draggable
+          v-else
+          v-model="workDragList"
+          class="community-board"
+          item-key="id"
+          handle=".community-card__drag"
+          :animation="180"
+          :disabled="!canDragWorks"
+          ghost-class="is-work-ghost"
+          drag-class="is-work-drag"
+          @end="persistWorkOrder"
+        >
+          <template #item="{ element: item }">
+            <CommunityWorkCard
+              :item="item"
+              :operating="workOperating === item.id"
+              :category-label="categoryLabelOf(item)"
+              :selected="selectedWorkIds.has(item.id)"
+              :draggable="canDragWorks"
+              @edit="openEdit"
+              @feature="toggleFeatured"
+              @preview="openPreview"
+              @select="setWorkSelected"
+            />
+          </template>
+        </draggable>
       </div>
 
       <div class="community-pane__pager">
@@ -647,41 +853,54 @@ onMounted(() => {
 
     <el-dialog
       v-model="authorsOpen"
-      title="创作者"
-      width="760px"
+      title="创作者管理"
+      width="880px"
       append-to-body
       destroy-on-close
       class="community-authors-dialog"
     >
+      <div class="authors-overview">
+        <div><strong>{{ authorSummary.creators }}</strong><span>当前创作者</span></div>
+        <div><strong>{{ authorSummary.submissions }}</strong><span>累计投稿</span></div>
+        <div><strong>{{ authorSummary.approved }}</strong><span>已通过</span></div>
+        <div :class="{ 'is-alert': authorSummary.banned > 0 }">
+          <strong>{{ authorSummary.banned }}</strong><span>禁投中</span>
+        </div>
+      </div>
       <div class="authors-toolbar">
-        <el-input
-          v-model="authorQuery"
-          :prefix-icon="Search"
-          clearable
-          placeholder="搜索邮箱或用户名"
-          @keyup.enter="loadAuthors"
-          @clear="loadAuthors"
-        />
-        <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">搜索</el-button>
+        <label class="authors-search">
+          <el-icon :size="16"><Search /></el-icon>
+          <el-input
+            v-model="authorQuery"
+            clearable
+            placeholder="搜索创作者名称或邮箱"
+            @keyup.enter="loadAuthors"
+            @clear="loadAuthors"
+          />
+        </label>
+        <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">查询</el-button>
       </div>
       <div v-loading="authorsLoading" class="authors-list">
         <el-empty v-if="!authorsLoading && !authors.length" description="暂无创作者" />
         <article v-for="row in authors" :key="row.userId" class="author-row" :class="{ 'is-banned': isBanned(row) }">
-          <span class="author-row__avatar">{{ (row.username || row.email || '?').slice(0, 1).toUpperCase() }}</span>
-          <div class="author-row__names">
-            <strong>{{ row.username || row.email }}</strong>
-            <small>{{ row.email }}</small>
+          <el-avatar class="author-row__avatar" :size="44" :src="row.avatarUrl || undefined">
+            {{ authorInitial(row) }}
+          </el-avatar>
+          <div class="author-row__identity">
+            <div class="author-row__name-line">
+              <strong>{{ row.username || '未设置昵称' }}</strong>
+              <el-tag v-if="isBanned(row)" type="danger" size="small" effect="light">禁投中</el-tag>
+              <el-tag v-else type="success" size="small" effect="plain">正常</el-tag>
+            </div>
+            <small :title="row.email">{{ row.email }}</small>
           </div>
           <div class="author-row__metrics">
-            <span><strong>{{ row.submissions }}</strong><small>投稿</small></span>
-            <span><strong>{{ row.approved }}</strong><small>已通过</small></span>
-            <span><strong>{{ row.removed }}</strong><small>已下架</small></span>
+            <span><small>投稿</small><strong>{{ row.submissions }}</strong></span>
+            <span><small>通过</small><strong>{{ row.approved }}</strong></span>
+            <span><small>下架</small><strong>{{ row.removed }}</strong></span>
           </div>
           <div class="author-row__state">
-            <el-tag v-if="isBanned(row)" type="danger" size="small">
-              禁投至 {{ formatTime(row.bannedUntil) }}
-            </el-tag>
-            <el-tag v-else type="success" size="small" effect="plain">正常</el-tag>
+            <small v-if="isBanned(row)">至 {{ formatTime(row.bannedUntil) }}</small>
             <el-button
               v-if="isBanned(row)"
               size="small"
@@ -698,51 +917,124 @@ onMounted(() => {
     </el-dialog>
 
     <el-dialog
+      v-model="batchOpen"
+      :title="`批量编辑 · ${selectedCount} 个作品`"
+      width="600px"
+      append-to-body
+      destroy-on-close
+      class="community-batch-dialog"
+    >
+      <div class="community-batch">
+        <div class="community-batch__row">
+          <el-checkbox v-model="batchForm.setFeatured">更新精选状态</el-checkbox>
+          <el-segmented
+            v-model="batchForm.featured"
+            :disabled="!batchForm.setFeatured"
+            :options="[
+              { label: '设为精选', value: true },
+              { label: '取消精选', value: false },
+            ]"
+          />
+        </div>
+        <div class="community-batch__row">
+          <el-checkbox v-model="batchForm.setCategory">更新分类</el-checkbox>
+          <el-select
+            v-model="batchForm.categoryId"
+            :disabled="!batchForm.setCategory"
+            clearable
+            placeholder="未分类"
+          >
+            <el-option v-for="category in enabledCategories" :key="category.id" :label="category.name" :value="category.id" />
+          </el-select>
+        </div>
+        <div class="community-batch__row is-tags">
+          <el-checkbox v-model="batchForm.setTags">更新标签</el-checkbox>
+          <el-segmented
+            v-model="batchForm.tagMode"
+            :disabled="!batchForm.setTags"
+            :options="[
+              { label: '添加', value: 'add' },
+              { label: '移除', value: 'remove' },
+              { label: '替换', value: 'replace' },
+            ]"
+          />
+          <el-select
+            v-model="batchForm.tags"
+            :disabled="!batchForm.setTags"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入标签后按回车"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="batchOpen = false">取消</el-button>
+        <el-button type="primary" :loading="batchSaving" @click="saveBatchEdit">应用更新</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="editOpen"
-      title="作品策展"
-      width="640px"
+      title="作品详情"
+      width="820px"
       append-to-body
       destroy-on-close
       class="community-edit-dialog"
     >
       <div v-if="editTarget" class="community-edit">
-        <div class="community-edit__cover">
-          <img
-            v-if="editTarget.coverUrl || editTarget.mediaUrls?.[0]"
-            :src="editTarget.coverUrl ?? editTarget.mediaUrls?.[0]"
-            :alt="editTarget.title"
-          />
-          <div v-else class="community-edit__empty">无图片</div>
-        </div>
+        <div class="community-edit__layout">
+          <button type="button" class="community-edit__cover" title="打开全屏预览" @click="openPreview(editTarget)">
+            <img
+              v-if="editTarget.coverUrl || editTarget.mediaUrls?.[0]"
+              :src="editTarget.coverUrl ?? editTarget.mediaUrls?.[0]"
+              :alt="editTarget.title"
+            />
+            <span v-else class="community-edit__empty">无图片</span>
+          </button>
 
-        <div class="community-edit__summary">
-          <span>{{ editTarget.author?.username || editTarget.userEmail || '未知作者' }}</span>
-          <span>{{ editTarget.userEmail || '—' }}</span>
-          <span>{{ formatTime(editTarget.createdAt) }}</span>
-        </div>
-
-        <el-form class="community-edit-form" label-position="top">
-          <div class="community-edit__grid">
-            <el-form-item label="分类归属">
-              <el-select v-model="editForm.categoryId" clearable placeholder="未分类" style="width: 100%">
-                <el-option
-                  v-for="category in enabledCategories"
-                  :key="category.id"
-                  :label="category.name"
-                  :value="category.id"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="推荐排序">
-              <el-input-number v-model="editForm.sort" :min="0" :max="9999" style="width: 100%" />
-            </el-form-item>
-          </div>
-          <el-form-item label="社区控制">
-            <div class="community-switches">
-              <el-switch v-model="editForm.featured" active-text="精选展示" />
+          <div class="community-edit__content">
+            <div class="community-edit__heading">
+              <small>作品标题</small>
+              <strong>{{ editTarget.title || '未命名作品' }}</strong>
             </div>
-          </el-form-item>
-        </el-form>
+            <dl class="community-edit__meta">
+              <div><dt>创作者</dt><dd>{{ editTarget.author?.username || '未设置昵称' }}</dd></div>
+              <div><dt>账号</dt><dd>{{ editTarget.userEmail || '—' }}</dd></div>
+              <div><dt>投稿时间</dt><dd>{{ formatTime(editTarget.createdAt) }}</dd></div>
+              <div><dt>图片数量</dt><dd>{{ editTarget.mediaUrls?.length || 1 }}</dd></div>
+            </dl>
+
+            <el-form class="community-edit-form" label-position="top">
+              <el-form-item label="分类归属">
+                <el-select v-model="editForm.categoryId" clearable placeholder="未分类" style="width: 100%">
+                  <el-option
+                    v-for="category in enabledCategories"
+                    :key="category.id"
+                    :label="category.name"
+                    :value="category.id"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="作品标签">
+                <el-select
+                  v-model="editForm.tags"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="输入标签后按回车，可直接删除已有标签"
+                  style="width: 100%"
+                />
+              </el-form-item>
+              <div class="community-edit__featured">
+                <div><strong>精选展示</strong><small>在社区中突出展示该作品</small></div>
+                <el-switch v-model="editForm.featured" />
+              </div>
+            </el-form>
+          </div>
+        </div>
       </div>
       <template #footer>
         <el-button @click="editOpen = false">取消</el-button>
@@ -992,6 +1284,41 @@ onMounted(() => {
   color: var(--el-text-color-placeholder);
 }
 
+.community-selection-bar {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--surface-2);
+
+  &.has-selection {
+    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    background: var(--accent-soft);
+  }
+}
+
+.community-selection-bar__left,
+.community-selection-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.community-selection-bar__left .is-hint {
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .community-pane__scroll {
   flex: 0 1 auto;
   min-height: 200px;
@@ -1031,6 +1358,15 @@ onMounted(() => {
   border-color: var(--community-line);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
+}
+
+.community-board :deep(.is-work-ghost) {
+  opacity: 0.35;
+  border-style: dashed;
+}
+
+.community-board :deep(.is-work-drag) {
+  box-shadow: 0 14px 32px rgb(15 23 42 / 18%);
 }
 
 .community-card-skeleton {
@@ -1095,6 +1431,11 @@ onMounted(() => {
   .community-pane {
     padding: 8px;
   }
+
+  .community-selection-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>
 
@@ -1103,6 +1444,7 @@ onMounted(() => {
 .community-manage-dialog,
 .community-config-editor-dialog,
 .community-authors-dialog,
+.community-batch-dialog,
 .community-edit-dialog {
   --community-dialog-line: var(--border);
 }
@@ -1304,34 +1646,91 @@ onMounted(() => {
 }
 
 .community-authors-dialog {
+  .el-dialog__body {
+    padding-top: 8px;
+  }
+
+  .authors-overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    overflow: hidden;
+    margin-bottom: 14px;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 10px;
+    background: var(--community-dialog-line);
+
+    > div {
+      display: grid;
+      gap: 2px;
+      padding: 12px 14px;
+      background: var(--surface-2);
+
+      strong {
+        color: var(--ink);
+        font-size: 20px;
+        line-height: 1.2;
+      }
+
+      span {
+        color: var(--ink-3);
+        font-size: 11px;
+      }
+
+      &.is-alert strong {
+        color: var(--danger);
+      }
+    }
+  }
+
   .authors-toolbar {
     display: flex;
     gap: 8px;
     margin-bottom: 12px;
+  }
 
-    .el-input {
-      flex: 1;
+  .authors-search {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding-left: 10px;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 9px;
+    color: var(--ink-3);
+    background: var(--surface-2);
+
+    &:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .el-input__wrapper {
+      background: transparent;
+      box-shadow: none;
     }
   }
 
   .authors-list {
     display: grid;
-    gap: 8px;
+    gap: 6px;
     min-height: 160px;
     max-height: min(56vh, 520px);
+    padding-right: 3px;
     overflow: auto;
   }
 
   .author-row {
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) auto auto;
+    grid-template-columns: 44px minmax(180px, 1fr) auto minmax(88px, auto);
     align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
+    gap: 14px;
+    min-height: 68px;
+    padding: 10px 14px;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 12px;
+    border-radius: 9px;
     background: var(--surface);
-    box-shadow: var(--shadow-sm);
 
     &.is-banned {
       border-color: color-mix(in srgb, var(--danger) 30%, transparent);
@@ -1340,46 +1739,55 @@ onMounted(() => {
   }
 
   .author-row__avatar {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+    flex-shrink: 0;
+    background: var(--accent);
     color: #fff;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
   }
 
-  .author-row__names {
+  .author-row__identity {
     min-width: 0;
 
-    strong,
-    small {
+    > small {
       display: block;
       overflow: hidden;
+      margin-top: 3px;
+      color: var(--el-text-color-secondary);
+      font-size: 11px;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+  }
+
+  .author-row__name-line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
 
     strong {
+      overflow: hidden;
+      color: var(--ink);
       font-size: 13px;
-    }
-
-    small {
-      color: var(--el-text-color-secondary);
-      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
   }
 
   .author-row__metrics {
     display: flex;
-    gap: 14px;
+    gap: 5px;
 
     > span {
-      display: grid;
-      justify-items: center;
-      gap: 1px;
+      display: flex;
+      min-width: 62px;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 7px;
+      padding: 5px 8px;
+      border-radius: 7px;
+      background: var(--surface-2);
 
       strong {
         font-size: 13px;
@@ -1393,30 +1801,98 @@ onMounted(() => {
   }
 
   .author-row__state {
-    display: flex;
-    align-items: center;
+    display: grid;
+    justify-items: end;
+    gap: 5px;
+
+    > small {
+      color: var(--danger);
+      font-size: 10px;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .authors-overview {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .author-row {
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+    }
+
+    .author-row__metrics {
+      grid-column: 2 / -1;
+      grid-row: 2;
+      flex-wrap: wrap;
+    }
+  }
+}
+
+.community-batch-dialog {
+  .community-batch {
+    display: grid;
     gap: 8px;
+  }
+
+  .community-batch__row {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    min-height: 58px;
+    padding: 10px 12px;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 9px;
+    background: var(--surface-2);
+
+    &.is-tags {
+      align-items: start;
+
+      .el-select {
+        grid-column: 2;
+        width: 100%;
+      }
+    }
+  }
+
+  @media (max-width: 640px) {
+    .community-batch__row {
+      grid-template-columns: 1fr;
+
+      &.is-tags .el-select {
+        grid-column: 1;
+      }
+    }
   }
 }
 
 .community-edit-dialog {
   .community-edit {
+    min-width: 0;
+  }
+
+  .community-edit__layout {
     display: grid;
-    gap: 14px;
+    grid-template-columns: minmax(250px, 0.9fr) minmax(320px, 1.1fr);
+    gap: 18px;
   }
 
   .community-edit__cover {
     display: grid;
     place-items: center;
+    min-height: 360px;
+    padding: 0;
     overflow: hidden;
-    border-radius: 12px;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 10px;
     background: var(--el-fill-color-light);
+    cursor: zoom-in;
 
     img {
       display: block;
       width: 100%;
-      max-height: 260px;
-      object-fit: contain;
+      height: 100%;
+      object-fit: cover;
     }
   }
 
@@ -1424,22 +1900,75 @@ onMounted(() => {
     display: grid;
     place-items: center;
     width: 100%;
-    height: 180px;
+    min-height: 300px;
     color: var(--el-text-color-secondary);
     font-size: 13px;
   }
 
-  .community-edit__summary {
+  .community-edit__content {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    min-width: 0;
+    flex-direction: column;
+    gap: 12px;
+  }
 
-    span {
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: var(--el-fill-color-light);
-      color: var(--el-text-color-secondary);
+  .community-edit__heading {
+    display: grid;
+    gap: 3px;
+
+    small {
+      color: var(--ink-3);
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    strong {
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.45;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .community-edit__meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    overflow: hidden;
+    margin: 0;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 8px;
+    background: var(--community-dialog-line);
+
+    > div {
+      min-width: 0;
+      padding: 8px 10px;
+      background: var(--surface-2);
+    }
+
+    dt {
+      color: var(--ink-3);
+      font-size: 10px;
+    }
+
+    dd {
+      overflow: hidden;
+      margin: 2px 0 0;
+      color: var(--ink);
       font-size: 12px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .community-edit-form {
+    min-width: 0;
+
+    .el-form-item {
+      margin-bottom: 12px;
     }
   }
 
@@ -1449,15 +1978,38 @@ onMounted(() => {
     gap: 12px;
   }
 
-  .community-switches {
+  .community-edit__featured {
     display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 9px 11px;
+    border: 1px solid var(--community-dialog-line);
+    border-radius: 8px;
+
+    > div {
+      display: grid;
+      gap: 2px;
+
+      strong {
+        font-size: 12px;
+      }
+
+      small {
+        color: var(--ink-3);
+        font-size: 10px;
+      }
+    }
   }
 
   @media (max-width: 900px) {
+    .community-edit__layout,
     .community-edit__grid {
       grid-template-columns: 1fr;
+    }
+
+    .community-edit__cover {
+      min-height: 240px;
     }
   }
 }

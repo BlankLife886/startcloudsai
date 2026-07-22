@@ -17,7 +17,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 
 /**
  * 壁纸工坊薄编排层：组装 canvas / inputs / models / tasks，保留对外 API。
@@ -30,7 +29,6 @@ export function useAiWallpaperStudioState() {
   const historyStore = null
   const authStore = useAuthStore()
   const userStore = null
-  const router = useRouter()
   const { isMobile } = useStudioLayout()
 
   const autoSaveConfig = ref(true)
@@ -213,10 +211,6 @@ export function useAiWallpaperStudioState() {
       ? { '--ai-ambient-image': `url("${ambientBackgroundImage.value}")` }
       : {},
   )
-
-  function openPricingWallet() {
-    router.push({ path: '/pricing', query: { section: 'wallet' } }).catch(() => {})
-  }
 
   async function requestCreateTask() {
     if (!canCreateTask.value) return
@@ -664,7 +658,6 @@ export function useAiWallpaperStudioState() {
     handleCanvasPointerMove: canvas.handleCanvasPointerMove,
     handleCanvasPointerUp: canvas.handleCanvasPointerUp,
     togglePreviewFullscreen: canvas.togglePreviewFullscreen,
-    openPricingWallet,
     costConfirmVisible,
     costConfirmPayload,
     confirmCostAndCreate,

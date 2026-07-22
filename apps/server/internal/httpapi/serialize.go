@@ -11,12 +11,15 @@ import (
 
 func userDict(u *store.User) gin.H {
 	return gin.H{
-		"id":        u.ID.String(),
-		"email":     u.Email,
-		"username":  u.Username,
-		"avatarUrl": u.AvatarURL,
-		"role":      u.Role,
-		"createdAt": isoValue(u.CreatedAt),
+		"id":         u.ID.String(),
+		"email":      u.Email,
+		"username":   u.Username,
+		"avatarUrl":  u.AvatarURL,
+		"bio":        u.Bio,
+		"location":   u.Location,
+		"websiteUrl": u.WebsiteURL,
+		"role":       u.Role,
+		"createdAt":  isoValue(u.CreatedAt),
 	}
 }
 
@@ -24,6 +27,7 @@ func adminUserDict(u *store.User, wallet *store.Wallet) gin.H {
 	d := userDict(u)
 	d["status"] = u.Status
 	d["lastLoginAt"] = iso(u.LastLoginAt)
+	d["submissionBannedUntil"] = iso(u.SubmissionBannedUntil)
 	if wallet != nil {
 		d["wallet"] = gin.H{"balanceCents": wallet.BalanceCents, "frozenCents": wallet.FrozenCents}
 	}
@@ -37,32 +41,36 @@ func nonNilStrings(s []string) []string {
 	return s
 }
 
-func taskDict(t *store.Task, outputURLs []string) gin.H {
+func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	params := t.Params
 	if params == nil {
 		params = map[string]any{}
 	}
 	return gin.H{
-		"id":           t.ID.String(),
-		"type":         t.Type,
-		"status":       t.Status,
-		"prompt":       t.Prompt,
-		"params":       params,
-		"count":        t.Count,
-		"inputKeys":    nonNilStrings(t.InputKeys),
-		"outputKeys":   nonNilStrings(t.OutputKeys),
-		"outputUrls":   nonNilStrings(outputURLs),
-		"costCents":    t.CostCents,
-		"errorCode":    t.ErrorCode,
-		"errorMessage": t.ErrorMessage,
-		"createdAt":    isoValue(t.CreatedAt),
-		"startedAt":    iso(t.StartedAt),
-		"finishedAt":   iso(t.FinishedAt),
+		"id":            t.ID.String(),
+		"type":          t.Type,
+		"model":         t.Model,
+		"status":        t.Status,
+		"prompt":        t.Prompt,
+		"params":        params,
+		"count":         t.Count,
+		"inputKeys":     nonNilStrings(t.InputKeys),
+		"outputKeys":    nonNilStrings(t.OutputKeys),
+		"outputUrls":    nonNilStrings(outputURLs),
+		"thumbnailUrls": nonNilStrings(outputURLs),
+		"originalUrls":  nonNilStrings(originalURLs),
+		"thumbnailKeys": nonNilStrings(t.ThumbnailKeys),
+		"costCents":     t.CostCents,
+		"errorCode":     t.ErrorCode,
+		"errorMessage":  t.ErrorMessage,
+		"createdAt":     isoValue(t.CreatedAt),
+		"startedAt":     iso(t.StartedAt),
+		"finishedAt":    iso(t.FinishedAt),
 	}
 }
 
 func adminTaskDict(t *store.Task, user *store.User) gin.H {
-	d := taskDict(t, nil)
+	d := taskDict(t, nil, nil)
 	d["userId"] = t.UserID.String()
 	d["attempt"] = t.Attempt
 	if user != nil {
@@ -168,6 +176,7 @@ func submissionDict(s *store.GallerySubmission, mediaURLs []string) gin.H {
 		"featured":     s.Featured,
 		"categoryId":   categoryID,
 		"sort":         s.Sort,
+		"tags":         nonNilStrings(s.Tags),
 		"createdAt":    isoValue(s.CreatedAt),
 	}
 }

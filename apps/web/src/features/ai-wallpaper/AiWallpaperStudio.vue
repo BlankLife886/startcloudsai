@@ -2,6 +2,7 @@
 import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import AspectRatioSelect from './components/AspectRatioSelect.vue'
 import DeleteHistoryConfirmDialog from './components/DeleteHistoryConfirmDialog.vue'
@@ -24,6 +25,7 @@ import { getAuthenticatedMediaMetadata } from '@/services/authenticatedMedia'
 import {
   normalizeVisibleDisplayPositions,
   uniqueTaskOutputs,
+  uniqueTaskThumbnailOutputs,
 } from '@/features/ai-wallpaper/domain/galleryDisplay'
 import { formatOutputSize } from '@/features/ai-wallpaper/domain/outputSizeMetadata'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
@@ -183,7 +185,6 @@ const LIGHTBOX_MIN_ZOOM = 0.5
 const LIGHTBOX_MAX_ZOOM = 5
 const LIGHTBOX_ZOOM_STEP = 0.25
 const LIGHTBOX_UPSCALE_OPTIONS = ['2K', '4K', '8K']
-const STAGE_PREVIEW_DIMENSION = 1200
 const FILMSTRIP_THUMBNAIL_DIMENSION = 240
 const HISTORY_THUMBNAIL_DIMENSION = 720
 let lightboxPanStart = null
@@ -264,6 +265,10 @@ const lightboxCanCompare = computed(
     Boolean(lightboxUrl.value) &&
     lightboxOriginalUrl.value !== lightboxUrl.value,
 )
+const lightboxPreviewUrl = computed(() => {
+  if (selectedCloudExperimentKey.value) return ''
+  return taskThumbnailOutputs(lightboxTask.value)[lightboxIndex.value] || ''
+})
 const lightboxLiveTask = computed(() => {
   const taskId = String(lightboxTask.value?.id || '')
   return tasks.value.find((task) => String(task.id || '') === taskId) || lightboxTask.value
@@ -346,6 +351,7 @@ const imageGallery = computed(() => {
     }
     if (!isDone(task)) continue
     const outputs = taskOutputs(task)
+    const thumbnailOutputs = taskThumbnailOutputs(task)
     outputs.forEach((url, index) => {
       if (isImageUnavailable(task, index, url)) return
       items.push({
@@ -353,6 +359,7 @@ const imageGallery = computed(() => {
         kind: 'image',
         task,
         url,
+        thumbnailUrl: thumbnailOutputs[index] || '',
         index,
         batchIndex: Number(task.batchSize || 1) > 1 ? Number(task.batchIndex || 0) : index,
         total: Number(task.batchSize || 1) > 1 ? Number(task.batchSize) : outputs.length,
@@ -390,7 +397,8 @@ const featuredAspect = computed(() => {
 })
 const featuredAspectStyle = computed(() => {
   const [width, height] = String(featuredAspect.value).split('/').map(Number)
-  const ratio = Number.isFinite(width) && Number.isFinite(height) && height > 0 ? width / height : 16 / 9
+  const ratio =
+    Number.isFinite(width) && Number.isFinite(height) && height > 0 ? width / height : 16 / 9
   return {
     aspectRatio: featuredAspect.value,
     '--t2i-stage-fit-width': `${ratio * 100}cqh`,
@@ -527,6 +535,7 @@ const historyFeedItems = computed(() => {
   const items = []
   for (const task of historyTasks.value) {
     const outputs = taskOutputs(task)
+    const thumbnailOutputs = taskThumbnailOutputs(task)
     if (outputs.length) {
       let visibleOutputCount = 0
       outputs.forEach((url, index) => {
@@ -540,6 +549,7 @@ const historyFeedItems = computed(() => {
           kind: 'image',
           task,
           url,
+          thumbnailUrl: thumbnailOutputs[index] || '',
           index,
           batchIndex: Number(task.batchSize || 1) > 1 ? Number(task.batchIndex || 0) : index,
           total: Number(task.batchSize || 1) > 1 ? Number(task.batchSize) : outputs.length,
@@ -565,9 +575,7 @@ const historyFeedItems = computed(() => {
 
 function measureHistoryImage(item, event) {
   const image = event?.target
-  const authenticatedMetadata = getAuthenticatedMediaMetadata(item.url, {
-    maxDimension: HISTORY_THUMBNAIL_DIMENSION,
-  })
+  const authenticatedMetadata = getAuthenticatedMediaMetadata(item.url)
   const width = Number(authenticatedMetadata?.width || image?.naturalWidth || 0)
   const height = Number(authenticatedMetadata?.height || image?.naturalHeight || 0)
   if (!item?.key || width <= 0 || height <= 0) return
@@ -604,7 +612,9 @@ function nearestTaskAspect(width, height) {
   if (!Number.isFinite(ratio) || ratio <= 0) return ''
   let best = null
   for (const option of T2I_ASPECT_OPTIONS) {
-    const [w, h] = String(option.value || '').split(':').map(Number)
+    const [w, h] = String(option.value || '')
+      .split(':')
+      .map(Number)
     if (!w || !h) continue
     const distance = Math.abs(Math.log(ratio / (w / h)))
     if (!best || distance < best.distance) best = { value: option.value, distance }
@@ -630,9 +640,7 @@ function syncTaskImageDimensions(task, width, height, { exact = false } = {}) {
 
 function measureFeaturedImage(item, event) {
   const image = event?.target
-  const metadata = getAuthenticatedMediaMetadata(item?.url || '', {
-    maxDimension: STAGE_PREVIEW_DIMENSION,
-  })
+  const metadata = getAuthenticatedMediaMetadata(item?.url || '')
   const width = Number(metadata?.width || image?.naturalWidth || 0)
   const height = Number(metadata?.height || image?.naturalHeight || 0)
   if (item?.key && width > 0 && height > 0) {
@@ -1345,6 +1353,10 @@ function taskOutputs(task) {
   return uniqueTaskOutputs(task)
 }
 
+function taskThumbnailOutputs(task) {
+  return uniqueTaskThumbnailOutputs(task)
+}
+
 function taskMeta(task) {
   const upstreamSize = formatOutputSize(task?.upstreamOutputSize || task?.outputSize)
   const actualSize = formatOutputSize(task?.actualOutputSize)
@@ -1425,7 +1437,7 @@ function friendlyError(task) {
   if (/timeout|超时/i.test(raw)) return '生成超时，请稍后重试。'
   if (/insufficient|积分不足|余额不足/i.test(raw)) return '积分不足，请先充值。'
   if (/unauthorized|未登录|login/i.test(raw)) return '登录失效，请重新登录。'
-  return raw.length > 72 ? `${raw.slice(0, 72)}…` : raw
+  return raw
 }
 
 function statusTitle(task) {
@@ -2084,31 +2096,31 @@ function setMainTab(tab) {
               @dragover.prevent
               @drop.prevent="handleReferenceDrop"
             >
-            <figure v-for="item in referenceImages" :key="item.id" class="t2i-prompt-ref">
-              <AuthenticatedImage :src="item.preview" :alt="item.label" :max-dimension="160" />
-              <button type="button" title="移除参考图" @click="removeReferenceImage(item.id)">
-                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              <figure v-for="item in referenceImages" :key="item.id" class="t2i-prompt-ref">
+                <AuthenticatedImage :src="item.preview" :alt="item.label" :max-dimension="160" />
+                <button type="button" title="移除参考图" @click="removeReferenceImage(item.id)">
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </figure>
+              <button
+                v-if="referenceImages.length < 4"
+                type="button"
+                class="t2i-prompt-ref-add"
+                aria-label="添加参考图"
+                title="参考图：点击选择或拖入图片，最多 4 张"
+                @click="referenceInputRef?.click()"
+              >
+                <i class="bi bi-plus-lg" aria-hidden="true"></i>
               </button>
-            </figure>
-            <button
-              v-if="referenceImages.length < 4"
-              type="button"
-              class="t2i-prompt-ref-add"
-              aria-label="添加参考图"
-              title="参考图：点击选择或拖入图片，最多 4 张"
-              @click="referenceInputRef?.click()"
-            >
-              <i class="bi bi-plus-lg" aria-hidden="true"></i>
-            </button>
-            <input
-              ref="referenceInputRef"
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              @change="handleReferenceFileInput"
-            />
-          </div>
+              <input
+                ref="referenceInputRef"
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                @change="handleReferenceFileInput"
+              />
+            </div>
             <div class="t2i-prompt-tools">
               <button type="button" class="t2i-icon-btn" title="清空提示词" @click="clearPrompt">
                 <i class="bi bi-trash"></i>
@@ -2259,7 +2271,12 @@ function setMainTab(tab) {
                 </label>
               </div>
               <div class="t2i-skill-form">
-                <input v-model="customSkillName" type="text" maxlength="80" placeholder="Skill 名称" />
+                <input
+                  v-model="customSkillName"
+                  type="text"
+                  maxlength="80"
+                  placeholder="Skill 名称"
+                />
                 <input
                   v-model="customSkillDescription"
                   type="text"
@@ -2417,11 +2434,12 @@ function setMainTab(tab) {
                   class="t2i-stage-media"
                   @click="openLightbox(featuredItem.task, featuredItem.index)"
                 >
-                  <AuthenticatedImage
+                  <ProgressiveAuthenticatedImage
                     :src="featuredItem.url"
+                    :preview-src="featuredItem.thumbnailUrl"
+                    load-original
                     alt=""
                     loading="eager"
-                    :max-dimension="STAGE_PREVIEW_DIMENSION"
                     @load="measureFeaturedImage(featuredItem, $event)"
                     @error="
                       markImageUnavailable(featuredItem.task, featuredItem.index, featuredItem.url)
@@ -2550,7 +2568,7 @@ function setMainTab(tab) {
                 </span>
                 <AuthenticatedImage
                   v-else
-                  :src="item.url"
+                  :src="item.thumbnailUrl"
                   alt=""
                   loading="lazy"
                   root-margin="180px 240px"
@@ -2605,13 +2623,13 @@ function setMainTab(tab) {
                   :style="{ aspectRatio: item.aspect }"
                   @click="openLightbox(item.task, item.index)"
                 >
-                  <AuthenticatedImage
+                  <ProgressiveAuthenticatedImage
                     :src="item.url"
+                    :preview-src="item.thumbnailUrl"
                     alt=""
                     loading="lazy"
-                    :max-dimension="HISTORY_THUMBNAIL_DIMENSION"
+                    root-margin="180px 0px"
                     @load="measureHistoryImage(item, $event)"
-                    @error="markImageUnavailable(item.task, item.index, item.url)"
                   />
                   <UpscaleProcessingOverlay
                     v-if="isLocalUpscaling(item.task)"
@@ -3149,8 +3167,10 @@ function setMainTab(tab) {
             @pointercancel="endLightboxPan"
           >
             <div class="t2i-lightbox-image-layer" :style="lightboxImageStyle">
-              <AuthenticatedImage
+              <ProgressiveAuthenticatedImage
                 :src="lightboxUrl"
+                :preview-src="lightboxPreviewUrl"
+                load-original
                 alt=""
                 class="is-processed"
                 loading="eager"

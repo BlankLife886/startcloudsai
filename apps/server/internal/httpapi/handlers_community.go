@@ -3,10 +3,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -415,9 +417,48 @@ func (s *Server) adminDeleteGalleryCategory(c *gin.Context, _ *store.User) {
 // ---------- 策展 ----------
 
 type curateIn struct {
-	Featured Opt[bool]   `json:"featured"`
-	Category Opt[string] `json:"categoryId"`
-	Sort     Opt[int]    `json:"sort"`
+	Featured Opt[bool]     `json:"featured"`
+	Category Opt[string]   `json:"categoryId"`
+	Sort     Opt[int]      `json:"sort"`
+	Tags     Opt[[]string] `json:"tags"`
+}
+
+func normalizeSubmissionTags(tags []string) ([]string, error) {
+	if len(tags) > 20 {
+		return nil, apperr.E("validation_error", "tags: 数量不能超过 20", 422)
+	}
+	out := make([]string, 0, len(tags))
+	seen := make(map[string]bool, len(tags))
+	for _, raw := range tags {
+		tag := strings.TrimSpace(raw)
+		if tag == "" || len([]rune(tag)) > 32 {
+			return nil, apperr.E("validation_error", "tags: 每项长度须在 1-32 之间", 422)
+		}
+		key := strings.ToLower(tag)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, tag)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) resolveGalleryCategory(ctx context.Context, body Opt[string]) (*uuid.UUID, error) {
+	if !body.Valid {
+		return nil, nil
+	}
+	parsed, err := uuid.Parse(body.Value)
+	if err != nil {
+		return nil, apperr.E("validation_error", "categoryId: 无效的 UUID", 422)
+	}
+	category, err := store.GetGalleryCategory(ctx, s.St.Pool, parsed)
+	if err != nil {
+		return nil, err
+	}
+	if category == nil {
+		return nil, apperr.E("validation_error", "categoryId: 分类不存在", 422)
+	}
+	return &parsed, nil
 }
 
 func (s *Server) adminCurateSubmission(c *gin.Context, _ *store.User) {
@@ -441,26 +482,21 @@ func (s *Server) adminCurateSubmission(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "投稿不存在", 404))
 		return
 	}
-	var categoryID *uuid.UUID
-	if body.Category.Valid {
-		parsed, perr := uuid.Parse(body.Category.Value)
-		if perr != nil {
-			fail(c, apperr.E("validation_error", "categoryId: 无效的 UUID", 422))
+	categoryID, err := s.resolveGalleryCategory(ctx, body.Category)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var tags []string
+	if body.Tags.Set {
+		tags, err = normalizeSubmissionTags(body.Tags.Value)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		category, gerr := store.GetGalleryCategory(ctx, s.St.Pool, parsed)
-		if gerr != nil {
-			fail(c, gerr)
-			return
-		}
-		if category == nil {
-			fail(c, apperr.E("validation_error", "categoryId: 分类不存在", 422))
-			return
-		}
-		categoryID = &parsed
 	}
 	if err := store.CurateSubmission(ctx, s.St.Pool, submissionID,
-		body.Featured.Ptr(), body.Category.Set, categoryID, body.Sort.Ptr()); err != nil {
+		body.Featured.Ptr(), body.Category.Set, categoryID, body.Sort.Ptr(), body.Tags.Set, tags); err != nil {
 		fail(c, err)
 		return
 	}
@@ -470,6 +506,171 @@ func (s *Server) adminCurateSubmission(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, submissionDict(updated, nil))
+}
+
+type batchCurateIn struct {
+	IDs      []string      `json:"ids"`
+	Featured Opt[bool]     `json:"featured"`
+	Category Opt[string]   `json:"categoryId"`
+	Tags     Opt[[]string] `json:"tags"`
+	TagMode  string        `json:"tagMode"`
+}
+
+func mergeSubmissionTags(current, changed []string, mode string) []string {
+	if mode == "replace" {
+		return changed
+	}
+	changedSet := make(map[string]bool, len(changed))
+	for _, tag := range changed {
+		changedSet[strings.ToLower(tag)] = true
+	}
+	out := make([]string, 0, len(current)+len(changed))
+	seen := map[string]bool{}
+	for _, tag := range current {
+		key := strings.ToLower(tag)
+		if mode == "remove" && changedSet[key] {
+			continue
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, tag)
+		}
+	}
+	if mode == "add" {
+		for _, tag := range changed {
+			key := strings.ToLower(tag)
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, tag)
+			}
+		}
+	}
+	return out
+}
+
+func parseSubmissionIDs(raw []string) ([]uuid.UUID, error) {
+	if len(raw) == 0 || len(raw) > 100 {
+		return nil, apperr.E("validation_error", "ids: 数量须在 1-100 之间", 422)
+	}
+	ids := make([]uuid.UUID, 0, len(raw))
+	seen := map[uuid.UUID]bool{}
+	for _, value := range raw {
+		id, err := uuid.Parse(value)
+		if err != nil {
+			return nil, apperr.E("validation_error", "ids: 包含无效的 UUID", 422)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Server) adminBatchCurateSubmissions(c *gin.Context, _ *store.User) {
+	var body batchCurateIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	ids, err := parseSubmissionIDs(body.IDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !body.Featured.Set && !body.Category.Set && !body.Tags.Set {
+		fail(c, apperr.E("validation_error", "至少选择一项要更新的内容", 422))
+		return
+	}
+	mode := body.TagMode
+	if mode == "" {
+		mode = "replace"
+	}
+	if mode != "replace" && mode != "add" && mode != "remove" {
+		fail(c, apperr.E("validation_error", "tagMode: 仅支持 replace、add、remove", 422))
+		return
+	}
+	ctx := c.Request.Context()
+	categoryID, err := s.resolveGalleryCategory(ctx, body.Category)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var changedTags []string
+	if body.Tags.Set {
+		changedTags, err = normalizeSubmissionTags(body.Tags.Value)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		for _, id := range ids {
+			submission, err := store.GetSubmission(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if submission == nil {
+				return apperr.E("not_found", "投稿不存在", 404)
+			}
+			var tags []string
+			if body.Tags.Set {
+				tags = mergeSubmissionTags(submission.Tags, changedTags, mode)
+				if len(tags) > 20 {
+					return apperr.E("validation_error", "tags: 合并后数量不能超过 20", 422)
+				}
+			}
+			if err := store.CurateSubmission(ctx, tx, id, body.Featured.Ptr(), body.Category.Set,
+				categoryID, nil, body.Tags.Set, tags); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"updated": len(ids)})
+}
+
+type reorderSubmissionsIn struct {
+	IDs []string `json:"ids"`
+}
+
+func (s *Server) adminReorderSubmissions(c *gin.Context, _ *store.User) {
+	var body reorderSubmissionsIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	ids, err := parseSubmissionIDs(body.IDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		for index, id := range ids {
+			submission, err := store.GetSubmission(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if submission == nil {
+				return apperr.E("not_found", "投稿不存在", 404)
+			}
+			sort := (index + 1) * 10
+			if err := store.CurateSubmission(ctx, tx, id, nil, false, nil, &sort, false, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"updated": len(ids)})
 }
 
 // ---------- 画廊设置 ----------
@@ -565,6 +766,7 @@ func (s *Server) adminGalleryAuthors(c *gin.Context, _ *store.User) {
 			"userId":      a.UserID.String(),
 			"email":       a.Email,
 			"username":    a.Username,
+			"avatarUrl":   a.AvatarURL,
 			"submissions": a.Submissions,
 			"approved":    a.Approved,
 			"removed":     a.Removed,

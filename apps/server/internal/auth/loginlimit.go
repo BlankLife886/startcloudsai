@@ -74,6 +74,23 @@ func (l *LoginLimiter) Check(email, ip string) (time.Duration, bool) {
 	return 0, true
 }
 
+// Reserve atomically checks the lock and records the attempt, preventing a
+// concurrent burst from passing between separate Check and Fail calls.
+func (l *LoginLimiter) Reserve(email, ip string) (time.Duration, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.nowFunc()
+	l.gcLocked(now)
+	for _, e := range []*limitEntry{l.emails[email], l.ips[ip]} {
+		if e != nil && now.Before(e.lockedUntil) {
+			return e.lockedUntil.Sub(now), false
+		}
+	}
+	l.bump(l.emails, email, now, l.emailMaxFails, l.emailLockDur)
+	l.bump(l.ips, ip, now, l.ipMaxFails, l.ipLockDur)
+	return 0, true
+}
+
 // Fail 记录一次失败尝试。
 func (l *LoginLimiter) Fail(email, ip string) {
 	l.mu.Lock()
@@ -88,6 +105,15 @@ func (l *LoginLimiter) Success(email string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.emails, email)
+}
+
+func (l *LoginLimiter) SuccessAttempt(email, ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.emails, email)
+	if ip != "" {
+		delete(l.ips, ip)
+	}
 }
 
 func (l *LoginLimiter) bump(m map[string]*limitEntry, key string, now time.Time, maxFails int, lockDur time.Duration) {

@@ -16,9 +16,9 @@ function formatCredits(value = 0) {
   return num >= 1000 ? Math.round(num).toLocaleString() : String(Math.round(num * 1000) / 1000)
 }
 
-function goRecharge() {
+function goWallet() {
   emit('close')
-  router.push({ path: '/pricing', query: { section: 'wallet' } })
+  router.push({ path: '/profile', query: { tab: 'wallet' } })
 }
 </script>
 
@@ -36,11 +36,11 @@ function goRecharge() {
       </p>
       <p v-else>当前钱包余额不足以提交本次任务。</p>
       <p class="insufficient-credits-hint">
-        请前往 <strong>价格页</strong> 充值或使用兑换码入账后再试。
+        请前往 <strong>个人中心</strong> 使用兑换码入账后再试。
       </p>
       <div class="insufficient-credits-actions">
         <button type="button" class="ghost" @click="emit('close')">稍后再说</button>
-        <button type="button" class="primary" @click="goRecharge">去充值</button>
+        <button type="button" class="primary" @click="goWallet">打开钱包</button>
       </div>
     </section>
   </div>

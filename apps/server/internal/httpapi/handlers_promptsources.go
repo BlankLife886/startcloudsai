@@ -3,13 +3,13 @@ package httpapi
 
 import (
 	"errors"
-	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -35,8 +35,7 @@ func promptSourceDict(s *store.PromptSource) gin.H {
 }
 
 func validPromptSourceURL(raw string) bool {
-	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host != ""
+	return netguard.ValidateURL(raw, false, true) == nil
 }
 
 func clampSyncInterval(minutes int) int {

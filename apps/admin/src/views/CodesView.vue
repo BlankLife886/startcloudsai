@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Download, Hide, Plus, View } from '@element-plus/icons-vue'
+import { CopyDocument, Download, Hide, Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { normalizeList, request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { fenToYuan, formatTime, yuanToFen } from '@/utils'
@@ -43,6 +43,13 @@ const CODE_STATUS_TAG: Record<string, 'success' | 'info' | 'danger'> = {
   disabled: 'danger',
 }
 
+const STATUS_FILTERS = [
+  { value: '', label: '全部' },
+  { value: 'active', label: '可用' },
+  { value: 'redeemed', label: '已兑换' },
+  { value: 'disabled', label: '已禁用' },
+] as const
+
 // ---------- 码列表 ----------
 const filters = reactive({ status: '', batchId: '', search: '' })
 
@@ -82,8 +89,25 @@ function toggleReveal(id: string) {
   revealed[id] = !revealed[id]
 }
 
+async function copyCode(row: RedemptionCode) {
+  try {
+    await navigator.clipboard.writeText(row.code)
+    ElMessage.success('兑换码已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
+
 function isExpired(row: RedemptionCode): boolean {
   return row.status === 'active' && !!row.expiresAt && new Date(row.expiresAt).getTime() < Date.now()
+}
+
+function displayStatus(row: RedemptionCode) {
+  if (isExpired(row)) return { label: '已过期', type: 'warning' as const }
+  return {
+    label: CODE_STATUS_LABELS[row.status] ?? row.status,
+    type: CODE_STATUS_TAG[row.status] ?? ('info' as const),
+  }
 }
 
 async function disableCode(row: RedemptionCode) {
@@ -117,9 +141,16 @@ async function loadBatches() {
   }
 }
 
-/** 点批次卡片 = 按该批次筛选码列表（再点一次取消） */
-function filterByBatch(batchId: string) {
-  filters.batchId = filters.batchId === batchId ? '' : batchId
+const selectedBatch = computed(() => batches.value.find((batch) => batch.batchId === filters.batchId) ?? null)
+
+function batchOptionLabel(batch: CodeBatch) {
+  const note = String(batch.note || '').trim()
+  return `${note || batch.batchId} · ${fenToYuan(batch.grantCents)} 元 · ${batch.total} 个`
+}
+
+function setStatus(value: string) {
+  if (filters.status === value) return
+  filters.status = value
   void reset()
 }
 
@@ -215,115 +246,142 @@ function downloadCodes() {
 </script>
 
 <template>
-  <div class="page">
-    <!-- 批次汇总 -->
-    <PageCard title="批次汇总" subtitle="最近生成的兑换码批次，点击卡片可按批次筛选下方列表">
-      <template #actions>
-        <el-button type="primary" size="small" :icon="Plus" @click="openGenerate">生成兑换码</el-button>
-      </template>
-      <div v-loading="batchesLoading" class="batch-row">
-        <el-empty v-if="!batchesLoading && batches.length === 0" description="暂无批次" :image-size="50">
-          <div class="empty-sub">点击右上角「生成兑换码」创建第一批</div>
-        </el-empty>
-        <button
-          v-for="batch in batches"
-          :key="batch.batchId"
-          type="button"
-          class="batch-card"
-          :class="{ 'is-active': filters.batchId === batch.batchId }"
-          @click="filterByBatch(batch.batchId)"
-        >
-          <div class="batch-card__head">
-            <span class="mono batch-card__id" :title="batch.batchId">{{ batch.batchId }}</span>
-            <span class="batch-card__value tnum">{{ fenToYuan(batch.grantCents) }} 元</span>
-          </div>
-          <div class="batch-card__note" :title="batch.note ?? ''">{{ batch.note || '（无备注）' }}</div>
-          <div class="batch-card__stats tnum">
-            <span>总数 {{ batch.total }}</span>
-            <span class="is-redeemed">已兑 {{ batch.redeemed }}</span>
-            <span class="is-disabled">禁用 {{ batch.disabled }}</span>
-          </div>
-          <div class="batch-card__time">{{ formatTime(batch.createdAt) }}</div>
-        </button>
+  <div class="codes-page">
+    <header class="codes-header">
+      <div class="codes-header__copy">
+        <span>REDEMPTION CODES</span>
+        <h2>兑换码</h2>
+        <p>{{ batches.length }} 个批次 · 当前列表 {{ items.length }} 条</p>
       </div>
-    </PageCard>
+      <el-button type="primary" :icon="Plus" @click="openGenerate">生成兑换码</el-button>
+    </header>
 
-    <!-- 码列表 -->
-    <PageCard title="兑换码列表" subtitle="兑换 = 面值一次性入账到用户钱包；仅可用状态的码可禁用">
-      <div class="filter-bar">
-        <el-select v-model="filters.status" placeholder="状态" size="small" clearable style="width: 120px" @change="reset">
-          <el-option v-for="(label, value) in CODE_STATUS_LABELS" :key="value" :label="label" :value="value" />
-        </el-select>
-        <el-input
-          v-model="filters.batchId"
-          placeholder="批次 ID"
-          size="small"
-          clearable
-          style="width: 180px"
-          @keyup.enter="reset"
-          @clear="reset"
-        />
-        <el-input
-          v-model="filters.search"
-          placeholder="完整兑换码（如 SC-XXXX-XXXX-XXXX）"
-          size="small"
-          clearable
-          style="width: 240px"
-          @keyup.enter="reset"
-          @clear="reset"
-        />
-        <el-button type="primary" size="small" @click="reset">查询</el-button>
-        <el-button size="small" @click="clearFilters">重置</el-button>
+    <section class="codes-list-panel">
+      <div class="codes-toolbar">
+        <div class="status-tabs" role="tablist" aria-label="兑换码状态">
+          <button
+            v-for="option in STATUS_FILTERS"
+            :key="option.value || 'all'"
+            type="button"
+            role="tab"
+            :aria-selected="filters.status === option.value"
+            :class="{ 'is-active': filters.status === option.value }"
+            @click="setStatus(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
+        <div class="codes-toolbar__filters">
+          <el-select
+            v-model="filters.batchId"
+            filterable
+            clearable
+            placeholder="全部批次"
+            :loading="batchesLoading"
+            class="batch-select"
+            @change="reset"
+          >
+            <el-option
+              v-for="batch in batches"
+              :key="batch.batchId"
+              :label="batchOptionLabel(batch)"
+              :value="batch.batchId"
+            />
+          </el-select>
+          <el-input
+            v-model="filters.search"
+            :prefix-icon="Search"
+            placeholder="搜索完整兑换码"
+            clearable
+            class="code-search"
+            @keyup.enter="reset"
+            @clear="reset"
+          />
+          <el-button type="primary" @click="reset">查询</el-button>
+          <el-button v-if="filters.status || filters.batchId || filters.search" text @click="clearFilters">重置</el-button>
+          <el-tooltip content="刷新列表" placement="top">
+            <el-button :icon="Refresh" circle :loading="loading" aria-label="刷新列表" @click="refresh" />
+          </el-tooltip>
+        </div>
+      </div>
+
+      <div v-if="selectedBatch" class="batch-context">
+        <span class="mono">{{ selectedBatch.batchId }}</span>
+        <strong>{{ selectedBatch.note || '无备注批次' }}</strong>
+        <small>
+          面值 {{ fenToYuan(selectedBatch.grantCents) }} 元 · 共 {{ selectedBatch.total }} 个 · 已兑换
+          {{ selectedBatch.redeemed }} 个 · 已禁用 {{ selectedBatch.disabled }} 个
+        </small>
       </div>
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
-      <el-table v-loading="loading" :data="items" size="small">
+      <div class="codes-table-shell">
+        <el-table v-loading="loading" :data="items" size="small" table-layout="fixed">
         <template #empty>
           <el-empty description="暂无兑换码" :image-size="60">
             <div class="empty-sub">调整筛选条件，或生成新的兑换码</div>
           </el-empty>
         </template>
-        <el-table-column label="兑换码" min-width="220">
+        <el-table-column label="兑换码" min-width="230">
           <template #default="{ row }">
             <span class="code-cell">
               <span class="mono">{{ revealed[row.id] ? row.code : maskCode(row.code) }}</span>
-              <el-button
-                text
-                size="small"
-                class="code-eye"
-                :icon="revealed[row.id] ? Hide : View"
-                :title="revealed[row.id] ? '隐藏完整码' : '查看完整码'"
-                @click="toggleReveal(row.id)"
-              />
+              <span class="code-cell__actions">
+                <el-button
+                  text
+                  size="small"
+                  :icon="revealed[row.id] ? Hide : View"
+                  :title="revealed[row.id] ? '隐藏完整码' : '查看完整码'"
+                  @click="toggleReveal(row.id)"
+                />
+                <el-button
+                  text
+                  size="small"
+                  :icon="CopyDocument"
+                  title="复制完整码"
+                  @click="copyCode(row as RedemptionCode)"
+                />
+              </span>
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="面值（元）" width="100" align="right" class-name="col-num">
-          <template #default="{ row }">{{ fenToYuan(row.grantCents) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
+        <el-table-column label="批次" min-width="185">
           <template #default="{ row }">
-            <el-tag :type="CODE_STATUS_TAG[row.status] ?? 'info'" size="small">
-              {{ CODE_STATUS_LABELS[row.status] ?? row.status }}
-            </el-tag>
-            <el-tag v-if="isExpired(row as RedemptionCode)" type="warning" size="small" style="margin-left: 4px">
-              已过期
+            <span class="batch-cell">
+              <strong class="mono" :title="row.batchId">{{ row.batchId }}</strong>
+              <small :title="row.note ?? ''">{{ row.note || '无备注' }}</small>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="面值" width="92" align="right" class-name="col-num">
+          <template #default="{ row }"><strong class="value-cell tnum">{{ fenToYuan(row.grantCents) }} 元</strong></template>
+        </el-table-column>
+        <el-table-column label="状态" width="92">
+          <template #default="{ row }">
+            <el-tag :type="displayStatus(row as RedemptionCode).type" size="small" effect="light">
+              {{ displayStatus(row as RedemptionCode).label }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="兑换人邮箱" min-width="180">
-          <template #default="{ row }">{{ row.redeemedByEmail || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="兑换时间" width="160">
-          <template #default="{ row }">{{ formatTime(row.redeemedAt) }}</template>
-        </el-table-column>
-        <el-table-column label="有效期" width="160">
+        <el-table-column label="有效期" width="155">
           <template #default="{ row }">
-            {{ row.expiresAt ? formatTime(row.expiresAt) : '长期有效' }}
+            <span class="time-cell" :class="{ 'is-expired': isExpired(row as RedemptionCode) }">
+              {{ row.expiresAt ? formatTime(row.expiresAt) : '长期有效' }}
+            </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="兑换信息" min-width="190">
+          <template #default="{ row }">
+            <span v-if="row.redeemedByEmail" class="redeem-cell">
+              <strong :title="row.redeemedByEmail">{{ row.redeemedByEmail }}</strong>
+              <small>{{ formatTime(row.redeemedAt) }}</small>
+            </span>
+            <span v-else class="cell-muted">尚未兑换</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="78" fixed="right" align="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'active'"
@@ -336,10 +394,14 @@ function downloadCodes() {
             </el-button>
           </template>
         </el-table-column>
-      </el-table>
+        </el-table>
+      </div>
 
-      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
-    </PageCard>
+      <footer class="codes-list-footer">
+        <span>本页 {{ items.length }} 条</span>
+        <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      </footer>
+    </section>
 
     <!-- 生成兑换码 -->
     <el-dialog v-model="genVisible" title="生成兑换码" width="480px">
@@ -402,96 +464,271 @@ function downloadCodes() {
 </template>
 
 <style scoped>
-/* ---- 批次卡片行 ---- */
-.batch-row {
-  display: flex;
+.codes-page {
+  display: grid;
+  min-width: 0;
   gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  min-height: 60px;
+  padding: 24px 28px;
 }
 
-.batch-card {
-  flex: 0 0 220px;
+.codes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.codes-header__copy {
   display: grid;
-  gap: 6px;
-  padding: 12px 14px;
+  min-width: 0;
+  gap: 2px;
+}
+
+.codes-header__copy > span {
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.codes-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.codes-header p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.codes-list-panel {
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.codes-toolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-tabs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--surface-2);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
-  color: var(--ink);
+}
+
+.status-tabs button {
+  min-width: 58px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink-2);
   font: inherit;
+  font-size: 12px;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.batch-card:hover {
-  border-color: var(--accent);
+.status-tabs button:hover {
+  color: var(--ink);
+  background: var(--surface-3);
 }
 
-.batch-card.is-active {
-  border-color: var(--accent);
+.status-tabs button.is-active {
+  color: var(--accent-ink);
+  font-weight: 650;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.codes-toolbar__filters {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 540px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.batch-select {
+  width: min(300px, 36vw);
+}
+
+.code-search {
+  width: min(240px, 30vw);
+}
+
+.batch-context {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(120px, 1fr) minmax(260px, auto);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--border);
   background: var(--accent-soft);
 }
 
-.batch-card__head {
+.batch-context span,
+.batch-context strong,
+.batch-context small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-context strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.batch-context small {
+  color: var(--ink-2);
+  font-size: 11px;
+  text-align: right;
+}
+
+.codes-table-shell {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.codes-table-shell :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 42px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+  background: var(--surface-2);
+}
+
+.codes-table-shell :deep(.el-table__row td.el-table__cell) {
+  height: 52px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.codes-table-shell :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--surface-2);
+}
+
+.code-cell {
   display: flex;
+  width: 100%;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.batch-card__id {
+.code-cell > .mono {
   overflow: hidden;
-  font-size: 12px;
+  color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.batch-card__value {
-  flex-shrink: 0;
-  color: var(--accent-ink);
-  font-size: 13px;
+.code-cell__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
+.code-cell:hover .code-cell__actions {
+  opacity: 1;
+}
+
+.code-cell__actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.batch-cell,
+.redeem-cell {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.batch-cell strong,
+.batch-cell small,
+.redeem-cell strong,
+.redeem-cell small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-cell strong,
+.redeem-cell strong {
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.batch-cell small,
+.redeem-cell small {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.value-cell {
+  color: var(--ink);
+  font-size: 12px;
   font-weight: 700;
 }
 
-.batch-card__note {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.batch-card__stats {
-  display: flex;
-  gap: 10px;
-  font-size: 12px;
-}
-
-.batch-card__stats .is-redeemed {
-  color: var(--success);
-}
-
-.batch-card__stats .is-disabled {
-  color: var(--danger);
-}
-
-.batch-card__time {
+.time-cell,
+.cell-muted {
   color: var(--ink-3);
   font-size: 11px;
 }
 
-/* ---- 码列表 ---- */
-.code-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.time-cell.is-expired {
+  color: var(--warning);
 }
 
-.code-eye {
-  padding: 2px 4px;
+.codes-list-footer {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.codes-list-footer > span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.codes-list-footer :deep(.pager-bar) {
+  margin-top: 0;
 }
 
 /* ---- 生成结果 ---- */
@@ -523,5 +760,54 @@ function downloadCodes() {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+}
+
+@media (max-width: 1180px) {
+  .codes-toolbar {
+    align-items: stretch;
+  }
+
+  .codes-toolbar__filters {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .batch-select,
+  .code-search {
+    width: min(280px, 38vw);
+  }
+}
+
+@media (max-width: 720px) {
+  .codes-page {
+    padding: 12px;
+  }
+
+  .codes-header {
+    align-items: flex-end;
+  }
+
+  .status-tabs {
+    width: 100%;
+  }
+
+  .status-tabs button {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .batch-select,
+  .code-search {
+    width: 100%;
+  }
+
+  .batch-context {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .batch-context small {
+    text-align: left;
+  }
 }
 </style>

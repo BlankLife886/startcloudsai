@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { request } from '@/request'
 
-export interface User {
+export interface AdminAccount {
   id: string
   email: string
   username: string | null
@@ -12,7 +12,7 @@ export interface User {
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    user: null as User | null,
+    user: null as AdminAccount | null,
     /** 是否已向服务端确认过登录态 */
     loaded: false,
   }),
@@ -22,8 +22,8 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async fetchMe() {
       try {
-        const data = await request<{ user: User | null }>('/api/auth/me', { silent: true })
-        this.user = data.user
+        const data = await request<{ admin: AdminAccount | null }>('/api/admin/auth/me', { silent: true })
+        this.user = data.admin
       } catch {
         this.user = null
       } finally {
@@ -31,18 +31,18 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async login(email: string, password: string, options: { silent?: boolean } = {}) {
-      const data = await request<{ user: User }>('/api/auth/login', {
+      const data = await request<{ admin: AdminAccount }>('/api/admin/auth/login', {
         method: 'POST',
         body: { email, password },
         silent: options.silent,
       })
-      this.user = data.user
+      this.user = data.admin
       this.loaded = true
-      return data.user
+      return data.admin
     },
     async logout() {
       try {
-        await request('/api/auth/logout', { method: 'POST', silent: true })
+        await request('/api/admin/auth/logout', { method: 'POST', silent: true })
       } catch {
         // 忽略退出失败，本地状态照常清空
       }

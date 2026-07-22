@@ -3,7 +3,9 @@ package taskflow_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
@@ -88,9 +91,36 @@ func TestCreateTaskFreezesCost(t *testing.T) {
 	if task.CostCents != 40 { // 默认单价 t2i=20 × 2
 		t.Fatalf("cost = %d, want 40", task.CostCents)
 	}
+	if task.Model != "gpt-image-2" {
+		t.Fatalf("model = %q, want gpt-image-2", task.Model)
+	}
 	w := getWallet(t, st, user.ID)
 	if w.BalanceCents != 60 || w.FrozenCents != 40 {
 		t.Fatalf("wallet = (%d, %d), want (60, 40)", w.BalanceCents, w.FrozenCents)
+	}
+}
+
+func TestCreateTaskSnapshotsConfiguredModel(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+
+	first, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatalf("create first task: %v", err)
+	}
+	if err := settings.Set(ctx, st.Pool, "task_models", json.RawMessage(`{"default":"new-default","t2i":"new-t2i"}`)); err != nil {
+		t.Fatalf("set task models: %v", err)
+	}
+	second, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatalf("create second task: %v", err)
+	}
+	if first.Model != "gpt-image-2" {
+		t.Fatalf("first model changed to %q", first.Model)
+	}
+	if second.Model != "new-t2i" {
+		t.Fatalf("second model = %q, want new-t2i", second.Model)
 	}
 }
 
@@ -138,6 +168,48 @@ func TestUserTaskLimit(t *testing.T) {
 	mustAppErr(t, err, "user_task_limit")
 }
 
+func TestUserTaskLimitUnderConcurrentCreation(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 1000)
+	const attempts = 10
+	start := make(chan struct{})
+	results := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, err := createT2I(t, st, user.ID, 1, nil)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	succeeded := 0
+	limited := 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		appErr, ok := apperr.As(err)
+		if !ok || appErr.Code != "user_task_limit" {
+			t.Fatalf("unexpected concurrent create error: %v", err)
+		}
+		limited++
+	}
+	if succeeded != 3 || limited != attempts-3 {
+		t.Fatalf("concurrent results = %d succeeded, %d limited; want 3 and %d", succeeded, limited, attempts-3)
+	}
+	active, err := store.CountActiveTasks(context.Background(), st.Pool, user.ID)
+	if err != nil || active != 3 {
+		t.Fatalf("active tasks = %d, err=%v; want 3", active, err)
+	}
+}
+
 func TestSettleOnSuccess(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)
@@ -149,7 +221,7 @@ func TestSettleOnSuccess(t *testing.T) {
 	forceRunning(t, st, task.ID)
 
 	err = st.Tx(ctx, func(tx pgx.Tx) error {
-		won, merr := taskflow.MarkSucceeded(ctx, tx, task, []string{"tasks/x/0.png"}, timeNow())
+		won, merr := taskflow.MarkSucceeded(ctx, tx, task, []string{"tasks/x/0.png"}, nil, timeNow())
 		if merr != nil {
 			return merr
 		}
@@ -170,7 +242,7 @@ func TestSettleOnSuccess(t *testing.T) {
 	}
 	// 重复结算（幂等）：状态迁移抢不到
 	err = st.Tx(ctx, func(tx pgx.Tx) error {
-		won, merr := taskflow.MarkSucceeded(ctx, tx, task, []string{"tasks/x/0.png"}, timeNow())
+		won, merr := taskflow.MarkSucceeded(ctx, tx, task, []string{"tasks/x/0.png"}, nil, timeNow())
 		if merr != nil {
 			return merr
 		}
@@ -289,7 +361,7 @@ func TestRequeueRefreezesThenSettles(t *testing.T) {
 
 	forceRunning(t, st, task.ID)
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		won, merr := taskflow.MarkSucceeded(ctx, tx, requeued, []string{"tasks/x/0.png"}, timeNow())
+		won, merr := taskflow.MarkSucceeded(ctx, tx, requeued, []string{"tasks/x/0.png"}, nil, timeNow())
 		if merr != nil {
 			return merr
 		}

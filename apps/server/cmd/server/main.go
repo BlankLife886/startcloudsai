@@ -6,10 +6,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/mail"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +23,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/httpapi"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -60,6 +64,9 @@ func runServe(cfg *config.Config) error {
 		return err
 	}
 	defer st.Close()
+	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
+		return fmt.Errorf("encrypt stored settings: %w", err)
+	}
 
 	stg, err := storage.New(cfg)
 	if err != nil {
@@ -71,21 +78,37 @@ func runServe(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.New(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs)
-	server := httpapi.New(cfg, st, stg, c2aClient, queue)
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	server, err := httpapi.New(cfg, st, stg, c2aClient, queue)
+	if err != nil {
+		return fmt.Errorf("initialize HTTP server: %w", err)
+	}
+	defer server.Close()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("PORT 必须为 1-65535 之间的整数")
 	}
 
 	// H2 优雅停机：SIGTERM/SIGINT 后 30s 内完成在途请求
 	notifyCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	srv := &http.Server{Addr: ":" + port, Handler: server.Router()}
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", portNumber),
+		Handler:           server.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      310 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Println("serving on :" + port)
+		log.Printf("serving on :%d", portNumber)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -120,22 +143,34 @@ func runWorker(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.New(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs)
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
 	return worker.New(cfg, st, stg, c2aClient, queue).Run()
 }
 
-// runCreateAdmin 创建或提升管理员（存在则提升 role 并重置密码，建钱包）。
+// runCreateAdmin 创建或更新独立管理员账号，不写 users/wallets。
 func runCreateAdmin(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("create-admin", flag.ExitOnError)
 	email := fs.String("email", "", "管理员邮箱")
-	password := fs.String("password", "", "管理员密码")
+	passwordStdin := fs.Bool("password-stdin", false, "从标准输入读取管理员密码")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *email == "" || *password == "" {
-		return fmt.Errorf("create-admin: --email 与 --password 必填")
+	if *email == "" || !*passwordStdin {
+		return fmt.Errorf("create-admin: --email 与 --password-stdin 必填")
 	}
 	normalized := strings.ToLower(strings.TrimSpace(*email))
+	addr, err := mail.ParseAddress(normalized)
+	if err != nil || addr.Address != normalized || !strings.Contains(normalized[strings.LastIndex(normalized, "@")+1:], ".") {
+		return fmt.Errorf("create-admin: 管理员邮箱格式不正确")
+	}
+	passwordBytes, err := io.ReadAll(io.LimitReader(os.Stdin, auth.MaxPasswordBytes+2))
+	if err != nil {
+		return fmt.Errorf("create-admin: 读取密码: %w", err)
+	}
+	password := strings.TrimRight(string(passwordBytes), "\r\n")
+	if err := auth.ValidateAdminPassword(password); err != nil {
+		return fmt.Errorf("create-admin: 密码须为 12-72 字节")
+	}
 
 	ctx := context.Background()
 	st, err := store.New(ctx, cfg.DatabaseURL)
@@ -144,40 +179,39 @@ func runCreateAdmin(cfg *config.Config, args []string) error {
 	}
 	defer st.Close()
 
-	passwordHash, err := auth.HashPassword(*password)
+	passwordHash, err := auth.HashPassword(password)
 	if err != nil {
 		return err
 	}
 
 	var action string
-	var user *store.User
+	var admin *store.AdminAccount
 	err = st.Tx(ctx, func(tx pgx.Tx) error {
-		existing, terr := store.GetUserByEmail(ctx, tx, normalized)
+		existing, terr := store.GetAdminAccountByEmail(ctx, tx, normalized)
 		if terr != nil {
 			return terr
 		}
+		username := normalized
+		if at := strings.Index(normalized, "@"); at > 0 {
+			username = normalized[:at]
+		}
 		if existing == nil {
-			username := normalized
-			if at := strings.Index(normalized, "@"); at > 0 {
-				username = normalized[:at]
-			}
-			user, terr = store.InsertUser(ctx, tx, normalized, username, passwordHash, "admin", nil)
-			if terr != nil {
-				return terr
-			}
 			action = "created"
 		} else {
-			user = existing
-			if terr = store.PromoteAdmin(ctx, tx, user.ID, passwordHash); terr != nil {
-				return terr
-			}
-			action = "promoted"
+			action = "updated"
 		}
-		return store.InsertWallet(ctx, tx, user.ID)
+		admin, terr = store.UpsertAdminAccount(ctx, tx, normalized, username, passwordHash)
+		if terr != nil {
+			return terr
+		}
+		if terr = store.DeleteAdminSessionsByAdmin(ctx, tx, admin.ID); terr != nil {
+			return terr
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("admin %s: %s (id=%s)\n", action, normalized, user.ID)
+	fmt.Printf("admin %s: %s (id=%s)\n", action, normalized, admin.ID)
 	return nil
 }

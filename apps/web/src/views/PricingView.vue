@@ -1,1076 +1,938 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { createLoginRedirectQuery } from '@/services/authRedirect'
-import { getMySubscription, getWallet } from '@/services/meApi'
+import { listPlans, formatCents } from '@/services/billingApi'
 import { getTaskPricing } from '@/services/metaApi'
-import { createOrder, formatCents, getOrder, listPlans } from '@/services/billingApi'
+import { getWallet } from '@/services/meApi'
 import { TASK_TYPE_LABELS } from '@/services/tasksApi'
-import notificationService from '@/services/notification'
 
 const router = useRouter()
 const authStore = useAuthStore()
 
-// ---- 钱包快览 & 单价（订单/账本/兑换码在个人中心） ----
-const wallet = ref(null)
-const walletLoading = ref(false)
-const pricing = ref(null)
-
-// ---- 订阅现状（后端未上线时为 null，隐藏现状条） ----
-const subscription = ref(null)
-
-// ---- 套餐 & 下单 ----
 const plans = ref([])
 const plansLoading = ref(true)
-const purchasingPlanId = ref('')
-const activeOrder = ref(null)
-let orderPollTimer = null
+const plansLoadFailed = ref(false)
+const pricing = ref(null)
+const wallet = ref(null)
+const section = ref('plans')
 
-const isAuthenticated = computed(() => authStore.isAuthenticated)
+// 支付通道尚未接入。即使后端将来增加支付能力，也必须完成前端收银台接入后再显式改为 true。
+const PAYMENT_UI_ENABLED = false
+
+const previewPlans = [
+  {
+    id: 'preview-usage',
+    name: '按量创作',
+    eyebrow: 'Flexible',
+    description: '无需固定套餐，按照不同工作台的实际任务单价消耗钱包额度。',
+    priceMode: 'unit',
+    suffix: '/ 张起',
+    features: [
+      '全部 AI 创作工作台',
+      '按任务冻结与结算额度',
+      '原图与 512px 缩略图分别保存',
+      '适合轻量体验与偶尔创作',
+    ],
+    preview: true,
+  },
+  {
+    id: 'preview-creator',
+    name: '创作者计划',
+    eyebrow: 'Creator',
+    description: '为持续创作准备的月度方案，正式价格与每日额度将在支付接入后公布。',
+    priceMode: 'coming',
+    suffix: '/ 月',
+    features: [
+      '计划包含月度创作额度',
+      '每日额度自动发放',
+      '覆盖全部图像工作台',
+      '优先体验后续创作能力',
+    ],
+    popular: true,
+    preview: true,
+  },
+  {
+    id: 'preview-pro',
+    name: '专业制作',
+    eyebrow: 'Professional',
+    description: '面向高频制作与团队场景，套餐、发票和协作能力仍在规划中。',
+    priceMode: 'coming',
+    suffix: '/ 月',
+    features: ['更高的计划额度', '适合高频生产任务', '团队与商业能力预留', '支付接入后开放购买'],
+    preview: true,
+  },
+]
+
+const taskPriceRows = computed(() => {
+  const values = pricing.value?.taskPrices || {}
+  return Object.entries(TASK_TYPE_LABELS).map(([type, label]) => ({
+    type,
+    label,
+    priceCents: Object.prototype.hasOwnProperty.call(values, type) ? Number(values[type]) : null,
+  }))
+})
+
+const minimumTaskPrice = computed(() => {
+  const values = taskPriceRows.value
+    .map((item) => item.priceCents)
+    .filter((value) => value !== null && Number.isFinite(value) && value > 0)
+  return values.length ? Math.min(...values) : 0
+})
+
+const displayPlans = computed(() => {
+  if (!plans.value.length) return previewPlans
+  return plans.value.map((plan, index) => ({
+    ...plan,
+    eyebrow: plan.kind === 'subscription' ? 'Subscription' : 'Top-up',
+    description:
+      plan.kind === 'subscription'
+        ? '订阅期内按计划发放创作额度。支付接入前仅展示方案信息。'
+        : '一次性额度包，支付接入前仅展示方案信息。',
+    popular: index === 1,
+    preview: false,
+  }))
+})
+
 const availableCents = computed(() =>
   Math.max(0, Number(wallet.value?.balanceCents || 0) - Number(wallet.value?.frozenCents || 0)),
 )
 
-/** 旧后端 plans 无 kind 字段时默认按 topup 处理。 */
-function planKind(plan) {
-  return plan?.kind === 'subscription' ? 'subscription' : 'topup'
-}
+const paymentMethods = [
+  { name: '支付宝', icon: 'bi-alipay', note: '尚未接入' },
+  { name: '微信支付', icon: 'bi-wechat', note: '尚未接入' },
+  { name: '银行卡', icon: 'bi-credit-card-2-front', note: '尚未接入' },
+]
 
-const subscriptionPlans = computed(() =>
-  plans.value.filter((plan) => planKind(plan) === 'subscription'),
-)
-const topupPlans = computed(() => plans.value.filter((plan) => planKind(plan) === 'topup'))
+const faqs = [
+  {
+    question: '现在可以购买套餐吗？',
+    answer:
+      '暂时不可以。价格与套餐页面已经恢复，但支付通道尚未接入，所有购买按钮都处于禁用状态，不会创建订单或发生扣款。',
+  },
+  {
+    question: '当前创作如何计费？',
+    answer:
+      '任务提交时按张数冻结钱包额度，任务成功后结算；失败或取消时释放对应冻结额度。各工作台的当前单价可在本页下方查看。',
+  },
+  {
+    question: '为什么套餐显示“待公布”？',
+    answer:
+      '数据库尚未配置正式上架套餐时，页面只展示方案预览，不会虚构金额。配置正式套餐后，本页会自动显示对应价格和权益。',
+  },
+  {
+    question: '将来会支持哪些支付方式？',
+    answer:
+      '页面已经为支付宝、微信支付和银行卡预留入口。最终开放方式以支付服务完成接入和安全审计后的实际上线结果为准。',
+  },
+  {
+    question: '已有钱包额度会受影响吗？',
+    answer:
+      '不会。现有钱包余额、兑换码和任务扣费逻辑保持不变；恢复价格页不会启用任何新的自动扣费能力。',
+  },
+]
 
-const hasActiveSubscription = computed(() => subscription.value?.active === true)
-
-function subscriptionDailyLabel(plan) {
-  const daily = Number(plan?.dailyGrantCents || 0)
-  if (daily <= 0) return ''
-  return `每天 ${formatCents(daily)} 额度`
-}
-
-function subscriptionTotalLabel(plan) {
-  const daily = Number(plan?.dailyGrantCents || 0)
-  const days = Number(plan?.durationDays || 0)
-  if (daily <= 0 || days <= 0) return ''
-  return `期内共 ${formatCents(daily * days)}`
-}
-
-const taskPriceRows = computed(() => {
-  const prices = pricing.value?.taskPrices || {}
-  return Object.entries(TASK_TYPE_LABELS).map(([type, label]) => ({
-    type,
-    label,
-    priceCents: Number(prices[type] ?? 0),
-  }))
-})
-
-const ORDER_STATUS_LABELS = {
-  pending: '等待支付',
-  paid: '已支付',
-  completed: '已完成',
-  failed: '失败',
-  expired: '已过期',
-}
-
-function orderStatusLabel(status) {
-  return ORDER_STATUS_LABELS[status] || status || '未知'
-}
-
-function formatDay(value) {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
-  return date.toLocaleDateString('zh-CN')
-}
-
-function goLogin() {
-  router.push({
-    name: 'auth',
-    query: { ...createLoginRedirectQuery('/pricing'), mode: 'login' },
-  })
-}
-
-function goProfile(tab) {
-  router.push({ name: 'profile', query: tab ? { tab } : {} })
-}
-
-async function refreshWallet() {
-  if (!isAuthenticated.value) return
-  walletLoading.value = true
-  try {
-    wallet.value = await getWallet()
-  } catch {
-    /* 钱包读取失败时保持旧值 */
-  } finally {
-    walletLoading.value = false
+function planPrice(plan) {
+  if (plan.priceMode === 'unit') {
+    return minimumTaskPrice.value > 0 ? formatCents(minimumTaskPrice.value) : '按量计费'
   }
+  if (plan.priceMode === 'coming') return '待公布'
+  return formatCents(plan.priceCents)
 }
 
-async function refreshSubscription() {
-  if (!isAuthenticated.value) return
-  try {
-    subscription.value = await getMySubscription()
-  } catch {
-    /* 接口异常时静默：隐藏订阅现状条 */
+function taskPriceLabel(priceCents) {
+  if (priceCents === null || !Number.isFinite(priceCents)) return '暂不可用'
+  return formatCents(priceCents)
+}
+
+function planSuffix(plan) {
+  if (plan.suffix) return plan.suffix
+  if (plan.kind === 'subscription') {
+    return Number(plan.durationDays || 0) > 0 ? `/ ${plan.durationDays} 天` : '/ 订阅期'
   }
+  return '一次性入账'
 }
 
-function stopOrderPolling() {
-  if (orderPollTimer) {
-    clearInterval(orderPollTimer)
-    orderPollTimer = null
+function planQuota(plan) {
+  if (plan.preview) return ''
+  if (plan.kind === 'subscription') {
+    return Number(plan.dailyGrantCents || 0) > 0
+      ? `每天发放 ${formatCents(plan.dailyGrantCents)} 创作额度`
+      : ''
   }
+  const total = Number(plan.grantCents || 0) + Number(plan.bonusCents || 0)
+  return total > 0 ? `共入账 ${formatCents(total)} 创作额度` : ''
 }
 
-function startOrderPolling(orderId) {
-  stopOrderPolling()
-  orderPollTimer = setInterval(async () => {
-    try {
-      const order = await getOrder(orderId)
-      activeOrder.value = { ...activeOrder.value, ...order }
-      if (['completed', 'failed', 'expired'].includes(order?.status)) {
-        stopOrderPolling()
-        if (order.status === 'completed') {
-          notificationService.success('订单已完成，余额已入账')
-          await Promise.all([refreshWallet(), refreshSubscription()])
-        }
-      }
-    } catch {
-      /* 下一轮重试 */
-    }
-  }, 3000)
+function planFeatures(plan) {
+  return Array.isArray(plan.features) && plan.features.length
+    ? plan.features
+    : ['套餐信息已配置', '支付接入后开放购买', '当前不会创建订单']
 }
 
-async function purchase(plan) {
-  if (!isAuthenticated.value) {
-    goLogin()
-    return
-  }
-  if (purchasingPlanId.value) return
-  purchasingPlanId.value = plan.id
-  try {
-    const order = await createOrder(plan.id)
-    activeOrder.value = { ...order, planName: plan.name }
-    if (order?.payUrl) {
-      window.open(order.payUrl, '_blank', 'noopener')
-    }
-    startOrderPolling(order.id)
-  } catch (error) {
-    notificationService.error(error?.message || '订单创建失败')
-  } finally {
-    purchasingPlanId.value = ''
-  }
+function scrollToSection(id) {
+  section.value = id
+  document.getElementById(`pricing-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-function dismissActiveOrder() {
-  stopOrderPolling()
-  activeOrder.value = null
+function goCreate() {
+  router.push('/text-to-image')
 }
 
 onMounted(async () => {
-  await authStore.initAuth().catch(() => null)
-  void getTaskPricing()
-    .then((data) => {
-      pricing.value = data
-    })
-    .catch(() => null)
-  void listPlans()
-    .then((items) => {
-      plans.value = items
-    })
-    .catch(() => null)
-    .finally(() => {
-      plansLoading.value = false
-    })
-  if (isAuthenticated.value) {
-    void refreshWallet()
-    void refreshSubscription()
+  const [plansResult, pricingResult] = await Promise.allSettled([listPlans(), getTaskPricing()])
+  if (plansResult.status === 'fulfilled') {
+    plans.value = plansResult.value.items
+  } else {
+    plansLoadFailed.value = true
+  }
+  if (pricingResult.status === 'fulfilled') pricing.value = pricingResult.value
+  plansLoading.value = false
+
+  if (authStore.isAuthenticated) {
+    wallet.value = await getWallet().catch(() => null)
   }
 })
-
-onBeforeUnmount(() => stopOrderPolling())
 </script>
 
 <template>
-  <div class="pr-page">
-    <div class="pr-atmosphere" aria-hidden="true"></div>
+  <div class="pricing-page">
+    <div class="pricing-glow" aria-hidden="true"></div>
 
-    <!-- 页头：衬线大标题 + 钱包余额条 -->
-    <header class="pr-masthead">
-      <div class="pr-masthead__copy">
-        <p class="pr-eyebrow">StarCloud Tariff <i></i> 馆内票务</p>
-        <h1 class="pr-title">
-          <span class="pr-seal" aria-hidden="true">藏</span>
-          价格与套餐
-        </h1>
-        <p class="pr-lede">
-          按任务张数计费，充值即时入账，余额永不过期。订阅期内每日自动发放创作额度。
-        </p>
-      </div>
+    <main class="pricing-shell">
+      <section class="pricing-hero" aria-labelledby="pricing-title">
+        <div class="pricing-hero__copy">
+          <p class="pricing-kicker">PLANS &amp; PRICING</p>
+          <h1 id="pricing-title">选择适合你的<br /><span>创作方案</span></h1>
+          <p class="pricing-hero__lede">
+            从按量创作到未来的订阅计划，费用结构保持清晰。支付功能已预留，但在正式接入前不会创建订单或扣款。
+          </p>
 
-      <aside class="pr-wallet" aria-label="钱包余额">
-        <div class="pr-wallet__head">
-          <span class="pr-wallet__label">Wallet · 可用余额</span>
-          <button
-            v-if="isAuthenticated"
-            type="button"
-            class="pr-wallet__refresh"
-            aria-label="刷新余额"
-            :disabled="walletLoading"
-            @click="refreshWallet"
-          >
-            <i class="bi bi-arrow-repeat" :class="{ spin: walletLoading }"></i>
-          </button>
-        </div>
-        <template v-if="isAuthenticated">
-          <strong class="pr-wallet__amount">{{ formatCents(availableCents) }}</strong>
-          <div class="pr-wallet__meta">
-            <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
-            <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
-              冻结中 {{ formatCents(wallet?.frozenCents || 0) }}
-            </span>
+          <div class="pricing-switch" aria-label="页面分区">
+            <button
+              type="button"
+              :class="{ active: section === 'plans' }"
+              @click="scrollToSection('plans')"
+            >
+              套餐方案
+            </button>
+            <button
+              type="button"
+              :class="{ active: section === 'unit' }"
+              @click="scrollToSection('unit')"
+            >
+              创作单价
+            </button>
           </div>
-          <button type="button" class="pr-wallet__link" @click="goProfile('wallet')">
-            个人中心 · 钱包与兑换码 →
-          </button>
-        </template>
-        <template v-else>
-          <strong class="pr-wallet__amount is-muted">登录后查看</strong>
-          <button type="button" class="pr-btn is-primary" @click="goLogin">登录 / 注册</button>
-        </template>
-      </aside>
-    </header>
+        </div>
 
-    <!-- 订阅现状条 -->
-    <section v-if="isAuthenticated && hasActiveSubscription" class="pr-substatus">
-      <i class="bi bi-patch-check-fill" aria-hidden="true"></i>
-      <div class="pr-substatus__body">
-        <strong>{{ subscription.planName || '订阅会员' }}</strong>
-        <span>有效期至 {{ formatDay(subscription.endsAt) }}</span>
-        <span v-if="Number(subscription.dailyGrantCents || 0) > 0">
-          每日发放 {{ formatCents(subscription.dailyGrantCents) }}
-        </span>
-        <em :class="{ 'is-done': subscription.grantedToday }">
-          {{ subscription.grantedToday ? '今日已发放' : '今日待发放' }}
-        </em>
-      </div>
-    </section>
+        <aside class="pricing-status" aria-label="支付接入状态">
+          <div class="pricing-status__icon"><i class="bi bi-shield-lock"></i></div>
+          <p>PAYMENT STATUS</p>
+          <strong>支付暂未开放</strong>
+          <span>开发、测试与生产环境均不会发起真实支付。</span>
+          <div v-if="authStore.isAuthenticated" class="pricing-wallet">
+            <small>当前可用额度</small>
+            <b>{{ formatCents(availableCents) }}</b>
+          </div>
+        </aside>
+      </section>
 
-    <!-- 下单后即时反馈，完整订单列表在个人中心 -->
-    <section v-if="activeOrder" class="pr-order-banner" :data-status="activeOrder.status">
-      <div class="pr-order-banner__body">
-        <i
-          class="bi"
-          :class="activeOrder.status === 'completed' ? 'bi-check-circle-fill' : 'bi-hourglass-split'"
-        ></i>
+      <section id="pricing-plans" class="pricing-section pricing-plans">
+        <header class="pricing-section__head">
+          <div>
+            <p>CHOOSE A PLAN</p>
+            <h2>简单、透明的方案结构</h2>
+          </div>
+          <span class="pricing-disabled-note"><i class="bi bi-lock-fill"></i> 购买功能未启用</span>
+        </header>
+
+        <div v-if="plansLoading" class="pricing-plan-grid" aria-label="套餐加载中">
+          <article
+            v-for="item in 3"
+            :key="item"
+            class="pricing-plan pricing-plan--loading"
+          ></article>
+        </div>
+        <div v-else class="pricing-plan-grid">
+          <article
+            v-for="plan in displayPlans"
+            :key="plan.id"
+            class="pricing-plan"
+            :class="{ 'pricing-plan--popular': plan.popular }"
+          >
+            <span v-if="plan.popular" class="pricing-plan__popular">推荐方案</span>
+            <p class="pricing-plan__eyebrow">{{ plan.eyebrow }}</p>
+            <h3>{{ plan.name }}</h3>
+            <p class="pricing-plan__description">{{ plan.description }}</p>
+
+            <div class="pricing-plan__price">
+              <strong>{{ planPrice(plan) }}</strong>
+              <span>{{ planSuffix(plan) }}</span>
+            </div>
+            <p v-if="planQuota(plan)" class="pricing-plan__quota">{{ planQuota(plan) }}</p>
+
+            <div class="pricing-plan__divider"></div>
+            <p class="pricing-plan__includes">方案包含</p>
+            <ul>
+              <li v-for="feature in planFeatures(plan)" :key="feature">
+                <i class="bi bi-check2"></i>
+                <span>{{ feature }}</span>
+              </li>
+            </ul>
+
+            <button
+              type="button"
+              class="pricing-plan__button"
+              :disabled="!PAYMENT_UI_ENABLED"
+              title="支付通道尚未接入"
+            >
+              <i class="bi bi-lock-fill"></i>
+              支付暂未开放
+            </button>
+          </article>
+        </div>
+
+        <p v-if="plansLoadFailed" class="pricing-data-note">
+          套餐服务暂时不可用，当前显示的是预览方案；创作单价仍以服务端实际返回为准。
+        </p>
+      </section>
+
+      <section id="pricing-unit" class="pricing-section pricing-unit">
+        <header class="pricing-section__head">
+          <div>
+            <p>UNIT PRICING</p>
+            <h2>每一次创作都清楚计价</h2>
+          </div>
+          <span>提交时冻结，成功后结算</span>
+        </header>
+
+        <div class="pricing-unit-grid">
+          <article v-for="row in taskPriceRows" :key="row.type">
+            <span class="pricing-unit__icon"><i class="bi bi-stars"></i></span>
+            <div>
+              <small>{{ row.type.toUpperCase() }}</small>
+              <strong>{{ row.label }}</strong>
+            </div>
+            <p>
+              {{ taskPriceLabel(row.priceCents) }} <span v-if="row.priceCents !== null">/ 张</span>
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="pricing-section pricing-payment" aria-labelledby="payment-title">
+        <div class="pricing-payment__copy">
+          <p>PAYMENT METHODS</p>
+          <h2 id="payment-title">支付位置已经预留</h2>
+          <span>通道接入和安全审计完成前，下面所有方式均保持禁用。</span>
+        </div>
+        <div class="pricing-payment__methods">
+          <article v-for="method in paymentMethods" :key="method.name" aria-disabled="true">
+            <i class="bi" :class="method.icon"></i>
+            <div>
+              <strong>{{ method.name }}</strong>
+              <small>{{ method.note }}</small>
+            </div>
+            <i class="bi bi-lock-fill"></i>
+          </article>
+        </div>
+      </section>
+
+      <section class="pricing-section pricing-faq">
+        <header class="pricing-section__head">
+          <div>
+            <p>FREQUENTLY ASKED QUESTIONS</p>
+            <h2>常见问题</h2>
+          </div>
+        </header>
+
+        <div class="pricing-faq__list">
+          <details v-for="(item, index) in faqs" :key="item.question" :open="index === 0">
+            <summary>
+              <span>{{ item.question }}</span>
+              <i class="bi bi-plus-lg"></i>
+            </summary>
+            <p>{{ item.answer }}</p>
+          </details>
+        </div>
+      </section>
+
+      <section class="pricing-cta">
         <div>
-          <strong>
-            {{ activeOrder.planName || '套餐订单' }} · {{ orderStatusLabel(activeOrder.status) }}
-          </strong>
-          <p v-if="activeOrder.status === 'pending'">
-            订单已创建（{{ formatCents(activeOrder.amountCents) }}），等待支付完成后自动入账。
-            <button type="button" class="pr-inline-link" @click="goProfile('orders')">
-              到个人中心查看订单 →
-            </button>
-          </p>
-          <p v-else-if="activeOrder.status === 'completed'">
-            余额已入账，可以开始创作了。
-            <button type="button" class="pr-inline-link" @click="goProfile('wallet')">
-              查看钱包 →
-            </button>
-          </p>
-          <p v-else>
-            订单状态：{{ orderStatusLabel(activeOrder.status) }}
-            <button type="button" class="pr-inline-link" @click="goProfile('orders')">
-              查看全部订单 →
-            </button>
-          </p>
+          <p>READY TO CREATE?</p>
+          <h2>无需等待支付，也可以继续使用现有额度创作。</h2>
         </div>
-      </div>
-      <button type="button" aria-label="关闭" @click="dismissActiveOrder">
-        <i class="bi bi-x-lg"></i>
-      </button>
-    </section>
-
-    <!-- 01 · 订阅 -->
-    <section class="pr-hall">
-      <header class="pr-hall__head">
-        <div class="pr-hall__label">
-          <em>01</em>
-          <i></i>
-          <span>Subscription</span>
-        </div>
-        <h2>订阅</h2>
-        <p>订阅期内每天自动发放创作额度，北京时间每日入账，续购自动顺延。</p>
-      </header>
-
-      <div v-if="plansLoading" class="pr-plan-grid">
-        <div v-for="n in 2" :key="n" class="pr-plan is-skeleton"></div>
-      </div>
-      <div v-else-if="subscriptionPlans.length" class="pr-plan-grid">
-        <article v-for="plan in subscriptionPlans" :key="plan.id" class="pr-plan is-subscription">
-          <div class="pr-plan__mark" aria-hidden="true">SUB</div>
-          <h3 class="pr-plan__name">{{ plan.name }}</h3>
-          <div class="pr-plan__price">
-            <strong>{{ formatCents(plan.priceCents) }}</strong>
-            <small v-if="Number(plan.durationDays || 0) > 0">/ {{ plan.durationDays }} 天</small>
-          </div>
-          <p v-if="subscriptionDailyLabel(plan)" class="pr-plan__daily">
-            {{ subscriptionDailyLabel(plan) }}
-            <span v-if="subscriptionTotalLabel(plan)">· {{ subscriptionTotalLabel(plan) }}</span>
-          </p>
-          <ul v-if="plan.features?.length" class="pr-plan__features">
-            <li v-for="(feature, index) in plan.features" :key="index">{{ feature }}</li>
-          </ul>
-          <button
-            type="button"
-            class="pr-btn is-primary"
-            :disabled="purchasingPlanId === plan.id"
-            @click="purchase(plan)"
-          >
-            {{ purchasingPlanId === plan.id ? '创建订单中…' : hasActiveSubscription ? '续订' : '立即订阅' }}
-          </button>
-        </article>
-      </div>
-      <div v-else class="pr-coming">
-        <span class="pr-coming__mono">Coming Soon</span>
-        <strong>订阅套餐即将上线</strong>
-        <p>每日自动发放创作额度的订阅方案正在筹备中，可先购买充值包。</p>
-      </div>
-    </section>
-
-    <!-- 02 · 充值包 -->
-    <section class="pr-hall">
-      <header class="pr-hall__head">
-        <div class="pr-hall__label">
-          <em>02</em>
-          <i></i>
-          <span>Top-up</span>
-        </div>
-        <h2>充值包</h2>
-        <p>一次性入账，按「入账 + 赠送」金额充入钱包，余额永不过期。</p>
-      </header>
-
-      <div v-if="plansLoading" class="pr-plan-grid">
-        <div v-for="n in 2" :key="n" class="pr-plan is-skeleton"></div>
-      </div>
-      <div v-else-if="topupPlans.length" class="pr-plan-grid">
-        <article v-for="plan in topupPlans" :key="plan.id" class="pr-plan">
-          <h3 class="pr-plan__name">{{ plan.name }}</h3>
-          <div class="pr-plan__price">
-            <strong>{{ formatCents(plan.priceCents) }}</strong>
-          </div>
-          <p class="pr-plan__daily">
-            入账 {{ formatCents(plan.grantCents) }}
-            <span v-if="Number(plan.bonusCents || 0) > 0" class="is-bonus">
-              + 赠送 {{ formatCents(plan.bonusCents) }}
-            </span>
-          </p>
-          <ul v-if="plan.features?.length" class="pr-plan__features">
-            <li v-for="(feature, index) in plan.features" :key="index">{{ feature }}</li>
-          </ul>
-          <button
-            type="button"
-            class="pr-btn is-primary"
-            :disabled="purchasingPlanId === plan.id"
-            @click="purchase(plan)"
-          >
-            {{ purchasingPlanId === plan.id ? '创建订单中…' : '立即购买' }}
-          </button>
-        </article>
-      </div>
-      <p v-else class="pr-empty">暂无上架套餐，请稍后再来。</p>
-    </section>
-
-    <!-- 03 · 创作单价 -->
-    <section class="pr-hall">
-      <header class="pr-hall__head">
-        <div class="pr-hall__label">
-          <em>03</em>
-          <i></i>
-          <span>Unit Price</span>
-        </div>
-        <h2>创作单价</h2>
-        <p>
-          各工作台按张计费，提交时按张数冻结、完成后结算。
-          <template v-if="Number(pricing?.freeDailyCents || 0) > 0">
-            每日赠送 {{ formatCents(pricing.freeDailyCents) }}。
-          </template>
-        </p>
-      </header>
-
-      <ul class="pr-price-table">
-        <li v-for="row in taskPriceRows" :key="row.type">
-          <span class="pr-price-table__name">{{ row.label }}</span>
-          <i class="pr-price-table__rail" aria-hidden="true"></i>
-          <span class="pr-price-table__value">
-            {{ formatCents(row.priceCents) }} <small>/ 张</small>
-          </span>
-        </li>
-      </ul>
-    </section>
-
-    <aside class="pr-help">
-      <p>
-        订单记录、钱包账本与兑换码已移至
-        <button type="button" class="pr-inline-link" @click="goProfile('orders')">个人中心</button>
-        ，购买完成后可在那里查看状态。
-      </p>
-    </aside>
-
-    <footer class="pr-outro" aria-hidden="true">
-      <span>StarCloudIsAI · Tariff Hall</span>
-    </footer>
+        <button type="button" @click="goCreate">开始创作 <i class="bi bi-arrow-right"></i></button>
+      </section>
+    </main>
   </div>
 </template>
 
 <style scoped>
-/* —— 价格页 · 深色美术馆语言 ——
-   与首页/画廊同一套：衬线大字、mono 展签、hairline 分隔、金色点缀 */
-.pr-page {
-  --pr-bg: #0c0e16;
-  --pr-ink: #eceaf2;
-  --pr-muted: rgba(214, 218, 235, 0.58);
-  --pr-faint: rgba(214, 218, 235, 0.34);
-  --pr-line: rgba(226, 201, 143, 0.14);
-  --pr-hairline: rgba(255, 255, 255, 0.08);
-  --pr-gold: #e2c98f;
-  --pr-gold-deep: #caa961;
-  --pr-cyan: #8fd8d2;
-  --pr-serif: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
-  --pr-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
-  position: relative;
-  isolation: isolate;
+.pricing-page {
+  --price-bg: #191b28;
+  --price-panel: #353845;
+  --price-panel-deep: #2b2e3a;
+  --price-ink: #f8f8fb;
+  --price-muted: #a9acb9;
+  --price-faint: #737786;
+  --price-line: rgba(255, 255, 255, 0.1);
+  --price-accent: #745cff;
+  --price-accent-2: #a895ff;
+  --price-warn: #ff9c8d;
   min-height: 100vh;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: clamp(28px, 5vh, 56px) clamp(18px, 3.4vw, 40px) 72px;
-  color: var(--pr-ink);
-}
-
-.pr-atmosphere {
-  pointer-events: none;
-  position: absolute;
-  z-index: 0;
-  inset: 0 0 auto;
-  height: min(64vh, 640px);
-  background:
-    radial-gradient(ellipse 46% 52% at 74% 12%, rgba(226, 201, 143, 0.07), transparent 70%),
-    radial-gradient(ellipse 30% 38% at 12% 32%, rgba(143, 216, 210, 0.05), transparent 72%);
-  mask-image: linear-gradient(180deg, #000 42%, transparent);
-}
-
-.pr-page > * {
   position: relative;
-  z-index: 1;
+  overflow: hidden;
+  color: var(--price-ink);
+  background: var(--price-bg);
 }
 
-/* —— 页头 —— */
-.pr-masthead {
+.pricing-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 84% 4%, rgba(116, 92, 255, 0.17), transparent 28rem),
+    radial-gradient(circle at 8% 28%, rgba(99, 208, 255, 0.07), transparent 24rem);
+}
+
+.pricing-shell {
+  position: relative;
+  width: min(1240px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: clamp(62px, 8vw, 112px) 0 80px;
+}
+
+.pricing-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
-  gap: clamp(20px, 3vw, 44px);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: clamp(36px, 8vw, 110px);
   align-items: end;
-  padding-bottom: clamp(24px, 4vh, 36px);
-  border-bottom: 1px solid var(--pr-line);
 }
 
-.pr-eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 14px;
-  color: var(--pr-gold);
-  font-family: var(--pr-mono);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-}
-
-.pr-eyebrow i {
-  width: 42px;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(226, 201, 143, 0.6), transparent);
-}
-
-.pr-title {
-  display: flex;
-  align-items: center;
-  gap: 18px;
+.pricing-kicker,
+.pricing-section__head p,
+.pricing-payment__copy > p,
+.pricing-cta p,
+.pricing-plan__eyebrow {
   margin: 0;
-  font-family: var(--pr-serif);
-  font-size: clamp(2.1rem, 5vw, 3.3rem);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1.12;
-}
-
-.pr-seal {
-  display: grid;
-  place-items: center;
-  width: clamp(44px, 5vw, 58px);
-  aspect-ratio: 1;
-  border: 1px solid rgba(226, 201, 143, 0.5);
-  color: var(--pr-gold);
-  font-size: clamp(1.2rem, 2.6vw, 1.7rem);
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-.pr-lede {
-  margin: 14px 0 0;
-  max-width: 30em;
-  color: var(--pr-muted);
-  font-size: 0.92rem;
-  line-height: 1.8;
-}
-
-/* 钱包条 */
-.pr-wallet {
-  display: grid;
-  gap: 8px;
-  padding: 18px 20px;
-  border: 1px solid var(--pr-hairline);
-  border-left: 2px solid var(--pr-gold);
-  background: linear-gradient(150deg, rgba(226, 201, 143, 0.05), rgba(255, 255, 255, 0.015) 55%);
-}
-
-.pr-wallet__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.pr-wallet__label {
-  color: var(--pr-faint);
-  font-family: var(--pr-mono);
-  font-size: 0.66rem;
+  color: var(--price-faint);
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.2em;
-  text-transform: uppercase;
 }
 
-.pr-wallet__refresh {
-  border: none;
+.pricing-hero h1 {
+  margin: 18px 0 0;
+  max-width: 760px;
+  font-size: clamp(3.2rem, 7vw, 6.4rem);
+  font-weight: 400;
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.pricing-hero h1 span {
+  color: var(--price-accent-2);
+}
+
+.pricing-hero__lede {
+  max-width: 650px;
+  margin: 28px 0 0;
+  color: var(--price-muted);
+  font-size: clamp(1rem, 1.6vw, 1.16rem);
+  line-height: 1.85;
+}
+
+.pricing-switch {
+  width: fit-content;
+  display: flex;
+  margin-top: 34px;
+  padding: 4px;
+  border: 1px solid var(--price-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.pricing-switch button {
+  min-width: 118px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--price-muted);
   background: transparent;
-  color: var(--pr-gold);
-  font-size: 0.95rem;
   cursor: pointer;
 }
 
-.pr-wallet__refresh:disabled {
-  opacity: 0.5;
-  cursor: default;
+.pricing-switch button.active {
+  color: white;
+  background: #333644;
 }
 
-.pr-wallet__amount {
-  font-family: var(--pr-serif);
-  font-size: clamp(1.9rem, 3.4vw, 2.5rem);
+.pricing-status {
+  padding: 28px;
+  border: 1px solid rgba(116, 92, 255, 0.35);
+  border-radius: 28px;
+  background: linear-gradient(145deg, rgba(116, 92, 255, 0.12), rgba(255, 255, 255, 0.025));
+}
+
+.pricing-status__icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 28px;
+  border-radius: 15px;
+  color: var(--price-accent-2);
+  background: rgba(116, 92, 255, 0.16);
+  font-size: 1.35rem;
+}
+
+.pricing-status > p {
+  margin: 0 0 8px;
+  color: var(--price-faint);
+  font-size: 0.66rem;
   font-weight: 700;
-  color: var(--pr-gold);
-  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.18em;
 }
 
-.pr-wallet__amount.is-muted {
-  color: var(--pr-muted);
-  font-size: 1.25rem;
+.pricing-status > strong {
+  display: block;
+  font-size: 1.35rem;
 }
 
-.pr-wallet__meta {
-  display: flex;
-  gap: 14px;
-  font-size: 0.78rem;
-  color: var(--pr-muted);
+.pricing-status > span {
+  display: block;
+  margin-top: 10px;
+  color: var(--price-muted);
+  font-size: 0.86rem;
+  line-height: 1.65;
 }
 
-.pr-wallet__meta .is-frozen {
-  color: #f0b453;
-}
-
-.pr-wallet__link {
-  margin-top: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--pr-cyan);
-  font-size: 0.78rem;
-  letter-spacing: 0.04em;
-  text-align: left;
-  cursor: pointer;
-}
-
-.pr-wallet__link:hover {
-  color: var(--pr-gold);
-}
-
-.pr-inline-link {
-  display: inline;
-  margin-left: 6px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--pr-cyan);
-  font-size: inherit;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-}
-
-.pr-inline-link:hover {
-  color: var(--pr-gold);
-}
-
-/* —— 订阅现状条 —— */
-.pr-substatus {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 18px;
-  padding: 12px 18px;
-  border: 1px solid rgba(143, 216, 210, 0.24);
-  background: rgba(143, 216, 210, 0.05);
-}
-
-.pr-substatus > i {
-  color: var(--pr-cyan);
-  font-size: 1.05rem;
-}
-
-.pr-substatus__body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 16px;
-  font-size: 0.84rem;
-  color: var(--pr-muted);
-}
-
-.pr-substatus__body strong {
-  color: var(--pr-ink);
-  font-family: var(--pr-serif);
-  font-size: 0.98rem;
-  letter-spacing: 0.04em;
-}
-
-.pr-substatus__body em {
-  font-style: normal;
-  font-family: var(--pr-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  color: #f0b453;
-}
-
-.pr-substatus__body em.is-done {
-  color: var(--pr-cyan);
-}
-
-/* —— 订单横幅 —— */
-.pr-order-banner {
+.pricing-wallet {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 14px;
-  margin-top: 18px;
-  padding: 15px 18px;
-  border: 1px solid rgba(240, 180, 83, 0.32);
-  background: rgba(240, 180, 83, 0.06);
+  align-items: baseline;
+  gap: 20px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--price-line);
 }
 
-.pr-order-banner[data-status='completed'] {
-  border-color: rgba(143, 216, 210, 0.34);
-  background: rgba(143, 216, 210, 0.06);
+.pricing-wallet small {
+  color: var(--price-muted);
 }
-
-.pr-order-banner__body {
-  display: flex;
-  gap: 12px;
-}
-
-.pr-order-banner__body i {
-  margin-top: 2px;
+.pricing-wallet b {
+  color: var(--price-accent-2);
   font-size: 1.1rem;
-  color: #f0b453;
 }
 
-.pr-order-banner[data-status='completed'] .pr-order-banner__body i {
-  color: var(--pr-cyan);
+.pricing-section {
+  scroll-margin-top: 110px;
+  margin-top: clamp(90px, 11vw, 150px);
 }
 
-.pr-order-banner__body strong {
-  font-size: 0.92rem;
-}
-
-.pr-order-banner__body p {
-  margin: 4px 0 0;
-  font-size: 0.8rem;
-  color: var(--pr-muted);
-}
-
-.pr-order-banner > button {
-  border: none;
-  background: transparent;
-  color: var(--pr-faint);
-  cursor: pointer;
-}
-
-/* —— 展厅分区 —— */
-.pr-hall {
-  margin-top: clamp(40px, 7vh, 60px);
-}
-
-.pr-hall__head {
-  margin-bottom: 22px;
-}
-
-.pr-hall__label {
+.pricing-section__head {
   display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 36px;
+}
+
+.pricing-section__head h2,
+.pricing-payment__copy h2,
+.pricing-cta h2 {
+  margin: 10px 0 0;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  font-weight: 450;
+  letter-spacing: -0.035em;
+}
+
+.pricing-section__head > span,
+.pricing-disabled-note {
+  color: var(--price-muted);
+  font-size: 0.82rem;
+}
+
+.pricing-disabled-note {
+  display: inline-flex;
+  gap: 8px;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
 }
 
-.pr-hall__label em {
-  font-style: normal;
-  color: var(--pr-gold);
-  font-family: var(--pr-serif);
-  font-size: 1.05rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.pr-hall__label i {
-  width: 52px;
-  height: 1px;
-  background: var(--pr-line);
-}
-
-.pr-hall__label span {
-  color: var(--pr-faint);
-  font-family: var(--pr-mono);
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-}
-
-.pr-hall__head h2 {
-  margin: 0;
-  font-family: var(--pr-serif);
-  font-size: clamp(1.35rem, 2.6vw, 1.75rem);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.pr-hall__head p {
-  margin: 8px 0 0;
-  font-size: 0.85rem;
-  color: var(--pr-muted);
-  line-height: 1.7;
-}
-
-/* —— 套餐卡 —— */
-.pr-plan-grid {
+.pricing-plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px;
+  align-items: stretch;
 }
 
-.pr-plan {
+.pricing-plan {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 24px 22px;
-  border: 1px solid var(--pr-hairline);
-  background: rgba(255, 255, 255, 0.014);
-  transition:
-    border-color 0.25s ease,
-    transform 0.25s ease;
+  min-height: 550px;
+  padding: 36px;
+  border: 1px solid transparent;
+  border-radius: 28px;
+  background: var(--price-panel);
 }
 
-.pr-plan:hover {
-  border-color: rgba(226, 201, 143, 0.4);
-  transform: translateY(-2px);
+.pricing-plan--popular {
+  border-color: rgba(168, 149, 255, 0.78);
+  background:
+    linear-gradient(180deg, rgba(116, 92, 255, 0.13), transparent 30%), var(--price-panel);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.2);
 }
 
-.pr-plan.is-subscription {
-  border-color: rgba(226, 201, 143, 0.24);
-  background: linear-gradient(160deg, rgba(226, 201, 143, 0.045), rgba(255, 255, 255, 0.012) 58%);
-}
-
-.pr-plan__mark {
+.pricing-plan__popular {
   position: absolute;
-  top: 16px;
-  right: 18px;
-  color: rgba(226, 201, 143, 0.4);
-  font-family: var(--pr-mono);
-  font-size: 0.62rem;
+  top: 28px;
+  right: 28px;
+  color: var(--price-warn);
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.24em;
 }
 
-.pr-plan.is-skeleton {
-  min-height: 230px;
-  border: 1px solid var(--pr-hairline);
-  background: linear-gradient(
-    110deg,
-    rgba(255, 255, 255, 0.02) 30%,
-    rgba(255, 255, 255, 0.05) 50%,
-    rgba(255, 255, 255, 0.02) 70%
-  );
-  background-size: 200% 100%;
-  animation: pr-skeleton 1.4s ease infinite;
+.pricing-plan__eyebrow {
+  color: var(--price-accent-2);
 }
 
-@keyframes pr-skeleton {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-.pr-plan__name {
-  margin: 0;
-  font-family: var(--pr-serif);
-  font-size: 1.05rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-}
-
-.pr-plan__price {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.pr-plan__price strong {
-  font-family: var(--pr-serif);
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--pr-gold);
-  font-variant-numeric: tabular-nums;
-}
-
-.pr-plan__price small {
-  color: var(--pr-faint);
-  font-size: 0.8rem;
-}
-
-.pr-plan__daily {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--pr-muted);
-}
-
-.pr-plan__daily .is-bonus {
-  color: var(--pr-cyan);
-}
-
-.pr-plan__features {
-  list-style: none;
-  margin: 4px 0 10px;
-  padding: 0;
-  flex: 1;
-  display: grid;
-  gap: 7px;
-}
-
-.pr-plan__features li {
-  position: relative;
-  padding-left: 16px;
-  font-size: 0.8rem;
-  color: var(--pr-muted);
-  line-height: 1.55;
-}
-
-.pr-plan__features li::before {
-  content: '';
-  position: absolute;
-  top: 0.55em;
-  left: 2px;
-  width: 5px;
-  height: 5px;
-  transform: rotate(45deg);
-  background: rgba(226, 201, 143, 0.55);
-}
-
-/* —— 即将上线 —— */
-.pr-coming {
-  display: grid;
-  justify-items: start;
-  gap: 8px;
-  padding: 30px 26px;
-  border: 1px dashed rgba(226, 201, 143, 0.26);
-  background: rgba(226, 201, 143, 0.02);
-}
-
-.pr-coming__mono {
-  color: var(--pr-gold);
-  font-family: var(--pr-mono);
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.26em;
-  text-transform: uppercase;
-}
-
-.pr-coming strong {
-  font-family: var(--pr-serif);
-  font-size: 1.15rem;
-  letter-spacing: 0.06em;
-}
-
-.pr-coming p {
-  margin: 0;
-  font-size: 0.83rem;
-  color: var(--pr-muted);
-}
-
-/* —— 单价表 —— */
-.pr-price-table {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 0 40px;
-  border-top: 1px solid var(--pr-hairline);
-}
-
-.pr-price-table li {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--pr-hairline);
-}
-
-.pr-price-table__name {
-  font-size: 0.88rem;
-  color: var(--pr-ink);
-  letter-spacing: 0.04em;
-}
-
-.pr-price-table__rail {
-  flex: 1;
-  border-bottom: 1px dotted rgba(255, 255, 255, 0.14);
-}
-
-.pr-price-table__value {
-  font-family: var(--pr-serif);
-  font-size: 0.98rem;
-  font-weight: 700;
-  color: var(--pr-gold);
-  font-variant-numeric: tabular-nums;
-}
-
-.pr-price-table__value small {
-  color: var(--pr-faint);
-  font-family: var(--pr-mono);
-  font-size: 0.66rem;
+.pricing-plan h3 {
+  margin: 20px 0 0;
+  font-size: clamp(2rem, 3.4vw, 3.1rem);
   font-weight: 400;
+  letter-spacing: -0.045em;
 }
 
-.pr-help {
-  margin-top: clamp(36px, 6vh, 52px);
-  padding: 16px 18px;
-  border: 1px solid var(--pr-hairline);
-  background: rgba(255, 255, 255, 0.012);
-}
-
-.pr-help p {
-  margin: 0;
-  color: var(--pr-muted);
-  font-size: 0.84rem;
+.pricing-plan__description {
+  min-height: 76px;
+  margin: 16px 0 0;
+  color: var(--price-muted);
+  font-size: 0.9rem;
   line-height: 1.7;
 }
 
-/* —— 按钮 —— */
-.pr-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.pricing-plan__price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: 8px;
-  padding: 11px 22px;
-  border-radius: 0;
+  margin-top: 24px;
+}
+
+.pricing-plan__price strong {
+  color: var(--price-accent-2);
+  font-size: clamp(2rem, 3vw, 2.8rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+
+.pricing-plan__price span,
+.pricing-plan__quota {
+  color: var(--price-muted);
+  font-size: 0.82rem;
+}
+
+.pricing-plan__quota {
+  margin: 8px 0 0;
+}
+
+.pricing-plan__divider {
+  margin: 24px 0;
+  border-top: 1px solid var(--price-line);
+}
+
+.pricing-plan__includes {
+  margin: 0 0 14px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.pricing-plan ul {
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pricing-plan li {
+  display: flex;
+  gap: 10px;
+  color: #d8d9df;
   font-size: 0.86rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition:
-    background 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease;
+  line-height: 1.5;
 }
 
-.pr-btn.is-primary {
-  border: 1px solid var(--pr-gold);
-  background: var(--pr-gold);
-  color: #16130a;
+.pricing-plan li i {
+  color: var(--price-accent-2);
 }
 
-.pr-btn.is-primary:hover:not(:disabled) {
-  background: transparent;
-  color: var(--pr-gold);
+.pricing-plan__button {
+  width: 100%;
+  margin-top: 30px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  color: #8d909e;
+  background: rgba(14, 16, 24, 0.38);
+  font-weight: 700;
 }
 
-.pr-btn.is-primary:disabled {
-  opacity: 0.55;
+.pricing-plan__button:disabled {
   cursor: not-allowed;
 }
 
-.pr-btn.is-ghost {
-  border: 1px solid var(--pr-hairline);
-  background: transparent;
-  color: var(--pr-muted);
+.pricing-plan--loading {
+  min-height: 550px;
+  background: linear-gradient(105deg, #2d303b 25%, #393c48 44%, #2d303b 63%);
+  background-size: 300% 100%;
+  animation: pricing-shimmer 1.4s linear infinite;
 }
 
-.pr-btn.is-ghost:hover:not(:disabled) {
-  border-color: rgba(226, 201, 143, 0.4);
-  color: var(--pr-gold);
-}
-
-/* —— 尾注 —— */
-.pr-outro {
-  margin-top: clamp(46px, 8vh, 68px);
-  padding-top: 18px;
-  border-top: 1px solid var(--pr-line);
-  color: var(--pr-faint);
-  font-family: var(--pr-mono);
-  font-size: 0.64rem;
-  letter-spacing: 0.26em;
-  text-transform: uppercase;
-  text-align: center;
-}
-
-.pr-empty {
-  margin: 0;
-  padding: 12px 0;
-  color: var(--pr-faint);
-  font-size: 0.84rem;
-}
-
-.spin {
-  animation: pr-spin 0.9s linear infinite;
-}
-
-@keyframes pr-spin {
+@keyframes pricing-shimmer {
   to {
-    transform: rotate(360deg);
+    background-position: -150% 0;
   }
 }
 
-/* —— 响应式 —— */
-@media (max-width: 860px) {
-  .pr-masthead {
+.pricing-data-note {
+  margin: 20px 0 0;
+  color: var(--price-muted);
+  font-size: 0.8rem;
+}
+
+.pricing-unit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--price-line);
+}
+
+.pricing-unit-grid article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-height: 98px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--price-line);
+}
+
+.pricing-unit-grid article:nth-child(odd) {
+  border-right: 1px solid var(--price-line);
+}
+
+.pricing-unit__icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--price-accent-2);
+  background: rgba(116, 92, 255, 0.13);
+}
+
+.pricing-unit-grid small {
+  display: block;
+  color: var(--price-faint);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.pricing-unit-grid strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.95rem;
+}
+
+.pricing-unit-grid article > p {
+  margin: 0;
+  color: var(--price-accent-2);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.pricing-unit-grid article > p span {
+  color: var(--price-faint);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.pricing-payment {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
+  gap: clamp(34px, 8vw, 100px);
+  align-items: center;
+  padding: 56px;
+  border-radius: 32px;
+  background: var(--price-panel-deep);
+}
+
+.pricing-payment__copy > span {
+  display: block;
+  margin-top: 16px;
+  color: var(--price-muted);
+  line-height: 1.7;
+}
+
+.pricing-payment__methods {
+  display: grid;
+  gap: 12px;
+}
+
+.pricing-payment__methods article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 17px 20px;
+  border: 1px solid var(--price-line);
+  border-radius: 18px;
+  color: #777b89;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.pricing-payment__methods article > i:first-child {
+  font-size: 1.4rem;
+}
+.pricing-payment__methods strong {
+  display: block;
+  color: #9a9dab;
+}
+.pricing-payment__methods small {
+  display: block;
+  margin-top: 3px;
+}
+
+.pricing-faq__list {
+  border-top: 1px solid var(--price-line);
+}
+
+.pricing-faq details {
+  border-bottom: 1px solid var(--price-line);
+}
+
+.pricing-faq summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 24px 4px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.pricing-faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.pricing-faq summary i {
+  color: var(--price-accent-2);
+  transition: transform 0.2s ease;
+}
+.pricing-faq details[open] summary i {
+  transform: rotate(45deg);
+}
+
+.pricing-faq details p {
+  max-width: 850px;
+  margin: -6px 0 24px;
+  color: var(--price-muted);
+  line-height: 1.8;
+}
+
+.pricing-cta {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 34px;
+  margin-top: clamp(90px, 11vw, 150px);
+  padding: 52px 56px;
+  border-radius: 32px;
+  background: linear-gradient(120deg, #5f48e8, #826cff);
+}
+
+.pricing-cta p {
+  color: rgba(255, 255, 255, 0.62);
+}
+.pricing-cta h2 {
+  max-width: 740px;
+  font-size: clamp(1.7rem, 3.5vw, 2.7rem);
+}
+
+.pricing-cta button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border: 0;
+  border-radius: 999px;
+  color: #201b42;
+  background: white;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (max-width: 960px) {
+  .pricing-hero {
     grid-template-columns: 1fr;
+  }
+  .pricing-status {
+    max-width: 520px;
+  }
+  .pricing-plan-grid {
+    grid-template-columns: 1fr;
+  }
+  .pricing-plan {
+    min-height: auto;
+  }
+  .pricing-plan__description {
+    min-height: 0;
+  }
+  .pricing-payment {
+    grid-template-columns: 1fr;
+    padding: 38px;
+  }
+}
+
+@media (max-width: 680px) {
+  .pricing-shell {
+    width: min(100% - 28px, 1240px);
+    padding-top: 48px;
+  }
+  .pricing-hero h1 {
+    font-size: clamp(2.7rem, 14vw, 4.5rem);
+  }
+  .pricing-section__head {
     align-items: start;
+    flex-direction: column;
   }
-}
-
-@media (max-width: 560px) {
-  .pr-price-table {
+  .pricing-unit-grid {
     grid-template-columns: 1fr;
+  }
+  .pricing-unit-grid article:nth-child(odd) {
+    border-right: 0;
+  }
+  .pricing-plan {
+    padding: 30px 24px;
+    border-radius: 22px;
+  }
+  .pricing-payment {
+    padding: 30px 24px;
+    border-radius: 24px;
+  }
+  .pricing-cta {
+    align-items: start;
+    flex-direction: column;
+    padding: 34px 26px;
+    border-radius: 24px;
   }
 }
 </style>

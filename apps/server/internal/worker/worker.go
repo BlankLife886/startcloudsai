@@ -18,12 +18,12 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
-	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
@@ -31,7 +31,6 @@ const (
 	typeCleanupSessions   = "cron:cleanup_sessions"
 	typeReapZombies       = "cron:reap_zombies"
 	typeSyncPromptSources = "cron:sync_prompt_sources"
-	typeSubscriptionTick  = "cron:subscription_tick"
 
 	zombieRunningMinutes = 30
 	staleQueuedMinutes   = 10
@@ -47,7 +46,7 @@ type Worker struct {
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Worker {
-	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue, PromptSync: promptsync.New(st)}
+	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue, PromptSync: promptsync.New(st, cfg.AppEnv == "development")}
 }
 
 // Run 启动 Asynq server + PeriodicTaskManager，阻塞运行。
@@ -55,6 +54,14 @@ func (w *Worker) Run() error {
 	redisOpt, err := asynq.ParseRedisURI(w.Cfg.RedisURL)
 	if err != nil {
 		return fmt.Errorf("parse redis url: %w", err)
+	}
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelStartup()
+	if err := w.recoverRunningTasks(startupCtx); err != nil {
+		return fmt.Errorf("recover running tasks: %w", err)
+	}
+	if err := w.reapStaleQueued(startupCtx); err != nil {
+		return fmt.Errorf("recover queued tasks: %w", err)
 	}
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: w.Cfg.WorkerConcurrency,
@@ -64,7 +71,6 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
-	mux.HandleFunc(typeSubscriptionTick, w.handleSubscriptionTick)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -83,6 +89,24 @@ func (w *Worker) Run() error {
 	return srv.Run(mux)
 }
 
+// recoverRunningTasks 接管上一个 Worker 进程被停止时遗留的任务。ChatGPT2API
+// 以本地 task ID 作为 client_task_id，因此重新执行会查询原任务，而不会再生成一份。
+func (w *Worker) recoverRunningTasks(ctx context.Context) error {
+	ids, err := store.RequeueAllRunningTasks(ctx, w.St.Pool)
+	if err != nil {
+		return err
+	}
+	for _, taskID := range ids {
+		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
+			// 保持 queued；stale queued 定时任务还会继续补入队。
+			log.Printf("recovered task %s enqueue failed: %v", taskID, err)
+			continue
+		}
+		log.Printf("recovered interrupted running task %s", taskID)
+	}
+	return nil
+}
+
 type staticPeriodicConfigProvider struct{}
 
 func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
@@ -90,7 +114,6 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 10m", Task: asynq.NewTask(typeSubscriptionTick, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 
@@ -122,13 +145,13 @@ func (w *Worker) loadInputImagesB64(ctx context.Context, inputKeys []string) ([]
 // 使后台修改 chatgpt2api 地址/Key 即时生效，无需重启 Worker。
 func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
 	resolved, err := settings.ResolveC2A(
-		ctx, w.St.Pool, w.Cfg.C2ABaseURL, w.Cfg.C2AAPIKey, w.Cfg.C2ATimeoutSecs,
+		ctx, w.St.Pool, w.Cfg.C2ABaseURL, w.Cfg.C2AAPIKey, w.Cfg.C2ATimeoutSecs, w.Cfg.AppSecret,
 	)
 	if err != nil {
 		// 配置读取失败时退回启动时的客户端，任务仍可执行
 		return w.C2A
 	}
-	return c2a.New(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs)
+	return c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, w.Cfg.AppEnv == "development")
 }
 
 func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model string) ([]string, error) {
@@ -139,9 +162,9 @@ func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model strin
 		if err != nil {
 			return nil, err
 		}
-		return client.EditImages(ctx, finalPrompt, model, task.Count, inputs, size)
+		return client.EditImagesWithID(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size)
 	}
-	return client.GenerateImages(ctx, finalPrompt, model, task.Count, size)
+	return client.GenerateImagesWithID(ctx, task.ID.String(), finalPrompt, model, task.Count, size)
 }
 
 func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage string) error {
@@ -195,9 +218,17 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		return nil
 	}
 
-	model, err := settings.TaskModel(ctx, w.St.Pool, task.Type)
-	if err != nil {
-		return err
+	// 模型在任务创建时已经快照，避免排队期间后台配置变化导致展示值与实际执行值不一致。
+	model := strings.TrimSpace(task.Model)
+	if model == "" {
+		model, err = settings.TaskModel(ctx, w.St.Pool, task.Type)
+		if err != nil {
+			return err
+		}
+		if err := store.SetTaskModel(ctx, w.St.Pool, task.ID, model); err != nil {
+			return err
+		}
+		task.Model = model
 	}
 
 	errorCode, errorMessage := "internal_error", "未知错误"
@@ -230,18 +261,38 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	if imagesB64 != nil {
 		var succeeded *store.Task
 		outputCount := 0
+		var uploadedKeys []string
 		storeErr := func() error {
 			outputKeys := make([]string, 0, len(imagesB64))
+			thumbnailKeys := make([]string, 0, len(imagesB64))
 			for i, b64 := range imagesB64 {
 				data, derr := base64.StdEncoding.DecodeString(b64)
 				if derr != nil {
 					return derr
 				}
-				key := fmt.Sprintf("tasks/%s/%s/%d.png", task.UserID, task.ID, i)
-				if uerr := w.Storage.UploadBytes(ctx, key, data, "image/png"); uerr != nil {
+				if len(data) == 0 || len(data) > 20<<20 {
+					return fmt.Errorf("output image exceeds 20 MiB limit")
+				}
+				ext, contentType := media.Detect(data)
+				if ext == "" {
+					return fmt.Errorf("upstream returned unsupported image data")
+				}
+				thumb, terr := media.ThumbnailJPEG(data, 512)
+				if terr != nil {
+					return terr
+				}
+				key := fmt.Sprintf("tasks/%s/%s/original/%d.%s", task.UserID, task.ID, i, ext)
+				thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%d.jpg", task.UserID, task.ID, i)
+				if uerr := w.Storage.UploadBytes(ctx, key, data, contentType); uerr != nil {
 					return uerr
 				}
+				uploadedKeys = append(uploadedKeys, key)
+				if uerr := w.Storage.UploadBytes(ctx, thumbKey, thumb, "image/jpeg"); uerr != nil {
+					return uerr
+				}
+				uploadedKeys = append(uploadedKeys, thumbKey)
 				outputKeys = append(outputKeys, key)
+				thumbnailKeys = append(thumbnailKeys, thumbKey)
 			}
 			outputCount = len(outputKeys)
 			return w.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -249,7 +300,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 				if gerr != nil || dbTask == nil {
 					return gerr
 				}
-				won, merr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, time.Now().UTC())
+				won, merr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC())
 				if won {
 					succeeded = dbTask
 				}
@@ -263,6 +314,9 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			}
 			return nil
 		}
+		if len(uploadedKeys) > 0 {
+			_ = w.Storage.DeleteKeys(ctx, uploadedKeys)
+		}
 		log.Printf("task %s failed to store outputs: %v", taskID, storeErr)
 		errorCode, errorMessage = "storage_error", "图片保存失败，请重试"
 	}
@@ -272,12 +326,21 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 
 // handleCleanupSessions cron：每小时清理过期 session。
 func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error {
-	n, err := store.DeleteExpiredSessions(ctx, w.St.Pool, time.Now().UTC())
+	now := time.Now().UTC()
+	n, err := store.DeleteExpiredSessions(ctx, w.St.Pool, now)
 	if err != nil {
 		return err
 	}
-	if n > 0 {
-		log.Printf("cleaned %d expired sessions", n)
+	adminN, err := store.DeleteExpiredAdminSessions(ctx, w.St.Pool, now)
+	if err != nil {
+		return err
+	}
+	auditN, err := store.DeleteAuditLogsBefore(ctx, w.St.Pool, now.AddDate(0, -6, 0))
+	if err != nil {
+		return err
+	}
+	if n > 0 || adminN > 0 || auditN > 0 {
+		log.Printf("cleaned %d user sessions, %d admin sessions and %d audit logs", n, adminN, auditN)
 	}
 	return nil
 }
@@ -288,7 +351,7 @@ func (w *Worker) handleSyncPromptSources(ctx context.Context, _ *asynq.Task) err
 }
 
 // handleReapZombies cron：每 10 分钟做两种回收——
-//  1. running 超过 30 分钟的任务判为 failed 并 release；
+//  1. running 超过 30 分钟的孤儿任务恢复为 queued 并接管；
 //  2. queued 超过 10 分钟的任务（入队丢失/Redis 异常）重新入队一次，
 //     再失败则 failed + release（C1 兜底）。
 func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
@@ -298,29 +361,19 @@ func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 		return err
 	}
 	for _, taskID := range zombieIDs {
-		var reaped *store.Task
-		err := w.St.Tx(ctx, func(tx pgx.Tx) error {
-			task, gerr := store.GetTask(ctx, tx, taskID)
-			if gerr != nil || task == nil || task.StartedAt == nil {
-				return gerr
-			}
-			won, merr := taskflow.MarkFailed(ctx, tx, task, "timeout", "任务执行超时，已自动回收", "running")
-			if merr != nil {
-				return merr
-			}
-			if won {
-				reaped = task
-				log.Printf("reaped zombie task %s", taskID)
-			}
-			return nil
-		})
+		requeued, err := store.RequeueRunningTask(ctx, w.St.Pool, taskID)
 		if err != nil {
-			log.Printf("failed to reap zombie task %s: %v", taskID, err)
+			log.Printf("failed to recover zombie task %s: %v", taskID, err)
 			continue
 		}
-		if reaped != nil {
-			taskflow.NotifyTaskFailed(ctx, w.St.Pool, reaped)
+		if !requeued {
+			continue
 		}
+		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
+			log.Printf("recovered zombie task %s enqueue failed: %v", taskID, err)
+			continue
+		}
+		log.Printf("recovered zombie task %s", taskID)
 	}
 
 	return w.reapStaleQueued(ctx)
@@ -335,7 +388,7 @@ func (w *Worker) reapStaleQueued(ctx context.Context) error {
 		return err
 	}
 	for _, taskID := range staleIDs {
-		if err := w.Queue.EnqueueRunTask(ctx, taskID.String()); err != nil {
+		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
 			log.Printf("stale queued task %s re-enqueue failed, marking failed: %v", taskID, err)
 			if _, ferr := taskflow.FailQueuedEnqueue(ctx, w.St, taskID); ferr != nil {
 				log.Printf("stale queued task %s compensation failed: %v", taskID, ferr)
@@ -345,9 +398,4 @@ func (w *Worker) reapStaleQueued(ctx context.Context) error {
 		log.Printf("re-enqueued stale queued task %s", taskID)
 	}
 	return nil
-}
-
-// handleSubscriptionTick cron：每 10 分钟回收过期订阅并发放当日额度。
-func (w *Worker) handleSubscriptionTick(ctx context.Context, _ *asynq.Task) error {
-	return subscription.Tick(ctx, w.St, time.Now())
 }

@@ -13,6 +13,17 @@ type Config struct {
 	AppSecret      string
 	AllowedOrigins string
 	TrustedProxies string
+	PublicBaseURL  string
+	// Historical handlers keep these zero-valued; no environment loads payment settings.
+	PaymentMockEnabled   bool
+	PaymentWebhookSecret string
+
+	GitHubClientID     string
+	GitHubClientSecret string
+	SMTPAddr           string
+	SMTPUser           string
+	SMTPPassword       string
+	SMTPFrom           string
 
 	DatabaseURL string
 	RedisURL    string
@@ -71,19 +82,31 @@ func validateSecret(appEnv, secret string) {
 }
 
 func Load() *Config {
+	appEnv := strings.ToLower(strings.TrimSpace(getenv("APP_ENV", "development")))
+	if appEnv != "development" && appEnv != "test" && appEnv != "production" {
+		log.Fatalf("APP_ENV 必须为 development、test 或 production，当前为 %q", appEnv)
+	}
 	cfg := &Config{
-		AppEnv:         getenv("APP_ENV", "development"),
+		AppEnv:         appEnv,
 		AppSecret:      getenv("APP_SECRET", "dev-secret-change-me"),
 		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
+		PublicBaseURL:  getenv("PUBLIC_BASE_URL", "http://localhost:8080"),
+
+		GitHubClientID:     getenv("GITHUB_CLIENT_ID", ""),
+		GitHubClientSecret: getenv("GITHUB_CLIENT_SECRET", ""),
+		SMTPAddr:           getenv("SMTP_ADDR", ""),
+		SMTPUser:           getenv("SMTP_USER", ""),
+		SMTPPassword:       getenv("SMTP_PASSWORD", ""),
+		SMTPFrom:           getenv("SMTP_FROM", ""),
 
 		DatabaseURL: getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
 		RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"),
 
 		C2ABaseURL:     getenv("C2A_BASE_URL", "http://localhost:3000"),
 		C2AAPIKey:      getenv("C2A_API_KEY", ""),
-		C2ATimeoutSecs: getenvInt("C2A_TIMEOUT_SECS", 180),
+		C2ATimeoutSecs: getenvInt("C2A_TIMEOUT_SECS", 600),
 
 		R2Endpoint:          getenv("R2_ENDPOINT", ""),
 		R2AccessKeyID:       getenv("R2_ACCESS_KEY_ID", ""),
@@ -99,6 +122,13 @@ func Load() *Config {
 		UploadMaxBytes:    15 * 1024 * 1024,
 	}
 	validateSecret(cfg.AppEnv, cfg.AppSecret)
+	if cfg.AppEnv == "production" {
+		for _, origin := range cfg.AllowedOriginsList() {
+			if !strings.HasPrefix(origin, "https://") {
+				log.Fatalf("生产环境 ALLOWED_ORIGINS 只允许 HTTPS Origin，当前包含 %q", origin)
+			}
+		}
+	}
 	return cfg
 }
 

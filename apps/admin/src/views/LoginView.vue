@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { FormInstance, FormRules } from 'element-plus'
-import { Key, Lock, RefreshRight, User } from '@element-plus/icons-vue'
+import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import heroImage from '@/assets/login/hero.jpg'
 
@@ -13,66 +13,14 @@ const auth = useAuthStore()
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 const error = ref('')
-const captchaCode = ref('')
-const captchaSeed = ref(0)
-
-const form = reactive({ email: '', password: '', verifyCode: '' })
+const form = reactive({ email: '', password: '' })
 
 const rules: FormRules = {
-  email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
-  verifyCode: [
-    { required: true, message: '请输入图片验证码', trigger: 'blur' },
-    {
-      validator: (_rule, value, callback) => {
-        if (
-          String(value || '')
-            .trim()
-            .toLowerCase() !== captchaCode.value.toLowerCase()
-        ) {
-          callback(new Error('图片验证码不正确'))
-        } else {
-          callback()
-        }
-      },
-      trigger: 'blur',
-    },
+  email: [
+    { required: true, message: '请输入邮箱', trigger: 'blur' },
+    { type: 'email', message: '请输入有效的邮箱地址', trigger: ['blur', 'change'] },
   ],
-}
-
-const captchaSvg = computed(() => {
-  const code = captchaCode.value
-  const lines = Array.from({ length: 5 }, (_, index) => {
-    const x1 = (captchaSeed.value * (index + 3) * 17) % 118
-    const y1 = (captchaSeed.value * (index + 5) * 11) % 40
-    const x2 = (x1 + 38 + index * 9) % 120
-    const y2 = (y1 + 22 + index * 7) % 42
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(94,184,168,.35)" stroke-width="1"/>`
-  }).join('')
-  const chars = code
-    .split('')
-    .map((char, index) => {
-      const rotate = ((captchaSeed.value + index * 9) % 18) - 9
-      return `<text x="${18 + index * 22}" y="${31 + (index % 2) * 3}" transform="rotate(${rotate} ${18 + index * 22} 28)" fill="#e8f2ef" font-size="22" font-family="Arial, sans-serif" font-weight="700">${char}</text>`
-    })
-    .join('')
-
-  return `data:image/svg+xml;utf8,${encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="132" height="44" viewBox="0 0 132 44">
-      <rect width="132" height="44" rx="8" fill="#121820"/>
-      ${lines}
-      ${chars}
-    </svg>`,
-  )}`
-})
-
-function refreshCaptcha() {
-  captchaSeed.value = Math.floor(Math.random() * 100000)
-  captchaCode.value = Array.from({ length: 4 }, () =>
-    'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'.charAt(Math.floor(Math.random() * 32)),
-  ).join('')
-  form.verifyCode = ''
-  formRef.value?.clearValidate('verifyCode')
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
 async function onSubmit() {
@@ -85,7 +33,7 @@ async function onSubmit() {
   loading.value = true
   error.value = ''
   try {
-    const user = await auth.login(form.email, form.password, { silent: true })
+    const user = await auth.login(form.email.trim(), form.password, { silent: true })
     if (user.role !== 'admin') {
       router.push('/forbidden')
       return
@@ -94,13 +42,11 @@ async function onSubmit() {
     router.push(redirect)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '后台登录失败'
-    refreshCaptcha()
   } finally {
     loading.value = false
   }
 }
 
-onMounted(refreshCaptcha)
 </script>
 
 <template>
@@ -134,7 +80,7 @@ onMounted(refreshCaptcha)
         <header class="panel-heading">
           <p class="panel-kicker">管理员入口</p>
           <h2>登录后台</h2>
-          <p>使用管理员账号继续。</p>
+          <p>使用独立管理员账号和密码继续。</p>
         </header>
 
         <el-alert
@@ -152,6 +98,7 @@ onMounted(refreshCaptcha)
           class="login-form"
           :model="form"
           :rules="rules"
+          autocomplete="off"
           label-position="top"
           @submit.prevent="onSubmit"
         >
@@ -159,7 +106,10 @@ onMounted(refreshCaptcha)
             <el-input
               v-model="form.email"
               autofocus
-              autocomplete="username"
+              autocomplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              name="admin-login-email"
               :prefix-icon="User"
               placeholder="管理员邮箱"
               @keyup.enter="onSubmit"
@@ -171,33 +121,14 @@ onMounted(refreshCaptcha)
               v-model="form.password"
               type="password"
               show-password
-              autocomplete="current-password"
+              autocomplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              name="admin-login-password"
               :prefix-icon="Lock"
               placeholder="请输入密码"
               @keyup.enter="onSubmit"
             />
-          </el-form-item>
-
-          <el-form-item label="图片验证码" prop="verifyCode">
-            <div class="captcha-row">
-              <el-input
-                v-model="form.verifyCode"
-                autocomplete="off"
-                :prefix-icon="Key"
-                placeholder="请输入验证码"
-                @keyup.enter="onSubmit"
-              />
-              <button
-                class="captcha-image"
-                type="button"
-                title="点击刷新验证码"
-                aria-label="刷新图片验证码"
-                @click="refreshCaptcha"
-              >
-                <img :src="captchaSvg" alt="图片验证码" />
-                <el-icon><RefreshRight /></el-icon>
-              </button>
-            </div>
           </el-form-item>
 
           <el-button
@@ -222,8 +153,6 @@ onMounted(refreshCaptcha)
 </template>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Syne:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-
 .admin-login-page {
   --ink: #ffffff;
   --muted: rgba(236, 244, 240, 0.9);

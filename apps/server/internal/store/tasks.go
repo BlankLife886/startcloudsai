@@ -9,12 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const taskCols = `id, user_id, type, status, prompt, params, count, input_keys, output_keys, cost_cents,
+const taskCols = `id, user_id, type, model, status, prompt, params, count, input_keys, output_keys, thumbnail_keys, cost_cents,
 	idempotency_key, error_code, error_message, attempt, started_at, finished_at, created_at`
 
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.UserID, &t.Type, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys,
+	err := row.Scan(&t.ID, &t.UserID, &t.Type, &t.Model, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys, &t.ThumbnailKeys,
 		&t.CostCents, &t.IdempotencyKey, &t.ErrorCode, &t.ErrorMessage, &t.Attempt, &t.StartedAt, &t.FinishedAt, &t.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -26,6 +26,7 @@ type NewTask struct {
 	ID             uuid.UUID
 	UserID         uuid.UUID
 	Type           string
+	Model          string
 	Prompt         string
 	Params         map[string]any
 	Count          int
@@ -42,9 +43,9 @@ func InsertTask(ctx context.Context, q Q, n NewTask) (*Task, error) {
 		n.InputKeys = []string{}
 	}
 	return scanTask(q.QueryRow(ctx,
-		`INSERT INTO tasks (id, user_id, type, prompt, params, count, input_keys, output_keys, cost_cents, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, '[]'::jsonb, $8, $9) RETURNING `+taskCols,
-		n.ID, n.UserID, n.Type, n.Prompt, n.Params, n.Count, n.InputKeys, n.CostCents, n.IdempotencyKey))
+		`INSERT INTO tasks (id, user_id, type, model, prompt, params, count, input_keys, output_keys, cost_cents, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, $9, $10) RETURNING `+taskCols,
+		n.ID, n.UserID, n.Type, n.Model, n.Prompt, n.Params, n.Count, n.InputKeys, n.CostCents, n.IdempotencyKey))
 }
 
 func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
@@ -214,6 +215,13 @@ func ClaimTask(ctx context.Context, q Q, id uuid.UUID, startedAt time.Time) (boo
 	return tag.RowsAffected() > 0, nil
 }
 
+// SetTaskModel records the model actually selected for an already claimed legacy task.
+func SetTaskModel(ctx context.Context, q Q, id uuid.UUID, model string) error {
+	_, err := q.Exec(ctx,
+		`UPDATE tasks SET model = $2 WHERE id = $1 AND status = 'running' AND model = ''`, id, model)
+	return err
+}
+
 func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (bool, error) {
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET status = 'canceled', finished_at = $2 WHERE id = $1 AND status = 'queued'`, id, finishedAt)
@@ -223,17 +231,26 @@ func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (b
 	return tag.RowsAffected() > 0, nil
 }
 
-func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys []string, finishedAt time.Time) (bool, error) {
+func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
+	if thumbnailKeys == nil {
+		thumbnailKeys = []string{}
+	}
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'succeeded', output_keys = $2, finished_at = $3, error_code = NULL, error_message = NULL
-		 WHERE id = $1 AND status = 'running'`, id, outputKeys, finishedAt)
+		`UPDATE tasks SET status = 'succeeded', output_keys = $2, thumbnail_keys = $3, finished_at = $4, error_code = NULL, error_message = NULL
+		 WHERE id = $1 AND status = 'running'`, id, outputKeys, thumbnailKeys, finishedAt)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// LockUserTaskCreation serializes the count-and-insert critical section per user.
+func LockUserTaskCreation(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID.String())
+	return err
 }
 
 func MarkTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time) (bool, error) {
@@ -254,6 +271,41 @@ func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// RequeueRunningTask 将失去 Worker 的 running 任务恢复到 queued。任务原有冻结金额
+// 保持不变，后续仍以同一个 task ID 查询幂等的上游图片任务。
+func RequeueRunningTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE tasks SET status = 'queued', started_at = NULL
+		 WHERE id = $1 AND status = 'running'`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RequeueAllRunningTasks is used once when a Worker process starts. A running
+// row cannot have a live handler in the newly started process, so it is safe to
+// make it claimable again. Upstream submission is idempotent on the task ID.
+func RequeueAllRunningTasks(ctx context.Context, q Q) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx,
+		`UPDATE tasks SET status = 'queued', started_at = NULL
+		 WHERE status = 'running'
+		 RETURNING id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func BumpTaskAttempt(ctx context.Context, q Q, id uuid.UUID) error {

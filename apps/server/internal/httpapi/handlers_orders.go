@@ -27,7 +27,10 @@ func (s *Server) listPlans(c *gin.Context) {
 	for _, p := range plans {
 		items = append(items, planDict(p, false))
 	}
-	ok(c, gin.H{"items": items})
+	ok(c, gin.H{
+		"items":          items,
+		"paymentEnabled": false,
+	})
 }
 
 type orderCreateIn struct {
@@ -35,6 +38,10 @@ type orderCreateIn struct {
 }
 
 func (s *Server) createOrder(c *gin.Context) {
+	if !s.Cfg.PaymentMockEnabled {
+		fail(c, apperr.E("payment_unavailable", "支付渠道尚未配置", 503))
+		return
+	}
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
@@ -117,6 +124,7 @@ func (s *Server) getOrder(c *gin.Context) {
 // 已 completed 的订单视为幂等重放，直接返回成功，不重复入账
 // （ledger 幂等键 ('grant','order',order_id) 双保险）。
 // 通知在事务提交后尽力而为（M4 解耦）。
+// 当前没有 HTTP 路由暴露支付或补单；此函数只用于历史数据兼容和迁移测试。
 func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.Order, error) {
 	if order.Status == "completed" {
 		return order, nil
@@ -190,7 +198,7 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 	return result, err
 }
 
-// mySubscription GET /api/me/subscription：当前生效订阅状态。
+// mySubscription 保留用于历史数据兼容；当前未注册 HTTP 路由。
 func (s *Server) mySubscription(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -232,6 +240,10 @@ type mockWebhookIn struct {
 }
 
 func (s *Server) paymentWebhook(c *gin.Context) {
+	if !s.Cfg.PaymentMockEnabled {
+		fail(c, apperr.E("payment_unavailable", "支付渠道尚未配置", 503))
+		return
+	}
 	if c.Param("provider") != "mock" {
 		fail(c, apperr.E("not_found", "不支持的支付渠道", 404))
 		return
@@ -246,7 +258,7 @@ func (s *Server) paymentWebhook(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "orderId: 无效的 UUID", 422))
 		return
 	}
-	if !hmac.Equal([]byte(body.Secret), []byte(s.Cfg.AppSecret)) {
+	if !hmac.Equal([]byte(body.Secret), []byte(s.Cfg.PaymentWebhookSecret)) {
 		fail(c, apperr.E("auth_required", "webhook 校验失败", 401))
 		return
 	}

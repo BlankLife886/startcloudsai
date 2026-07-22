@@ -45,6 +45,10 @@ func (s *Server) adminAudit(c *gin.Context) {
 	admin := adminVal.(*store.User)
 	entry := buildAuditEntry(admin, c.Request.Method, c.Request.URL.Path, c.Param("id"),
 		c.Writer.Status(), c.ClientIP(), body)
+	s.writeAuditEntry(entry)
+}
+
+func (s *Server) writeAuditEntry(entry *store.AdminAuditLog) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -52,6 +56,25 @@ func (s *Server) adminAudit(c *gin.Context) {
 			log.Printf("write audit log for %s %s: %v", entry.Method, entry.Path, err)
 		}
 	}()
+}
+
+func (s *Server) writeAdminAuthAudit(action, email, method, path string, status int, ip string, admin *store.AdminAccount) {
+	entry := &store.AdminAuditLog{
+		AdminEmail: email,
+		Method:     method,
+		Path:       path,
+		Action:     action,
+		Status:     status,
+	}
+	if admin != nil {
+		id := admin.ID
+		entry.AdminID = &id
+		entry.AdminEmail = admin.Email
+	}
+	if ip != "" {
+		entry.IP = &ip
+	}
+	s.writeAuditEntry(entry)
 }
 
 func buildAuditEntry(admin *store.User, method, path, targetID string, status int, ip string, body []byte) *store.AdminAuditLog {
@@ -127,11 +150,7 @@ func auditDetail(body []byte) []byte {
 	}
 	var v any
 	if err := json.Unmarshal(trimmed, &v); err != nil {
-		raw := string(trimmed)
-		if len(raw) > auditDetailMaxBytes {
-			raw = raw[:auditDetailMaxBytes]
-		}
-		out, _ := json.Marshal(gin.H{"raw": raw})
+		out, _ := json.Marshal(gin.H{"invalidJson": true, "bytes": len(trimmed)})
 		return out
 	}
 	out, err := json.Marshal(sanitizeAuditValue(v))

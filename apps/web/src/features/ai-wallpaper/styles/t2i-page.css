@@ -1756,9 +1756,9 @@
 .t2i-history-meta small {
   color: var(--t2i-faint);
   font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .t2i-history-prompt {
@@ -1766,16 +1766,16 @@
   color: var(--t2i-muted);
   font-size: 0.86rem;
   line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .t2i-history-error {
   color: var(--t2i-danger);
   font-size: 0.78rem;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .t2i-entry-progress {

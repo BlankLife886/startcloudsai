@@ -41,6 +41,9 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	var task *store.Task
 	created := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockUserTaskCreation(ctx, tx, userID); err != nil {
+			return err
+		}
 		if in.IdempotencyKey != nil && *in.IdempotencyKey != "" {
 			existing, err := store.GetTaskByIdemKey(ctx, tx, userID, *in.IdempotencyKey)
 			if err != nil {
@@ -71,6 +74,10 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err != nil {
 			return err
 		}
+		model, err := settings.TaskModel(ctx, tx, in.Type)
+		if err != nil {
+			return err
+		}
 		costCents := unitPrice * int64(in.Count)
 
 		taskID := uuid.New()
@@ -78,6 +85,7 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			ID:             taskID,
 			UserID:         userID,
 			Type:           in.Type,
+			Model:          model,
 			Prompt:         in.Prompt,
 			Params:         in.Params,
 			Count:          in.Count,
@@ -193,8 +201,8 @@ func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*sto
 
 // MarkSucceeded running→succeeded + settle，同事务。返回是否抢到状态迁移。
 // 通知已解耦：调用方在事务提交后调用 NotifyTaskSucceeded（尽力而为）。
-func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys []string, finishedAt time.Time) (bool, error) {
-	ok, err := store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, finishedAt)
+func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
+	ok, err := store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt)
 	if err != nil || !ok {
 		return false, err
 	}

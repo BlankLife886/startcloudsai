@@ -4,33 +4,57 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import {
   deleteMyGallerySubmission,
-  getMySubscription,
+  deleteUserAsset,
+  createUserAsset,
   getOverview,
   getWallet,
   listMyGallerySubmissions,
   listNotifications,
+  listUserAssets,
   listWalletLedger,
   markNotificationsRead,
   redeemWalletCode,
   updateProfile,
 } from '@/services/meApi'
-import { deleteTask, listTasks, TASK_TYPE_LABELS } from '@/services/tasksApi'
+import { deleteTask, listTasks, TASK_TYPE_LABELS, uploadFile } from '@/services/tasksApi'
 import { listGalleryCategories, submitShareItem } from '@/services/shareGallery'
-import { formatCents, getOrder, listOrders } from '@/services/billingApi'
+import { formatCents } from '@/services/billingApi'
 import notificationService from '@/services/notification'
+import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
+import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 
-const TAB_IDS = ['works', 'submissions', 'orders', 'wallet', 'notifications', 'account']
+const TAB_IDS = ['works', 'materials', 'submissions', 'wallet', 'notifications', 'account']
 const TABS = [
-  { id: 'works', label: '我的作品', mono: 'Works', icon: 'bi-images' },
-  { id: 'submissions', label: '我的投稿', mono: 'Gallery', icon: 'bi-send-check' },
-  { id: 'orders', label: '订单', mono: 'Orders', icon: 'bi-receipt' },
-  { id: 'wallet', label: '钱包', mono: 'Wallet', icon: 'bi-wallet2' },
-  { id: 'notifications', label: '通知', mono: 'Inbox', icon: 'bi-bell' },
-  { id: 'account', label: '账号设置', mono: 'Account', icon: 'bi-person-gear' },
+  {
+    id: 'materials',
+    label: '素材库',
+    description: '上传并整理可重复使用的个人视觉素材。',
+    icon: 'bi-collection',
+  },
+  {
+    id: 'works',
+    label: '我的作品',
+    description: '查找、预览和管理你的创作记录。',
+    icon: 'bi-images',
+  },
+  {
+    id: 'submissions',
+    label: '我的投稿',
+    description: '查看画廊投稿与审核进度。',
+    icon: 'bi-send-check',
+  },
+  { id: 'wallet', label: '钱包', description: '管理余额、兑换码和资金明细。', icon: 'bi-wallet2' },
+  { id: 'notifications', label: '通知', description: '集中查看账号与任务消息。', icon: 'bi-bell' },
+  {
+    id: 'account',
+    label: '账号设置',
+    description: '更新公开资料、头像和登录密码。',
+    icon: 'bi-person-gear',
+  },
 ]
 
 function resolveTab(value) {
@@ -39,26 +63,11 @@ function resolveTab(value) {
 }
 
 const activeTab = ref(resolveTab(route.query.tab))
+const activeTabInfo = computed(() => TABS.find((tab) => tab.id === activeTab.value) || TABS[0])
 
 // ---- 总览 ----
 const overview = ref(null)
 const unreadCount = computed(() => Number(overview.value?.unreadNotifications || 0))
-const taskStats = computed(() => overview.value?.taskStats || {})
-const successRate = computed(() => {
-  const total = Number(taskStats.value.total || 0)
-  if (!total) return '—'
-  return `${Math.round((Number(taskStats.value.succeeded || 0) / total) * 100)}%`
-})
-const typeStatRows = computed(() => {
-  const byType = overview.value?.taskStatsByType || {}
-  return Object.entries(TASK_TYPE_LABELS)
-    .map(([type, label]) => ({ type, label, count: Number(byType[type] || 0) }))
-    .filter((row) => row.count > 0)
-})
-
-// ---- 订阅（接口 404 时为 null，不显示徽标） ----
-const subscription = ref(null)
-const hasActiveSubscription = computed(() => subscription.value?.active === true)
 
 // ---- 我的作品（任务列表） ----
 const tasks = ref([])
@@ -67,7 +76,61 @@ const tasksCursor = ref(null)
 const taskTypeFilter = ref('')
 const previewTask = ref(null)
 const deletingTaskId = ref('')
+const loggingOut = ref(false)
 const submittingTaskId = ref('')
+const taskSearch = ref('')
+const taskStatusFilter = ref('')
+
+const hasTaskFilters = computed(() =>
+  Boolean(taskSearch.value.trim() || taskStatusFilter.value || taskTypeFilter.value),
+)
+
+function cleanText(value, max = 220) {
+  const text = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+function taskOriginalUrl(task) {
+  return task?.originalUrls?.[0] || task?.outputUrls?.[0] || ''
+}
+
+function taskThumbnailUrl(task) {
+  if (Array.isArray(task?.thumbnailKeys) && task.thumbnailKeys.length === 0) return ''
+  return task?.thumbnailUrls?.[0] || task?.outputUrls?.[0] || ''
+}
+
+function taskDisplayPrompt(task) {
+  return String(
+    task?.params?.userPrompt || task?.userPrompt || task?.params?.prompt || task?.prompt || '',
+  )
+    .replace(/\{argument\b[^{}]*\bdefault="([^"]*)"[^{}]*\}/gi, '$1')
+    .replace(/\{argument\b[^{}]*\bdefault='([^']*)'[^{}]*\}/gi, '$1')
+    .replace(/\{argument\b[^{}]*\}/gi, '')
+    .trim()
+}
+
+const visibleTasks = computed(() => {
+  const seen = new Set()
+  const query = taskSearch.value.trim().toLowerCase()
+  return tasks.value
+    .filter((task) => {
+      const id = String(task?.id || '')
+      if (!id || seen.has(id)) return false
+      seen.add(id)
+      if (taskStatusFilter.value && task.status !== taskStatusFilter.value) return false
+      if (!query) return true
+      return `${taskDisplayPrompt(task)} ${TASK_TYPE_LABELS[task.type] || ''}`
+        .toLowerCase()
+        .includes(query)
+    })
+    .map((task) => ({
+      ...task,
+      cleanPrompt: cleanText(taskDisplayPrompt(task), 180) || '未填写提示词',
+    }))
+})
 
 // ---- 投稿到画廊对话框 ----
 const submitDialog = reactive({ open: false, task: null, title: '', categoryId: '' })
@@ -81,14 +144,14 @@ const submissionsCursor = ref(null)
 const submissionsLoaded = ref(false)
 const submissionsError = ref('')
 
-// ---- 订单 ----
-const orders = ref([])
-const ordersLoading = ref(false)
-const ordersCursor = ref(null)
-const ordersLoaded = ref(false)
-const ordersError = ref('')
-const activeOrder = ref(null)
-let orderPollTimer = null
+// ---- 个人素材库 ----
+const materials = ref([])
+const materialsLoading = ref(false)
+const materialsLoaded = ref(false)
+const materialsCursor = ref(null)
+const materialsUploading = ref(false)
+const materialInput = ref(null)
+const previewMaterial = ref(null)
 
 // ---- 钱包 ----
 const wallet = ref(null)
@@ -122,15 +185,109 @@ const notificationsLoaded = ref(false)
 const notificationsError = ref('')
 
 // ---- 账号设置 ----
-const profileForm = reactive({ username: '', saving: false })
+const profileForm = reactive({
+  username: '',
+  bio: '',
+  location: '',
+  websiteUrl: '',
+  saving: false,
+  avatarUploading: false,
+})
 const passwordForm = reactive({ old: '', next: '', confirm: '', saving: false })
+const passwordVisible = reactive({ old: false, next: false, confirm: false })
+const avatarInput = ref(null)
+
+const normalizedProfileForm = computed(() => ({
+  username: profileForm.username.trim(),
+  bio: profileForm.bio.trim(),
+  location: profileForm.location.trim(),
+  websiteUrl: profileForm.websiteUrl.trim(),
+}))
+const normalizedSavedProfile = computed(() => ({
+  username: String(authStore.user?.username || '').trim(),
+  bio: String(authStore.user?.bio || '').trim(),
+  location: String(authStore.user?.location || '').trim(),
+  websiteUrl: String(authStore.user?.websiteUrl || '').trim(),
+}))
+const profileDirty = computed(
+  () =>
+    JSON.stringify(normalizedProfileForm.value) !== JSON.stringify(normalizedSavedProfile.value),
+)
+const usernameError = computed(() => (normalizedProfileForm.value.username ? '' : '昵称不能为空'))
+const websiteError = computed(() => {
+  const url = normalizedProfileForm.value.websiteUrl
+  return url && !/^https?:\/\/[^\s]+$/i.test(url) ? '请输入完整的 http:// 或 https:// 地址' : ''
+})
+const profileCanSave = computed(
+  () => profileDirty.value && !usernameError.value && !websiteError.value && !profileForm.saving,
+)
+const passwordStarted = computed(() =>
+  Boolean(passwordForm.old || passwordForm.next || passwordForm.confirm),
+)
+const passwordChecks = computed(() => ({
+  length: passwordForm.next.length >= 8,
+  matches: Boolean(passwordForm.confirm) && passwordForm.next === passwordForm.confirm,
+}))
+const passwordCanSave = computed(
+  () =>
+    Boolean(passwordForm.old) &&
+    passwordChecks.value.length &&
+    passwordChecks.value.matches &&
+    !passwordForm.saving,
+)
+
+const confirmDialog = reactive({
+  open: false,
+  title: '',
+  message: '',
+  confirmLabel: '确认删除',
+  icon: 'bi-trash3',
+  eyebrow: '请确认此操作',
+  note: '',
+  tone: 'danger',
+})
+let confirmDialogResolve = null
+
+function askConfirmation({
+  title,
+  message,
+  confirmLabel = '确认删除',
+  icon = 'bi-trash3',
+  eyebrow = '请确认此操作',
+  note = '',
+  tone = 'danger',
+}) {
+  if (confirmDialogResolve) confirmDialogResolve(false)
+  confirmDialog.title = title
+  confirmDialog.message = message
+  confirmDialog.confirmLabel = confirmLabel
+  confirmDialog.icon = icon
+  confirmDialog.eyebrow = eyebrow
+  confirmDialog.note = note
+  confirmDialog.tone = tone
+  confirmDialog.open = true
+  return new Promise((resolve) => {
+    confirmDialogResolve = resolve
+  })
+}
+
+function closeConfirmation(confirmed = false) {
+  confirmDialog.open = false
+  const resolve = confirmDialogResolve
+  confirmDialogResolve = null
+  resolve?.(confirmed)
+}
 
 const TASK_STATUS_LABELS = {
   queued: '排队中',
   running: '生成中',
   succeeded: '已完成',
+  completed: '已完成',
+  done: '已完成',
   failed: '失败',
   canceled: '已取消',
+  cancelled: '已取消',
+  paused: '已暂停',
 }
 
 const SUBMISSION_STATUS_LABELS = {
@@ -138,14 +295,6 @@ const SUBMISSION_STATUS_LABELS = {
   approved: '已通过',
   rejected: '已拒绝',
   removed: '已下架',
-}
-
-const ORDER_STATUS_LABELS = {
-  pending: '等待支付',
-  paid: '已支付',
-  completed: '已完成',
-  failed: '失败',
-  expired: '已过期',
 }
 
 const LEDGER_KIND_LABELS = {
@@ -160,10 +309,6 @@ const LEDGER_KIND_LABELS = {
   subscription_grant: '订阅每日发放',
 }
 
-function orderStatusLabel(status) {
-  return ORDER_STATUS_LABELS[status] || status || '未知'
-}
-
 function ledgerKindLabel(kind) {
   return LEDGER_KIND_LABELS[kind] || kind || '变动'
 }
@@ -175,26 +320,11 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function formatDay(value) {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
-  return date.toLocaleDateString('zh-CN')
-}
-
 async function loadOverview() {
   try {
     overview.value = await getOverview()
   } catch {
     /* 静默失败 */
-  }
-}
-
-async function loadSubscription() {
-  try {
-    subscription.value = await getMySubscription()
-  } catch {
-    /* 静默失败：不显示会员徽标 */
   }
 }
 
@@ -223,6 +353,17 @@ function setTaskFilter(type) {
   void loadTasks()
 }
 
+function clearTaskFilters() {
+  const reload = Boolean(taskTypeFilter.value)
+  taskSearch.value = ''
+  taskStatusFilter.value = ''
+  taskTypeFilter.value = ''
+  if (reload) {
+    tasksCursor.value = null
+    void loadTasks()
+  }
+}
+
 async function loadSubmissions({ append = false } = {}) {
   if (submissionsLoading.value) return
   submissionsLoading.value = true
@@ -243,54 +384,90 @@ async function loadSubmissions({ append = false } = {}) {
   }
 }
 
-async function loadOrders({ append = false } = {}) {
-  if (ordersLoading.value) return
-  ordersLoading.value = true
-  ordersError.value = ''
+async function loadMaterials({ append = false } = {}) {
+  if (materialsLoading.value) return
+  materialsLoading.value = true
   try {
-    const { items, nextCursor } = await listOrders({
-      limit: 12,
-      cursor: append ? ordersCursor.value || '' : '',
+    const { items, nextCursor } = await listUserAssets({
+      limit: 24,
+      cursor: append ? materialsCursor.value || '' : '',
     })
-    orders.value = append ? [...orders.value, ...items] : items
-    ordersCursor.value = nextCursor
-    ordersLoaded.value = true
-    const pending = orders.value.find((item) => item.status === 'pending')
-    if (pending) startOrderPolling(pending.id)
+    materials.value = append ? [...materials.value, ...items] : items
+    materialsCursor.value = nextCursor
+    materialsLoaded.value = true
   } catch (error) {
-    ordersError.value = error?.message || '订单列表读取失败'
+    notificationService.error(error?.message || '素材库读取失败')
   } finally {
-    ordersLoading.value = false
+    materialsLoading.value = false
   }
 }
 
-function stopOrderPolling() {
-  if (orderPollTimer) {
-    clearInterval(orderPollTimer)
-    orderPollTimer = null
-  }
+function materialTitle(file) {
+  return String(file?.name || '个人素材')
+    .replace(/\.[a-z0-9]+$/i, '')
+    .trim()
+    .slice(0, 120)
 }
 
-function startOrderPolling(orderId) {
-  if (!orderId) return
-  stopOrderPolling()
-  orderPollTimer = setInterval(async () => {
-    try {
-      const order = await getOrder(orderId)
-      activeOrder.value = order
-      const index = orders.value.findIndex((item) => item.id === order.id)
-      if (index >= 0) orders.value[index] = { ...orders.value[index], ...order }
-      if (['completed', 'failed', 'expired'].includes(order?.status)) {
-        stopOrderPolling()
-        if (order.status === 'completed') {
-          notificationService.success('订单已完成，余额已入账')
-          await Promise.all([loadOverview(), loadWallet(), loadLedger()])
-        }
-      }
-    } catch {
-      /* 下一轮重试 */
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value || 0))
+  if (!bytes) return '—'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+async function onMaterialsSelected(event) {
+  const files = Array.from(event.target?.files || [])
+  if (event.target) event.target.value = ''
+  if (!files.length || materialsUploading.value) return
+  if (files.length > 6) {
+    notificationService.warning('单次最多上传 6 张素材')
+    return
+  }
+  const invalid = files.find(
+    (file) => !file.type.startsWith('image/') || file.size <= 0 || file.size > 10 * 1024 * 1024,
+  )
+  if (invalid) {
+    notificationService.warning('仅支持 10MB 以内的 PNG、JPEG 或 WebP 图片')
+    return
+  }
+  materialsUploading.value = true
+  let completed = 0
+  try {
+    for (const file of files) {
+      const uploaded = await uploadFile(file)
+      const asset = await createUserAsset({
+        title: materialTitle(file),
+        fileKey: uploaded.key,
+        thumbnailKey: uploaded.thumbnailKey,
+        contentType: uploaded.contentType || file.type,
+      })
+      materials.value = [asset, ...materials.value.filter((item) => item.id !== asset.id)]
+      completed += 1
     }
-  }, 3000)
+    materialsLoaded.value = true
+    notificationService.success(`已添加 ${completed} 项素材`)
+  } catch (error) {
+    notificationService.error(error?.message || `已添加 ${completed} 项，其余素材上传失败`)
+  } finally {
+    materialsUploading.value = false
+  }
+}
+
+async function removeMaterial(asset) {
+  const confirmed = await askConfirmation({
+    title: '删除这项素材？',
+    message: '素材原图和缩略图都会移除，删除后无法恢复。',
+  })
+  if (!confirmed) return
+  try {
+    await deleteUserAsset(asset.id)
+    materials.value = materials.value.filter((item) => item.id !== asset.id)
+    if (previewMaterial.value?.id === asset.id) previewMaterial.value = null
+    notificationService.success('素材已删除')
+  } catch (error) {
+    notificationService.error(error?.message || '素材删除失败')
+  }
 }
 
 async function loadWallet() {
@@ -376,8 +553,8 @@ async function loadNotifications({ append = false } = {}) {
 }
 
 function ensureTabData(tabId) {
+  if (tabId === 'materials' && !materialsLoaded.value) void loadMaterials()
   if (tabId === 'submissions' && !submissionsLoaded.value) void loadSubmissions()
-  if (tabId === 'orders' && !ordersLoaded.value) void loadOrders()
   if (tabId === 'wallet' && !walletLoaded.value) {
     void loadWallet()
     void loadLedger()
@@ -406,6 +583,20 @@ watch(
   },
 )
 
+const overlayOpen = computed(() =>
+  Boolean(previewTask.value || previewMaterial.value || submitDialog.open || confirmDialog.open),
+)
+
+watch(
+  overlayOpen,
+  (open) => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('profile-overlay-open', open)
+    }
+  },
+  { immediate: true },
+)
+
 async function markAllRead() {
   try {
     await markNotificationsRead()
@@ -422,7 +613,11 @@ async function markAllRead() {
 
 async function removeTask(task) {
   if (deletingTaskId.value) return
-  if (!window.confirm('删除后任务记录与产物都会移除，确定删除？')) return
+  const confirmed = await askConfirmation({
+    title: '删除这项作品？',
+    message: '任务记录与生成产物会一并移除，删除后无法恢复。',
+  })
+  if (!confirmed) return
   deletingTaskId.value = task.id
   try {
     await deleteTask(task.id)
@@ -439,7 +634,7 @@ async function removeTask(task) {
 function openSubmitDialog(task) {
   if (submittingTaskId.value) return
   submitDialog.task = task
-  submitDialog.title = task.prompt?.slice(0, 40) || 'AI 作品'
+  submitDialog.title = taskDisplayPrompt(task).slice(0, 40) || 'AI 作品'
   submitDialog.categoryId = ''
   submitDialog.open = true
   if (!galleryCategoriesRequested) {
@@ -482,7 +677,11 @@ async function submitToGallery() {
 }
 
 async function removeSubmission(submission) {
-  if (!window.confirm('确定撤回/删除该投稿？')) return
+  const confirmed = await askConfirmation({
+    title: '删除这项投稿？',
+    message: '投稿将从你的记录中移除；已展示的作品也会从画廊撤下。',
+  })
+  if (!confirmed) return
   try {
     await deleteMyGallerySubmission(submission.id)
     submissions.value = submissions.value.filter((item) => item.id !== submission.id)
@@ -492,21 +691,118 @@ async function removeSubmission(submission) {
   }
 }
 
-async function saveUsername() {
-  const username = profileForm.username.trim()
+function syncProfileForm() {
+  profileForm.username = authStore.user?.username || ''
+  profileForm.bio = authStore.user?.bio || ''
+  profileForm.location = authStore.user?.location || ''
+  profileForm.websiteUrl = authStore.user?.websiteUrl || ''
+}
+
+async function saveProfile() {
+  const { username, bio, location, websiteUrl } = normalizedProfileForm.value
   if (!username) {
     notificationService.warning('用户名不能为空')
     return
   }
   profileForm.saving = true
   try {
-    await updateProfile({ username })
-    authStore.patchUser({ username })
-    notificationService.success('用户名已更新')
+    if (websiteUrl && !/^https?:\/\/[^\s]+$/i.test(websiteUrl)) {
+      notificationService.warning('个人网站需要填写完整的 http/https 地址')
+      return
+    }
+    const result = await updateProfile({
+      username,
+      bio,
+      location,
+      websiteUrl,
+    })
+    authStore.patchUser(
+      result?.user || {
+        username,
+        bio,
+        location,
+        websiteUrl,
+      },
+    )
+    syncProfileForm()
+    notificationService.success('个人资料已保存')
   } catch (error) {
     notificationService.error(error?.message || '保存失败')
   } finally {
     profileForm.saving = false
+  }
+}
+
+function loadAvatarImage(file) {
+  return new Promise((resolve, reject) => {
+    const objectURL = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      URL.revokeObjectURL(objectURL)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectURL)
+      reject(new Error('头像图片读取失败'))
+    }
+    image.src = objectURL
+  })
+}
+
+async function createAvatarUpload(file) {
+  if (!file?.type?.startsWith('image/')) throw new Error('请选择 PNG、JPEG 或 WebP 图片')
+  if (file.size > 10 * 1024 * 1024) throw new Error('头像图片不能超过 10MB')
+  const image = await loadAvatarImage(file)
+  const side = Math.min(image.naturalWidth, image.naturalHeight)
+  const canvas = document.createElement('canvas')
+  canvas.width = 512
+  canvas.height = 512
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('当前浏览器无法处理头像图片')
+  context.drawImage(
+    image,
+    (image.naturalWidth - side) / 2,
+    (image.naturalHeight - side) / 2,
+    side,
+    side,
+    0,
+    0,
+    512,
+    512,
+  )
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+  if (!blob) throw new Error('头像处理失败')
+  return new File([blob], `avatar-${Date.now()}.jpg`, { type: 'image/jpeg' })
+}
+
+async function onAvatarSelected(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file || profileForm.avatarUploading) return
+  profileForm.avatarUploading = true
+  try {
+    const uploaded = await uploadFile(await createAvatarUpload(file))
+    const result = await updateProfile({ avatarUrl: uploaded.url })
+    authStore.patchUser(result?.user || { avatarUrl: uploaded.url })
+    notificationService.success('头像已更新')
+  } catch (error) {
+    notificationService.error(error?.message || '头像上传失败')
+  } finally {
+    profileForm.avatarUploading = false
+  }
+}
+
+async function removeAvatar() {
+  if (profileForm.avatarUploading || !authStore.user?.avatarUrl) return
+  profileForm.avatarUploading = true
+  try {
+    const result = await updateProfile({ avatarUrl: '' })
+    authStore.patchUser(result?.user || { avatarUrl: null })
+    notificationService.success('头像已移除')
+  } catch (error) {
+    notificationService.error(error?.message || '头像移除失败')
+  } finally {
+    profileForm.avatarUploading = false
   }
 }
 
@@ -538,487 +834,776 @@ async function savePassword() {
 }
 
 async function handleLogout() {
-  await authStore.logout()
-  router.push('/')
+  if (loggingOut.value) return
+  const confirmed = await askConfirmation({
+    title: '退出当前账号？',
+    message: '退出后需要重新登录才能继续查看个人资料和创作记录。',
+    confirmLabel: '确认退出',
+    icon: 'bi-box-arrow-right',
+    eyebrow: '账号安全',
+    note: '仅退出当前设备，不会删除你的账号、作品或素材。',
+    tone: 'logout',
+  })
+  if (!confirmed) return
+
+  loggingOut.value = true
+  try {
+    const result = await authStore.logout()
+    if (result?.error) {
+      notificationService.warning('本机登录状态已清除，服务器会话可能仍需稍后重试。')
+    } else {
+      notificationService.success('已安全退出登录')
+    }
+    await router.replace({ name: 'auth', query: { mode: 'login', redirect: '/profile' } })
+  } finally {
+    loggingOut.value = false
+  }
 }
 
 onMounted(async () => {
   await authStore.initAuth().catch(() => null)
-  profileForm.username = authStore.user?.username || ''
+  syncProfileForm()
   void loadOverview()
-  void loadSubscription()
   void loadTasks()
   ensureTabData(activeTab.value)
 })
 
-onBeforeUnmount(() => stopOrderPolling())
+onBeforeUnmount(() => {
+  if (typeof document !== 'undefined') document.body.classList.remove('profile-overlay-open')
+})
 </script>
 
 <template>
   <div class="pp-page">
     <div class="pp-atmosphere" aria-hidden="true"></div>
 
-    <!-- 馆主档案页头 -->
-    <header class="pp-masthead">
-      <div class="pp-masthead__spine" aria-hidden="true">
-        <span>Curator Profile</span>
-        <i></i>
-        <em>SC</em>
-      </div>
-      <div class="pp-masthead__body">
-        <p class="pp-eyebrow">StarCloud Curator <i></i> 馆主档案</p>
-        <h1 class="pp-name">
-          <span class="pp-avatar">
-            <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
-            <i v-else class="bi bi-person-fill"></i>
-          </span>
-          <span class="pp-name__text">{{ authStore.displayName }}</span>
-          <span v-if="hasActiveSubscription" class="pp-member" :title="subscription.planName || '订阅会员'">
-            <i class="bi bi-patch-check-fill" aria-hidden="true"></i>
-            {{ subscription.planName || '会员' }} · 至 {{ formatDay(subscription.endsAt) }}
-          </span>
-        </h1>
-        <div class="pp-idline">
-          <span>{{ authStore.user?.email }}</span>
-          <i aria-hidden="true"></i>
-          <span>注册于 {{ formatTime(authStore.user?.createdAt) }}</span>
-        </div>
-        <div class="pp-masthead__actions">
-          <button type="button" class="pp-btn is-ghost" @click="switchTab('account')">
-            <i class="bi bi-pencil-square"></i> 编辑资料 / 改密
-          </button>
-          <button type="button" class="pp-btn is-text" @click="handleLogout">
-            <i class="bi bi-box-arrow-right"></i> 退出登录
-          </button>
-        </div>
-      </div>
-    </header>
-
-    <!-- 四张数据卡 -->
-    <section class="pp-stats" aria-label="账号数据">
-      <article>
-        <span class="pp-stats__label">Balance · 可用余额</span>
-        <strong class="pp-stats__value is-gold">{{
-          formatCents(
-            Math.max(
-              0,
-              Number(overview?.wallet?.balanceCents || 0) -
-                Number(overview?.wallet?.frozenCents || 0),
-            ),
-          )
-        }}</strong>
-        <div class="pp-stats__actions">
-          <button type="button" class="pp-stats__foot is-link" @click="switchTab('wallet')">
-            钱包 / 兑换码 →
-          </button>
-          <RouterLink class="pp-stats__foot" to="/pricing">去充值 →</RouterLink>
-        </div>
-      </article>
-      <article>
-        <span class="pp-stats__label">Tasks · 任务总数</span>
-        <strong class="pp-stats__value">{{ taskStats.total ?? '—' }}</strong>
-        <small class="pp-stats__foot">进行中 {{ taskStats.running || 0 }}</small>
-      </article>
-      <article>
-        <span class="pp-stats__label">Rate · 成功率</span>
-        <strong class="pp-stats__value">{{ successRate }}</strong>
-        <small class="pp-stats__foot">
-          成功 {{ taskStats.succeeded || 0 }} / 失败 {{ taskStats.failed || 0 }}
-        </small>
-      </article>
-      <article>
-        <span class="pp-stats__label">Inbox · 未读通知</span>
-        <strong class="pp-stats__value">{{ unreadCount }}</strong>
-        <button type="button" class="pp-stats__foot is-link" @click="switchTab('notifications')">
-          查看通知 →
-        </button>
-      </article>
-    </section>
-
-    <div v-if="typeStatRows.length" class="pp-type-chips">
-      <span v-for="row in typeStatRows" :key="row.type" class="pp-type-chip">
-        {{ row.label }} × {{ row.count }}
-      </span>
-    </div>
-
-    <!-- Tab 导航 -->
-    <nav class="pp-tabs" aria-label="个人中心分区">
-      <button
-        v-for="tab in TABS"
-        :key="tab.id"
-        type="button"
-        :class="{ 'is-active': activeTab === tab.id }"
-        @click="switchTab(tab.id)"
-      >
-        <small>{{ tab.mono }}</small>
-        <span>
-          {{ tab.label }}
-          <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
-        </span>
-      </button>
-    </nav>
-
-    <!-- 我的作品 -->
-    <section v-show="activeTab === 'works'" class="pp-panel">
-      <div class="pp-works-filter">
-        <button
-          type="button"
-          :class="{ 'is-active': taskTypeFilter === '' }"
-          @click="setTaskFilter('')"
-        >
-          全部
-        </button>
-        <button
-          v-for="(label, type) in TASK_TYPE_LABELS"
-          :key="type"
-          type="button"
-          :class="{ 'is-active': taskTypeFilter === type }"
-          @click="setTaskFilter(type)"
-        >
-          {{ label }}
-        </button>
-      </div>
-
-      <div v-if="tasks.length" class="pp-works-grid">
-        <article v-for="(task, index) in tasks" :key="task.id" class="pp-work">
-          <button
-            type="button"
-            class="pp-work__cover"
-            :disabled="!task.outputUrls?.length"
-            @click="previewTask = task"
-          >
-            <img
-              v-if="task.outputUrls?.length"
-              :src="task.outputUrls[0]"
-              :alt="task.prompt || 'AI 作品'"
-              loading="lazy"
-            />
-            <span v-else class="pp-work__placeholder">
-              <i
-                class="bi"
-                :class="task.status === 'failed' ? 'bi-x-circle' : 'bi-hourglass-split'"
-              ></i>
-              {{ TASK_STATUS_LABELS[task.status] || task.status }}
-            </span>
-            <span class="pp-work__mark">No.{{ String(index + 1).padStart(2, '0') }}</span>
-          </button>
-          <div class="pp-work__meta">
-            <span class="pp-work__type">{{ TASK_TYPE_LABELS[task.type] || task.type }}</span>
-            <span class="pp-work__status" :data-status="task.status">
-              {{ TASK_STATUS_LABELS[task.status] || task.status }}
-            </span>
-          </div>
-          <p class="pp-work__prompt" :title="task.prompt">{{ task.prompt || '（无提示词）' }}</p>
-          <small class="pp-work__caption">
-            {{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}
-          </small>
-          <div class="pp-work__actions">
-            <button
-              v-if="task.status === 'succeeded' && task.outputUrls?.length"
-              type="button"
-              :disabled="submittingTaskId === task.id"
-              @click="openSubmitDialog(task)"
-            >
-              <i class="bi bi-send"></i> 投稿
-            </button>
+    <div class="pp-shell">
+      <aside class="pp-sidebar">
+        <!-- 个人资料摘要 -->
+        <header class="pp-masthead">
+          <div class="pp-profile-summary">
             <button
               type="button"
-              class="is-danger"
-              :disabled="deletingTaskId === task.id"
-              @click="removeTask(task)"
+              class="pp-avatar"
+              :disabled="profileForm.avatarUploading"
+              aria-label="更换头像"
+              @click="avatarInput?.click()"
             >
-              <i class="bi bi-trash3"></i> 删除
+              <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
+              <i v-else class="bi bi-person-fill" aria-hidden="true"></i>
+              <em>
+                <i
+                  class="bi"
+                  :class="profileForm.avatarUploading ? 'bi-arrow-repeat spin' : 'bi-camera-fill'"
+                ></i>
+              </em>
             </button>
-          </div>
-        </article>
-      </div>
-      <p v-else-if="!tasksLoading" class="pp-empty">还没有创作记录，去工作台生成第一张图吧。</p>
-
-      <button
-        v-if="tasksCursor"
-        type="button"
-        class="pp-btn is-ghost pp-load-more"
-        :disabled="tasksLoading"
-        @click="loadTasks({ append: true })"
-      >
-        {{ tasksLoading ? '加载中…' : '加载更多' }}
-      </button>
-    </section>
-
-    <!-- 我的投稿 -->
-    <section v-show="activeTab === 'submissions'" class="pp-panel">
-      <ul v-if="submissions.length" class="pp-submission-list">
-        <li v-for="submission in submissions" :key="submission.id">
-          <img
-            v-if="submission.coverUrl || submission.mediaUrls?.length"
-            :src="submission.coverUrl || submission.mediaUrls[0]"
-            alt=""
-            loading="lazy"
-          />
-          <div class="pp-submission__body">
-            <strong>{{ submission.title || 'AI 作品' }}</strong>
-            <small>{{ formatTime(submission.createdAt) }}</small>
-            <p v-if="submission.rejectReason" class="pp-submission__reason">
-              原因：{{ submission.rejectReason }}
-            </p>
-          </div>
-          <span class="pp-submission__status" :data-status="submission.status">
-            {{ SUBMISSION_STATUS_LABELS[submission.status] || submission.status }}
-          </span>
-          <button
-            type="button"
-            class="pp-submission__remove"
-            title="撤回/删除"
-            @click="removeSubmission(submission)"
-          >
-            <i class="bi bi-trash3"></i>
-          </button>
-        </li>
-      </ul>
-      <p v-else-if="submissionsLoaded && !submissionsLoading" class="pp-empty">
-        还没有投稿，在「我的作品」里把成功任务投稿到画廊吧。
-      </p>
-      <button
-        v-if="submissionsCursor"
-        type="button"
-        class="pp-btn is-ghost pp-load-more"
-        :disabled="submissionsLoading"
-        @click="loadSubmissions({ append: true })"
-      >
-        {{ submissionsLoading ? '加载中…' : '加载更多' }}
-      </button>
-    </section>
-
-    <!-- 订单 -->
-    <section v-show="activeTab === 'orders'" class="pp-panel">
-      <header class="pp-panel-head">
-        <div>
-          <h2>我的订单</h2>
-          <p>订阅与充值订单状态，待支付订单会自动刷新。</p>
-        </div>
-        <RouterLink class="pp-btn is-ghost" to="/pricing">去价格页购买</RouterLink>
-      </header>
-
-      <div v-if="ordersLoading && !ordersLoaded" class="pp-skel-list" aria-hidden="true">
-        <div v-for="n in 4" :key="n" class="pp-skel-row"></div>
-      </div>
-
-      <div v-else-if="ordersError && !orders.length" class="pp-state is-error">
-        <strong>订单加载失败</strong>
-        <p>{{ ordersError }}</p>
-        <button type="button" class="pp-btn is-ghost" @click="loadOrders()">重试</button>
-      </div>
-
-      <ul v-else-if="orders.length" class="pp-order-list">
-        <li v-for="order in orders" :key="order.id">
-          <div class="pp-order__main">
-            <strong class="pp-order__amount">{{ formatCents(order.amountCents) }}</strong>
-            <span class="pp-order__status" :data-status="order.status">
-              {{ orderStatusLabel(order.status) }}
-            </span>
-          </div>
-          <div class="pp-order__meta">
-            <span>{{ order.planName || order.planId || '套餐订单' }}</span>
-            <span>{{ formatTime(order.createdAt) }}</span>
-          </div>
-          <p v-if="order.id === activeOrder?.id && activeOrder.status === 'pending'" class="pp-order__hint">
-            正在等待支付结果，完成后将自动入账…
-          </p>
-        </li>
-      </ul>
-
-      <div v-else-if="ordersLoaded" class="pp-state">
-        <strong>还没有订单</strong>
-        <p>去价格页购买订阅或充值包后，记录会出现在这里。</p>
-        <RouterLink class="pp-btn is-primary" to="/pricing">去看看套餐</RouterLink>
-      </div>
-
-      <button
-        v-if="ordersCursor"
-        type="button"
-        class="pp-btn is-ghost pp-load-more"
-        :disabled="ordersLoading"
-        @click="loadOrders({ append: true })"
-      >
-        {{ ordersLoading ? '加载中…' : '加载更多' }}
-      </button>
-    </section>
-
-    <!-- 钱包：余额 + 兑换码 + 账本 -->
-    <section v-show="activeTab === 'wallet'" class="pp-panel">
-      <header class="pp-panel-head">
-        <div>
-          <h2>钱包</h2>
-          <p>余额、兑换码入账与资金明细。</p>
-        </div>
-        <button
-          type="button"
-          class="pp-btn is-ghost"
-          :disabled="walletLoading"
-          @click="
-            () => {
-              void loadWallet()
-              void loadLedger()
-            }
-          "
-        >
-          <i class="bi bi-arrow-repeat" :class="{ spin: walletLoading || ledgerLoading }"></i>
-          刷新
-        </button>
-      </header>
-
-      <div v-if="walletLoading && !walletLoaded" class="pp-skel-list" aria-hidden="true">
-        <div class="pp-skel-card"></div>
-        <div class="pp-skel-row"></div>
-      </div>
-
-      <div v-else-if="walletError && !wallet" class="pp-state is-error">
-        <strong>钱包加载失败</strong>
-        <p>{{ walletError }}</p>
-        <button type="button" class="pp-btn is-ghost" @click="loadWallet()">重试</button>
-      </div>
-
-      <template v-else>
-        <div class="pp-wallet-hero">
-          <div>
-            <span class="pp-wallet-hero__label">Available · 可用余额</span>
-            <strong class="pp-wallet-hero__amount">{{ formatCents(availableCents) }}</strong>
-            <div class="pp-wallet-hero__meta">
-              <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
-              <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
-                冻结 {{ formatCents(wallet?.frozenCents || 0) }}
-              </span>
+            <div class="pp-profile-copy">
+              <span>个人空间</span>
+              <h1>{{ authStore.displayName }}</h1>
+              <p data-no-translate>{{ authStore.user?.email }}</p>
             </div>
           </div>
-          <RouterLink class="pp-btn is-primary" to="/pricing">去充值</RouterLink>
-        </div>
-
-        <div class="pp-redeem">
-          <div class="pp-redeem__head">
-            <h3>兑换码</h3>
-            <p>持有兑换码可在此入账，格式 SC-XXXX-XXXX-XXXX。</p>
+          <input
+            ref="avatarInput"
+            class="pp-avatar-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            @change="onAvatarSelected"
+          />
+          <p v-if="authStore.user?.bio" class="pp-profile-bio" data-no-translate>
+            {{ authStore.user.bio }}
+          </p>
+          <div class="pp-idline">
+            <span v-if="authStore.user?.location" data-no-translate>
+              <i class="bi bi-geo-alt" aria-hidden="true"></i>
+              {{ authStore.user.location }}
+            </span>
+            <span>
+              <i class="bi bi-calendar3" aria-hidden="true"></i>
+              {{ formatTime(authStore.user?.createdAt) }}
+            </span>
           </div>
-          <form class="pp-redeem__form" @submit.prevent="submitRedeem">
-            <input
-              :value="redeemCode"
-              type="text"
-              class="pp-redeem__input"
-              placeholder="SC-XXXX-XXXX-XXXX"
-              maxlength="20"
-              autocomplete="off"
-              spellcheck="false"
-              aria-label="兑换码"
-              @input="onRedeemInput"
-            />
-            <button type="submit" class="pp-btn is-primary" :disabled="redeeming">
-              {{ redeeming ? '兑换中…' : '兑换' }}
+          <button type="button" class="pp-edit-shortcut" @click="switchTab('account')">
+            <i class="bi bi-pencil-square" aria-hidden="true"></i>
+            编辑个人资料
+          </button>
+        </header>
+
+        <nav class="pp-tabs" aria-label="个人中心分区" role="tablist">
+          <button
+            v-for="tab in TABS"
+            :key="tab.id"
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === tab.id"
+            :aria-controls="`profile-panel-${tab.id}`"
+            :class="{ 'is-active': activeTab === tab.id }"
+            @click="switchTab(tab.id)"
+          >
+            <i class="bi" :class="tab.icon" aria-hidden="true"></i>
+            <span>{{ tab.label }}</span>
+            <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
+            <em v-else-if="tab.id === 'materials' && materials.length">{{ materials.length }}</em>
+            <i class="bi bi-chevron-right pp-tab-arrow" aria-hidden="true"></i>
+          </button>
+        </nav>
+
+        <footer class="pp-sidebar-footer">
+          <button type="button" :disabled="loggingOut" @click="handleLogout">
+            <i class="bi bi-box-arrow-right" aria-hidden="true"></i>
+            <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
+          </button>
+        </footer>
+      </aside>
+
+      <main class="pp-main">
+        <header class="pp-content-head">
+          <div>
+            <span class="pp-content-index">
+              SPACE
+              {{ String(TABS.findIndex((tab) => tab.id === activeTab) + 1).padStart(2, '0') }} /
+              {{ String(TABS.length).padStart(2, '0') }}
+            </span>
+            <h2>{{ activeTabInfo.label }}</h2>
+            <p>{{ activeTabInfo.description }}</p>
+          </div>
+          <RouterLink to="/text-to-image" class="pp-create-link">
+            <i class="bi bi-stars" aria-hidden="true"></i>
+            开始创作
+          </RouterLink>
+        </header>
+
+        <!-- 我的作品 -->
+        <section
+          id="profile-panel-works"
+          v-show="activeTab === 'works'"
+          class="pp-panel"
+          role="tabpanel"
+        >
+          <div class="pp-works-filter">
+            <button
+              type="button"
+              :class="{ 'is-active': taskTypeFilter === '' }"
+              @click="setTaskFilter('')"
+            >
+              全部
             </button>
-          </form>
-        </div>
-
-        <div class="pp-ledger">
-          <div class="pp-ledger__head">
-            <h3>账本明细</h3>
-            <span v-if="ledgerError" class="pp-ledger__error">{{ ledgerError }}</span>
+            <button
+              v-for="(label, type) in TASK_TYPE_LABELS"
+              :key="type"
+              type="button"
+              :class="{ 'is-active': taskTypeFilter === type }"
+              @click="setTaskFilter(type)"
+            >
+              {{ label }}
+            </button>
           </div>
 
-          <div v-if="ledgerLoading && !ledger.length" class="pp-skel-list" aria-hidden="true">
-            <div v-for="n in 5" :key="n" class="pp-skel-row"></div>
+          <div class="pp-works-toolbar">
+            <label class="pp-search"
+              ><i class="bi bi-search"></i
+              ><input v-model="taskSearch" type="search" placeholder="搜索提示词"
+            /></label>
+            <div class="pp-works-toolbar__meta">
+              <span>{{ visibleTasks.length }} 项结果</span>
+              <button v-if="hasTaskFilters" type="button" @click="clearTaskFilters">
+                清除筛选
+              </button>
+              <select v-model="taskStatusFilter" aria-label="状态筛选">
+                <option value="">全部状态</option>
+                <option value="succeeded">已完成</option>
+                <option value="running">生成中</option>
+                <option value="queued">排队中</option>
+                <option value="failed">失败</option>
+              </select>
+            </div>
           </div>
 
-          <ul v-else-if="ledger.length" class="pp-ledger-list">
-            <li v-for="entry in ledger" :key="entry.id">
-              <div class="pp-ledger__main">
-                <span>{{ ledgerKindLabel(entry.kind) }}</span>
-                <strong :class="Number(entry.deltaCents) >= 0 ? 'is-income' : 'is-spend'">
-                  {{ Number(entry.deltaCents) >= 0 ? '+' : '' }}{{ formatCents(entry.deltaCents) }}
-                </strong>
+          <div v-if="tasksLoading && !tasks.length" class="pp-works-grid" aria-label="正在加载作品">
+            <div v-for="n in 8" :key="n" class="pp-work-skeleton" aria-hidden="true">
+              <div></div>
+              <span></span><span></span>
+            </div>
+          </div>
+          <div v-else-if="visibleTasks.length" class="pp-works-grid">
+            <article v-for="task in visibleTasks" :key="task.id" class="pp-work">
+              <button
+                type="button"
+                class="pp-work__cover"
+                :disabled="!taskOriginalUrl(task)"
+                @click="previewTask = task"
+              >
+                <ProgressiveAuthenticatedImage
+                  v-if="taskThumbnailUrl(task)"
+                  :src="taskOriginalUrl(task)"
+                  :preview-src="taskThumbnailUrl(task)"
+                  :alt="task.cleanPrompt || 'AI 作品'"
+                  loading="lazy"
+                  :retry-count="2"
+                />
+                <span v-else class="pp-work__placeholder" :data-status="task.status">
+                  <i
+                    class="bi"
+                    :class="
+                      task.status === 'failed'
+                        ? 'bi-x-circle'
+                        : task.status === 'succeeded'
+                          ? 'bi-image'
+                          : 'bi-hourglass-split'
+                    "
+                  ></i>
+                  {{
+                    task.status === 'succeeded'
+                      ? '缩略图暂不可用，点击查看原图'
+                      : TASK_STATUS_LABELS[task.status] || task.status
+                  }}
+                </span>
+              </button>
+              <div class="pp-work__meta">
+                <span class="pp-work__type">{{ TASK_TYPE_LABELS[task.type] || '其他创作' }}</span>
+                <span class="pp-work__status" :data-status="task.status">
+                  {{ TASK_STATUS_LABELS[task.status] || '未知状态' }}
+                </span>
               </div>
-              <small>
-                {{ formatTime(entry.createdAt) }} · 余额 {{ formatCents(entry.balanceAfterCents) }}
-                <template v-if="entry.reason"> · {{ entry.reason }}</template>
+              <p class="pp-work__prompt" :title="task.cleanPrompt" data-no-translate>
+                {{ task.cleanPrompt }}
+              </p>
+              <small class="pp-work__caption">
+                {{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}
               </small>
-            </li>
-          </ul>
-
-          <p v-else-if="!ledgerLoading" class="pp-empty">暂无余额变动记录。</p>
+              <div class="pp-work__actions">
+                <button
+                  v-if="task.status === 'succeeded' && taskOriginalUrl(task)"
+                  type="button"
+                  :disabled="submittingTaskId === task.id"
+                  @click="openSubmitDialog(task)"
+                >
+                  <i class="bi bi-send"></i> 投稿
+                </button>
+                <button
+                  type="button"
+                  class="is-danger"
+                  :disabled="deletingTaskId === task.id"
+                  @click="removeTask(task)"
+                >
+                  <i class="bi bi-trash3"></i> 删除
+                </button>
+              </div>
+            </article>
+          </div>
+          <div v-else-if="!tasksLoading" class="pp-empty">
+            <i class="bi" :class="hasTaskFilters ? 'bi-search' : 'bi-images'"></i>
+            <strong>{{ hasTaskFilters ? '没有符合条件的作品' : '还没有创作记录' }}</strong>
+            <p>
+              {{ hasTaskFilters ? '换个关键词或清除筛选后再试。' : '去工作台生成第一张图吧。' }}
+            </p>
+            <button
+              v-if="hasTaskFilters"
+              type="button"
+              class="pp-btn is-ghost"
+              @click="clearTaskFilters"
+            >
+              清除筛选
+            </button>
+            <RouterLink v-else class="pp-btn is-primary" to="/text-to-image">开始创作</RouterLink>
+          </div>
 
           <button
-            v-if="ledgerCursor"
+            v-if="tasksCursor"
             type="button"
             class="pp-btn is-ghost pp-load-more"
-            :disabled="ledgerLoading"
-            @click="loadLedger({ append: true })"
+            :disabled="tasksLoading"
+            @click="loadTasks({ append: true })"
           >
-            {{ ledgerLoading ? '加载中…' : '加载更多' }}
+            {{ tasksLoading ? '加载中…' : '加载更多' }}
           </button>
-        </div>
-      </template>
-    </section>
+        </section>
 
-    <!-- 通知 -->
-    <section v-show="activeTab === 'notifications'" class="pp-panel">
-      <div class="pp-notify-toolbar">
-        <button type="button" class="pp-btn is-ghost" @click="markAllRead">
-          <i class="bi bi-check2-all"></i> 全部已读
-        </button>
-      </div>
-      <ul v-if="notifications.length" class="pp-notify-list">
-        <li v-for="item in notifications" :key="item.id" :class="{ 'is-unread': !item.readAt }">
-          <span class="pp-notify-dot" aria-hidden="true"></span>
-          <div>
-            <strong>{{ item.title }}</strong>
-            <p v-if="item.body">{{ item.body }}</p>
-            <small>{{ formatTime(item.createdAt) }}</small>
+        <!-- 个人素材库 -->
+        <section
+          id="profile-panel-materials"
+          v-show="activeTab === 'materials'"
+          class="pp-panel pp-materials-panel"
+          role="tabpanel"
+        >
+          <header class="pp-panel-head pp-materials-head">
+            <div>
+              <h2>个人素材</h2>
+              <p>列表始终使用 512px 缩略图；只有打开预览时才读取原图。</p>
+            </div>
+            <button
+              type="button"
+              class="pp-btn is-primary"
+              :disabled="materialsUploading || materials.length >= 200"
+              @click="materialInput?.click()"
+            >
+              <i class="bi" :class="materialsUploading ? 'bi-arrow-repeat spin' : 'bi-plus-lg'"></i>
+              {{ materialsUploading ? '上传中…' : '添加素材' }}
+            </button>
+            <input
+              ref="materialInput"
+              class="pp-avatar-input"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              @change="onMaterialsSelected"
+            />
+          </header>
+
+          <div
+            v-if="materialsLoading && !materials.length"
+            class="pp-material-grid"
+            aria-hidden="true"
+          >
+            <div v-for="n in 8" :key="n" class="pp-material-skeleton"></div>
           </div>
-        </li>
-      </ul>
-      <p v-else-if="notificationsLoaded && !notificationsLoading" class="pp-empty">暂无通知。</p>
-      <button
-        v-if="notificationsCursor"
-        type="button"
-        class="pp-btn is-ghost pp-load-more"
-        :disabled="notificationsLoading"
-        @click="loadNotifications({ append: true })"
-      >
-        {{ notificationsLoading ? '加载中…' : '加载更多' }}
-      </button>
-    </section>
+          <div v-else-if="materials.length" class="pp-material-grid">
+            <article v-for="asset in materials" :key="asset.id" class="pp-material-card">
+              <button
+                type="button"
+                class="pp-material-card__cover"
+                @click="previewMaterial = asset"
+              >
+                <AuthenticatedImage
+                  :src="asset.thumbnailUrl"
+                  :alt="asset.title"
+                  loading="lazy"
+                  root-margin="180px 0px"
+                />
+                <span class="pp-material-card__preview-hint"
+                  ><i class="bi bi-arrows-fullscreen"></i> 预览</span
+                >
+              </button>
+              <div class="pp-material-card__body">
+                <strong :title="asset.title">{{ asset.title }}</strong>
+                <small
+                  >{{ formatBytes(asset.sizeBytes) }} · {{ formatTime(asset.createdAt) }}</small
+                >
+                <button type="button" aria-label="删除素材" @click="removeMaterial(asset)">
+                  <i class="bi bi-trash3"></i>
+                </button>
+              </div>
+            </article>
+          </div>
+          <div v-else class="pp-empty is-compact">
+            <i class="bi bi-collection"></i>
+            <strong>建立你的私人素材架</strong>
+            <p>上传 PNG、JPEG 或 WebP；单张不超过 10MB，单次最多 6 张。</p>
+            <button type="button" class="pp-btn is-primary" @click="materialInput?.click()">
+              添加第一项素材
+            </button>
+          </div>
 
-    <!-- 账号设置 -->
-    <section v-show="activeTab === 'account'" class="pp-panel">
-      <div class="pp-account-forms">
-        <form class="pp-account-form" @submit.prevent="saveUsername">
-          <h3><i class="bi bi-person-badge"></i> 修改用户名</h3>
-          <label>
-            <span>用户名</span>
-            <input v-model="profileForm.username" maxlength="24" placeholder="输入新的用户名" />
-          </label>
-          <button type="submit" class="pp-btn is-primary" :disabled="profileForm.saving">
-            {{ profileForm.saving ? '保存中…' : '保存' }}
+          <div class="pp-material-limit">
+            <span>{{ materials.length }} / 200 项</span>
+            <span>单张 ≤ 10MB</span>
+          </div>
+          <button
+            v-if="materialsCursor"
+            type="button"
+            class="pp-btn is-ghost pp-load-more"
+            :disabled="materialsLoading"
+            @click="loadMaterials({ append: true })"
+          >
+            {{ materialsLoading ? '加载中…' : '加载更多' }}
           </button>
-        </form>
+        </section>
 
-        <form class="pp-account-form" @submit.prevent="savePassword">
-          <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
-          <label>
-            <span>当前密码</span>
-            <input v-model="passwordForm.old" type="password" autocomplete="current-password" />
-          </label>
-          <label>
-            <span>新密码（至少 8 位）</span>
-            <input v-model="passwordForm.next" type="password" autocomplete="new-password" />
-          </label>
-          <label>
-            <span>确认新密码</span>
-            <input v-model="passwordForm.confirm" type="password" autocomplete="new-password" />
-          </label>
-          <button type="submit" class="pp-btn is-primary" :disabled="passwordForm.saving">
-            {{ passwordForm.saving ? '保存中…' : '更新密码' }}
+        <!-- 我的投稿 -->
+        <section
+          id="profile-panel-submissions"
+          v-show="activeTab === 'submissions'"
+          class="pp-panel"
+          role="tabpanel"
+        >
+          <ul v-if="submissions.length" class="pp-submission-list">
+            <li v-for="submission in submissions" :key="submission.id">
+              <img
+                v-if="submission.coverUrl || submission.mediaUrls?.length"
+                :src="submission.coverUrl || submission.mediaUrls[0]"
+                alt=""
+                loading="lazy"
+              />
+              <div class="pp-submission__body">
+                <strong>{{ submission.title || 'AI 作品' }}</strong>
+                <small>{{ formatTime(submission.createdAt) }}</small>
+                <p v-if="submission.rejectReason" class="pp-submission__reason">
+                  原因：{{ submission.rejectReason }}
+                </p>
+              </div>
+              <span class="pp-submission__status" :data-status="submission.status">
+                {{ SUBMISSION_STATUS_LABELS[submission.status] || submission.status }}
+              </span>
+              <button
+                type="button"
+                class="pp-submission__remove"
+                title="撤回/删除"
+                @click="removeSubmission(submission)"
+              >
+                <i class="bi bi-trash3"></i>
+              </button>
+            </li>
+          </ul>
+          <p v-else-if="submissionsLoaded && !submissionsLoading" class="pp-empty">
+            还没有投稿，在「我的作品」里把成功任务投稿到画廊吧。
+          </p>
+          <button
+            v-if="submissionsCursor"
+            type="button"
+            class="pp-btn is-ghost pp-load-more"
+            :disabled="submissionsLoading"
+            @click="loadSubmissions({ append: true })"
+          >
+            {{ submissionsLoading ? '加载中…' : '加载更多' }}
           </button>
-        </form>
-      </div>
-    </section>
+        </section>
+
+        <!-- 钱包：余额 + 兑换码 + 账本 -->
+        <section
+          id="profile-panel-wallet"
+          v-show="activeTab === 'wallet'"
+          class="pp-panel"
+          role="tabpanel"
+        >
+          <header class="pp-panel-head">
+            <div>
+              <h2>钱包</h2>
+              <p>余额、兑换码入账与资金明细。</p>
+            </div>
+            <button
+              type="button"
+              class="pp-btn is-ghost"
+              :disabled="walletLoading"
+              @click="
+                () => {
+                  void loadWallet()
+                  void loadLedger()
+                }
+              "
+            >
+              <i class="bi bi-arrow-repeat" :class="{ spin: walletLoading || ledgerLoading }"></i>
+              刷新
+            </button>
+          </header>
+
+          <div v-if="walletLoading && !walletLoaded" class="pp-skel-list" aria-hidden="true">
+            <div class="pp-skel-card"></div>
+            <div class="pp-skel-row"></div>
+          </div>
+
+          <div v-else-if="walletError && !wallet" class="pp-state is-error">
+            <strong>钱包加载失败</strong>
+            <p>{{ walletError }}</p>
+            <button type="button" class="pp-btn is-ghost" @click="loadWallet()">重试</button>
+          </div>
+
+          <template v-else>
+            <div class="pp-wallet-hero">
+              <div>
+                <span class="pp-wallet-hero__label">可用余额</span>
+                <strong class="pp-wallet-hero__amount">{{ formatCents(availableCents) }}</strong>
+                <div class="pp-wallet-hero__meta">
+                  <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
+                  <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
+                    冻结 {{ formatCents(wallet?.frozenCents || 0) }}
+                  </span>
+                </div>
+              </div>
+              <RouterLink class="pp-btn is-primary" to="/pricing">去充值</RouterLink>
+            </div>
+
+            <div class="pp-redeem">
+              <div class="pp-redeem__head">
+                <h3>兑换码</h3>
+                <p>持有兑换码可在此入账，格式 SC-XXXX-XXXX-XXXX。</p>
+              </div>
+              <form class="pp-redeem__form" @submit.prevent="submitRedeem">
+                <input
+                  :value="redeemCode"
+                  type="text"
+                  class="pp-redeem__input"
+                  placeholder="SC-XXXX-XXXX-XXXX"
+                  maxlength="20"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="兑换码"
+                  @input="onRedeemInput"
+                />
+                <button type="submit" class="pp-btn is-primary" :disabled="redeeming">
+                  {{ redeeming ? '兑换中…' : '兑换' }}
+                </button>
+              </form>
+            </div>
+
+            <div class="pp-ledger">
+              <div class="pp-ledger__head">
+                <h3>账本明细</h3>
+                <span v-if="ledgerError" class="pp-ledger__error">{{ ledgerError }}</span>
+              </div>
+
+              <div v-if="ledgerLoading && !ledger.length" class="pp-skel-list" aria-hidden="true">
+                <div v-for="n in 5" :key="n" class="pp-skel-row"></div>
+              </div>
+
+              <ul v-else-if="ledger.length" class="pp-ledger-list">
+                <li v-for="entry in ledger" :key="entry.id">
+                  <div class="pp-ledger__main">
+                    <span>{{ ledgerKindLabel(entry.kind) }}</span>
+                    <strong :class="Number(entry.deltaCents) >= 0 ? 'is-income' : 'is-spend'">
+                      {{ Number(entry.deltaCents) >= 0 ? '+' : ''
+                      }}{{ formatCents(entry.deltaCents) }}
+                    </strong>
+                  </div>
+                  <small>
+                    {{ formatTime(entry.createdAt) }} · 余额
+                    {{ formatCents(entry.balanceAfterCents) }}
+                    <template v-if="entry.reason"> · {{ entry.reason }}</template>
+                  </small>
+                </li>
+              </ul>
+
+              <p v-else-if="!ledgerLoading" class="pp-empty">暂无余额变动记录。</p>
+
+              <button
+                v-if="ledgerCursor"
+                type="button"
+                class="pp-btn is-ghost pp-load-more"
+                :disabled="ledgerLoading"
+                @click="loadLedger({ append: true })"
+              >
+                {{ ledgerLoading ? '加载中…' : '加载更多' }}
+              </button>
+            </div>
+          </template>
+        </section>
+
+        <!-- 通知 -->
+        <section
+          id="profile-panel-notifications"
+          v-show="activeTab === 'notifications'"
+          class="pp-panel"
+          role="tabpanel"
+        >
+          <div class="pp-notify-toolbar">
+            <button type="button" class="pp-btn is-ghost" @click="markAllRead">
+              <i class="bi bi-check2-all"></i> 全部已读
+            </button>
+          </div>
+          <ul v-if="notifications.length" class="pp-notify-list">
+            <li v-for="item in notifications" :key="item.id" :class="{ 'is-unread': !item.readAt }">
+              <span class="pp-notify-dot" aria-hidden="true"></span>
+              <div>
+                <strong>{{ item.title }}</strong>
+                <p v-if="item.body">{{ item.body }}</p>
+                <small>{{ formatTime(item.createdAt) }}</small>
+              </div>
+            </li>
+          </ul>
+          <p v-else-if="notificationsLoaded && !notificationsLoading" class="pp-empty">
+            暂无通知。
+          </p>
+          <button
+            v-if="notificationsCursor"
+            type="button"
+            class="pp-btn is-ghost pp-load-more"
+            :disabled="notificationsLoading"
+            @click="loadNotifications({ append: true })"
+          >
+            {{ notificationsLoading ? '加载中…' : '加载更多' }}
+          </button>
+        </section>
+
+        <!-- 账号设置 -->
+        <section
+          id="profile-panel-account"
+          v-show="activeTab === 'account'"
+          class="pp-panel"
+          role="tabpanel"
+        >
+          <div class="pp-account-forms">
+            <form class="pp-account-form is-profile" @submit.prevent="saveProfile">
+              <h3><i class="bi bi-person-vcard"></i> 个人资料</h3>
+              <div class="pp-avatar-editor">
+                <button
+                  type="button"
+                  class="pp-avatar-editor__preview"
+                  @click="avatarInput?.click()"
+                >
+                  <img
+                    v-if="authStore.user?.avatarUrl"
+                    :src="authStore.user.avatarUrl"
+                    alt="当前头像"
+                  />
+                  <i v-else class="bi bi-person-fill"></i>
+                </button>
+                <div>
+                  <strong>个人头像</strong>
+                  <p>自动裁切为 512 × 512，支持 PNG、JPEG、WebP。</p>
+                  <div class="pp-avatar-editor__actions">
+                    <button
+                      type="button"
+                      class="pp-btn is-ghost"
+                      :disabled="profileForm.avatarUploading"
+                      @click="avatarInput?.click()"
+                    >
+                      上传新头像
+                    </button>
+                    <button
+                      v-if="authStore.user?.avatarUrl"
+                      type="button"
+                      class="pp-btn is-text"
+                      :disabled="profileForm.avatarUploading"
+                      @click="removeAvatar"
+                    >
+                      移除
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="pp-profile-form-grid">
+                <label
+                  ><span>昵称</span
+                  ><input
+                    v-model="profileForm.username"
+                    maxlength="64"
+                    placeholder="你希望展示的名字"
+                    :aria-invalid="Boolean(usernameError)"
+                /></label>
+                <label
+                  ><span>所在地</span
+                  ><input
+                    v-model="profileForm.location"
+                    maxlength="80"
+                    placeholder="例如：上海 / Remote"
+                /></label>
+                <label class="is-wide"
+                  ><span>个人网站</span
+                  ><input
+                    v-model="profileForm.websiteUrl"
+                    maxlength="300"
+                    inputmode="url"
+                    placeholder="https://example.com"
+                    :aria-invalid="Boolean(websiteError)"
+                /></label>
+                <p v-if="websiteError" class="pp-field-error is-wide">{{ websiteError }}</p>
+                <label class="is-wide"
+                  ><span
+                    >个人简介 <em>{{ profileForm.bio.length }}/280</em></span
+                  ><textarea
+                    v-model="profileForm.bio"
+                    maxlength="280"
+                    rows="5"
+                    placeholder="介绍你的创作方向、擅长风格或正在进行的项目…"
+                  ></textarea>
+                </label>
+              </div>
+              <div class="pp-form-footer">
+                <span :class="{ 'is-dirty': profileDirty }">
+                  <i class="bi" :class="profileDirty ? 'bi-circle-fill' : 'bi-check2-circle'"></i>
+                  {{ profileDirty ? '有未保存的修改' : '资料已是最新状态' }}
+                </span>
+                <button type="submit" class="pp-btn is-primary" :disabled="!profileCanSave">
+                  {{ profileForm.saving ? '保存中…' : '保存个人资料' }}
+                </button>
+              </div>
+            </form>
+
+            <form class="pp-account-form" @submit.prevent="savePassword">
+              <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
+              <label>
+                <span>当前密码</span>
+                <span class="pp-password-input">
+                  <input
+                    v-model="passwordForm.old"
+                    :type="passwordVisible.old ? 'text' : 'password'"
+                    autocomplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    :aria-label="passwordVisible.old ? '隐藏当前密码' : '显示当前密码'"
+                    @click="passwordVisible.old = !passwordVisible.old"
+                  >
+                    <i class="bi" :class="passwordVisible.old ? 'bi-eye-slash' : 'bi-eye'"></i>
+                  </button>
+                </span>
+              </label>
+              <label>
+                <span>新密码（至少 8 位）</span>
+                <span class="pp-password-input">
+                  <input
+                    v-model="passwordForm.next"
+                    :type="passwordVisible.next ? 'text' : 'password'"
+                    autocomplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    :aria-label="passwordVisible.next ? '隐藏新密码' : '显示新密码'"
+                    @click="passwordVisible.next = !passwordVisible.next"
+                  >
+                    <i class="bi" :class="passwordVisible.next ? 'bi-eye-slash' : 'bi-eye'"></i>
+                  </button>
+                </span>
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <span class="pp-password-input">
+                  <input
+                    v-model="passwordForm.confirm"
+                    :type="passwordVisible.confirm ? 'text' : 'password'"
+                    autocomplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    :aria-label="passwordVisible.confirm ? '隐藏确认密码' : '显示确认密码'"
+                    @click="passwordVisible.confirm = !passwordVisible.confirm"
+                  >
+                    <i class="bi" :class="passwordVisible.confirm ? 'bi-eye-slash' : 'bi-eye'"></i>
+                  </button>
+                </span>
+              </label>
+              <ul v-if="passwordStarted" class="pp-password-checks" aria-live="polite">
+                <li :class="{ 'is-valid': passwordChecks.length }">
+                  <i
+                    class="bi"
+                    :class="passwordChecks.length ? 'bi-check-circle-fill' : 'bi-circle'"
+                  ></i>
+                  至少 8 个字符
+                </li>
+                <li :class="{ 'is-valid': passwordChecks.matches }">
+                  <i
+                    class="bi"
+                    :class="passwordChecks.matches ? 'bi-check-circle-fill' : 'bi-circle'"
+                  ></i>
+                  两次输入一致
+                </li>
+              </ul>
+              <button type="submit" class="pp-btn is-primary" :disabled="!passwordCanSave">
+                {{ passwordForm.saving ? '保存中…' : '更新密码' }}
+              </button>
+            </form>
+
+            <section class="pp-account-form is-identity">
+              <h3><i class="bi bi-fingerprint"></i> 账号信息</h3>
+              <dl>
+                <div>
+                  <dt>登录邮箱</dt>
+                  <dd>{{ authStore.user?.email || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>账号 ID</dt>
+                  <dd>{{ authStore.user?.id || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>注册时间</dt>
+                  <dd>{{ formatTime(authStore.user?.createdAt) }}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <!-- 投稿到画廊 -->
     <Teleport to="body">
@@ -1070,10 +1655,42 @@ onBeforeUnmount(() => stopOrderPolling())
       </div>
     </Teleport>
 
+    <!-- 素材原图按需预览 -->
+    <Teleport to="body">
+      <div
+        v-if="previewMaterial"
+        class="pp-backdrop pp-viewport-backdrop"
+        tabindex="-1"
+        @click.self="previewMaterial = null"
+        @keydown.esc="previewMaterial = null"
+      >
+        <div class="pp-preview pp-material-preview">
+          <header>
+            <div>
+              <strong>{{ previewMaterial.title }}</strong>
+              <small>{{ formatBytes(previewMaterial.sizeBytes) }}</small>
+            </div>
+            <button type="button" aria-label="关闭" @click="previewMaterial = null">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </header>
+          <div class="pp-preview__media">
+            <img :src="previewMaterial.url" :alt="previewMaterial.title" />
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- 产物大图预览 -->
     <Teleport to="body">
-      <div v-if="previewTask" class="pp-backdrop" @click.self="previewTask = null">
-        <div class="pp-preview">
+      <div
+        v-if="previewTask"
+        class="pp-backdrop pp-viewport-backdrop pp-task-preview-backdrop"
+        tabindex="-1"
+        @click.self="previewTask = null"
+        @keydown.esc="previewTask = null"
+      >
+        <div class="pp-preview" role="dialog" aria-modal="true" aria-label="作品预览">
           <header>
             <strong>{{ TASK_TYPE_LABELS[previewTask.type] || previewTask.type }}</strong>
             <button type="button" aria-label="关闭" @click="previewTask = null">
@@ -1082,16 +1699,88 @@ onBeforeUnmount(() => stopOrderPolling())
           </header>
           <div class="pp-preview__media">
             <a
-              v-for="(url, index) in previewTask.outputUrls"
+              v-for="(url, index) in previewTask.originalUrls?.length
+                ? previewTask.originalUrls
+                : previewTask.outputUrls"
               :key="index"
               :href="url"
               target="_blank"
               rel="noopener"
             >
-              <img :src="url" :alt="`产物 ${index + 1}`" />
+              <ProgressiveAuthenticatedImage
+                class="pp-preview__image"
+                :src="url"
+                :alt="`产物 ${index + 1}`"
+                loading="eager"
+                :load-original="true"
+                :retry-count="2"
+              />
             </a>
           </div>
-          <p class="pp-preview__prompt">{{ previewTask.prompt }}</p>
+          <p class="pp-preview__prompt" data-no-translate>
+            {{ cleanText(taskDisplayPrompt(previewTask), 800) }}
+          </p>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 危险操作确认 -->
+    <Teleport to="body">
+      <div
+        v-if="confirmDialog.open"
+        class="pp-backdrop"
+        @click.self="closeConfirmation(false)"
+        @keydown.esc="closeConfirmation(false)"
+      >
+        <div
+          class="pp-dialog pp-confirm-dialog"
+          :class="`is-${confirmDialog.tone}`"
+          role="alertdialog"
+          aria-modal="true"
+          :aria-label="confirmDialog.title"
+          tabindex="-1"
+        >
+          <button
+            type="button"
+            class="pp-confirm-dialog__close"
+            aria-label="关闭"
+            @click="closeConfirmation(false)"
+          >
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
+          </button>
+          <div class="pp-confirm-dialog__body">
+            <span class="pp-confirm-dialog__icon" aria-hidden="true">
+              <i class="bi" :class="confirmDialog.icon"></i>
+            </span>
+            <div class="pp-confirm-dialog__copy">
+              <span class="pp-confirm-dialog__eyebrow">{{ confirmDialog.eyebrow }}</span>
+              <h3>{{ confirmDialog.title }}</h3>
+              <p>{{ confirmDialog.message }}</p>
+            </div>
+          </div>
+          <p v-if="confirmDialog.note" class="pp-confirm-dialog__note">
+            <i class="bi bi-shield-check" aria-hidden="true"></i>
+            <span>{{ confirmDialog.note }}</span>
+          </p>
+          <footer>
+            <button
+              type="button"
+              class="pp-btn is-ghost"
+              autofocus
+              @click="closeConfirmation(false)"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              class="pp-btn"
+              :class="confirmDialog.tone === 'logout' ? 'is-primary' : 'is-danger'"
+              @click="closeConfirmation(true)"
+            >
+              <i class="bi" :class="confirmDialog.icon" aria-hidden="true"></i>
+              {{ confirmDialog.confirmLabel }}
+            </button>
+          </footer>
         </div>
       </div>
     </Teleport>
@@ -2313,3 +3002,4 @@ a.pp-stats__foot,
   }
 }
 </style>
+<style scoped src="./ProfileView.modern.css"></style>

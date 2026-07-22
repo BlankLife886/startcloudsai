@@ -59,3 +59,21 @@ func DeleteExpiredSessions(ctx context.Context, q Q, now time.Time) (int64, erro
 	}
 	return tag.RowsAffected(), nil
 }
+
+// GetUserSessionSummary 返回用户当前有效会话数与最近一次会话元数据。
+func GetUserSessionSummary(ctx context.Context, q Q, userID uuid.UUID, now time.Time) (*UserSessionSummary, error) {
+	var summary UserSessionSummary
+	err := q.QueryRow(ctx,
+		`SELECT
+			(SELECT count(*) FROM sessions WHERE user_id = $1 AND expires_at > $2),
+			(SELECT ip FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1),
+			(SELECT user_agent FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1),
+			(SELECT created_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1),
+			(SELECT expires_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1)`,
+		userID, now).Scan(&summary.ActiveCount, &summary.LastIP, &summary.LastUserAgent,
+		&summary.LastCreatedAt, &summary.LastExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}

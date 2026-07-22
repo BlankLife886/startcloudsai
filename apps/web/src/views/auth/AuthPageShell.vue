@@ -115,8 +115,8 @@ function authModeQuery(mode) {
           <li data-auth-feature class="auth-hero-feature">
             <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-wallet2"></i></span>
             <div class="auth-hero-feature__body">
-              <strong>钱包与套餐</strong>
-              <p>按张计费透明可查，充值套餐与兑换码即时入账</p>
+              <strong>安全登录</strong>
+              <p>密码独立加密保存，邮箱验证码保护注册与找回流程</p>
             </div>
           </li>
         </ul>

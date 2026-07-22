@@ -75,7 +75,7 @@ export const useAuthStore = defineStore('auth', () => {
     return initPromise
   }
 
-  async function login(credentials) {
+  async function loginWithPassword(credentials) {
     isLoading.value = true
     error.value = ''
     try {
@@ -94,20 +94,13 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function register(payload) {
+  async function registerWithEmail(credentials) {
     isLoading.value = true
     error.value = ''
     try {
-      const result = await registerAccount({
-        email: payload.email,
-        password: payload.password,
-        username: payload.username || payload.displayName || '',
-      })
-      // 新契约注册即登录
-      if (result?.user?.id) {
-        applyUser(result.user)
-        lastAuthCheckedAt = Date.now()
-      }
+      const result = await registerAccount(credentials)
+      applyUser(result.user)
+      lastAuthCheckedAt = Date.now()
       return result
     } catch (err) {
       error.value = err?.message || '注册失败'
@@ -153,8 +146,8 @@ export const useAuthStore = defineStore('auth', () => {
     displayName,
     resetAuthState,
     initAuth,
-    login,
-    register,
+    loginWithPassword,
+    registerWithEmail,
     logout,
     patchUser,
   }

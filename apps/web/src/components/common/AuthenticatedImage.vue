@@ -103,13 +103,9 @@ function scheduleSourceRelease(value) {
   }, delay)
 }
 
-function observeProtectedSource(value) {
+function observeSource(value) {
   stopObserving()
-  if (
-    props.loading === 'eager' ||
-    !isAuthenticatedAiMediaUrl(value) ||
-    typeof IntersectionObserver === 'undefined'
-  ) {
+  if (props.loading === 'eager' || typeof IntersectionObserver === 'undefined') {
     nearViewport = true
     loadActive.value = true
     void resolveSource(value)
@@ -176,13 +172,13 @@ watch(
     nearViewport = false
     loadActive.value = false
     if (!next) return
-    void nextTick(() => observeProtectedSource(next))
+    void nextTick(() => observeSource(next))
   },
   { immediate: true },
 )
 
 onMounted(() => {
-  if (props.src && !resolvedSrc.value) observeProtectedSource(String(props.src).trim())
+  if (props.src && !resolvedSrc.value) observeSource(String(props.src).trim())
 })
 
 onBeforeUnmount(() => {
@@ -267,16 +263,28 @@ onBeforeUnmount(() => {
 }
 
 @keyframes authenticated-image-skeleton {
-  to { background-position: -220% 0; }
+  to {
+    background-position: -220% 0;
+  }
 }
 
 @keyframes authenticated-image-reveal {
-  from { opacity: 0.35; filter: blur(7px); transform: scale(1.012); }
-  to { opacity: 1; filter: blur(0); transform: scale(1); }
+  from {
+    opacity: 0.35;
+    filter: blur(7px);
+    transform: scale(1.012);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .authenticated-image.is-loading,
-  .authenticated-image.is-loaded { animation: none; }
+  .authenticated-image.is-loaded {
+    animation: none;
+  }
 }
 </style>

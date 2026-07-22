@@ -10,17 +10,13 @@ import { ElMessage } from 'element-plus'
 const CODE_MESSAGES: Record<string, string> = {
   auth_required: '登录已失效，请重新登录',
   admin_required: '需要管理员权限',
-  invalid_credentials: '邮箱或密码错误',
-  email_exists: '该邮箱已被注册',
+  invalid_credentials: '管理员账号、密码或密钥错误',
   insufficient_balance: '余额不足',
   task_not_found: '任务不存在',
   task_not_cancelable: '任务当前状态不可取消',
   user_task_limit: '该用户并发任务数已达上限',
   upload_too_large: '文件过大',
   unsupported_file: '不支持的文件类型',
-  plan_not_found: '套餐不存在',
-  order_not_found: '订单不存在',
-  order_not_payable: '订单当前状态不可操作',
   submission_not_allowed: '不允许的投稿操作',
   submission_banned: '该账号已被禁止投稿',
   submission_disabled: '投稿功能已关闭',
@@ -103,7 +99,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   const code = (envelope && envelope.success === false && envelope.code) || `http_${res.status}`
   const serverMessage = (envelope && envelope.success === false && envelope.error) || ''
-  const message = CODE_MESSAGES[code] ?? serverMessage ?? `请求失败（${res.status}）`
+  const message =
+    code === 'validation_error' && serverMessage
+      ? serverMessage
+      : (CODE_MESSAGES[code] ?? serverMessage ?? `请求失败（${res.status}）`)
 
   if (res.status === 401) {
     // 会话失效：回登录页（避免在登录页上循环跳转）

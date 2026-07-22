@@ -1,0 +1,10 @@
+title = "StarCloudsAI gitleaks configuration"
+
+[allowlist]
+description = "Generated prompt hashes and CSS color literals are not credentials"
+paths = [
+  '''apps/server/scripts/backfill-prompt-categories\.sql''',
+]
+regexes = [
+  '''rgba\([^)]*\)''',
+]

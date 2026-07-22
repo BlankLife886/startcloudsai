@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"strings"
 
@@ -13,16 +14,27 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
-// outputURLsFor 生成任务产物的短期可读 URL（presign 失败跳过）。
+// outputURLsFor 返回站内受保护文件地址，避免把客户端是否能直连 R2
+// 变成任务结果能否展示的额外前提。
 func (s *Server) outputURLsFor(c *gin.Context, t *store.Task) []string {
-	urls := make([]string, 0, len(t.OutputKeys))
-	for _, key := range t.OutputKeys {
-		u, err := s.Storage.PresignGet(c.Request.Context(), key)
-		if err != nil {
-			log.Printf("presign failed for key %s: %v", key, err)
-			continue
+	keys := t.ThumbnailKeys
+	if len(keys) == 0 {
+		keys = t.OutputKeys
+	}
+	return s.urlsForKeys(c, keys)
+}
+
+func (s *Server) originalURLsFor(c *gin.Context, t *store.Task) []string {
+	return s.urlsForKeys(c, t.OutputKeys)
+}
+
+func (s *Server) urlsForKeys(c *gin.Context, keys []string) []string {
+	urls := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key != "" {
+			urls = append(urls, "/api/files/"+key)
 		}
-		urls = append(urls, u)
 	}
 	return urls
 }
@@ -42,6 +54,36 @@ type taskCreateIn struct {
 	InputKeys      []string       `json:"inputKeys"`
 	Count          *int           `json:"count"`
 	IdempotencyKey *string        `json:"idempotencyKey"`
+}
+
+func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, objectSize func(context.Context, string) (int64, error)) error {
+	if len(keys) > 4 {
+		return apperr.E("validation_error", "inputKeys: 最多允许 4 张参考图", 422)
+	}
+	seen := make(map[string]struct{}, len(keys))
+	var totalInputBytes int64
+	for _, key := range keys {
+		if len(key) > 512 {
+			return apperr.E("validation_error", "inputKeys: 文件键过长", 422)
+		}
+		if _, exists := seen[key]; exists {
+			return apperr.E("validation_error", "inputKeys: 不允许重复文件", 422)
+		}
+		seen[key] = struct{}{}
+		if !strings.HasPrefix(key, "uploads/"+userID.String()+"/") &&
+			!strings.HasPrefix(key, "tasks/"+userID.String()+"/") {
+			return apperr.E("validation_error", "inputKeys 只能引用自己的文件", 422)
+		}
+		size, err := objectSize(ctx, key)
+		if err != nil {
+			return apperr.E("validation_error", "inputKeys: 文件不存在", 422)
+		}
+		totalInputBytes += size
+		if size <= 0 || size > maxObjectBytes || totalInputBytes > 32<<20 {
+			return apperr.E("validation_error", "inputKeys: 图片累计大小超过限制", 422)
+		}
+	}
+	return nil
 }
 
 func (s *Server) createTask(c *gin.Context) {
@@ -75,12 +117,9 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "idempotencyKey: 长度不能超过 128", 422))
 		return
 	}
-	for _, key := range body.InputKeys {
-		if !strings.HasPrefix(key, "uploads/"+user.ID.String()+"/") &&
-			!strings.HasPrefix(key, "tasks/"+user.ID.String()+"/") {
-			fail(c, apperr.E("validation_error", "inputKeys 只能引用自己的文件", 422))
-			return
-		}
+	if err := validateTaskInputKeys(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, s.Storage.ObjectSize); err != nil {
+		fail(c, err)
+		return
 	}
 
 	task, created, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{
@@ -111,7 +150,7 @@ func (s *Server) createTask(c *gin.Context) {
 			log.Printf("task %s idempotent re-enqueue failed (queued reaper will pick up): %v", task.ID, err)
 		}
 	}
-	ok(c, taskDict(task, s.outputURLsFor(c, task)))
+	ok(c, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
 }
 
 func (s *Server) listTasks(c *gin.Context) {
@@ -141,7 +180,7 @@ func (s *Server) listTasks(c *gin.Context) {
 		return
 	}
 	ok(c, buildPage(rows, limit, func(t *store.Task) gin.H {
-		return taskDict(t, s.outputURLsFor(c, t))
+		return taskDict(t, s.outputURLsFor(c, t), s.originalURLsFor(c, t))
 	}))
 }
 
@@ -171,7 +210,7 @@ func (s *Server) getTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, taskDict(task, s.outputURLsFor(c, task)))
+	ok(c, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
 }
 
 func (s *Server) cancelTask(c *gin.Context) {
@@ -190,7 +229,7 @@ func (s *Server) cancelTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, taskDict(task, nil))
+	ok(c, taskDict(task, nil, nil))
 }
 
 func (s *Server) deleteTask(c *gin.Context) {
@@ -210,6 +249,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	keys := append([]string(nil), task.OutputKeys...)
+	keys = append(keys, task.ThumbnailKeys...)
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		if terr := store.DeleteSubmissionByTaskID(ctx, tx, task.ID); terr != nil {
 			return terr

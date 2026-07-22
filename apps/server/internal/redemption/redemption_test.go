@@ -31,6 +31,16 @@ func newUser(t *testing.T, st *store.Store) *store.User {
 	return user
 }
 
+func newAdmin(t *testing.T, st *store.Store) *store.AdminAccount {
+	t.Helper()
+	email := fmt.Sprintf("admin-%s@test.dev", uuid.NewString()[:8])
+	admin, err := store.UpsertAdminAccount(context.Background(), st.Pool, email, "admin", "x")
+	if err != nil {
+		t.Fatalf("insert admin: %v", err)
+	}
+	return admin
+}
+
 func insertCode(t *testing.T, st *store.Store, grantCents int64, expiresAt *time.Time, createdBy uuid.UUID) *store.RedemptionCode {
 	t.Helper()
 	code, err := redemption.NewCode()
@@ -85,7 +95,7 @@ func TestNewCodeFormat(t *testing.T) {
 func TestRedeemSuccessAndReplay(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
-	admin := newUser(t, st)
+	admin := newAdmin(t, st)
 	user := newUser(t, st)
 	r := insertCode(t, st, 500, nil, admin.ID)
 
@@ -128,7 +138,7 @@ func TestRedeemSuccessAndReplay(t *testing.T) {
 func TestRedeemErrors(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
-	admin := newUser(t, st)
+	admin := newAdmin(t, st)
 	user := newUser(t, st)
 
 	// 不存在

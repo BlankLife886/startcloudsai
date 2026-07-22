@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,18 @@ func (e *communityEnv) newUserSession(t *testing.T, role string) (*store.User, s
 	t.Helper()
 	ctx := context.Background()
 	email := fmt.Sprintf("u-%s@test.dev", uuid.NewString()[:8])
+	if role == "admin" {
+		admin, err := store.UpsertAdminAccount(ctx, e.st.Pool, email, "admin", "x")
+		if err != nil {
+			t.Fatalf("insert admin: %v", err)
+		}
+		token := auth.NewSessionToken()
+		expires := time.Now().UTC().Add(24 * time.Hour)
+		if err := store.InsertAdminSession(ctx, e.st.Pool, admin.ID, auth.HashToken(token), expires, nil, nil); err != nil {
+			t.Fatalf("insert admin session: %v", err)
+		}
+		return adminAccountAsUser(admin), token
+	}
 	user, err := store.InsertUser(ctx, e.st.Pool, email, "tester", "x", role, nil)
 	if err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -87,7 +100,11 @@ func (e *communityEnv) do(t *testing.T, method, path string, body any, token str
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
-		req.AddCookie(&http.Cookie{Name: e.cfg.SessionCookieName, Value: token})
+		cookieName := e.cfg.SessionCookieName
+		if strings.HasPrefix(path, "/api/admin") {
+			cookieName = adminSessionCookieName
+		}
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: token})
 	}
 	w := httptest.NewRecorder()
 	e.engine.ServeHTTP(w, req)
@@ -228,6 +245,98 @@ func TestAutoApprovePassThrough(t *testing.T) {
 	}
 }
 
+func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	taskID := env.newSucceededTask(t, user.ID)
+
+	w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
+		"taskId": taskID.String(), "title": "审核图片回归测试",
+	}, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+
+	w = env.do(t, "GET", "/api/admin/gallery/submissions?status=pending&limit=20", nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin submissions: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	items, ok := data["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %#v, want one submission", data["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item = %#v, want object", items[0])
+	}
+	coverURL, _ := item["coverUrl"].(string)
+	mediaURLs, _ := item["mediaUrls"].([]any)
+	if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
+		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
+	}
+	if len(mediaURLs) != 1 || mediaURLs[0] != coverURL {
+		t.Fatalf("mediaUrls = %#v, want [%q]", mediaURLs, coverURL)
+	}
+	author, ok := item["author"].(map[string]any)
+	if !ok || author["id"] != user.ID.String() || item["userEmail"] != user.Email {
+		t.Fatalf("author fields = %#v / %#v", author, item["userEmail"])
+	}
+}
+
+func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
+	env := newCommunityEnv(t)
+	ctx := context.Background()
+	user, _ := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	now := time.Now().UTC()
+	banUntil := now.Add(48 * time.Hour)
+
+	_, err := env.st.Pool.Exec(ctx,
+		`UPDATE users SET avatar_url = '/api/files/avatar.jpg', bio = '个人简介', location = '上海',
+		 website_url = 'https://example.com', last_login_at = $2, submission_banned_until = $3 WHERE id = $1`,
+		user.ID, now, banUntil)
+	if err != nil {
+		t.Fatalf("update profile: %v", err)
+	}
+	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "测试素材", "assets/a.png", "assets/a.jpg", "image/png", 128); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+	env.newSucceededTask(t, user.ID)
+	if _, err := env.st.Pool.Exec(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, status, cost_cents) VALUES ($1, 't2i', 'canceled', 'canceled', 0)`,
+		user.ID); err != nil {
+		t.Fatalf("insert canceled task: %v", err)
+	}
+	ip, agent := "203.0.113.8", "Admin detail test agent"
+	if err := store.InsertSession(ctx, env.st.Pool, user.ID, auth.HashToken(auth.NewSessionToken()),
+		now.Add(time.Hour), &ip, &agent); err != nil {
+		t.Fatalf("insert recent session: %v", err)
+	}
+
+	w := env.do(t, "GET", "/api/admin/users/"+user.ID.String(), nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin user detail: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	userData := data["user"].(map[string]any)
+	if userData["bio"] != "个人简介" || userData["location"] != "上海" || userData["websiteUrl"] != "https://example.com" {
+		t.Fatalf("profile fields = %#v", userData)
+	}
+	if userData["lastLoginAt"] == nil || userData["submissionBannedUntil"] == nil {
+		t.Fatalf("account timestamps missing: %#v", userData)
+	}
+	counts := data["counts"].(map[string]any)
+	if counts["assets"] != float64(1) || counts["tasksSucceeded"] != float64(1) || counts["tasksCanceled"] != float64(1) {
+		t.Fatalf("counts = %#v", counts)
+	}
+	security := data["security"].(map[string]any)
+	if security["activeSessions"] != float64(2) || security["lastSessionIp"] != ip || security["lastSessionUserAgent"] != agent {
+		t.Fatalf("security = %#v", security)
+	}
+}
+
 func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, userToken := env.newUserSession(t, "user")
@@ -313,6 +422,67 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	}
 }
 
+func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+
+	if w := env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken); w.Code != 200 {
+		t.Fatalf("put settings: status %d body %s", w.Code, w.Body.String())
+	}
+	ids := make([]string, 0, 2)
+	for range 2 {
+		taskID := env.newSucceededTask(t, user.ID)
+		w := env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": taskID.String()}, userToken)
+		data, _ := decode(t, w)
+		if w.Code != 200 {
+			t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+		}
+		ids = append(ids, data["id"].(string))
+	}
+
+	w := env.do(t, "POST", "/api/admin/gallery/submissions/"+ids[0]+"/curate",
+		gin.H{"tags": []string{" 人像 ", "电影感", "人像"}}, adminToken)
+	data, _ := decode(t, w)
+	if w.Code != 200 {
+		t.Fatalf("curate tags: status %d body %s", w.Code, w.Body.String())
+	}
+	tags := data["tags"].([]any)
+	if len(tags) != 2 || tags[0] != "人像" || tags[1] != "电影感" {
+		t.Fatalf("normalized tags = %#v", tags)
+	}
+
+	w = env.do(t, "POST", "/api/admin/gallery/submissions/batch-curate", gin.H{
+		"ids": ids, "featured": true, "tags": []string{"精选"}, "tagMode": "add",
+	}, adminToken)
+	data, _ = decode(t, w)
+	if w.Code != 200 || data["updated"] != float64(2) {
+		t.Fatalf("batch curate: status %d data %#v", w.Code, data)
+	}
+	for _, rawID := range ids {
+		id := uuid.MustParse(rawID)
+		submission, err := store.GetSubmission(context.Background(), env.st.Pool, id)
+		if err != nil || submission == nil {
+			t.Fatalf("get submission %s: %v", rawID, err)
+		}
+		if !submission.Featured || !store.Contains(submission.Tags, "精选") {
+			t.Fatalf("batch result = featured:%v tags:%v", submission.Featured, submission.Tags)
+		}
+	}
+
+	w = env.do(t, "POST", "/api/admin/gallery/submissions/reorder", gin.H{
+		"ids": []string{ids[1], ids[0]},
+	}, adminToken)
+	if w.Code != 200 {
+		t.Fatalf("reorder: status %d body %s", w.Code, w.Body.String())
+	}
+	first, _ := store.GetSubmission(context.Background(), env.st.Pool, uuid.MustParse(ids[1]))
+	second, _ := store.GetSubmission(context.Background(), env.st.Pool, uuid.MustParse(ids[0]))
+	if first.Sort != 10 || second.Sort != 20 {
+		t.Fatalf("sorts = %d, %d; want 10, 20", first.Sort, second.Sort)
+	}
+}
+
 func TestAuditActionCommunityPaths(t *testing.T) {
 	id := uuid.NewString()
 	cases := []struct {
@@ -323,6 +493,8 @@ func TestAuditActionCommunityPaths(t *testing.T) {
 		{"POST", "/api/admin/prompt-library/" + id + "/cover", "prompt-library.cover"},
 		{"POST", "/api/admin/gallery/submissions/" + id + "/violation", "submissions.violation"},
 		{"POST", "/api/admin/gallery/submissions/" + id + "/curate", "submissions.curate"},
+		{"POST", "/api/admin/gallery/submissions/batch-curate", "submissions.batch-curate"},
+		{"POST", "/api/admin/gallery/submissions/reorder", "submissions.reorder"},
 		{"POST", "/api/admin/gallery/users/" + id + "/unban", "users.unban"},
 		// 集合 POST 沿用既有「resource.末段」约定（同 settings.test-c2a）
 		{"POST", "/api/admin/gallery/categories", "gallery.categories"},

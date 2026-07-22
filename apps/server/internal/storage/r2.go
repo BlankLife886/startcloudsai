@@ -4,6 +4,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -56,6 +57,10 @@ func (s *Storage) UploadBytes(ctx context.Context, key string, data []byte, cont
 }
 
 func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
+	return s.GetBytesLimit(ctx, key, 32<<20)
+}
+
+func (s *Storage) GetBytesLimit(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -64,7 +69,22 @@ func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	defer out.Body.Close()
-	return io.ReadAll(out.Body)
+	data, err := io.ReadAll(io.LimitReader(out.Body, maxBytes+1))
+	if err == nil && int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("object exceeds %d byte limit", maxBytes)
+	}
+	return data, err
+}
+
+func (s *Storage) ObjectSize(ctx context.Context, key string) (int64, error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+	if err != nil {
+		return 0, err
+	}
+	if out.ContentLength == nil {
+		return 0, fmt.Errorf("object size unavailable")
+	}
+	return *out.ContentLength, nil
 }
 
 func (s *Storage) DeleteKeys(ctx context.Context, keys []string) error {

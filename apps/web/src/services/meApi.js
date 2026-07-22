@@ -3,7 +3,7 @@
  */
 import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
 
-/** 修改资料：{ username?, avatarUrl?, password?: { old, new } } */
+/** 修改资料：{ username?, avatarUrl?, bio?, location?, websiteUrl?, password?: {old,new} } */
 export async function updateProfile(payload = {}) {
   return apiPatch('/me/profile', payload, { fallbackMessage: '资料保存失败' })
 }
@@ -19,26 +19,17 @@ export async function getWallet({ signal } = {}) {
 }
 
 /**
- * 当前订阅：{ active, planName, endsAt, dailyGrantCents, grantedToday }。
- * 后端订阅接口尚未上线时返回 null（404 优雅降级，调用方隐藏订阅现状条）。
- */
-export async function getMySubscription({ signal } = {}) {
-  try {
-    return await apiGet('/me/subscription', { signal, fallbackMessage: '订阅状态读取失败' })
-  } catch (error) {
-    if (error?.status === 404) return null
-    throw error
-  }
-}
-
-/**
  * 兑换码入账：POST /api/me/wallet/redeem → { grantCents, balanceCents }。
  * 错误码：code_invalid / code_redeemed / code_expired / code_disabled / rate_limited。
  */
 export async function redeemWalletCode(code) {
   return apiPost(
     '/me/wallet/redeem',
-    { code: String(code || '').trim().toUpperCase() },
+    {
+      code: String(code || '')
+        .trim()
+        .toUpperCase(),
+    },
     { fallbackMessage: '兑换失败' },
   )
 }
@@ -71,11 +62,9 @@ export async function listNotifications({ limit = 20, cursor = '', signal } = {}
 
 /** 标记已读；不传 ids 则全部已读。 */
 export async function markNotificationsRead(ids = null) {
-  return apiPost(
-    '/me/notifications/read',
-    Array.isArray(ids) && ids.length ? { ids } : {},
-    { fallbackMessage: '标记已读失败' },
-  )
+  return apiPost('/me/notifications/read', Array.isArray(ids) && ids.length ? { ids } : {}, {
+    fallbackMessage: '标记已读失败',
+  })
 }
 
 /** 我的画廊投稿及审核状态。 */
@@ -96,4 +85,25 @@ export async function deleteMyGallerySubmission(id) {
   return apiDelete(`/me/gallery/submissions/${encodeURIComponent(id)}`, {
     fallbackMessage: '投稿删除失败',
   })
+}
+
+/** 用户自有素材库（原图仅在预览时读取，列表使用 thumbnailUrl）。 */
+export async function listUserAssets({ limit = 24, cursor = '', signal } = {}) {
+  const data = await apiGet('/me/assets', {
+    query: { limit, cursor },
+    signal,
+    fallbackMessage: '素材库读取失败',
+  })
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    nextCursor: data?.nextCursor || null,
+  }
+}
+
+export async function createUserAsset(payload) {
+  return apiPost('/me/assets', payload, { fallbackMessage: '素材保存失败' })
+}
+
+export async function deleteUserAsset(id) {
+  return apiDelete(`/me/assets/${encodeURIComponent(id)}`, { fallbackMessage: '素材删除失败' })
 }

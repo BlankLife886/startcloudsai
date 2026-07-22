@@ -25,6 +25,7 @@ import { createLoginRedirectQuery } from './services/authRedirect'
 import notificationService from './services/notification'
 import { useAppearanceStore } from './stores/appearance'
 import { useAuthStore } from './stores/auth'
+import { useLocaleStore } from './stores/locale'
 
 /**
  * 401（auth_required）全局处理：仅当此前是已登录态才清会话并跳登录，
@@ -55,6 +56,7 @@ function bootstrapApp() {
   app.use(router)
 
   useAppearanceStore().applyToDocument()
+  useLocaleStore().applyToDocument()
   registerUnauthorizedHandler()
 
   app.mount('#app')

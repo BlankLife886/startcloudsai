@@ -11,6 +11,7 @@ export interface AdminSubmission {
   author?: { id: string; username: string | null }
   userEmail?: string
   reason?: string | null
+  rejectReason?: string | null
   featured?: boolean
   category?: { id: string; name: string } | null
   createdAt: string
@@ -24,6 +25,7 @@ import { Close, Refresh, CircleCloseFilled, WarningFilled } from '@element-plus/
 import { request, normalizeList, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { formatTime, SUBMISSION_STATUS_LABELS, taskTypeLabel } from '@/utils'
+import ProgressiveImage from '@/components/ProgressiveImage.vue'
 import ShareReviewCard from './ShareReviewCard.vue'
 
 const status = ref('pending')
@@ -102,7 +104,7 @@ const rejectReasonPresets = ['画面质量不足', '与社区风格不符', '疑
 
 function openReject(item: AdminSubmission) {
   rejectTarget.value = item
-  rejectNote.value = String(item.reason || '').trim()
+  rejectNote.value = String(item.rejectReason ?? item.reason ?? '').trim()
   rejectOpen.value = true
 }
 
@@ -356,12 +358,12 @@ onUnmounted(() => {
             <div class="share-lightbox__viewport">
               <Transition name="share-media" mode="out-in">
                 <div :key="`${previewItem.id}:${previewMediaIndex}`" class="share-lightbox__media">
-                  <img
+                  <ProgressiveImage
                     v-if="previewMediaUrl"
                     class="share-lightbox__image"
                     :src="previewMediaUrl"
                     :alt="itemTitle(previewItem)"
-                    decoding="async"
+                    fit="contain"
                   />
                   <div v-else class="share-lightbox__empty">暂无图片</div>
                 </div>
@@ -733,25 +735,25 @@ onUnmounted(() => {
 
 .share-board {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
   grid-auto-rows: 1fr;
   align-items: stretch;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
 }
 
 .share-card-skeleton {
-  min-height: 280px;
+  min-height: 360px;
   overflow: hidden;
   border: 1px solid var(--community-line);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
   content-visibility: auto;
-  contain-intrinsic-size: 280px;
+  contain-intrinsic-size: 360px;
 
   > div {
-    aspect-ratio: 2.05 / 1;
+    aspect-ratio: 16 / 10;
     background: linear-gradient(
       105deg,
       var(--el-fill-color-light) 22%,

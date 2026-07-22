@@ -32,7 +32,7 @@ func (s *Server) currentUser(c *gin.Context) (*store.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if user == nil || user.Status != "active" {
+	if user == nil || user.Status != "active" || user.Role != "user" {
 		return nil, nil
 	}
 	// 30 天滑动续期：剩余不足阈值时延长
@@ -57,16 +57,53 @@ func (s *Server) requireUser(c *gin.Context) (*store.User, error) {
 	return user, nil
 }
 
-// requireAdmin 非管理员返回 admin_required。
-func (s *Server) requireAdmin(c *gin.Context) (*store.User, error) {
-	user, err := s.requireUser(c)
+func (s *Server) currentAdminAccount(c *gin.Context) (*store.AdminAccount, error) {
+	token, err := c.Cookie(adminSessionCookieName)
+	if err != nil || token == "" {
+		return nil, nil
+	}
+	ctx := c.Request.Context()
+	now := time.Now().UTC()
+	session, err := store.GetAdminSessionByTokenHash(ctx, s.St.Pool, auth.HashToken(token))
 	if err != nil {
 		return nil, err
 	}
-	if user.Role != "admin" {
-		return nil, apperr.E("admin_required", "需要管理员权限", 403)
+	if session == nil || !session.ExpiresAt.After(now) {
+		return nil, nil
 	}
-	return user, nil
+	admin, err := store.GetAdminAccountByID(ctx, s.St.Pool, session.AdminID)
+	if err != nil {
+		return nil, err
+	}
+	if admin == nil || admin.Status != "active" {
+		return nil, nil
+	}
+	if session.ExpiresAt.Sub(now) < adminRenewThreshold {
+		if err := store.UpdateAdminSessionExpiry(ctx, s.St.Pool, session.ID, now.Add(adminSessionTTL)); err != nil {
+			return nil, err
+		}
+	}
+	return admin, nil
+}
+
+func (s *Server) requireAdminAccount(c *gin.Context) (*store.AdminAccount, error) {
+	admin, err := s.currentAdminAccount(c)
+	if err != nil {
+		return nil, err
+	}
+	if admin == nil {
+		return nil, apperr.E("admin_required", "请登录管理员账号", 401)
+	}
+	return admin, nil
+}
+
+// requireAdmin 只接受独立管理员会话；普通用户 Cookie 永远不会通过。
+func (s *Server) requireAdmin(c *gin.Context) (*store.User, error) {
+	admin, err := s.requireAdminAccount(c)
+	if err != nil {
+		return nil, err
+	}
+	return adminAccountAsUser(admin), nil
 }
 
 // adminOnly 包装后台 handler：先校验管理员，再执行。

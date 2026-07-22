@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElCheckbox, ElMessage, ElMessageBox, type CheckboxValueType } from 'element-plus'
 import {
   CollectionTag,
@@ -9,12 +9,12 @@ import {
   Link,
   Picture,
   Plus,
+  Rank,
   Refresh,
   Search,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
 import { TASK_TYPES, taskTypeLabel } from '@/utils'
 
 interface PromptItem {
@@ -88,22 +88,107 @@ const categoryFilter = ref('all')
 const typeFilter = ref('all')
 const statusFilter = ref('all')
 let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
+const items = ref<PromptItem[]>([])
+const loading = ref(false)
+const loadingMore = ref(false)
+const error = ref<string | null>(null)
+const nextCursor = ref<string | null>(null)
+const promptContentRef = ref<HTMLElement | null>(null)
+const promptSentinelRef = ref<HTMLElement | null>(null)
+let promptLoadObserver: IntersectionObserver | null = null
+let promptRequestVersion = 0
 
-const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
-  usePagedList<PromptItem>(
-    (cursor) =>
-      request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
-        query: {
-          type: typeFilter.value === 'all' ? '' : typeFilter.value,
-          category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
-          search: query.value.trim(),
-          limit: 24,
-          cursor,
-        },
-      }).then(normalizeList),
-    // 启停/封面筛选（statusFilter）为纯前端过滤，不参与翻页参数快照
-    () => ({ type: typeFilter.value, category: categoryFilter.value, search: query.value.trim() }),
+const hasNext = computed(() => nextCursor.value !== null)
+const initialLoading = computed(() => loading.value && items.value.length === 0)
+const refreshing = computed(() => loading.value && items.value.length > 0)
+
+function promptQueryParams(cursor: string | null) {
+  return {
+    type: typeFilter.value === 'all' ? '' : typeFilter.value,
+    category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
+    search: query.value.trim(),
+    limit: 24,
+    cursor,
+  }
+}
+
+async function reset() {
+  const version = ++promptRequestVersion
+  const hadItems = items.value.length > 0
+  const params = promptQueryParams(null)
+  loading.value = true
+  error.value = null
+  try {
+    const page = normalizeList(
+      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+        query: params,
+      }),
+    )
+    if (version !== promptRequestVersion) return
+    items.value = page.items
+    nextCursor.value = page.nextCursor
+    const loadedIds = new Set(page.items.map((item) => item.id))
+    for (const id of selectedIds) {
+      if (!loadedIds.has(id)) selectedIds.delete(id)
+    }
+    await nextTick()
+    promptContentRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+    setupPromptObserver()
+  } catch (cause) {
+    if (version !== promptRequestVersion) return
+    if (!hadItems) items.value = []
+    error.value = cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+  } finally {
+    if (version === promptRequestVersion) loading.value = false
+  }
+}
+
+async function loadMorePrompts() {
+  const cursor = nextCursor.value
+  if (!cursor || loading.value || loadingMore.value) return
+  const version = promptRequestVersion
+  loadingMore.value = true
+  try {
+    const page = normalizeList(
+      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+        query: promptQueryParams(cursor),
+      }),
+    )
+    if (version !== promptRequestVersion) return
+    const merged = new Map(items.value.map((item) => [item.id, item]))
+    for (const item of page.items) merged.set(item.id, item)
+    items.value = [...merged.values()]
+    nextCursor.value = page.nextCursor
+    error.value = null
+  } catch (cause) {
+    if (version === promptRequestVersion) {
+      error.value = cause instanceof Error && cause.message ? cause.message : '加载更多失败，请重试'
+    }
+  } finally {
+    if (version === promptRequestVersion) loadingMore.value = false
+  }
+}
+
+function refresh() {
+  return reset()
+}
+
+function retry() {
+  return items.value.length ? loadMorePrompts() : reset()
+}
+
+function setupPromptObserver() {
+  promptLoadObserver?.disconnect()
+  promptLoadObserver = null
+  if (typeof IntersectionObserver === 'undefined' || !promptSentinelRef.value) return
+  promptLoadObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMorePrompts()
+    },
+    { root: promptContentRef.value, rootMargin: '560px 0px', threshold: 0.01 },
   )
+  promptLoadObserver.observe(promptSentinelRef.value)
+}
 
 /** 启停/封面筛选（契约无该查询参数，作用于当前页） */
 const visibleItems = computed(() => {
@@ -112,6 +197,248 @@ const visibleItems = computed(() => {
   if (statusFilter.value === 'missing-cover') return items.value.filter((item) => !item.coverUrl)
   return items.value
 })
+
+/* 多选编辑：只操作当前已经加载且可见的提示词，避免误改筛选范围之外的数据。 */
+const selectedIds = reactive(new Set<string>())
+const selectionMode = ref(false)
+const batchSaving = ref(false)
+const batchForm = reactive({
+  category: '',
+  taskType: '',
+  active: '' as '' | 'enabled' | 'disabled',
+})
+
+const selectedItems = computed(() => items.value.filter((item) => selectedIds.has(item.id)))
+const selectedVisibleCount = computed(() =>
+  visibleItems.value.reduce((count, item) => count + Number(selectedIds.has(item.id)), 0),
+)
+const allVisibleSelected = computed(
+  () => visibleItems.value.length > 0 && selectedVisibleCount.value === visibleItems.value.length,
+)
+const someVisibleSelected = computed(
+  () => selectedVisibleCount.value > 0 && !allVisibleSelected.value,
+)
+const hasBatchChanges = computed(
+  () => Boolean(batchForm.category || batchForm.taskType || batchForm.active),
+)
+
+function resetBatchForm() {
+  batchForm.category = ''
+  batchForm.taskType = ''
+  batchForm.active = ''
+}
+
+function clearSelection() {
+  selectedIds.clear()
+  resetBatchForm()
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) clearSelection()
+  selectionMode.value = !selectionMode.value
+}
+
+function toggleSelected(id: string, selected: boolean) {
+  if (selected) selectedIds.add(id)
+  else selectedIds.delete(id)
+}
+
+function toggleVisibleSelection(selected: boolean) {
+  for (const item of visibleItems.value) {
+    if (selected) selectedIds.add(item.id)
+    else selectedIds.delete(item.id)
+  }
+}
+
+async function applyBatchEdit() {
+  const targets = selectedItems.value
+  if (!targets.length) {
+    ElMessage.warning('请先选择提示词')
+    return
+  }
+  if (!hasBatchChanges.value) {
+    ElMessage.warning('请选择需要批量修改的字段')
+    return
+  }
+
+  const changes: Partial<Pick<PromptItem, 'category' | 'taskType' | 'active'>> = {}
+  if (batchForm.category) changes.category = batchForm.category
+  if (batchForm.taskType) changes.taskType = batchForm.taskType
+  if (batchForm.active) changes.active = batchForm.active === 'enabled'
+
+  batchSaving.value = true
+  const queue = [...targets]
+  const failedIds = new Set<string>()
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift()
+      if (!item) return
+      try {
+        await request(`/api/admin/prompt-library/${item.id}`, {
+          method: 'PATCH',
+          body: changes,
+          silent: true,
+        })
+        Object.assign(item, changes)
+        selectedIds.delete(item.id)
+      } catch {
+        failedIds.add(item.id)
+      }
+    }
+  }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker))
+    const successCount = targets.length - failedIds.size
+    if (successCount) ElMessage.success(`已更新 ${successCount} 条提示词`)
+    if (failedIds.size) {
+      for (const id of failedIds) selectedIds.add(id)
+      ElMessage.error(`${failedIds.size} 条更新失败，已保留选择`)
+    } else {
+      resetBatchForm()
+    }
+
+    const filterAffected =
+      (Boolean(changes.category) && categoryFilter.value !== 'all') ||
+      (Boolean(changes.taskType) && typeFilter.value !== 'all')
+    if (filterAffected) await refresh()
+  } finally {
+    batchSaving.value = false
+  }
+}
+
+/* 拖动归类：从卡片手柄拖到左侧分类，PATCH 成功后同步当前筛选结果。 */
+const draggingItem = ref<PromptItem | null>(null)
+const dragTargetCategory = ref('')
+const movingItemId = ref('')
+const dragPointer = reactive({ x: 0, y: 0 })
+const updatingItemFields = reactive(new Set<string>())
+
+const dragTargetMeta = computed(() =>
+  dragTargetCategory.value ? categoryMeta(dragTargetCategory.value) : null,
+)
+
+const headerStatus = computed(() => {
+  if (batchSaving.value) {
+    return { tone: 'is-saving', title: '正在批量更新', detail: `${selectedItems.value.length} 条内容` }
+  }
+  if (selectedItems.value.length) {
+    return { tone: 'is-selecting', title: '多选编辑', detail: `已选 ${selectedItems.value.length} 条` }
+  }
+  if (movingItemId.value) {
+    return { tone: 'is-saving', title: '正在更新分类', detail: '保存中' }
+  }
+  if (draggingItem.value) {
+    const target = dragTargetCategory.value ? categoryMeta(dragTargetCategory.value).label : '选择目标分类'
+    return { tone: 'is-dragging', title: draggingItem.value.title, detail: `目标：${target}` }
+  }
+  if (refreshing.value) {
+    return { tone: 'is-saving', title: categoryMeta(categoryFilter.value).label, detail: '正在更新内容' }
+  }
+  return {
+    tone: '',
+    title: categoryMeta(categoryFilter.value).label,
+    detail: `本页 ${visibleItems.value.length} 条`,
+  }
+})
+
+function categoryAtPoint(x: number, y: number) {
+  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-prompt-category]')
+  const value = target?.dataset.promptCategory ?? ''
+  if (!value || value === 'all') return null
+  return CATEGORY_OPTIONS.find((category) => category.value === value) ?? null
+}
+
+function startCategoryDrag(item: PromptItem, event: PointerEvent) {
+  if (movingItemId.value) {
+    event.preventDefault()
+    return
+  }
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  event.preventDefault()
+  draggingItem.value = item
+  dragTargetCategory.value = ''
+  dragPointer.x = event.clientX
+  dragPointer.y = event.clientY
+}
+
+function finishCategoryDrag() {
+  draggingItem.value = null
+  dragTargetCategory.value = ''
+}
+
+function moveCategoryDrag(event: PointerEvent) {
+  if (!draggingItem.value) return
+  event.preventDefault()
+  dragPointer.x = event.clientX
+  dragPointer.y = event.clientY
+  dragTargetCategory.value = categoryAtPoint(event.clientX, event.clientY)?.value ?? ''
+}
+
+async function finishPointerCategoryDrag(event: PointerEvent) {
+  const item = draggingItem.value
+  const category = categoryAtPoint(event.clientX, event.clientY)
+  finishCategoryDrag()
+  if (!item || !category || item.category === category.value || movingItemId.value) return
+
+  const previousCategory = item.category
+  item.category = category.value
+  movingItemId.value = item.id
+  try {
+    await request(`/api/admin/prompt-library/${item.id}`, {
+      method: 'PATCH',
+      body: { category: category.value },
+    })
+    ElMessage.success(`已移入「${category.label}」`)
+    if (categoryFilter.value !== 'all') await refresh()
+  } catch {
+    item.category = previousCategory
+  } finally {
+    movingItemId.value = ''
+  }
+}
+
+function categoryOptionsFor(item: PromptItem) {
+  const options = CATEGORY_OPTIONS.slice(1)
+  if (!item.category || options.some((category) => category.value === item.category)) return options
+  return [categoryMeta(item.category), ...options]
+}
+
+async function quickChangeCategory(item: PromptItem, category: string) {
+  if (!category || category === item.category) return
+  const key = `${item.id}:category`
+  if (updatingItemFields.has(key)) return
+  const previous = item.category
+  item.category = category
+  updatingItemFields.add(key)
+  try {
+    await request(`/api/admin/prompt-library/${item.id}`, { method: 'PATCH', body: { category } })
+    ElMessage.success(`已移入「${categoryMeta(category).label}」`)
+    if (categoryFilter.value !== 'all') await refresh()
+  } catch {
+    item.category = previous
+  } finally {
+    updatingItemFields.delete(key)
+  }
+}
+
+async function quickChangeTaskType(item: PromptItem, taskType: string) {
+  if (!taskType || taskType === item.taskType) return
+  const key = `${item.id}:taskType`
+  if (updatingItemFields.has(key)) return
+  const previous = item.taskType
+  item.taskType = taskType
+  updatingItemFields.add(key)
+  try {
+    await request(`/api/admin/prompt-library/${item.id}`, { method: 'PATCH', body: { taskType } })
+    ElMessage.success(`已投放到「${taskTypeLabel(taskType)}」`)
+    if (typeFilter.value !== 'all') await refresh()
+  } catch {
+    item.taskType = previous
+  } finally {
+    updatingItemFields.delete(key)
+  }
+}
 
 /* 瀑布流列布局（还原旧版按图片比例分列） */
 const gridColumnCount = ref(5)
@@ -159,6 +486,7 @@ function formatTime(value: string | undefined) {
 }
 
 function scheduleReload() {
+  clearSelection()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
   filterReloadTimer = setTimeout(
     () => {
@@ -170,6 +498,7 @@ function scheduleReload() {
 }
 
 watch([query, categoryFilter, typeFilter], scheduleReload)
+watch(statusFilter, clearSelection)
 
 function resetFilters() {
   query.value = ''
@@ -291,6 +620,7 @@ async function remove(item: PromptItem) {
     cancelButtonText: '取消',
   })
   await request(`/api/admin/prompt-library/${item.id}`, { method: 'DELETE' })
+  selectedIds.delete(item.id)
   ElMessage.success('提示词已删除')
   await refresh()
 }
@@ -489,12 +819,19 @@ async function saveSource() {
 onMounted(() => {
   updateGridColumnCount()
   window.addEventListener('resize', updateGridColumnCount, { passive: true })
+  window.addEventListener('pointermove', moveCategoryDrag, { passive: false })
+  window.addEventListener('pointerup', finishPointerCategoryDrag)
+  window.addEventListener('pointercancel', finishCategoryDrag)
   void reset()
   void loadSources(true)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateGridColumnCount)
+  window.removeEventListener('pointermove', moveCategoryDrag)
+  window.removeEventListener('pointerup', finishPointerCategoryDrag)
+  window.removeEventListener('pointercancel', finishCategoryDrag)
+  promptLoadObserver?.disconnect()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
 })
@@ -503,24 +840,64 @@ onBeforeUnmount(() => {
 <template>
   <div class="prompt-library-page">
     <header class="library-header">
-      <div class="library-header__copy">
-        <span class="library-eyebrow">PROMPT OPERATIONS</span>
-        <h2>统一提示词库</h2>
-        <p>管理内容分类、投放功能、封面素材与启停排序</p>
+      <div class="library-header__top">
+        <div class="library-header__copy">
+          <span class="library-eyebrow">PROMPT OPERATIONS</span>
+          <h2>统一提示词库</h2>
+          <p>管理内容分类、投放功能、封面素材与启停排序</p>
+        </div>
+        <div class="library-header__actions">
+          <el-tag type="success" effect="light" round size="small">已加载 {{ items.length }} 条内容</el-tag>
+          <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
+            <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
+          </el-badge>
+          <el-button
+            :type="selectionMode ? 'primary' : ''"
+            :icon="EditPen"
+            :disabled="batchSaving"
+            @click="toggleSelectionMode"
+          >
+            {{ selectionMode ? '退出多选' : '多选编辑' }}
+          </el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
+          <el-button type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
+        </div>
       </div>
-      <div class="library-header__actions">
-        <el-tag type="success" effect="light" round size="small">已加载 {{ items.length }} 条内容</el-tag>
-        <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
-          <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
-        </el-badge>
-        <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
+
+      <div class="library-header__controls">
+        <div class="prompt-toolbar">
+          <el-input
+            v-model="query"
+            :prefix-icon="Search"
+            clearable
+            placeholder="搜索名称、提示词或标签"
+            class="prompt-search"
+          />
+          <el-select v-model="typeFilter" class="toolbar-select" aria-label="投放功能">
+            <el-option label="全部功能" value="all" />
+            <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+          </el-select>
+          <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="状态">
+            <el-option label="全部状态" value="all" />
+            <el-option label="已启用" value="enabled" />
+            <el-option label="已停用" value="disabled" />
+            <el-option label="缺少封面" value="missing-cover" />
+          </el-select>
+          <el-button text @click="resetFilters">重置</el-button>
+        </div>
+        <div class="library-event-status" :class="headerStatus.tone" aria-live="polite">
+          <el-icon><component :is="headerStatus.tone === 'is-dragging' ? Rank : CollectionTag" /></el-icon>
+          <span>
+            <strong :title="headerStatus.title">{{ headerStatus.title }}</strong>
+            <small>{{ headerStatus.detail }}</small>
+          </span>
+        </div>
       </div>
     </header>
 
     <section class="library-workspace">
       <div class="items-workspace">
-        <aside class="category-rail">
+        <aside class="category-rail" :class="{ 'is-receiving-drop': Boolean(draggingItem) }">
           <div class="category-rail__title">
             <span>内容分类</span>
             <small>{{ items.length }}</small>
@@ -529,48 +906,102 @@ onBeforeUnmount(() => {
             v-for="category in CATEGORY_OPTIONS"
             :key="category.value"
             type="button"
-            :class="{ 'is-active': categoryFilter === category.value }"
+            :class="{
+              'is-active': categoryFilter === category.value,
+              'is-drop-target': dragTargetCategory === category.value,
+              'is-drop-disabled': Boolean(draggingItem) && category.value === 'all',
+            }"
             @click="categoryFilter = category.value"
+            :data-prompt-category="category.value"
           >
             <i :style="{ '--category-color': category.color }">{{ category.icon }}</i>
             <span>{{ category.label }}</span>
           </button>
         </aside>
 
-        <main class="prompt-content">
-          <div class="prompt-toolbar">
-            <el-input
-              v-model="query"
-              :prefix-icon="Search"
-              clearable
-              placeholder="搜索名称、提示词或标签"
-              class="prompt-search"
-            />
-            <el-select v-model="typeFilter" class="toolbar-select" aria-label="投放功能">
-              <el-option label="全部功能" value="all" />
-              <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
-            </el-select>
-            <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="状态">
-              <el-option label="全部状态" value="all" />
-              <el-option label="已启用" value="enabled" />
-              <el-option label="已停用" value="disabled" />
-              <el-option label="缺少封面" value="missing-cover" />
-            </el-select>
-            <el-button text @click="resetFilters">重置</el-button>
-          </div>
-
-          <div class="result-summary">
-            <div>
-              <strong>{{ categoryMeta(categoryFilter).label }}</strong>
-              <span>本页 {{ visibleItems.length }} 条提示词</span>
-            </div>
-            <el-button type="primary" :icon="Plus" @click="openEditor()">新增内容</el-button>
-          </div>
-
+        <main ref="promptContentRef" class="prompt-content">
           <ListError :error="error" :loading="loading" @retry="retry" />
 
-          <div v-loading="loading" class="prompt-grid">
-            <template v-if="visibleItems.length">
+          <div v-if="selectionMode" class="prompt-bulk-bar" :class="{ 'is-active': selectedItems.length }">
+            <div class="prompt-bulk-selection">
+              <el-checkbox
+                :model-value="allVisibleSelected"
+                :indeterminate="someVisibleSelected"
+                :disabled="!visibleItems.length || batchSaving"
+                @change="toggleVisibleSelection(Boolean($event))"
+              >
+                全选当前结果
+              </el-checkbox>
+              <span v-if="selectedItems.length">已选 {{ selectedItems.length }} 条</span>
+            </div>
+            <div v-if="selectedItems.length" class="prompt-bulk-controls">
+              <el-select
+                v-model="batchForm.category"
+                clearable
+                size="small"
+                placeholder="修改分类"
+                aria-label="批量修改分类"
+              >
+                <el-option
+                  v-for="category in CATEGORY_OPTIONS.slice(1)"
+                  :key="category.value"
+                  :label="category.label"
+                  :value="category.value"
+                />
+              </el-select>
+              <el-select
+                v-model="batchForm.taskType"
+                clearable
+                size="small"
+                placeholder="修改投放"
+                aria-label="批量修改投放功能"
+              >
+                <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+              </el-select>
+              <el-select
+                v-model="batchForm.active"
+                clearable
+                size="small"
+                placeholder="修改状态"
+                aria-label="批量修改状态"
+              >
+                <el-option label="启用" value="enabled" />
+                <el-option label="停用" value="disabled" />
+              </el-select>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="batchSaving"
+                :disabled="!hasBatchChanges"
+                @click="applyBatchEdit"
+              >
+                应用修改
+              </el-button>
+              <el-button text size="small" :disabled="batchSaving" @click="clearSelection">清除选择</el-button>
+            </div>
+          </div>
+
+          <div class="prompt-grid" :class="{ 'is-refreshing': refreshing }">
+            <template v-if="initialLoading">
+              <div
+                v-for="columnIndex in gridColumnCount"
+                :key="`prompt-skeleton-column-${columnIndex}`"
+                class="prompt-grid__column"
+              >
+                <article
+                  v-for="cardIndex in 3"
+                  :key="`prompt-skeleton-${columnIndex}-${cardIndex}`"
+                  class="prompt-skeleton-card"
+                >
+                  <span class="prompt-skeleton-card__cover" :class="`is-variant-${cardIndex}`" />
+                  <span class="prompt-skeleton-card__line is-title" />
+                  <span class="prompt-skeleton-card__line" />
+                  <span class="prompt-skeleton-card__line is-short" />
+                </article>
+              </div>
+            </template>
+
+            <template v-else-if="visibleItems.length">
               <div
                 v-for="(column, columnIndex) in gridColumns"
                 :key="`prompt-column-${columnIndex}`"
@@ -580,9 +1011,19 @@ onBeforeUnmount(() => {
                   v-for="item in column"
                   :key="item.id"
                   class="prompt-card"
-                  :class="{ 'is-disabled': !item.active }"
+                  :class="{
+                    'is-disabled': !item.active,
+                    'is-dragging': draggingItem?.id === item.id,
+                    'is-moving': movingItemId === item.id,
+                    'is-selected': selectedIds.has(item.id),
+                    'is-selection-mode': selectionMode,
+                  }"
                 >
-                  <div class="prompt-cover" :class="{ 'has-image': Boolean(item.coverUrl) }" @click="openEditor(item)">
+                  <div
+                    class="prompt-cover"
+                    :class="{ 'has-image': Boolean(item.coverUrl) }"
+                    @click="selectionMode ? toggleSelected(item.id, !selectedIds.has(item.id)) : openEditor(item)"
+                  >
                     <img
                       v-if="item.coverUrl"
                       :src="item.coverUrl"
@@ -598,6 +1039,14 @@ onBeforeUnmount(() => {
                     <span class="category-badge" :style="{ '--category-color': categoryMeta(item.category).color }">
                       {{ categoryMeta(item.category).label }}
                     </span>
+                    <el-checkbox
+                      v-if="selectionMode"
+                      class="prompt-card__select"
+                      :model-value="selectedIds.has(item.id)"
+                      :aria-label="`选择 ${item.title}`"
+                      @click.stop
+                      @change="toggleSelected(item.id, Boolean($event))"
+                    />
                     <span v-if="item.sourceId" class="sync-badge" title="来自远程数据源，同步时会自动更新">
                       <el-icon><Link /></el-icon>
                       同步
@@ -620,14 +1069,63 @@ onBeforeUnmount(() => {
                         <strong :title="item.title">{{ item.title }}</strong>
                         <small>{{ categoryMeta(item.category).label }} · 排序 {{ item.sort }}</small>
                       </div>
-                      <el-switch
-                        :model-value="item.active"
-                        size="small"
-                        @change="toggleItem(item, Boolean($event))"
-                      />
+                      <div class="prompt-card__header-actions">
+                        <el-tooltip content="拖动到左侧分类" placement="top">
+                          <button
+                            type="button"
+                            class="prompt-drag-handle"
+                            :disabled="Boolean(movingItemId) || selectionMode"
+                            aria-label="拖动提示词分类"
+                            @click.stop.prevent
+                            @pointerdown="startCategoryDrag(item, $event)"
+                          >
+                            <el-icon><Rank /></el-icon>
+                          </button>
+                        </el-tooltip>
+                        <el-switch
+                          :model-value="item.active"
+                          size="small"
+                          @change="toggleItem(item, Boolean($event))"
+                        />
+                      </div>
                     </header>
-                    <div class="page-assignments">
-                      <span>{{ taskTypeLabel(item.taskType) }}</span>
+                    <div class="prompt-quick-fields">
+                      <label>
+                        <span>分类</span>
+                        <el-select
+                          :model-value="item.category"
+                          size="small"
+                          :loading="updatingItemFields.has(`${item.id}:category`)"
+                          aria-label="快捷分类"
+                          @change="quickChangeCategory(item, String($event))"
+                        >
+                          <el-option
+                            v-for="category in categoryOptionsFor(item)"
+                            :key="category.value"
+                            :label="category.label"
+                            :value="category.value"
+                          />
+                        </el-select>
+                      </label>
+                      <label>
+                        <span>投放</span>
+                        <el-select
+                          :model-value="item.taskType"
+                          size="small"
+                          :loading="updatingItemFields.has(`${item.id}:taskType`)"
+                          aria-label="快捷投放"
+                          @change="quickChangeTaskType(item, String($event))"
+                        >
+                          <el-option
+                            v-for="type in TASK_TYPES"
+                            :key="type"
+                            :label="taskTypeLabel(type)"
+                            :value="type"
+                          />
+                        </el-select>
+                      </label>
+                    </div>
+                    <div v-if="item.tags?.length" class="page-assignments">
                       <em v-for="tag in (item.tags ?? []).slice(0, 2)" :key="tag">#{{ tag }}</em>
                     </div>
                     <footer>
@@ -646,7 +1144,7 @@ onBeforeUnmount(() => {
               </div>
             </template>
 
-            <div v-if="!loading && !visibleItems.length" class="library-empty">
+            <div v-if="!initialLoading && !visibleItems.length" class="library-empty">
               <el-icon><CollectionTag /></el-icon>
               <strong>没有匹配的提示词</strong>
               <span>调整分类或筛选条件后再试</span>
@@ -654,27 +1152,50 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+          <div ref="promptSentinelRef" class="prompt-load-sentinel" aria-hidden="true" />
+          <div v-if="loadingMore" class="prompt-load-state" aria-live="polite">
+            <el-icon class="is-spinning"><Refresh /></el-icon>
+            <span>正在加载更多提示词</span>
+          </div>
+          <div v-else-if="items.length && !hasNext" class="prompt-load-state is-complete">
+            <span>已加载全部 {{ items.length }} 条</span>
+          </div>
         </main>
       </div>
     </section>
 
+    <Teleport to="body">
+      <Transition name="prompt-drag-preview">
+        <div
+          v-if="draggingItem"
+          class="prompt-drag-preview"
+          :class="{ 'has-target': Boolean(dragTargetMeta) }"
+          :style="{ left: `${dragPointer.x}px`, top: `${dragPointer.y}px` }"
+        >
+          <img v-if="draggingItem.coverUrl" :src="draggingItem.coverUrl" alt="" />
+          <span v-else><el-icon><Picture /></el-icon></span>
+          <div>
+            <strong>{{ draggingItem.title }}</strong>
+            <small>
+              {{ categoryMeta(draggingItem.category).label }}
+              <template v-if="dragTargetMeta"> → {{ dragTargetMeta.label }}</template>
+            </small>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <el-dialog
       v-model="editorOpen"
       :title="editingId ? '编辑提示词' : '新增提示词'"
-      width="820px"
+      width="min(1480px, 94vw)"
+      align-center
+      append-to-body
       destroy-on-close
-      class="prompt-editor-dialog"
+      class="prompt-editor-dialog prompt-content-editor"
     >
-      <div class="dialog-intro">
-        <span><el-icon :size="18"><CollectionTag /></el-icon></span>
-        <div>
-          <strong>{{ editingId ? '维护提示词内容' : '创建一条提示词' }}</strong>
-          <small>内容分类用于检索，投放功能决定用户在哪个工作台可以看到它。</small>
-        </div>
-      </div>
-      <el-form label-position="top" class="editor-form">
-        <div class="form-grid">
+      <el-form label-position="top" class="editor-form editor-form--wide">
+        <div class="editor-meta-grid">
           <el-form-item label="名称"><el-input v-model="form.title" maxlength="80" /></el-form-item>
           <el-form-item label="内容分类">
             <el-select
@@ -693,47 +1214,55 @@ onBeforeUnmount(() => {
               />
             </el-select>
           </el-form-item>
-        </div>
-        <el-form-item label="提示词内容">
-          <el-input v-model="form.prompt" type="textarea" :rows="8" maxlength="8000" show-word-limit />
-        </el-form-item>
-        <el-form-item label="标签">
-          <el-input v-model="form.tagsText" placeholder="用逗号分隔，例如：电影感，人物，霓虹" />
-        </el-form-item>
-        <el-form-item label="投放功能">
-          <div class="type-checkboxes">
-            <button
-              v-for="type in TASK_TYPES"
-              :key="type"
-              type="button"
-              :class="{ 'is-active': form.taskType === type }"
-              @click="form.taskType = type"
-            >
-              {{ taskTypeLabel(type) }}
-            </button>
-          </div>
-        </el-form-item>
-        <div class="form-bottom-grid">
-          <el-form-item label="封面图片">
-            <label class="image-picker">
-              <img v-if="previewUrl" :src="previewUrl" alt="提示词封面预览" />
-              <span v-else>
-                <el-icon :size="24"><Picture /></el-icon>
-                <strong>上传封面</strong>
-                <small>PNG / JPG / WebP，最大 8MB</small>
-              </span>
-              <em v-if="previewUrl">更换图片</em>
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="pickImage" />
-            </label>
+          <el-form-item label="标签" class="editor-tags-field">
+            <el-input v-model="form.tagsText" placeholder="用逗号分隔，例如：电影感，人物，霓虹" />
           </el-form-item>
-          <div class="form-settings">
-            <el-form-item label="后台排序">
-              <el-input-number v-model="form.sort" :min="0" :max="10000" />
+        </div>
+
+        <div class="editor-work-layout">
+          <section class="editor-prompt-panel">
+            <el-form-item label="提示词内容" class="prompt-body-field">
+              <el-input v-model="form.prompt" type="textarea" maxlength="8000" show-word-limit />
             </el-form-item>
-            <el-form-item label="用户端状态">
-              <el-switch v-model="form.active" active-text="启用" inactive-text="停用" />
+          </section>
+
+          <aside class="editor-options-panel">
+            <el-form-item label="投放功能">
+              <div class="type-checkboxes">
+                <button
+                  v-for="type in TASK_TYPES"
+                  :key="type"
+                  type="button"
+                  :class="{ 'is-active': form.taskType === type }"
+                  @click="form.taskType = type"
+                >
+                  {{ taskTypeLabel(type) }}
+                </button>
+              </div>
             </el-form-item>
-          </div>
+            <div class="editor-options-lower">
+              <el-form-item label="封面图片">
+                <label class="image-picker">
+                  <img v-if="previewUrl" :src="previewUrl" alt="提示词封面预览" />
+                  <span v-else>
+                    <el-icon :size="24"><Picture /></el-icon>
+                    <strong>上传封面</strong>
+                    <small>PNG / JPG / WebP，最大 8MB</small>
+                  </span>
+                  <em v-if="previewUrl">更换图片</em>
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="pickImage" />
+                </label>
+              </el-form-item>
+              <div class="form-settings">
+                <el-form-item label="后台排序">
+                  <el-input-number v-model="form.sort" :min="0" :max="10000" />
+                </el-form-item>
+                <el-form-item label="用户端状态">
+                  <el-switch v-model="form.active" active-text="启用" inactive-text="停用" />
+                </el-form-item>
+              </div>
+            </div>
+          </aside>
         </div>
       </el-form>
       <template #footer>
@@ -905,7 +1434,11 @@ onBeforeUnmount(() => {
   --library-muted: var(--ink-3);
   box-sizing: border-box;
   display: grid;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
+  overflow: hidden;
   padding: 24px 28px;
   background:
     radial-gradient(circle at 88% 4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
@@ -913,15 +1446,22 @@ onBeforeUnmount(() => {
 }
 
 .library-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  position: relative;
+  z-index: 4;
+  display: grid;
+  gap: 11px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+
+.library-header__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .library-header__copy {
@@ -960,7 +1500,80 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.library-header__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 240px);
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--library-border);
+}
+
+.library-event-status {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  border: 1px solid var(--library-border);
+  border-radius: 9px;
+  background: var(--el-fill-color-lighter);
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+
+  > .el-icon {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border-radius: 7px;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
+
+  > span {
+    display: grid;
+    min-width: 0;
+    gap: 1px;
+  }
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 12px;
+  }
+
+  small {
+    color: var(--library-muted);
+    font-size: 10px;
+  }
+
+  &.is-dragging {
+    border-color: color-mix(in srgb, var(--accent) 46%, var(--library-border));
+    background: var(--accent-soft);
+  }
+
+  &.is-selecting {
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--library-border));
+    background: var(--accent-soft);
+  }
+
+  &.is-saving > .el-icon {
+    animation: prompt-status-pulse 0.9s ease-in-out infinite alternate;
+  }
+}
+
 .library-workspace {
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--library-border);
   border-radius: 16px;
@@ -970,14 +1583,27 @@ onBeforeUnmount(() => {
 
 .items-workspace {
   display: grid;
+  height: 100%;
+  min-height: 0;
   grid-template-columns: 210px minmax(0, 1fr);
-  min-height: 600px;
 }
 
 .category-rail {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px 12px;
   border-right: 1px solid var(--library-border);
   background: color-mix(in srgb, var(--el-fill-color-lighter) 65%, transparent);
+
+  &.is-receiving-drop {
+    background: color-mix(in srgb, var(--accent) 5%, var(--el-fill-color-lighter));
+
+    > button:not(.is-drop-disabled) {
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--category-color) 24%, transparent);
+    }
+  }
 
   &__title {
     display: flex;
@@ -1030,11 +1656,30 @@ onBeforeUnmount(() => {
       font-weight: 600;
       background: var(--accent-soft);
     }
+
+    &.is-drop-target {
+      border-color: color-mix(in srgb, var(--category-color) 55%, transparent);
+      color: var(--el-text-color-primary);
+      background: color-mix(in srgb, var(--category-color) 14%, var(--surface));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--category-color) 44%, transparent);
+      transform: translateX(3px);
+    }
+
+    &.is-drop-disabled {
+      opacity: 0.46;
+      cursor: not-allowed;
+    }
   }
 }
 
 .prompt-content {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 28%, transparent) transparent;
   padding: 18px;
 }
 
@@ -1042,10 +1687,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 13px;
-  border: 1px solid var(--library-border);
-  border-radius: 12px;
-  background: var(--el-fill-color-lighter);
+  min-width: 0;
 }
 
 .prompt-search {
@@ -1061,29 +1703,63 @@ onBeforeUnmount(() => {
   }
 }
 
-.result-summary {
+.prompt-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
+  min-height: 46px;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 2px 14px;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--library-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
 
-  div {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
+  &.is-active {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--library-border));
+  }
+}
+
+.prompt-bulk-selection {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+
+  > span {
+    padding-left: 9px;
+    border-left: 1px solid var(--library-border);
+    color: var(--accent-ink);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+}
+
+.prompt-bulk-controls {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+
+  :deep(.el-select) {
+    width: 128px;
   }
 
-  strong {
-    font-size: 17px;
-  }
-
-  span {
-    color: var(--library-muted);
-    font-size: 12px;
+  .el-button + .el-button {
+    margin-left: 0;
   }
 }
 
 .prompt-grid {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -1096,6 +1772,80 @@ onBeforeUnmount(() => {
   flex: 1 1 0;
   flex-direction: column;
   gap: 12px;
+}
+
+.prompt-skeleton-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--library-border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.prompt-skeleton-card__cover,
+.prompt-skeleton-card__line {
+  display: block;
+  border-radius: 8px;
+  background: linear-gradient(
+    100deg,
+    var(--el-fill-color-light) 20%,
+    var(--el-fill-color) 42%,
+    var(--el-fill-color-light) 64%
+  );
+  background-size: 220% 100%;
+  animation: prompt-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.prompt-skeleton-card__cover {
+  height: 168px;
+
+  &.is-variant-2 {
+    height: 204px;
+  }
+
+  &.is-variant-3 {
+    height: 148px;
+  }
+}
+
+.prompt-skeleton-card__line {
+  width: 100%;
+  height: 9px;
+
+  &.is-title {
+    width: 72%;
+    height: 12px;
+  }
+
+  &.is-short {
+    width: 46%;
+  }
+}
+
+.prompt-load-sentinel {
+  width: 100%;
+  height: 1px;
+}
+
+.prompt-load-state {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--library-muted);
+  font-size: 11px;
+
+  .is-spinning {
+    color: var(--accent-ink);
+    animation: prompt-load-spin 0.85s linear infinite;
+  }
+
+  &.is-complete {
+    opacity: 0.72;
+  }
 }
 
 .prompt-card {
@@ -1128,6 +1878,26 @@ onBeforeUnmount(() => {
 
   &.is-disabled:hover {
     opacity: 1;
+  }
+
+  &.is-dragging {
+    border-color: var(--accent);
+    opacity: 0.36;
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 20%, transparent);
+    transform: scale(0.975) rotate(-0.4deg);
+    user-select: none;
+  }
+
+  &.is-moving {
+    pointer-events: none;
+    opacity: 0.58;
+  }
+
+  &.is-selected {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      0 12px 30px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -1201,6 +1971,36 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--category-color) 88%, #111827);
   box-shadow: 0 4px 12px color-mix(in srgb, var(--category-color) 25%, transparent);
   backdrop-filter: blur(10px);
+}
+
+.prompt-card__select {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: 8px;
+  background: rgb(15 23 42 / 68%);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+  backdrop-filter: blur(10px);
+
+  :deep(.el-checkbox__label) {
+    display: none;
+  }
+
+  :deep(.el-checkbox__inner) {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.prompt-card.is-selection-mode .sync-badge {
+  top: 48px;
 }
 
 .prompt-cover__overlay {
@@ -1328,6 +2128,88 @@ onBeforeUnmount(() => {
   }
 }
 
+.prompt-card__header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.prompt-quick-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 7px;
+
+  label {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+
+    > span {
+      color: var(--library-muted);
+      font-size: 9px;
+      font-weight: 650;
+    }
+  }
+
+  :deep(.el-select) {
+    width: 100%;
+  }
+
+  :deep(.el-select__wrapper) {
+    min-height: 28px;
+    padding: 3px 8px;
+    border-radius: 7px;
+    box-shadow: 0 0 0 1px var(--library-border) inset;
+  }
+
+  :deep(.el-select__selected-item) {
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.prompt-drag-handle {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--library-border);
+  border-radius: 7px;
+  color: var(--library-muted);
+  background: var(--el-fill-color-lighter);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--library-border));
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+}
+
+@keyframes prompt-status-pulse {
+  to {
+    opacity: 0.52;
+  }
+}
+
 .page-assignments {
   display: flex;
   min-height: 23px;
@@ -1352,6 +2234,85 @@ onBeforeUnmount(() => {
     color: var(--accent-ink);
     background: var(--accent-soft);
   }
+}
+
+.prompt-drag-preview {
+  position: fixed;
+  z-index: 10020;
+  display: grid;
+  width: min(260px, calc(100vw - 28px));
+  min-height: 58px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 16px 38px rgb(15 23 42 / 26%);
+  pointer-events: none;
+  transform: translate(16px, 16px) rotate(1deg);
+  backdrop-filter: blur(14px);
+
+  > img,
+  > span {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: 7px;
+    object-fit: cover;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
+
+  > div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 12px;
+  }
+
+  small {
+    color: var(--library-muted);
+    font-size: 10px;
+  }
+
+  &.has-target {
+    border-color: var(--success);
+    box-shadow: 0 16px 40px color-mix(in srgb, var(--success) 24%, transparent);
+    transform: translate(16px, 16px) rotate(0deg) scale(1.02);
+
+    small {
+      color: var(--success);
+      font-weight: 700;
+    }
+  }
+}
+
+.prompt-drag-preview-enter-active,
+.prompt-drag-preview-leave-active {
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.prompt-drag-preview-enter-from,
+.prompt-drag-preview-leave-to {
+  opacity: 0;
+  transform: translate(8px, 8px) scale(0.94);
 }
 
 .library-empty {
@@ -1415,6 +2376,65 @@ onBeforeUnmount(() => {
   }
 }
 
+.editor-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.85fr) minmax(320px, 1.1fr);
+  gap: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--library-border);
+
+  .el-form-item {
+    min-width: 0;
+    margin-bottom: 0;
+  }
+}
+
+.editor-work-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(460px, 0.9fr);
+  gap: 28px;
+  align-items: stretch;
+  padding-top: 18px;
+}
+
+.editor-prompt-panel,
+.editor-options-panel {
+  min-width: 0;
+}
+
+.editor-options-panel {
+  padding-left: 28px;
+  border-left: 1px solid var(--library-border);
+
+  > .el-form-item {
+    margin-bottom: 20px;
+  }
+}
+
+.prompt-body-field {
+  margin-bottom: 0 !important;
+
+  :deep(.el-textarea__inner) {
+    height: 320px;
+    min-height: 320px !important;
+    padding: 14px 15px 28px;
+    line-height: 1.65;
+    resize: none;
+  }
+}
+
+.editor-options-lower {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.18fr) minmax(170px, 0.82fr);
+  gap: 18px;
+  align-items: start;
+
+  > .el-form-item {
+    min-width: 0;
+    margin-bottom: 0;
+  }
+}
+
 .type-checkboxes {
   display: grid;
   width: 100%;
@@ -1422,7 +2442,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 
   button {
-    height: 38px;
+    height: 42px;
     margin: 0;
     padding: 0 11px;
     border: 1px solid var(--library-border);
@@ -1447,24 +2467,26 @@ onBeforeUnmount(() => {
   }
 }
 
-.form-bottom-grid {
-  display: grid;
-  grid-template-columns: 270px 1fr;
-  gap: 18px;
-}
-
 .form-settings {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  grid-template-columns: 1fr;
+  gap: 12px;
   align-content: start;
+
+  .el-form-item {
+    margin-bottom: 0;
+  }
+
+  :deep(.el-input-number) {
+    width: 100%;
+  }
 }
 
 .image-picker {
   position: relative;
   display: grid;
   width: 100%;
-  height: 154px;
+  height: 192px;
   place-items: center;
   overflow: hidden;
   border: 1px dashed var(--el-border-color);
@@ -1764,6 +2786,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1500px) {
+  .library-header__controls {
+    grid-template-columns: minmax(0, 1fr) 210px;
+  }
+
   .prompt-toolbar {
     flex-wrap: wrap;
   }
@@ -1774,13 +2800,41 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1100px) {
+  .prompt-bulk-bar {
+    align-items: flex-start;
+  }
+
+  .prompt-bulk-controls {
+    flex-wrap: wrap;
+  }
+
+  .editor-meta-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .editor-tags-field {
+    grid-column: 1 / -1;
+  }
+
+  .editor-work-layout {
+    grid-template-columns: minmax(0, 1.25fr) minmax(380px, 0.9fr);
+    gap: 20px;
+  }
+
+  .editor-options-panel {
+    padding-left: 20px;
+  }
+
   .items-workspace {
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: 1fr;
   }
 
   .category-rail {
     display: flex;
+    min-height: auto;
     overflow-x: auto;
+    overflow-y: hidden;
     border-right: 0;
     border-bottom: 1px solid var(--library-border);
 
@@ -1796,8 +2850,22 @@ onBeforeUnmount(() => {
   }
 }
 
+@media (max-width: 900px) {
+  .editor-work-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-options-panel {
+    padding-top: 18px;
+    padding-left: 0;
+    border-top: 1px solid var(--library-border);
+    border-left: 0;
+  }
+}
+
 @media (max-width: 720px) {
   .prompt-library-page {
+    grid-template-rows: auto minmax(0, 1fr);
     padding: 10px;
   }
 
@@ -1810,23 +2878,66 @@ onBeforeUnmount(() => {
     width: calc(50% - 5px);
   }
 
-  .result-summary div span {
-    display: none;
-  }
-
-  .library-header {
+  .library-header__top {
     flex-direction: column;
     align-items: stretch;
   }
 
+  .library-header__actions {
+    flex-wrap: wrap;
+  }
+
+  .library-header__controls {
+    grid-template-columns: 1fr;
+  }
+
+  .library-event-status {
+    min-width: 0;
+  }
+
+  .prompt-bulk-bar {
+    position: relative;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .prompt-bulk-controls {
+    justify-content: flex-start;
+
+    :deep(.el-select) {
+      width: calc(50% - 4px);
+    }
+  }
+
+  .editor-meta-grid,
   .editor-form .form-grid,
-  .form-bottom-grid,
+  .editor-options-lower,
   .form-settings {
     grid-template-columns: 1fr;
   }
 
+  .editor-tags-field {
+    grid-column: auto;
+  }
+
   .type-checkboxes {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@keyframes prompt-load-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes prompt-skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -120% 0;
   }
 }
 </style>
@@ -1840,5 +2951,46 @@ onBeforeUnmount(() => {
 .source-delete-confirm p {
   margin: 0 0 10px;
   line-height: 1.6;
+}
+
+.prompt-editor-dialog {
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  align-self: center;
+  margin: 16px auto !important;
+}
+
+.prompt-content-editor {
+  --el-dialog-padding-primary: 24px;
+  border: 1px solid var(--border);
+}
+
+.prompt-content-editor .el-dialog__footer {
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.prompt-editor-dialog .el-dialog__body {
+  padding-top: 12px;
+  overflow: visible;
+}
+
+.prompt-content-editor .el-dialog__body {
+  padding-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .prompt-content-editor .el-dialog__body {
+    max-height: calc(100dvh - 142px);
+    padding-right: 8px;
+    overflow-y: auto;
+  }
+}
+
+@media (max-height: 680px) {
+  .prompt-editor-dialog .el-dialog__body {
+    max-height: calc(100dvh - 154px);
+    overflow-y: auto;
+  }
 }
 </style>

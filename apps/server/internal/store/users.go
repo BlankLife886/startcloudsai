@@ -16,11 +16,11 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-const userCols = `id, email, username, password_hash, avatar_url, role, status, last_login_at, submission_banned_until, created_at`
+const userCols = `id, email, username, password_hash, avatar_url, bio, location, website_url, role, status, last_login_at, submission_banned_until, created_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -50,14 +50,17 @@ func InsertUser(ctx context.Context, q Q, email, username, passwordHash, role st
 		email, username, passwordHash, role, lastLoginAt))
 }
 
-func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, passwordHash *string) error {
+func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, bio, location, websiteURL, passwordHash *string) error {
 	_, err := q.Exec(ctx,
 		`UPDATE users SET
 			username = COALESCE($2, username),
 			avatar_url = CASE WHEN $3 THEN $4 ELSE avatar_url END,
-			password_hash = COALESCE($5, password_hash)
+			bio = COALESCE($5, bio),
+			location = COALESCE($6, location),
+			website_url = COALESCE($7, website_url),
+			password_hash = COALESCE($8, password_hash)
 		 WHERE id = $1`,
-		id, username, avatarURL != nil, avatarDeref(avatarURL), passwordHash)
+		id, username, avatarURL != nil, avatarDeref(avatarURL), bio, location, websiteURL, passwordHash)
 	return err
 }
 
@@ -68,10 +71,8 @@ func avatarDeref(p **string) *string {
 	return *p
 }
 
-func UpdateUserAdmin(ctx context.Context, q Q, id uuid.UUID, status, role *string) error {
-	_, err := q.Exec(ctx,
-		`UPDATE users SET status = COALESCE($2, status), role = COALESCE($3, role) WHERE id = $1`,
-		id, status, role)
+func UpdateUserStatus(ctx context.Context, q Q, id uuid.UUID, status *string) error {
+	_, err := q.Exec(ctx, `UPDATE users SET status = COALESCE($2, status) WHERE id = $1`, id, status)
 	return err
 }
 
@@ -91,26 +92,21 @@ func TouchLastLogin(ctx context.Context, q Q, id uuid.UUID, at time.Time) error 
 	return err
 }
 
-func PromoteAdmin(ctx context.Context, q Q, id uuid.UUID, passwordHash string) error {
-	_, err := q.Exec(ctx, `UPDATE users SET role = 'admin', password_hash = $2 WHERE id = $1`, id, passwordHash)
-	return err
-}
-
 func CountUsers(ctx context.Context, q Q) (int64, error) {
 	var n int64
-	err := q.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT count(*) FROM users WHERE role = 'user'`).Scan(&n)
 	return n, err
 }
 
 func CountUsersSince(ctx context.Context, q Q, since time.Time) (int64, error) {
 	var n int64
-	err := q.QueryRow(ctx, `SELECT count(*) FROM users WHERE created_at >= $1`, since).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT count(*) FROM users WHERE role = 'user' AND created_at >= $1`, since).Scan(&n)
 	return n, err
 }
 
 // ListUsers 后台用户搜索分页（limit+1 行）。
 func ListUsers(ctx context.Context, q Q, search, status string, limit int, cursor *Cursor) ([]*User, error) {
-	sql := `SELECT ` + userCols + ` FROM users WHERE true`
+	sql := `SELECT ` + userCols + ` FROM users WHERE role = 'user'`
 	args := []any{}
 	if search != "" {
 		args = append(args, "%"+search+"%")
@@ -143,7 +139,7 @@ func MatchUserIDs(ctx context.Context, q Q, keyword string) ([]uuid.UUID, error)
 		return []uuid.UUID{id}, nil
 	}
 	rows, err := q.Query(ctx,
-		`SELECT id FROM users WHERE email ILIKE $1 OR username ILIKE $1 LIMIT 200`, "%"+keyword+"%")
+		`SELECT id FROM users WHERE role = 'user' AND (email ILIKE $1 OR username ILIKE $1) LIMIT 200`, "%"+keyword+"%")
 	if err != nil {
 		return nil, err
 	}

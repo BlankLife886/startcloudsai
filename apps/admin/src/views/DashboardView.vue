@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, type Component } from 'vue'
 import {
   CircleCheck,
-  Coin,
   Histogram,
   Monitor,
   TrendCharts,
@@ -32,20 +31,8 @@ interface AdminStats {
   typeDistribution?: Record<string, number>
 }
 
-interface DailyAmount {
-  date: string
-  amountCents: number
-}
-
-interface FinanceSummary {
-  revenueDaily?: DailyAmount[]
-  spendDaily?: DailyAmount[]
-  totals?: { revenueCents: number; spendCents: number; grantCents: number; refundCents: number }
-}
-
 const loading = ref(false)
 const stats = ref<AdminStats | null>(null)
-const finance = ref<FinanceSummary | null>(null)
 const loadedAt = ref('')
 
 const taskDaily = computed(() => stats.value?.taskDaily ?? [])
@@ -111,13 +98,6 @@ const cards = computed<KpiCard[]>(() => {
       tone: 'info',
     },
     {
-      label: '近30日收入（元）',
-      value: s?.revenueCents !== undefined ? fenToYuan(s.revenueCents) : '-',
-      caption: '订单入账合计',
-      icon: Coin,
-      tone: 'success',
-    },
-    {
       label: '钱包总余额（元）',
       value: s?.walletBalanceCents !== undefined ? fenToYuan(s.walletBalanceCents) : '-',
       caption: '全站用户钱包结余',
@@ -152,31 +132,6 @@ const taskLineOption = computed<EChartOption>(() => {
         data: taskDaily.value.map((d) => d.succeeded),
         itemStyle: { color: CHART_COLORS[2] },
         lineStyle: { color: CHART_COLORS[2] },
-      },
-    ],
-  }
-})
-
-/** 近30日收入柱状（分 → 元） */
-const revenueBarOption = computed<EChartOption>(() => {
-  const daily = finance.value?.revenueDaily ?? []
-  const base = chartBase()
-  return {
-    color: base.color,
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (value) => `${value ?? 0} 元`,
-      ...base.tooltip,
-    },
-    grid: { left: 48, right: 16, top: 16, bottom: 24 },
-    xAxis: { type: 'category', data: daily.map((d) => d.date), axisLabel: base.axisLabel, axisLine: base.axisLine },
-    yAxis: { type: 'value', axisLabel: base.axisLabel, splitLine: base.splitLine },
-    series: [
-      {
-        name: '收入（元）',
-        type: 'bar',
-        data: daily.map((d) => d.amountCents / 100),
-        itemStyle: { color: CHART_COLORS[0], borderRadius: [4, 4, 0, 0] },
       },
     ],
   }
@@ -240,16 +195,7 @@ const hasTypeDistribution = computed(() => typeTotal.value > 0)
 async function load() {
   loading.value = true
   try {
-    const [statsData, financeData] = await Promise.all([
-      request<AdminStats>('/api/admin/stats'),
-      // 财务汇总接口（v2）不可用时不阻塞仪表盘其余部分
-      request<FinanceSummary>('/api/admin/finance/summary', {
-        query: { days: 30 },
-        silent: true,
-      }).catch(() => null),
-    ])
-    stats.value = statsData
-    finance.value = financeData
+    stats.value = await request<AdminStats>('/api/admin/stats')
     loadedAt.value = formatTime(new Date().toISOString())
   } finally {
     loading.value = false
@@ -299,14 +245,6 @@ onMounted(load)
       </PageCard>
     </div>
 
-    <PageCard title="近30日收入（元）" subtitle="订单入账金额按日汇总" style="margin-top: 16px">
-      <EChart v-if="finance?.revenueDaily?.length" :option="revenueBarOption" />
-      <div v-else class="card-empty" style="min-height: 280px">
-        <el-empty description="暂无收入数据" :image-size="60">
-          <div class="empty-sub">近 30 日还没有入账订单</div>
-        </el-empty>
-      </div>
-    </PageCard>
   </div>
 </template>
 

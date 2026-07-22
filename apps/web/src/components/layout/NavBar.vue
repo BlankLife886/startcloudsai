@@ -7,6 +7,7 @@ import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
+import { useLocaleStore } from '@/stores/locale'
 import { navigationTarget } from '@/router'
 
 const route = useRoute()
@@ -15,6 +16,7 @@ const settingsStore = useSettingsStore()
 const appearanceStore = useAppearanceStore()
 const authStore = useAuthStore()
 const runtimeConfigStore = useRuntimeConfigStore()
+const localeStore = useLocaleStore()
 const { balanceDisplay, refreshWalletBalance } = useClientWalletBalance()
 
 const MOBILE_NAV_MQ = '(max-width: 920px)'
@@ -73,7 +75,7 @@ const homeLink = { to: '/', label: '首页', icon: 'bi-house-door-fill' }
 
 const shareLink = { to: '/share', label: '画廊', icon: 'bi-images' }
 
-const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-currency-dollar' }
+const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-credit-card-2-front-fill' }
 
 const toolLinks = [
   { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
@@ -106,6 +108,7 @@ const aiLinks = [
 
 const routePrefetchers = {
   '/updates': () => import('@/views/UpdatesView.vue'),
+  '/pricing': () => import('@/views/PricingView.vue'),
   '/share': () => import('@/views/ShareView.vue'),
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
   '/ai-illustration-coloring': () => import('@/views/AiIllustrationColoringView.vue'),
@@ -113,7 +116,6 @@ const routePrefetchers = {
   '/design-workshop': () => import('@/views/DesignWorkshopView.vue'),
   '/model-sheet': () => import('@/views/ModelSheetStudioView.vue'),
   '/game-art': () => import('@/views/GameArtStudioView.vue'),
-  '/pricing': () => import('@/views/PricingView.vue'),
   '/app-space': () => import('@/views/AppSpaceView.vue'),
   '/auth': () => import('@/views/auth/AuthAccountView.vue'),
   '/profile': () => import('@/views/ProfileView.vue'),
@@ -144,12 +146,11 @@ const NAV_ORDER = [
   { type: 'group', key: 'tools' },
 ]
 
-/** 移动端底部 Tab：首页 / 画廊 / AI / 价格 / 我的 */
+/** 移动端底部 Tab：首页 / 画廊 / AI / 我的 */
 const BOTTOM_TAB_DEFS = [
   { id: 'home', label: '首页', icon: 'bi-house-door-fill', kind: 'link', link: homeLink },
   { id: 'share', label: '画廊', icon: 'bi-images', kind: 'link', link: shareLink },
   { id: 'ai', label: 'AI', icon: 'bi-cpu-fill', kind: 'group', groupKey: 'ai' },
-  { id: 'pricing', label: '价格', icon: 'bi-currency-dollar', kind: 'link', link: pricingLink },
   { id: 'mine', label: '我的', icon: 'bi-person-circle', kind: 'mine' },
 ]
 
@@ -226,7 +227,8 @@ const mobileSheetLinks = computed(() => {
         disabled: profileDisabled.value,
       })
     }
-    toolLinks.filter((link) => isLinkVisible(link)).forEach((link) => cells.push(toCell(link)))
+    const mineLinks = [pricingLink, ...toolLinks]
+    mineLinks.filter((link) => isLinkVisible(link)).forEach((link) => cells.push(toCell(link)))
 
     return cells
   }
@@ -267,9 +269,7 @@ const accountDisplayName = computed(
     settingsStore.settings.username ||
     '创作者',
 )
-const accountAvatarUrl = computed(
-  () => settingsStore.settings.avatar_url || '/placeholder.svg',
-)
+const accountAvatarUrl = computed(() => settingsStore.settings.avatar_url || '/placeholder.svg')
 const accountShortName = computed(() => {
   const name = String(accountDisplayName.value || '').trim()
   if (name.length <= 8) return name
@@ -344,7 +344,7 @@ function openMobileSheet(kind) {
 
   if (kind === 'ai') prefetchLinks(aiLinks)
   if (kind === 'mine') {
-    prefetchLinks([...toolLinks, { to: '/auth' }, { to: '/profile' }])
+    prefetchLinks([pricingLink, ...toolLinks, { to: '/auth' }, { to: '/profile' }])
   }
 
   syncBodyScrollLock()
@@ -356,7 +356,7 @@ function isBottomTabActive(tab) {
     if (isRouteActive('/profile') || route.path.startsWith('/auth')) {
       return true
     }
-    return toolLinks.some((link) => isLinkVisible(link) && isRouteActive(link.to))
+    return [pricingLink, ...toolLinks].some((link) => isLinkVisible(link) && isRouteActive(link.to))
   }
 
   if (mobileSheetKind.value === tab.id || mobileSheetKind.value === tab.groupKey) {
@@ -751,6 +751,22 @@ onBeforeUnmount(() => {
 
         <div v-if="!isMobileNav" class="header-tools">
           <div class="tool-actions">
+            <label class="locale-picker" title="语言 / Language / 語言">
+              <i class="bi bi-translate" aria-hidden="true"></i>
+              <select
+                :value="localeStore.locale"
+                aria-label="语言 / Language / 語言"
+                @change="localeStore.setLocale($event.target.value)"
+              >
+                <option
+                  v-for="option in localeStore.options"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.short }}
+                </option>
+              </select>
+            </label>
             <button
               type="button"
               class="tool-icon"
@@ -799,7 +815,7 @@ onBeforeUnmount(() => {
                   class="account-chip__avatar"
                   :src="accountAvatarUrl"
                   alt=""
-                  @error="($event.target).src = '/placeholder.svg'"
+                  @error="$event.target.src = '/placeholder.svg'"
                 />
                 <span class="account-chip__meta">
                   <strong>{{ accountShortName }}</strong>
@@ -807,7 +823,6 @@ onBeforeUnmount(() => {
                 </span>
               </router-link>
             </template>
-
           </div>
         </div>
       </div>
@@ -839,6 +854,22 @@ onBeforeUnmount(() => {
           <header class="msheet-header">
             <h2 class="msheet-title">{{ mobileSheetTitle }}</h2>
             <div class="msheet-header-actions">
+              <label v-if="mobileSheetKind === 'mine'" class="msheet-locale">
+                <i class="bi bi-translate" aria-hidden="true"></i>
+                <select
+                  :value="localeStore.locale"
+                  aria-label="语言 / Language / 語言"
+                  @change="localeStore.setLocale($event.target.value)"
+                >
+                  <option
+                    v-for="option in localeStore.options"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.short }}
+                  </option>
+                </select>
+              </label>
               <button
                 v-if="mobileSheetKind === 'mine'"
                 type="button"
@@ -853,7 +884,12 @@ onBeforeUnmount(() => {
                   aria-hidden="true"
                 ></i>
               </button>
-              <button type="button" class="msheet-close" aria-label="关闭" @click="closeMobileSheet">
+              <button
+                type="button"
+                class="msheet-close"
+                aria-label="关闭"
+                @click="closeMobileSheet"
+              >
                 <i class="bi bi-x-lg" aria-hidden="true"></i>
               </button>
             </div>
@@ -867,7 +903,7 @@ onBeforeUnmount(() => {
               class="msheet-account__avatar"
               :src="accountAvatarUrl"
               alt=""
-              @error="($event.target).src = '/placeholder.svg'"
+              @error="$event.target.src = '/placeholder.svg'"
             />
             <div class="msheet-account__copy">
               <strong>{{ accountDisplayName }}</strong>
@@ -1121,7 +1157,9 @@ onBeforeUnmount(() => {
   margin-left: 1px;
   font-size: 0.62rem;
   opacity: 0.5;
-  transition: transform 0.18s var(--nav-ease), opacity 0.18s var(--nav-ease);
+  transition:
+    transform 0.18s var(--nav-ease),
+    opacity 0.18s var(--nav-ease);
 }
 
 .nav-caret.is-open {
@@ -1310,6 +1348,38 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.locale-picker,
+.msheet-locale {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--nav-line);
+  color: var(--nav-muted);
+  background: transparent;
+}
+
+.locale-picker select,
+.msheet-locale select {
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font:
+    700 0.7rem/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  cursor: pointer;
+}
+
+.locale-picker option,
+.msheet-locale option {
+  color: #e8e8f2;
+  background: #171925;
 }
 
 .tool-icon {
@@ -1588,6 +1658,12 @@ body.nav-mobile-open {
   gap: 4px;
 }
 
+.msheet-locale {
+  height: 38px;
+  border-color: var(--ms-line);
+  color: var(--ms-heading);
+}
+
 .msheet-title {
   margin: 0;
   font-family: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
@@ -1781,7 +1857,12 @@ body.nav-mobile-open {
   border: 0;
   color: var(--mb-muted);
   background: transparent;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
   font-size: 0.68rem;
   font-weight: 650;
   line-height: 1.1;

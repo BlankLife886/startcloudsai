@@ -61,22 +61,6 @@ export const TASK_STATUS_TAG: Record<string, 'info' | 'primary' | 'success' | 'd
   canceled: 'warning',
 }
 
-export const ORDER_STATUS_LABELS: Record<string, string> = {
-  pending: '待支付',
-  paid: '已支付',
-  completed: '已完成',
-  failed: '失败',
-  expired: '已过期',
-}
-
-export const ORDER_STATUS_TAG: Record<string, 'info' | 'primary' | 'success' | 'danger' | 'warning'> = {
-  pending: 'warning',
-  paid: 'primary',
-  completed: 'success',
-  failed: 'danger',
-  expired: 'info',
-}
-
 /** 账本 kind → 中文（契约未穷举，未知 kind 原样展示） */
 export const LEDGER_KIND_LABELS: Record<string, string> = {
   admin_adjust: '人工调整',

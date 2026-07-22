@@ -10,12 +10,12 @@ import (
 )
 
 const submissionCols = `id, user_id, task_id, title, status, cover_key, media_keys, reject_reason,
-	reviewed_by, reviewed_at, featured, category_id, sort, created_at`
+	reviewed_by, reviewed_at, featured, category_id, sort, tags, created_at`
 
 func scanSubmission(row pgx.Row) (*GallerySubmission, error) {
 	var s GallerySubmission
 	err := row.Scan(&s.ID, &s.UserID, &s.TaskID, &s.Title, &s.Status, &s.CoverKey, &s.MediaKeys,
-		&s.RejectReason, &s.ReviewedBy, &s.ReviewedAt, &s.Featured, &s.CategoryID, &s.Sort, &s.CreatedAt)
+		&s.RejectReason, &s.ReviewedBy, &s.ReviewedAt, &s.Featured, &s.CategoryID, &s.Sort, &s.Tags, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -77,16 +77,20 @@ func CountSubmissionsByUserSince(ctx context.Context, q Q, userID uuid.UUID, sin
 	return n, err
 }
 
-// CurateSubmission 策展：featured/categoryId/sort 按需更新（幂等）。
+// CurateSubmission 管理社区展示字段（按需更新，幂等）。
 // setCategory=true 时把 category_id 更新为 categoryID（可为 nil 表示清除归类）。
-func CurateSubmission(ctx context.Context, q Q, id uuid.UUID, featured *bool, setCategory bool, categoryID *uuid.UUID, sort *int) error {
+func CurateSubmission(ctx context.Context, q Q, id uuid.UUID, featured *bool, setCategory bool, categoryID *uuid.UUID, sort *int, setTags bool, tags []string) error {
+	if tags == nil {
+		tags = []string{}
+	}
 	_, err := q.Exec(ctx,
 		`UPDATE gallery_submissions SET
 			featured = COALESCE($2, featured),
 			category_id = CASE WHEN $3 THEN $4 ELSE category_id END,
-			sort = COALESCE($5, sort)
+			sort = COALESCE($5, sort),
+			tags = CASE WHEN $6 THEN $7 ELSE tags END
 		 WHERE id = $1`,
-		id, featured, setCategory, categoryID, sort)
+		id, featured, setCategory, categoryID, sort, setTags, tags)
 	return err
 }
 
@@ -105,7 +109,7 @@ func MarkSubmissionRemoved(ctx context.Context, q Q, id uuid.UUID, rejectReason 
 
 // ListGalleryAuthors 创作者聚合（limit+1 行，游标按用户 created_at/id 倒序）。
 func ListGalleryAuthors(ctx context.Context, q Q, search string, limit int, cursor *Cursor) ([]*GalleryAuthor, error) {
-	sql := `SELECT u.id, u.email, u.username, u.submission_banned_until, u.created_at,
+	sql := `SELECT u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at,
 			count(*) AS submissions,
 			count(*) FILTER (WHERE s.status = 'approved') AS approved,
 			count(*) FILTER (WHERE s.status = 'removed') AS removed
@@ -121,7 +125,7 @@ func ListGalleryAuthors(ctx context.Context, q Q, search string, limit int, curs
 		args = append(args, cursor.CreatedAt, cursor.ID)
 		sql += fmt.Sprintf(` AND (u.created_at < $%d OR (u.created_at = $%d AND u.id < $%d))`, len(args)-1, len(args)-1, len(args))
 	}
-	sql += ` GROUP BY u.id, u.email, u.username, u.submission_banned_until, u.created_at`
+	sql += ` GROUP BY u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at`
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(` ORDER BY u.created_at DESC, u.id DESC LIMIT $%d`, len(args))
 
@@ -133,7 +137,7 @@ func ListGalleryAuthors(ctx context.Context, q Q, search string, limit int, curs
 	var out []*GalleryAuthor
 	for rows.Next() {
 		var a GalleryAuthor
-		if err := rows.Scan(&a.UserID, &a.Email, &a.Username, &a.BannedUntil, &a.CreatedAt,
+		if err := rows.Scan(&a.UserID, &a.Email, &a.Username, &a.AvatarURL, &a.BannedUntil, &a.CreatedAt,
 			&a.Submissions, &a.Approved, &a.Removed); err != nil {
 			return nil, err
 		}

@@ -131,7 +131,7 @@ func TestSyncSourceEndToEnd(t *testing.T) {
 	defer server.Close()
 
 	insertTestSource(t, st, "e2e-src", server.URL+"/prompts.json", "json")
-	engine := New(st)
+	engine := New(st, true)
 
 	result, err := engine.SyncSource(ctx, "e2e-src")
 	if err != nil {
@@ -189,7 +189,7 @@ func TestSyncSourceFailureRecordsError(t *testing.T) {
 	defer server.Close()
 
 	insertTestSource(t, st, "bad-src", server.URL+"/x.json", "json")
-	engine := New(st)
+	engine := New(st, true)
 	if _, err := engine.SyncSource(ctx, "bad-src"); err == nil {
 		t.Fatal("sync should fail")
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
+	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -121,7 +122,6 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 
 type adminUserPatchIn struct {
 	Status Opt[string] `json:"status"`
-	Role   Opt[string] `json:"role"`
 }
 
 func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
@@ -139,10 +139,6 @@ func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "status: 无效的用户状态", 422))
 		return
 	}
-	if body.Role.Valid && body.Role.Value != "user" && body.Role.Value != "admin" {
-		fail(c, apperr.E("validation_error", "role: 无效的角色", 422))
-		return
-	}
 	ctx := c.Request.Context()
 	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
 	if err != nil {
@@ -153,15 +149,16 @@ func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "用户不存在", 404))
 		return
 	}
-	if err := store.UpdateUserAdmin(ctx, s.St.Pool, userID, body.Status.Ptr(), body.Role.Ptr()); err != nil {
+	if user.Role != "user" {
+		fail(c, apperr.E("not_found", "用户不存在", 404))
+		return
+	}
+	if err := store.UpdateUserStatus(ctx, s.St.Pool, userID, body.Status.Ptr()); err != nil {
 		fail(c, err)
 		return
 	}
 	if body.Status.Valid {
 		user.Status = body.Status.Value
-	}
-	if body.Role.Valid {
-		user.Role = body.Role.Value
 	}
 	ok(c, adminUserDict(user, nil))
 }
@@ -673,7 +670,7 @@ func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
+	if err := s.Queue.EnqueueRunTaskRecovery(c.Request.Context(), task.ID.String()); err != nil {
 		// C1 补偿：重跑入队失败 → queued→failed + 解冻，返回 500 让管理员重试
 		log.Printf("task %s requeue enqueue failed, compensating: %v", task.ID, err)
 		if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
@@ -717,12 +714,28 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	categories, err := s.categoriesFor(ctx, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
-		d := submissionDict(sub, nil)
+		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
+		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
+		d["category"] = nil
+		if sub.CategoryID != nil {
+			if category := categories[*sub.CategoryID]; category != nil {
+				d["category"] = gin.H{"id": category.ID.String(), "name": category.Name}
+			}
+		}
 		if author := users[sub.UserID]; author != nil {
 			d["user"] = gin.H{"id": author.ID.String(), "email": author.Email, "username": author.Username}
+			d["author"] = gin.H{"id": author.ID.String(), "username": author.Username}
+			d["userEmail"] = author.Email
 		} else {
 			d["user"] = nil
+			d["author"] = nil
+			d["userEmail"] = nil
 		}
 		return d
 	}))
@@ -1201,8 +1214,12 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		}
 		if k == "c2a_api_key" {
 			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
-			var plain string
-			_ = json.Unmarshal(v, &plain)
+			var stored string
+			_ = json.Unmarshal(v, &stored)
+			plain, derr := settings.DecryptSecret(stored, s.Cfg.AppSecret)
+			if derr != nil {
+				return nil, derr
+			}
 			masked, _ := json.Marshal(maskSecret(plain))
 			out[camel] = json.RawMessage(masked)
 			continue
@@ -1293,8 +1310,8 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				return
 			}
 			v = strings.TrimRight(strings.TrimSpace(v), "/")
-			if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
-				fail(c, apperr.E("validation_error", "c2aBaseUrl: 须以 http:// 或 https:// 开头", 422))
+			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+				fail(c, apperr.E("validation_error", "c2aBaseUrl: 地址无效或指向受限网络", 422))
 				return
 			}
 			normalized, _ := json.Marshal(v)
@@ -1309,6 +1326,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			if strings.HasPrefix(v, "****") {
 				continue
 			}
+			encrypted, eerr := settings.EncryptSecret(v, s.Cfg.AppSecret)
+			if eerr != nil {
+				fail(c, eerr)
+				return
+			}
+			raw, _ = json.Marshal(encrypted)
 		case "c2a_timeout_secs":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 600 {
@@ -1348,18 +1371,22 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 	_ = c.ShouldBindJSON(&override)
 
 	ctx := c.Request.Context()
-	resolved, rerr := settings.ResolveC2A(ctx, s.St.Pool, s.Cfg.C2ABaseURL, s.Cfg.C2AAPIKey, s.Cfg.C2ATimeoutSecs)
+	resolved, rerr := settings.ResolveC2A(ctx, s.St.Pool, s.Cfg.C2ABaseURL, s.Cfg.C2AAPIKey, s.Cfg.C2ATimeoutSecs, s.Cfg.AppSecret)
 	if rerr != nil {
 		fail(c, rerr)
 		return
 	}
 	if v := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); v != "" {
+		if netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+			fail(c, apperr.E("validation_error", "baseUrl: 地址无效或指向受限网络", 422))
+			return
+		}
 		resolved.BaseURL = v
 	}
 	if v := strings.TrimSpace(override.APIKey); v != "" && !strings.HasPrefix(v, "****") {
 		resolved.APIKey = v
 	}
-	client := c2a.New(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs)
+	client := c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, s.Cfg.AppEnv == "development")
 	result, err := client.ListModels(ctx)
 	if err != nil {
 		msg := err.Error()

@@ -1,234 +1,278 @@
 # API 契约
 
-所有接口前缀 `/api`。响应统一：
+本文与 `apps/server/internal/httpapi/router.go` 的当前路由对齐。所有接口使用 `/api` 前缀，JSON 字段使用 camelCase，时间使用 RFC 3339/ISO 8601，金额使用整数分并以 `Cents` 结尾。
+
+## 通用约定
+
+成功与失败响应：
 
 ```json
-// 成功
-{ "success": true, "data": { ... } }
-// 失败
-{ "success": false, "code": "task_not_found", "error": "任务不存在" }
+{ "success": true, "data": {} }
+{ "success": false, "code": "validation_error", "error": "错误说明" }
 ```
 
-分页统一 cursor 风格：请求 `?limit=20&cursor=<上页返回>`，响应 `data.items[]` + `data.nextCursor`（无更多为 null）。时间一律 UTC ISO8601 字符串。金额字段一律 `*Cents` 整数（分）。
+- 用户接口使用 `sc_session`，对应 `users/sessions`；未登录返回 HTTP 401 `auth_required`。
+- 管理接口使用 `sc_admin_session`，对应 `admin_accounts/admin_sessions`；未登录返回 HTTP 401 `admin_required`。
+- 用户与管理员允许使用相同邮箱，但身份表、密码和会话完全独立，两种 Cookie 不能交叉鉴权。
+- 浏览器写请求的 `Origin` 必须位于 `ALLOWED_ORIGINS`；非浏览器请求可省略 Origin。
+- cursor 列表接受 `limit`、`cursor`，返回 `{items, nextCursor}`；无下一页时 `nextCursor` 为 `null`。
+- limit 在各 handler 中有默认值和上限；客户端不应依赖超大页。
+- 未知路由返回 404 `not_found`，已知路由的错误方法返回 405 `bad_request`。
 
-鉴权：HttpOnly Cookie `sc_session`。需要登录的接口未登录返回 401 `auth_required`；管理员接口非管理员返回 403 `admin_required`。
-
-## 认证 auth
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/auth/register` | POST | `{email, password, username?}` → 注册并登录，返回 `data.user` |
-| `/api/auth/login` | POST | `{email, password}` → 登录，返回 `data.user` |
-| `/api/auth/logout` | POST | 退出 |
-| `/api/auth/me` | GET | 当前用户；未登录返回 200 `data.user = null` |
-
-`user` 对象：`{id, email, username, avatarUrl, role, createdAt}`。
-
-## 个人中心 me
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/me/profile` | PATCH | `{username?, avatarUrl?, password? {old, new}}` |
-| `/api/me/overview` | GET | `{wallet: {balanceCents, frozenCents}, taskStats: {total, succeeded, failed, running}, taskStatsByType: {t2i: n, ...}, unreadNotifications, recentTasks: [...]}` |
-| `/api/me/wallet` | GET | `{balanceCents, frozenCents}` |
-| `/api/me/wallet/ledger` | GET | 分页账本 `{id, kind, deltaCents, balanceAfterCents, sourceType, sourceId, reason, createdAt}` |
-| `/api/me/notifications` | GET | 分页 `{id, title, body, kind, readAt, createdAt}`（含全站公告合并） |
-| `/api/me/notifications/read` | POST | `{ids?: []}`，缺省为全部已读 |
-
-## 任务 tasks
-
-任务类型 `type`：`t2i` 文生图 | `coloring` 插画染色 | `ui_design` UI设计稿 | `model_sheet` 超高清模型图 | `game_art` 游戏设计 | `puzzle` AI拼图。
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/tasks` | POST | `{type, prompt, params?: {...}, inputKeys?: [r2key], count?: 1-4, idempotencyKey?}` → 校验余额并冻结费用，入队。返回完整 task 对象 |
-| `/api/tasks` | GET | `?type=&status=&limit=&cursor=` 当前用户任务列表 |
-| `/api/tasks/{id}` | GET | 任务详情（轮询用） |
-| `/api/tasks/{id}/cancel` | POST | 仅 `queued` 可取消，解冻费用 |
-| `/api/tasks/{id}` | DELETE | 删除记录（终态任务），同时删除 R2 产物 |
-
-`task` 对象：
+用户对象：
 
 ```json
 {
-  "id": "uuid", "type": "t2i", "status": "queued|running|succeeded|failed|canceled",
-  "prompt": "...", "params": {}, "count": 1,
-  "inputKeys": ["uploads/u1/xx.png"], "outputKeys": ["tasks/u1/t1/0.png"],
-  "outputUrls": ["https://..."],          // 服务端生成的短期可读 URL，仅详情/列表返回
-  "costCents": 20, "errorCode": null, "errorMessage": null,
-  "createdAt": "...", "startedAt": null, "finishedAt": null
+  "id": "uuid",
+  "email": "user@example.com",
+  "username": "user",
+  "avatarUrl": null,
+  "bio": "角色与场景设计",
+  "location": "上海",
+  "websiteUrl": "https://example.com/portfolio",
+  "role": "user",
+  "createdAt": "2026-07-21T00:00:00Z"
 }
 ```
 
-任务单价来自 `GET /api/meta/pricing`（见下），提交时按 `count × 单价` 冻结。
+## 认证
+
+| 方法 | 路径 | 认证 | 请求/说明 |
+| --- | --- | --- | --- |
+| GET | `/api/auth/providers` | 公开 | 返回 `github`、`email`、`password` 和允许的邮箱域名；不提供 Google OAuth |
+| POST | `/api/auth/email/code` | 公开 | `{email,purpose:register|reset}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
+| POST | `/api/auth/register` | 公开 | `{username,email,code,password}`；验证码用途必须为 `register`，成功后创建用户、钱包和 session |
+| POST | `/api/auth/login` | 公开 | `{email,password}`；成功后设置 `sc_session` |
+| POST | `/api/auth/password/reset` | 公开 | `{email,code,password}`；验证码用途必须为 `reset`，成功后更新密码并撤销全部用户 session |
+| GET | `/api/auth/oauth/github` | 公开 | 创建一次性 state 后跳转 GitHub OAuth |
+| GET | `/api/auth/oauth/github/callback` | 公开 | 校验 state、交换 token、验证邮箱后创建用户 session 并跳回 `/auth` |
+| POST | `/api/auth/logout` | 可匿名 | 删除当前 session 并清 Cookie |
+| GET | `/api/auth/me` | 可匿名 | 返回 `{user}`；未登录时 `user:null` |
+
+用户状态为 banned 时不能登录或调用受保护能力。GitHub identity 按 `(provider,subject)` 唯一绑定；邮箱验证码只保存绑定 email、purpose 和 code 的 HMAC，不保存明文。注册只允许新账号并受 `registrationEnabled` 控制，密码长度为 8-72 字节。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
+
+## 管理员认证
+
+| 方法 | 路径 | 认证 | 请求/说明 |
+| --- | --- | --- | --- |
+| POST | `/api/admin/auth/login` | 公开 | `{email,password}`；验证独立管理员账号后设置 `sc_admin_session` |
+| POST | `/api/admin/auth/logout` | 可匿名 | 删除当前管理员 session 并清除管理员 Cookie |
+| GET | `/api/admin/auth/me` | 可匿名 | 返回 `{admin}`；未登录时 `admin:null` |
+| PATCH | `/api/admin/auth/password` | 管理员 | `{old,new}`；成功后清除该管理员全部 session，要求重新登录 |
+
+管理员账号由 `server create-admin --email ... --password-stdin` 创建或更新，不通过用户登录流程产生。管理员密码为 12-72 字节且只从标准输入读取。系统不生成或校验管理员密钥。管理员会话有效期 12 小时并滑动续期；用户 Cookie 不能访问管理接口，管理员 Cookie 也不会建立用户身份。
+
+## 个人中心
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| PATCH | `/api/me/profile` | 更新 `{username?,avatarUrl?,bio?,location?,websiteUrl?,password?:{old,new}}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址；改密后撤销旧 session 并签发当前新 session，头像只能引用本人站内上传 |
+| GET | `/api/me/overview` | 钱包、任务汇总/分类型统计、未读数和最近任务 |
+| GET | `/api/me/wallet` | `{balanceCents,frozenCents}` |
+| GET | `/api/me/wallet/ledger` | 当前用户账本 cursor 分页 |
+| POST | `/api/me/wallet/redeem` | `{code}`，兑换成功返回 `{grantCents,balanceCents}` |
+| GET | `/api/me/notifications` | 个人通知与全站通知合并后的 cursor 分页 |
+| POST | `/api/me/notifications/read` | `{ids?:[]}`；省略 ids 表示全部已读 |
+| GET | `/api/me/gallery/submissions` | 我的投稿 cursor 分页 |
+| DELETE | `/api/me/gallery/submissions/{id}` | 删除自己的投稿 |
+| GET | `/api/me/assets` | 个人素材 cursor 分页；列表返回 `thumbnailUrl`，原图地址为 `url` |
+| POST | `/api/me/assets` | 保存 `{title,fileKey,thumbnailKey,contentType}`；仅允许本人上传、原图不超过 10MB、每账号最多 200 项 |
+| DELETE | `/api/me/assets/{id}` | 删除自己的素材记录、原图与缩略图 |
+
+账本条目包含 `{id,kind,deltaCents,balanceAfterCents,sourceType,sourceId,reason,createdAt}`。
+
+兑换码错误包括 `code_invalid`、`code_redeemed`、`code_expired`、`code_disabled`、`rate_limited`。连续失败会触发按用户的小时级限流。
+
+## 图片任务
+
+任务类型：`t2i|coloring|ui_design|model_sheet|game_art|puzzle`。状态：`queued|running|succeeded|failed|canceled`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/tasks` | `{type,prompt,params?,inputKeys?,count?,idempotencyKey?}`；校验并冻结余额后入队 |
+| GET | `/api/tasks` | 当前用户列表；筛选 `type`、`status`，支持 cursor |
+| GET | `/api/tasks/{id}` | 当前用户任务详情 |
+| POST | `/api/tasks/{id}/cancel` | 仅 queued 可取消并释放冻结额 |
+| DELETE | `/api/tasks/{id}` | 删除终态任务记录及对应 R2 产物 |
+
+task 主要字段：
+
+```json
+{
+  "id": "uuid",
+  "type": "t2i",
+  "model": "gpt-image-2",
+  "status": "queued",
+  "prompt": "...",
+  "params": {},
+  "count": 1,
+  "inputKeys": [],
+  "outputKeys": [],
+  "thumbnailKeys": [],
+  "outputUrls": [],
+  "thumbnailUrls": [],
+  "originalUrls": [],
+  "costCents": 20,
+  "errorCode": null,
+  "errorMessage": null,
+  "attempt": 0,
+  "createdAt": "...",
+  "startedAt": null,
+  "finishedAt": null
+}
+```
+
+新任务的 `model` 在提交时锁定，并由 Worker 实际调用；迁移前的历史任务因过去没有保存该字段，只能在迁移时按当时生效的 `task_models` 配置补齐，补齐后也不会再随后台配置改变。
+
+费用按 `count * taskPrices[type]` 计算。`idempotencyKey` 在同一用户内唯一，客户端重试提交时应复用。成功任务的 `outputKeys`/`originalUrls` 指向原图，`thumbnailKeys`/`thumbnailUrls` 指向最长边 512px 的 JPEG 缩略图；`outputUrls` 为兼容字段，优先返回缩略图。
 
 ## 上传与文件
 
-| 接口 | 方法 | 说明 |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/uploads` | POST | multipart `file`（≤15MB，png/jpg/webp）→ `{key, url}` |
-| `/api/files/{key:path}` | GET | 302 重定向到 R2 presigned URL（校验属主：uploads/tasks 前缀须为本人；gallery 已过审公开；**role=admin 可读任意 key**） |
+| POST | `/api/uploads` | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP；同步生成 512px JPEG 缩略图，返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` |
+| GET | `/api/files/{key...}` | 校验访问权限后由 API 代理读取 R2 并直接返回文件（`200`，私有缓存 1 小时）；客户端无需直连对象存储 |
 
-## 套餐与订单
+用户只能读取属于自己的 `uploads/`、`tasks/` key；已审核画廊资源公开；管理员可读取任意业务 key。网关请求体上限为 20 MB，应用层限制仍是 15 MB。
 
-> **商业模式（定稿）**：用户获得额度有三条途径——**订阅**（周期发放）、**充值包**（一次性入账）、**兑换码**（见 CDK 一节）。
+## 支付状态
 
-套餐分两种 `kind`：
-- `topup` 充值包：支付后立即入账 `grantCents + bonusCents`（现状行为）。
-- `subscription` 订阅：支付后创建/顺延订阅期（`durationDays`），**有效期内每天自动发放 `dailyGrantCents` 到钱包**（北京时间日界；ledger kind=grant, source_type=subscription_daily, source_id=`{subscriptionId}/{YYYY-MM-DD}` 幂等）。同一套餐续购 = ends_at 顺延。
+价格页和只读套餐列表已经恢复：`GET /api/plans` 返回 `{items,paymentEnabled:false}`。支付、订单创建、订阅查询和 webhook 路由在开发、测试、生产环境仍不注册；价格页支付按钮只展示禁用状态，不会创建订单、跳转收银台或扣款。钱包目前只能通过管理员调整、兑换码或现有业务赠送入账。数据库保留历史订单/订阅数据用于兼容升级。
 
-表 `subscriptions`：id / user_id / plan_id / order_id / starts_at / ends_at / daily_grant_cents / last_granted_date date / status('active','expired') / created_at。索引 `(status, ends_at)`、`(user_id, ends_at desc)`。Worker 定时（@every 10m）给 active 且当日未发放的订阅入账；过期置 expired。
+## 画廊与公开提示词
 
-`plans` 增列：`kind`（默认 'topup'）、`duration_days int`、`daily_grant_cents bigint`（订阅型必填）。
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/gallery` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor |
+| GET | `/api/gallery/categories` | 公开 | active 分类 |
+| POST | `/api/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务 |
+| GET | `/api/prompts` | 公开 | active 提示词；支持 `type`、`category` 和 cursor |
 
-| 接口 | 方法 | 说明 |
+画廊 item 包含封面/媒体 URL、作者、精选状态和可空分类。投稿受 `submissionEnabled`、`dailyLimit`、用户禁投时间和任务归属/状态约束；可能返回 `submission_disabled`、`submission_daily_limit`、`submission_banned`。
+
+## 元信息
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/plans` | GET | 上架套餐 `{id, code, name, kind, priceCents, grantCents, bonusCents, durationDays, dailyGrantCents, features[], sort}` |
-| `/api/me/subscription` | GET | 当前订阅：`{active: bool, planName, endsAt, dailyGrantCents, grantedToday: bool}`；无订阅 `active: false` |
-| `/api/orders` | POST | `{planId}` → 创建订单 `{id, status: "pending", amountCents, payUrl?}` |
-| `/api/orders/{id}` | GET | 订单状态轮询 `{id, status: pending/paid/completed/failed/expired, ...}` |
-| `/api/orders` | GET | 我的订单分页 |
-| `/api/payments/webhook/{provider}` | POST | 支付回调（幂等；provider 首期支持 `mock`，生产接入时扩展） |
+| GET | `/api/meta/pricing` | `{taskPrices,freeDailyCents}`；当前免费日额度为兼容字段 |
+| GET | `/api/meta/changelog` | 公开更新说明 |
+| GET | `/api/meta/announcements` | 当前生效公告 |
+| GET | `/api/health` | API、PostgreSQL 与 Redis 健康状态；成功 `{status:"ok"}` |
 
-订单完成 = 状态条件更新为 `completed` + 幂等入账 `grantCents + bonusCents` 到钱包，同一事务。
+## 管理端：用户、账本和任务
 
-## 画廊 gallery
+以下接口全部要求管理员权限。
 
-| 接口 | 方法 | 说明 |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/gallery` | GET | 公开已过审作品分页 `{id, title, coverUrl, mediaUrls[], author: {id, username, avatarUrl}, createdAt}` |
-| `/api/gallery/submissions` | POST | `{taskId, title}` 把自己成功任务投稿（校验产物仍在） |
-| `/api/me/gallery/submissions` | GET | 我的投稿及审核状态 |
-| `/api/me/gallery/submissions/{id}` | DELETE | 撤回/删除投稿 |
+| GET | `/api/admin/stats` | 用户、任务、全站余额、运行中任务和类型分布 |
+| GET | `/api/admin/users` | `search`、`status` 筛选的 cursor 列表 |
+| GET | `/api/admin/users/{id}` | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
+| PATCH | `/api/admin/users/{id}` | 更新 `{status?,role?}` |
+| GET | `/api/admin/users/{id}/ledger` | 指定用户账本 |
+| POST | `/api/admin/users/{id}/wallet-adjust` | `{deltaCents,reason}`，写 admin_adjust 账本 |
+| GET | `/api/admin/ledger` | 全站账本；筛选 `kind`、`sourceType`、`user` |
+| GET | `/api/admin/tasks` | 按 `type`、`status`、`user` 筛选全站任务 |
+| POST | `/api/admin/tasks/{id}/requeue` | 重新冻结费用并重入队 failed 任务 |
+| POST | `/api/admin/tasks/{id}/cancel` | 取消任意用户 queued 任务 |
+| POST | `/api/admin/tasks/{id}/force-fail` | 将 running 任务置 failed 并释放费用 |
+| GET | `/api/admin/audit-logs` | 按 `admin`、`path` 筛选审计日志 |
 
-## 兑换码 CDK（v5 增补）
+`stats` 包含 `{totalUsers,newUsersToday,taskDaily,walletBalanceCents,runningTasks,typeDistribution}` 等字段。管理任务列表提供扁平 `userEmail`。
 
-表 `redemption_codes`：id uuid / code text UNIQUE（格式 `SC-XXXX-XXXX-XXXX`，字符集去易混 `0O1IL`）/ grant_cents bigint CHECK(>0) / batch_id text / note text / status CHECK in ('active','redeemed','disabled') DEFAULT 'active' / expires_at timestamptz null / redeemed_by uuid FK null / redeemed_at / created_by uuid / created_at。索引：`(batch_id)`、`(status, created_at desc)`。
+## 管理端：兑换码
 
-| 接口 | 方法 | 说明 |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/me/wallet/redeem` | POST | `{code}` → 成功 `{grantCents, balanceCents}`。兑换 = 条件更新 `status='active' AND (expires_at IS NULL OR expires_at > now())` → redeemed + redeemed_by/at，同事务钱包入账（ledger kind=grant, source_type=redeem_code, source_id=code_id 幂等）。错误码：`code_invalid`(404) / `code_redeemed`(409) / `code_expired`(410) / `code_disabled`(410) / `rate_limited`(429)。**防爆破**：单用户 1 小时内 10 次失败尝试即锁 1 小时（复用限流器模式），失败不区分"不存在/已兑"以外的细节泄漏节奏 |
-| `/api/admin/redemption-codes/generate` | POST | `{count(1-1000), grantCents(>0), expiresAt?, note?}` → `{batchId, grantCents, codes: ["SC-..."...]}`（明文码仅生成时返回一次） |
-| `/api/admin/redemption-codes` | GET | `?status=&batchId=&search=`（search 匹配完整 code）cursor 分页：`{id, code, grantCents, batchId, note, status, expiresAt, redeemedBy, redeemedByEmail, redeemedAt, createdAt}` |
-| `/api/admin/redemption-codes/{id}/disable` | POST | 仅 active 可禁用（条件更新）；非 active 返回 409 `code_not_active` |
-| `/api/admin/redemption-codes/batches` | GET | 批次汇总：`{batchId, note, grantCents, total, redeemed, disabled, createdAt}` 列表（近100批） |
+| POST | `/api/admin/redemption-codes/generate` | `{count,grantCents,expiresAt?,note?}`；count 为 1 至 1000 |
+| GET | `/api/admin/redemption-codes` | `status`、`batchId`、`search` 筛选的 cursor 列表 |
+| POST | `/api/admin/redemption-codes/{id}/disable` | 仅 active 可停用 |
+| GET | `/api/admin/redemption-codes/batches` | 最近批次汇总 |
 
-## 元信息 meta
+明文码格式为 `SC-XXXX-XXXX-XXXX`，批量生成响应是导出的权威来源。已兑换或停用的码不能再次操作。
 
-| 接口 | 方法 | 说明 |
+## 管理端：画廊与社区
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/meta/pricing` | GET | `{taskPrices: {t2i: cents, coloring: cents, ...}, freeDailyCents}` |
-| `/api/meta/changelog` | GET | 更新说明条目（后台可维护，`{id, version, date, tag, title, summary, items[]}`） |
-| `/api/meta/announcements` | GET | 生效中公告 |
-| `/api/health` | GET | 健康检查 `{status: "ok"}` |
+| GET | `/api/admin/gallery/submissions` | 按状态查看投稿 |
+| POST | `/api/admin/gallery/submissions/{id}/review` | `{action:approve|reject|remove,reason?}` |
+| POST | `/api/admin/gallery/submissions/{id}/curate` | `{featured?,categoryId?,sort?,tags?}` 更新作品详情 |
+| POST | `/api/admin/gallery/submissions/batch-curate` | `{ids,featured?,categoryId?,tags?,tagMode?}` 批量更新；`tagMode` 为 `replace|add|remove` |
+| POST | `/api/admin/gallery/submissions/reorder` | `{ids}` 按数组顺序写入作品展示排序 |
+| POST | `/api/admin/gallery/submissions/{id}/violation` | `{reason,banDays,deleteMedia?}` |
+| POST | `/api/admin/gallery/users/{id}/unban` | 解除用户禁投 |
+| GET | `/api/admin/gallery/categories` | 全部分类 |
+| POST | `/api/admin/gallery/categories` | 新建分类 |
+| PATCH | `/api/admin/gallery/categories/{id}` | 修改分类 |
+| DELETE | `/api/admin/gallery/categories/{id}` | 删除分类，投稿关联置空 |
+| GET | `/api/admin/gallery/settings` | `{submissionEnabled,autoApprove,dailyLimit}` |
+| PUT | `/api/admin/gallery/settings` | 保存投稿规则 |
+| GET | `/api/admin/gallery/authors` | 按 `search` 聚合创作者与投稿/禁投信息 |
 
-## 后台 admin（全部要求 role=admin）
+`banDays` 范围为 0 至 365；0 表示只下架不新增禁投期限。`deleteMedia` 会删除对应任务产物，属于不可恢复操作。
 
-| 接口 | 方法 | 说明 |
+## 管理端：提示词库与数据源
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/admin/stats` | GET | 总用户/今日新增/任务量与成功率（近7日）/收入（近30日）/钱包总余额 |
-| `/api/admin/users` | GET | 搜索分页（email/username/status） |
-| `/api/admin/users/{id}` | PATCH | `{status?: active/banned, role?}` |
-| `/api/admin/users/{id}/wallet-adjust` | POST | `{deltaCents, reason}` 人工调整（走账本，kind=admin_adjust） |
-| `/api/admin/orders` | GET | 订单分页筛选 |
-| `/api/admin/orders/{id}/complete` | POST | 人工补单（幂等入账） |
-| `/api/admin/plans` | GET/POST | 套餐列表/新建 |
-| `/api/admin/plans/{id}` | PATCH/DELETE | 修改/下架 |
-| `/api/admin/tasks` | GET | 全站任务监控（筛 type/status/user） |
-| `/api/admin/tasks/{id}/requeue` | POST | 失败任务重新入队（不重复扣费） |
-| `/api/admin/gallery/submissions` | GET | 待审/全部投稿 |
-| `/api/admin/gallery/submissions/{id}/review` | POST | `{action: approve/reject/remove, reason?}` |
-| `/api/admin/announcements` | GET/POST，`/{id}` PATCH/DELETE | 公告管理 |
-| `/api/admin/changelog` | GET/POST，`/{id}` PATCH/DELETE | 更新说明管理 |
-| `/api/admin/settings` | GET/PUT | 运营配置（任务单价、用户并发上限、注册开关等） |
-| `/api/admin/settings/test-c2a` | POST | 测试 chatgpt2api 连通性（调 `/v1/models`） |
+| GET | `/api/admin/prompt-library` | 按 `type`、`category`、`search` 筛选词条 |
+| POST | `/api/admin/prompt-library` | 新建手工词条 |
+| PATCH | `/api/admin/prompt-library/{id}` | 修改词条、排序或 active |
+| DELETE | `/api/admin/prompt-library/{id}` | 删除词条 |
+| POST | `/api/admin/prompt-library/{id}/cover` | multipart 封面上传 |
+| GET | `/api/admin/prompt-sources` | `{items:[...]}`，不分页 |
+| POST | `/api/admin/prompt-sources` | 新建 JSON/Markdown/HTML 数据源 |
+| PATCH | `/api/admin/prompt-sources/{id}` | 修改数据源与同步配置 |
+| DELETE | `/api/admin/prompt-sources/{id}` | 可带 `purgeItems=1`；内置源不可删除 |
+| POST | `/api/admin/prompt-sources/{id}/sync` | 立即同步，返回 imported/updated/unchanged/failed 统计 |
 
-### 后台扩展接口（v2 增补）
+源对象使用 camelCase。同步条目的远程图片 URL 可以直接存于 `coverKey`，序列化时 http(s) URL 原样返回。部分条目失败仍返回 200，并在 `failed` 中计数。
 
-| 接口 | 方法 | 说明 |
+## 管理端：内容与设置
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `/api/admin/users/{id}` | GET | 用户详情：`{user, wallet: {balanceCents, frozenCents}, counts: {orders, tasksTotal, tasksSucceeded, tasksFailed, tasksRunning, submissions}}` |
-| `/api/admin/users/{id}/ledger` | GET | 该用户账本流水（cursor 分页，条目同 `/api/me/wallet/ledger`） |
-| `/api/admin/users/{id}/reset-password` | POST | `{newPassword}`（≥8位），同时使该用户所有 session 失效 |
-| `/api/admin/ledger` | GET | 全站账本流水，`?kind=&sourceType=&user=`（user 同任务筛选语义），条目额外带 `userEmail` |
-| `/api/admin/finance/summary` | GET | `?days=30`（7-90）→ `{revenueDaily: [{date, amountCents}], spendDaily: [{date, amountCents}], totals: {revenueCents, spendCents, grantCents, refundCents}}`（spend=任务结算，grant=全部入账，refund=解冻退还） |
-| `/api/admin/tasks/{id}/cancel` | POST | 取消 queued 任务并解冻（同用户端语义，管理员可操作任何人） |
-| `/api/admin/tasks/{id}/force-fail` | POST | 把卡死的 running 任务强制置为 failed 并解冻（errorCode=admin_force_failed） |
-| `/api/admin/audit-logs` | GET | 操作审计分页：`{id, adminEmail, method, path, action, targetId, status, ip, createdAt, detail}`，`?admin=&path=` 筛选 |
+| GET/POST | `/api/admin/announcements` | 列表/新建公告 |
+| PATCH/DELETE | `/api/admin/announcements/{id}` | 修改/删除公告 |
+| GET/POST | `/api/admin/changelog` | 列表/新建更新说明 |
+| PATCH/DELETE | `/api/admin/changelog/{id}` | 修改/删除更新说明 |
+| GET | `/api/admin/settings` | 获取运营配置 |
+| PUT | `/api/admin/settings` | 保存运营配置 |
+| POST | `/api/admin/settings/test-c2a` | 调用上游 `/v1/models`，返回模型数量与最多 20 个 ID |
 
-**stats 增补字段**：`typeDistribution: {t2i: n, ...}`（近30日各类型任务数）。
+settings 请求/响应：
 
-**审计规则**：所有 `/api/admin/*` 的非 GET 请求成功与否都写 `admin_audit_logs`（记录 method/path/状态码/目标 id/请求体摘要，密码等敏感字段脱敏为 `***`）。
+```json
+{
+  "taskPrices": {"t2i": 20},
+  "taskModels": {"default": "gpt-image-2"},
+  "userMaxRunningTasks": 3,
+  "registrationEnabled": true,
+  "signupBonusCents": 100,
+  "freeDailyCents": 0,
+  "submissionEnabled": true,
+  "autoApprove": false,
+  "dailyLimit": 0,
+  "c2aBaseUrl": "",
+  "c2aApiKey": "****abcd",
+  "c2aTimeoutSecs": 0
+}
+```
 
-**settings 增补**：`taskModels` 支持按类型覆盖（`{"default": "gpt-image-2", "coloring": "..."}`），后台设置页可编辑。
+`c2aBaseUrl`、`c2aApiKey` 非空以及 `c2aTimeoutSecs > 0` 时覆盖环境变量；空值/0 使用环境变量。API Key 永不明文返回，已配置时只返回末四位掩码；PUT 省略该字段、提交空串或原掩码均不会覆盖现有 key。`dailyLimit=0` 表示投稿不限次数。
 
-### 社区运营接口（v3 增补）
+## 常见错误码
 
-**提示词库**（表 prompt_library：id/title/prompt/task_type/category/tags jsonb/cover_key/sort/active/created_at）：
+| 类别 | 错误码 |
+| --- | --- |
+| 鉴权 | `auth_required`, `admin_required`, `invalid_credentials`, `rate_limited` |
+| 参数/资源 | `validation_error`, `not_found`, `email_exists`, `registration_required`, `registration_closed` |
+| 任务 | `insufficient_balance`, `user_task_limit`, `task_not_found`, `task_not_cancelable` |
+| 文件 | `upload_too_large`, `unsupported_file` |
+| 投稿 | `submission_not_allowed`, `submission_disabled`, `submission_daily_limit`, `submission_banned` |
+| 兑换码 | `code_invalid`, `code_redeemed`, `code_expired`, `code_disabled`, `code_not_active` |
+| 数据源 | `builtin_source_protected` |
+| 服务端 | `internal_error` |
 
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/prompts` | GET | 公开：`?type=&category=&limit=&cursor=`，仅 active，item `{id, title, prompt, taskType, category, tags[], coverUrl}` |
-| `/api/admin/prompt-library` | GET/POST | 管理列表（含 inactive，`?type=&category=&search=`）/ 新建 |
-| `/api/admin/prompt-library/{id}` | PATCH/DELETE | 修改（含 sort/active）/ 删除 |
-| `/api/admin/prompt-library/{id}/cover` | POST | multipart 上传封面图 → 存 R2 `prompt-covers/{id}.{ext}`，返回 `{coverUrl}` |
-
-**社区管理**：
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/admin/gallery/categories` | GET/POST，`/{id}` PATCH/DELETE | 分类 CRUD：`{id, name, sort, active}`；删除时投稿的 categoryId 置 NULL |
-| `/api/admin/gallery/submissions/{id}/curate` | POST | `{featured?: bool, categoryId?: uuid\|null, sort?: int}` 策展（精选/归类/排序） |
-| `/api/admin/gallery/settings` | GET/PUT | `{submissionEnabled, autoApprove, dailyLimit}`（存 app_settings） |
-| `/api/admin/gallery/authors` | GET | 创作者聚合：`{userId, email, username, submissions, approved, removed, bannedUntil}`，`?search=` |
-
-**投稿审核增强**：
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/admin/gallery/submissions/{id}/violation` | POST | `{reason, banDays: 0-365, deleteMedia?: bool}` → status=removed + 用户 `submission_banned_until`（banDays=0 只下架）+ 通知用户；deleteMedia 时删 R2 产物 |
-| `/api/admin/gallery/users/{id}/unban` | POST | 解除禁投 |
-
-**公开画廊增补**：`GET /api/gallery` 支持 `?category=` 与 `?featured=1`；item 增加 `featured`、`category: {id, name} \| null`。`GET /api/gallery/categories` 公开返回 active 分类。用户投稿 `POST /api/gallery/submissions` 增加可选 `categoryId`，提交时校验 `submission_banned_until` 与 `submissionEnabled`/`dailyLimit`（错误码 `submission_banned` / `submission_disabled` / `submission_daily_limit`）；`autoApprove` 开启时直接 approved。
-
-**数据库增补**：`gallery_categories` 表；`gallery_submissions` 加 `featured bool default false`、`category_id uuid FK null`、`sort int default 0`；`users` 加 `submission_banned_until timestamptz null`；`prompt_library` 表。
-
-### 提示词库数据源（v4 增补）
-
-表 `prompt_sources`：id text（内置源用固定 slug 如 banana-prompt-quicker，自建源用 uuid 字符串）/ name / source_url / format('json'|'markdown'|'html') / task_type（导入到哪类，默认 t2i）/ default_tags jsonb / enabled / auto_sync_enabled / sync_interval_minutes（默认 360）/ next_sync_at / item_count / last_synced_at / last_sync_duration_ms / last_error / created_at。
-`prompt_library` 加列：source_id text default ''、source_item_key text default ''；partial unique index (source_id, source_item_key)（两者非空时）。手工词条 source_id 为空，不受同步影响。
-
-| 接口 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/admin/prompt-sources` | GET/POST | 源列表 / 新建（name、sourceUrl、format、taskType、defaultTags、syncIntervalMinutes、enabled、autoSyncEnabled） |
-| `/api/admin/prompt-sources/{id}` | PATCH/DELETE | 修改 / 删除（`?purgeItems=1` 时连带删除该源词条） |
-| `/api/admin/prompt-sources/{id}/sync` | POST | 立即同步 → `{imported, updated, unchanged, failed, durationMs, itemCount}` |
-
-同步语义：抓取 source_url → 按 format 解析出 `{itemKey, title, prompt, tags[], imageUrl, category?}` 列表 → 按 (source_id, item_key) upsert：新增写入（category 缺省 'other'，cover_key 直接存远程 imageUrl，active=true）；已存在则更新 title/prompt/tags/cover，**保留**已有 category（非 other 时）、active、sort。远程封面 URL 存在 cover_key 里，序列化时 http(s) 开头原样返回。
-Worker 定时（@every 30m）扫描 enabled+autoSync 且 next_sync_at 到期的源自动同步。
-迁移 seed 内置 6 个源（walleven 同款：banana-prompt-quicker / awesome-gpt-image / awesome-gpt4o-image / youmind-gpt-image-2 / youmind-nano-banana-pro / davidwu-gpt-image-2）。
-分类回填：`apps/server/scripts/backfill-prompt-categories.sql`（由旧库导出的 source_item_key → category 映射），同步后执行一次即可让分类与旧后台一致。
-
-**序列化对齐基准（v4 定稿）**：
-- 源对象响应一律 camelCase：`{id, name, sourceUrl, format, taskType, defaultTags[], enabled, builtin, autoSyncEnabled, syncIntervalMinutes, itemCount, lastSyncedAt, lastSyncDurationMs, lastError, createdAt}`。
-- `GET /api/admin/prompt-sources` 返回 `{items: [...]}`（与 plans/announcements 一致，不分页）。
-- `GET /api/admin/prompt-library` 词条序列化增加 `sourceId`（空串 = 手工词条）。
-- 同步整体失败走统一错误格式；部分失败返回 200 且 `failed > 0`。
-- seed 的 6 个内置源带 `builtin: true`：可编辑、可停用，**不可删除**（DELETE 返回 422 `builtin_source_protected`）。
-
-### 后台接口字段补充定义（联调对齐基准）
-
-- `GET /api/admin/stats` 响应：`{totalUsers, newUsersToday, taskDaily: [{date, total, succeeded}](近7日), revenueCents(近30日), walletBalanceCents(全站可用余额合计), runningTasks}`。
-- `GET /api/admin/users` 查询参数：`?search=`（匹配 email/username）`&status=`。
-- `GET /api/admin/tasks` 查询参数：`?type=&status=&user=`（user 接受用户 id 或邮箱）。
-- 套餐上架字段统一为 **`active: boolean`**（与数据库一致；admin 端如用 enabled 需改为 active）。公告生效字段同样为 `active`。
-- `GET/PUT /api/admin/settings` 响应/请求体：`{taskPrices: {type: cents}, userMaxRunningTasks, registrationEnabled, signupBonusCents}`（注意是 `signupBonusCents`）。
-- `POST /api/admin/settings/test-c2a` 成功响应：`{ok: true, modelCount, models: [id...]（最多前20个）}`；失败走统一错误格式。
-- 订单列表项携带 `userEmail` 与 `planName` 扁平字段；任务列表项携带 `userEmail`。
-
-## 错误码约定
-
-`auth_required` `admin_required` `invalid_credentials` `email_exists` `insufficient_balance`
-`task_not_found` `task_not_cancelable` `user_task_limit` `upload_too_large` `unsupported_file`
-`plan_not_found` `order_not_found` `order_not_payable` `submission_not_allowed` `not_found`
-`validation_error` `rate_limited` `internal_error`
+调用方应以 HTTP 状态和 `code` 分支，不应解析中文 `error` 文案。

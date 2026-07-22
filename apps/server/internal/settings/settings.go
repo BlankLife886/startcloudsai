@@ -150,7 +150,7 @@ type C2AConfig struct {
 }
 
 // ResolveC2A 返回生效的 chatgpt2api 配置：后台设置非空则覆盖环境变量默认值。
-func ResolveC2A(ctx context.Context, q store.Q, envBaseURL, envAPIKey string, envTimeoutSecs int) (C2AConfig, error) {
+func ResolveC2A(ctx context.Context, q store.Q, envBaseURL, envAPIKey string, envTimeoutSecs int, masterKey string) (C2AConfig, error) {
 	cfg := C2AConfig{BaseURL: envBaseURL, APIKey: envAPIKey, TimeoutSecs: envTimeoutSecs}
 	readString := func(key string) (string, error) {
 		raw, err := Get(ctx, q, key)
@@ -171,7 +171,11 @@ func ResolveC2A(ctx context.Context, q store.Q, envBaseURL, envAPIKey string, en
 	if v, err := readString("c2a_api_key"); err != nil {
 		return cfg, err
 	} else if v != "" {
-		cfg.APIKey = v
+		plain, derr := DecryptSecret(v, masterKey)
+		if derr != nil {
+			return cfg, derr
+		}
+		cfg.APIKey = plain
 	}
 	rawTimeout, err := Get(ctx, q, "c2a_timeout_secs")
 	if err != nil {

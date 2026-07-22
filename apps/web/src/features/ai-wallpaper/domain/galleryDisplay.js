@@ -1,6 +1,17 @@
+function uniqueUrls(items = []) {
+  if (!Array.isArray(items)) return []
+  return Array.from(new Set(items.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
 export function uniqueTaskOutputs(task = {}) {
-  if (!Array.isArray(task?.outputs)) return []
-  return Array.from(new Set(task.outputs.map((item) => String(item || '').trim()).filter(Boolean)))
+  const originals = uniqueUrls(task?.originalOutputs)
+  return originals.length ? originals : uniqueUrls(task?.outputs)
+}
+
+export function uniqueTaskThumbnailOutputs(task = {}) {
+  if (task?.hasDedicatedThumbnails === false) return []
+  const thumbnails = uniqueUrls(task?.thumbnailOutputs)
+  return thumbnails
 }
 
 export function normalizeVisibleDisplayPositions(items = []) {

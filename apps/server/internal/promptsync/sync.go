@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -46,8 +47,9 @@ type Engine struct {
 	Client *http.Client
 }
 
-func New(st *store.Store) *Engine {
-	return &Engine{St: st, Client: &http.Client{Timeout: fetchTimeout}}
+func New(st *store.Store, allowPrivate ...bool) *Engine {
+	allow := len(allowPrivate) > 0 && allowPrivate[0]
+	return &Engine{St: st, Client: netguard.NewHTTPClient(fetchTimeout, allow, true)}
 }
 
 // SyncSource 手动同步：抢锁（不要求到期）→ 执行 → 释放锁。

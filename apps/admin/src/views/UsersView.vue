@@ -7,8 +7,6 @@ import {
   fenToYuan,
   formatTime,
   ledgerKindLabel,
-  ORDER_STATUS_LABELS,
-  ORDER_STATUS_TAG,
   shortId,
   TASK_STATUS_LABELS,
   TASK_STATUS_TAG,
@@ -20,10 +18,48 @@ interface AdminUser {
   id: string
   email: string
   username: string | null
-  role: string
+  avatarUrl?: string | null
+  bio?: string
+  location?: string
+  websiteUrl?: string
   status: string
+  lastLoginAt?: string | null
+  submissionBannedUntil?: string | null
+  wallet?: { balanceCents: number; frozenCents: number }
+  /** 兼容旧版接口。 */
   balanceCents?: number
   createdAt: string
+}
+
+function displayName(user: AdminUser | null | undefined) {
+  return String(user?.username || user?.email || '未知用户').trim()
+}
+
+function avatarInitial(user: AdminUser | null | undefined) {
+  return displayName(user).slice(0, 1).toUpperCase() || '?'
+}
+
+function walletOf(user: AdminUser | null | undefined) {
+  return {
+    balanceCents: user?.wallet?.balanceCents ?? user?.balanceCents ?? 0,
+    frozenCents: user?.wallet?.frozenCents ?? 0,
+  }
+}
+
+function isSubmissionBanned(user: AdminUser | null | undefined) {
+  if (!user?.submissionBannedUntil) return false
+  return new Date(user.submissionBannedUntil).getTime() > Date.now()
+}
+
+function profileCompleteness(user: AdminUser | null | undefined) {
+  if (!user) return 0
+  const fields = [user.username, user.avatarUrl, user.bio, user.location, user.websiteUrl]
+  return Math.round((fields.filter((value) => String(value || '').trim()).length / fields.length) * 100)
+}
+
+function websiteHref(value: string | null | undefined) {
+  const url = String(value || '').trim()
+  return /^https?:\/\//i.test(url) ? url : ''
 }
 
 const filters = reactive({ search: '', status: '' })
@@ -108,7 +144,16 @@ interface UserDetail {
     tasksSucceeded: number
     tasksFailed: number
     tasksRunning: number
+    tasksCanceled: number
     submissions: number
+    assets: number
+  }
+  security: {
+    activeSessions: number
+    lastSessionIp: string | null
+    lastSessionUserAgent: string | null
+    lastSessionAt: string | null
+    lastSessionExpiresAt: string | null
   }
 }
 
@@ -123,26 +168,21 @@ interface LedgerEntry {
   createdAt: string
 }
 
-interface UserOrder {
-  id: string
-  status: string
-  amountCents: number
-  planName?: string
-  createdAt: string
-}
-
 interface UserTask {
   id: string
   type: string
+  model?: string
   status: string
+  attempt?: number
   costCents: number
+  errorMessage?: string | null
   createdAt: string
 }
 
 const drawerVisible = ref(false)
 const drawerUser = ref<AdminUser | null>(null)
 const activeTab = ref('overview')
-/** 已加载过的懒加载 Tab（账本/订单/任务），换用户后清空 */
+/** 已加载过的懒加载 Tab（账本/任务），换用户后清空 */
 const loadedTabs = new Set<string>()
 
 const overviewLoading = ref(false)
@@ -154,14 +194,6 @@ const ledgerList = usePagedList<LedgerEntry>(
       query: { limit: 20, cursor },
     }),
   () => drawerUser.value?.id ?? '',
-)
-
-const orderList = usePagedList<UserOrder>(
-  (cursor) =>
-    request<Page<UserOrder>>('/api/admin/orders', {
-      query: { search: drawerUser.value?.email, limit: 20, cursor },
-    }),
-  () => drawerUser.value?.email ?? '',
 )
 
 const taskList = usePagedList<UserTask>(
@@ -195,66 +227,23 @@ watch(activeTab, (tab) => {
   if (!drawerVisible.value || tab === 'overview' || loadedTabs.has(tab)) return
   loadedTabs.add(tab)
   if (tab === 'ledger') ledgerList.reset()
-  else if (tab === 'orders') orderList.reset()
   else if (tab === 'tasks') taskList.reset()
 })
 
 /** 抽屉里展示的用户（概览接口返回后以其为准） */
 const drawerUserInfo = computed(() => overview.value?.user ?? drawerUser.value)
+const drawerWallet = computed(() => overview.value?.wallet ?? walletOf(drawerUserInfo.value))
+const taskSuccessRate = computed(() => {
+  const counts = overview.value?.counts
+  if (!counts?.tasksTotal) return 0
+  return Math.round((counts.tasksSucceeded / counts.tasksTotal) * 100)
+})
 
-// ---------- 重置密码 ----------
-const resetVisible = ref(false)
-const resetForm = reactive({ newPassword: '' })
-const resetSubmitting = ref(false)
-/** 重置成功后仅展示一次的新密码 */
-const resetDone = ref('')
-
-function generatePassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
-  const bytes = new Uint8Array(12)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => chars[b % chars.length]).join('')
-}
-
-function openReset() {
-  resetForm.newPassword = generatePassword()
-  resetDone.value = ''
-  resetVisible.value = true
-}
-
-async function submitReset() {
-  if (!drawerUser.value) return
-  const pwd = resetForm.newPassword.trim()
-  if (pwd.length < 8) {
-    ElMessage.warning('新密码至少 8 位')
-    return
-  }
-  resetSubmitting.value = true
-  try {
-    await request(`/api/admin/users/${drawerUser.value.id}/reset-password`, {
-      method: 'POST',
-      body: { newPassword: pwd },
-    })
-    resetDone.value = pwd
-    ElMessage.success('密码已重置，该用户所有登录态已失效')
-  } finally {
-    resetSubmitting.value = false
-  }
-}
-
-async function copyPassword() {
-  try {
-    await navigator.clipboard.writeText(resetDone.value)
-    ElMessage.success('已复制')
-  } catch {
-    ElMessage.warning('复制失败，请手动复制')
-  }
-}
 </script>
 
 <template>
   <div class="page">
-    <PageCard title="用户列表" subtitle="查看与管理全部注册用户，点击行查看详情">
+    <PageCard title="用户管理" subtitle="查看账号资料、资金状态、使用情况与安全信息">
       <div class="filter-bar">
         <el-input
           v-model="filters.search"
@@ -287,34 +276,56 @@ async function copyPassword() {
             <div class="empty-sub">调整筛选条件后重新查询</div>
           </el-empty>
         </template>
-        <el-table-column prop="email" label="邮箱" min-width="200">
+        <el-table-column label="用户" min-width="270">
           <template #default="{ row }">
-            <el-link type="primary" :underline="false" @click.stop="openDrawer(row as AdminUser)">
-              {{ row.email }}
-            </el-link>
+            <button type="button" class="user-cell" @click.stop="openDrawer(row as AdminUser)">
+              <span class="user-avatar">
+                <img v-if="row.avatarUrl" :src="row.avatarUrl" :alt="displayName(row as AdminUser)" />
+                <template v-else>{{ avatarInitial(row as AdminUser) }}</template>
+              </span>
+              <span class="user-cell__copy">
+                <strong>{{ displayName(row as AdminUser) }}</strong>
+                <small>{{ row.email }}</small>
+                <code :title="row.id">{{ shortId(row.id) }}</code>
+              </span>
+            </button>
           </template>
         </el-table-column>
-        <el-table-column prop="username" label="用户名" min-width="120">
-          <template #default="{ row }">{{ row.username || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="角色" width="90">
+        <el-table-column label="资料" min-width="135">
           <template #default="{ row }">
-            <el-tag v-if="row.role === 'admin'" type="danger" size="small">管理员</el-tag>
-            <span v-else>用户</span>
+            <div class="profile-state">
+              <strong>{{ row.location || '未填写地区' }}</strong>
+              <span>资料完整度 {{ profileCompleteness(row as AdminUser) }}%</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="账号状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'banned' ? 'danger' : 'success'" size="small">
-              {{ row.status === 'banned' ? '已封禁' : '正常' }}
-            </el-tag>
+            <div class="status-stack">
+              <el-tag :type="row.status === 'banned' ? 'danger' : 'success'" size="small">
+                {{ row.status === 'banned' ? '已封禁' : '正常' }}
+              </el-tag>
+              <el-tag v-if="isSubmissionBanned(row as AdminUser)" type="warning" size="small" effect="plain">
+                禁止投稿
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="余额（元）" width="110" align="right" class-name="col-num">
-          <template #default="{ row }">{{ fenToYuan(row.balanceCents) }}</template>
+        <el-table-column label="资金（元）" width="135" align="right" class-name="col-num">
+          <template #default="{ row }">
+            <div class="money-cell">
+              <strong>{{ fenToYuan(walletOf(row as AdminUser).balanceCents) }}</strong>
+              <small>冻结 {{ fenToYuan(walletOf(row as AdminUser).frozenCents) }}</small>
+            </div>
+          </template>
         </el-table-column>
-        <el-table-column label="注册时间" width="170">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="最近活动" min-width="165">
+          <template #default="{ row }">
+            <div class="activity-cell">
+              <strong>{{ row.lastLoginAt ? formatTime(row.lastLoginAt) : '从未登录' }}</strong>
+              <small>注册 {{ formatTime(row.createdAt) }}</small>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
@@ -337,7 +348,7 @@ async function copyPassword() {
     <!-- 调整余额 -->
     <el-dialog v-model="adjustVisible" title="调整余额" width="440px">
       <p v-if="adjustTarget" class="text-muted" style="margin-top: 0">
-        用户：{{ adjustTarget.email }}（当前余额 {{ fenToYuan(adjustTarget.balanceCents) }} 元）
+        用户：{{ adjustTarget.email }}（当前余额 {{ fenToYuan(walletOf(adjustTarget).balanceCents) }} 元）
       </p>
       <el-form label-width="90px">
         <el-form-item label="金额（元）" required>
@@ -364,24 +375,32 @@ async function copyPassword() {
     </el-dialog>
 
     <!-- 用户详情抽屉 -->
-    <el-drawer v-model="drawerVisible" size="640px">
+    <el-drawer v-model="drawerVisible" size="min(760px, 96vw)" class="user-detail-drawer">
       <template #header>
-        <div class="drawer-header">
-          <span class="drawer-title">{{ drawerUserInfo?.email ?? '用户详情' }}</span>
-          <el-tag
-            v-if="drawerUserInfo"
-            :type="drawerUserInfo.status === 'banned' ? 'danger' : 'success'"
-            size="small"
-          >
-            {{ drawerUserInfo.status === 'banned' ? '已封禁' : '正常' }}
-          </el-tag>
+        <div v-if="drawerUserInfo" class="drawer-header">
+          <span class="drawer-avatar">
+            <img v-if="drawerUserInfo.avatarUrl" :src="drawerUserInfo.avatarUrl" :alt="displayName(drawerUserInfo)" />
+            <template v-else>{{ avatarInitial(drawerUserInfo) }}</template>
+          </span>
+          <span class="drawer-heading">
+            <strong>{{ displayName(drawerUserInfo) }}</strong>
+            <small>{{ drawerUserInfo.email }}</small>
+          </span>
+          <span class="drawer-statuses">
+            <el-tag :type="drawerUserInfo.status === 'banned' ? 'danger' : 'success'" size="small">
+              {{ drawerUserInfo.status === 'banned' ? '已封禁' : '正常' }}
+            </el-tag>
+            <el-tag v-if="isSubmissionBanned(drawerUserInfo)" type="warning" size="small" effect="plain">
+              禁止投稿
+            </el-tag>
+          </span>
         </div>
       </template>
 
       <template v-if="drawerUser">
         <div class="drawer-actions">
+          <span>用户 ID：<code :title="drawerUser.id">{{ shortId(drawerUser.id) }}</code></span>
           <el-button size="small" @click="openAdjust(drawerUser)">调整余额</el-button>
-          <el-button size="small" type="warning" plain @click="openReset">重置密码</el-button>
           <el-button
             size="small"
             :type="drawerUserInfo?.status === 'banned' ? 'success' : 'danger'"
@@ -392,53 +411,133 @@ async function copyPassword() {
           </el-button>
         </div>
 
-        <el-tabs v-model="activeTab">
-          <el-tab-pane label="概览" name="overview">
-            <div v-loading="overviewLoading">
+        <el-tabs v-model="activeTab" class="user-detail-tabs">
+          <el-tab-pane label="资料概览" name="overview">
+            <div v-loading="overviewLoading" class="overview-panel">
               <template v-if="overview">
-                <el-descriptions :column="2" size="small" border>
-                  <el-descriptions-item label="邮箱" :span="2">{{ overview.user.email }}</el-descriptions-item>
-                  <el-descriptions-item label="用户名">{{ overview.user.username || '-' }}</el-descriptions-item>
-                  <el-descriptions-item label="角色">
-                    {{ overview.user.role === 'admin' ? '管理员' : '用户' }}
-                  </el-descriptions-item>
-                  <el-descriptions-item label="注册时间" :span="2">
-                    {{ formatTime(overview.user.createdAt) }}
-                  </el-descriptions-item>
-                  <el-descriptions-item label="可用余额">
-                    {{ fenToYuan(overview.wallet.balanceCents) }} 元
-                  </el-descriptions-item>
-                  <el-descriptions-item label="冻结金额">
-                    {{ fenToYuan(overview.wallet.frozenCents) }} 元
-                  </el-descriptions-item>
-                </el-descriptions>
+                <section class="detail-section profile-overview">
+                  <div class="profile-overview__copy">
+                    <strong>资料完整度 {{ profileCompleteness(overview.user) }}%</strong>
+                    <small>{{ overview.user.bio || '用户尚未填写个人简介' }}</small>
+                  </div>
+                  <el-progress
+                    :percentage="profileCompleteness(overview.user)"
+                    :stroke-width="7"
+                    :show-text="false"
+                  />
+                </section>
 
-                <div class="count-cards">
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.orders }}</div>
-                    <div class="count-label">订单</div>
+                <section class="detail-section">
+                  <header class="detail-section__title">账号与个人资料</header>
+                  <el-descriptions :column="2" size="small" border>
+                    <el-descriptions-item label="用户 ID" :span="2">
+                      <code class="mono" :title="overview.user.id">{{ overview.user.id }}</code>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="邮箱">{{ overview.user.email }}</el-descriptions-item>
+                    <el-descriptions-item label="用户名">{{ overview.user.username || '-' }}</el-descriptions-item>
+                    <el-descriptions-item label="所在地">{{ overview.user.location || '-' }}</el-descriptions-item>
+                    <el-descriptions-item label="个人网站">
+                      <a
+                        v-if="websiteHref(overview.user.websiteUrl)"
+                        :href="websiteHref(overview.user.websiteUrl)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {{ overview.user.websiteUrl }}
+                      </a>
+                      <template v-else>-</template>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="注册时间">{{ formatTime(overview.user.createdAt) }}</el-descriptions-item>
+                    <el-descriptions-item label="最近登录">{{ formatTime(overview.user.lastLoginAt) }}</el-descriptions-item>
+                    <el-descriptions-item label="投稿限制" :span="2">
+                      {{
+                        isSubmissionBanned(overview.user)
+                          ? `禁投至 ${formatTime(overview.user.submissionBannedUntil)}`
+                          : '未限制'
+                      }}
+                    </el-descriptions-item>
+                  </el-descriptions>
+                </section>
+
+                <section class="detail-section">
+                  <header class="detail-section__title">资金概览</header>
+                  <div class="wallet-overview">
+                    <div>
+                      <small>可用余额</small>
+                      <strong>{{ fenToYuan(drawerWallet.balanceCents) }}</strong>
+                      <span>元</span>
+                    </div>
+                    <div>
+                      <small>冻结金额</small>
+                      <strong>{{ fenToYuan(drawerWallet.frozenCents) }}</strong>
+                      <span>元</span>
+                    </div>
+                    <div>
+                      <small>资金合计</small>
+                      <strong>{{ fenToYuan(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
+                      <span>元</span>
+                    </div>
                   </div>
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.tasksTotal }}</div>
-                    <div class="count-label">任务总数</div>
+                </section>
+
+                <section class="detail-section">
+                  <header class="detail-section__title">使用情况</header>
+                  <div class="count-cards">
+                    <div class="count-card is-emphasis">
+                      <div class="count-value">{{ overview.counts.tasksTotal }}</div>
+                      <div class="count-label">任务总数</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ taskSuccessRate }}%</div>
+                      <div class="count-label">任务成功率</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.tasksSucceeded }}</div>
+                      <div class="count-label">成功任务</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.tasksFailed }}</div>
+                      <div class="count-label">失败任务</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.tasksRunning }}</div>
+                      <div class="count-label">运行中</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.tasksCanceled }}</div>
+                      <div class="count-label">已取消</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.submissions }}</div>
+                      <div class="count-label">投稿</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.assets }}</div>
+                      <div class="count-label">素材</div>
+                    </div>
+                    <div class="count-card">
+                      <div class="count-value">{{ overview.counts.orders }}</div>
+                      <div class="count-label">订单记录</div>
+                    </div>
                   </div>
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.tasksSucceeded }}</div>
-                    <div class="count-label">成功</div>
-                  </div>
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.tasksFailed }}</div>
-                    <div class="count-label">失败</div>
-                  </div>
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.tasksRunning }}</div>
-                    <div class="count-label">运行中</div>
-                  </div>
-                  <div class="count-card">
-                    <div class="count-value">{{ overview.counts.submissions }}</div>
-                    <div class="count-label">投稿</div>
-                  </div>
-                </div>
+                </section>
+
+                <section class="detail-section">
+                  <header class="detail-section__title">登录与会话</header>
+                  <el-descriptions :column="2" size="small" border>
+                    <el-descriptions-item label="有效会话">{{ overview.security.activeSessions }}</el-descriptions-item>
+                    <el-descriptions-item label="最近会话">{{ formatTime(overview.security.lastSessionAt) }}</el-descriptions-item>
+                    <el-descriptions-item label="最近 IP">{{ overview.security.lastSessionIp || '-' }}</el-descriptions-item>
+                    <el-descriptions-item label="会话到期">
+                      {{ formatTime(overview.security.lastSessionExpiresAt) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="最近设备" :span="2">
+                      <span class="device-text" :title="overview.security.lastSessionUserAgent || ''">
+                        {{ overview.security.lastSessionUserAgent || '-' }}
+                      </span>
+                    </el-descriptions-item>
+                  </el-descriptions>
+                </section>
               </template>
             </div>
           </el-tab-pane>
@@ -469,7 +568,14 @@ async function copyPassword() {
                 <template #default="{ row }">{{ fenToYuan(row.balanceAfterCents) }}</template>
               </el-table-column>
               <el-table-column label="原因" min-width="140">
-                <template #default="{ row }">{{ row.reason || '-' }}</template>
+                <template #default="{ row }">
+                  <div class="ledger-reason">
+                    <span>{{ row.reason || '-' }}</span>
+                    <small v-if="row.sourceType" :title="row.sourceId || ''">
+                      {{ row.sourceType }}<template v-if="row.sourceId"> · {{ shortId(row.sourceId) }}</template>
+                    </small>
+                  </div>
+                </template>
               </el-table-column>
             </el-table>
             <CursorPager
@@ -478,42 +584,6 @@ async function copyPassword() {
               :loading="ledgerList.loading.value"
               @prev="ledgerList.prev"
               @next="ledgerList.next"
-            />
-          </el-tab-pane>
-
-          <el-tab-pane label="订单" name="orders">
-            <el-table v-loading="orderList.loading.value" :data="orderList.items.value" size="small">
-              <template #empty>
-                <el-empty description="暂无订单" :image-size="60" />
-              </template>
-              <el-table-column label="订单ID" width="100">
-                <template #default="{ row }">
-                  <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="套餐" min-width="120">
-                <template #default="{ row }">{{ row.planName ?? '-' }}</template>
-              </el-table-column>
-              <el-table-column label="金额（元）" width="100" align="right">
-                <template #default="{ row }">{{ fenToYuan(row.amountCents) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="ORDER_STATUS_TAG[row.status] ?? 'info'" size="small">
-                    {{ ORDER_STATUS_LABELS[row.status] ?? row.status }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="时间" width="150">
-                <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-              </el-table-column>
-            </el-table>
-            <CursorPager
-              :has-prev="orderList.hasPrev.value"
-              :has-next="orderList.hasNext.value"
-              :loading="orderList.loading.value"
-              @prev="orderList.prev"
-              @next="orderList.next"
             />
           </el-tab-pane>
 
@@ -527,21 +597,31 @@ async function copyPassword() {
                   <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="类型" width="110">
-                <template #default="{ row }">{{ taskTypeLabel(row.type) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
+              <el-table-column label="类型 / 模型" min-width="145">
                 <template #default="{ row }">
-                  <el-tag :type="TASK_STATUS_TAG[row.status] ?? 'info'" size="small">
-                    {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
-                  </el-tag>
+                  <div class="task-kind">
+                    <strong>{{ taskTypeLabel(row.type) }}</strong>
+                    <small :title="row.model || ''">{{ row.model || '未记录模型' }}</small>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="105">
+                <template #default="{ row }">
+                  <div class="task-status">
+                    <el-tag :type="TASK_STATUS_TAG[row.status] ?? 'info'" size="small">
+                      {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+                    </el-tag>
+                    <small v-if="row.attempt">尝试 {{ row.attempt }} 次</small>
+                  </div>
                 </template>
               </el-table-column>
               <el-table-column label="费用（元）" width="100" align="right">
                 <template #default="{ row }">{{ fenToYuan(row.costCents) }}</template>
               </el-table-column>
               <el-table-column label="时间" width="150">
-                <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+                <template #default="{ row }">
+                  <span :title="row.errorMessage || ''">{{ formatTime(row.createdAt) }}</span>
+                </template>
               </el-table-column>
             </el-table>
             <CursorPager
@@ -556,37 +636,6 @@ async function copyPassword() {
       </template>
     </el-drawer>
 
-    <!-- 重置密码 -->
-    <el-dialog v-model="resetVisible" title="重置密码" width="440px">
-      <template v-if="!resetDone">
-        <p v-if="drawerUser" class="text-muted" style="margin-top: 0">
-          用户：{{ drawerUser.email }}。重置后该用户所有登录态将失效。
-        </p>
-        <el-form label-width="90px">
-          <el-form-item label="新密码" required>
-            <el-input v-model="resetForm.newPassword" placeholder="至少 8 位" style="width: 240px" />
-            <el-button style="margin-left: 8px" @click="resetForm.newPassword = generatePassword()">
-              随机生成
-            </el-button>
-          </el-form-item>
-        </el-form>
-      </template>
-      <template v-else>
-        <el-alert type="success" :closable="false" title="密码已重置，请立即复制并转交用户"
-          description="关闭本窗口后将无法再次查看。" />
-        <div class="reset-result">
-          <span class="mono reset-password">{{ resetDone }}</span>
-          <el-button size="small" @click="copyPassword">复制</el-button>
-        </div>
-      </template>
-      <template #footer>
-        <template v-if="!resetDone">
-          <el-button @click="resetVisible = false">取消</el-button>
-          <el-button type="primary" :loading="resetSubmitting" @click="submitReset">确认重置</el-button>
-        </template>
-        <el-button v-else type="primary" @click="resetVisible = false">我已保存，关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -595,41 +644,297 @@ async function copyPassword() {
   cursor: pointer;
 }
 
-.drawer-header {
+.filter-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.drawer-title {
+.user-cell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.user-avatar,
+.drawer-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 12px;
+}
+
+.user-avatar img,
+.drawer-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-cell__copy,
+.profile-state,
+.money-cell,
+.activity-cell,
+.ledger-reason,
+.task-kind,
+.task-status {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.user-cell__copy strong,
+.user-cell__copy small,
+.user-cell__copy code,
+.profile-state strong,
+.activity-cell strong,
+.activity-cell small,
+.task-kind small,
+.ledger-reason span,
+.ledger-reason small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-cell__copy strong {
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+}
+
+.user-cell__copy small,
+.profile-state span,
+.money-cell small,
+.activity-cell small,
+.ledger-reason small,
+.task-kind small,
+.task-status small {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.user-cell__copy code {
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.profile-state strong,
+.activity-cell strong,
+.money-cell strong,
+.task-kind strong {
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+}
+
+.status-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.money-cell {
+  justify-items: end;
+}
+
+.drawer-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding-right: 12px;
+}
+
+.drawer-avatar {
+  width: 42px;
+  height: 42px;
+  font-size: 14px;
+}
+
+.drawer-heading {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.drawer-heading strong,
+.drawer-heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-heading strong {
+  color: var(--el-text-color-primary);
   font-size: 15px;
-  font-weight: 600;
+}
+
+.drawer-heading small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.drawer-statuses {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
 }
 
 .drawer-actions {
   display: flex;
+  min-height: 36px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.drawer-actions > span {
+  min-width: 0;
+  flex: 1;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.drawer-actions code {
+  color: var(--ink-2);
+}
+
+.overview-panel {
+  min-height: 260px;
+  padding-bottom: 8px;
+}
+
+.detail-section {
+  margin-bottom: 18px;
+}
+
+.detail-section__title {
+  margin-bottom: 8px;
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.profile-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.profile-overview__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.profile-overview__copy strong {
+  color: var(--accent-ink);
+  font-size: 12px;
+}
+
+.profile-overview__copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.wallet-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.wallet-overview > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 3px 6px;
+  padding: 12px 14px;
+}
+
+.wallet-overview > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.wallet-overview small {
+  grid-column: 1 / -1;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.wallet-overview strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 18px;
+  text-overflow: ellipsis;
+}
+
+.wallet-overview span {
+  color: var(--ink-3);
+  font-size: 10px;
 }
 
 .count-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 12px;
 }
 
 .count-card {
-  background: var(--surface-2);
+  min-width: 0;
+  padding: 9px 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
+  border-radius: 8px;
   text-align: center;
+  background: var(--surface-2);
+}
+
+.count-card.is-emphasis {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--accent-soft);
 }
 
 .count-value {
-  font-size: 20px;
+  overflow: hidden;
+  font-size: 17px;
   font-weight: 700;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
 
@@ -637,6 +942,19 @@ async function copyPassword() {
   margin-top: 2px;
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.device-text {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.ledger-reason,
+.task-kind,
+.task-status {
+  line-height: 1.3;
 }
 
 .delta-pos {
@@ -647,16 +965,54 @@ async function copyPassword() {
   color: var(--warning);
 }
 
-.reset-result {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 12px;
+:deep(.user-detail-tabs .el-tabs__header) {
+  margin-bottom: 14px;
 }
 
-.reset-password {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 1px;
+:deep(.user-detail-drawer .el-drawer__body) {
+  padding-top: 8px;
 }
+
+:deep(.detail-section .el-descriptions__label) {
+  min-width: 82px;
+  width: 96px;
+  color: var(--ink-3);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+:deep(.detail-section .el-descriptions__content) {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.detail-section a {
+  display: block;
+  max-width: 230px;
+  overflow: hidden;
+  color: var(--accent-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .profile-overview,
+  .wallet-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .wallet-overview > div + div {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .count-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .drawer-statuses {
+    display: none;
+  }
+}
+
 </style>

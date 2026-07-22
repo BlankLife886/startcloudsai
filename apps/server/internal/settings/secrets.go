@@ -1,0 +1,91 @@
+package settings
+
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
+)
+
+const encryptedSecretPrefix = "enc:v1:"
+
+func secretAEAD(masterKey string) (cipher.AEAD, error) {
+	if masterKey == "" {
+		return nil, errors.New("应用密钥为空，无法加密设置")
+	}
+	key := sha256.Sum256([]byte(masterKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// EncryptSecret returns a versioned AES-GCM value suitable for JSON storage.
+func EncryptSecret(plain, masterKey string) (string, error) {
+	if plain == "" || strings.HasPrefix(plain, encryptedSecretPrefix) {
+		return plain, nil
+	}
+	aead, err := secretAEAD(masterKey)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nonce, nonce, []byte(plain), nil)
+	return encryptedSecretPrefix + base64.RawURLEncoding.EncodeToString(sealed), nil
+}
+
+// DecryptSecret accepts legacy plaintext so startup can migrate existing rows.
+func DecryptSecret(value, masterKey string) (string, error) {
+	if value == "" || !strings.HasPrefix(value, encryptedSecretPrefix) {
+		return value, nil
+	}
+	aead, err := secretAEAD(masterKey)
+	if err != nil {
+		return "", err
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, encryptedSecretPrefix))
+	if err != nil || len(raw) < aead.NonceSize() {
+		return "", errors.New("加密设置格式损坏")
+	}
+	nonce, ciphertext := raw[:aead.NonceSize()], raw[aead.NonceSize():]
+	plain, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", errors.New("无法使用当前 APP_SECRET 解密设置")
+	}
+	return string(plain), nil
+}
+
+// EncryptStoredSecrets upgrades legacy plaintext settings in place at startup.
+func EncryptStoredSecrets(ctx context.Context, q store.Q, masterKey string) error {
+	raw, err := store.GetAppSetting(ctx, q, "c2a_api_key")
+	if err != nil || raw == nil {
+		return err
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fmt.Errorf("读取 c2a_api_key: %w", err)
+	}
+	if value == "" || strings.HasPrefix(value, encryptedSecretPrefix) {
+		return nil
+	}
+	encrypted, err := EncryptSecret(value, masterKey)
+	if err != nil {
+		return err
+	}
+	encoded, _ := json.Marshal(encrypted)
+	return store.SetAppSetting(ctx, q, "c2a_api_key", encoded, time.Now().UTC())
+}
