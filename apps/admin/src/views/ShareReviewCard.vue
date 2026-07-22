@@ -152,33 +152,6 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
     box-shadow 0.2s ease,
     border-color 0.2s ease;
 
-  &::before {
-    position: absolute;
-    inset: 0 auto auto 0;
-    z-index: 3;
-    width: 100%;
-    height: 2px;
-    content: '';
-    background: var(--accent);
-    pointer-events: none;
-  }
-
-  &.is-pending::before {
-    background: var(--el-color-warning);
-  }
-
-  &.is-approved::before {
-    background: var(--el-color-success);
-  }
-
-  &.is-rejected::before {
-    background: var(--el-color-danger);
-  }
-
-  &.is-removed::before {
-    background: var(--el-color-info);
-  }
-
   &:hover {
     border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
     box-shadow: var(--shadow-md);
