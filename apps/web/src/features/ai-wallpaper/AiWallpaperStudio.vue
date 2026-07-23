@@ -158,7 +158,7 @@ const promptCategoryCounts = ref({ all: 0 })
 const myAssets = ref([])
 const assetsLoading = ref(false)
 const assetsLoadingMore = ref(false)
-const assetsPage = ref(1)
+const assetsCursor = ref('')
 const assetsTotal = ref(0)
 const assetsHasMore = ref(false)
 const failedAssetIds = ref({})
@@ -235,10 +235,7 @@ const historyTasks = computed(() =>
 const historyCount = computed(() => historyTasks.value.length)
 const assetCount = computed(() => Math.max(assetsTotal.value, myAssets.value.length))
 const promptCategoryOptions = computed(() => {
-  return PROMPT_CATEGORY_META.filter(
-    (category) =>
-      category.value === 'all' || Number(promptCategoryCounts.value[category.value] || 0) > 0,
-  ).map((category) => ({
+  return PROMPT_CATEGORY_META.map((category) => ({
     ...category,
     count: Number(promptCategoryCounts.value[category.value] || 0),
   }))
@@ -660,7 +657,7 @@ function measureFeaturedImage(item, event) {
 function measureCollectionImage(item, event, aspectState, metadataState) {
   const image = event?.target
   const authenticatedMetadata = getAuthenticatedMediaMetadata(
-    item?.item?.imageUrl || item?.asset?.resultUrl || '',
+    item?.item?.imageUrl || item?.asset?.coverUrl || item?.asset?.resultUrl || '',
     { maxDimension: HISTORY_THUMBNAIL_DIMENSION },
   )
   const width = Number(authenticatedMetadata?.width || image?.naturalWidth || 0)
@@ -917,21 +914,24 @@ function loadMorePrompts() {
 
 async function loadMyAssets({ reset = false } = {}) {
   if (assetsLoading.value || assetsLoadingMore.value) return
-  const nextPage = reset ? 1 : assetsPage.value + 1
   if (!reset && !assetsHasMore.value) return
   if (reset) assetsLoading.value = true
   else assetsLoadingMore.value = true
   try {
-    const response = await listMyShareAssets({ page: nextPage, pageSize: 12 })
+    const response = await listMyShareAssets({
+      pageSize: 12,
+      cursor: reset ? '' : assetsCursor.value,
+    })
     const incoming = Array.isArray(response?.items) ? response.items : []
+    if (reset) failedAssetIds.value = {}
     myAssets.value = reset
       ? incoming
       : Array.from(
           new Map([...myAssets.value, ...incoming].map((item) => [item.id, item])).values(),
         )
-    assetsPage.value = Number(response?.page || nextPage)
-    assetsTotal.value = Number(response?.total || myAssets.value.length)
-    assetsHasMore.value = assetsPage.value < Number(response?.totalPages || 1)
+    assetsCursor.value = String(response?.nextCursor || '')
+    assetsTotal.value = myAssets.value.length
+    assetsHasMore.value = Boolean(assetsCursor.value)
   } catch (error) {
     notificationService.warning(error?.message || '我的资产读取失败')
   } finally {
@@ -961,7 +961,6 @@ function useGeneratedAsReference(task, index = 0) {
 function usePromptLibraryEntry(item) {
   if (!item?.prompt) return
   prompt.value = item.prompt
-  mainTab.value = 'images'
   nextTick(() => promptBoxRef.value?.querySelector?.('textarea')?.focus?.())
 }
 
@@ -1015,11 +1014,6 @@ onUnmounted(() => {
   disconnectAssetObserver()
   cloudUpscaleLoadController?.abort()
   cloudUpscaleRunController?.abort()
-})
-
-watch(isRunning, (running, wasRunning) => {
-  if (running) mainTab.value = 'images'
-  else if (wasRunning && completedImageCount.value) mainTab.value = 'images'
 })
 
 async function activateMainTab(tab) {
@@ -1541,8 +1535,7 @@ async function submitHistoryToShare(options = {}) {
     )
     publishOpen.value = false
     publishTarget.value = null
-    await loadMyAssets({ reset: true })
-    mainTab.value = 'assets'
+    void loadMyAssets({ reset: true })
   } catch (error) {
     notificationService.error(error?.message || '作品发布失败')
   } finally {
@@ -1598,7 +1591,6 @@ async function submitLocalMaskEdit(payload) {
   if (localMaskEditorBusy.value || !localMaskEditorTask.value) return
   localMaskEditorBusy.value = true
   try {
-    mainTab.value = 'images'
     await createMaskedEditTask({
       sourceTask: localMaskEditorTask.value,
       sourceUrl: localMaskEditorUrl.value,
@@ -1930,7 +1922,6 @@ async function regenerateTask(task) {
       notificationService.warning(createHint.value || '当前无法重新生成')
       return
     }
-    mainTab.value = 'images'
     await requestCreateTask()
   } catch (error) {
     notificationService.error(error?.message || '重新生成失败')
@@ -1940,7 +1931,6 @@ async function regenerateTask(task) {
 }
 
 async function handleGenerate() {
-  mainTab.value = 'images'
   closeMenus()
   await requestCreateTask()
 }
@@ -2926,7 +2916,7 @@ function setMainTab(tab) {
                   @click="openAsset(entry.asset)"
                 >
                   <AuthenticatedImage
-                    :src="entry.asset.resultUrl"
+                    :src="entry.asset.coverUrl || entry.asset.resultUrl"
                     :alt="entry.asset.title"
                     loading="lazy"
                     :max-dimension="HISTORY_THUMBNAIL_DIMENSION"

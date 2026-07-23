@@ -18,6 +18,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
@@ -1179,6 +1180,11 @@ var settingsCamel = map[string]string{
 	"c2a_base_url":           "c2aBaseUrl",
 	"c2a_api_key":            "c2aApiKey",
 	"c2a_timeout_secs":       "c2aTimeoutSecs",
+	"sub2api_base_url":       "sub2apiBaseUrl",
+	"sub2api_api_key":        "sub2apiApiKey",
+	"sub2api_chat_model":     "sub2apiChatModel",
+	"sub2api_image_model":    "sub2apiImageModel",
+	"sub2api_timeout_secs":   "sub2apiTimeoutSecs",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1212,7 +1218,7 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		if camel == "" {
 			camel = k
 		}
-		if k == "c2a_api_key" {
+		if k == "c2a_api_key" || k == "sub2api_api_key" {
 			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
 			var stored string
 			_ = json.Unmarshal(v, &stored)
@@ -1303,23 +1309,23 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "taskModels: 格式不正确", 422))
 				return
 			}
-		case "c2a_base_url":
+		case "c2a_base_url", "sub2api_base_url":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
-				fail(c, apperr.E("validation_error", "c2aBaseUrl: 格式不正确", 422))
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
 				return
 			}
 			v = strings.TrimRight(strings.TrimSpace(v), "/")
 			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
-				fail(c, apperr.E("validation_error", "c2aBaseUrl: 地址无效或指向受限网络", 422))
+				fail(c, apperr.E("validation_error", camel+": 地址无效或指向受限网络", 422))
 				return
 			}
 			normalized, _ := json.Marshal(v)
 			raw = normalized
-		case "c2a_api_key":
+		case "c2a_api_key", "sub2api_api_key":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
-				fail(c, apperr.E("validation_error", "c2aApiKey: 格式不正确", 422))
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
 				return
 			}
 			// 掩码值 = 前端原样回传未修改的 Key，跳过更新
@@ -1332,12 +1338,24 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				return
 			}
 			raw, _ = json.Marshal(encrypted)
-		case "c2a_timeout_secs":
+		case "c2a_timeout_secs", "sub2api_timeout_secs":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 600 {
-				fail(c, apperr.E("validation_error", "c2aTimeoutSecs: 须在 0-600 之间（0 = 使用默认）", 422))
+				fail(c, apperr.E("validation_error", camel+": 须在 0-600 之间（0 = 使用默认）", 422))
 				return
 			}
+		case "sub2api_chat_model", "sub2api_image_model":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len([]rune(v)) > 120 {
+				fail(c, apperr.E("validation_error", camel+": 长度不能超过 120", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
 		}
 		updates[snake] = raw
 	}
@@ -1424,6 +1442,62 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 	}
 	if top == nil {
 		top = []string{}
+	}
+	ok(c, gin.H{"ok": true, "modelCount": len(models), "models": top})
+}
+
+func (s *Server) adminTestSub2API(c *gin.Context, _ *store.User) {
+	var override struct {
+		BaseURL    string `json:"baseUrl"`
+		APIKey     string `json:"apiKey"`
+		ChatModel  string `json:"chatModel"`
+		ImageModel string `json:"imageModel"`
+	}
+	_ = c.ShouldBindJSON(&override)
+
+	ctx := c.Request.Context()
+	resolved, err := settings.ResolveSub2API(ctx, s.St.Pool, settings.Sub2APIConfig{
+		BaseURL: s.Cfg.Sub2APIBaseURL, APIKey: s.Cfg.Sub2APIAPIKey,
+		ChatModel: s.Cfg.Sub2APIChatModel, ImageModel: s.Cfg.Sub2APIImageModel,
+		TimeoutSecs: s.Cfg.Sub2APITimeoutSecs,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if value := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); value != "" {
+		if netguard.ValidateURL(value, s.Cfg.AppEnv == "development", false) != nil {
+			fail(c, apperr.E("validation_error", "baseUrl: 地址无效或指向受限网络", 422))
+			return
+		}
+		resolved.BaseURL = value
+	}
+	if value := strings.TrimSpace(override.APIKey); value != "" && !strings.HasPrefix(value, "****") {
+		resolved.APIKey = value
+	}
+	if value := strings.TrimSpace(override.ChatModel); value != "" {
+		resolved.ChatModel = value
+	}
+	if value := strings.TrimSpace(override.ImageModel); value != "" {
+		resolved.ImageModel = value
+	}
+	client, err := sub2api.New(resolved.BaseURL, resolved.APIKey, resolved.ChatModel, resolved.ImageModel, resolved.TimeoutSecs)
+	if err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
+		return
+	}
+	models, err := client.ListModels(ctx)
+	if err != nil {
+		message := err.Error()
+		if runes := []rune(message); len(runes) > 500 {
+			message = string(runes[:500])
+		}
+		fail(c, apperr.E("sub2api_test_failed", message, 502))
+		return
+	}
+	top := models
+	if len(top) > 20 {
+		top = top[:20]
 	}
 	ok(c, gin.H{"ok": true, "modelCount": len(models), "models": top})
 }

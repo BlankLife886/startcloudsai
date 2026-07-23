@@ -92,45 +92,47 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
         <span v-if="categoryText">{{ categoryText }}</span>
       </div>
 
-      <div class="share-card__user">
-        <span class="share-card__avatar">{{ userInitial }}</span>
-        <div class="share-card__names">
-          <strong :title="userName">{{ userName }}</strong>
-          <small v-if="userHint" :title="userHint">{{ userHint }}</small>
-          <small v-else>投稿用户</small>
+      <div class="share-card__footer">
+        <div class="share-card__user">
+          <span class="share-card__avatar">{{ userInitial }}</span>
+          <div class="share-card__names">
+            <strong :title="userName">{{ userName }}</strong>
+            <small v-if="userHint" :title="userHint">{{ userHint }}</small>
+            <small v-else>投稿用户</small>
+          </div>
         </div>
-      </div>
 
-      <div class="share-card__meta">
-        <span><el-icon><Picture /></el-icon>{{ kindText }}</span>
-        <span><el-icon><Clock /></el-icon>{{ timeText }}</span>
-      </div>
+        <div class="share-card__meta">
+          <span><el-icon><Picture /></el-icon>{{ kindText }}</span>
+          <span><el-icon><Clock /></el-icon>{{ timeText }}</span>
+        </div>
 
-      <div v-if="reviewNote" class="share-card__note" :title="reviewNote">
-        <span>处理说明</span>
-        <p>{{ reviewNote }}</p>
-      </div>
+        <div v-if="reviewNote" class="share-card__note" :title="reviewNote">
+          <span>处理说明</span>
+          <p>{{ reviewNote }}</p>
+        </div>
 
-      <div class="share-card__actions">
-        <button
-          type="button"
-          class="share-action is-approve"
-          :disabled="operating || !canApprove"
-          @click="emit('approve', item)"
-        >
-          {{ item.status === 'approved' ? '已通过' : '通过' }}
-        </button>
-        <button
-          type="button"
-          class="share-action is-reject"
-          :disabled="operating || !canReject"
-          @click="emit('reject', item)"
-        >
-          {{ item.status === 'rejected' ? '已拒绝' : '拒绝' }}
-        </button>
-        <button type="button" class="share-action is-violate" :disabled="operating" @click="emit('violation', item)">
-          违规
-        </button>
+        <div class="share-card__actions">
+          <button
+            type="button"
+            class="share-action is-approve"
+            :disabled="operating || !canApprove"
+            @click="emit('approve', item)"
+          >
+            {{ item.status === 'approved' ? '已通过' : '通过' }}
+          </button>
+          <button
+            type="button"
+            class="share-action is-reject"
+            :disabled="operating || !canReject"
+            @click="emit('reject', item)"
+          >
+            {{ item.status === 'rejected' ? '已拒绝' : '拒绝' }}
+          </button>
+          <button type="button" class="share-action is-violate" :disabled="operating" @click="emit('violation', item)">
+            违规
+          </button>
+        </div>
       </div>
     </div>
   </article>
@@ -262,8 +264,8 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
 }
 
 .share-card__body {
-  display: grid;
-  grid-template-rows: auto auto auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   min-width: 0;
   padding: 14px;
@@ -275,6 +277,8 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  // 标题最多两行，为不同长度的投稿保留一致的卡片内容高度。
+  min-height: calc(1.4em * 2);
 
   > strong {
     display: -webkit-box;
@@ -308,6 +312,13 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
   align-items: center;
   gap: 9px;
   min-width: 0;
+}
+
+.share-card__footer {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: auto;
 }
 
 .share-card__avatar {

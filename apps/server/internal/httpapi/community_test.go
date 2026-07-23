@@ -285,6 +285,41 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 	}
 }
 
+func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	taskID := env.newSucceededTask(t, user.ID)
+
+	w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
+		"taskId": taskID.String(), "title": "我的资产图片回归测试",
+	}, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+
+	w = env.do(t, "GET", "/api/me/gallery/submissions?limit=20", nil, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("my submissions: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	items, ok := data["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %#v, want one submission", data["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item = %#v, want object", items[0])
+	}
+	coverURL, _ := item["coverUrl"].(string)
+	mediaURLs, _ := item["mediaUrls"].([]any)
+	if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
+		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
+	}
+	if len(mediaURLs) != 1 {
+		t.Fatalf("mediaUrls = %#v, want one original image", mediaURLs)
+	}
+}
+
 func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	env := newCommunityEnv(t)
 	ctx := context.Background()

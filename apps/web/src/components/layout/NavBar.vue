@@ -84,6 +84,11 @@ const toolLinks = [
 
 const aiLinks = [
   {
+    to: '/assistant',
+    label: 'AI助手',
+    icon: 'bi-chat-square-text-fill',
+  },
+  {
     to: '/text-to-image',
     label: '文生图',
     icon: 'bi-stars',
@@ -107,6 +112,7 @@ const aiLinks = [
 ]
 
 const routePrefetchers = {
+  '/assistant': () => import('@/views/AssistantWorkspaceView.vue'),
   '/updates': () => import('@/views/UpdatesView.vue'),
   '/pricing': () => import('@/views/PricingView.vue'),
   '/share': () => import('@/views/ShareView.vue'),
@@ -990,7 +996,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  border-bottom: 1px solid var(--nav-line);
+  border-bottom: 0;
   background: var(--nav-bg);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -1549,7 +1555,7 @@ onBeforeUnmount(() => {
 @media (max-width: 920px) {
   .site-header {
     padding: 0;
-    border-bottom: 1px solid var(--nav-line);
+    border-bottom: 0;
     background: var(--nav-bg);
   }
 

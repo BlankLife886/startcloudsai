@@ -29,6 +29,7 @@ func TestAuditAction(t *testing.T) {
 		{"POST", "/api/admin/orders/" + id + "/complete", "orders.complete"},
 		{"PUT", "/api/admin/settings", "settings.update"},
 		{"POST", "/api/admin/settings/test-c2a", "settings.test-c2a"},
+		{"POST", "/api/admin/settings/test-sub2api", "settings.test-sub2api"},
 		{"PATCH", "/api/admin/users/" + id, "users.update"},
 	}
 	for _, c := range cases {

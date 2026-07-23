@@ -277,7 +277,9 @@ func (s *Server) mySubmissions(c *gin.Context) {
 		return
 	}
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
-		return submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
+		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
+		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
+		return d
 	}))
 }
 

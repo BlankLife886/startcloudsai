@@ -276,3 +276,12 @@ settings 请求/响应：
 | 服务端 | `internal_error` |
 
 调用方应以 HTTP 状态和 `code` 分支，不应解析中文 `error` 文案。
+## AI助手
+
+以下接口要求用户 Cookie `sc_session`，由服务端使用 `SUB2API_API_KEY` 调用本地或远程 Sub2API。Key 不返回浏览器。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/assistant/config` | 返回当前对话与生图模型名称 |
+| POST | `/api/assistant/chat` | `{messages:[{role,content,referenceImages?:string[]}], referenceImages?: string[]}`；每条用户消息均可携带图片，服务端会转换为多模态 `image_url` 内容；顶层字段兼容旧客户端并附加到最后一条用户消息；整段请求最多 4 张图；返回 `text/event-stream`，透传 OpenAI Chat Completions SSE |
+| POST | `/api/assistant/images` | `{prompt,size,quality}`；返回 `{images:[{dataUrl,revisedPrompt}],model}` |

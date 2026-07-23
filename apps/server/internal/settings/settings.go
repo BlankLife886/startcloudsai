@@ -25,6 +25,12 @@ var Defaults = map[string]json.RawMessage{
 	"c2a_base_url":     json.RawMessage(`""`),
 	"c2a_api_key":      json.RawMessage(`""`),
 	"c2a_timeout_secs": json.RawMessage(`0`),
+	// Sub2API 对话/生图网关（空 = 使用环境变量）
+	"sub2api_base_url":     json.RawMessage(`""`),
+	"sub2api_api_key":      json.RawMessage(`""`),
+	"sub2api_chat_model":   json.RawMessage(`""`),
+	"sub2api_image_model":  json.RawMessage(`""`),
+	"sub2api_timeout_secs": json.RawMessage(`0`),
 }
 
 // AllowedKeys 后台可读写的配置键。
@@ -178,6 +184,67 @@ func ResolveC2A(ctx context.Context, q store.Q, envBaseURL, envAPIKey string, en
 		cfg.APIKey = plain
 	}
 	rawTimeout, err := Get(ctx, q, "c2a_timeout_secs")
+	if err != nil {
+		return cfg, err
+	}
+	var timeout int
+	if rawTimeout != nil {
+		_ = json.Unmarshal(rawTimeout, &timeout)
+	}
+	if timeout > 0 {
+		cfg.TimeoutSecs = timeout
+	}
+	return cfg, nil
+}
+
+// Sub2APIConfig 对话与生图助手的生效配置。
+type Sub2APIConfig struct {
+	BaseURL     string
+	APIKey      string
+	ChatModel   string
+	ImageModel  string
+	TimeoutSecs int
+}
+
+// ResolveSub2API 返回后台设置覆盖环境变量后的 Sub2API 配置。
+func ResolveSub2API(ctx context.Context, q store.Q, env Sub2APIConfig, masterKey string) (Sub2APIConfig, error) {
+	cfg := env
+	readString := func(key string) (string, error) {
+		raw, err := Get(ctx, q, key)
+		if err != nil {
+			return "", err
+		}
+		var value string
+		if raw != nil {
+			_ = json.Unmarshal(raw, &value)
+		}
+		return value, nil
+	}
+	for key, target := range map[string]*string{
+		"sub2api_base_url":    &cfg.BaseURL,
+		"sub2api_chat_model":  &cfg.ChatModel,
+		"sub2api_image_model": &cfg.ImageModel,
+	} {
+		value, err := readString(key)
+		if err != nil {
+			return cfg, err
+		}
+		if value != "" {
+			*target = value
+		}
+	}
+	storedKey, err := readString("sub2api_api_key")
+	if err != nil {
+		return cfg, err
+	}
+	if storedKey != "" {
+		plain, derr := DecryptSecret(storedKey, masterKey)
+		if derr != nil {
+			return cfg, derr
+		}
+		cfg.APIKey = plain
+	}
+	rawTimeout, err := Get(ctx, q, "sub2api_timeout_secs")
 	if err != nil {
 		return cfg, err
 	}

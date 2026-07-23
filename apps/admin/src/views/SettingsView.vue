@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, Coin, Connection, MagicStick, Operation } from '@element-plus/icons-vue'
+import {
+  ChatDotRound,
+  Check,
+  Coin,
+  Connection,
+  MagicStick,
+  Operation,
+} from '@element-plus/icons-vue'
 import { request } from '@/request'
 import { fenToYuanNumber, TASK_TYPES, taskTypeLabel, yuanToFen } from '@/utils'
 
@@ -15,6 +22,12 @@ interface AdminSettings {
   /** 只回传掩码（****xxxx）；提交掩码或空 = 不修改 */
   c2aApiKey?: string
   c2aTimeoutSecs?: number
+  sub2apiBaseUrl?: string
+  /** 只回传掩码（****xxxx）；提交掩码或空 = 不修改 */
+  sub2apiApiKey?: string
+  sub2apiChatModel?: string
+  sub2apiImageModel?: string
+  sub2apiTimeoutSecs?: number
 }
 
 const loading = ref(false)
@@ -33,10 +46,17 @@ const form = reactive({
   c2aBaseUrl: '',
   c2aApiKey: '',
   c2aTimeoutSecs: 0,
+  sub2apiBaseUrl: '',
+  sub2apiApiKey: '',
+  sub2apiChatModel: '',
+  sub2apiImageModel: '',
+  sub2apiTimeoutSecs: 0,
 })
 
 /** 服务端返回的 Key 掩码（空串 = 后台未配置，走环境变量） */
 const c2aKeyMask = ref('')
+const sub2apiKeyMask = ref('')
+const clearSub2apiKey = ref(false)
 
 function settingsSignature() {
   return JSON.stringify({
@@ -49,15 +69,28 @@ function settingsSignature() {
     c2aBaseUrl: form.c2aBaseUrl,
     c2aApiKey: form.c2aApiKey,
     c2aTimeoutSecs: form.c2aTimeoutSecs,
+    sub2apiBaseUrl: form.sub2apiBaseUrl,
+    sub2apiApiKey: form.sub2apiApiKey,
+    clearSub2apiKey: clearSub2apiKey.value,
+    sub2apiChatModel: form.sub2apiChatModel,
+    sub2apiImageModel: form.sub2apiImageModel,
+    sub2apiTimeoutSecs: form.sub2apiTimeoutSecs,
   })
 }
 
-const isDirty = computed(() => !loading.value && savedSignature.value !== '' && settingsSignature() !== savedSignature.value)
-const modelOverrideCount = computed(() =>
-  TASK_TYPES.filter((type) => Boolean(form.taskModelOverrides[type]?.trim())).length,
+const isDirty = computed(
+  () =>
+    !loading.value && savedSignature.value !== '' && settingsSignature() !== savedSignature.value,
+)
+const modelOverrideCount = computed(
+  () => TASK_TYPES.filter((type) => Boolean(form.taskModelOverrides[type]?.trim())).length,
 )
 const upstreamSource = computed(() => (form.c2aBaseUrl.trim() ? '后台覆盖地址' : '服务器环境变量'))
 const timeoutLabel = computed(() => `${form.c2aTimeoutSecs > 0 ? form.c2aTimeoutSecs : 180} 秒`)
+const sub2apiSource = computed(() => (form.sub2apiBaseUrl.trim() ? '后台配置' : '服务器环境变量'))
+const sub2apiTimeoutLabel = computed(
+  () => `${form.sub2apiTimeoutSecs > 0 ? form.sub2apiTimeoutSecs : 300} 秒`,
+)
 
 function hydrate(settings: AdminSettings) {
   const prices = settings.taskPrices ?? {}
@@ -77,6 +110,13 @@ function hydrate(settings: AdminSettings) {
   form.c2aTimeoutSecs = settings.c2aTimeoutSecs ?? 0
   c2aKeyMask.value = settings.c2aApiKey ?? ''
   form.c2aApiKey = ''
+  form.sub2apiBaseUrl = settings.sub2apiBaseUrl ?? ''
+  form.sub2apiChatModel = settings.sub2apiChatModel ?? ''
+  form.sub2apiImageModel = settings.sub2apiImageModel ?? ''
+  form.sub2apiTimeoutSecs = settings.sub2apiTimeoutSecs ?? 0
+  sub2apiKeyMask.value = settings.sub2apiApiKey ?? ''
+  form.sub2apiApiKey = ''
+  clearSub2apiKey.value = false
   savedSignature.value = settingsSignature()
 }
 
@@ -102,9 +142,16 @@ async function save() {
     ElMessage.warning('chatgpt2api 地址须以 http:// 或 https:// 开头')
     return
   }
+  const sub2apiBaseUrl = form.sub2apiBaseUrl.trim()
+  if (sub2apiBaseUrl && !/^https?:\/\//.test(sub2apiBaseUrl)) {
+    ElMessage.warning('Sub2API 地址须以 http:// 或 https:// 开头')
+    return
+  }
   const taskPrices: Record<string, number> = {}
   for (const type of priceTypes.value) taskPrices[type] = yuanToFen(form.taskPricesYuan[type])
-  const taskModels: Record<string, string> = { default: form.taskModelDefault.trim() }
+  const taskModels: Record<string, string> = {
+    default: form.taskModelDefault.trim(),
+  }
   for (const type of TASK_TYPES) {
     const model = form.taskModelOverrides[type]?.trim()
     if (model) taskModels[type] = model
@@ -119,10 +166,22 @@ async function save() {
       taskModels,
       c2aBaseUrl: baseUrl,
       c2aTimeoutSecs: form.c2aTimeoutSecs,
+      sub2apiBaseUrl,
+      sub2apiChatModel: form.sub2apiChatModel.trim(),
+      sub2apiImageModel: form.sub2apiImageModel.trim(),
+      sub2apiTimeoutSecs: form.sub2apiTimeoutSecs,
     }
     const newKey = form.c2aApiKey.trim()
     if (newKey) body.c2aApiKey = newKey
-    hydrate(await request<AdminSettings>('/api/admin/settings', { method: 'PUT', body }))
+    const newSub2apiKey = form.sub2apiApiKey.trim()
+    if (newSub2apiKey) body.sub2apiApiKey = newSub2apiKey
+    else if (clearSub2apiKey.value) body.sub2apiApiKey = ''
+    hydrate(
+      await request<AdminSettings>('/api/admin/settings', {
+        method: 'PUT',
+        body,
+      }),
+    )
     ElMessage.success('设置已保存')
   } finally {
     saving.value = false
@@ -158,6 +217,47 @@ async function testC2a() {
     testing.value = false
   }
 }
+
+const testingSub2api = ref(false)
+const sub2apiTestResult = ref<{ ok: boolean; message: string } | null>(null)
+
+async function testSub2api() {
+  testingSub2api.value = true
+  sub2apiTestResult.value = null
+  try {
+    const body: Record<string, string> = {}
+    if (form.sub2apiBaseUrl.trim()) body.baseUrl = form.sub2apiBaseUrl.trim()
+    if (form.sub2apiApiKey.trim()) body.apiKey = form.sub2apiApiKey.trim()
+    if (form.sub2apiChatModel.trim()) body.chatModel = form.sub2apiChatModel.trim()
+    if (form.sub2apiImageModel.trim()) body.imageModel = form.sub2apiImageModel.trim()
+    const data = await request<{ models?: string[]; modelCount?: number }>(
+      '/api/admin/settings/test-sub2api',
+      { method: 'POST', body, silent: true },
+    )
+    const count = data.modelCount ?? data.models?.length
+    sub2apiTestResult.value = {
+      ok: true,
+      message: count !== undefined ? `连通正常，可用模型 ${count} 个` : '连通正常',
+    }
+  } catch (err) {
+    sub2apiTestResult.value = {
+      ok: false,
+      message: `连通失败：${err instanceof Error ? err.message : '未知错误'}`,
+    }
+  } finally {
+    testingSub2api.value = false
+  }
+}
+
+function onSub2apiKeyInput() {
+  if (form.sub2apiApiKey.trim()) clearSub2apiKey.value = false
+}
+
+function clearSavedSub2apiKey() {
+  form.sub2apiApiKey = ''
+  clearSub2apiKey.value = true
+  sub2apiTestResult.value = null
+}
 </script>
 
 <template>
@@ -173,7 +273,14 @@ async function testC2a() {
           <span />
           {{ isDirty ? '有未保存变更' : '配置已同步' }}
         </div>
-        <el-button type="primary" size="large" :icon="Check" :loading="saving" :disabled="!isDirty" @click="save">
+        <el-button
+          type="primary"
+          size="large"
+          :icon="Check"
+          :loading="saving"
+          :disabled="!isDirty"
+          @click="save"
+        >
           保存更改
         </el-button>
       </div>
@@ -181,7 +288,9 @@ async function testC2a() {
 
     <section class="settings-overview" aria-label="当前核心配置">
       <article class="overview-item is-upstream">
-        <span class="overview-item__icon"><el-icon><Connection /></el-icon></span>
+        <span class="overview-item__icon"
+          ><el-icon><Connection /></el-icon
+        ></span>
         <div>
           <small>生成上游</small>
           <strong>{{ upstreamSource }}</strong>
@@ -191,15 +300,21 @@ async function testC2a() {
         </div>
       </article>
       <article class="overview-item">
-        <span class="overview-item__icon is-model"><el-icon><MagicStick /></el-icon></span>
+        <span class="overview-item__icon is-model"
+          ><el-icon><MagicStick /></el-icon
+        ></span>
         <div>
           <small>默认模型</small>
-          <strong :title="form.taskModelDefault || '未配置'">{{ form.taskModelDefault || '未配置' }}</strong>
+          <strong :title="form.taskModelDefault || '未配置'">{{
+            form.taskModelDefault || '未配置'
+          }}</strong>
           <em>{{ modelOverrideCount }} 个类型独立覆盖</em>
         </div>
       </article>
       <article class="overview-item">
-        <span class="overview-item__icon is-operation"><el-icon><Operation /></el-icon></span>
+        <span class="overview-item__icon is-operation"
+          ><el-icon><Operation /></el-icon
+        ></span>
         <div>
           <small>用户策略</small>
           <strong>{{ form.registrationEnabled ? '开放注册' : '暂停注册' }}</strong>
@@ -207,7 +322,9 @@ async function testC2a() {
         </div>
       </article>
       <article class="overview-item">
-        <span class="overview-item__icon is-price"><el-icon><Coin /></el-icon></span>
+        <span class="overview-item__icon is-price"
+          ><el-icon><Coin /></el-icon
+        ></span>
         <div>
           <small>任务计费</small>
           <strong>{{ priceTypes.length }} 个任务类型</strong>
@@ -221,7 +338,9 @@ async function testC2a() {
       <PageCard class="settings-card is-pricing">
         <template #header>
           <div class="card-head">
-            <span class="card-head__icon is-warning"><el-icon :size="16"><Coin /></el-icon></span>
+            <span class="card-head__icon is-warning"
+              ><el-icon :size="16"><Coin /></el-icon
+            ></span>
             <div>
               <div class="page-card__title">任务计费</div>
               <div class="page-card__subtitle">用户每生成一张图片时扣除的金额</div>
@@ -241,7 +360,9 @@ async function testC2a() {
               controls-position="right"
               class="price-cell__input"
             />
-            <div class="price-cell__hint tnum">{{ yuanToFen(form.taskPricesYuan[type]) }} 分 / 张</div>
+            <div class="price-cell__hint tnum">
+              {{ yuanToFen(form.taskPricesYuan[type]) }} 分 / 张
+            </div>
           </div>
         </div>
       </PageCard>
@@ -250,7 +371,9 @@ async function testC2a() {
       <PageCard class="settings-card is-models">
         <template #header>
           <div class="card-head">
-            <span class="card-head__icon is-accent"><el-icon :size="16"><MagicStick /></el-icon></span>
+            <span class="card-head__icon is-accent"
+              ><el-icon :size="16"><MagicStick /></el-icon
+            ></span>
             <div>
               <div class="page-card__title">任务模型</div>
               <div class="page-card__subtitle">默认模型兜底，可按类型单独覆盖</div>
@@ -258,7 +381,9 @@ async function testC2a() {
           </div>
         </template>
         <template #actions>
-          <span class="section-count">{{ modelOverrideCount }} / {{ TASK_TYPES.length }} 已覆盖</span>
+          <span class="section-count"
+            >{{ modelOverrideCount }} / {{ TASK_TYPES.length }} 已覆盖</span
+          >
         </template>
         <div class="model-default priority-field">
           <span class="model-default__label">默认任务模型 <em>*</em></span>
@@ -282,7 +407,9 @@ async function testC2a() {
       <PageCard class="settings-card is-operations">
         <template #header>
           <div class="card-head">
-            <span class="card-head__icon is-success"><el-icon :size="16"><Operation /></el-icon></span>
+            <span class="card-head__icon is-success"
+              ><el-icon :size="16"><Operation /></el-icon
+            ></span>
             <div>
               <div class="page-card__title">运营配置</div>
               <div class="page-card__subtitle">注册与任务并发策略</div>
@@ -297,13 +424,19 @@ async function testC2a() {
                 {{ form.registrationEnabled ? '当前允许新用户创建账号' : '当前已暂停新用户注册' }}
               </div>
             </div>
-            <el-switch v-model="form.registrationEnabled" inline-prompt active-text="开" inactive-text="关" />
+            <el-switch
+              v-model="form.registrationEnabled"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+            />
           </div>
           <div class="setting-row">
             <div class="setting-row__copy">
               <div class="setting-row__label">注册赠送</div>
               <div class="setting-row__desc">
-                新用户注册即入账，当前 = {{ yuanToFen(form.signupBonusYuan) }} 分
+                新用户注册即入账，当前 =
+                {{ yuanToFen(form.signupBonusYuan) }} 分
               </div>
             </div>
             <el-input-number
@@ -336,7 +469,9 @@ async function testC2a() {
       <PageCard class="settings-card is-upstream">
         <template #header>
           <div class="card-head">
-            <span class="card-head__icon is-info"><el-icon :size="16"><Connection /></el-icon></span>
+            <span class="card-head__icon is-info"
+              ><el-icon :size="16"><Connection /></el-icon
+            ></span>
             <div>
               <div class="page-card__title">图片生成上游</div>
               <div class="page-card__subtitle">核心生成链路，修改后新任务立即使用</div>
@@ -359,7 +494,11 @@ async function testC2a() {
             <div class="setting-row__copy">
               <div class="setting-row__label">API Key</div>
               <div class="setting-row__desc">
-                {{ c2aKeyMask ? `已配置（${c2aKeyMask}），输入新值可替换` : '留空 = 使用服务器环境变量' }}
+                {{
+                  c2aKeyMask
+                    ? `已配置（${c2aKeyMask}），输入新值可替换`
+                    : '留空 = 使用服务器环境变量'
+                }}
               </div>
             </div>
             <el-input
@@ -396,6 +535,102 @@ async function testC2a() {
         </div>
       </PageCard>
 
+      <!-- Sub2API 对话与生图 -->
+      <PageCard class="settings-card is-assistant">
+        <template #header>
+          <div class="card-head">
+            <span class="card-head__icon is-assistant"
+              ><el-icon :size="16"><ChatDotRound /></el-icon
+            ></span>
+            <div>
+              <div class="page-card__title">对话与生图助手</div>
+              <div class="page-card__subtitle">
+                用户端AI助手的 Sub2API 网关配置，保存后立即生效
+              </div>
+            </div>
+          </div>
+        </template>
+        <template #actions>
+          <span class="config-badge is-assistant">{{ sub2apiSource }}</span>
+          <el-button :loading="testingSub2api" @click="testSub2api">测试连通</el-button>
+        </template>
+        <div class="assistant-settings-grid">
+          <div class="setting-row is-stack is-url">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">服务地址</div>
+              <div class="setting-row__desc">Sub2API 根地址，留空时使用服务器环境变量</div>
+            </div>
+            <el-input
+              v-model="form.sub2apiBaseUrl"
+              placeholder="http://host.docker.internal:8080"
+              clearable
+            />
+          </div>
+          <div class="setting-row is-stack is-key">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">API Key</div>
+              <div class="setting-row__desc">
+                {{
+                  clearSub2apiKey
+                    ? '保存后清除后台 Key，并回退到服务器环境变量'
+                    : sub2apiKeyMask
+                      ? `已配置（${sub2apiKeyMask}），输入新值可替换`
+                      : '留空时使用服务器环境变量'
+                }}
+              </div>
+            </div>
+            <el-input
+              v-model="form.sub2apiApiKey"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              @input="onSub2apiKeyInput"
+              :placeholder="sub2apiKeyMask ? '输入新 Key 以替换' : '粘贴 Sub2API API Key'"
+            />
+            <div v-if="sub2apiKeyMask && !clearSub2apiKey" class="secret-actions">
+              <el-button text type="danger" @click="clearSavedSub2apiKey">清除后台 Key</el-button>
+            </div>
+          </div>
+          <div class="setting-row is-stack">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">对话模型</div>
+              <div class="setting-row__desc">留空时使用环境变量或默认模型</div>
+            </div>
+            <el-input v-model="form.sub2apiChatModel" placeholder="gpt-5.4" clearable />
+          </div>
+          <div class="setting-row is-stack">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">生图模型</div>
+              <div class="setting-row__desc">留空时使用环境变量或默认模型</div>
+            </div>
+            <el-input v-model="form.sub2apiImageModel" placeholder="gpt-image-2" clearable />
+          </div>
+          <div class="setting-row is-timeout">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">请求超时</div>
+              <div class="setting-row__desc">当前有效等待时间：{{ sub2apiTimeoutLabel }}</div>
+            </div>
+            <el-input-number
+              v-model="form.sub2apiTimeoutSecs"
+              :min="0"
+              :max="600"
+              :step="30"
+              controls-position="right"
+              style="width: 140px"
+            />
+          </div>
+        </div>
+        <el-alert
+          v-if="sub2apiTestResult"
+          :type="sub2apiTestResult.ok ? 'success' : 'error'"
+          :title="sub2apiTestResult.message"
+          :closable="false"
+          style="margin-top: 14px"
+        />
+        <div class="text-muted" style="margin-top: 10px">
+          测试使用当前填写的值；空字段读取已保存配置，再回退到服务器环境变量
+        </div>
+      </PageCard>
     </div>
   </div>
 </template>
@@ -580,6 +815,7 @@ async function testC2a() {
   display: grid;
   grid-template-areas:
     'upstream upstream'
+    'assistant assistant'
     'models operations'
     'pricing pricing';
   grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
@@ -594,6 +830,11 @@ async function testC2a() {
   &.is-upstream {
     grid-area: upstream;
     border-top: 3px solid var(--info);
+  }
+
+  &.is-assistant {
+    grid-area: assistant;
+    border-top: 3px solid var(--accent);
   }
 
   &.is-models {
@@ -641,6 +882,11 @@ async function testC2a() {
   color: var(--info);
 }
 
+.card-head__icon.is-assistant {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
 .page-card__title {
   font-size: 15px;
   font-weight: 650;
@@ -660,6 +906,34 @@ async function testC2a() {
   font-size: 10px;
   font-weight: 600;
   background: var(--surface-3);
+}
+
+.config-badge.is-assistant {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.assistant-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.assistant-settings-grid .setting-row {
+  padding: 0;
+  border: 0;
+}
+
+.assistant-settings-grid .is-url,
+.assistant-settings-grid .is-key,
+.assistant-settings-grid .is-timeout {
+  grid-column: 1 / -1;
+}
+
+.secret-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 24px;
 }
 
 .config-badge {
@@ -829,6 +1103,7 @@ async function testC2a() {
   .settings-grid {
     grid-template-areas:
       'upstream'
+      'assistant'
       'models'
       'operations'
       'pricing';
@@ -865,11 +1140,18 @@ async function testC2a() {
   }
 
   .is-upstream .setting-rows,
+  .assistant-settings-grid,
   .model-grid {
     grid-template-columns: 1fr;
   }
 
   .is-upstream .setting-row:first-child {
+    grid-column: auto;
+  }
+
+  .assistant-settings-grid .is-url,
+  .assistant-settings-grid .is-key,
+  .assistant-settings-grid .is-timeout {
     grid-column: auto;
   }
 

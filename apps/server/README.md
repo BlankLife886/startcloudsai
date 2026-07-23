@@ -37,6 +37,7 @@ scripts/                 # 运维/回填 SQL
 | 用户认证 | `PUBLIC_BASE_URL`、`GITHUB_CLIENT_*`、`SMTP_*` |
 | 数据 | `DATABASE_URL`、`REDIS_URL` |
 | 图片上游 | `C2A_BASE_URL`、`C2A_API_KEY`、`C2A_TIMEOUT_SECS` |
+| 对话与生图工作区 | `SUB2API_BASE_URL`、`SUB2API_API_KEY`、`SUB2API_CHAT_MODEL`、`SUB2API_IMAGE_MODEL` |
 | 对象存储 | `R2_ENDPOINT`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`、`R2_PRESIGN_EXPIRE_SECS` |
 | Worker | `WORKER_CONCURRENCY`、`USER_MAX_RUNNING_TASKS` |
 
@@ -72,6 +73,7 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - `create-admin` 只创建或更新 `admin_accounts`，不会创建普通用户或钱包；更新密码时会撤销该管理员的全部旧会话。
 - 浏览器写请求校验 `Origin`，代理地址只信任 `TRUSTED_PROXIES`。
 - `GET /api/plans` 只读套餐列表已开放；支付、订单创建、webhook 和后台人工补单路由在开发、测试、生产环境均未注册，历史表和内部结算代码仅用于已有数据兼容。
+- `/api/assistant/*` 使用服务端保存的 Sub2API Key 代理流式对话和图片生成，浏览器不会取得该 Key；当前只要求用户已登录，不从站内钱包重复扣费。
 - 数据库中的 C2A API Key 使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密；启动时会自动迁移旧明文值。
 - 生产环境的登录与兑换限流保存在 Redis；开发和测试环境使用进程内限流。
 - Worker 对每张上游原图同时保存原图和最长边 512px 的 JPEG 缩略图；列表返回站内缩略图 URL，需要查看时再使用站内原图 URL。`GET /api/files/*` 完成权限校验后由 API 代理读取 R2，浏览器不再直接依赖 R2 网络可达性。

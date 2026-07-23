@@ -31,7 +31,7 @@ function normalizePromptItem(raw = {}) {
  * @param {string} [options.cursor] - 分页游标（可空）
  * @param {number} [options.limit]
  * @param {AbortSignal} [options.signal]
- * @returns {Promise<{items: Array, nextCursor: string|null}>}
+ * @returns {Promise<{items: Array, nextCursor: string|null, categoryCounts: object}>}
  */
 export async function listPrompts({
   type = '',
@@ -54,6 +54,12 @@ export async function listPrompts({
       .map(normalizePromptItem)
       .filter((item) => item.id && item.prompt),
     nextCursor: data?.nextCursor ? String(data.nextCursor) : null,
+    categoryCounts:
+      data?.categoryCounts && typeof data.categoryCounts === 'object'
+        ? Object.fromEntries(
+            Object.entries(data.categoryCounts).map(([key, count]) => [key, Number(count) || 0]),
+          )
+        : {},
   }
   cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data: result })
   return result

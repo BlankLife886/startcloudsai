@@ -47,6 +47,17 @@ const routes = [
     },
   },
   {
+    path: '/assistant',
+    name: 'assistant',
+    component: () => import('../views/AssistantWorkspaceView.vue'),
+    meta: {
+      title: `AI助手 - ${siteName}`,
+      description: '使用AI助手进行连续对话和 AI 图片创作。',
+      requiresAuth: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/ai-wallpaper',
     redirect: '/text-to-image',
   },
@@ -211,11 +222,15 @@ const assetLoadErrorPattern =
   /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|Importing a module script failed|Unable to preload CSS/i
 
 function recoverFromStaleAssetVersion(error, targetPath = '') {
-  if (typeof window === 'undefined' || !assetLoadErrorPattern.test(String(error?.message || error || ''))) {
+  if (
+    typeof window === 'undefined' ||
+    !assetLoadErrorPattern.test(String(error?.message || error || ''))
+  ) {
     return false
   }
 
-  const path = targetPath || `${window.location.pathname}${window.location.search}${window.location.hash}`
+  const path =
+    targetPath || `${window.location.pathname}${window.location.search}${window.location.hash}`
   const now = Date.now()
   let previous = null
   try {

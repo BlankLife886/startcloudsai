@@ -20,8 +20,8 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-// promptCoverMaxBytes 提示词封面上限 5MB。
-const promptCoverMaxBytes = 5 * 1024 * 1024
+// promptCoverMaxBytes 提示词封面上限 8MB，与后台选择器保持一致。
+const promptCoverMaxBytes = 8 * 1024 * 1024
 
 // ---------- 提示词库（公开） ----------
 
@@ -36,15 +36,22 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool,
-		store.PromptFilter{TaskType: taskType, Category: c.Query("category"), ActiveOnly: true}, limit, cursor)
+	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), ActiveOnly: true}
+	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
+	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
 		return promptDict(p, false)
-	}))
+	})
+	page["categoryCounts"] = categoryCounts
+	ok(c, page)
 }
 
 // ---------- 提示词库（管理） ----------
@@ -252,7 +259,7 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		return
 	}
 	if fileHeader.Size > promptCoverMaxBytes {
-		fail(c, apperr.E("upload_too_large", "封面不能超过 5MB", 413))
+		fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
 		return
 	}
 	f, err := fileHeader.Open()
@@ -267,7 +274,7 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		return
 	}
 	if int64(len(data)) > promptCoverMaxBytes {
-		fail(c, apperr.E("upload_too_large", "封面不能超过 5MB", 413))
+		fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
 		return
 	}
 	if len(data) == 0 {
@@ -280,19 +287,26 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		return
 	}
 	newKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
-	// 覆盖旧封面：先删再传（扩展名可能变化，旧 key 不一定等于新 key）
-	if entry.CoverKey != nil && *entry.CoverKey != "" {
-		if derr := s.Storage.DeleteKeys(ctx, []string{*entry.CoverKey}); derr != nil {
-			log.Printf("delete old prompt cover %s: %v", *entry.CoverKey, derr)
-		}
+	oldKey := ""
+	if entry.CoverKey != nil {
+		oldKey = *entry.CoverKey
 	}
+	// 先上传并更新数据库，避免新图上传失败时把仍在使用的旧封面删掉。
 	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
 		fail(c, err)
 		return
 	}
 	if err := store.UpdatePromptCoverKey(ctx, s.St.Pool, entry.ID, newKey); err != nil {
+		if newKey != oldKey {
+			_ = s.Storage.DeleteKeys(ctx, []string{newKey})
+		}
 		fail(c, err)
 		return
+	}
+	if oldKey != "" && oldKey != newKey && !strings.HasPrefix(oldKey, "http://") && !strings.HasPrefix(oldKey, "https://") {
+		if derr := s.Storage.DeleteKeys(ctx, []string{oldKey}); derr != nil {
+			log.Printf("delete old prompt cover %s: %v", oldKey, derr)
+		}
 	}
 	ok(c, gin.H{"coverUrl": "/api/files/" + newKey})
 }

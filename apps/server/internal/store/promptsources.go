@@ -187,7 +187,7 @@ const (
 )
 
 // UpsertSourcePrompt 按 (source_id, source_item_key) upsert 源词条：
-// 新增写入完整字段（category='other'、active=true）；已存在只更新
+// 新增写入完整字段（category 自动归类、active=true）；已存在只更新
 // title/prompt/tags/cover_key，保留 category/active/sort（回填分类与后台
 // 手工调整不被同步覆盖）；内容一致时不落盘（unchanged）。
 func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prompt, taskType string,
@@ -195,11 +195,12 @@ func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prom
 	if tags == nil {
 		tags = []string{}
 	}
+	category := ClassifyPromptCategory(title, prompt, tags)
 	var inserted bool
 	err := q.QueryRow(ctx,
 		`INSERT INTO prompt_library
 			(title, prompt, task_type, category, tags, cover_key, sort, active, source_id, source_item_key)
-		 VALUES ($3, $4, $5, 'other', $6, NULLIF($7, ''), $8, true, $1, $2)
+		 VALUES ($3, $4, $5, $9, $6, NULLIF($7, ''), $8, true, $1, $2)
 		 ON CONFLICT (source_id, source_item_key) WHERE source_id <> '' AND source_item_key <> ''
 		 DO UPDATE SET
 			title = excluded.title,
@@ -209,7 +210,7 @@ func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prom
 		 WHERE (prompt_library.title, prompt_library.prompt, prompt_library.tags, prompt_library.cover_key)
 			IS DISTINCT FROM (excluded.title, excluded.prompt, excluded.tags, excluded.cover_key)
 		 RETURNING (xmax = 0)`,
-		sourceID, itemKey, title, prompt, taskType, tags, coverKey, sort).Scan(&inserted)
+		sourceID, itemKey, title, prompt, taskType, tags, coverKey, sort, category).Scan(&inserted)
 	if err == pgx.ErrNoRows {
 		return SourcePromptUnchanged, nil
 	}

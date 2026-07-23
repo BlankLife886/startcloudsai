@@ -32,6 +32,12 @@ type Config struct {
 	C2AAPIKey      string
 	C2ATimeoutSecs int
 
+	Sub2APIBaseURL     string
+	Sub2APIAPIKey      string
+	Sub2APIChatModel   string
+	Sub2APIImageModel  string
+	Sub2APITimeoutSecs int
+
 	R2Endpoint          string
 	R2AccessKeyID       string
 	R2SecretAccessKey   string
@@ -107,6 +113,12 @@ func Load() *Config {
 		C2ABaseURL:     getenv("C2A_BASE_URL", "http://localhost:3000"),
 		C2AAPIKey:      getenv("C2A_API_KEY", ""),
 		C2ATimeoutSecs: getenvInt("C2A_TIMEOUT_SECS", 600),
+
+		Sub2APIBaseURL:     getenv("SUB2API_BASE_URL", "http://localhost:8080"),
+		Sub2APIAPIKey:      getenv("SUB2API_API_KEY", ""),
+		Sub2APIChatModel:   getenv("SUB2API_CHAT_MODEL", "gpt-5.4"),
+		Sub2APIImageModel:  getenv("SUB2API_IMAGE_MODEL", "gpt-image-2"),
+		Sub2APITimeoutSecs: getenvInt("SUB2API_TIMEOUT_SECS", 300),
 
 		R2Endpoint:          getenv("R2_ENDPOINT", ""),
 		R2AccessKeyID:       getenv("R2_ACCESS_KEY_ID", ""),

@@ -31,6 +31,7 @@ npm run test:coloring-upload-compression
 | `/` | 云上美术馆首页、六个创作入口、公开画廊内容 |
 | `/share` | 已审核作品画廊，支持分类和精选筛选 |
 | `/text-to-image` | 文生图工作台 |
+| `/assistant` | AI助手：流式对话与 Sub2API 图片生成工作区 |
 | `/ai-illustration-coloring` | 插画染色 |
 | `/design-workshop` | UI 设计稿 |
 | `/model-sheet` | 超高清模型图 |

@@ -93,6 +93,8 @@ func (s *Server) Router() *gin.Engine {
 		limit := int64(1 << 20)
 		if c.Request.URL.Path == "/api/uploads" {
 			limit = s.Cfg.UploadMaxBytes + (1 << 20)
+		} else if c.Request.URL.Path == "/api/assistant/chat" || c.Request.URL.Path == "/api/assistant/images" {
+			limit = 20 << 20
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		c.Next()
@@ -118,6 +120,11 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/auth/oauth/github/callback", s.oauthCallback)
 	api.POST("/auth/logout", s.logout)
 	api.GET("/auth/me", s.authMe)
+
+	// assistant workspace (Sub2API server-side bridge)
+	api.GET("/assistant/config", s.assistantConfig)
+	api.POST("/assistant/chat", s.assistantChat)
+	api.POST("/assistant/images", s.assistantImages)
 
 	// me
 	api.PATCH("/me/profile", s.patchProfile)
@@ -221,6 +228,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/settings", s.adminOnly(s.adminGetSettings))
 	admin.PUT("/settings", s.adminOnly(s.adminPutSettings))
 	admin.POST("/settings/test-c2a", s.adminOnly(s.adminTestC2A))
+	admin.POST("/settings/test-sub2api", s.adminOnly(s.adminTestSub2API))
 
 	return r
 }

@@ -81,16 +81,29 @@ export async function getShareOverview() {
  * 我的共享资产（旧接口形状：{ items, pagination }）。
  * 新契约映射到「我的画廊投稿」，字段尽量对齐旧模板使用。
  */
-export async function listMyShareAssets({ pageSize = 48 } = {}) {
+export async function listMyShareAssets({ pageSize = 48, cursor = '', signal } = {}) {
   const { listMyGallerySubmissions } = await import('./meApi')
-  const { items } = await listMyGallerySubmissions({ limit: pageSize })
+  const { items, nextCursor } = await listMyGallerySubmissions({
+    limit: pageSize,
+    cursor,
+    signal,
+  })
   return {
-    items: items.map((item) => ({
-      ...item,
-      kind: String(item.kind || item.taskType || ''),
-      coverUrl: item.coverUrl || item.mediaUrls?.[0] || '',
-    })),
-    pagination: { hasMore: false },
+    items: items.map((item) => {
+      const mediaUrls = Array.isArray(item.mediaUrls) ? item.mediaUrls.filter(Boolean) : []
+      const coverUrl = String(item.coverUrl || mediaUrls[0] || '').trim()
+      const resultUrl = String(item.resultUrl || mediaUrls[0] || coverUrl).trim()
+      return {
+        ...item,
+        kind: String(item.kind || item.taskType || ''),
+        jobId: String(item.jobId || item.taskId || ''),
+        resultUrl,
+        coverUrl,
+        mediaUrls,
+      }
+    }),
+    nextCursor: nextCursor || '',
+    pagination: { hasMore: Boolean(nextCursor), nextCursor: nextCursor || '' },
   }
 }
 

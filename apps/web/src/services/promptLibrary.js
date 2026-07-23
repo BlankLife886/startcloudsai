@@ -96,13 +96,15 @@ export async function listPromptLibrary(type, options = {}) {
   }
 
   try {
-    const { items, nextCursor } = await listPrompts({
+    const { items, nextCursor, categoryCounts } = await listPrompts({
       type,
       category: normalizedCategory,
       cursor,
       limit: pageSize,
     })
-    if (page === 1 && !normalizedCategory) serverHasData.set(type, items.length > 0)
+    if (page === 1 && (!normalizedCategory || Number(categoryCounts?.all || 0) > 0)) {
+      serverHasData.set(type, items.length > 0 || Number(categoryCounts?.all || 0) > 0)
+    }
     if (page === 1 && !items.length && !serverHasData.get(type)) {
       return buildFallbackResponse(fallbackItems, normalizedCategory)
     }
@@ -110,22 +112,17 @@ export async function listPromptLibrary(type, options = {}) {
     if (nextCursor) nextChain[page] = nextCursor
     cursorChains.set(key, nextChain)
     const legacyItems = items.map(toLegacyItem)
-    if (!normalizedCategory) {
-      const pageCounts = countCategories(legacyItems)
-      if (page === 1) {
-        countsByType.set(type, pageCounts)
-      } else {
-        const merged = { ...(countsByType.get(type) || {}) }
-        for (const [countKey, count] of Object.entries(pageCounts)) {
-          merged[countKey] = (merged[countKey] || 0) + count
-        }
-        countsByType.set(type, merged)
-      }
+    if (categoryCounts && Object.keys(categoryCounts).length) {
+      countsByType.set(type, categoryCounts)
     }
     return {
       items: legacyItems,
       page,
-      total: legacyItems.length,
+      total: Number(
+        (normalizedCategory
+          ? categoryCounts?.[normalizedCategory] ?? countsByType.get(type)?.[normalizedCategory]
+          : categoryCounts?.all ?? countsByType.get(type)?.all) ?? legacyItems.length,
+      ),
       hasMore: Boolean(nextCursor),
       categoryCounts: countsByType.get(type) || countCategories(legacyItems),
     }

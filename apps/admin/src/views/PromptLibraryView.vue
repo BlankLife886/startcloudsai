@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Directive } from 'vue'
 import { ElCheckbox, ElMessage, ElMessageBox, type CheckboxValueType } from 'element-plus'
 import {
   CollectionTag,
@@ -97,6 +97,14 @@ const promptContentRef = ref<HTMLElement | null>(null)
 const promptSentinelRef = ref<HTMLElement | null>(null)
 let promptLoadObserver: IntersectionObserver | null = null
 let promptRequestVersion = 0
+let coverLoadObserver: IntersectionObserver | null = null
+let bodyResizeObserver: ResizeObserver | null = null
+const coverElements = new Map<HTMLElement, string>()
+const bodyElements = new Map<HTMLElement, string>()
+const visibleCoverIds = reactive(new Set<string>())
+const cardBodyHeights = reactive<Record<string, number>>({})
+const isGridScrolling = ref(false)
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
 
 const hasNext = computed(() => nextCursor.value !== null)
 const initialLoading = computed(() => loading.value && items.value.length === 0)
@@ -188,6 +196,70 @@ function setupPromptObserver() {
     { root: promptContentRef.value, rootMargin: '560px 0px', threshold: 0.01 },
   )
   promptLoadObserver.observe(promptSentinelRef.value)
+}
+
+function setupCoverObserver() {
+  coverLoadObserver?.disconnect()
+  coverLoadObserver = null
+  if (typeof IntersectionObserver === 'undefined') {
+    for (const id of coverElements.values()) visibleCoverIds.add(id)
+    return
+  }
+  coverLoadObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const id = coverElements.get(entry.target as HTMLElement)
+        if (!id) continue
+        if (entry.isIntersecting) visibleCoverIds.add(id)
+        else visibleCoverIds.delete(id)
+      }
+    },
+    { root: promptContentRef.value, rootMargin: '720px 0px', threshold: 0.001 },
+  )
+  for (const element of coverElements.keys()) coverLoadObserver.observe(element)
+}
+
+const vPromptCoverVisibility: Directive<HTMLElement, string> = {
+  mounted(element, binding) {
+    coverElements.set(element, binding.value)
+    if (coverLoadObserver) coverLoadObserver.observe(element)
+    else visibleCoverIds.add(binding.value)
+  },
+  updated(element, binding) {
+    if (binding.value === binding.oldValue) return
+    if (binding.oldValue) visibleCoverIds.delete(binding.oldValue)
+    coverElements.set(element, binding.value)
+    visibleCoverIds.add(binding.value)
+  },
+  beforeUnmount(element) {
+    const id = coverElements.get(element)
+    coverLoadObserver?.unobserve(element)
+    coverElements.delete(element)
+    if (id) visibleCoverIds.delete(id)
+  },
+}
+
+const vPromptBodySize: Directive<HTMLElement, string> = {
+  mounted(element, binding) {
+    bodyElements.set(element, binding.value)
+    bodyResizeObserver?.observe(element)
+  },
+  updated(element, binding) {
+    bodyElements.set(element, binding.value)
+  },
+  beforeUnmount(element) {
+    bodyResizeObserver?.unobserve(element)
+    bodyElements.delete(element)
+  },
+}
+
+function onPromptScroll() {
+  if (!isGridScrolling.value) isGridScrolling.value = true
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+  scrollIdleTimer = setTimeout(() => {
+    scrollIdleTimer = null
+    isGridScrolling.value = false
+  }, 140)
 }
 
 /** 启停/封面筛选（契约无该查询参数，作用于当前页） */
@@ -440,20 +512,13 @@ async function quickChangeTaskType(item: PromptItem, taskType: string) {
   }
 }
 
-/* 瀑布流列布局（还原旧版按图片比例分列） */
+/* 稳定瀑布流：保持现有多列布局，但图片异步加载后不再跨列搬动卡片。 */
 const gridColumnCount = ref(5)
 const imageRatios = reactive<Record<string, number>>({})
 const gridColumns = computed(() => {
   const columns = Array.from({ length: gridColumnCount.value }, () => [] as PromptItem[])
-  const heights = Array.from({ length: gridColumnCount.value }, () => 0)
-  for (const item of visibleItems.value) {
-    let target = 0
-    for (let index = 1; index < heights.length; index += 1) {
-      if ((heights[index] ?? 0) < (heights[target] ?? 0)) target = index
-    }
-    columns[target]?.push(item)
-    const ratio = Math.max(0.38, Math.min(3.2, imageRatios[item.id] ?? 16 / 10))
-    heights[target] = (heights[target] ?? 0) + 1 / ratio + 0.52
+  for (const [index, item] of visibleItems.value.entries()) {
+    columns[index % gridColumnCount.value]?.push(item)
   }
   return columns
 })
@@ -468,6 +533,16 @@ function measureCover(item: PromptItem, event: Event) {
   const width = Number(image?.naturalWidth ?? 0)
   const height = Number(image?.naturalHeight ?? 0)
   if (width > 0 && height > 0) imageRatios[item.id] = width / height
+}
+
+function coverStyle(item: PromptItem) {
+  const ratio = Math.max(0.38, Math.min(3.2, imageRatios[item.id] ?? 16 / 10))
+  return { aspectRatio: String(ratio) }
+}
+
+function cardBodyPlaceholderStyle(item: PromptItem) {
+  const fallback = item.tags?.length ? 184 : 158
+  return { height: `${Math.max(120, cardBodyHeights[item.id] ?? fallback)}px` }
 }
 
 function categoryMeta(value: string | undefined): CategoryOption {
@@ -542,12 +617,14 @@ function pickImage(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] ?? null
   if (!file) return
-  if (!file.type.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    ElMessage.warning('封面仅支持 PNG、JPG 或 WebP')
+    input.value = ''
     return
   }
   if (file.size > 8 * 1024 * 1024) {
     ElMessage.warning('提示词封面不能超过 8MB')
+    input.value = ''
     return
   }
   pendingImage.value = file
@@ -564,8 +641,11 @@ async function uploadCover(id: string, file: File) {
     credentials: 'include',
     body,
   })
-  const payload = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null
-  if (!payload?.success) throw new Error(payload?.error ?? '封面上传失败')
+  const payload = (await res.json().catch(() => null)) as
+    | { success?: boolean; data?: { coverUrl?: string }; error?: string }
+    | null
+  if (!res.ok || !payload?.success) throw new Error(payload?.error || `封面上传失败（HTTP ${res.status}）`)
+  return payload.data?.coverUrl ?? ''
 }
 
 async function save() {
@@ -587,12 +667,16 @@ async function save() {
       sort: form.sort,
       active: form.active,
     }
+    const creating = !editingId.value
     const saved = editingId.value
       ? await request<PromptItem>(`/api/admin/prompt-library/${editingId.value}`, { method: 'PATCH', body })
       : await request<PromptItem>('/api/admin/prompt-library', { method: 'POST', body })
     const id = saved?.id || editingId.value
+    // 新增内容已落库后立即切换到编辑态，封面失败重试时不会重复创建词条。
+    if (creating && id) editingId.value = id
     if (pendingImage.value && id) {
-      await uploadCover(id, pendingImage.value)
+      previewUrl.value = (await uploadCover(id, pendingImage.value)) || previewUrl.value
+      pendingImage.value = null
     }
     ElMessage.success('提示词已保存')
     editorOpen.value = false
@@ -603,6 +687,13 @@ async function save() {
     saving.value = false
   }
 }
+
+watch(editorOpen, (open) => {
+  if (open) return
+  if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+  pendingImage.value = null
+})
 
 async function toggleItem(item: PromptItem, active: boolean) {
   item.active = active
@@ -822,6 +913,16 @@ onMounted(() => {
   window.addEventListener('pointermove', moveCategoryDrag, { passive: false })
   window.addEventListener('pointerup', finishPointerCategoryDrag)
   window.addEventListener('pointercancel', finishCategoryDrag)
+  if (typeof ResizeObserver !== 'undefined') {
+    bodyResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const id = bodyElements.get(entry.target as HTMLElement)
+        const height = Math.ceil(entry.contentRect.height)
+        if (id && height > 0) cardBodyHeights[id] = height
+      }
+    })
+  }
+  setupCoverObserver()
   void reset()
   void loadSources(true)
 })
@@ -832,7 +933,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', finishPointerCategoryDrag)
   window.removeEventListener('pointercancel', finishCategoryDrag)
   promptLoadObserver?.disconnect()
+  coverLoadObserver?.disconnect()
+  bodyResizeObserver?.disconnect()
+  coverElements.clear()
+  bodyElements.clear()
+  visibleCoverIds.clear()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
 })
 </script>
@@ -919,7 +1026,7 @@ onBeforeUnmount(() => {
           </button>
         </aside>
 
-        <main ref="promptContentRef" class="prompt-content">
+        <main ref="promptContentRef" class="prompt-content" @scroll.passive="onPromptScroll">
           <ListError :error="error" :loading="loading" @retry="retry" />
 
           <div v-if="selectionMode" class="prompt-bulk-bar" :class="{ 'is-active': selectedItems.length }">
@@ -981,7 +1088,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="prompt-grid" :class="{ 'is-refreshing': refreshing }">
+          <div class="prompt-grid" :class="{ 'is-refreshing': refreshing, 'is-scrolling': isGridScrolling }">
             <template v-if="initialLoading">
               <div
                 v-for="columnIndex in gridColumnCount"
@@ -1020,17 +1127,21 @@ onBeforeUnmount(() => {
                   }"
                 >
                   <div
+                    v-prompt-cover-visibility="item.id"
                     class="prompt-cover"
                     :class="{ 'has-image': Boolean(item.coverUrl) }"
+                    :style="item.coverUrl ? coverStyle(item) : undefined"
                     @click="selectionMode ? toggleSelected(item.id, !selectedIds.has(item.id)) : openEditor(item)"
                   >
                     <img
-                      v-if="item.coverUrl"
+                      v-if="item.coverUrl && visibleCoverIds.has(item.id)"
                       :src="item.coverUrl"
                       :alt="item.title"
-                      loading="lazy"
+                      loading="eager"
+                      decoding="async"
                       @load="measureCover(item, $event)"
                     />
+                    <span v-else-if="item.coverUrl" class="prompt-cover__media-placeholder" aria-hidden="true" />
                     <div v-else class="prompt-cover__empty">
                       <el-icon><Picture /></el-icon>
                       <span>缺少封面</span>
@@ -1063,7 +1174,7 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
 
-                  <div class="prompt-card__body">
+                  <div v-if="visibleCoverIds.has(item.id)" v-prompt-body-size="item.id" class="prompt-card__body">
                     <header>
                       <div>
                         <strong :title="item.title">{{ item.title }}</strong>
@@ -1140,6 +1251,7 @@ onBeforeUnmount(() => {
                       </div>
                     </footer>
                   </div>
+                  <div v-else class="prompt-card__body-placeholder" :style="cardBodyPlaceholderStyle(item)" />
                 </article>
               </div>
             </template>
@@ -1250,7 +1362,7 @@ onBeforeUnmount(() => {
                     <small>PNG / JPG / WebP，最大 8MB</small>
                   </span>
                   <em v-if="previewUrl">更换图片</em>
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="pickImage" />
+                  <input type="file" accept="image/png,image/jpeg,image/webp" @change="pickImage" />
                 </label>
               </el-form-item>
               <div class="form-settings">
@@ -1860,6 +1972,8 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
   transition:
     transform 0.22s ease,
     box-shadow 0.22s ease,
@@ -1915,9 +2029,11 @@ onBeforeUnmount(() => {
   }
 
   img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
-    height: auto;
+    height: 100%;
     min-height: 0;
     object-fit: contain;
     background: var(--el-fill-color-light);
@@ -1929,6 +2045,33 @@ onBeforeUnmount(() => {
   &:hover img {
     filter: brightness(0.82);
     transform: scale(1.025);
+  }
+}
+
+.prompt-cover__media-placeholder {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background: var(--el-fill-color-light);
+}
+
+.prompt-grid.is-scrolling {
+  .prompt-card {
+    pointer-events: none;
+    box-shadow: none;
+    transition: none;
+  }
+
+  .prompt-cover img {
+    filter: none;
+    transform: none;
+    transition: none;
+  }
+
+  .category-badge,
+  .prompt-card__select,
+  .prompt-cover__specs span {
+    backdrop-filter: none;
   }
 }
 
@@ -2109,6 +2252,12 @@ onBeforeUnmount(() => {
       white-space: nowrap;
     }
   }
+}
+
+.prompt-card__body-placeholder {
+  width: 100%;
+  min-height: 120px;
+  pointer-events: none;
 }
 
 .prompt-card__actions {

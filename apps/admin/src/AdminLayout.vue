@@ -7,6 +7,8 @@ import {
   ChatDotRound,
   CollectionTag,
   Document,
+  Expand,
+  Fold,
   List,
   Lock,
   MagicStick,
@@ -27,6 +29,12 @@ import { isDark, toggleTheme } from '@/theme'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const sidebarCollapsed = ref(false)
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  window.localStorage.setItem('startclouds-admin:sidebar-collapsed', String(sidebarCollapsed.value))
+}
 
 const NAV_GROUPS = [
   {
@@ -128,7 +136,10 @@ const notifyItems = computed(() =>
 
 const notifyTotal = computed(() => notifyItems.value.reduce((sum, item) => sum + item.count, 0))
 
-onMounted(loadTodoCounts)
+onMounted(() => {
+  sidebarCollapsed.value = window.localStorage.getItem('startclouds-admin:sidebar-collapsed') === 'true'
+  void loadTodoCounts()
+})
 watch(() => route.path, loadTodoCounts)
 
 function goTodo(to: string) {
@@ -192,7 +203,7 @@ async function submitPassword() {
 <template>
   <div class="layout">
     <!-- ==== 侧边栏 ==== -->
-    <aside class="aside">
+    <aside class="aside" :class="{ 'is-collapsed': sidebarCollapsed }">
       <div class="logo">
         <span class="logo-mark">
           <el-icon :size="18"><MagicStick /></el-icon>
@@ -228,8 +239,14 @@ async function submitPassword() {
           <strong :title="displayName">{{ displayName }}</strong>
           <span class="badge badge--accent">管理员</span>
         </div>
-        <button type="button" class="user-logout" title="退出登录" @click="onLogout">
-          <el-icon :size="15"><SwitchButton /></el-icon>
+        <button
+          type="button"
+          class="sidebar-toggle"
+          :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+          :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+          @click="toggleSidebar"
+        >
+          <el-icon :size="15"><component :is="sidebarCollapsed ? Expand : Fold" /></el-icon>
         </button>
       </div>
     </aside>
@@ -356,6 +373,12 @@ async function submitPassword() {
   overflow: hidden;
   background: var(--surface);
   border-right: 1px solid var(--border);
+  will-change: width;
+  transition: width 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.aside.is-collapsed {
+  width: 72px;
 }
 
 .logo {
@@ -363,6 +386,13 @@ async function submitPassword() {
   align-items: center;
   gap: 10px;
   padding: 20px 20px 16px;
+  transition: padding 0.18s ease;
+}
+
+.aside.is-collapsed .logo {
+  justify-content: center;
+  padding-right: 10px;
+  padding-left: 10px;
 }
 
 .logo-mark {
@@ -380,6 +410,20 @@ async function submitPassword() {
   display: grid;
   gap: 1px;
   min-width: 0;
+  opacity: 1;
+  transition: opacity 0.12s ease;
+}
+
+.aside.is-collapsed .logo-copy,
+.aside.is-collapsed .nav-group__title,
+.aside.is-collapsed .nav-item span,
+.aside.is-collapsed .user-meta {
+  display: none;
+}
+
+.aside.is-collapsed .logo-copy,
+.aside.is-collapsed .user-meta {
+  opacity: 0;
 }
 
 .logo-copy strong {
@@ -424,7 +468,32 @@ async function submitPassword() {
   font-size: 13.5px;
   font-weight: 500;
   text-decoration: none;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, padding 0.18s ease;
+}
+
+.aside.is-collapsed .nav {
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.aside.is-collapsed .nav-item {
+  justify-content: center;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.aside.is-collapsed .nav-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+}
+
+.aside.is-collapsed .nav-item {
+  position: relative;
 }
 
 .nav-item .el-icon {
@@ -505,7 +574,7 @@ async function submitPassword() {
   white-space: nowrap;
 }
 
-.user-logout {
+.sidebar-toggle {
   display: grid;
   place-items: center;
   width: 30px;
@@ -519,9 +588,25 @@ async function submitPassword() {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.user-logout:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
+.sidebar-toggle:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.aside.is-collapsed .user-card {
+  justify-content: center;
+  gap: 8px;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aside,
+  .logo,
+  .logo-copy,
+  .nav-item {
+    transition: none;
+  }
 }
 
 /* ---- 顶栏 ---- */

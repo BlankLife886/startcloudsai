@@ -71,21 +71,29 @@ func DecryptSecret(value, masterKey string) (string, error) {
 
 // EncryptStoredSecrets upgrades legacy plaintext settings in place at startup.
 func EncryptStoredSecrets(ctx context.Context, q store.Q, masterKey string) error {
-	raw, err := store.GetAppSetting(ctx, q, "c2a_api_key")
-	if err != nil || raw == nil {
-		return err
+	for _, key := range []string{"c2a_api_key", "sub2api_api_key"} {
+		raw, err := store.GetAppSetting(ctx, q, key)
+		if err != nil {
+			return err
+		}
+		if raw == nil {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("读取 %s: %w", key, err)
+		}
+		if value == "" || strings.HasPrefix(value, encryptedSecretPrefix) {
+			continue
+		}
+		encrypted, err := EncryptSecret(value, masterKey)
+		if err != nil {
+			return err
+		}
+		encoded, _ := json.Marshal(encrypted)
+		if err := store.SetAppSetting(ctx, q, key, encoded, time.Now().UTC()); err != nil {
+			return err
+		}
 	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return fmt.Errorf("读取 c2a_api_key: %w", err)
-	}
-	if value == "" || strings.HasPrefix(value, encryptedSecretPrefix) {
-		return nil
-	}
-	encrypted, err := EncryptSecret(value, masterKey)
-	if err != nil {
-		return err
-	}
-	encoded, _ := json.Marshal(encrypted)
-	return store.SetAppSetting(ctx, q, "c2a_api_key", encoded, time.Now().UTC())
+	return nil
 }

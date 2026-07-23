@@ -31,6 +31,7 @@ const isUpdatesGalleryRoute = computed(() => route.name === 'updates')
 const isStudioConsoleRoute = computed(() =>
   [
     'text-to-image',
+    'assistant',
     'ai-wallpaper',
     'ai-illustration-coloring',
     'ai-puzzle',
