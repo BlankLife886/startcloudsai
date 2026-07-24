@@ -37,3 +37,13 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 		t.Fatalf("sub2apiApiKey = %#v", out["sub2apiApiKey"])
 	}
 }
+
+func TestAdminModelListCleansSortsAndCaps(t *testing.T) {
+	models, total := adminModelList([]string{" z-model ", "a-model", "", "a-model", "m-model"}, 2)
+	if total != 3 {
+		t.Fatalf("total = %d, want 3", total)
+	}
+	if len(models) != 2 || models[0] != "a-model" || models[1] != "m-model" {
+		t.Fatalf("models = %#v", models)
+	}
+}

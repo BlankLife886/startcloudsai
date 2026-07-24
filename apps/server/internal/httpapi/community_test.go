@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,6 +243,43 @@ func TestAutoApprovePassThrough(t *testing.T) {
 	data, _ := decode(t, w)
 	if w.Code != 200 || data["status"] != "approved" {
 		t.Fatalf("auto-approve submit: status %d data %v", w.Code, data)
+	}
+}
+
+func TestAdminPromptCoverReportsOversizeInsteadOfMissingFile(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+	entry, err := store.InsertPromptEntry(context.Background(), env.st.Pool, &store.PromptEntry{
+		Title: "封面上传大小测试", Prompt: "test prompt", TaskType: "t2i", Sort: 10, Active: true,
+	})
+	if err != nil {
+		t.Fatalf("insert prompt: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "oversize.png")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(make([]byte, promptCoverMaxBytes+(2<<20))); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/prompt-library/"+entry.ID.String()+"/cover", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: adminToken})
+	w := httptest.NewRecorder()
+	env.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body %s, want 413", w.Code, w.Body.String())
+	}
+	_, code := decode(t, w)
+	if code != "upload_too_large" {
+		t.Fatalf("code = %q body %s, want upload_too_large", code, w.Body.String())
 	}
 }
 

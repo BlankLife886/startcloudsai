@@ -10,7 +10,7 @@ import { useStudioMotion } from '@/features/creative-studios/useStudioMotion'
 import { downloadAuthenticatedMedia } from '@/services/authenticatedMedia'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
-import { listPromptLibrary } from '@/services/promptLibrary'
+import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import notificationService from '@/services/notification'
 
 const SETTINGS_KEY = 'game-art-studio-v1'
@@ -514,6 +514,13 @@ function openFullscreen(url) {
   activeOutput.value = url
   fullscreenOpen.value = true
 }
+
+function stepFullscreen(direction) {
+  const gallery = canvasOutputs.value.length ? canvasOutputs.value : outputs.value
+  if (gallery.length < 2) return
+  const index = Math.max(0, gallery.indexOf(activeOutput.value))
+  activeOutput.value = gallery[(index + direction + gallery.length) % gallery.length]
+}
 // 中西文混排时补空格：「游戏 UI 设计」而非「游戏 UI设计」
 const currentTypeHeading = computed(() => {
   const label = currentType.value.label
@@ -746,6 +753,7 @@ function usePromptEntry(item) {
   const text = String(item?.prompt || '').trim()
   if (!text) return
   currentState.value.prompt = text
+  if (item?.id) void recordPromptEngagement(item.id, 'use').catch(() => undefined)
   libraryOpen.value = false
   notificationService.success('已填入创意描述，可继续修改后生成')
 }
@@ -1217,9 +1225,21 @@ function assetStatusLabel(statusValue) {
               <p v-else-if="!filteredPrompts.length" class="ga-drawer-note">没有匹配「{{ promptQuery }}」的提示词</p>
               <div v-else class="ga-prompt-list">
                 <button v-for="item in filteredPrompts" :key="item.id" type="button" class="ga-prompt-item" @click="usePromptEntry(item)">
-                  <strong v-if="item.title">{{ item.title }}</strong>
-                  <span>{{ item.prompt }}</span>
-                  <em><i class="bi bi-stars" aria-hidden="true"></i>点击填入创意描述</em>
+                  <span class="ga-prompt-cover">
+                    <AuthenticatedImage
+                      v-if="item.coverUrl || item.imageUrl"
+                      :src="item.coverUrl || item.imageUrl"
+                      alt=""
+                      :max-dimension="360"
+                      loading="lazy"
+                    />
+                    <i v-else class="bi bi-controller" aria-hidden="true"></i>
+                  </span>
+                  <span class="ga-prompt-copy">
+                    <strong v-if="item.title">{{ item.title }}</strong>
+                    <span>{{ item.prompt }}</span>
+                    <em><i class="bi bi-stars" aria-hidden="true"></i>点击填入创意描述</em>
+                  </span>
                 </button>
                 <button v-if="promptHasMore" type="button" class="ga-prompt-more" :disabled="promptLoading" @click="loadPromptEntries(false)">
                   <i class="bi" :class="promptLoading ? 'bi-arrow-repeat spin' : 'bi-chevron-down'" aria-hidden="true"></i>
@@ -1307,7 +1327,21 @@ function assetStatusLabel(statusValue) {
           @click.self="fullscreenOpen = false"
         >
           <button type="button" aria-label="关闭大图" @click="fullscreenOpen = false"><i class="bi bi-x-lg"></i></button>
+          <button
+            v-if="(canvasOutputs.length || outputs.length) > 1"
+            type="button"
+            class="ga-fullscreen-nav is-prev"
+            aria-label="上一张"
+            @click="stepFullscreen(-1)"
+          ><i class="bi bi-chevron-left"></i></button>
           <AuthenticatedImage :src="activeOutput" alt="游戏美术资产大图" loading="eager" />
+          <button
+            v-if="(canvasOutputs.length || outputs.length) > 1"
+            type="button"
+            class="ga-fullscreen-nav is-next"
+            aria-label="下一张"
+            @click="stepFullscreen(1)"
+          ><i class="bi bi-chevron-right"></i></button>
         </div>
       </Transition>
     </Teleport>
@@ -1419,6 +1453,7 @@ function assetStatusLabel(statusValue) {
 
 .ga-prompt-item {
   display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
   gap: 5px;
   padding: 10px 11px;
   border: 1px solid #30353a;
@@ -1428,6 +1463,36 @@ function assetStatusLabel(statusValue) {
   text-align: left;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.ga-prompt-cover {
+  display: grid;
+  width: 72px;
+  min-height: 76px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #30383b;
+  border-radius: 7px;
+  color: var(--acid);
+  background:
+    radial-gradient(circle at 24% 20%, rgba(184, 255, 53, 0.24), transparent 48%),
+    linear-gradient(145deg, #1f2521, #0d1010);
+}
+
+.ga-prompt-cover :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ga-prompt-cover > i {
+  font-size: 24px;
+}
+
+.ga-prompt-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
 }
 
 .ga-prompt-item:hover {
@@ -1440,7 +1505,7 @@ function assetStatusLabel(statusValue) {
   font-size: 11px;
 }
 
-.ga-prompt-item span {
+.ga-prompt-copy > span {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -2978,6 +3043,24 @@ function assetStatusLabel(statusValue) {
 .ga-fullscreen > button:hover {
   border-color: var(--acid);
   color: var(--acid);
+}
+
+.ga-fullscreen > .ga-fullscreen-nav {
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  backdrop-filter: blur(12px);
+}
+
+.ga-fullscreen > .ga-fullscreen-nav.is-prev {
+  right: auto;
+  left: 18px;
+}
+
+.ga-fullscreen > .ga-fullscreen-nav.is-next {
+  right: 18px;
 }
 
 .ga-zoom-enter-active,

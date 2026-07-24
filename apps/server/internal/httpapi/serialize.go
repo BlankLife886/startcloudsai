@@ -73,6 +73,10 @@ func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	d := taskDict(t, nil, nil)
 	d["userId"] = t.UserID.String()
 	d["attempt"] = t.Attempt
+	d["source"] = "task"
+	if t.Type == "assistant" {
+		d["source"] = "assistant"
+	}
 	if user != nil {
 		d["user"] = gin.H{"id": user.ID.String(), "email": user.Email, "username": user.Username}
 	}
@@ -206,16 +210,24 @@ func promptCoverURL(coverKey *string) *string {
 
 func promptDict(p *store.PromptEntry, includeAdmin bool) gin.H {
 	d := gin.H{
-		"id":       p.ID.String(),
-		"title":    p.Title,
-		"prompt":   p.Prompt,
-		"taskType": p.TaskType,
-		"category": p.Category,
-		"tags":     nonNilStrings(p.Tags),
-		"coverUrl": promptCoverURL(p.CoverKey),
+		"id":            p.ID.String(),
+		"title":         p.Title,
+		"prompt":        p.Prompt,
+		"taskType":      p.TaskType,
+		"category":      p.Category,
+		"tags":          nonNilStrings(p.Tags),
+		"coverUrl":      promptCoverURL(p.CoverKey),
+		"likeCount":     p.LikeCount,
+		"favoriteCount": p.FavoriteCount,
+		"useCount":      p.UseCount,
 	}
 	if includeAdmin {
 		d["coverKey"] = p.CoverKey
+		if p.GallerySubmissionID != nil {
+			d["gallerySubmissionId"] = p.GallerySubmissionID.String()
+		} else {
+			d["gallerySubmissionId"] = nil
+		}
 		d["sort"] = p.Sort
 		d["active"] = p.Active
 		d["createdAt"] = isoValue(p.CreatedAt)

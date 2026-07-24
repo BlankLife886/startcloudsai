@@ -16,7 +16,7 @@ import { useCreativeImageJob } from '@/features/creative-studios/useCreativeImag
 import { useStudioMotion } from '@/features/creative-studios/useStudioMotion'
 import { downloadAuthenticatedMedia } from '@/services/authenticatedMedia'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
-import { listPromptLibrary } from '@/services/promptLibrary'
+import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
 import notificationService from '@/services/notification'
 import { gsap } from 'gsap'
@@ -104,6 +104,7 @@ const outputLabels = ref({})
 const studioRoot = ref(null)
 const localError = ref('')
 const fullscreenOpen = ref(false)
+const fullscreenGallery = ref([])
 const dragOver = ref(false)
 const background = ref('gray')
 const retryViews = ref([])
@@ -399,6 +400,7 @@ function usePromptEntry(item) {
   const text = String(item?.prompt || '').trim()
   if (!text) return
   prompt.value = text
+  if (item?.id) void recordPromptEngagement(item.id, 'use').catch(() => undefined)
   notificationService.success('已填入提示词，可继续修改后生成')
 }
 
@@ -1146,6 +1148,19 @@ function selectOutput(output) {
   localError.value = ''
 }
 
+function openHistoryGroup(group) {
+  fullscreenGallery.value = Array.isArray(group?.urls) ? group.urls : [group?.cover].filter(Boolean)
+  selectOutput(group?.cover)
+  fullscreenOpen.value = Boolean(activeOutput.value)
+}
+
+function stepFullscreen(direction) {
+  const gallery = fullscreenGallery.value.length ? fullscreenGallery.value : outputs.value
+  if (gallery.length < 2) return
+  const index = Math.max(0, gallery.indexOf(activeOutput.value))
+  activeOutput.value = gallery[(index + direction + gallery.length) % gallery.length]
+}
+
 function refreshHistory() {
   if (historyLoading.value) return
   void loadHistory().catch(() => null)
@@ -1509,7 +1524,6 @@ function refreshHistory() {
             alt="超高清模型图"
             loading="eager"
             :retry-count="2"
-            :max-dimension="1024"
             @error="localError = '结果图加载失败，请选择其他版本或重新生成'"
           />
           <div v-else class="ms3-silhouette" :style="{ gridTemplateColumns: `repeat(${silhouetteViews.length}, 1fr)` }">
@@ -1614,9 +1628,21 @@ function refreshHistory() {
           <p v-else-if="!filteredPrompts.length" class="ms3-gallery-note">没有匹配「{{ promptQuery }}」的提示词</p>
           <div v-else class="ms3-prompt-list">
             <button v-for="item in filteredPrompts" :key="item.id" type="button" class="ms3-prompt-item" @click="usePromptEntry(item)">
-              <strong v-if="item.title">{{ item.title }}</strong>
-              <span>{{ item.prompt }}</span>
-              <em><i class="bi bi-stars" aria-hidden="true"></i>点击填入</em>
+              <span class="ms3-prompt-cover">
+                <AuthenticatedImage
+                  v-if="item.coverUrl || item.imageUrl"
+                  :src="item.coverUrl || item.imageUrl"
+                  alt=""
+                  :max-dimension="320"
+                  loading="lazy"
+                />
+                <i v-else class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+              </span>
+              <span class="ms3-prompt-copy">
+                <strong v-if="item.title">{{ item.title }}</strong>
+                <span>{{ item.prompt }}</span>
+                <em><i class="bi bi-stars" aria-hidden="true"></i>点击填入</em>
+              </span>
             </button>
             <button v-if="promptHasMore" type="button" class="ms3-prompt-more" :disabled="promptLoading" @click="loadPromptEntries(false)">
               <i class="bi" :class="promptLoading ? 'bi-arrow-repeat ms3-spin' : 'bi-chevron-down'" aria-hidden="true"></i>
@@ -1682,7 +1708,7 @@ function refreshHistory() {
               class="ms3-card-pick"
               :aria-pressed="group.urls.includes(activeOutput)"
               :title="group.urls.length > 1 ? `包含 ${group.urls.length} 张视图，点击展开查看` : '查看'"
-              @click="selectOutput(group.cover)"
+              @click="openHistoryGroup(group)"
             >
               <AuthenticatedImage :src="group.cover" alt="" :max-dimension="360" loading="lazy" />
             </button>
@@ -1743,7 +1769,21 @@ function refreshHistory() {
           @click.self="fullscreenOpen = false"
         >
           <button type="button" aria-label="关闭大图" @click="fullscreenOpen = false"><i class="bi bi-x-lg"></i></button>
+          <button
+            v-if="(fullscreenGallery.length || outputs.length) > 1"
+            type="button"
+            class="ms3-fullscreen-nav is-prev"
+            aria-label="上一张"
+            @click="stepFullscreen(-1)"
+          ><i class="bi bi-chevron-left"></i></button>
           <AuthenticatedImage :src="activeOutput" alt="超高清模型图大图" loading="eager" />
+          <button
+            v-if="(fullscreenGallery.length || outputs.length) > 1"
+            type="button"
+            class="ms3-fullscreen-nav is-next"
+            aria-label="下一张"
+            @click="stepFullscreen(1)"
+          ><i class="bi bi-chevron-right"></i></button>
         </div>
       </Transition>
     </Teleport>
@@ -3213,6 +3253,7 @@ function refreshHistory() {
 
 .ms3-prompt-item {
   display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 5px;
   padding: 10px 11px;
   border: 1px solid var(--line-2);
@@ -3222,6 +3263,35 @@ function refreshHistory() {
   text-align: left;
   cursor: pointer;
   transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.ms3-prompt-cover {
+  display: grid;
+  width: 64px;
+  min-height: 70px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  color: rgba(255, 158, 113, 0.82);
+  background:
+    radial-gradient(circle at 25% 20%, rgba(255, 92, 26, 0.34), transparent 48%),
+    linear-gradient(145deg, #272126, #15151b);
+}
+
+.ms3-prompt-cover :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ms3-prompt-cover > i {
+  font-size: 22px;
+}
+
+.ms3-prompt-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
 }
 
 .ms3-prompt-item:hover {
@@ -3234,7 +3304,7 @@ function refreshHistory() {
   font-size: 11px;
 }
 
-.ms3-prompt-item span {
+.ms3-prompt-copy > span {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -3738,6 +3808,24 @@ function refreshHistory() {
   color: var(--accent);
 }
 
+.ms3-fullscreen > .ms3-fullscreen-nav {
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  backdrop-filter: blur(12px);
+}
+
+.ms3-fullscreen > .ms3-fullscreen-nav.is-prev {
+  right: auto;
+  left: 18px;
+}
+
+.ms3-fullscreen > .ms3-fullscreen-nav.is-next {
+  right: 18px;
+}
+
 .ms3-zoom-enter-active,
 .ms3-zoom-leave-active {
   transition: opacity 0.18s ease;
@@ -3792,6 +3880,22 @@ function refreshHistory() {
 }
 
 /* ================= 响应式 ================= */
+@media (max-width: 1500px) {
+  .ms3-stage-actions {
+    gap: 4px;
+  }
+
+  .ms3-stage-actions button {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .ms3-stage-actions button > span {
+    display: none;
+  }
+}
+
 @media (max-width: 1240px) {
   .ms3 {
     grid-template-columns: 284px minmax(0, 1fr);

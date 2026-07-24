@@ -14,17 +14,23 @@ export const ILLUSTRATION_COLORING_HISTORY_LIMIT = MAX_HISTORY
 export const ILLUSTRATION_COLORING_VISIBLE_HISTORY_LIMIT = MAX_VISIBLE_HISTORY
 
 export const COLORING_OUTPUT_SIZE_OPTIONS = [
-  { id: 'original', label: '原图尺寸', hint: '按输入图分辨率输出（超限自动适配）' },
   { id: '1k', label: '1K', hint: '约 1024 长边' },
   { id: '2k', label: '2K', hint: '约 2048 长边' },
-  { id: '3k', label: '3K', hint: '约 3072 长边' },
   { id: '4k', label: '4K', hint: '最高 3840 长边（受总像素限制）' },
 ]
 
 export const COLORING_OUTPUT_ORIENTATION_OPTIONS = [
-  { id: 'source', label: '保持原图方向', hint: '按线稿原有构图染色' },
-  { id: 'portrait', label: '竖图', hint: '适合人物、海报和移动端展示' },
-  { id: 'landscape', label: '横图扩展', hint: '向左右延展画面，适合桌面与场景展示' },
+  { id: 'source', label: '原图比例', hint: '保持线稿原有构图比例' },
+  { id: '1:1', label: '1:1 方形' },
+  { id: '2:3', label: '2:3 竖图' },
+  { id: '3:2', label: '3:2 横图' },
+  { id: '3:4', label: '3:4 竖图' },
+  { id: '4:3', label: '4:3 横图' },
+  { id: '4:5', label: '4:5 竖图' },
+  { id: '5:4', label: '5:4 横图' },
+  { id: '9:16', label: '9:16 竖屏' },
+  { id: '16:9', label: '16:9 横屏' },
+  { id: '21:9', label: '21:9 超宽' },
 ]
 
 export const COLORING_FORMAT_OPTIONS = [
@@ -35,15 +41,16 @@ export const COLORING_FORMAT_OPTIONS = [
 ]
 
 export const COLORING_COMPRESS_KB_OPTIONS = [256, 512, 1024, 1536, 2048, 3072, 4096]
-export const COLORING_BATCH_COUNT_OPTIONS = [1, 2, 3, 4, 5]
+export const COLORING_BATCH_COUNT_OPTIONS = [1, 2, 3, 4]
 
 export const DEFAULT_COLORING_SETTINGS = {
   enableCompress: false,
   compressMaxKb: 1024,
   inputFormat: 'original',
-  outputSize: 'original',
+  outputSize: '2k',
   outputOrientation: 'source',
   generationCount: 1,
+  fitMode: 'contain',
   confirmBeforeDelete: false,
   publicModelKey: '',
 }
@@ -282,7 +289,7 @@ export function normalizeColoringHistoryItem(item = {}) {
     status: String(item.status || 'queued'),
     statusConfidence: String(item.statusConfidence || ''),
     title: String(item.title || ''),
-    styleId: String(item.styleId || 'watercolor'),
+    styleId: String(item.styleId || 'coloring'),
     customPrompt: String(item.customPrompt || ''),
     styleLabel: String(item.styleLabel || ''),
     batchId: String(item.batchId || ''),
@@ -483,9 +490,18 @@ export function normalizeColoringSettings(value = {}) {
   const format = COLORING_FORMAT_OPTIONS.some((item) => item.id === source.inputFormat)
     ? source.inputFormat
     : DEFAULT_COLORING_SETTINGS.inputFormat
-  const outputSize = COLORING_OUTPUT_SIZE_OPTIONS.some((item) => item.id === source.outputSize)
-    ? source.outputSize
+  const legacyOutputSize = String(source.outputSize || '').toLowerCase()
+  const migratedOutputSize = legacyOutputSize === 'original' ? '2k' : legacyOutputSize
+  const outputSize = COLORING_OUTPUT_SIZE_OPTIONS.some((item) => item.id === migratedOutputSize)
+    ? migratedOutputSize
     : DEFAULT_COLORING_SETTINGS.outputSize
+  const legacyOrientation = String(source.outputOrientation || '').trim()
+  const migratedOrientation =
+    legacyOrientation === 'portrait'
+      ? '9:16'
+      : legacyOrientation === 'landscape'
+        ? '16:9'
+        : legacyOrientation
   const generationCount = COLORING_BATCH_COUNT_OPTIONS.includes(Number(source.generationCount))
     ? Number(source.generationCount)
     : DEFAULT_COLORING_SETTINGS.generationCount
@@ -499,11 +515,12 @@ export function normalizeColoringSettings(value = {}) {
     inputFormat: format,
     outputSize,
     outputOrientation: COLORING_OUTPUT_ORIENTATION_OPTIONS.some(
-      (item) => item.id === source.outputOrientation,
+      (item) => item.id === migratedOrientation,
     )
-      ? source.outputOrientation
+      ? migratedOrientation
       : DEFAULT_COLORING_SETTINGS.outputOrientation,
     generationCount,
+    fitMode: source.fitMode === 'cover' ? 'cover' : 'contain',
     confirmBeforeDelete: source.confirmBeforeDelete === true,
     publicModelKey: String(source.publicModelKey || '').trim(),
   }
@@ -557,19 +574,15 @@ export function resolveOutputEdge(outputSize = 'original') {
     {
       '1k': 1024,
       '2k': 2048,
-      '3k': 3072,
       '4k': 3840,
     }[String(outputSize || '').trim()] || 0
   )
 }
 
 export function resolveColoringOutputOrientation(width, height, outputOrientation = 'source') {
-  const w = Math.max(1, Math.round(Number(width) || 1))
-  const h = Math.max(1, Math.round(Number(height) || 1))
   const requested = String(outputOrientation || 'source').trim()
-  // 横图线稿不允许压成竖图，避免主体被截断或产生不自然的补画。
-  if (w > h && requested === 'portrait') return 'source'
-  if (['source', 'portrait', 'landscape'].includes(requested)) return requested
+  const migrated = requested === 'portrait' ? '9:16' : requested === 'landscape' ? '16:9' : requested
+  if (COLORING_OUTPUT_ORIENTATION_OPTIONS.some((item) => item.id === migrated)) return migrated
   return 'source'
 }
 
@@ -586,16 +599,19 @@ export function resolveOutputPixelSize(
   const maxEdge = edge || Math.max(w, h)
   let requestedWidth = 0
   let requestedHeight = 0
-  if (orientation === 'landscape') {
-    requestedWidth = Math.max(1, Math.round(maxEdge))
-    requestedHeight = Math.max(1, Math.round((requestedWidth * 9) / 16))
-  } else if (orientation === 'portrait') {
-    requestedHeight = Math.max(1, Math.round(maxEdge))
-    requestedWidth = Math.max(1, Math.round((requestedHeight * 9) / 16))
-  } else {
+  if (orientation === 'source') {
     const scale = maxEdge / Math.max(w, h)
     requestedWidth = Math.max(1, Math.round(w * scale))
     requestedHeight = Math.max(1, Math.round(h * scale))
+  } else {
+    const [ratioWidth, ratioHeight] = orientation.split(':').map(Number)
+    if (ratioWidth >= ratioHeight) {
+      requestedWidth = maxEdge
+      requestedHeight = Math.max(1, Math.round((maxEdge * ratioHeight) / ratioWidth))
+    } else {
+      requestedHeight = maxEdge
+      requestedWidth = Math.max(1, Math.round((maxEdge * ratioWidth) / ratioHeight))
+    }
   }
   const normalized = normalizeGptImageOutputSize(requestedWidth, requestedHeight)
   return {

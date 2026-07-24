@@ -5,9 +5,12 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"strings"
 	"time"
 
@@ -31,12 +34,17 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
+	order := c.DefaultQuery("sort", "recommended")
+	if order != "recommended" && order != "latest" && order != "favorites" && order != "likes" && order != "usage" {
+		fail(c, apperr.E("validation_error", "无效的提示词排序", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), ActiveOnly: true}
+	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), Order: order, ActiveOnly: true}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
 		fail(c, err)
@@ -47,11 +55,94 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	user, err := s.currentUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	states := map[uuid.UUID]store.PromptEngagementState{}
+	if user != nil {
+		states, err = store.PromptEngagementStates(c.Request.Context(), s.St.Pool, user.ID, ids)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
 	page := buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
-		return promptDict(p, false)
+		d := promptDict(p, false)
+		state := states[p.ID]
+		d["liked"] = state.Liked
+		d["favorited"] = state.Favorited
+		return d
 	})
 	page["categoryCounts"] = categoryCounts
 	ok(c, page)
+}
+
+type promptEngagementIn struct {
+	Action string `json:"action"`
+	Active *bool  `json:"active"`
+}
+
+func (s *Server) promptEngagement(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	promptID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body promptEngagementIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Action != "like" && body.Action != "favorite" && body.Action != "use" {
+		fail(c, apperr.E("validation_error", "action: 仅支持 like / favorite / use", 422))
+		return
+	}
+	entry, err := store.GetPromptEntry(c.Request.Context(), s.St.Pool, promptID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if entry == nil || !entry.Active {
+		fail(c, apperr.E("not_found", "提示词不存在", 404))
+		return
+	}
+	tx, err := s.St.Pool.Begin(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+	var likes, favorites, uses int
+	active := true
+	if body.Action == "use" {
+		likes, favorites, uses, err = store.RecordPromptUse(c.Request.Context(), tx, user.ID, promptID)
+	} else {
+		active = body.Active == nil || *body.Active
+		likes, favorites, uses, err = store.SetPromptReaction(c.Request.Context(), tx, user.ID, promptID, body.Action, active)
+	}
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{
+		"action": body.Action, "active": active,
+		"likeCount": likes, "favoriteCount": favorites, "useCount": uses,
+	})
 }
 
 // ---------- 提示词库（管理） ----------
@@ -62,30 +153,62 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
+	status := c.Query("status")
+	if status != "" && status != "enabled" && status != "disabled" && status != "missing-cover" {
+		fail(c, apperr.E("validation_error", "无效的状态筛选", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool,
-		store.PromptFilter{TaskType: taskType, Category: c.Query("category"), Search: c.Query("search")}, limit, cursor)
+	filter := store.PromptFilter{
+		TaskType: taskType, Category: c.Query("category"), Search: c.Query("search"), Status: status,
+	}
+	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
+	total, err := store.CountPromptEntries(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	scopeFilter := filter
+	scopeFilter.Search = ""
+	scopeTotal, err := store.CountPromptEntries(c.Request.Context(), s.St.Pool, scopeFilter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
 		return promptDict(p, true)
-	}))
+	})
+	page["total"] = total
+	page["scopeTotal"] = scopeTotal
+	ok(c, page)
 }
 
 type promptIn struct {
-	Title    string   `json:"title"`
-	Prompt   string   `json:"prompt"`
-	TaskType string   `json:"taskType"`
-	Category *string  `json:"category"`
-	Tags     []string `json:"tags"`
-	Sort     *int     `json:"sort"`
-	Active   *bool    `json:"active"`
+	Title         string   `json:"title"`
+	Prompt        string   `json:"prompt"`
+	TaskType      string   `json:"taskType"`
+	Category      *string  `json:"category"`
+	Tags          []string `json:"tags"`
+	Sort          *int     `json:"sort"`
+	LikeCount     *int     `json:"likeCount"`
+	FavoriteCount *int     `json:"favoriteCount"`
+	UseCount      *int     `json:"useCount"`
+	Active        *bool    `json:"active"`
+}
+
+func promptMetricValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func validatePromptFields(title, prompt, taskType string, category *string, tags []string) error {
@@ -125,19 +248,28 @@ func (s *Server) adminCreatePrompt(c *gin.Context, _ *store.User) {
 	sortVal := 0
 	if body.Sort != nil {
 		sortVal = *body.Sort
+	} else {
+		maxSort, err := store.MaxPromptSort(c.Request.Context(), s.St.Pool)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		sortVal = maxSort + 10
 	}
 	active := true
 	if body.Active != nil {
 		active = *body.Active
 	}
+	if (body.LikeCount != nil && *body.LikeCount < 0) ||
+		(body.FavoriteCount != nil && *body.FavoriteCount < 0) ||
+		(body.UseCount != nil && *body.UseCount < 0) {
+		fail(c, apperr.E("validation_error", "热度数据不能小于 0", 422))
+		return
+	}
 	entry, err := store.InsertPromptEntry(c.Request.Context(), s.St.Pool, &store.PromptEntry{
-		Title:    body.Title,
-		Prompt:   body.Prompt,
-		TaskType: body.TaskType,
-		Category: body.Category,
-		Tags:     body.Tags,
-		Sort:     sortVal,
-		Active:   active,
+		Title: body.Title, Prompt: body.Prompt, TaskType: body.TaskType, Category: body.Category,
+		Tags: body.Tags, Sort: sortVal, LikeCount: promptMetricValue(body.LikeCount),
+		FavoriteCount: promptMetricValue(body.FavoriteCount), UseCount: promptMetricValue(body.UseCount), Active: active,
 	})
 	if err != nil {
 		fail(c, err)
@@ -146,14 +278,261 @@ func (s *Server) adminCreatePrompt(c *gin.Context, _ *store.User) {
 	ok(c, promptDict(entry, true))
 }
 
+type galleryPromptIn struct {
+	Title      string   `json:"title"`
+	Prompt     string   `json:"prompt"`
+	TaskType   string   `json:"taskType"`
+	Category   *string  `json:"category"`
+	Tags       []string `json:"tags"`
+	Active     *bool    `json:"active"`
+	MediaIndex int      `json:"mediaIndex"`
+}
+
+// adminCreatePromptFromSubmission converts an approved gallery image into an
+// independent prompt entry. Its cover is copied so later gallery changes do
+// not break the prompt library.
+func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) {
+	submissionID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body galleryPromptIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	submission, err := store.GetSubmission(ctx, s.St.Pool, submissionID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if submission == nil {
+		fail(c, apperr.E("not_found", "投稿不存在", 404))
+		return
+	}
+	if submission.Status != "approved" {
+		fail(c, apperr.E("submission_not_approved", "只有审核通过的图片才能加入提示词库", 409))
+		return
+	}
+	if existing, getErr := store.GetPromptEntryByGallerySubmission(ctx, s.St.Pool, submissionID); getErr != nil {
+		fail(c, getErr)
+		return
+	} else if existing != nil {
+		fail(c, apperr.E("prompt_already_exists", "这张审核图片已经加入提示词库", 409))
+		return
+	}
+	body.Title = strings.TrimSpace(body.Title)
+	body.Prompt = strings.TrimSpace(body.Prompt)
+	body.TaskType = strings.TrimSpace(body.TaskType)
+	if err := validatePromptFields(body.Title, body.Prompt, body.TaskType, body.Category, body.Tags); err != nil {
+		fail(c, err)
+		return
+	}
+	mediaKeys := submission.MediaKeys
+	if len(mediaKeys) == 0 && submission.CoverKey != nil && *submission.CoverKey != "" {
+		mediaKeys = []string{*submission.CoverKey}
+	}
+	if body.MediaIndex < 0 || body.MediaIndex >= len(mediaKeys) {
+		body.MediaIndex = 0
+	}
+	sourceKey := ""
+	if task, taskErr := store.GetTask(ctx, s.St.Pool, submission.TaskID); taskErr != nil {
+		fail(c, taskErr)
+		return
+	} else if task != nil && body.MediaIndex < len(task.ThumbnailKeys) {
+		sourceKey = task.ThumbnailKeys[body.MediaIndex]
+	}
+	if len(mediaKeys) > 0 {
+		if sourceKey == "" {
+			sourceKey = mediaKeys[body.MediaIndex]
+		}
+	}
+	if body.MediaIndex == 0 && submission.CoverKey != nil && *submission.CoverKey != "" {
+		sourceKey = *submission.CoverKey
+	}
+	if sourceKey == "" {
+		fail(c, apperr.E("media_not_found", "投稿没有可用图片", 409))
+		return
+	}
+	data, err := s.Storage.GetBytesLimit(ctx, sourceKey, promptCoverMaxBytes)
+	if err != nil {
+		fail(c, apperr.E("media_unavailable", "审核图片读取失败，请稍后重试", 502))
+		return
+	}
+	ext, contentType := sniffImage(data)
+	if ext == "" {
+		fail(c, apperr.E("unsupported_file", "审核图片格式不支持", 400))
+		return
+	}
+	maxSort, err := store.MaxPromptSort(ctx, s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	active := true
+	if body.Active != nil {
+		active = *body.Active
+	}
+	entry := &store.PromptEntry{
+		ID: uuid.New(), Title: body.Title, Prompt: body.Prompt, TaskType: body.TaskType,
+		Category: body.Category, Tags: body.Tags, GallerySubmissionID: &submissionID,
+		Sort: maxSort + 10, Active: active,
+	}
+	coverKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
+	if err := s.Storage.UploadBytes(ctx, coverKey, data, contentType); err != nil {
+		fail(c, err)
+		return
+	}
+	created, err := store.InsertPromptEntry(ctx, s.St.Pool, entry)
+	if err != nil {
+		_ = s.Storage.DeleteKeys(ctx, []string{coverKey})
+		fail(c, err)
+		return
+	}
+	if err := store.UpdatePromptCoverKey(ctx, s.St.Pool, created.ID, coverKey); err != nil {
+		_ = store.DeletePromptEntry(ctx, s.St.Pool, created.ID)
+		_ = s.Storage.DeleteKeys(ctx, []string{coverKey})
+		fail(c, err)
+		return
+	}
+	created.CoverKey = &coverKey
+	ok(c, promptDict(created, true))
+}
+
+type reorderPromptsIn struct {
+	IDs []string `json:"ids"`
+}
+
+type movePromptIn struct {
+	Position int    `json:"position"`
+	TaskType string `json:"taskType"`
+	Category string `json:"category"`
+	Status   string `json:"status"`
+}
+
+func validatePromptSortScope(taskType, status string) error {
+	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
+	}
+	if status != "" && status != "enabled" && status != "disabled" && status != "missing-cover" {
+		return apperr.E("validation_error", "status: 无效的状态筛选", 422)
+	}
+	return nil
+}
+
+func (s *Server) adminPromptPosition(c *gin.Context, _ *store.User) {
+	entryID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	taskType, status := c.Query("type"), c.Query("status")
+	if err := validatePromptSortScope(taskType, status); err != nil {
+		fail(c, err)
+		return
+	}
+	position, count, found, err := store.PromptEntryPosition(c.Request.Context(), s.St.Pool, entryID, store.PromptFilter{
+		TaskType: taskType, Category: c.Query("category"), Status: status,
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !found {
+		fail(c, apperr.E("not_found", "提示词不在当前排序范围内", 404))
+		return
+	}
+	ok(c, gin.H{"position": position, "count": count})
+}
+
+func (s *Server) adminMovePrompt(c *gin.Context, _ *store.User) {
+	entryID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body movePromptIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Position < 1 {
+		fail(c, apperr.E("validation_error", "position: 必须大于 0", 422))
+		return
+	}
+	if err := validatePromptSortScope(body.TaskType, body.Status); err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	tx, err := s.St.Pool.Begin(ctx)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	count, found, err := store.MovePromptEntry(ctx, tx, entryID, body.Position, store.PromptFilter{
+		TaskType: body.TaskType, Category: body.Category, Status: body.Status,
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !found {
+		fail(c, apperr.E("not_found", "提示词不在当前排序范围内", 404))
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		fail(c, err)
+		return
+	}
+	position := body.Position
+	if position > count {
+		position = count
+	}
+	ok(c, gin.H{"position": position, "count": count})
+}
+
+func (s *Server) adminReorderPrompts(c *gin.Context, _ *store.User) {
+	var body reorderPromptsIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 2000 {
+		fail(c, apperr.E("validation_error", "ids: 数量须在 1-2000 之间", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.IDs))
+	for _, raw := range body.IDs {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			fail(c, apperr.E("validation_error", "ids: 包含无效 UUID", 422))
+			return
+		}
+		ids = append(ids, id)
+	}
+	ctx := c.Request.Context()
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error { return store.ReorderPromptEntries(ctx, tx, ids) }); err != nil {
+		fail(c, apperr.E("prompt_reorder_failed", "提示词排序保存失败，请刷新后重试", 409))
+		return
+	}
+	ok(c, gin.H{"updated": len(ids)})
+}
+
 type promptPatchIn struct {
-	Title    Opt[string]   `json:"title"`
-	Prompt   Opt[string]   `json:"prompt"`
-	TaskType Opt[string]   `json:"taskType"`
-	Category Opt[string]   `json:"category"`
-	Tags     Opt[[]string] `json:"tags"`
-	Sort     Opt[int]      `json:"sort"`
-	Active   Opt[bool]     `json:"active"`
+	Title         Opt[string]   `json:"title"`
+	Prompt        Opt[string]   `json:"prompt"`
+	TaskType      Opt[string]   `json:"taskType"`
+	Category      Opt[string]   `json:"category"`
+	Tags          Opt[[]string] `json:"tags"`
+	Sort          Opt[int]      `json:"sort"`
+	LikeCount     Opt[int]      `json:"likeCount"`
+	FavoriteCount Opt[int]      `json:"favoriteCount"`
+	UseCount      Opt[int]      `json:"useCount"`
+	Active        Opt[bool]     `json:"active"`
 }
 
 func (s *Server) adminPatchPrompt(c *gin.Context, _ *store.User) {
@@ -195,11 +574,24 @@ func (s *Server) adminPatchPrompt(c *gin.Context, _ *store.User) {
 	if body.Sort.Valid {
 		entry.Sort = body.Sort.Value
 	}
+	if body.LikeCount.Valid {
+		entry.LikeCount = body.LikeCount.Value
+	}
+	if body.FavoriteCount.Valid {
+		entry.FavoriteCount = body.FavoriteCount.Value
+	}
+	if body.UseCount.Valid {
+		entry.UseCount = body.UseCount.Value
+	}
 	if body.Active.Valid {
 		entry.Active = body.Active.Value
 	}
 	if err := validatePromptFields(entry.Title, entry.Prompt, entry.TaskType, entry.Category, entry.Tags); err != nil {
 		fail(c, err)
+		return
+	}
+	if entry.LikeCount < 0 || entry.FavoriteCount < 0 || entry.UseCount < 0 {
+		fail(c, apperr.E("validation_error", "热度数据不能小于 0", 422))
 		return
 	}
 	if err := store.UpdatePromptEntry(ctx, s.St.Pool, entry); err != nil {
@@ -255,10 +647,24 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 	}
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		log.Printf("prompt cover multipart parse failed: path=%s content_length=%d body_limit=%d err=%v",
+			c.Request.URL.Path, c.Request.ContentLength,
+			requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes), err)
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || errors.Is(err, multipart.ErrMessageTooLarge) {
+			fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
+			return
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			fail(c, apperr.E("invalid_upload", "图片上传数据不完整，请重新选择后重试", 400))
+			return
+		}
 		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
 		return
 	}
 	if fileHeader.Size > promptCoverMaxBytes {
+		log.Printf("prompt cover file too large: path=%s file_size=%d max=%d",
+			c.Request.URL.Path, fileHeader.Size, promptCoverMaxBytes)
 		fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
 		return
 	}

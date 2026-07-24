@@ -6,8 +6,12 @@ export interface AdminSubmission {
   title: string
   status: string
   taskType?: string
+  taskPrompt?: string
+  taskModel?: string
+  promptEntryId?: string
   coverUrl?: string
   mediaUrls?: string[]
+  tags?: string[]
   author?: { id: string; username: string | null }
   userEmail?: string
   reason?: string | null
@@ -19,12 +23,12 @@ export interface AdminSubmission {
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Close, Refresh, CircleCloseFilled, WarningFilled } from '@element-plus/icons-vue'
+import { Close, Refresh, CircleCloseFilled, CollectionTag, WarningFilled } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
-import { formatTime, SUBMISSION_STATUS_LABELS, taskTypeLabel } from '@/utils'
+import { formatTime, SUBMISSION_STATUS_LABELS, TASK_TYPES, taskTypeLabel } from '@/utils'
 import ProgressiveImage from '@/components/ProgressiveImage.vue'
 import ShareReviewCard from './ShareReviewCard.vue'
 
@@ -75,6 +79,101 @@ function kindLabel(item: AdminSubmission | null) {
 function mediaListOf(item: AdminSubmission) {
   if (item.mediaUrls?.length) return item.mediaUrls
   return item.coverUrl ? [item.coverUrl] : []
+}
+
+const PROMPT_CATEGORIES = [
+  { value: 'portrait', label: '人像人物' },
+  { value: 'photography', label: '摄影写实' },
+  { value: 'product', label: '产品商业' },
+  { value: 'illustration', label: '插画动漫' },
+  { value: 'scene', label: '场景建筑' },
+  { value: 'design', label: '视觉设计' },
+  { value: 'game', label: '游戏美术' },
+  { value: 'typography', label: '文字排版' },
+  { value: 'other', label: '其他' },
+] as const
+
+function defaultPromptCategory(taskType = '') {
+  if (taskType === 'game_art') return 'game'
+  if (taskType === 'ui_design' || taskType === 'model_sheet' || taskType === 'puzzle') return 'design'
+  if (taskType === 'coloring') return 'illustration'
+  return 'other'
+}
+
+const promptCreatorOpen = ref(false)
+const promptCreatorSaving = ref(false)
+const promptCreatorTarget = ref<AdminSubmission | null>(null)
+const promptCreatorMediaIndex = ref(0)
+const promptCreatorForm = reactive({
+  title: '',
+  prompt: '',
+  taskType: 't2i',
+  category: 'other',
+  tagsText: '',
+  active: true,
+})
+const promptCreatorImage = computed(() => {
+  const target = promptCreatorTarget.value
+  return target ? mediaListOf(target)[promptCreatorMediaIndex.value] || target.coverUrl || '' : ''
+})
+
+function normalizePromptTitle(value: unknown) {
+  return Array.from(String(value || '').trim()).slice(0, 80).join('')
+}
+
+function openPromptCreator(item: AdminSubmission, mediaIndex = 0) {
+  if (item.status !== 'approved') {
+    ElMessage.warning('请先审核通过，再加入提示词库')
+    return
+  }
+  if (item.promptEntryId) {
+    ElMessage.info('这张作品已经加入提示词库')
+    return
+  }
+  const taskType = TASK_TYPES.includes(item.taskType as (typeof TASK_TYPES)[number])
+    ? String(item.taskType)
+    : 't2i'
+  promptCreatorTarget.value = item
+  promptCreatorMediaIndex.value = Math.max(0, Math.min(mediaIndex, mediaListOf(item).length - 1))
+  promptCreatorForm.title = normalizePromptTitle(itemTitle(item))
+  promptCreatorForm.prompt = String(item.taskPrompt || item.title || '').trim()
+  promptCreatorForm.taskType = taskType
+  promptCreatorForm.category = defaultPromptCategory(taskType)
+  promptCreatorForm.tagsText = Array.isArray(item.tags) ? item.tags.join('，') : ''
+  promptCreatorForm.active = true
+  promptCreatorOpen.value = true
+}
+
+async function createPromptFromSubmission() {
+  const target = promptCreatorTarget.value
+  if (!target || promptCreatorSaving.value) return
+  if (!promptCreatorForm.title.trim() || !promptCreatorForm.prompt.trim()) {
+    ElMessage.warning('请填写提示词名称和内容')
+    return
+  }
+  promptCreatorSaving.value = true
+  try {
+    const created = await request<{ id: string }>(`/api/admin/gallery/submissions/${target.id}/prompt`, {
+      method: 'POST',
+      body: {
+        title: normalizePromptTitle(promptCreatorForm.title),
+        prompt: promptCreatorForm.prompt.trim(),
+        taskType: promptCreatorForm.taskType,
+        category: promptCreatorForm.category,
+        tags: promptCreatorForm.tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
+        active: promptCreatorForm.active,
+        mediaIndex: promptCreatorMediaIndex.value,
+      },
+    })
+    target.promptEntryId = created.id
+    const listed = items.value.find((item) => item.id === target.id)
+    if (listed) listed.promptEntryId = created.id
+    if (previewItem.value?.id === target.id) previewItem.value.promptEntryId = created.id
+    promptCreatorOpen.value = false
+    ElMessage.success('已加入提示词库，并复制审核图片作为封面')
+  } finally {
+    promptCreatorSaving.value = false
+  }
 }
 
 /* ---------- 审核动作 ---------- */
@@ -333,6 +432,7 @@ onUnmounted(() => {
         @approve="approve"
         @reject="openReject"
         @violation="openViolation"
+        @prompt="openPromptCreator"
       />
     </div>
 
@@ -426,6 +526,15 @@ onUnmounted(() => {
             </div>
             <div class="share-lightbox__actions" role="group" aria-label="审核操作">
               <button
+                v-if="previewItem.status === 'approved'"
+                type="button"
+                class="share-action is-prompt"
+                :disabled="operatingId === previewItem.id || Boolean(previewItem.promptEntryId)"
+                @click="openPromptCreator(previewItem, previewMediaIndex)"
+              >
+                {{ previewItem.promptEntryId ? '已加入提示词库' : '作为提示词' }}
+              </button>
+              <button
                 type="button"
                 class="share-action is-approve"
                 :disabled="operatingId === previewItem.id || previewItem.status === 'approved'"
@@ -454,6 +563,56 @@ onUnmounted(() => {
         </div>
       </Transition>
     </Teleport>
+
+    <el-dialog
+      v-model="promptCreatorOpen"
+      title="将审核图片加入提示词库"
+      width="min(860px, 94vw)"
+      align-center
+      append-to-body
+      destroy-on-close
+      class="gallery-prompt-dialog"
+    >
+      <div class="gallery-prompt-layout">
+        <aside class="gallery-prompt-cover">
+          <ProgressiveImage v-if="promptCreatorImage" :src="promptCreatorImage" :alt="promptCreatorForm.title" fit="contain" />
+          <div v-else><el-icon><CollectionTag /></el-icon><span>暂无图片</span></div>
+          <small>将复制为提示词封面，不依赖原画廊状态</small>
+        </aside>
+        <el-form label-position="top" class="gallery-prompt-form">
+          <el-form-item label="提示词名称">
+            <el-input v-model="promptCreatorForm.title" maxlength="80" show-word-limit />
+          </el-form-item>
+          <el-form-item label="提示词内容">
+            <el-input v-model="promptCreatorForm.prompt" type="textarea" :rows="7" maxlength="8000" show-word-limit />
+          </el-form-item>
+          <div class="gallery-prompt-form__row">
+            <el-form-item label="投放功能">
+              <el-select v-model="promptCreatorForm.taskType">
+                <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="内容分类">
+              <el-select v-model="promptCreatorForm.category">
+                <el-option v-for="category in PROMPT_CATEGORIES" :key="category.value" :label="category.label" :value="category.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item label="标签">
+            <el-input v-model="promptCreatorForm.tagsText" placeholder="多个标签用逗号分隔" />
+          </el-form-item>
+          <el-form-item label="用户端状态">
+            <el-switch v-model="promptCreatorForm.active" active-text="立即启用" inactive-text="暂不启用" />
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="promptCreatorOpen = false">取消</el-button>
+        <el-button type="primary" :loading="promptCreatorSaving" @click="createPromptFromSubmission">
+          加入提示词库
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="rejectOpen"
@@ -1220,7 +1379,8 @@ onUnmounted(() => {
 
 .share-lightbox__actions {
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(96px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(96px, 1fr);
   gap: 0;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 14%);
@@ -1253,6 +1413,10 @@ onUnmounted(() => {
       color: #86efac;
     }
 
+    &.is-prompt {
+      color: #c4b5fd;
+    }
+
     &.is-reject {
       color: #fca5a5;
     }
@@ -1264,6 +1428,11 @@ onUnmounted(() => {
     &:not(:disabled):hover.is-approve {
       background: rgb(22 163 74 / 28%);
       color: #bbf7d0;
+    }
+
+    &:not(:disabled):hover.is-prompt {
+      background: rgb(124 58 237 / 28%);
+      color: #ede9fe;
     }
 
     &:not(:disabled):hover.is-reject {
@@ -1292,7 +1461,7 @@ onUnmounted(() => {
 
   .share-lightbox__actions {
     width: 100%;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-columns: minmax(0, 1fr);
   }
 
   .share-lightbox__tools {
@@ -1513,6 +1682,75 @@ onUnmounted(() => {
     justify-content: flex-end;
     gap: 8px;
     width: 100%;
+  }
+}
+
+.gallery-prompt-dialog {
+  .el-dialog__body {
+    padding-top: 8px;
+  }
+}
+
+.gallery-prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr);
+  gap: 22px;
+}
+
+.gallery-prompt-cover {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+
+  > .progressive-image,
+  > div {
+    display: grid;
+    width: 100%;
+    min-height: 260px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-2);
+  }
+
+  > .progressive-image {
+    height: min(52vh, 440px);
+  }
+
+  > div {
+    align-content: center;
+    gap: 8px;
+    color: var(--ink-3);
+  }
+
+  > small {
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+}
+
+.gallery-prompt-form__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+
+  .el-select {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .gallery-prompt-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .gallery-prompt-cover > .progressive-image,
+  .gallery-prompt-cover > div {
+    min-height: 190px;
+    height: 32vh;
   }
 }
 </style>

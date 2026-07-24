@@ -223,6 +223,116 @@
   font-size: 0.66rem;
 }
 
+.coloring-library-launcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.coloring-library-launcher button {
+  min-width: 0;
+  min-height: 54px;
+  padding: 7px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 0.64rem;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s var(--coloring-ease);
+}
+
+.coloring-library-launcher button i {
+  color: #f9a8d4;
+  font-size: 0.9rem;
+}
+
+.coloring-library-launcher button:hover {
+  color: #fff;
+  border-color: rgba(244, 114, 182, 0.28);
+  background: rgba(244, 114, 182, 0.08);
+  transform: translateY(-1px);
+}
+
+.coloring-parameter-block {
+  gap: 8px;
+}
+
+.coloring-parameter-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  outline: none;
+  color: rgba(255, 255, 255, 0.88);
+  background: #18131e;
+  font-size: 0.72rem;
+}
+
+.coloring-parameter-select:focus {
+  border-color: rgba(244, 114, 182, 0.42);
+}
+
+.coloring-parameter-ratios,
+.coloring-parameter-segments {
+  display: grid;
+  gap: 5px;
+}
+
+.coloring-parameter-ratios {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.coloring-parameter-segments {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.coloring-parameter-ratios button,
+.coloring-parameter-segments button {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 8px;
+  padding: 0 4px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 0.64rem;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease;
+}
+
+.coloring-parameter-ratios button:hover:not(:disabled),
+.coloring-parameter-segments button:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.coloring-parameter-ratios button.active,
+.coloring-parameter-segments button.active {
+  color: #fff;
+  border-color: rgba(244, 114, 182, 0.38);
+  background: linear-gradient(135deg, rgba(244, 114, 182, 0.16), rgba(167, 139, 250, 0.12));
+}
+
+.coloring-parameter-ratios button:disabled,
+.coloring-parameter-segments button:disabled,
+.coloring-parameter-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .coloring-text-btn {
   border: 0;
   padding: 0;
@@ -3294,7 +3404,7 @@
   }
 
   .coloring-workflow span:nth-child(2)::after {
-    content: '风格';
+    content: '配色';
   }
 
   .coloring-workflow span:nth-child(3)::after {

@@ -63,11 +63,15 @@ func (w *Worker) Run() error {
 	if err := w.reapStaleQueued(startupCtx); err != nil {
 		return fmt.Errorf("recover queued tasks: %w", err)
 	}
+	if err := w.recoverAssistantRuns(startupCtx); err != nil {
+		return fmt.Errorf("recover assistant runs: %w", err)
+	}
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: w.Cfg.WorkerConcurrency,
 	})
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
+	mux.HandleFunc(taskflow.TypeRunAssistant, w.handleRunAssistant)
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)

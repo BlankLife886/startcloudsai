@@ -82,26 +82,6 @@
   padding-right: 2px;
 }
 
-.t2i-side-tabs {
-  display: flex;
-  gap: 20px;
-  padding: 2px 2px 4px;
-}
-
-.t2i-side-tabs button {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--t2i-faint);
-  font-size: 0.98rem;
-  font-weight: 600;
-  cursor: default;
-}
-
-.t2i-side-tabs button.is-active {
-  color: var(--t2i-ink);
-}
-
 .t2i-model {
   position: relative;
 }
@@ -159,11 +139,6 @@
   white-space: nowrap;
 }
 
-.t2i-model-copy small {
-  color: var(--t2i-faint);
-  font-size: 0.72rem;
-}
-
 .t2i-model-skeleton span,
 .t2i-status-skeleton,
 .t2i-page-skeleton-line,
@@ -185,11 +160,6 @@
   width: 72%;
   height: 11px;
   border-radius: 999px;
-}
-
-.t2i-model-skeleton span:last-child {
-  width: 46%;
-  height: 8px;
 }
 
 .t2i-library-panel {
@@ -265,17 +235,17 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .t2i-prompt-ref {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 52px;
+  height: 52px;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--t2i-line);
-  border-radius: 14px;
+  border-radius: 11px;
   background: #0a0a0f;
 }
 
@@ -309,13 +279,13 @@
 
 /* 添加参考图：虚线圆角方块，中央一个 + */
 .t2i-prompt-ref-add {
-  width: 64px;
-  height: 64px;
+  width: 52px;
+  height: 52px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 1.5px dashed rgba(155, 139, 255, 0.45);
-  border-radius: 14px;
+  border-radius: 11px;
   background: rgba(var(--t2i-accent-rgb), 0.06);
   color: var(--t2i-accent-2);
   font-size: 0.92rem;
@@ -667,7 +637,9 @@
 
 .t2i-skill-popover-enter-active,
 .t2i-skill-popover-leave-active {
-  transition: opacity 150ms ease, transform 150ms ease;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
 }
 
 .t2i-skill-popover-enter-from,
@@ -983,11 +955,7 @@
 }
 
 .t2i-stage-page-skeleton .t2i-page-skeleton-media {
-  width: min(
-    100%,
-    var(--t2i-stage-max-width, 920px),
-    var(--t2i-stage-fit-width, 920px)
-  );
+  width: min(100%, var(--t2i-stage-max-width, 920px), var(--t2i-stage-fit-width, 920px));
   height: auto;
   min-height: 0;
   max-width: min(100%, var(--t2i-stage-max-width, 920px));
@@ -1109,11 +1077,7 @@
 
 .t2i-stage-frame {
   position: relative;
-  width: min(
-    100%,
-    var(--t2i-stage-max-width, 920px),
-    var(--t2i-stage-fit-width, 920px)
-  );
+  width: min(100%, var(--t2i-stage-max-width, 920px), var(--t2i-stage-fit-width, 920px));
   height: auto;
   min-height: 0;
   max-width: min(100%, var(--t2i-stage-max-width, 920px));
@@ -1350,6 +1314,12 @@
   transform: translateY(-1px);
 }
 
+.t2i-stage-quick-actions button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .t2i-stage-quick-actions button:focus-visible {
   outline: 2px solid rgba(var(--t2i-accent-rgb), 0.78);
   outline-offset: 1px;
@@ -1495,41 +1465,72 @@
 }
 
 .t2i-film-pending {
+  overflow: hidden;
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 2px;
+  gap: 5px;
   background:
-    radial-gradient(circle at 50% 30%, rgba(var(--t2i-accent-rgb), 0.2), transparent 70%),
-    rgba(255, 255, 255, 0.04);
+    radial-gradient(circle at 20% 12%, rgba(var(--t2i-accent-rgb), 0.16), transparent 56%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
   color: rgba(255, 255, 255, 0.68);
 }
 
-.t2i-film-pending i {
-  font-size: 0.95rem;
-  color: var(--t2i-accent-2);
-  animation: t2i-spin 1.2s linear infinite;
+.t2i-film-pending::before {
+  content: '';
+  position: absolute;
+  inset: -30% auto -30% -42%;
+  width: 24%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  transform: translate3d(-160%, 0, 0) skewX(-16deg);
+  animation: t2i-film-pending-sheen 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.t2i-film-pending-spinner {
+  position: relative;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(var(--t2i-accent-rgb), 0.18);
+  border-top-color: rgba(var(--t2i-accent-rgb), 0.9);
+  border-radius: 50%;
+  animation: t2i-film-pending-spin 900ms linear infinite;
 }
 
 .t2i-film-pending em {
+  position: relative;
+  z-index: 1;
   font-style: normal;
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.42);
 }
 
 .t2i-film-item.is-pending {
-  border-color: rgba(var(--t2i-accent-rgb), 0.5);
-  animation: t2i-film-pending-glow 2s ease-in-out infinite;
+  border-color: rgba(var(--t2i-accent-rgb), 0.3);
+  box-shadow: inset 0 0 0 1px rgba(var(--t2i-accent-rgb), 0.05);
 }
 
-@keyframes t2i-film-pending-glow {
+@keyframes t2i-film-pending-sheen {
   0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(var(--t2i-accent-rgb), 0);
+  28% {
+    transform: translate3d(-160%, 0, 0) skewX(-16deg);
+    opacity: 0;
   }
-  50% {
-    box-shadow: 0 0 10px 1px rgba(var(--t2i-accent-rgb), 0.35);
+  42% {
+    opacity: 1;
+  }
+  72%,
+  100% {
+    transform: translate3d(520%, 0, 0) skewX(-16deg);
+    opacity: 0;
+  }
+}
+
+@keyframes t2i-film-pending-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -1556,6 +1557,12 @@
 .t2i-entry-actions button:hover {
   border-color: rgba(255, 255, 255, 0.18);
   color: #fff;
+}
+
+.t2i-entry-actions button.is-active {
+  border-color: rgba(var(--t2i-accent-rgb), 0.5);
+  color: #fff;
+  background: rgba(var(--t2i-accent-rgb), 0.18);
 }
 
 .t2i-image-actions button:disabled,
@@ -1613,6 +1620,35 @@
 
 .t2i-masonry-card.is-active {
   border-color: rgba(var(--t2i-accent-rgb), 0.45);
+}
+
+.t2i-history-card {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 14px;
+}
+
+.t2i-history-card .t2i-masonry-cover {
+  border-radius: 10px;
+}
+
+.t2i-history-actions {
+  flex-wrap: nowrap;
+  gap: 5px;
+}
+
+.t2i-history-actions button {
+  width: 32px;
+  min-height: 32px;
+  display: grid;
+  flex: 0 0 32px;
+  place-items: center;
+  padding: 0;
+  border-radius: 9px;
+}
+
+.t2i-history-actions button.is-danger {
+  margin-left: auto;
 }
 
 .t2i-masonry-cover {
@@ -1836,6 +1872,23 @@
   font-size: 0.78rem;
 }
 
+.t2i-feed-more {
+  display: block;
+  margin: 8px auto 0;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.78rem;
+  transition:
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+.t2i-feed-more:hover {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 .t2i-library-view,
 .t2i-assets-view {
   overflow-y: auto;
@@ -1856,6 +1909,66 @@
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+}
+
+.t2i-library-toolbar {
+  position: sticky;
+  top: -1px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--t2i-line);
+  border-radius: 14px;
+  background: rgba(10, 10, 16, 0.86);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.t2i-library-toolbar .t2i-library-categories {
+  position: static;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.t2i-library-sort {
+  display: inline-flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid rgba(var(--t2i-accent-rgb), 0.28);
+  border-radius: 999px;
+  color: var(--t2i-faint);
+  background: rgba(var(--t2i-accent-rgb), 0.1);
+}
+
+.t2i-library-sort select {
+  border: 0;
+  outline: 0;
+  color: #fff;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .t2i-library-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .t2i-library-sort {
+    align-self: flex-end;
+  }
 }
 
 .t2i-library-categories button {
@@ -2685,6 +2798,7 @@
   color: #fff;
 }
 
+.t2i-image-actions button.is-share,
 .t2i-entry-actions button.is-share {
   border-color: rgba(var(--t2i-accent-rgb), 0.42);
   background: rgba(var(--t2i-accent-rgb), 0.14);
@@ -2841,8 +2955,8 @@
   .t2i-pending-orb::after,
   .t2i-pending-orb i,
   .t2i-pending-bar i,
-  .t2i-film-pending i,
-  .t2i-film-item.is-pending,
+  .t2i-film-pending::before,
+  .t2i-film-pending-spinner,
   .t2i-lightbox-image-layer {
     animation: none;
     transition: none;

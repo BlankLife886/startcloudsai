@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -245,10 +246,169 @@ func financeSummaryData(ctx context.Context, q store.Q, days int) (gin.H, error)
 
 // ---------- tasks ----------
 
+func adminAssistantRunDict(run *store.AssistantRun) gin.H {
+	params := make(map[string]any, len(run.Params)+4)
+	for key, value := range run.Params {
+		if key != "referenceImages" {
+			params[key] = value
+		}
+	}
+	params["conversationId"] = run.ConversationID.String()
+	params["mode"] = run.Mode
+	params["resolvedMode"] = run.ResolvedMode
+	params["stage"] = run.Stage
+	return gin.H{
+		"id": run.ID.String(), "userId": run.UserID.String(), "type": "assistant",
+		"source": "assistant", "model": run.Params["model"], "status": run.Status,
+		"prompt": run.Prompt, "params": params, "count": run.Params["count"],
+		"inputKeys": []string{}, "outputKeys": []string{}, "outputUrls": []string{},
+		"costCents": 0, "errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
+		"attempt": 0, "createdAt": isoValue(run.CreatedAt), "startedAt": iso(run.StartedAt),
+		"finishedAt": iso(run.FinishedAt),
+	}
+}
+
+func assistantAdminMetadata(message *store.AssistantMessage, run *store.AssistantRun, stage, errorMessage string) map[string]any {
+	metadata := make(map[string]any, len(message.Metadata)+5)
+	for key, value := range message.Metadata {
+		metadata[key] = value
+	}
+	metadata["runId"] = run.ID.String()
+	metadata["statusStage"] = stage
+	metadata["pending"] = stage == "queued"
+	metadata["routing"] = stage == "queued" && run.Mode == "agent"
+	metadata["error"] = errorMessage
+	return metadata
+}
+
+func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
+	var run *store.AssistantRun
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		run, err = store.GetAssistantRun(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if run == nil {
+			return apperr.E("task_not_found", "任务不存在", 404)
+		}
+		if err := store.LockAssistantRunsForUser(ctx, tx, run.UserID); err != nil {
+			return err
+		}
+		active, err := store.ListActiveUserAssistantRuns(ctx, tx, run.UserID)
+		if err != nil {
+			return err
+		}
+		if err := validateAssistantRunCapacity(active, run.ConversationID); err != nil {
+			return err
+		}
+		changed, err := store.RequeueAssistantRun(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return apperr.E("task_not_cancelable", "仅失败任务可以重新入队", 400)
+		}
+		message, err := store.GetAssistantMessage(ctx, tx, run.AssistantMessageID)
+		if err != nil {
+			return err
+		}
+		if message != nil {
+			metadata := assistantAdminMetadata(message, run, "queued", "")
+			delete(metadata, "images")
+			if err := store.UpdateAssistantMessage(ctx, tx, message.ID, "", run.Mode, "queued", metadata); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+		message := "任务入队失败，请稍后重试"
+		_, _ = store.FailAssistantRun(ctx, s.St.Pool, id, "queue_error", message)
+		if assistantMessage, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && assistantMessage != nil {
+			_ = store.UpdateAssistantMessage(ctx, s.St.Pool, assistantMessage.ID, message, run.Mode, "failed",
+				assistantAdminMetadata(assistantMessage, run, "failed", message))
+		}
+		return nil, apperr.E("queue_error", message, 503)
+	}
+	return store.GetAssistantRun(ctx, s.St.Pool, id)
+}
+
+func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
+	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, apperr.E("task_not_found", "任务不存在", 404)
+	}
+	changed, err := store.AdminCancelAssistantRun(ctx, s.St.Pool, id)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
+	}
+	s.Queue.CancelAssistantRun(id.String())
+	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
+		content := message.Content
+		if content == "" {
+			content = "已停止生成"
+		}
+		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "stopped",
+			assistantAdminMetadata(message, run, "stopped", ""))
+	}
+	return store.GetAssistantRun(ctx, s.St.Pool, id)
+}
+
+func (s *Server) adminForceFailAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
+	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, apperr.E("task_not_found", "任务不存在", 404)
+	}
+	changed, err := store.AdminForceFailAssistantRun(ctx, s.St.Pool, id)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)
+	}
+	s.Queue.CancelAssistantRun(id.String())
+	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
+		content := message.Content
+		if content == "" {
+			content = "管理员已终止任务"
+		}
+		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "failed",
+			assistantAdminMetadata(message, run, "failed", "管理员强制终止任务"))
+	}
+	return store.GetAssistantRun(ctx, s.St.Pool, id)
+}
+
 func (s *Server) adminCancelTask(c *gin.Context, _ *store.User) {
 	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	regularTask, err := store.GetTask(c.Request.Context(), s.St.Pool, taskID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if regularTask == nil {
+		run, assistantErr := s.adminCancelAssistantRun(c.Request.Context(), taskID)
+		if assistantErr != nil {
+			fail(c, assistantErr)
+			return
+		}
+		ok(c, adminAssistantRunDict(run))
 		return
 	}
 	task, err := taskflow.AdminCancelTask(c.Request.Context(), s.St, taskID)
@@ -263,6 +423,20 @@ func (s *Server) adminForceFailTask(c *gin.Context, _ *store.User) {
 	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	regularTask, err := store.GetTask(c.Request.Context(), s.St.Pool, taskID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if regularTask == nil {
+		run, assistantErr := s.adminForceFailAssistantRun(c.Request.Context(), taskID)
+		if assistantErr != nil {
+			fail(c, assistantErr)
+			return
+		}
+		ok(c, adminAssistantRunDict(run))
 		return
 	}
 	task, err := taskflow.ForceFailTask(c.Request.Context(), s.St, taskID)

@@ -120,10 +120,19 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 export interface Page<T> {
   items: T[]
   nextCursor: string | null
+	total?: number
+	scopeTotal?: number
 }
 
 /** 兼容"数组 / 分页对象"两种列表返回 */
-export function normalizeList<T>(data: T[] | { items: T[]; nextCursor?: string | null }): Page<T> {
+export function normalizeList<T>(
+	data: T[] | { items: T[]; nextCursor?: string | null; total?: number; scopeTotal?: number },
+): Page<T> {
   if (Array.isArray(data)) return { items: data, nextCursor: null }
-  return { items: data.items, nextCursor: data.nextCursor ?? null }
+	return {
+		items: data.items,
+		nextCursor: data.nextCursor ?? null,
+		total: data.total,
+		scopeTotal: data.scopeTotal,
+	}
 }

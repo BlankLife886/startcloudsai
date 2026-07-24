@@ -1,10 +1,18 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
@@ -124,5 +132,189 @@ func TestValidateAssistantImageSize(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestAssistantConversationLifecycle(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+
+	created := env.do(t, http.MethodPost, "/api/assistant/conversations", map[string]any{"title": "持久化测试"}, token)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	data, _ := decode(t, created)
+	id, _ := data["id"].(string)
+	if id == "" || data["title"] != "持久化测试" {
+		t.Fatalf("created conversation = %#v", data)
+	}
+
+	listed := env.do(t, http.MethodGet, "/api/assistant/conversations", nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list conversations: status %d body %s", listed.Code, listed.Body.String())
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Conversations []map[string]any `json:"conversations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data.Conversations) != 1 || response.Data.Conversations[0]["id"] != id {
+		t.Fatalf("listed conversations = %#v", response.Data.Conversations)
+	}
+
+	deleted := env.do(t, http.MethodDelete, "/api/assistant/conversations/"+id, nil, token)
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete conversation: status %d body %s", deleted.Code, deleted.Body.String())
+	}
+}
+
+func TestValidateAssistantRunCapacity(t *testing.T) {
+	conversationID := uuid.New()
+	active := []*store.AssistantRun{{ConversationID: conversationID}}
+	err := validateAssistantRunCapacity(active, conversationID)
+	appErr, ok := apperr.As(err)
+	if !ok || appErr.Code != "assistant_conversation_busy" {
+		t.Fatalf("same conversation error = %#v", err)
+	}
+
+	active = make([]*store.AssistantRun, 0, assistantActiveRunLimit)
+	for range assistantActiveRunLimit {
+		active = append(active, &store.AssistantRun{ConversationID: uuid.New()})
+	}
+	err = validateAssistantRunCapacity(active, conversationID)
+	appErr, ok = apperr.As(err)
+	if !ok || appErr.Code != "assistant_run_limit" {
+		t.Fatalf("run limit error = %#v", err)
+	}
+
+	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID); err != nil {
+		t.Fatalf("three other conversations should be allowed: %v", err)
+	}
+}
+
+func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "运行中的对话", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成图片",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image",
+		Status: "queued", CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "image", Prompt: "生成图片",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/assistant/conversations/" + conversation.ID.String()
+	refused := env.do(t, http.MethodDelete, path, nil, token)
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("delete active conversation: status %d body %s", refused.Code, refused.Body.String())
+	}
+	if _, code := decode(t, refused); code != "assistant_conversation_busy" {
+		t.Fatalf("delete active conversation code = %q", code)
+	}
+
+	confirmed := env.do(t, http.MethodDelete, path+"?cancelActive=true", nil, token)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirmed delete: status %d body %s", confirmed.Code, confirmed.Body.String())
+	}
+	stored, err := store.GetUserAssistantConversation(ctx, env.st.Pool, user.ID, conversation.ID)
+	if err != nil || stored != nil {
+		t.Fatalf("conversation after confirmed delete = %#v, err = %v", stored, err)
+	}
+}
+
+func TestAssistantRunStatePersistence(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, _ := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "任务测试", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "你好",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "agent",
+		Status: "queued", CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "agent", Prompt: "你好", Params: map[string]any{"count": 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || !claimed {
+		t.Fatalf("claim = %v, err = %v", claimed, err)
+	}
+	if err := store.SetAssistantRunStage(ctx, env.st.Pool, run.ID, "chat", "answering"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat")
+	if err != nil || !completed {
+		t.Fatalf("complete = %v, err = %v", completed, err)
+	}
+	stored, err := store.GetUserAssistantRun(ctx, env.st.Pool, user.ID, run.ID)
+	if err != nil || stored == nil || stored.Status != "succeeded" || stored.Stage != "complete" {
+		t.Fatalf("stored run = %#v, err = %v", stored, err)
+	}
+	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil)
+	if err != nil {
+		t.Fatalf("list admin assistant tasks: %v", err)
+	}
+	var listed *store.Task
+	for _, task := range adminTasks {
+		if task.ID == run.ID {
+			listed = task
+			break
+		}
+	}
+	if listed == nil || listed.Type != "assistant" || listed.Status != "succeeded" {
+		t.Fatalf("admin assistant task = %#v", listed)
+	}
+	if listed.Params["stage"] != "complete" || listed.Params["resolvedMode"] != "chat" {
+		t.Fatalf("admin assistant params = %#v", listed.Params)
+	}
+	overview, err := store.GetAdminTaskOverview(ctx, env.st.Pool, "assistant", "", []uuid.UUID{user.ID})
+	if err != nil {
+		t.Fatalf("admin assistant overview: %v", err)
+	}
+	if overview.Total != 1 || overview.Succeeded != 1 || overview.Failed != 0 || overview.Today != 1 {
+		t.Fatalf("admin assistant overview = %+v", overview)
 	}
 }

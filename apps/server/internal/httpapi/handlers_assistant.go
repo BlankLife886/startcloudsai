@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -42,11 +45,7 @@ type assistantImageIn struct {
 }
 
 func (s *Server) assistantClient(ctx *gin.Context) (*sub2api.Client, error) {
-	resolved, err := settings.ResolveSub2API(ctx.Request.Context(), s.St.Pool, settings.Sub2APIConfig{
-		BaseURL: s.Cfg.Sub2APIBaseURL, APIKey: s.Cfg.Sub2APIAPIKey,
-		ChatModel: s.Cfg.Sub2APIChatModel, ImageModel: s.Cfg.Sub2APIImageModel,
-		TimeoutSecs: s.Cfg.Sub2APITimeoutSecs,
-	}, s.Cfg.AppSecret)
+	resolved, err := s.assistantResolvedConfig(ctx.Request.Context())
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +57,14 @@ func (s *Server) assistantClient(ctx *gin.Context) (*sub2api.Client, error) {
 		return nil, apperr.E("assistant_unavailable", "AI 对话服务尚未配置", http.StatusServiceUnavailable)
 	}
 	return client, nil
+}
+
+func (s *Server) assistantResolvedConfig(ctx context.Context) (settings.Sub2APIConfig, error) {
+	return settings.ResolveSub2API(ctx, s.St.Pool, settings.Sub2APIConfig{
+		BaseURL: s.Cfg.Sub2APIBaseURL, APIKey: s.Cfg.Sub2APIAPIKey,
+		ChatModel: s.Cfg.Sub2APIChatModel, ImageModel: s.Cfg.Sub2APIImageModel,
+		TimeoutSecs: s.Cfg.Sub2APITimeoutSecs,
+	}, s.Cfg.AppSecret)
 }
 
 func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
@@ -73,9 +80,71 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	resolved, resolveErr := s.assistantResolvedConfig(c.Request.Context())
+	if resolveErr != nil {
+		fail(c, resolveErr)
+		return
+	}
+	type modelOption struct {
+		Label  string `json:"label"`
+		Model  string `json:"model"`
+		Source string `json:"source"`
+	}
+	options := make([]modelOption, 0, len(resolved.ChatModels)+8)
+	configuredCatalog := len(resolved.ChatModels) > 0
+	seenModels := map[string]bool{}
+	aliasLabels := make([]string, 0, len(resolved.ChatModels))
+	for label := range resolved.ChatModels {
+		aliasLabels = append(aliasLabels, label)
+	}
+	sort.Strings(aliasLabels)
+	for _, label := range aliasLabels {
+		model := strings.TrimSpace(resolved.ChatModels[label])
+		if model == "" {
+			continue
+		}
+		options = append(options, modelOption{Label: label, Model: model, Source: "configured"})
+		seenModels[model] = true
+	}
+	if !seenModels[client.ChatModel()] {
+		options = append(options, modelOption{Label: client.ChatModel(), Model: client.ChatModel(), Source: "default"})
+		seenModels[client.ChatModel()] = true
+	}
+	modelCtx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
+	upstreamModels, modelErr := client.ListModels(modelCtx)
+	cancel()
+	sort.Strings(upstreamModels)
+	if !configuredCatalog {
+		for _, model := range upstreamModels {
+			if seenModels[model] || !assistantConversationModel(model, client.ImageModel()) {
+				continue
+			}
+			options = append(options, modelOption{Label: model, Model: model, Source: "upstream"})
+			seenModels[model] = true
+		}
+	}
+	modelMode := "upstream"
+	if configuredCatalog {
+		modelMode = "configured"
+	}
 	ok(c, gin.H{
 		"chatModel": client.ChatModel(), "imageModel": client.ImageModel(),
+		"conversationModels": options, "modelDiscoveryAvailable": modelErr == nil,
+		"conversationModelMode": modelMode,
 	})
+}
+
+func assistantConversationModel(model, imageModel string) bool {
+	value := strings.ToLower(strings.TrimSpace(model))
+	if value == "" || value == strings.ToLower(strings.TrimSpace(imageModel)) {
+		return false
+	}
+	for _, token := range []string{"image", "dall-e", "sora", "video", "embedding", "whisper", "tts"} {
+		if strings.Contains(value, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) assistantChat(c *gin.Context) {

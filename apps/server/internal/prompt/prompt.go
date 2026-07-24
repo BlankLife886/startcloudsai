@@ -46,10 +46,11 @@ func sizeOf(params map[string]any) string {
 
 func compileT2I(prompt string, params map[string]any) string {
 	suffix := styleSuffix(params)
-	if suffix == "" {
-		return prompt
+	compiled := prompt
+	if suffix != "" {
+		compiled = strings.TrimSpace(prompt + "\n" + suffix)
 	}
-	return strings.TrimSpace(prompt + "\n" + suffix)
+	return applyT2ISkills(compiled, params)
 }
 
 func compileColoring(prompt string, params map[string]any) string {

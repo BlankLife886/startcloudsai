@@ -8,6 +8,8 @@ const props = defineProps({
   placeholder: { type: String, default: '请选择' },
   showRatioIcons: { type: Boolean, default: true },
   useOptionLabel: { type: Boolean, default: false },
+  compactText: { type: Boolean, default: false },
+  compactMenu: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -57,7 +59,7 @@ function updateMenuPosition() {
 
   const rect = trigger.getBoundingClientRect()
   const viewportPadding = 12
-  const menuWidth = Math.max(184, rect.width)
+  const menuWidth = props.compactMenu ? Math.max(96, rect.width) : Math.max(184, rect.width)
   const left = Math.min(
     Math.max(rect.left, viewportPadding),
     Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
@@ -137,13 +139,14 @@ watch(
       ref="triggerRef"
       type="button"
       class="ratio-select__trigger"
+      :class="{ 'is-compact-text': compactText }"
       :aria-label="ariaLabel"
       aria-haspopup="listbox"
       :aria-expanded="open"
       @click="toggleMenu"
     >
       <span class="ratio-select__value">{{ selectedLabel }}</span>
-      <i class="bi bi-chevron-down" aria-hidden="true"></i>
+      <i class="ratio-select__chevron bi bi-chevron-down" aria-hidden="true"></i>
     </button>
 
     <Teleport to="body">
@@ -152,7 +155,11 @@ watch(
           v-if="open"
           ref="menuRef"
           class="ratio-select__menu"
-          :class="{ 'is-plain': !showRatioIcons }"
+          :class="{
+            'is-plain': !showRatioIcons,
+            'is-compact-text': compactText,
+            'is-compact-menu': compactMenu,
+          }"
           :style="menuStyle"
           role="listbox"
           :aria-label="ariaLabel"
@@ -236,15 +243,20 @@ watch(
   white-space: nowrap;
 }
 
-.ratio-select__trigger i {
+.ratio-select__chevron {
   flex: 0 0 auto;
   color: rgba(255, 255, 255, 0.5);
   font-size: 0.8rem;
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.ratio-select.is-open .ratio-select__trigger i {
+.ratio-select.is-open .ratio-select__chevron {
   transform: rotate(180deg);
+}
+
+.ratio-select__trigger.is-compact-text {
+  font-size: 0.72rem;
+  font-weight: 550;
 }
 
 .ratio-select__menu {
@@ -309,6 +321,28 @@ watch(
   color: rgba(139, 123, 255, 0.92);
   font-size: 1rem;
   text-align: center;
+}
+
+.ratio-select__menu.is-compact-text .ratio-select__option {
+  min-height: 38px;
+  font-size: 0.78rem;
+}
+
+.ratio-select__menu.is-compact-text .ratio-select__option-glyph {
+  font-size: 0.88rem;
+}
+
+.ratio-select__menu.is-compact-menu {
+  gap: 1px;
+  padding: 4px;
+  border-radius: 12px;
+}
+
+.ratio-select__menu.is-compact-menu .ratio-select__option {
+  min-height: 32px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
 }
 
 .ratio-select__option:hover,

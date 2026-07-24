@@ -1,20 +1,14 @@
 <script setup>
 import { computed, onUnmounted, reactive, watch } from 'vue'
 import {
-  COLORING_BATCH_COUNT_OPTIONS,
   COLORING_COMPRESS_KB_OPTIONS,
   COLORING_FORMAT_OPTIONS,
-  COLORING_OUTPUT_ORIENTATION_OPTIONS,
-  COLORING_OUTPUT_SIZE_OPTIONS,
   normalizeColoringSettings,
 } from '@/services/aiIllustrationColoringState'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
   settings: { type: Object, default: () => ({}) },
-  models: { type: Array, default: () => [] },
-  sourceWidth: { type: Number, default: 0 },
-  sourceHeight: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['close', 'save'])
@@ -29,49 +23,6 @@ watch(
   },
   { immediate: true, deep: true },
 )
-
-const modelOptions = computed(() =>
-  (Array.isArray(props.models) ? props.models : [])
-    .map((item) => ({
-      id: String(item?.publicModelKey || item?.id || '').trim(),
-      label: String(item?.label || item?.publicModelKey || item?.id || '').trim(),
-      creditCost: Number(item?.creditCost || 0),
-    }))
-    .filter((item) => item.id),
-)
-
-const outputHint = computed(
-  () => COLORING_OUTPUT_SIZE_OPTIONS.find((item) => item.id === draft.outputSize)?.hint || '',
-)
-
-const isLandscapeSource = computed(
-  () => Number(props.sourceWidth || 0) > Number(props.sourceHeight || 0),
-)
-
-watch(
-  isLandscapeSource,
-  (isLandscape) => {
-    if (isLandscape && draft.outputOrientation === 'portrait') {
-      draft.outputOrientation = 'source'
-    }
-  },
-  { immediate: true },
-)
-
-const outputOrientationOptions = computed(() =>
-  COLORING_OUTPUT_ORIENTATION_OPTIONS.map((item) => ({
-    ...item,
-    disabled: item.id === 'portrait' && isLandscapeSource.value,
-  })),
-)
-
-const orientationHint = computed(() => {
-  if (isLandscapeSource.value) return '横图线稿会保持横向输出，避免压缩主体或生成不自然的竖向补画。'
-  if (draft.outputOrientation === 'landscape')
-    return '会向左右延展画布；主体保留，新增区域由模型补全。'
-  if (draft.outputOrientation === 'portrait') return '按竖向画布出图，适合人物、海报与移动端展示。'
-  return '保持输入线稿的原始方向和构图比例。'
-})
 
 const uploadHint = computed(() => {
   if (!draft.enableCompress) {
@@ -88,9 +39,6 @@ const uploadHint = computed(() => {
 
 function save() {
   const payload = normalizeColoringSettings(draft)
-  if (!payload.publicModelKey && modelOptions.value.length) {
-    payload.publicModelKey = modelOptions.value[0].id
-  }
   emit('save', payload)
 }
 
@@ -127,7 +75,7 @@ onUnmounted(() => {
       <header>
         <div>
           <strong id="coloring-settings-title">染色设置</strong>
-          <small>上传、输出与模型 — 影响下次提交</small>
+          <small>上传处理与历史记录偏好</small>
         </div>
         <button type="button" class="coloring-settings-close" aria-label="关闭" @click="close">
           <i class="bi bi-x-lg"></i>
@@ -177,59 +125,6 @@ onUnmounted(() => {
         </section>
 
         <section class="coloring-settings-section">
-          <h3><i class="bi bi-aspect-ratio"></i> 输出</h3>
-          <div class="coloring-settings-field">
-            <span>输出方向</span>
-            <div class="coloring-settings-chips coloring-settings-chips--orientation">
-              <button
-                v-for="item in outputOrientationOptions"
-                :key="item.id"
-                type="button"
-                :class="{ active: draft.outputOrientation === item.id }"
-                :disabled="item.disabled"
-                @click="draft.outputOrientation = item.id"
-              >
-                {{ item.label }}
-              </button>
-            </div>
-            <small>{{ orientationHint }}</small>
-          </div>
-          <div class="coloring-settings-field">
-            <span>输出尺寸</span>
-            <div class="coloring-settings-chips">
-              <button
-                v-for="item in COLORING_OUTPUT_SIZE_OPTIONS"
-                :key="item.id"
-                type="button"
-                :class="{ active: draft.outputSize === item.id }"
-                @click="draft.outputSize = item.id"
-              >
-                {{ item.label }}
-              </button>
-            </div>
-            <small>{{ outputHint }}</small>
-          </div>
-
-          <div class="coloring-settings-field">
-            <span>一次生成</span>
-            <div class="coloring-settings-chips">
-              <button
-                v-for="count in COLORING_BATCH_COUNT_OPTIONS"
-                :key="count"
-                type="button"
-                :class="{ active: draft.generationCount === count }"
-                @click="draft.generationCount = count"
-              >
-                {{ count }} 张
-              </button>
-            </div>
-            <small
-              >同一线稿和风格并发生成多个结果，最多 5 张；完成后可打开批次选择每张清晰结果。</small
-            >
-          </div>
-        </section>
-
-        <section class="coloring-settings-section">
           <h3><i class="bi bi-trash3"></i> 历史记录</h3>
           <label class="coloring-settings-switch">
             <input v-model="draft.confirmBeforeDelete" type="checkbox" />
@@ -238,28 +133,6 @@ onUnmounted(() => {
           <small>默认关闭。开启后，删除单次或批量染色记录前会显示确认窗口。</small>
         </section>
 
-        <section v-if="modelOptions.length" class="coloring-settings-section">
-          <h3><i class="bi bi-cpu"></i> 模型</h3>
-          <div class="coloring-settings-field">
-            <div class="coloring-settings-models">
-              <button
-                v-for="model in modelOptions"
-                :key="model.id"
-                type="button"
-                :class="{
-                  active:
-                    draft.publicModelKey === model.id ||
-                    (!draft.publicModelKey && model === modelOptions[0]),
-                }"
-                @click="draft.publicModelKey = model.id"
-              >
-                <strong>{{ model.label }}</strong>
-                <small v-if="model.creditCost > 0">{{ model.creditCost }} 积分 / 次</small>
-                <small v-else>按平台计费</small>
-              </button>
-            </div>
-          </div>
-        </section>
       </div>
 
       <footer>

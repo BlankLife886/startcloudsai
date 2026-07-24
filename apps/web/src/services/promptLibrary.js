@@ -5,7 +5,7 @@
  * 服务端为空或请求失败时回退到调用方提供的本地静态词库，
  * 保持旧的页码式返回结构，工作台 UI 无需改动。
  */
-import { listPrompts } from './promptsApi'
+import { listPrompts, recordPromptEngagement } from './promptsApi'
 
 // cursor 分页 → 页码分页的游标链：key = `${type}|${category}`，index p 存第 p+1 页的 cursor
 const cursorChains = new Map()
@@ -14,8 +14,8 @@ const countsByType = new Map()
 // 记录服务端该 type 是否有数据：无数据时分类筛选也走本地静态词库
 const serverHasData = new Map()
 
-function chainKey(type, category) {
-  return `${type}|${category}`
+function chainKey(type, category, sort) {
+  return `${type}|${category}|${sort}`
 }
 
 function toLegacyItem(item) {
@@ -30,6 +30,11 @@ function toLegacyItem(item) {
     tags: item.tags || [],
     coverUrl: item.coverUrl || '',
     imageUrl: item.coverUrl || '',
+    likeCount: item.likeCount || 0,
+    favoriteCount: item.favoriteCount || 0,
+    useCount: item.useCount || 0,
+    liked: item.liked === true,
+    favorited: item.favorited === true,
   }
 }
 
@@ -45,6 +50,11 @@ function normalizeFallbackItem(item) {
     tags: Array.isArray(item?.tags) ? item.tags : [],
     coverUrl: String(item?.coverUrl || item?.imageUrl || ''),
     imageUrl: String(item?.imageUrl || item?.coverUrl || ''),
+    likeCount: Math.max(0, Number(item?.likeCount) || 0),
+    favoriteCount: Math.max(0, Number(item?.favoriteCount) || 0),
+    useCount: Math.max(0, Number(item?.useCount) || 0),
+    liked: item?.liked === true,
+    favorited: item?.favorited === true,
   }
 }
 
@@ -82,9 +92,9 @@ function buildFallbackResponse(fallbackItems, category) {
  * @returns {Promise<{items: Array, page: number, total: number, hasMore: boolean, categoryCounts: object}>}
  */
 export async function listPromptLibrary(type, options = {}) {
-  const { pageNumber = 1, pageSize = 24, category = '', fallbackItems = [] } = options
+  const { pageNumber = 1, pageSize = 24, category = '', sort = 'recommended', fallbackItems = [] } = options
   const normalizedCategory = category === 'all' ? '' : String(category || '')
-  const key = chainKey(type, normalizedCategory)
+  const key = chainKey(type, normalizedCategory, sort)
   const chain = cursorChains.get(key) || ['']
   const page = Math.max(1, Number(pageNumber) || 1)
 
@@ -99,6 +109,7 @@ export async function listPromptLibrary(type, options = {}) {
     const { items, nextCursor, categoryCounts } = await listPrompts({
       type,
       category: normalizedCategory,
+      sort,
       cursor,
       limit: pageSize,
     })
@@ -131,3 +142,5 @@ export async function listPromptLibrary(type, options = {}) {
     return { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
   }
 }
+
+export { recordPromptEngagement }

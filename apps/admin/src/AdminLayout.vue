@@ -315,7 +315,10 @@ async function submitPassword() {
         </div>
       </header>
 
-      <main class="content" :class="{ 'content--workspace': route.path === '/prompt-library' }">
+      <main
+        class="content"
+        :class="{ 'content--workspace': ['/prompt-library', '/tasks'].includes(route.path) }"
+      >
         <div :key="route.path" class="anim-fade-up content-inner">
           <router-view />
         </div>

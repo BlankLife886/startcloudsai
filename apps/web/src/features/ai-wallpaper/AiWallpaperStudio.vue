@@ -20,7 +20,7 @@ import {
 } from './composables/wallpaperStudioConstants'
 import notificationService from '@/services/notification'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
-import { listPromptLibrary } from '@/services/promptLibrary'
+import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { getAuthenticatedMediaMetadata } from '@/services/authenticatedMedia'
 import {
   normalizeVisibleDisplayPositions,
@@ -163,6 +163,7 @@ const assetsTotal = ref(0)
 const assetsHasMore = ref(false)
 const failedAssetIds = ref({})
 const promptCategoryFilter = ref('all')
+const promptSort = ref('recommended')
 const promptSentinelRef = ref(null)
 const assetSentinelRef = ref(null)
 let promptLoadObserver = null
@@ -192,7 +193,7 @@ let lightboxComparePointerId = null
 let cloudUpscaleLoadController = null
 let cloudUpscaleRunController = null
 
-const PROMPT_MAX = 6000
+const PROMPT_MAX = 20_000
 const effectiveOutputFormat = computed({
   get: () => (transparentPngEnabled.value ? 'png' : upscaleOutputFormat.value),
   set: (value) => {
@@ -247,7 +248,6 @@ const failedOrPausedTaskCount = computed(
       ['failed', 'paused'].includes(String(task?.status || '').toLowerCase()),
     ).length,
 )
-const promptLength = computed(() => String(prompt.value || '').length)
 const lightboxZoomLabel = computed(() => `${Math.round(lightboxZoom.value * 100)}%`)
 const lightboxImageStyle = computed(() => ({
   transform: `translate3d(${lightboxPanX.value}px, ${lightboxPanY.value}px, 0) scale(${lightboxZoom.value})`,
@@ -326,7 +326,9 @@ function markImageUnavailable(task, index, url) {
 
 const imageGallery = computed(() => {
   const items = []
-  for (const task of sortedTasks.value) {
+  // The stage filmstrip stays bounded even when the paginated history has
+  // loaded hundreds of records. The history tab itself remains uncapped.
+  for (const task of sortedTasks.value.slice(0, 120)) {
     if (isBusy(task)) {
       const batchSize = Math.max(1, Number(task.batchSize || 1))
       const slots =
@@ -500,7 +502,7 @@ const promptLibraryFeedItems = computed(() =>
 )
 
 const promptLibraryMasonryColumns = computed(() =>
-  buildBalancedMasonryColumns(promptLibraryFeedItems.value, historyColumnCount.value),
+  buildBalancedMasonryColumns(promptLibraryFeedItems.value, libraryColumnCount.value),
 )
 
 const assetFeedItems = computed(() =>
@@ -525,7 +527,7 @@ const assetFeedItems = computed(() =>
 )
 
 const assetMasonryColumns = computed(() =>
-  buildBalancedMasonryColumns(assetFeedItems.value, historyColumnCount.value),
+  buildBalancedMasonryColumns(assetFeedItems.value, assetColumnCount.value),
 )
 
 const historyFeedItems = computed(() => {
@@ -765,8 +767,23 @@ const historyHasMore = computed(
 const historyColumnCount = computed(() => {
   const width = historyViewportWidth.value
   if (width <= 640) return 1
+  if (width <= 820) return 2
+  if (width <= 960) return 3
+  if (width <= 1280) return 4
+  return 5
+})
+const libraryColumnCount = computed(() => {
+  const width = historyViewportWidth.value
+  if (width <= 640) return 1
   if (width <= 960) return 2
   return 3
+})
+const assetColumnCount = computed(() => {
+  const width = historyViewportWidth.value
+  if (width <= 640) return 1
+  if (width <= 820) return 2
+  if (width <= 960) return 3
+  return 5
 })
 
 const historyMasonryColumns = computed(() =>
@@ -792,13 +809,17 @@ async function loadMoreHistory() {
       historyFeedItems.value.length,
       historyVisibleCount.value + HISTORY_BATCH,
     )
+    await nextTick()
+    if (historyHasMore.value) setupHistoryObserver()
     return
   }
-  await loadMoreServerJobs()
+  const loaded = await loadMoreServerJobs()
   historyVisibleCount.value = Math.min(
     historyFeedItems.value.length,
     historyVisibleCount.value + HISTORY_BATCH,
   )
+  await nextTick()
+  if (loaded !== false && historyHasMore.value) setupHistoryObserver()
 }
 
 function resetHistoryWindow() {
@@ -881,6 +902,7 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
       pageNumber: nextPage,
       pageSize: 24,
       category: promptCategoryFilter.value,
+      sort: promptSort.value,
       fallbackItems: T2I_PROMPT_LIBRARY,
     })
     const incoming = Array.isArray(response?.items) ? response.items : []
@@ -958,9 +980,36 @@ function useGeneratedAsReference(task, index = 0) {
   addReferenceImageFromUrl(url, taskPrompt(task).slice(0, 80))
 }
 
+function applyPromptEngagementResult(item, result = {}) {
+  item.likeCount = Math.max(0, Number(result.likeCount) || 0)
+  item.favoriteCount = Math.max(0, Number(result.favoriteCount) || 0)
+  item.useCount = Math.max(0, Number(result.useCount) || 0)
+}
+
+async function togglePromptEngagement(item, action) {
+  if (!item?.id) return
+  const field = action === 'like' ? 'liked' : 'favorited'
+  const countField = action === 'like' ? 'likeCount' : 'favoriteCount'
+  const previous = item[field] === true
+  item[field] = !previous
+  item[countField] = Math.max(0, Number(item[countField] || 0) + (previous ? -1 : 1))
+  try {
+    const result = await recordPromptEngagement(item.id, action, !previous)
+    applyPromptEngagementResult(item, result)
+  } catch (caught) {
+    item[field] = previous
+    item[countField] = Math.max(0, Number(item[countField] || 0) + (previous ? 1 : -1))
+    notificationService.error(caught?.message || '操作失败，请稍后重试')
+  }
+}
+
 function usePromptLibraryEntry(item) {
   if (!item?.prompt) return
   prompt.value = item.prompt
+  item.useCount = Math.max(0, Number(item.useCount || 0) + 1)
+  void recordPromptEngagement(item.id, 'use')
+    .then((result) => applyPromptEngagementResult(item, result))
+    .catch(() => undefined)
   nextTick(() => promptBoxRef.value?.querySelector?.('textarea')?.focus?.())
 }
 
@@ -1044,7 +1093,7 @@ watch(mainTab, async (tab) => {
   await activateMainTab(tab)
 })
 
-watch(promptCategoryFilter, async () => {
+watch([promptCategoryFilter, promptSort], async () => {
   await loadManagedPromptLibrary({ reset: true })
   if (mainTab.value !== 'prompts') return
   await nextTick()
@@ -2051,20 +2100,14 @@ function setMainTab(tab) {
 <template>
   <div class="t2i-page" @click="closeMenus">
     <aside class="t2i-sidebar" aria-label="生成设置" @click.stop>
-      <div class="t2i-side-tabs">
-        <button type="button" class="is-active">图片生成</button>
-      </div>
-
       <div class="t2i-model">
         <div class="t2i-model-badge" :class="{ 'is-loading': isPageLoading }" aria-label="生成模型">
           <span class="t2i-model-icon"><i class="bi bi-stars"></i></span>
           <span v-if="isPageLoading" class="t2i-model-copy t2i-model-skeleton" aria-hidden="true">
             <span></span>
-            <span></span>
           </span>
           <span v-else class="t2i-model-copy">
             <strong>GPT Image 2</strong>
-            <small>站内统一生成模型</small>
           </span>
           <span class="t2i-model-fixed-tag" aria-hidden="true">Model</span>
         </div>
@@ -2115,7 +2158,6 @@ function setMainTab(tab) {
               <button type="button" class="t2i-icon-btn" title="清空提示词" @click="clearPrompt">
                 <i class="bi bi-trash"></i>
               </button>
-              <span>{{ promptLength }}/{{ PROMPT_MAX }}</span>
             </div>
           </div>
         </div>
@@ -2142,6 +2184,7 @@ function setMainTab(tab) {
             aria-label="张数"
             :show-ratio-icons="false"
             use-option-label
+            compact-menu
           />
         </div>
 
@@ -2161,6 +2204,7 @@ function setMainTab(tab) {
                 aria-label="处理格式"
                 :show-ratio-icons="false"
                 use-option-label
+                compact-text
               />
             </div>
             <div class="t2i-prompt-enhancers" aria-label="提示词智能处理">
@@ -2465,6 +2509,29 @@ function setMainTab(tab) {
                   >
                     <i class="bi bi-images" aria-hidden="true"></i>
                   </button>
+                  <button
+                    type="button"
+                    :aria-label="shareStatusLabel(featuredItem.task)"
+                    :title="shareStatusLabel(featuredItem.task)"
+                    :disabled="
+                      submittingShareId === String(featuredItem.task.id) ||
+                      featuredItem.task.shareSubmitted ||
+                      isLocalUpscaling(featuredItem.task)
+                    "
+                    @click.stop="openPublish(featuredItem)"
+                  >
+                    <i
+                      class="bi"
+                      :class="
+                        submittingShareId === String(featuredItem.task.id)
+                          ? 'bi-arrow-repeat spin'
+                          : featuredItem.task.shareSubmitted
+                            ? 'bi-patch-check'
+                            : 'bi-send-check'
+                      "
+                      aria-hidden="true"
+                    ></i>
+                  </button>
                 </div>
                 <UpscaleProcessingOverlay
                   v-if="featuredItem.task && isLocalUpscaling(featuredItem.task)"
@@ -2488,6 +2555,33 @@ function setMainTab(tab) {
               </div>
               <div class="t2i-image-actions">
                 <template v-if="featuredItem.kind === 'image'">
+                  <button
+                    type="button"
+                    class="is-share"
+                    :disabled="
+                      submittingShareId === String(featuredItem.task.id) ||
+                      featuredItem.task.shareSubmitted ||
+                      isLocalUpscaling(featuredItem.task)
+                    "
+                    @click.stop="openPublish(featuredItem)"
+                  >
+                    <i
+                      class="bi"
+                      :class="
+                        submittingShareId === String(featuredItem.task.id)
+                          ? 'bi-arrow-repeat spin'
+                          : featuredItem.task.shareSubmitted
+                            ? 'bi-patch-check'
+                            : 'bi-send-check'
+                      "
+                      aria-hidden="true"
+                    ></i>
+                    {{
+                      submittingShareId === String(featuredItem.task.id)
+                        ? '提交中…'
+                        : shareStatusLabel(featuredItem.task)
+                    }}
+                  </button>
                   <button type="button" @click.stop="regenerateTask(featuredItem.task)">
                     重新生成
                   </button>
@@ -2537,7 +2631,7 @@ function setMainTab(tab) {
 
             <div v-if="imageGallery.length > 1" class="t2i-filmstrip" aria-label="作品列表">
               <button
-                v-for="item in imageGallery"
+                v-for="(item, galleryIndex) in imageGallery"
                 :key="item.key"
                 type="button"
                 class="t2i-film-item"
@@ -2552,15 +2646,20 @@ function setMainTab(tab) {
                   item.kind === 'image' && useGeneratedAsReference(item.task, item.index)
                 "
               >
-                <span v-if="item.kind === 'pending'" class="t2i-film-pending">
-                  <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
-                  <em>{{ formatTaskElapsed(item.task) || '排队' }}</em>
+                <span
+                  v-if="item.kind === 'pending'"
+                  class="t2i-film-pending"
+                  role="status"
+                  aria-label="任务处理中"
+                >
+                  <span class="t2i-film-pending-spinner" aria-hidden="true"></span>
+                  <em>{{ formatTaskElapsed(item.task) || '即将开始' }}</em>
                 </span>
                 <AuthenticatedImage
                   v-else
-                  :src="item.thumbnailUrl"
+                  :src="item.thumbnailUrl || item.url"
                   alt=""
-                  loading="lazy"
+                  :loading="galleryIndex < 12 ? 'eager' : 'lazy'"
                   root-margin="180px 240px"
                   :max-dimension="FILMSTRIP_THUMBNAIL_DIMENSION"
                   @error="markImageUnavailable(item.task, item.index, item.url)"
@@ -2602,7 +2701,7 @@ function setMainTab(tab) {
               <article
                 v-for="item in column"
                 :key="item.key"
-                class="t2i-masonry-card"
+                class="t2i-masonry-card t2i-history-card"
                 :class="{ 'is-active': item.task.id === activeTaskId }"
                 :data-status="item.task.status"
               >
@@ -2627,7 +2726,7 @@ function setMainTab(tab) {
                     compact
                   />
                   <span v-if="item.total > 1" class="t2i-history-batch-index">
-                    第 {{ Number(item.batchIndex ?? item.index) + 1 }}/{{ item.total }} 张
+                    {{ Number(item.batchIndex ?? item.index) + 1 }}/{{ item.total }}
                   </span>
                   <span class="t2i-history-image-overlay">
                     <span class="t2i-history-image-prompt">{{ taskPrompt(item.task) }}</span>
@@ -2662,12 +2761,8 @@ function setMainTab(tab) {
                   <span>{{ statusTitle(item.task) }}</span>
                 </div>
 
-                <div class="t2i-masonry-body">
-                  <header class="t2i-history-meta">
-                    <strong>{{ statusTitle(item.task) }}</strong>
-                    <small>{{ taskMeta(item.task) }}</small>
-                  </header>
-                  <p v-if="item.kind !== 'image'" class="t2i-history-prompt">
+                <div v-if="item.kind !== 'image'" class="t2i-masonry-body">
+                  <p class="t2i-history-prompt">
                     {{ taskPrompt(item.task) }}
                   </p>
                   <small v-if="friendlyError(item.task)" class="t2i-history-error">{{
@@ -2689,18 +2784,22 @@ function setMainTab(tab) {
                   </div>
                 </div>
 
-                <footer class="t2i-entry-actions">
+                <footer class="t2i-entry-actions t2i-history-actions">
                   <button
                     v-if="item.kind === 'image'"
                     type="button"
+                    aria-label="设为参考图"
+                    title="设为参考图"
                     @click.stop="useGeneratedAsReference(item.task, item.index)"
                   >
-                    参考图
+                    <i class="bi bi-images" aria-hidden="true"></i>
                   </button>
                   <button
                     v-if="item.kind === 'image'"
                     type="button"
                     class="is-share"
+                    :aria-label="shareStatusLabel(item.task)"
+                    :title="shareStatusLabel(item.task)"
                     :disabled="
                       submittingShareId === String(item.task.id) ||
                       item.task.shareSubmitted ||
@@ -2718,41 +2817,44 @@ function setMainTab(tab) {
                             : 'bi-send-check'
                       "
                     ></i>
-                    {{
-                      submittingShareId === String(item.task.id)
-                        ? '提交中…'
-                        : shareStatusLabel(item.task)
-                    }}
                   </button>
                   <button
                     type="button"
+                    aria-label="编辑任务"
+                    title="编辑"
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="editTask(item.task)"
                   >
-                    编辑
+                    <i class="bi bi-pencil-square" aria-hidden="true"></i>
                   </button>
                   <button
                     type="button"
+                    aria-label="重新生成"
+                    title="重新生成"
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="regenerateTask(item.task)"
                   >
-                    重新生成
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                   </button>
                   <button
                     v-if="canCancel(item.task)"
                     type="button"
+                    aria-label="取消任务"
+                    title="取消"
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="handleCancelTask(item.task)"
                   >
-                    取消
+                    <i class="bi bi-stop-circle" aria-hidden="true"></i>
                   </button>
                   <button
                     type="button"
                     class="is-danger"
+                    aria-label="删除任务"
+                    title="删除"
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="handleRemoveTask(item.task)"
                   >
-                    删除
+                    <i class="bi bi-trash3" aria-hidden="true"></i>
                   </button>
                 </footer>
               </article>
@@ -2769,6 +2871,14 @@ function setMainTab(tab) {
             <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
             正在加载更多历史记录…
           </p>
+          <button
+            v-else-if="historyHasMore"
+            type="button"
+            class="t2i-feed-more"
+            @click="loadMoreHistory"
+          >
+            加载更多
+          </button>
           <p v-else-if="!historyHasMore" class="t2i-feed-end">没有更多数据了</p>
         </div>
       </section>
@@ -2787,18 +2897,30 @@ function setMainTab(tab) {
           <span>管理员添加并分配到“图片生成”后会显示在这里。</span>
         </div>
         <div v-else class="t2i-masonry-wrap">
-          <nav class="t2i-library-categories" aria-label="提示词分类">
-            <button
-              v-for="category in promptCategoryOptions"
-              :key="category.value"
-              type="button"
-              :class="{ 'is-active': promptCategoryFilter === category.value }"
-              @click="promptCategoryFilter = category.value"
-            >
-              {{ category.label }}
-              <em>{{ category.count }}</em>
-            </button>
-          </nav>
+          <div class="t2i-library-toolbar">
+            <nav class="t2i-library-categories" aria-label="提示词分类">
+              <button
+                v-for="category in promptCategoryOptions"
+                :key="category.value"
+                type="button"
+                :class="{ 'is-active': promptCategoryFilter === category.value }"
+                @click="promptCategoryFilter = category.value"
+              >
+                {{ category.label }}
+                <em>{{ category.count }}</em>
+              </button>
+            </nav>
+            <label class="t2i-library-sort">
+              <i class="bi bi-sort-down" aria-hidden="true"></i>
+              <select v-model="promptSort" aria-label="提示词排序">
+                <option value="recommended">智能推荐</option>
+                <option value="latest">最新发布</option>
+                <option value="favorites">收藏最多</option>
+                <option value="likes">点赞最多</option>
+                <option value="usage">使用最多</option>
+              </select>
+            </label>
+          </div>
 
           <div v-if="!promptLibraryFeedItems.length" class="t2i-empty t2i-collection-empty">
             <div class="t2i-empty-icon"><i class="bi bi-filter"></i></div>
@@ -2806,7 +2928,7 @@ function setMainTab(tab) {
             <span>选择其他分类继续浏览。</span>
           </div>
 
-          <div v-else class="t2i-masonry" :style="{ '--t2i-masonry-cols': historyColumnCount }">
+          <div v-else class="t2i-masonry" :style="{ '--t2i-masonry-cols': libraryColumnCount }">
             <div
               v-for="(column, columnIndex) in promptLibraryMasonryColumns"
               :key="`prompt-col-${columnIndex}`"
@@ -2854,11 +2976,32 @@ function setMainTab(tab) {
                   <header class="t2i-history-meta">
                     <strong>{{ entry.item.label }}</strong>
                     <small
-                      >{{ promptCategoryLabel(entry.item.categoryKey) }} · 点击即可填入创作区</small
+                      >{{ promptCategoryLabel(entry.item.categoryKey) }} · 使用
+                      {{ entry.item.useCount || 0 }} 次</small
                     >
                   </header>
                 </div>
                 <footer class="t2i-entry-actions">
+                  <button
+                    type="button"
+                    :class="{ 'is-active': entry.item.liked }"
+                    @click="togglePromptEngagement(entry.item, 'like')"
+                  >
+                    <i
+                      :class="
+                        entry.item.liked ? 'bi bi-hand-thumbs-up-fill' : 'bi bi-hand-thumbs-up'
+                      "
+                    ></i>
+                    {{ entry.item.likeCount || 0 }}
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ 'is-active': entry.item.favorited }"
+                    @click="togglePromptEngagement(entry.item, 'favorite')"
+                  >
+                    <i :class="entry.item.favorited ? 'bi bi-heart-fill' : 'bi bi-heart'"></i>
+                    {{ entry.item.favoriteCount || 0 }}
+                  </button>
                   <button type="button" @click="usePromptLibraryEntry(entry.item)">
                     <i class="bi bi-magic" aria-hidden="true"></i>
                     使用提示词
@@ -2897,7 +3040,7 @@ function setMainTab(tab) {
           <span>从历史记录发布作品后，投稿与审核状态会集中显示在这里。</span>
         </div>
         <div v-else class="t2i-masonry-wrap">
-          <div class="t2i-masonry" :style="{ '--t2i-masonry-cols': historyColumnCount }">
+          <div class="t2i-masonry" :style="{ '--t2i-masonry-cols': assetColumnCount }">
             <div
               v-for="(column, columnIndex) in assetMasonryColumns"
               :key="`asset-col-${columnIndex}`"
@@ -2956,22 +3099,10 @@ function setMainTab(tab) {
                   <i class="bi bi-arrow-clockwise"></i>
                   <span>图片暂时无法读取，点击重试</span>
                 </button>
-                <div class="t2i-masonry-body">
-                  <header class="t2i-history-meta">
-                    <strong>{{ entry.asset.title }}</strong>
-                    <small
-                      >{{ entry.asset.categoryLabel }} ·
-                      {{
-                        new Date(entry.asset.updatedAt || entry.asset.createdAt).toLocaleString()
-                      }}</small
-                    >
-                  </header>
-                </div>
                 <footer class="t2i-entry-actions">
                   <button type="button" @click="useGeneratedAsReference(entry.task, 0)">
                     参考图
                   </button>
-                  <button type="button" @click="openAsset(entry.asset)">预览</button>
                 </footer>
               </article>
             </div>

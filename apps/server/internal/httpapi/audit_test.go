@@ -2,16 +2,65 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
+
+func TestAdminAuditPreservesRequestBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{
+			name:        "multipart upload",
+			contentType: "multipart/form-data; boundary=test-boundary",
+			body:        bytes.Repeat([]byte("upload-data"), 200_000),
+		},
+		{
+			name:        "large json",
+			contentType: "application/json",
+			body:        []byte(`{"payload":"` + strings.Repeat("x", auditBodyReadLimit*2) + `"}`),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			engine := gin.New()
+			engine.Use((&Server{}).adminAudit)
+			engine.POST("/api/admin/test", func(c *gin.Context) {
+				got, err := io.ReadAll(c.Request.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				if !bytes.Equal(got, test.body) {
+					t.Fatalf("body truncated: got %d bytes, want %d", len(got), len(test.body))
+				}
+				c.Status(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/test", bytes.NewReader(test.body))
+			req.Header.Set("Content-Type", test.contentType)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+			if w.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+			}
+		})
+	}
+}
 
 func TestAuditAction(t *testing.T) {
 	id := uuid.NewString()

@@ -26,13 +26,20 @@ interface AdminSettings {
   /** 只回传掩码（****xxxx）；提交掩码或空 = 不修改 */
   sub2apiApiKey?: string
   sub2apiChatModel?: string
+  sub2apiChatModels?: Record<string, string>
   sub2apiImageModel?: string
   sub2apiTimeoutSecs?: number
+}
+
+interface ModelMapping {
+  label: string
+  model: string
 }
 
 const loading = ref(false)
 const saving = ref(false)
 const savedSignature = ref('')
+const activeSection = ref<'models' | 'business'>('models')
 
 const priceTypes = ref<string[]>([...TASK_TYPES])
 
@@ -49,6 +56,7 @@ const form = reactive({
   sub2apiBaseUrl: '',
   sub2apiApiKey: '',
   sub2apiChatModel: '',
+  sub2apiChatModels: [] as ModelMapping[],
   sub2apiImageModel: '',
   sub2apiTimeoutSecs: 0,
 })
@@ -73,6 +81,7 @@ function settingsSignature() {
     sub2apiApiKey: form.sub2apiApiKey,
     clearSub2apiKey: clearSub2apiKey.value,
     sub2apiChatModel: form.sub2apiChatModel,
+    sub2apiChatModels: form.sub2apiChatModels.map(({ label, model }) => [label, model]),
     sub2apiImageModel: form.sub2apiImageModel,
     sub2apiTimeoutSecs: form.sub2apiTimeoutSecs,
   })
@@ -91,6 +100,64 @@ const sub2apiSource = computed(() => (form.sub2apiBaseUrl.trim() ? '后台配置
 const sub2apiTimeoutLabel = computed(
   () => `${form.sub2apiTimeoutSecs > 0 ? form.sub2apiTimeoutSecs : 300} 秒`,
 )
+const c2aModels = ref<string[]>([])
+const c2aModelTotal = ref(0)
+const c2aModelsTruncated = ref(false)
+const sub2apiModels = ref<string[]>([])
+const sub2apiModelTotal = ref(0)
+const sub2apiModelsTruncated = ref(false)
+
+function uniqueModels(values: Array<string | undefined>) {
+  return [...new Set(values.map((value) => value?.trim() ?? '').filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
+  )
+}
+
+const c2aModelOptions = computed(() =>
+  uniqueModels([
+    ...c2aModels.value,
+    form.taskModelDefault,
+    ...Object.values(form.taskModelOverrides),
+  ]),
+)
+
+function looksLikeImageModel(model: string) {
+  return /image|dall[-_. ]?e|picture|flux|midjourney/i.test(model)
+}
+
+const sub2apiChatCandidates = computed(() => {
+  const filtered = sub2apiModels.value.filter((model) => !looksLikeImageModel(model))
+  return uniqueModels([
+    ...filtered,
+    form.sub2apiChatModel,
+    ...form.sub2apiChatModels.map((item) => item.model),
+  ])
+})
+const sub2apiImageCandidates = computed(() => {
+  const suggested = sub2apiModels.value.filter(looksLikeImageModel)
+  return uniqueModels([...suggested, form.sub2apiImageModel, ...sub2apiModels.value])
+})
+const selectedAssistantModelIds = computed<string[]>({
+  get: () => form.sub2apiChatModels.map((item) => item.model),
+  set: (models) => {
+    const existing = new Map(form.sub2apiChatModels.map((item) => [item.model, item]))
+    form.sub2apiChatModels = uniqueModels(models).map((model) => ({
+      model,
+      label: existing.get(model)?.label || model,
+    }))
+  },
+})
+
+function syncDiscoveredChatModels() {
+  const models = sub2apiChatCandidates.value.slice(0, 40)
+  selectedAssistantModelIds.value = models
+  ElMessage.success(`已同步 ${models.length} 个对话模型，可继续修改显示名称`)
+}
+
+function setDefaultTaskModel(model: string) {
+  form.taskModelDefault = model
+  ElMessage.success(`默认任务模型已选择 ${model}`)
+}
 
 function hydrate(settings: AdminSettings) {
   const prices = settings.taskPrices ?? {}
@@ -112,6 +179,9 @@ function hydrate(settings: AdminSettings) {
   form.c2aApiKey = ''
   form.sub2apiBaseUrl = settings.sub2apiBaseUrl ?? ''
   form.sub2apiChatModel = settings.sub2apiChatModel ?? ''
+  form.sub2apiChatModels = Object.entries(settings.sub2apiChatModels ?? {}).map(
+    ([label, model]) => ({ label, model }),
+  )
   form.sub2apiImageModel = settings.sub2apiImageModel ?? ''
   form.sub2apiTimeoutSecs = settings.sub2apiTimeoutSecs ?? 0
   sub2apiKeyMask.value = settings.sub2apiApiKey ?? ''
@@ -130,7 +200,11 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  void testC2a()
+  void testSub2api()
+})
 
 async function save() {
   if (!form.taskModelDefault.trim()) {
@@ -152,6 +226,20 @@ async function save() {
   const taskModels: Record<string, string> = {
     default: form.taskModelDefault.trim(),
   }
+  const sub2apiChatModels: Record<string, string> = {}
+  for (const [index, item] of form.sub2apiChatModels.entries()) {
+    const label = item.label.trim()
+    const model = item.model.trim()
+    if (!label || !model) {
+      ElMessage.warning(`第 ${index + 1} 个可选对话模型缺少显示名称或模型 ID`)
+      return
+    }
+    if (sub2apiChatModels[label] && sub2apiChatModels[label] !== model) {
+      ElMessage.warning(`显示名称“${label}”重复，请修改后再保存`)
+      return
+    }
+    sub2apiChatModels[label] = model
+  }
   for (const type of TASK_TYPES) {
     const model = form.taskModelOverrides[type]?.trim()
     if (model) taskModels[type] = model
@@ -168,6 +256,7 @@ async function save() {
       c2aTimeoutSecs: form.c2aTimeoutSecs,
       sub2apiBaseUrl,
       sub2apiChatModel: form.sub2apiChatModel.trim(),
+      sub2apiChatModels,
       sub2apiImageModel: form.sub2apiImageModel.trim(),
       sub2apiTimeoutSecs: form.sub2apiTimeoutSecs,
     }
@@ -199,16 +288,21 @@ async function testC2a() {
     const body: Record<string, string> = {}
     if (form.c2aBaseUrl.trim()) body.baseUrl = form.c2aBaseUrl.trim()
     if (form.c2aApiKey.trim()) body.apiKey = form.c2aApiKey.trim()
-    const data = await request<{ models?: string[]; modelCount?: number }>(
+    const data = await request<{ models?: string[]; modelCount?: number; truncated?: boolean }>(
       '/api/admin/settings/test-c2a',
       { method: 'POST', body, silent: true },
     )
     const count = data.modelCount ?? data.models?.length
+    c2aModels.value = uniqueModels(data.models ?? [])
+    c2aModelTotal.value = count ?? c2aModels.value.length
+    c2aModelsTruncated.value = data.truncated === true
     testResult.value = {
       ok: true,
       message: count !== undefined ? `连通正常，可用模型 ${count} 个` : '连通正常',
     }
   } catch (err) {
+    c2aModels.value = []
+    c2aModelTotal.value = 0
     testResult.value = {
       ok: false,
       message: `连通失败：${err instanceof Error ? err.message : '未知错误'}`,
@@ -230,16 +324,21 @@ async function testSub2api() {
     if (form.sub2apiApiKey.trim()) body.apiKey = form.sub2apiApiKey.trim()
     if (form.sub2apiChatModel.trim()) body.chatModel = form.sub2apiChatModel.trim()
     if (form.sub2apiImageModel.trim()) body.imageModel = form.sub2apiImageModel.trim()
-    const data = await request<{ models?: string[]; modelCount?: number }>(
+    const data = await request<{ models?: string[]; modelCount?: number; truncated?: boolean }>(
       '/api/admin/settings/test-sub2api',
       { method: 'POST', body, silent: true },
     )
     const count = data.modelCount ?? data.models?.length
+    sub2apiModels.value = uniqueModels(data.models ?? [])
+    sub2apiModelTotal.value = count ?? sub2apiModels.value.length
+    sub2apiModelsTruncated.value = data.truncated === true
     sub2apiTestResult.value = {
       ok: true,
       message: count !== undefined ? `连通正常，可用模型 ${count} 个` : '连通正常',
     }
   } catch (err) {
+    sub2apiModels.value = []
+    sub2apiModelTotal.value = 0
     sub2apiTestResult.value = {
       ok: false,
       message: `连通失败：${err instanceof Error ? err.message : '未知错误'}`,
@@ -266,7 +365,7 @@ function clearSavedSub2apiKey() {
       <div class="settings-header__copy">
         <span>CONTROL PLANE</span>
         <h1>系统设置</h1>
-        <p>管理图片生成链路、模型路由、运营策略与任务计费</p>
+        <p>连接上游、读取模型、选择启用范围，再配置运营与计费</p>
       </div>
       <div class="settings-header__actions">
         <div class="save-state" :class="{ 'is-dirty': isDirty }" aria-live="polite">
@@ -286,8 +385,31 @@ function clearSavedSub2apiKey() {
       </div>
     </header>
 
-    <section class="settings-overview" aria-label="当前核心配置">
-      <article class="overview-item is-upstream">
+    <nav class="settings-section-tabs" aria-label="设置分类">
+      <button
+        type="button"
+        :class="{ 'is-active': activeSection === 'models' }"
+        @click="activeSection = 'models'"
+      >
+        <el-icon><Connection /></el-icon>
+        <span><strong>模型与接口</strong><small>Base URL、密钥、模型读取与分配</small></span>
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': activeSection === 'business' }"
+        @click="activeSection = 'business'"
+      >
+        <el-icon><Operation /></el-icon>
+        <span><strong>运营与计费</strong><small>注册、并发、赠送金额与任务单价</small></span>
+      </button>
+    </nav>
+
+    <section
+      class="settings-overview"
+      :class="`is-${activeSection}-section`"
+      aria-label="当前核心配置"
+    >
+      <article v-if="activeSection === 'models'" class="overview-item is-upstream">
         <span class="overview-item__icon"
           ><el-icon><Connection /></el-icon
         ></span>
@@ -299,7 +421,7 @@ function clearSavedSub2apiKey() {
           </em>
         </div>
       </article>
-      <article class="overview-item">
+      <article v-if="activeSection === 'models'" class="overview-item">
         <span class="overview-item__icon is-model"
           ><el-icon><MagicStick /></el-icon
         ></span>
@@ -308,10 +430,22 @@ function clearSavedSub2apiKey() {
           <strong :title="form.taskModelDefault || '未配置'">{{
             form.taskModelDefault || '未配置'
           }}</strong>
-          <em>{{ modelOverrideCount }} 个类型独立覆盖</em>
+          <em>{{ c2aModelTotal ? `已读取 ${c2aModelTotal} 个模型` : `${modelOverrideCount} 个类型独立覆盖` }}</em>
         </div>
       </article>
-      <article class="overview-item">
+      <article v-if="activeSection === 'models'" class="overview-item">
+        <span class="overview-item__icon is-assistant"
+          ><el-icon><ChatDotRound /></el-icon
+        ></span>
+        <div>
+          <small>AI 助手模型</small>
+          <strong>{{ form.sub2apiChatModel || '未配置' }}</strong>
+          <em :class="sub2apiTestResult ? (sub2apiTestResult.ok ? 'is-success' : 'is-danger') : ''">
+            {{ sub2apiTestResult?.message || '尚未读取模型' }}
+          </em>
+        </div>
+      </article>
+      <article v-if="activeSection === 'business'" class="overview-item">
         <span class="overview-item__icon is-operation"
           ><el-icon><Operation /></el-icon
         ></span>
@@ -321,7 +455,7 @@ function clearSavedSub2apiKey() {
           <em>每用户最多 {{ form.userMaxRunningTasks }} 个并发任务</em>
         </div>
       </article>
-      <article class="overview-item">
+      <article v-if="activeSection === 'business'" class="overview-item">
         <span class="overview-item__icon is-price"
           ><el-icon><Coin /></el-icon
         ></span>
@@ -333,9 +467,9 @@ function clearSavedSub2apiKey() {
       </article>
     </section>
 
-    <div class="settings-grid">
+    <div class="settings-grid" :class="`is-${activeSection}-section`">
       <!-- 任务单价 -->
-      <PageCard class="settings-card is-pricing">
+      <PageCard v-if="activeSection === 'business'" class="settings-card is-pricing">
         <template #header>
           <div class="card-head">
             <span class="card-head__icon is-warning"
@@ -368,15 +502,15 @@ function clearSavedSub2apiKey() {
       </PageCard>
 
       <!-- 任务模型 -->
-      <PageCard class="settings-card is-models">
+      <PageCard v-if="activeSection === 'models'" class="settings-card is-models">
         <template #header>
           <div class="card-head">
             <span class="card-head__icon is-accent"
               ><el-icon :size="16"><MagicStick /></el-icon
             ></span>
             <div>
-              <div class="page-card__title">任务模型</div>
-              <div class="page-card__subtitle">默认模型兜底，可按类型单独覆盖</div>
+              <div class="page-card__title">③ 分配图片生成模型</div>
+              <div class="page-card__subtitle">从上一步读取结果中选择，不再手工猜模型 ID</div>
             </div>
           </div>
         </template>
@@ -388,23 +522,43 @@ function clearSavedSub2apiKey() {
         <div class="model-default priority-field">
           <span class="model-default__label">默认任务模型 <em>*</em></span>
           <small>所有未单独指定模型的任务均使用此值</small>
-          <el-input v-model="form.taskModelDefault" placeholder="如 gpt-image-2" />
+          <el-select
+            v-model="form.taskModelDefault"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="先读取模型，或直接输入模型 ID"
+            style="width: 100%"
+          >
+            <el-option v-for="model in c2aModelOptions" :key="model" :label="model" :value="model" />
+          </el-select>
         </div>
         <div class="model-grid">
           <div v-for="type in TASK_TYPES" :key="type" class="model-cell">
             <span class="model-cell__label">{{ taskTypeLabel(type) }}</span>
-            <el-input
+            <el-select
               v-model="form.taskModelOverrides[type]"
+              filterable
+              allow-create
+              default-first-option
               :placeholder="form.taskModelDefault || 'gpt-image-2'"
               clearable
-            />
+              style="width: 100%"
+            >
+              <el-option
+                v-for="model in c2aModelOptions"
+                :key="`${type}-${model}`"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
           </div>
         </div>
         <div class="text-muted" style="margin-top: 10px">留空的类型自动使用默认模型</div>
       </PageCard>
 
       <!-- 运营配置 -->
-      <PageCard class="settings-card is-operations">
+      <PageCard v-if="activeSection === 'business'" class="settings-card is-operations">
         <template #header>
           <div class="card-head">
             <span class="card-head__icon is-success"
@@ -466,21 +620,23 @@ function clearSavedSub2apiKey() {
       </PageCard>
 
       <!-- chatgpt2api -->
-      <PageCard class="settings-card is-upstream">
+      <PageCard v-if="activeSection === 'models'" class="settings-card is-upstream">
         <template #header>
           <div class="card-head">
             <span class="card-head__icon is-info"
               ><el-icon :size="16"><Connection /></el-icon
             ></span>
             <div>
-              <div class="page-card__title">图片生成上游</div>
-              <div class="page-card__subtitle">核心生成链路，修改后新任务立即使用</div>
+              <div class="page-card__title">① 连接图片生成服务</div>
+              <div class="page-card__subtitle">填写 Base URL 与密钥，然后读取实际可用模型</div>
             </div>
           </div>
         </template>
         <template #actions>
           <span class="config-badge">{{ upstreamSource }}</span>
-          <el-button :loading="testing" @click="testC2a">测试连通</el-button>
+          <el-button type="primary" plain :loading="testing" @click="testC2a()">
+            {{ testing ? '正在读取' : '② 读取模型' }}
+          </el-button>
         </template>
         <div class="setting-rows">
           <div class="setting-row is-stack">
@@ -523,6 +679,28 @@ function clearSavedSub2apiKey() {
             />
           </div>
         </div>
+        <div v-if="c2aModels.length" class="model-discovery">
+          <div class="model-discovery__head">
+            <div>
+              <strong>Base URL 返回的模型</strong>
+              <span>点击模型即可同步为默认任务模型</span>
+            </div>
+            <em>{{ c2aModels.length }}{{ c2aModelsTruncated ? ` / ${c2aModelTotal}` : '' }} 个</em>
+          </div>
+          <div class="model-chip-list">
+            <button
+              v-for="model in c2aModels"
+              :key="model"
+              type="button"
+              class="model-chip"
+              :class="{ 'is-selected': form.taskModelDefault === model }"
+              @click="setDefaultTaskModel(model)"
+            >
+              <span>{{ model }}</span>
+              <small>{{ form.taskModelDefault === model ? '当前默认' : '设为默认' }}</small>
+            </button>
+          </div>
+        </div>
         <el-alert
           v-if="testResult"
           :type="testResult.ok ? 'success' : 'error'"
@@ -536,14 +714,14 @@ function clearSavedSub2apiKey() {
       </PageCard>
 
       <!-- Sub2API 对话与生图 -->
-      <PageCard class="settings-card is-assistant">
+      <PageCard v-if="activeSection === 'models'" class="settings-card is-assistant">
         <template #header>
           <div class="card-head">
             <span class="card-head__icon is-assistant"
               ><el-icon :size="16"><ChatDotRound /></el-icon
             ></span>
             <div>
-              <div class="page-card__title">对话与生图助手</div>
+              <div class="page-card__title">AI 助手 · 接口与模型</div>
               <div class="page-card__subtitle">
                 用户端AI助手的 Sub2API 网关配置，保存后立即生效
               </div>
@@ -552,7 +730,9 @@ function clearSavedSub2apiKey() {
         </template>
         <template #actions>
           <span class="config-badge is-assistant">{{ sub2apiSource }}</span>
-          <el-button :loading="testingSub2api" @click="testSub2api">测试连通</el-button>
+          <el-button type="primary" plain :loading="testingSub2api" @click="testSub2api()">
+            {{ testingSub2api ? '正在读取' : '读取模型' }}
+          </el-button>
         </template>
         <div class="assistant-settings-grid">
           <div class="setting-row is-stack is-url">
@@ -596,14 +776,79 @@ function clearSavedSub2apiKey() {
               <div class="setting-row__label">对话模型</div>
               <div class="setting-row__desc">留空时使用环境变量或默认模型</div>
             </div>
-            <el-input v-model="form.sub2apiChatModel" placeholder="gpt-5.4" clearable />
+            <el-select
+              v-model="form.sub2apiChatModel"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="选择 Base URL 返回的对话模型"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="model in sub2apiChatCandidates"
+                :key="`chat-${model}`"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
+          </div>
+          <div class="setting-row is-stack">
+            <div class="setting-row__copy">
+              <div class="setting-row__label">用户可选对话模型</div>
+              <div class="setting-row__desc">
+                勾选后仅同步这些模型给用户端 Agent；未勾选时自动使用上游模型列表
+              </div>
+            </div>
+            <div class="model-mapping-toolbar">
+              <el-select
+                v-model="selectedAssistantModelIds"
+                multiple
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择允许用户使用的模型"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="model in sub2apiChatCandidates"
+                  :key="`select-${model}`"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
+              <el-button :disabled="!sub2apiChatCandidates.length" @click="syncDiscoveredChatModels">
+                全部同步
+              </el-button>
+            </div>
+            <div v-if="form.sub2apiChatModels.length" class="model-mapping-list">
+              <div v-for="item in form.sub2apiChatModels" :key="item.model" class="model-mapping-row">
+                <span :title="item.model">{{ item.model }}</span>
+                <el-input v-model="item.label" placeholder="用户端显示名称" />
+              </div>
+            </div>
           </div>
           <div class="setting-row is-stack">
             <div class="setting-row__copy">
               <div class="setting-row__label">生图模型</div>
               <div class="setting-row__desc">留空时使用环境变量或默认模型</div>
             </div>
-            <el-input v-model="form.sub2apiImageModel" placeholder="gpt-image-2" clearable />
+            <el-select
+              v-model="form.sub2apiImageModel"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="选择 Base URL 返回的生图模型"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="model in sub2apiImageCandidates"
+                :key="`image-${model}`"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
           </div>
           <div class="setting-row is-timeout">
             <div class="setting-row__copy">
@@ -618,6 +863,19 @@ function clearSavedSub2apiKey() {
               controls-position="right"
               style="width: 140px"
             />
+          </div>
+        </div>
+        <div v-if="sub2apiModels.length" class="model-discovery is-assistant">
+          <div class="model-discovery__head">
+            <div>
+              <strong>Sub2API 返回的模型</strong>
+              <span>已自动用于上方下拉选择，无需手工复制模型 ID</span>
+            </div>
+            <em>{{ sub2apiModels.length }}{{ sub2apiModelsTruncated ? ` / ${sub2apiModelTotal}` : '' }} 个</em>
+          </div>
+          <div class="model-summary">
+            <span>建议对话模型 {{ sub2apiChatCandidates.length }} 个</span>
+            <span>可选生图模型 {{ sub2apiImageCandidates.length }} 个</span>
           </div>
         </div>
         <el-alert
@@ -638,9 +896,12 @@ function clearSavedSub2apiKey() {
 <style scoped>
 .settings-page {
   display: grid;
-  max-width: 1440px;
-  gap: 14px;
-  padding: 24px 28px 36px;
+  width: 100%;
+  max-width: 1600px;
+  box-sizing: border-box;
+  gap: 16px;
+  margin: 0 auto;
+  padding: 20px 24px 36px;
 }
 
 .settings-header {
@@ -653,7 +914,6 @@ function clearSavedSub2apiKey() {
   gap: 20px;
   min-height: 70px;
   padding: 10px 0 12px;
-  border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(14px);
 }
@@ -694,6 +954,66 @@ function clearSavedSub2apiKey() {
   gap: 10px;
 }
 
+.settings-section-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-section-tabs button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink-3);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.settings-section-tabs button:hover {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+
+.settings-section-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.settings-section-tabs button > .el-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.settings-section-tabs button > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.settings-section-tabs strong {
+  font-size: 13px;
+}
+
+.settings-section-tabs small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .save-state {
   display: inline-flex;
   align-items: center;
@@ -727,6 +1047,14 @@ function clearSavedSub2apiKey() {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+
+.settings-overview.is-models-section {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-overview.is-business-section {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .overview-item {
@@ -809,18 +1137,34 @@ function clearSavedSub2apiKey() {
     color: var(--warning);
     background: var(--warning-soft);
   }
+
+  &.is-assistant {
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+  }
 }
 
 .settings-grid {
   display: grid;
   grid-template-areas:
-    'upstream upstream'
-    'assistant assistant'
-    'models operations'
-    'pricing pricing';
-  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
-  gap: 14px;
+    'upstream upstream upstream upstream upstream assistant assistant assistant assistant assistant assistant assistant'
+    'models models models models models models models models models models models models'
+    'operations operations operations operations pricing pricing pricing pricing pricing pricing pricing pricing';
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
   align-items: start;
+}
+
+.settings-grid.is-models-section {
+  grid-template-areas:
+    'upstream upstream upstream upstream upstream upstream upstream upstream upstream upstream upstream upstream'
+    'models models models models models models models models models models models models'
+    'assistant assistant assistant assistant assistant assistant assistant assistant assistant assistant assistant assistant';
+}
+
+.settings-grid.is-business-section {
+  grid-template-areas:
+    'operations operations operations operations pricing pricing pricing pricing pricing pricing pricing pricing';
 }
 
 .settings-card {
@@ -919,6 +1263,147 @@ function clearSavedSub2apiKey() {
   gap: 14px 18px;
 }
 
+.model-discovery {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--info) 24%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--info-soft) 55%, var(--surface));
+}
+
+.model-discovery.is-assistant {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface));
+}
+
+.model-discovery__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-discovery__head > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.model-discovery__head strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.model-discovery__head span,
+.model-discovery__head em {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.model-discovery__head em {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.model-chip-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 216px;
+  overflow: auto;
+  padding-right: 3px;
+  overscroll-behavior: contain;
+}
+
+.model-chip {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--ink-2);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.model-chip:hover,
+.model-chip.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.model-chip span {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-chip small {
+  flex: 0 0 auto;
+  color: inherit;
+  font-size: 9px;
+  opacity: 0.72;
+}
+
+.model-summary,
+.model-mapping-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-summary span {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+  background: var(--surface);
+}
+
+.model-mapping-toolbar > :first-child {
+  min-width: 0;
+}
+
+.model-mapping-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.model-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.85fr) minmax(160px, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.model-mapping-row > span {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .assistant-settings-grid .setting-row {
   padding: 0;
   border: 0;
@@ -958,7 +1443,7 @@ function clearSavedSub2apiKey() {
 
 .price-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1022,7 +1507,7 @@ function clearSavedSub2apiKey() {
 
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1110,8 +1595,25 @@ function clearSavedSub2apiKey() {
     grid-template-columns: 1fr;
   }
 
+  .settings-grid.is-models-section {
+    grid-template-areas:
+      'upstream'
+      'models'
+      'assistant';
+  }
+
+  .settings-grid.is-business-section {
+    grid-template-areas:
+      'operations'
+      'pricing';
+  }
+
   .price-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .model-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1131,6 +1633,10 @@ function clearSavedSub2apiKey() {
   }
 
   .settings-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-section-tabs {
     grid-template-columns: 1fr;
   }
 
@@ -1157,6 +1663,17 @@ function clearSavedSub2apiKey() {
 
   .price-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-chip-list,
+  .model-mapping-row {
+    grid-template-columns: 1fr;
+  }
+
+  .model-mapping-toolbar,
+  .model-summary {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 </style>

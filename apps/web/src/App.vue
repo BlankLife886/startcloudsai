@@ -65,6 +65,27 @@ function applyPreferenceHtmlClasses() {
   root.classList.toggle('settings-no-blur', !settingsStore.settings.enable_blur_effects)
 }
 
+function recoverDocumentScroll() {
+  if (typeof document === 'undefined') return
+  if (!['home', 'updates'].includes(String(route.name || ''))) return
+
+  // 这两个页面使用文档滚动。仅在对应遮罩已经不存在时清理上个页面遗留的锁，
+  // 避免公告弹窗或移动端菜单仍打开时误放开背景页。
+  if (document.querySelector('.announcement-layer, .msheet-root')) return
+
+  const root = document.documentElement
+  const body = document.body
+  root.classList.remove('nav-mobile-open', 'assistant-image-viewer-open')
+  body.classList.remove('nav-mobile-open', 'share-detail-open', 'profile-overlay-open')
+  body.style.removeProperty('overflow')
+  body.style.removeProperty('position')
+  body.style.removeProperty('top')
+  body.style.removeProperty('left')
+  body.style.removeProperty('right')
+  body.style.removeProperty('width')
+  delete body.dataset.announcementScrollLock
+}
+
 watch(
   () => settingsStore.settings,
   () => applyPreferenceHtmlClasses(),
@@ -76,7 +97,10 @@ watch(
   () => {
     if (typeof window === 'undefined') return
     void nextTick().then(() => {
-      window.requestAnimationFrame(() => updateScrollUi(false))
+      window.requestAnimationFrame(() => {
+        recoverDocumentScroll()
+        updateScrollUi(false)
+      })
     })
   },
 )
@@ -100,6 +124,8 @@ onMounted(() => {
   settingsStore.initSettings().finally(() => {
     applyPreferenceHtmlClasses()
   })
+
+  recoverDocumentScroll()
 
   window.addEventListener('scroll', handleScroll, { passive: true })
   window.addEventListener('resize', handleScroll, { passive: true })

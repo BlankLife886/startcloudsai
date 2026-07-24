@@ -33,8 +33,22 @@ func (s *Server) adminAudit(c *gin.Context) {
 	}
 	var body []byte
 	if c.Request.Body != nil {
-		body, _ = io.ReadAll(io.LimitReader(c.Request.Body, auditBodyReadLimit))
-		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		// multipart 中包含图片等二进制数据，不需要写入审计详情，也不能为了
+		// 截取摘要提前消费请求体。之前这里只把前 64KB 放回 Body，导致所有
+		// 超过 64KB 的后台上传都在 handler 中得到 unexpected EOF。
+		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+			original := c.Request.Body
+			body, _ = io.ReadAll(io.LimitReader(original, auditBodyReadLimit))
+			// 把已读取的前缀和尚未读取的剩余流重新拼接，业务 handler 仍能读取
+			// 完整正文；关闭新 Body 时同时关闭原始网络流。
+			c.Request.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.MultiReader(bytes.NewReader(body), original),
+				Closer: original,
+			}
+		}
 	}
 	c.Next()
 

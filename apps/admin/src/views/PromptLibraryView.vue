@@ -16,6 +16,7 @@ import {
 } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
 import { TASK_TYPES, taskTypeLabel } from '@/utils'
+import draggable from 'vuedraggable'
 
 interface PromptItem {
   id: string
@@ -26,6 +27,9 @@ interface PromptItem {
   tags: string[]
   coverUrl?: string | null
   sort: number
+  likeCount: number
+  favoriteCount: number
+  useCount: number
   active: boolean
   createdAt?: string
   /** 远程源导入的词条携带来源 id（契约 v4，后端未返回时为空） */
@@ -89,6 +93,7 @@ const typeFilter = ref('all')
 const statusFilter = ref('all')
 let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
 const items = ref<PromptItem[]>([])
+const promptScopeTotal = ref(0)
 const loading = ref(false)
 const loadingMore = ref(false)
 const error = ref<string | null>(null)
@@ -114,6 +119,7 @@ function promptQueryParams(cursor: string | null) {
   return {
     type: typeFilter.value === 'all' ? '' : typeFilter.value,
     category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
+    status: statusFilter.value === 'all' ? '' : statusFilter.value,
     search: query.value.trim(),
     limit: 24,
     cursor,
@@ -135,6 +141,7 @@ async function reset() {
     if (version !== promptRequestVersion) return
     items.value = page.items
     nextCursor.value = page.nextCursor
+    promptScopeTotal.value = page.scopeTotal ?? page.total ?? page.items.length
     const loadedIds = new Set(page.items.map((item) => item.id))
     for (const id of selectedIds) {
       if (!loadedIds.has(id)) selectedIds.delete(id)
@@ -262,13 +269,7 @@ function onPromptScroll() {
   }, 140)
 }
 
-/** 启停/封面筛选（契约无该查询参数，作用于当前页） */
-const visibleItems = computed(() => {
-  if (statusFilter.value === 'enabled') return items.value.filter((item) => item.active)
-  if (statusFilter.value === 'disabled') return items.value.filter((item) => !item.active)
-  if (statusFilter.value === 'missing-cover') return items.value.filter((item) => !item.coverUrl)
-  return items.value
-})
+const visibleItems = computed(() => items.value)
 
 /* 多选编辑：只操作当前已经加载且可见的提示词，避免误改筛选范围之外的数据。 */
 const selectedIds = reactive(new Set<string>())
@@ -379,16 +380,7 @@ async function applyBatchEdit() {
   }
 }
 
-/* 拖动归类：从卡片手柄拖到左侧分类，PATCH 成功后同步当前筛选结果。 */
-const draggingItem = ref<PromptItem | null>(null)
-const dragTargetCategory = ref('')
-const movingItemId = ref('')
-const dragPointer = reactive({ x: 0, y: 0 })
 const updatingItemFields = reactive(new Set<string>())
-
-const dragTargetMeta = computed(() =>
-  dragTargetCategory.value ? categoryMeta(dragTargetCategory.value) : null,
-)
 
 const headerStatus = computed(() => {
   if (batchSaving.value) {
@@ -396,13 +388,6 @@ const headerStatus = computed(() => {
   }
   if (selectedItems.value.length) {
     return { tone: 'is-selecting', title: '多选编辑', detail: `已选 ${selectedItems.value.length} 条` }
-  }
-  if (movingItemId.value) {
-    return { tone: 'is-saving', title: '正在更新分类', detail: '保存中' }
-  }
-  if (draggingItem.value) {
-    const target = dragTargetCategory.value ? categoryMeta(dragTargetCategory.value).label : '选择目标分类'
-    return { tone: 'is-dragging', title: draggingItem.value.title, detail: `目标：${target}` }
   }
   if (refreshing.value) {
     return { tone: 'is-saving', title: categoryMeta(categoryFilter.value).label, detail: '正在更新内容' }
@@ -413,62 +398,6 @@ const headerStatus = computed(() => {
     detail: `本页 ${visibleItems.value.length} 条`,
   }
 })
-
-function categoryAtPoint(x: number, y: number) {
-  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-prompt-category]')
-  const value = target?.dataset.promptCategory ?? ''
-  if (!value || value === 'all') return null
-  return CATEGORY_OPTIONS.find((category) => category.value === value) ?? null
-}
-
-function startCategoryDrag(item: PromptItem, event: PointerEvent) {
-  if (movingItemId.value) {
-    event.preventDefault()
-    return
-  }
-  if (event.pointerType === 'mouse' && event.button !== 0) return
-  event.preventDefault()
-  draggingItem.value = item
-  dragTargetCategory.value = ''
-  dragPointer.x = event.clientX
-  dragPointer.y = event.clientY
-}
-
-function finishCategoryDrag() {
-  draggingItem.value = null
-  dragTargetCategory.value = ''
-}
-
-function moveCategoryDrag(event: PointerEvent) {
-  if (!draggingItem.value) return
-  event.preventDefault()
-  dragPointer.x = event.clientX
-  dragPointer.y = event.clientY
-  dragTargetCategory.value = categoryAtPoint(event.clientX, event.clientY)?.value ?? ''
-}
-
-async function finishPointerCategoryDrag(event: PointerEvent) {
-  const item = draggingItem.value
-  const category = categoryAtPoint(event.clientX, event.clientY)
-  finishCategoryDrag()
-  if (!item || !category || item.category === category.value || movingItemId.value) return
-
-  const previousCategory = item.category
-  item.category = category.value
-  movingItemId.value = item.id
-  try {
-    await request(`/api/admin/prompt-library/${item.id}`, {
-      method: 'PATCH',
-      body: { category: category.value },
-    })
-    ElMessage.success(`已移入「${category.label}」`)
-    if (categoryFilter.value !== 'all') await refresh()
-  } catch {
-    item.category = previousCategory
-  } finally {
-    movingItemId.value = ''
-  }
-}
 
 function categoryOptionsFor(item: PromptItem) {
   const options = CATEGORY_OPTIONS.slice(1)
@@ -509,6 +438,72 @@ async function quickChangeTaskType(item: PromptItem, taskType: string) {
     item.taskType = previous
   } finally {
     updatingItemFields.delete(key)
+  }
+}
+
+const quickSortOpen = ref(false)
+const quickSortLoading = ref(false)
+const quickSortSaving = ref(false)
+const quickSortItem = ref<PromptItem | null>(null)
+const quickSortPosition = ref(1)
+const quickSortCount = ref(1)
+const quickSortScope = ref({ taskType: '', category: '', status: '' })
+
+function currentSortScope() {
+  return {
+    taskType: typeFilter.value === 'all' ? '' : typeFilter.value,
+    category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
+    status: statusFilter.value === 'all' ? '' : statusFilter.value,
+  }
+}
+
+async function openQuickSort(item: PromptItem) {
+  quickSortItem.value = item
+  quickSortPosition.value = 1
+  quickSortCount.value = Math.max(1, promptScopeTotal.value)
+  quickSortScope.value = currentSortScope()
+  quickSortOpen.value = true
+  quickSortLoading.value = true
+  try {
+    const scope = quickSortScope.value
+    const result = await request<{ position: number; count: number }>(
+      `/api/admin/prompt-library/${item.id}/position`,
+      {
+        query: { type: scope.taskType, category: scope.category, status: scope.status },
+      },
+    )
+    if (quickSortItem.value?.id !== item.id) return
+    quickSortPosition.value = result.position
+    quickSortCount.value = result.count
+  } finally {
+    quickSortLoading.value = false
+  }
+}
+
+async function submitQuickSort(position = quickSortPosition.value) {
+  const item = quickSortItem.value
+  if (!item || quickSortSaving.value) return
+  const scope = quickSortScope.value
+  const target = Math.max(1, Math.min(Math.round(position || 1), quickSortCount.value))
+  quickSortSaving.value = true
+  try {
+    const result = await request<{ position: number; count: number }>(
+      `/api/admin/prompt-library/${item.id}/move`,
+      {
+        method: 'POST',
+        body: {
+          position: target,
+          taskType: scope.taskType,
+          category: scope.category,
+          status: scope.status,
+        },
+      },
+    )
+    quickSortOpen.value = false
+    ElMessage.success(`「${item.title}」已移到当前范围第 ${result.position} 位`)
+    await refresh()
+  } finally {
+    quickSortSaving.value = false
   }
 }
 
@@ -572,7 +567,7 @@ function scheduleReload() {
   )
 }
 
-watch([query, categoryFilter, typeFilter], scheduleReload)
+watch([query, categoryFilter, typeFilter, statusFilter], scheduleReload)
 watch(statusFilter, clearSelection)
 
 function resetFilters() {
@@ -580,6 +575,176 @@ function resetFilters() {
   categoryFilter.value = 'all'
   typeFilter.value = 'all'
   statusFilter.value = 'all'
+}
+
+/* 大规模排序管理：服务端分页，每次只渲染一小段；跨页移动直接输入目标名次。
+ * 当前页拖拽仍使用批量重排，未参与排序的条目保持原有相对位置。 */
+const SORT_PAGE_SIZE = 60
+const sortDrawerOpen = ref(false)
+const sortLoading = ref(false)
+const sortSaving = ref(false)
+const sortItems = ref<PromptItem[]>([])
+const sortSnapshot = ref<string[]>([])
+const sortQuery = ref('')
+const sortCategory = ref('all')
+const sortType = ref('all')
+const sortStatus = ref('all')
+const sortPage = ref(1)
+const sortCursors = ref<(string | null)[]>([null])
+const sortNextCursor = ref<string | null>(null)
+const sortMatchTotal = ref(0)
+const sortScopeTotal = ref(0)
+const sortSelectedId = ref('')
+const sortTargetPosition = ref(1)
+let sortFilterTimer: ReturnType<typeof setTimeout> | null = null
+const sortDirty = computed(
+  () => sortItems.value.map((item) => item.id).join('|') !== sortSnapshot.value.join('|'),
+)
+const sortSelectedItem = computed(() => sortItems.value.find((item) => item.id === sortSelectedId.value) ?? null)
+const sortIsSearching = computed(() => Boolean(sortQuery.value.trim()))
+const sortRangeStart = computed(() => (sortPage.value - 1) * SORT_PAGE_SIZE + (sortItems.value.length ? 1 : 0))
+const sortRangeEnd = computed(() => (sortPage.value - 1) * SORT_PAGE_SIZE + sortItems.value.length)
+
+async function loadSortItems(resetPaging = false) {
+  if (resetPaging) {
+    sortPage.value = 1
+    sortCursors.value = [null]
+  }
+  sortLoading.value = true
+  try {
+    const page: Page<PromptItem> = normalizeList(
+      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+        query: {
+          type: sortType.value === 'all' ? '' : sortType.value,
+          category: sortCategory.value === 'all' ? '' : sortCategory.value,
+          status: sortStatus.value === 'all' ? '' : sortStatus.value,
+          search: sortQuery.value.trim(),
+          limit: SORT_PAGE_SIZE,
+          cursor: sortCursors.value[sortPage.value - 1],
+        },
+        silent: true,
+      }),
+    )
+    sortItems.value = page.items
+    sortNextCursor.value = page.nextCursor
+    sortMatchTotal.value = page.total ?? page.items.length
+    sortScopeTotal.value = page.scopeTotal ?? sortMatchTotal.value
+    if (page.nextCursor) sortCursors.value[sortPage.value] = page.nextCursor
+    sortSnapshot.value = sortItems.value.map((item) => item.id)
+    if (!sortItems.value.some((item) => item.id === sortSelectedId.value)) {
+      sortSelectedId.value = ''
+    }
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '排序列表加载失败')
+  } finally {
+    sortLoading.value = false
+  }
+}
+
+function openSortDrawer() {
+  sortQuery.value = query.value.trim()
+  sortCategory.value = categoryFilter.value
+  sortType.value = typeFilter.value
+  sortStatus.value = statusFilter.value
+  sortSelectedId.value = ''
+  sortTargetPosition.value = 1
+  sortDrawerOpen.value = true
+  void loadSortItems(true)
+}
+
+function beforeCloseSortDrawer(done: () => void) {
+  if (!sortDirty.value || sortSaving.value) {
+    done()
+    return
+  }
+  void ElMessageBox.confirm('当前排序还没有保存，确定放弃这些调整吗？', '放弃排序调整', {
+    type: 'warning',
+    confirmButtonText: '放弃调整',
+    cancelButtonText: '继续排序',
+  }).then(done).catch(() => undefined)
+}
+
+function moveSortItem(index: number, destination: number) {
+  if (index < 0 || index >= sortItems.value.length) return
+  const target = Math.max(0, Math.min(destination, sortItems.value.length - 1))
+  if (target === index) return
+  const [item] = sortItems.value.splice(index, 1)
+  if (item) sortItems.value.splice(target, 0, item)
+}
+
+function selectSortItem(item: PromptItem, index: number) {
+  sortSelectedId.value = item.id
+  sortTargetPosition.value = sortIsSearching.value
+    ? Math.max(1, Math.min(sortTargetPosition.value, sortScopeTotal.value))
+    : (sortPage.value - 1) * SORT_PAGE_SIZE + index + 1
+}
+
+function reloadSortForFilters() {
+  if (!sortDrawerOpen.value) return
+  if (sortFilterTimer) clearTimeout(sortFilterTimer)
+  sortFilterTimer = setTimeout(() => {
+    sortFilterTimer = null
+    void loadSortItems(true)
+  }, sortQuery.value.trim() ? 280 : 50)
+}
+
+watch([sortQuery, sortCategory, sortType, sortStatus], reloadSortForFilters)
+
+async function changeSortPage(direction: -1 | 1) {
+  if (sortDirty.value) {
+    ElMessage.warning('请先保存或撤销当前页的拖拽调整')
+    return
+  }
+  const nextPage = sortPage.value + direction
+  if (nextPage < 1 || (direction > 0 && !sortNextCursor.value)) return
+  sortPage.value = nextPage
+  await loadSortItems()
+}
+
+async function saveSortOrder(refreshLibrary = true) {
+  if (!sortItems.value.length || !sortDirty.value || sortSaving.value) return false
+  sortSaving.value = true
+  try {
+    await request('/api/admin/prompt-library/reorder', {
+      method: 'POST',
+      body: { ids: sortItems.value.map((item) => item.id) },
+    })
+    sortSnapshot.value = sortItems.value.map((item) => item.id)
+    ElMessage.success(`已保存当前页 ${sortItems.value.length} 条提示词的顺序`)
+    if (refreshLibrary) await refresh()
+    return true
+  } finally {
+    sortSaving.value = false
+  }
+}
+
+async function moveSelectedPrompt(position = sortTargetPosition.value) {
+  const item = sortSelectedItem.value
+  if (!item || sortSaving.value) return
+  if (sortDirty.value && !(await saveSortOrder(false))) return
+  const target = Math.max(1, Math.min(Math.round(position || 1), sortScopeTotal.value || 1))
+  sortSaving.value = true
+  try {
+    const result = await request<{ position: number; count: number }>(
+      `/api/admin/prompt-library/${item.id}/move`,
+      {
+        method: 'POST',
+        body: {
+          position: target,
+          taskType: sortType.value === 'all' ? '' : sortType.value,
+          category: sortCategory.value === 'all' ? '' : sortCategory.value,
+          status: sortStatus.value === 'all' ? '' : sortStatus.value,
+        },
+      },
+    )
+    sortTargetPosition.value = result.position
+    sortScopeTotal.value = result.count
+    ElMessage.success(`「${item.title}」已移到当前范围第 ${result.position} 位`)
+    await loadSortItems(true)
+    await refresh()
+  } finally {
+    sortSaving.value = false
+  }
 }
 
 /* 新建/编辑对话框 */
@@ -595,6 +760,9 @@ const form = reactive({
   taskType: 't2i',
   tagsText: '',
   sort: 100,
+  likeCount: 0,
+  favoriteCount: 0,
+  useCount: 0,
   active: true,
 })
 
@@ -606,6 +774,9 @@ function openEditor(item: PromptItem | null = null) {
   form.taskType = item?.taskType ?? 't2i'
   form.tagsText = Array.isArray(item?.tags) ? item.tags.join('，') : ''
   form.sort = item?.sort ?? 100
+  form.likeCount = Math.max(0, Number(item?.likeCount) || 0)
+  form.favoriteCount = Math.max(0, Number(item?.favoriteCount) || 0)
+  form.useCount = Math.max(0, Number(item?.useCount) || 0)
   form.active = item?.active !== false
   pendingImage.value = null
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
@@ -664,7 +835,10 @@ async function save() {
         .split(/[，,\n]/)
         .map((tag) => tag.trim())
         .filter(Boolean),
-      sort: form.sort,
+      ...(editingId.value ? { sort: form.sort } : {}),
+      likeCount: form.likeCount,
+      favoriteCount: form.favoriteCount,
+      useCount: form.useCount,
       active: form.active,
     }
     const creating = !editingId.value
@@ -910,9 +1084,6 @@ async function saveSource() {
 onMounted(() => {
   updateGridColumnCount()
   window.addEventListener('resize', updateGridColumnCount, { passive: true })
-  window.addEventListener('pointermove', moveCategoryDrag, { passive: false })
-  window.addEventListener('pointerup', finishPointerCategoryDrag)
-  window.addEventListener('pointercancel', finishCategoryDrag)
   if (typeof ResizeObserver !== 'undefined') {
     bodyResizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -929,9 +1100,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateGridColumnCount)
-  window.removeEventListener('pointermove', moveCategoryDrag)
-  window.removeEventListener('pointerup', finishPointerCategoryDrag)
-  window.removeEventListener('pointercancel', finishCategoryDrag)
   promptLoadObserver?.disconnect()
   coverLoadObserver?.disconnect()
   bodyResizeObserver?.disconnect()
@@ -939,6 +1107,7 @@ onBeforeUnmount(() => {
   bodyElements.clear()
   visibleCoverIds.clear()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
+  if (sortFilterTimer) clearTimeout(sortFilterTimer)
   if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
 })
@@ -966,6 +1135,7 @@ onBeforeUnmount(() => {
           >
             {{ selectionMode ? '退出多选' : '多选编辑' }}
           </el-button>
+          <el-button :icon="Rank" @click="openSortDrawer">批量排序</el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
           <el-button type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
         </div>
@@ -1004,7 +1174,7 @@ onBeforeUnmount(() => {
 
     <section class="library-workspace">
       <div class="items-workspace">
-        <aside class="category-rail" :class="{ 'is-receiving-drop': Boolean(draggingItem) }">
+        <aside class="category-rail">
           <div class="category-rail__title">
             <span>内容分类</span>
             <small>{{ items.length }}</small>
@@ -1015,8 +1185,6 @@ onBeforeUnmount(() => {
             type="button"
             :class="{
               'is-active': categoryFilter === category.value,
-              'is-drop-target': dragTargetCategory === category.value,
-              'is-drop-disabled': Boolean(draggingItem) && category.value === 'all',
             }"
             @click="categoryFilter = category.value"
             :data-prompt-category="category.value"
@@ -1120,8 +1288,6 @@ onBeforeUnmount(() => {
                   class="prompt-card"
                   :class="{
                     'is-disabled': !item.active,
-                    'is-dragging': draggingItem?.id === item.id,
-                    'is-moving': movingItemId === item.id,
                     'is-selected': selectedIds.has(item.id),
                     'is-selection-mode': selectionMode,
                   }"
@@ -1178,17 +1344,19 @@ onBeforeUnmount(() => {
                     <header>
                       <div>
                         <strong :title="item.title">{{ item.title }}</strong>
-                        <small>{{ categoryMeta(item.category).label }} · 排序 {{ item.sort }}</small>
+                        <small>
+                          {{ categoryMeta(item.category).label }} · 👍 {{ item.likeCount || 0 }} · ❤
+                          {{ item.favoriteCount || 0 }} · 使用 {{ item.useCount || 0 }}
+                        </small>
                       </div>
                       <div class="prompt-card__header-actions">
-                        <el-tooltip content="拖动到左侧分类" placement="top">
+                        <el-tooltip content="直接调整展示顺序" placement="top">
                           <button
                             type="button"
-                            class="prompt-drag-handle"
-                            :disabled="Boolean(movingItemId) || selectionMode"
-                            aria-label="拖动提示词分类"
-                            @click.stop.prevent
-                            @pointerdown="startCategoryDrag(item, $event)"
+                            class="prompt-drag-handle prompt-quick-sort-trigger"
+                            :disabled="selectionMode"
+                            aria-label="调整提示词展示顺序"
+                            @click.stop="openQuickSort(item)"
                           >
                             <el-icon><Rank /></el-icon>
                           </button>
@@ -1276,110 +1444,329 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <Teleport to="body">
-      <Transition name="prompt-drag-preview">
-        <div
-          v-if="draggingItem"
-          class="prompt-drag-preview"
-          :class="{ 'has-target': Boolean(dragTargetMeta) }"
-          :style="{ left: `${dragPointer.x}px`, top: `${dragPointer.y}px` }"
-        >
-          <img v-if="draggingItem.coverUrl" :src="draggingItem.coverUrl" alt="" />
-          <span v-else><el-icon><Picture /></el-icon></span>
+    <el-dialog
+      v-model="quickSortOpen"
+      title="调整展示顺序"
+      width="min(520px, 92vw)"
+      append-to-body
+      align-center
+      class="prompt-quick-sort-dialog"
+    >
+      <div v-loading="quickSortLoading" class="prompt-quick-sort-panel">
+        <div v-if="quickSortItem" class="prompt-quick-sort-item">
+          <span class="prompt-quick-sort-cover">
+            <img v-if="quickSortItem.coverUrl" :src="quickSortItem.coverUrl" :alt="quickSortItem.title" />
+            <el-icon v-else><Picture /></el-icon>
+          </span>
+          <span>
+            <small>正在调整</small>
+            <strong>{{ quickSortItem.title }}</strong>
+            <em>
+              {{ quickSortScope.category ? categoryMeta(quickSortScope.category).label : '全部内容' }} ·
+              {{ quickSortScope.taskType ? taskTypeLabel(quickSortScope.taskType) : '全部功能' }}
+            </em>
+          </span>
+        </div>
+        <div class="prompt-quick-sort-rank">
+          <span>当前位于</span>
+          <strong>第 {{ quickSortPosition }} 位</strong>
+          <small>当前范围共 {{ quickSortCount }} 条</small>
+        </div>
+        <label class="prompt-quick-sort-input">
+          <span>移动到目标名次</span>
+          <el-input-number
+            v-model="quickSortPosition"
+            :min="1"
+            :max="Math.max(1, quickSortCount)"
+            controls-position="right"
+            :disabled="quickSortLoading || quickSortSaving"
+          />
+        </label>
+        <p>无需拖动或翻页，输入名次后保存即可；其他提示词会自动顺延。</p>
+      </div>
+      <template #footer>
+        <div class="prompt-quick-sort-footer">
+          <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(1)">置顶</el-button>
+          <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(quickSortCount)">置底</el-button>
+          <span />
+          <el-button :disabled="quickSortSaving" @click="quickSortOpen = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="quickSortSaving"
+            :disabled="quickSortLoading"
+            @click="submitQuickSort()"
+          >
+            保存位置
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-drawer
+      v-model="sortDrawerOpen"
+      title="提示词排序管理"
+      size="min(820px, 98vw)"
+      append-to-body
+      :before-close="beforeCloseSortDrawer"
+      class="prompt-sort-drawer"
+    >
+      <div class="prompt-sort-panel">
+        <header class="prompt-sort-summary">
           <div>
-            <strong>{{ draggingItem.title }}</strong>
-            <small>
-              {{ categoryMeta(draggingItem.category).label }}
-              <template v-if="dragTargetMeta"> → {{ dragTargetMeta.label }}</template>
-            </small>
+            <strong>分页定位排序</strong>
+            <span>
+              当前范围 {{ sortScopeTotal }} 条，每页仅渲染 {{ SORT_PAGE_SIZE }} 条
+            </span>
+          </div>
+          <el-button :loading="sortLoading" :icon="Refresh" @click="loadSortItems(false)">重新载入</el-button>
+        </header>
+
+        <div class="prompt-sort-filters">
+          <el-input v-model="sortQuery" clearable :prefix-icon="Search" placeholder="搜索名称或提示词，快速定位目标" />
+          <el-select v-model="sortCategory" aria-label="排序分类">
+            <el-option v-for="category in CATEGORY_OPTIONS" :key="category.value" :label="category.label" :value="category.value" />
+          </el-select>
+          <el-select v-model="sortType" aria-label="排序功能">
+            <el-option label="全部功能" value="all" />
+            <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+          </el-select>
+          <el-select v-model="sortStatus" aria-label="排序状态">
+            <el-option label="全部状态" value="all" />
+            <el-option label="已启用" value="enabled" />
+            <el-option label="已停用" value="disabled" />
+            <el-option label="缺少封面" value="missing-cover" />
+          </el-select>
+        </div>
+
+        <div v-if="sortSelectedItem" class="prompt-sort-positioner">
+          <span class="prompt-sort-positioner__item">
+            <img v-if="sortSelectedItem.coverUrl" :src="sortSelectedItem.coverUrl" alt="" />
+            <el-icon v-else><Picture /></el-icon>
+            <span><small>正在移动</small><strong>{{ sortSelectedItem.title }}</strong></span>
+          </span>
+          <span class="prompt-sort-positioner__controls">
+            <el-button :disabled="sortSaving" @click="moveSelectedPrompt(1)">置顶</el-button>
+            <span>移到第</span>
+            <el-input-number
+              v-model="sortTargetPosition"
+              :min="1"
+              :max="Math.max(1, sortScopeTotal)"
+              controls-position="right"
+              :disabled="sortSaving"
+            />
+            <span>位</span>
+            <el-button type="primary" :loading="sortSaving" @click="moveSelectedPrompt()">立即移动</el-button>
+            <el-button :disabled="sortSaving" @click="moveSelectedPrompt(sortScopeTotal)">置底</el-button>
+          </span>
+        </div>
+
+        <div v-if="sortIsSearching" class="prompt-sort-search-note">
+          搜索到 {{ sortMatchTotal }} 条。搜索用于快速选中目标；目标名次仍按“分类、功能、状态”范围计算。
+        </div>
+
+        <div v-if="sortLoading" class="prompt-sort-loading" v-loading="true" />
+        <div v-else-if="!sortItems.length" class="prompt-sort-empty">
+          <el-icon><Rank /></el-icon>
+          <strong>当前筛选范围没有提示词</strong>
+          <span>关闭排序管理后调整筛选条件再试</span>
+        </div>
+        <draggable
+          v-else
+          v-model="sortItems"
+          item-key="id"
+          handle=".prompt-sort-handle"
+          :animation="180"
+          :disabled="sortIsSearching"
+          ghost-class="is-sort-ghost"
+          drag-class="is-sort-dragging"
+          class="prompt-sort-list"
+        >
+          <template #item="{ element: item, index }">
+            <article
+              class="prompt-sort-row"
+              :class="{ 'is-selected': sortSelectedId === item.id, 'is-search-result': sortIsSearching }"
+              @click="selectSortItem(item, index)"
+            >
+              <button
+                type="button"
+                class="prompt-sort-handle"
+                :disabled="sortIsSearching"
+                :title="sortIsSearching ? '清除搜索后可拖动当前页' : '拖动当前页排序'"
+                aria-label="拖动排序"
+                @click.stop
+              >
+                <el-icon><Rank /></el-icon>
+              </button>
+              <span class="prompt-sort-index">{{ sortIsSearching ? '·' : (sortPage - 1) * SORT_PAGE_SIZE + index + 1 }}</span>
+              <span class="prompt-sort-cover">
+                <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.title" loading="lazy" />
+                <el-icon v-else><Picture /></el-icon>
+              </span>
+              <span class="prompt-sort-copy">
+                <strong :title="item.title">{{ item.title }}</strong>
+                <small>{{ categoryMeta(item.category).label }} · {{ taskTypeLabel(item.taskType) }}</small>
+              </span>
+              <span class="prompt-sort-actions">
+                <button type="button" title="选中并置顶" @click.stop="selectSortItem(item, index); moveSelectedPrompt(1)">⇈</button>
+                <button type="button" title="当前页上移" :disabled="sortIsSearching || index === 0" @click.stop="moveSortItem(index, index - 1)">↑</button>
+                <button type="button" title="当前页下移" :disabled="sortIsSearching || index === sortItems.length - 1" @click.stop="moveSortItem(index, index + 1)">↓</button>
+                <button type="button" title="选中并置底" @click.stop="selectSortItem(item, index); moveSelectedPrompt(sortScopeTotal)">⇊</button>
+              </span>
+            </article>
+          </template>
+        </draggable>
+
+        <div v-if="!sortLoading && sortItems.length" class="prompt-sort-pagination">
+          <span>
+            显示 {{ sortRangeStart }}–{{ sortRangeEnd }} / {{ sortMatchTotal }}
+            <template v-if="sortIsSearching">（排序范围共 {{ sortScopeTotal }} 条）</template>
+          </span>
+          <div>
+            <el-button :disabled="sortPage <= 1 || sortLoading" @click="changeSortPage(-1)">上一页</el-button>
+            <strong>第 {{ sortPage }} 页</strong>
+            <el-button :disabled="!sortNextCursor || sortLoading" @click="changeSortPage(1)">下一页</el-button>
           </div>
         </div>
-      </Transition>
-    </Teleport>
+
+        <footer class="prompt-sort-footer">
+          <span>{{ sortDirty ? '当前页顺序有改动，尚未保存' : '当前页顺序已保存' }}</span>
+          <div>
+            <el-button @click="sortDrawerOpen = false">关闭</el-button>
+            <el-button type="primary" :loading="sortSaving" :disabled="!sortDirty" @click="saveSortOrder()">
+              保存顺序
+            </el-button>
+          </div>
+        </footer>
+      </div>
+    </el-drawer>
 
     <el-dialog
       v-model="editorOpen"
-      :title="editingId ? '编辑提示词' : '新增提示词'"
-      width="min(1480px, 94vw)"
+      width="min(1280px, 94vw)"
       align-center
       append-to-body
       destroy-on-close
       class="prompt-editor-dialog prompt-content-editor"
     >
-      <el-form label-position="top" class="editor-form editor-form--wide">
-        <div class="editor-meta-grid">
-          <el-form-item label="名称"><el-input v-model="form.title" maxlength="80" /></el-form-item>
-          <el-form-item label="内容分类">
-            <el-select
-              v-model="form.category"
-              filterable
-              allow-create
-              default-first-option
-              placeholder="选择或输入新分类 key"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="category in CATEGORY_OPTIONS.slice(1)"
-                :key="category.value"
-                :label="`${category.label}（${category.value}）`"
-                :value="category.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="标签" class="editor-tags-field">
-            <el-input v-model="form.tagsText" placeholder="用逗号分隔，例如：电影感，人物，霓虹" />
-          </el-form-item>
+      <template #header>
+        <div class="editor-dialog-head">
+          <span class="editor-dialog-head__mark"><el-icon><EditPen /></el-icon></span>
+          <div>
+            <strong>{{ editingId ? '编辑提示词' : '新增提示词' }}</strong>
+            <small>完善内容与发布设置，保存后立即同步到用户端词库</small>
+          </div>
         </div>
+      </template>
+      <el-form label-position="top" class="editor-form editor-form--wide">
+        <section class="editor-basics-panel">
+          <div class="editor-section-head">
+            <div><strong>基础信息</strong><span>用于用户端搜索、分类和识别</span></div>
+          </div>
+          <div class="editor-meta-grid">
+            <el-form-item label="名称"><el-input v-model="form.title" maxlength="80" placeholder="请输入清晰易懂的提示词名称" /></el-form-item>
+            <el-form-item label="内容分类">
+              <el-select
+                v-model="form.category"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="选择内容分类"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="category in CATEGORY_OPTIONS.slice(1)"
+                  :key="category.value"
+                  :label="`${category.label}（${category.value}）`"
+                  :value="category.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="标签" class="editor-tags-field">
+              <el-input v-model="form.tagsText" placeholder="用逗号分隔，例如：电影感，人物，霓虹" />
+            </el-form-item>
+          </div>
+        </section>
 
         <div class="editor-work-layout">
-          <section class="editor-prompt-panel">
-            <el-form-item label="提示词内容" class="prompt-body-field">
-              <el-input v-model="form.prompt" type="textarea" maxlength="8000" show-word-limit />
+          <section class="editor-prompt-panel editor-surface-card">
+            <div class="editor-section-head">
+              <div><strong>提示词内容</strong><span>描述主体、构图、风格与细节要求</span></div>
+              <em>最多 8000 字</em>
+            </div>
+            <el-form-item class="prompt-body-field">
+              <el-input
+                v-model="form.prompt"
+                type="textarea"
+                maxlength="8000"
+                show-word-limit
+                placeholder="输入完整提示词内容…"
+              />
             </el-form-item>
           </section>
 
           <aside class="editor-options-panel">
-            <el-form-item label="投放功能">
-              <div class="type-checkboxes">
-                <button
-                  v-for="type in TASK_TYPES"
-                  :key="type"
-                  type="button"
-                  :class="{ 'is-active': form.taskType === type }"
-                  @click="form.taskType = type"
-                >
-                  {{ taskTypeLabel(type) }}
-                </button>
+            <section class="editor-setting-card editor-publish-card">
+              <div class="editor-section-head is-compact">
+                <div><strong>发布设置</strong><span>决定投放位置和用户端可见性</span></div>
               </div>
-            </el-form-item>
-            <div class="editor-options-lower">
-              <el-form-item label="封面图片">
-                <label class="image-picker">
-                  <img v-if="previewUrl" :src="previewUrl" alt="提示词封面预览" />
-                  <span v-else>
-                    <el-icon :size="24"><Picture /></el-icon>
-                    <strong>上传封面</strong>
-                    <small>PNG / JPG / WebP，最大 8MB</small>
-                  </span>
-                  <em v-if="previewUrl">更换图片</em>
-                  <input type="file" accept="image/png,image/jpeg,image/webp" @change="pickImage" />
-                </label>
+              <el-form-item label="投放功能">
+                <el-select v-model="form.taskType" placeholder="选择投放功能" style="width: 100%">
+                  <el-option
+                    v-for="type in TASK_TYPES"
+                    :key="type"
+                    :label="taskTypeLabel(type)"
+                    :value="type"
+                  />
+                </el-select>
               </el-form-item>
-              <div class="form-settings">
-                <el-form-item label="后台排序">
-                  <el-input-number v-model="form.sort" :min="0" :max="10000" />
-                </el-form-item>
-                <el-form-item label="用户端状态">
-                  <el-switch v-model="form.active" active-text="启用" inactive-text="停用" />
-                </el-form-item>
+              <div class="editor-visibility-row">
+                <span><strong>用户端展示</strong><small>{{ form.active ? '当前用户可以看到并使用' : '仅后台保留，用户端隐藏' }}</small></span>
+                <el-switch v-model="form.active" inline-prompt active-text="开" inactive-text="关" />
               </div>
-            </div>
+            </section>
+
+            <section class="editor-setting-card editor-cover-card">
+              <div class="editor-section-head is-compact">
+                <div><strong>封面图片</strong><span>建议使用清晰、能代表效果的图片</span></div>
+                <em>PNG / JPG / WebP · 8MB</em>
+              </div>
+              <label class="image-picker">
+                <img v-if="previewUrl" :src="previewUrl" alt="提示词封面预览" />
+                <span v-else>
+                  <el-icon :size="22"><Picture /></el-icon>
+                  <strong>点击上传封面</strong>
+                  <small>PNG / JPG / WebP</small>
+                </span>
+                <em v-if="previewUrl">更换图片</em>
+                <input type="file" accept="image/png,image/jpeg,image/webp" @change="pickImage" />
+              </label>
+            </section>
+
+            <section class="editor-setting-card editor-heat-card">
+              <div class="editor-section-head is-compact">
+                <div><strong>冷启动热度</strong><span>可选；真实用户行为会在此基础上累计</span></div>
+              </div>
+              <div class="editor-heat-fields">
+                <label><span>点赞</span><el-input-number v-model="form.likeCount" :min="0" :max="100000000" controls-position="right" /></label>
+                <label><span>收藏</span><el-input-number v-model="form.favoriteCount" :min="0" :max="100000000" controls-position="right" /></label>
+                <label><span>使用</span><el-input-number v-model="form.useCount" :min="0" :max="100000000" controls-position="right" /></label>
+              </div>
+              <div class="editor-sort-note">
+                <el-icon><Rank /></el-icon>
+                <span>展示顺序请在保存后使用卡片右上角“调序”设置</span>
+              </div>
+            </section>
           </aside>
         </div>
       </el-form>
       <template #footer>
-        <el-button @click="editorOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存提示词</el-button>
+        <div class="editor-dialog-footer">
+          <span>{{ pendingImage ? '已选择新封面，保存时一并上传' : '所有修改将在保存后生效' }}</span>
+          <div>
+            <el-button @click="editorOpen = false">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="save">保存提示词</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -2353,6 +2740,14 @@ onBeforeUnmount(() => {
   }
 }
 
+.prompt-quick-sort-trigger {
+  cursor: pointer;
+
+  &:active {
+    transform: scale(0.94);
+  }
+}
+
 @keyframes prompt-status-pulse {
   to {
     opacity: 0.52;
@@ -2528,9 +2923,7 @@ onBeforeUnmount(() => {
 .editor-meta-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.85fr) minmax(320px, 1.1fr);
-  gap: 18px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--library-border);
+  gap: 12px;
 
   .el-form-item {
     min-width: 0;
@@ -2538,12 +2931,58 @@ onBeforeUnmount(() => {
   }
 }
 
+.editor-basics-panel,
+.editor-surface-card,
+.editor-setting-card {
+  min-width: 0;
+  border: 1px solid var(--library-border);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.editor-basics-panel {
+  padding: 13px 14px 14px;
+}
+
+.editor-section-head {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.editor-section-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.editor-section-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.editor-section-head span,
+.editor-section-head em {
+  color: var(--ink-3);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.editor-section-head.is-compact {
+  margin-bottom: 10px;
+}
+
 .editor-work-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(460px, 0.9fr);
-  gap: 28px;
-  align-items: stretch;
-  padding-top: 18px;
+  grid-template-columns: minmax(0, 1.65fr) minmax(340px, 0.72fr);
+  gap: 12px;
+  align-items: start;
+  padding-top: 12px;
 }
 
 .editor-prompt-panel,
@@ -2552,24 +2991,59 @@ onBeforeUnmount(() => {
 }
 
 .editor-options-panel {
-  padding-left: 28px;
-  border-left: 1px solid var(--library-border);
+  display: grid;
+  gap: 10px;
 
   > .el-form-item {
-    margin-bottom: 20px;
+    margin-bottom: 0;
   }
+}
+
+.editor-prompt-panel,
+.editor-setting-card {
+  padding: 13px 14px;
+}
+
+.editor-setting-card .el-form-item {
+  margin-bottom: 0;
 }
 
 .prompt-body-field {
   margin-bottom: 0 !important;
 
   :deep(.el-textarea__inner) {
-    height: 320px;
-    min-height: 320px !important;
+    height: 438px;
+    min-height: 438px !important;
     padding: 14px 15px 28px;
     line-height: 1.65;
     resize: none;
   }
+}
+
+.editor-visibility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--library-border);
+}
+
+.editor-visibility-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.editor-visibility-row strong {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.editor-visibility-row small {
+  color: var(--ink-3);
+  font-size: 9px;
 }
 
 .editor-options-lower {
@@ -2635,7 +3109,7 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   width: 100%;
-  height: 192px;
+  height: 142px;
   place-items: center;
   overflow: hidden;
   border: 1px dashed var(--el-border-color);
@@ -2966,12 +3440,12 @@ onBeforeUnmount(() => {
   }
 
   .editor-work-layout {
-    grid-template-columns: minmax(0, 1.25fr) minmax(380px, 0.9fr);
-    gap: 20px;
+    grid-template-columns: minmax(0, 1.25fr) minmax(330px, 0.75fr);
+    gap: 12px;
   }
 
   .editor-options-panel {
-    padding-left: 20px;
+    padding-left: 0;
   }
 
   .items-workspace {
@@ -3005,9 +3479,9 @@ onBeforeUnmount(() => {
   }
 
   .editor-options-panel {
-    padding-top: 18px;
+    padding-top: 0;
     padding-left: 0;
-    border-top: 1px solid var(--library-border);
+    border-top: 0;
     border-left: 0;
   }
 }
@@ -3097,6 +3571,506 @@ onBeforeUnmount(() => {
   max-width: 94vw;
 }
 
+.prompt-quick-sort-dialog {
+  border: 1px solid var(--border);
+}
+
+.prompt-quick-sort-panel {
+  display: grid;
+  min-height: 260px;
+  gap: 18px;
+}
+
+.prompt-quick-sort-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface-2);
+}
+
+.prompt-quick-sort-cover {
+  display: grid;
+  width: 72px;
+  height: 64px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 10px;
+  color: var(--ink-3);
+  background: var(--surface);
+}
+
+.prompt-quick-sort-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.prompt-quick-sort-item small,
+.prompt-quick-sort-item strong,
+.prompt-quick-sort-item em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-quick-sort-item small {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.prompt-quick-sort-item strong {
+  margin-top: 3px;
+  color: var(--ink-1);
+  font-size: 14px;
+}
+
+.prompt-quick-sort-item em {
+  margin-top: 5px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.prompt-quick-sort-rank {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.prompt-quick-sort-rank strong {
+  color: var(--accent);
+  font-size: 22px;
+}
+
+.prompt-quick-sort-input {
+  display: grid;
+  grid-template-columns: 1fr 180px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 12px;
+  color: var(--ink-1);
+  font-weight: 650;
+  background: var(--accent-soft);
+}
+
+.prompt-quick-sort-input .el-input-number {
+  width: 100%;
+}
+
+.prompt-quick-sort-panel > p {
+  margin: -6px 4px 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.prompt-quick-sort-footer {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-quick-sort-footer > span {
+  flex: 1;
+}
+
+.prompt-sort-drawer {
+  max-width: 96vw;
+}
+
+.prompt-sort-drawer .el-drawer__body {
+  padding: 0;
+  overflow: hidden;
+}
+
+.prompt-sort-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.prompt-sort-summary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.prompt-sort-summary strong,
+.prompt-sort-summary span {
+  display: block;
+}
+
+.prompt-sort-summary strong {
+  color: var(--ink-1);
+  font-size: 14px;
+}
+
+.prompt-sort-summary span {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.prompt-sort-filters {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(220px, 1fr) 132px 132px 118px;
+  gap: 8px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.prompt-sort-positioner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: var(--accent-soft);
+}
+
+.prompt-sort-positioner__item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.prompt-sort-positioner__item > img,
+.prompt-sort-positioner__item > .el-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface);
+}
+
+.prompt-sort-positioner__item > .el-icon {
+  padding: 9px;
+  color: var(--ink-3);
+}
+
+.prompt-sort-positioner__item small,
+.prompt-sort-positioner__item strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-sort-positioner__item small {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.prompt-sort-positioner__item strong {
+  max-width: 220px;
+  margin-top: 2px;
+  color: var(--ink-1);
+  font-size: 12px;
+}
+
+.prompt-sort-positioner__controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.prompt-sort-positioner__controls .el-input-number {
+  width: 108px;
+}
+
+.prompt-sort-search-note {
+  flex: 0 0 auto;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-3);
+  font-size: 11px;
+  background: var(--surface-2);
+}
+
+.prompt-sort-loading,
+.prompt-sort-empty {
+  flex: 1;
+  min-height: 220px;
+}
+
+.prompt-sort-empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+}
+
+.prompt-sort-empty .el-icon {
+  font-size: 28px;
+}
+
+.prompt-sort-empty strong {
+  color: var(--ink-1);
+}
+
+.prompt-sort-list {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 14px 20px;
+  overflow-y: auto;
+  background: var(--surface-2);
+}
+
+.prompt-sort-row {
+  display: grid;
+  grid-template-columns: 32px 32px 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 68px;
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+  cursor: pointer;
+}
+
+.prompt-sort-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
+.prompt-sort-row.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.prompt-sort-row.is-search-result .prompt-sort-handle {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.prompt-sort-row.is-sort-ghost,
+.is-sort-ghost .prompt-sort-row {
+  opacity: 0.32;
+}
+
+.prompt-sort-handle {
+  display: grid;
+  width: 32px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  cursor: grab;
+}
+
+.prompt-sort-handle:active {
+  cursor: grabbing;
+}
+
+.prompt-sort-index {
+  color: var(--ink-3);
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+.prompt-sort-cover {
+  display: grid;
+  width: 56px;
+  height: 50px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.prompt-sort-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.prompt-sort-copy {
+  min-width: 0;
+}
+
+.prompt-sort-copy strong,
+.prompt-sort-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-sort-copy strong {
+  color: var(--ink-1);
+  font-size: 13px;
+}
+
+.prompt-sort-copy small {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.prompt-sort-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.prompt-sort-actions button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.prompt-sort-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.prompt-sort-actions button:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.prompt-sort-pagination {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--ink-3);
+  font-size: 11px;
+  background: var(--surface-2);
+}
+
+.prompt-sort-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.prompt-sort-pagination strong {
+  min-width: 58px;
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.prompt-sort-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.prompt-sort-footer > span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.editor-sort-hint {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.editor-sort-hint strong,
+.editor-sort-hint small {
+  display: block;
+}
+
+.editor-sort-hint strong {
+  color: var(--ink-1);
+  font-size: 12px;
+}
+
+.editor-sort-hint small {
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.editor-heat-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.editor-heat-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.editor-heat-fields .el-input-number {
+  width: 100%;
+}
+
+.editor-sort-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--library-border);
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.editor-sort-note .el-icon {
+  flex: 0 0 auto;
+  color: var(--accent-ink);
+}
+
 .source-delete-confirm p {
   margin: 0 0 10px;
   line-height: 1.6;
@@ -3112,23 +4086,113 @@ onBeforeUnmount(() => {
 .prompt-content-editor {
   --el-dialog-padding-primary: 24px;
   border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.prompt-content-editor .el-dialog__header {
+  margin: 0;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.editor-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.editor-dialog-head__mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.editor-dialog-head > div {
+  display: grid;
+  gap: 1px;
+}
+
+.editor-dialog-head strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.editor-dialog-head small {
+  color: var(--ink-3);
+  font-size: 10px;
 }
 
 .prompt-content-editor .el-dialog__footer {
-  padding-top: 18px;
+  padding: 11px 20px;
   border-top: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .prompt-editor-dialog .el-dialog__body {
-  padding-top: 12px;
+  padding: 14px 20px;
   overflow: visible;
 }
 
 .prompt-content-editor .el-dialog__body {
-  padding-top: 8px;
+  padding-top: 14px;
+}
+
+.editor-dialog-footer {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-dialog-footer > span {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.editor-dialog-footer > div {
+  display: flex;
+  gap: 8px;
 }
 
 @media (max-width: 900px) {
+  .prompt-sort-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .prompt-sort-filters > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .prompt-sort-positioner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .prompt-sort-positioner__controls {
+    flex-wrap: wrap;
+  }
+
+  .prompt-sort-row {
+    grid-template-columns: 30px 26px 48px minmax(0, 1fr);
+  }
+
+  .prompt-sort-actions {
+    grid-column: 3 / -1;
+    justify-content: flex-end;
+  }
+
+  .prompt-sort-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .prompt-content-editor .el-dialog__body {
     max-height: calc(100dvh - 142px);
     padding-right: 8px;

@@ -1327,8 +1327,8 @@ html.settings-no-animations [data-share-motion] { opacity: 1; }
   inset: 0;
   opacity: 0;
   background:
-    radial-gradient(circle at 20% 10%, rgba(106, 79, 224, 0.2), transparent 34%),
-    rgba(12, 14, 24, 0.78);
+    radial-gradient(circle at 20% 10%, rgba(106, 79, 224, 0.16), transparent 34%),
+    rgba(9, 10, 18, 0.93);
   /* 不用 backdrop-filter：和大面板一起做透明度动画时极易掉帧 */
 }
 .share-detail__panel {
@@ -2408,8 +2408,8 @@ html.color-scheme-dark.share-gallery-page .share-detail {
 }
 html.color-scheme-dark.share-gallery-page .share-detail__scrim {
   background:
-    radial-gradient(circle at 20% 10%, rgba(106, 79, 224, 0.22), transparent 34%),
-    rgba(6, 8, 14, 0.82);
+    radial-gradient(circle at 20% 10%, rgba(106, 79, 224, 0.16), transparent 34%),
+    rgba(3, 4, 9, 0.95);
 }
 html.color-scheme-dark.share-gallery-page .share-detail__panel {
   background: #141622;

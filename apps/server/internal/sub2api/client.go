@@ -2,6 +2,7 @@
 package sub2api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -80,6 +81,17 @@ func (c *Client) Configured() bool   { return c != nil && c.apiKey != "" }
 func (c *Client) ChatModel() string  { return c.chatModel }
 func (c *Client) ImageModel() string { return c.imageModel }
 
+// WithChatModel returns a request-scoped client that shares the HTTP transport
+// while using a user-selected, server-approved conversation model.
+func (c *Client) WithChatModel(model string) *Client {
+	if c == nil || strings.TrimSpace(model) == "" {
+		return c
+	}
+	clone := *c
+	clone.chatModel = strings.TrimSpace(model)
+	return &clone
+}
+
 // ListModels validates gateway connectivity and returns the visible model IDs.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if !c.Configured() {
@@ -139,6 +151,95 @@ func (c *Client) newJSONRequest(ctx context.Context, path string, body any) (*ht
 
 func (c *Client) ChatStream(ctx context.Context, messages []Message) (*http.Response, error) {
 	return c.ChatStreamWithImages(ctx, messages, nil)
+}
+
+// ChatTextWithImages consumes the streaming API server-side. The callback is
+// used by durable assistant jobs to checkpoint partial output in PostgreSQL.
+func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, error) {
+	resp, err := c.ChatStreamWithImages(ctx, messages, imageURLs)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	fullText := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if raw == "" || raw == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			continue
+		}
+		if message := streamError(payload); message != "" {
+			return fullText, errors.New(message)
+		}
+		delta := streamDelta(payload)
+		if delta == "" {
+			continue
+		}
+		fullText += delta
+		if onText != nil {
+			if err := onText(fullText); err != nil {
+				return fullText, err
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fullText, err
+	}
+	return fullText, nil
+}
+
+func streamDelta(payload map[string]any) string {
+	if value, ok := payload["delta"].(string); ok {
+		return value
+	}
+	if value, ok := payload["output_text"].(string); ok {
+		return value
+	}
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return ""
+	}
+	choice, _ := choices[0].(map[string]any)
+	if delta, ok := choice["delta"].(map[string]any); ok {
+		if content, ok := delta["content"].(string); ok {
+			return content
+		}
+	}
+	if message, ok := choice["message"].(map[string]any); ok {
+		if content, ok := message["content"].(string); ok {
+			return content
+		}
+	}
+	return ""
+}
+
+func streamError(payload map[string]any) string {
+	if payload["type"] == "error" {
+		if item, ok := payload["error"].(map[string]any); ok {
+			if message, ok := item["message"].(string); ok {
+				return message
+			}
+		}
+	}
+	if item, ok := payload["error"].(map[string]any); ok {
+		if message, ok := item["message"].(string); ok {
+			return message
+		}
+	}
+	if message, ok := payload["error"].(string); ok {
+		return message
+	}
+	return ""
 }
 
 // ChatStreamWithImages 将每轮参考图转换成 OpenAI chat-completions
@@ -212,36 +313,78 @@ func (c *Client) GenerateImage(ctx context.Context, prompt, size, quality string
 		return nil, errors.New("image count must be between 1 and 4")
 	}
 	if count == 1 {
-		return c.generateSingleImage(ctx, prompt, size, quality, referenceImages)
+		return c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
 	}
-
-	batchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	images := make([]Image, count)
 	var wg sync.WaitGroup
-	var firstErr error
-	var errOnce sync.Once
+	errorsByIndex := make([]error, count)
 	for index := 0; index < count; index++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			generated, err := c.generateSingleImage(batchCtx, prompt, size, quality, referenceImages)
+			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
 			if err != nil {
-				errOnce.Do(func() {
-					firstErr = fmt.Errorf("generate image %d/%d: %w", index+1, count, err)
-					cancel()
-				})
+				errorsByIndex[index] = err
 				return
 			}
 			images[index] = generated[0]
 		}(index)
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
+	completed := images[:0]
+	var firstErr error
+	for index, image := range images {
+		if image.DataURL != "" {
+			completed = append(completed, image)
+			continue
+		}
+		if firstErr == nil && errorsByIndex[index] != nil {
+			firstErr = fmt.Errorf("generate image %d/%d: %w", index+1, count, errorsByIndex[index])
+		}
 	}
-	return images, nil
+	// A transient failure in one branch must not discard images that the
+	// upstream already generated successfully. The caller records the actual
+	// completed count in the assistant message.
+	if len(completed) > 0 {
+		return completed, nil
+	}
+	return nil, firstErr
+}
+
+func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		images, err := c.generateSingleImage(ctx, prompt, size, quality, referenceImages)
+		if err == nil {
+			return images, nil
+		}
+		lastErr = err
+		if !transientImageError(err) || attempt == 1 {
+			break
+		}
+		timer := time.NewTimer(800 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func transientImageError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return upstream.Status == 429 || upstream.Status == 502 || upstream.Status == 503 ||
+			upstream.Status == 504 || upstream.Status == 524
+	}
+	var netErr interface{ Temporary() bool }
+	return errors.As(err, &netErr) && netErr.Temporary()
 }
 
 func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
@@ -349,6 +492,7 @@ func decodeUpstreamError(resp *http.Response) error {
 	message := strings.TrimSpace(string(raw))
 	var payload struct {
 		Message string `json:"message"`
+		Detail  string `json:"detail"`
 		Error   struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -358,7 +502,12 @@ func decodeUpstreamError(resp *http.Response) error {
 			message = payload.Error.Message
 		} else if payload.Message != "" {
 			message = payload.Message
+		} else if payload.Detail != "" {
+			message = payload.Detail
 		}
+	}
+	if resp.StatusCode == 524 {
+		message = "上游图片生成超过 120 秒网关等待时间，系统已自动重试；请稍后再试或降低一次生成张数"
 	}
 	if message == "" {
 		message = http.StatusText(resp.StatusCode)

@@ -5,7 +5,7 @@
  * 带简单内存缓存（按 type/category/cursor/limit 维度，短 TTL），
  * 失败或为空时由调用方决定回退到本地静态词库。
  */
-import { apiGet } from './apiClient'
+import { apiGet, apiPost } from './apiClient'
 
 const CACHE_TTL_MS = 5 * 60 * 1000
 const cache = new Map()
@@ -19,6 +19,11 @@ function normalizePromptItem(raw = {}) {
     category: String(raw?.category || '').trim(),
     tags: Array.isArray(raw?.tags) ? raw.tags.map((tag) => String(tag)).filter(Boolean) : [],
     coverUrl: String(raw?.coverUrl || ''),
+    likeCount: Math.max(0, Number(raw?.likeCount) || 0),
+    favoriteCount: Math.max(0, Number(raw?.favoriteCount) || 0),
+    useCount: Math.max(0, Number(raw?.useCount) || 0),
+    liked: raw?.liked === true,
+    favorited: raw?.favorited === true,
   }
 }
 
@@ -36,16 +41,17 @@ function normalizePromptItem(raw = {}) {
 export async function listPrompts({
   type = '',
   category = '',
+  sort = 'recommended',
   cursor = '',
   limit = 24,
   signal,
 } = {}) {
-  const cacheKey = [type, category, cursor, limit].join('|')
+  const cacheKey = [type, category, sort, cursor, limit].join('|')
   const hit = cache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit.data
 
   const data = await apiGet('/prompts', {
-    query: { type, category, cursor, limit },
+    query: { type, category, sort, cursor, limit },
     signal,
     fallbackMessage: '提示词库读取失败',
   })
@@ -63,6 +69,15 @@ export async function listPrompts({
   }
   cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data: result })
   return result
+}
+
+export async function recordPromptEngagement(id, action, active = true) {
+  const data = await apiPost(`/prompts/${encodeURIComponent(String(id))}/engagement`, {
+    action,
+    active,
+  })
+  cache.clear()
+  return data
 }
 
 /** 清空词库缓存（当前仅供调试/测试使用）。 */

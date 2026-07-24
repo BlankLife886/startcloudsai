@@ -49,6 +49,8 @@ import {
   validateReusableAiTempImageUrl,
 } from '@/features/ai-illustration-coloring/domain/coloringStability'
 import {
+  COLORING_BATCH_COUNT_OPTIONS,
+  COLORING_OUTPUT_ORIENTATION_OPTIONS,
   COLORING_OUTPUT_SIZE_OPTIONS,
   formatBytes,
   ILLUSTRATION_COLORING_HISTORY_LIMIT,
@@ -67,10 +69,8 @@ import {
 import {
   COLORING_JOB_POLL_INTERVAL_MS,
   createIllustrationColoringJob,
-  findColoringStylePreset,
   ILLUSTRATION_COLORING_FEATURE_KEY,
   ILLUSTRATION_COLORING_PUBLIC_MODEL,
-  resolveColoringStyleCatalog,
 } from '@/services/aiIllustrationColoring'
 import { submitShareItem } from '@/services/shareGallery'
 
@@ -152,7 +152,6 @@ export function useIllustrationColoringState() {
   const settingsStore = useSettingsStore()
   const runtimeConfigStore = useRuntimeConfigStore()
 
-  const styleId = ref('watercolor')
   const workTitle = ref('')
   const customPrompt = ref('')
   const sourcePreview = ref('')
@@ -211,12 +210,6 @@ export function useIllustrationColoringState() {
     ...(runtimeConfigStore.getFeatureConfig(ILLUSTRATION_COLORING_FEATURE_KEY) || {}),
     aiModelCatalog: runtimeConfigStore.getAiModelCatalog(),
   }))
-
-  const coloringStyleCatalog = computed(() =>
-    resolveColoringStyleCatalog(featureConfig.value?.config?.styleCatalog),
-  )
-  const COLORING_STYLE_CATEGORIES = computed(() => coloringStyleCatalog.value.categories)
-  const COLORING_STYLE_PRESETS = computed(() => coloringStyleCatalog.value.styles)
 
   const disabledMessage = computed(() => {
     if (runtimeConfigStore.isBlocked) return runtimeConfigStore.blockReason
@@ -337,7 +330,7 @@ export function useIllustrationColoringState() {
 
   const creditCost = computed(() => budgetGuard.getModelUnitCost(resolvedPublicModelKey.value))
   const generationCount = computed(() =>
-    Math.max(1, Math.min(5, Math.round(Number(settings.value.generationCount || 1)))),
+    Math.max(1, Math.min(4, Math.round(Number(settings.value.generationCount || 1)))),
   )
   const totalCreditCost = computed(() => Number(creditCost.value || 0) * generationCount.value)
 
@@ -411,35 +404,7 @@ export function useIllustrationColoringState() {
   const runningJobCount = computed(
     () => historyItems.value.filter((item) => isRunningStatus(item.status)).length,
   )
-  const availableConcurrency = computed(() => Math.max(0, 5 - runningJobCount.value))
-
-  const hasReferenceImages = computed(() => referenceImages.value.length > 0)
-
-  const effectiveStyleId = computed(() =>
-    hasReferenceImages.value ? 'reference-style' : styleId.value,
-  )
-
-  const activeStyle = computed(() => {
-    if (hasReferenceImages.value) {
-      return {
-        id: 'reference-style',
-        label: '参考图风格',
-        categoryId: 'reference',
-        categoryLabel: '参考图',
-        hint: '使用参考图提取配色、材质、光影和氛围，不叠加预设风格',
-      }
-    }
-    return (
-      findColoringStylePreset(styleId.value, COLORING_STYLE_PRESETS.value) || {
-        id: '',
-        label: '暂无可用风格',
-        categoryId: '',
-        categoryLabel: '风格配置',
-        hint: '请联系管理员启用至少一个插画染色风格',
-        prompt: '',
-      }
-    )
-  })
+  const availableConcurrency = computed(() => Math.max(0, 4 - runningJobCount.value))
 
   const canSubmit = computed(
     () =>
@@ -449,11 +414,7 @@ export function useIllustrationColoringState() {
       !sourceUploading.value &&
       !disabledMessage.value &&
       !!sourcePreview.value &&
-      authStore.isAuthenticated &&
-      (hasReferenceImages.value || Boolean(activeStyle.value?.id)) &&
-      (hasReferenceImages.value ||
-        styleId.value !== 'custom' ||
-        customPrompt.value.trim().length >= 2),
+      authStore.isAuthenticated,
   )
 
   const customPromptLength = computed(() => customPrompt.value.trim().length)
@@ -468,7 +429,7 @@ export function useIllustrationColoringState() {
     }
     if (resultUrl.value) return statusText.value || '染色完成'
     if (statusText.value) return statusText.value
-    if (sourcePreview.value) return '已选线稿，选择风格后开始染色'
+    if (sourcePreview.value) return '已选线稿，可填写配色描述后开始染色'
     return '上传线稿后开始'
   })
 
@@ -631,7 +592,6 @@ export function useIllustrationColoringState() {
     statusText.value = ''
     workTitle.value = ''
     customPrompt.value = ''
-    styleId.value = 'watercolor'
     clearSource()
     clearReferenceImages()
     persistColoringDraft({ immediate: true })
@@ -766,9 +726,9 @@ export function useIllustrationColoringState() {
     }
     const write = () => {
       writeColoringDraft({
-        styleId: effectiveStyleId.value,
+        styleId: 'coloring',
         workTitle: workTitle.value,
-        customPrompt: hasReferenceImages.value ? '' : customPrompt.value,
+        customPrompt: customPrompt.value,
         sourceRemoteUrl: sourceRemoteUrl.value,
         sourcePreview: readPersistableSourcePreview(),
         sourceName: sourceName.value,
@@ -822,7 +782,6 @@ export function useIllustrationColoringState() {
     try {
       const draft = readColoringDraft()
       if (!draft || typeof draft !== 'object') return
-      if (draft.styleId) styleId.value = draft.styleId
       if (typeof draft.workTitle === 'string') workTitle.value = draft.workTitle
       if (typeof draft.customPrompt === 'string') customPrompt.value = draft.customPrompt
       if (draft.compareMode === 'split' || draft.compareMode === 'result') {
@@ -897,7 +856,6 @@ export function useIllustrationColoringState() {
     if (!item) return
     // 先切 active，再同步源图/结果，保证侧栏与画布始终来自同一条历史
     activeHistoryId.value = item.id
-    styleId.value = item.styleId || 'watercolor'
     customPrompt.value = item.customPrompt || ''
     setReferenceImagesFromUrls(item.referenceImageUrls || [], item.referenceThumbUrls || [])
 
@@ -1768,6 +1726,24 @@ export function useIllustrationColoringState() {
     )
   }
 
+  function updateSettings(patch = {}) {
+    const previous = settings.value
+    const normalized = writeColoringSettings({ ...previous, ...patch })
+    settings.value = normalized
+    selectedModelKey.value = String(normalized.publicModelKey || '')
+    const uploadSettingsChanged =
+      normalized.enableCompress !== previous.enableCompress ||
+      normalized.compressMaxKb !== previous.compressMaxKb ||
+      normalized.inputFormat !== previous.inputFormat
+    if (uploadSettingsChanged && sourceBlobUrl.value) {
+      sourceRevision += 1
+      sourceRemoteUrl.value = ''
+      sourceRemoteRevision = 0
+      void preuploadSourceBlob(sourceRevision)
+    }
+    return normalized
+  }
+
   function recordUsageIfNeeded(item, modelKey) {
     if (!item || item.usageRecorded) return
     const snapshot = budgetGuard.getCostSnapshot(modelKey, 1)
@@ -2184,14 +2160,6 @@ export function useIllustrationColoringState() {
       notificationService.info('请先上传线稿插画')
       return
     }
-    if (
-      !hasReferenceImages.value &&
-      styleId.value === 'custom' &&
-      customPrompt.value.trim().length < 2
-    ) {
-      notificationService.info('自定义模式下请至少填写 2 个字的配色描述')
-      return
-    }
     if (submitting.value) {
       notificationService.info('正在提交任务，请稍候')
       return
@@ -2211,7 +2179,7 @@ export function useIllustrationColoringState() {
       notificationService.info(
         availableConcurrency.value
           ? `当前还有 ${availableConcurrency.value} 个可用任务槽位，请先降低一次生成数量`
-          : '同时最多可运行 5 个染色任务，请等待已有任务完成',
+          : '同时最多可运行 4 个染色任务，请等待已有任务完成',
       )
       return
     }
@@ -2239,7 +2207,7 @@ export function useIllustrationColoringState() {
     const batchId = replayCreateRequest?.batchId ||
       `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     sessionStartedJobs.add(batchId)
-    const styleLabel = activeStyle.value?.label || '插画染色'
+    const styleLabel = '插画染色'
     const baseTitle = String(workTitle.value || '').trim() || styleLabel || '插画染色'
     const createdAt = new Date().toISOString()
     const startedAt = Date.now()
@@ -2256,9 +2224,9 @@ export function useIllustrationColoringState() {
           : crypto.randomUUID(),
         createRequest: replayCreateRequest,
         status: 'queued',
-        styleId: effectiveStyleId.value,
+        styleId: 'coloring',
         title: batchCount > 1 ? `${baseTitle} #${index + 1}` : baseTitle,
-        customPrompt: hasReferenceImages.value ? '' : customPrompt.value,
+        customPrompt: customPrompt.value,
         styleLabel: batchCount > 1 ? `${styleLabel} #${index + 1}` : styleLabel,
         batchId: replayCreateRequest?.batchId || batchId,
         variantIndex: Number(replayCreateRequest?.variantIndex || index + 1),
@@ -2391,9 +2359,9 @@ export function useIllustrationColoringState() {
         entry.createRequest = replayCreateRequest || {
           sourceUrl: normalizedSourceUrl,
           clientRequestId: entry.clientRequestId,
-          styleId: effectiveStyleId.value,
+          styleId: 'coloring',
           title: entry.title,
-          customPrompt: hasReferenceImages.value ? '' : customPrompt.value,
+          customPrompt: customPrompt.value,
           publicModelKey: modelKey,
           outputSize: settings.value.outputSize,
           outputOrientation: outputOrientation.value,
@@ -2404,8 +2372,7 @@ export function useIllustrationColoringState() {
           batchId,
           variantIndex: entry.variantIndex,
           variantCount: batchCount,
-          stylePreset: hasReferenceImages.value ? null : activeStyle.value,
-          styleLabel: activeStyle.value?.label || '',
+          styleLabel,
         }
         updateHistoryItem(entry.id, { ...sharedPreparedPatch, createRequest: entry.createRequest }, {
           persistImmediately: entry.id === primaryHistoryId,
@@ -2541,9 +2508,9 @@ export function useIllustrationColoringState() {
       const response = await submitShareItem({
         jobId: item.serverJobId,
         title: item.title || item.styleLabel || 'AI Share',
-        styleLabel: item.styleLabel || activeStyle.value?.label || '',
+        styleLabel: item.styleLabel || '插画染色',
         category: 'illustration',
-        tags: [item.styleLabel || activeStyle.value?.label || '', 'AI 染色'].filter(Boolean),
+        tags: [item.styleLabel || '插画染色', 'AI 染色'].filter(Boolean),
         ...publishOptions,
       })
       const shareSubmissionStatus = String(response?.item?.status || 'pending').toLowerCase()
@@ -2736,7 +2703,6 @@ export function useIllustrationColoringState() {
         void materializeSourceFromRemote(revision, sourceRemoteUrl.value || sourcePreview.value)
       }
     }
-    if (item.styleId) styleId.value = item.styleId
     if (item.customPrompt) customPrompt.value = item.customPrompt
     resultUrl.value = ''
     revealResult.value = false
@@ -2851,7 +2817,7 @@ export function useIllustrationColoringState() {
     persistHistory({ immediate: true })
   }
 
-  watch([styleId, customPrompt, resultUrl, sourceRemoteUrl, activeHistoryId, compareMode], () => {
+  watch([customPrompt, resultUrl, sourceRemoteUrl, activeHistoryId, compareMode], () => {
     persistColoringDraft()
   })
 
@@ -2917,11 +2883,10 @@ export function useIllustrationColoringState() {
   })
 
   return {
-    COLORING_STYLE_PRESETS,
-    COLORING_STYLE_CATEGORIES,
+    COLORING_BATCH_COUNT_OPTIONS,
+    COLORING_OUTPUT_ORIENTATION_OPTIONS,
     COLORING_OUTPUT_SIZE_OPTIONS,
     MAX_REFERENCE_IMAGES,
-    styleId,
     workTitle,
     customPrompt,
     customPromptLength,
@@ -2967,7 +2932,6 @@ export function useIllustrationColoringState() {
     generationCount,
     totalCreditCost,
     canSubmit,
-    activeStyle,
     authStore,
     settings,
     settingsOpen,
@@ -2979,6 +2943,7 @@ export function useIllustrationColoringState() {
     openSettings,
     closeSettings,
     saveSettings,
+    updateSettings,
     openDebugPanel,
     closeDebugPanel,
     toggleDebugPanel,

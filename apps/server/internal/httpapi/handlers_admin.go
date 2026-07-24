@@ -608,12 +608,17 @@ func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
 func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	taskType := c.Query("type")
 	status := c.Query("status")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	errorCode := strings.TrimSpace(c.Query("errorCode"))
+	if taskType != "" && !store.Contains(store.AdminTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
 	if status != "" && !store.Contains(store.TaskStatuses, status) {
 		fail(c, apperr.E("validation_error", "无效的任务状态", 422))
+		return
+	}
+	if len([]rune(errorCode)) > 120 {
+		fail(c, apperr.E("validation_error", "错误码筛选不能超过 120 个字符", 422))
 		return
 	}
 	limit, cursor, err := pageParams(c)
@@ -630,7 +635,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		}
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListTasks(ctx, s.St.Pool, nil, taskType, status, userIDs, limit, cursor)
+	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs)
 	if err != nil {
 		fail(c, err)
 		return
@@ -648,22 +658,42 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(t *store.Task) gin.H {
+	page := buildPage(rows, limit, func(t *store.Task) gin.H {
 		user := users[t.UserID]
 		d := adminTaskDict(t, user)
+		outputURLs := s.urlsForKeys(c, t.OutputKeys)
+		d["outputUrls"] = outputURLs
+		d["thumbnailUrls"] = outputURLs
+		d["originalUrls"] = outputURLs
 		if user != nil {
 			d["userEmail"] = user.Email
 		} else {
 			d["userEmail"] = nil
 		}
 		return d
-	}))
+	})
+	page["summary"] = overview
+	ok(c, page)
 }
 
 func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	regularTask, err := store.GetTask(c.Request.Context(), s.St.Pool, taskID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if regularTask == nil {
+		run, assistantErr := s.adminRequeueAssistantRun(c.Request.Context(), taskID)
+		if assistantErr != nil {
+			fail(c, assistantErr)
+			return
+		}
+		ok(c, adminAssistantRunDict(run))
 		return
 	}
 	task, err := taskflow.RequeueTask(c.Request.Context(), s.St, taskID)
@@ -702,6 +732,26 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	taskIDs := make([]uuid.UUID, 0, len(rows))
+	for _, sub := range rows {
+		taskIDs = append(taskIDs, sub.TaskID)
+	}
+	tasks, err := store.GetTasksByIDs(ctx, s.St.Pool, taskIDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	promptBySubmission := make(map[uuid.UUID]*store.PromptEntry, len(rows))
+	for _, sub := range rows {
+		entry, promptErr := store.GetPromptEntryByGallerySubmission(ctx, s.St.Pool, sub.ID)
+		if promptErr != nil {
+			fail(c, promptErr)
+			return
+		}
+		if entry != nil {
+			promptBySubmission[sub.ID] = entry
+		}
+	}
 	unique := map[uuid.UUID]bool{}
 	var uids []uuid.UUID
 	for _, sub := range rows {
@@ -723,6 +773,14 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
 		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
 		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
+		if task := tasks[sub.TaskID]; task != nil {
+			d["taskType"] = task.Type
+			d["taskPrompt"] = task.Prompt
+			d["taskModel"] = task.Model
+		}
+		if promptEntry := promptBySubmission[sub.ID]; promptEntry != nil {
+			d["promptEntryId"] = promptEntry.ID.String()
+		}
 		d["category"] = nil
 		if sub.CategoryID != nil {
 			if category := categories[*sub.CategoryID]; category != nil {
@@ -1183,6 +1241,7 @@ var settingsCamel = map[string]string{
 	"sub2api_base_url":       "sub2apiBaseUrl",
 	"sub2api_api_key":        "sub2apiApiKey",
 	"sub2api_chat_model":     "sub2apiChatModel",
+	"sub2api_chat_models":    "sub2apiChatModels",
 	"sub2api_image_model":    "sub2apiImageModel",
 	"sub2api_timeout_secs":   "sub2apiTimeoutSecs",
 }
@@ -1303,11 +1362,28 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
 				return
 			}
-		case "task_models":
+		case "task_models", "sub2api_chat_models":
 			var v map[string]string
 			if err := json.Unmarshal(raw, &v); err != nil {
-				fail(c, apperr.E("validation_error", "taskModels: 格式不正确", 422))
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
 				return
+			}
+			if snake == "sub2api_chat_models" {
+				if len(v) > 40 {
+					fail(c, apperr.E("validation_error", camel+": 最多配置 40 个模型", 422))
+					return
+				}
+				cleaned := make(map[string]string, len(v))
+				for label, model := range v {
+					label = strings.TrimSpace(label)
+					model = strings.TrimSpace(model)
+					if label == "" || model == "" || len([]rune(label)) > 80 || len([]rune(model)) > 120 {
+						fail(c, apperr.E("validation_error", camel+": 名称或模型 ID 无效", 422))
+						return
+					}
+					cleaned[label] = model
+				}
+				raw, _ = json.Marshal(cleaned)
 			}
 		case "c2a_base_url", "sub2api_base_url":
 			var v string
@@ -1430,20 +1506,15 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 			if m, isMap := item.(map[string]any); isMap {
 				if id, isStr := m["id"].(string); isStr {
 					models = append(models, id)
-				} else {
-					models = append(models, "")
 				}
 			}
 		}
 	}
-	top := models
-	if len(top) > 20 {
-		top = top[:20]
-	}
-	if top == nil {
-		top = []string{}
-	}
-	ok(c, gin.H{"ok": true, "modelCount": len(models), "models": top})
+	visible, total := adminModelList(models, 200)
+	ok(c, gin.H{
+		"ok": true, "modelCount": total, "models": visible,
+		"truncated": total > len(visible),
+	})
 }
 
 func (s *Server) adminTestSub2API(c *gin.Context, _ *store.User) {
@@ -1495,9 +1566,37 @@ func (s *Server) adminTestSub2API(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("sub2api_test_failed", message, 502))
 		return
 	}
-	top := models
-	if len(top) > 20 {
-		top = top[:20]
+	visible, total := adminModelList(models, 200)
+	ok(c, gin.H{
+		"ok": true, "modelCount": total, "models": visible,
+		"truncated": total > len(visible),
+	})
+}
+
+// adminModelList cleans, de-duplicates and sorts model IDs before exposing them
+// to the settings UI. The generous cap keeps pathological upstream responses
+// bounded while still allowing administrators to select from normal catalogs.
+func adminModelList(models []string, limit int) ([]string, int) {
+	seen := make(map[string]struct{}, len(models))
+	cleaned := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		cleaned = append(cleaned, model)
 	}
-	ok(c, gin.H{"ok": true, "modelCount": len(models), "models": top})
+	sort.Strings(cleaned)
+	total := len(cleaned)
+	if limit > 0 && len(cleaned) > limit {
+		cleaned = cleaned[:limit]
+	}
+	if cleaned == nil {
+		cleaned = []string{}
+	}
+	return cleaned, total
 }

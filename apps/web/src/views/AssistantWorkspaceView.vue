@@ -2,17 +2,24 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  classifyAssistantIntent,
+  cancelAssistantRun,
+  createAssistantConversation,
+  createAssistantRun,
+  deleteAssistantConversation,
+  deleteAssistantMessage,
   fetchAssistantConfig,
-  generateAssistantImage,
-  streamAssistantChat,
+  importAssistantConversations,
+  listActiveAssistantRuns,
+  listAssistantConversations,
+  waitForAssistantRun,
 } from '@/services/assistantApi'
 import {
+  clearAssistantHistory,
   loadAssistantHistory,
   loadAssistantWorkspaceState,
-  saveAssistantHistory,
   saveAssistantWorkspaceState,
 } from '@/services/assistantHistory'
+import { uploadFile } from '@/services/tasksApi'
 import notificationService from '@/services/notification'
 import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
@@ -23,15 +30,17 @@ const authStore = useAuthStore()
 const appearanceStore = useAppearanceStore()
 const conversations = ref([])
 const activeId = ref('')
+const activeRunIds = ref({})
 const draft = ref('')
 const mode = ref('chat')
 const imageSize = ref('1024x1024')
 const imageQuality = ref('high')
-const isGenerating = ref(false)
 const serviceError = ref('')
 const serviceLoading = ref(true)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const sidebarAnimating = ref(false)
+const sidebarContentHidden = ref(false)
 const pendingDeleteId = ref('')
 const selectedImage = ref(null)
 const imageViewerFrame = ref(null)
@@ -47,7 +56,7 @@ const promptInput = ref(null)
 const composerRoot = ref(null)
 const isAtConversationBottom = ref(true)
 const isReturningToBottom = ref(false)
-const isStopping = ref(false)
+const stoppingConversationIds = ref(new Set())
 const copiedMessageId = ref('')
 const activeNavigatorMessageId = ref('')
 const isNavigatingByMarker = ref(false)
@@ -57,6 +66,8 @@ const editingMessageDraft = ref('')
 const editMessageInput = ref(null)
 const referenceInput = ref(null)
 const hydrated = ref(false)
+const historySyncing = ref(false)
+const conversationSearch = ref('')
 const creationMenuOpen = ref(false)
 const preferencesOpen = ref(false)
 const skillMenuOpen = ref(false)
@@ -67,7 +78,10 @@ const quotedMessage = ref(null)
 const generationAuto = ref(true)
 const generationMediaType = ref('image')
 const generationRatio = ref('auto')
-const generationModel = ref('gpt-image-2')
+const generationModel = ref('')
+const conversationModel = ref('')
+const imageGenerationModel = ref('gpt-image-2')
+const conversationModels = ref([])
 const generationResolution = ref('1K')
 const generationCount = ref(2)
 const customImageWidth = ref(1024)
@@ -76,6 +90,7 @@ const selectedSkill = ref(null)
 const creationType = ref('agent')
 const skillSearch = ref('')
 const referenceImages = ref([])
+const isUploadingReferences = ref(false)
 const assetLibraryOpen = ref(false)
 const assetSearch = ref('')
 const assetTab = ref('all')
@@ -84,12 +99,13 @@ const inlineMenuQuery = ref('')
 const inlineMenuPosition = ref({ left: 116, top: 56 })
 const inlineMenuIndex = ref(0)
 const activeTriggerRange = ref(null)
-let saveTimer = null
-let activeController = null
-let progressTimer = null
+const runControllers = new Map()
+const progressTimers = new Map()
 let returnToBottomTimer = null
 let copiedMessageTimer = null
 let navigatorFrame = null
+let sidebarTransitionTimer = null
+let sidebarCollapseTimer = null
 let markerNavigationToken = 0
 let imageViewerPanStart = null
 
@@ -112,9 +128,26 @@ const generationRatios = [
   { id: '9:16', label: '9:16', shape: 'portrait' },
   { id: '16:9', label: '16:9', shape: 'wide' },
 ]
-const generationModels = [
-  { label: 'gpt-image-2', description: 'OpenAI 图片生成与多参考图编辑模型' },
+const imageGenerationModels = [
+  {
+    label: 'GPT Image 2',
+    model: 'gpt-image-2',
+    source: 'image',
+    description: 'OpenAI 图片生成与多参考图编辑模型',
+  },
 ]
+const generationModels = computed(() =>
+  mode.value === 'image' ? imageGenerationModels : conversationModels.value,
+)
+const selectedGenerationModel = computed(
+  () =>
+    generationModels.value.find((item) => item.model === generationModel.value) ||
+    generationModels.value[0] ||
+    null,
+)
+const generationModelLabel = computed(
+  () => selectedGenerationModel.value?.label || generationModel.value || '默认模型',
+)
 const imageResolutions = [
   { id: '1K', label: '标清 1K', quality: 'low', longEdge: 1024 },
   { id: '2K', label: '高清 2K', quality: 'medium', longEdge: 2048 },
@@ -159,10 +192,30 @@ const hiddenMessageCount = computed(() => firstRenderedMessageIndex.value)
 const isComposerCompact = computed(
   () => messages.value.length > 0 && !isAtConversationBottom.value && !isReturningToBottom.value,
 )
-const visibleConversations = computed(() => conversations.value)
+const visibleConversations = computed(() => {
+  const query = conversationSearch.value.trim().toLowerCase()
+  if (!query) return conversations.value
+  return conversations.value.filter((conversation) =>
+    `${conversation.title || ''} ${conversation.messages?.map((message) => message.content).join(' ') || ''}`
+      .toLowerCase()
+      .includes(query),
+  )
+})
 const pendingDeleteConversation = computed(() =>
   conversations.value.find((conversation) => conversation.id === pendingDeleteId.value),
 )
+const activeRunId = computed(() => activeRunIds.value[activeId.value] || '')
+const activeRunCount = computed(() => Object.keys(activeRunIds.value).length)
+const isGenerating = computed(() => Boolean(activeRunId.value))
+const isStopping = computed(() => stoppingConversationIds.value.has(activeId.value))
+const pendingDeleteHasActiveRun = computed(() => {
+  const conversation = pendingDeleteConversation.value
+  if (!conversation) return false
+  return (
+    Boolean(activeRunIds.value[conversation.id]) ||
+    conversation.messages?.some((message) => message.role === 'assistant' && message.pending)
+  )
+})
 const lastAssistantId = computed(
   () => [...messages.value].reverse().find((message) => message.role === 'assistant')?.id || '',
 )
@@ -174,6 +227,7 @@ const canSend = computed(
     Boolean(draft.value.trim()) &&
     draft.value.trim().length <= 12000 &&
     !isGenerating.value &&
+    !isUploadingReferences.value &&
     !serviceError.value &&
     !serviceLoading.value,
 )
@@ -253,9 +307,44 @@ const inlineMenuItems = computed(() => {
     `${item.name || item.label}${item.description || ''}`.toLowerCase().includes(query),
   )
 })
+const workspaceStatus = computed(() => {
+  if (historySyncing.value) return { label: '同步对话中', icon: 'bi-arrow-repeat', active: true }
+  if (isUploadingReferences.value)
+    return { label: '上传图片中', icon: 'bi-cloud-arrow-up', active: true }
+  if (isGenerating.value) return { label: '后台处理中', icon: 'bi-stars', active: true }
+  if (activeRunCount.value)
+    return {
+      label: `${activeRunCount.value} 个对话处理中`,
+      icon: 'bi-arrow-repeat',
+      active: true,
+    }
+  return { label: '已保存到云端', icon: 'bi-cloud-check', active: false }
+})
 
 function uid() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function setConversationRun(conversationId, runId) {
+  activeRunIds.value = { ...activeRunIds.value, [conversationId]: runId }
+}
+
+function clearConversationRun(conversationId) {
+  if (!activeRunIds.value[conversationId]) return
+  const next = { ...activeRunIds.value }
+  delete next[conversationId]
+  activeRunIds.value = next
+}
+
+function setConversationStopping(conversationId, stopping) {
+  const next = new Set(stoppingConversationIds.value)
+  if (stopping) next.add(conversationId)
+  else next.delete(conversationId)
+  stoppingConversationIds.value = next
+}
+
+function conversationHasActiveRun(conversationId) {
+  return Boolean(activeRunIds.value[conversationId])
 }
 
 function workspaceSnapshot() {
@@ -293,8 +382,10 @@ function restoreWorkspaceState(state = {}) {
   if (generationRatios.some((item) => item.id === state.generationRatio)) {
     generationRatio.value = state.generationRatio
   }
-  if (generationModels.some((item) => item.label === state.generationModel)) {
-    generationModel.value = state.generationModel
+  if (typeof state.generationModel === 'string' && state.generationModel.trim()) {
+    generationModel.value = state.generationModel.trim().slice(0, 120)
+    if (mode.value === 'image') imageGenerationModel.value = generationModel.value
+    else conversationModel.value = generationModel.value
   }
   if (imageResolutions.some((item) => item.id === state.generationResolution)) {
     generationResolution.value = state.generationResolution
@@ -316,19 +407,7 @@ function restoreConversations(stored) {
   if (!Array.isArray(stored)) return []
   return stored.slice(0, 30).map((conversation) => ({
     ...conversation,
-    messages: Array.isArray(conversation.messages)
-      ? conversation.messages.map((message) =>
-          message.pending
-            ? {
-                ...message,
-                pending: false,
-                routing: false,
-                progress: 0,
-                content: message.content || '生成已中断，可重新生成',
-              }
-            : message,
-        )
-      : [],
+    messages: Array.isArray(conversation.messages) ? conversation.messages : [],
   }))
 }
 
@@ -337,17 +416,19 @@ function persistWorkspaceState() {
   saveAssistantWorkspaceState(scope.value, workspaceSnapshot())
 }
 
-function persistHistoryNow() {
-  if (!hydrated.value) return Promise.resolve()
-  if (saveTimer) window.clearTimeout(saveTimer)
-  saveTimer = null
-  return saveAssistantHistory(scope.value, conversations.value).catch(() => {})
-}
-
-function newConversation() {
-  const now = new Date().toISOString()
-  const conversation = { id: uid(), title: '新对话', createdAt: now, updatedAt: now, messages: [] }
-  conversations.value.unshift(conversation)
+async function newConversation() {
+  if (historySyncing.value) return activeConversation.value
+  historySyncing.value = true
+  let conversation
+  try {
+    conversation = await createAssistantConversation('新对话')
+    conversations.value.unshift(conversation)
+  } catch (error) {
+    notificationService.error(error?.message || '新建对话失败')
+    return null
+  } finally {
+    historySyncing.value = false
+  }
   visibleMessageLimit.value = MESSAGE_BATCH_SIZE
   activeId.value = conversation.id
   editingMessageId.value = ''
@@ -360,7 +441,7 @@ function newConversation() {
   return conversation
 }
 
-function ensureConversation() {
+async function ensureConversation() {
   return activeConversation.value || newConversation()
 }
 
@@ -377,14 +458,37 @@ function requestDeleteConversation(id) {
   pendingDeleteId.value = id
 }
 
-function deleteConversation(id) {
+async function deleteConversation(id) {
   const index = conversations.value.findIndex((item) => item.id === id)
   if (index < 0) return
-  if (activeId.value === id && isGenerating.value) stopGeneration()
+  const cancelActive = conversationHasActiveRun(id) || pendingDeleteHasActiveRun.value
+  try {
+    await deleteAssistantConversation(id, { cancelActive })
+  } catch (error) {
+    if (error?.code === 'assistant_conversation_busy') {
+      try {
+        const activeRuns = await listActiveAssistantRuns()
+        for (const run of activeRuns) {
+          if (run.conversationId === id) setConversationRun(id, run.id)
+        }
+      } catch {
+        /* Keep the confirmation open so the user can retry explicitly. */
+      }
+      notificationService.warning('该对话仍在生成，确认后将先停止任务再删除')
+      return
+    }
+    notificationService.error(error?.message || '删除对话失败')
+    return
+  }
+  runControllers.get(id)?.abort()
+  runControllers.delete(id)
+  clearConversationRun(id)
+  setConversationStopping(id, false)
+  for (const message of conversations.value[index]?.messages || []) stopImageProgress(message)
   conversations.value.splice(index, 1)
   if (activeId.value === id) {
     activeId.value = conversations.value[0]?.id || ''
-    if (!activeId.value) newConversation()
+    if (!activeId.value) await newConversation()
   }
   pendingDeleteId.value = ''
   notificationService.success('对话已删除')
@@ -420,8 +524,14 @@ function toggleComposerPanel(name) {
 }
 
 function selectCreationType(type) {
+  if (mode.value === 'image') imageGenerationModel.value = generationModel.value || 'gpt-image-2'
+  else conversationModel.value = generationModel.value
   creationType.value = type.id
   mode.value = type.id === 'image' ? 'image' : 'chat'
+  generationModel.value =
+    mode.value === 'image'
+      ? imageGenerationModel.value || 'gpt-image-2'
+      : conversationModel.value || conversationModels.value[0]?.model || ''
   generationMediaType.value = type.id === 'video' ? 'video' : 'image'
   if (type.id === 'image') selectedSkill.value = null
   closeComposerPanels()
@@ -429,8 +539,20 @@ function selectCreationType(type) {
 }
 
 function selectGenerationModel(model) {
-  generationModel.value = model.label
+  generationModel.value = model.model
+  if (mode.value === 'image') imageGenerationModel.value = model.model
+  else conversationModel.value = model.model
   modelMenuOpen.value = false
+}
+
+function modelDisplayName(model) {
+  const value = String(model || '').trim()
+  return (
+    [...conversationModels.value, ...imageGenerationModels].find((item) => item.model === value)
+      ?.label ||
+    value ||
+    generationModelLabel.value
+  )
 }
 
 function toggleModelMenu() {
@@ -501,16 +623,18 @@ function currentImageRequestSize() {
 }
 
 function startImageProgress(message) {
-  if (progressTimer) window.clearInterval(progressTimer)
+  stopImageProgress(message)
   message.progress = 8
-  progressTimer = window.setInterval(() => {
+  const timer = window.setInterval(() => {
     message.progress = Math.min(92, (message.progress || 8) + 4)
   }, 900)
+  progressTimers.set(message.id, timer)
 }
 
 function stopImageProgress(message, completed = false) {
-  if (progressTimer) window.clearInterval(progressTimer)
-  progressTimer = null
+  const timer = progressTimers.get(message?.id)
+  if (timer) window.clearInterval(timer)
+  progressTimers.delete(message?.id)
   if (completed) message.progress = 100
 }
 
@@ -672,11 +796,17 @@ function quoteMessage(message) {
   nextTick(() => promptInput.value?.focus())
 }
 
-function deleteMessage(messageId) {
+async function deleteMessage(messageId) {
   const conversation = activeConversation.value
   if (!conversation) return
   const index = conversation.messages.findIndex((message) => message.id === messageId)
   if (index < 0) return
+  try {
+    await deleteAssistantMessage(messageId)
+  } catch (error) {
+    notificationService.error(error?.message || '删除内容失败')
+    return
+  }
   conversation.messages.splice(index, 1)
   conversation.updatedAt = new Date().toISOString()
   activeMessageMenuId.value = ''
@@ -878,22 +1008,6 @@ function followConversationBottom() {
   if (isAtConversationBottom.value || isReturningToBottom.value) void scrollToBottom()
 }
 
-function chatPayload(conversation, visualContext = []) {
-  const payload = conversation.messages
-    .filter((message) => message.content?.trim() && !message.pending && !message.error)
-    .slice(-40)
-    .map(({ role, content }) => ({ role, content }))
-  const lastUserIndex = payload.findLastIndex((message) => message.role === 'user')
-  const referenceImages = visualContext
-    .map((image) => (typeof image === 'string' ? image : image?.dataUrl))
-    .filter(Boolean)
-    .slice(0, 4)
-  if (lastUserIndex >= 0 && referenceImages.length) {
-    payload[lastUserIndex].referenceImages = referenceImages
-  }
-  return payload
-}
-
 function promptNeedsRecentVisual(prompt) {
   const text = String(prompt || '').trim().toLowerCase()
   if (!text) return false
@@ -971,8 +1085,51 @@ function imageSkeletonRatio(message) {
   return width > 0 && height > 0 ? `${width} / ${height}` : '1 / 1'
 }
 
-async function generateResponse(conversation, prompt, assistantMessage, responseMode) {
-  let resolvedMode = responseMode
+function applyAssistantRunUpdate(conversation, assistantMessage, data) {
+  const run = data?.run || {}
+  const persisted = data?.assistantMessage
+  if (persisted) Object.assign(assistantMessage, persisted)
+  if (run.id) assistantMessage.runId = run.id
+  if (run.stage) assistantMessage.statusStage = run.stage
+  if (run.resolvedMode) assistantMessage.kind = run.resolvedMode
+  assistantMessage.pending = ['queued', 'running'].includes(run.status || assistantMessage.status)
+  assistantMessage.routing = run.stage === 'routing'
+  if (
+    assistantMessage.kind === 'image' &&
+    assistantMessage.pending &&
+    !progressTimers.has(assistantMessage.id)
+  ) {
+    startImageProgress(assistantMessage)
+  }
+  if (!assistantMessage.pending && progressTimers.has(assistantMessage.id)) {
+    stopImageProgress(assistantMessage, run.status === 'succeeded')
+  }
+  conversation.updatedAt = assistantMessage.updatedAt || new Date().toISOString()
+  if (activeId.value === conversation.id) followConversationBottom()
+}
+
+async function monitorAssistantRun(conversation, assistantMessage, runId, controller) {
+  setConversationRun(conversation.id, runId)
+  const data = await waitForAssistantRun(runId, {
+    signal: controller.signal,
+    onUpdate(update) {
+      applyAssistantRunUpdate(conversation, assistantMessage, update)
+    },
+  })
+  applyAssistantRunUpdate(conversation, assistantMessage, data)
+  if (data?.run?.status === 'failed') {
+    assistantMessage.error = data.run.errorMessage || assistantMessage.error || '生成失败，请稍后重试'
+  }
+  return data
+}
+
+async function generateResponse(
+  conversation,
+  prompt,
+  assistantMessage,
+  responseMode,
+  { sourceUserMessageId = '' } = {},
+) {
   const visualContext = resolveVisualContext(conversation, prompt)
   const hasReferenceImage = visualContext.length > 0
   const immediateIntent =
@@ -990,96 +1147,80 @@ async function generateResponse(conversation, prompt, assistantMessage, response
       : responseMode === 'agent'
         ? 'routing'
         : 'thinking'
-  isGenerating.value = true
-  activeController = new AbortController()
-  await scrollToBottom()
+  const controller = new AbortController()
+  setConversationRun(conversation.id, `creating:${assistantMessage.id}`)
+  runControllers.set(conversation.id, controller)
+  if (activeId.value === conversation.id) await scrollToBottom()
 
   try {
-    if (responseMode === 'agent') {
-      try {
-        resolvedMode = await classifyAssistantIntent(prompt, {
-          signal: activeController.signal,
-          hasReferenceImage,
-        })
-      } catch (error) {
-        if (error?.name === 'AbortError') throw error
-        resolvedMode = fallbackAgentIntent(prompt, { hasReferenceImage })
-      }
-      assistantMessage.kind = resolvedMode
-      assistantMessage.routing = false
-      assistantMessage.statusStage =
-        resolvedMode === 'image'
-          ? 'preparing-image'
-          : visualContext.length
-            ? 'analyzing-image'
-            : 'thinking'
-      followConversationBottom()
-    }
-
-    if (resolvedMode === 'image') {
-      assistantMessage.model = generationModel.value
-      assistantMessage.statusStage = 'generating-image'
-      startImageProgress(assistantMessage)
-      const result = await generateAssistantImage(prompt, {
-        size: assistantMessage.requestSize || imageSize.value,
-        quality: assistantMessage.quality || imageQuality.value,
+    const uploadedReferences = (
+      await Promise.all(visualContext.slice(0, 4).map(ensureReferenceUploaded))
+    ).filter(Boolean)
+    const currentUserMessage = conversation.messages.find(
+      (message) => message.id === (sourceUserMessageId || assistantMessage.userMessageId),
+    )
+    const created = await createAssistantRun(
+      {
+        conversationId: conversation.id,
+        prompt,
+        mode: responseMode,
+        clientUserMessageId: currentUserMessage?.id || uid(),
+        clientAssistantMessageId: assistantMessage.id,
+        sourceUserMessageId,
+        referenceImages: uploadedReferences,
+        quoted: currentUserMessage?.quoted || null,
+        skill: currentUserMessage?.skill || '',
+        model: assistantMessage.model || generationModel.value,
+        ratio: assistantMessage.ratio,
+        resolution: assistantMessage.resolution,
         count: assistantMessage.count || generationCount.value,
-        referenceImages: visualContext.map((image) => image?.dataUrl),
-        signal: activeController.signal,
-      })
-      assistantMessage.images = result.images || []
-      assistantMessage.content = assistantMessage.images.length ? '图片已生成' : '没有生成可用图片'
-      stopImageProgress(assistantMessage, true)
-    } else {
-      assistantMessage.statusStage = visualContext.length ? 'analyzing-image' : 'thinking'
-      const payload = chatPayload(conversation, visualContext).filter(
-        (message) => message.role !== 'assistant' || message.content,
-      )
-      await streamAssistantChat(payload, {
-        signal: activeController.signal,
-        onDelta(_delta, fullText) {
-          assistantMessage.statusStage = 'answering'
-          assistantMessage.content = fullText
-          followConversationBottom()
-        },
-      })
-      if (!assistantMessage.content) assistantMessage.content = '没有收到模型回复，请重试。'
-    }
+        requestSize: assistantMessage.requestSize || imageSize.value,
+        width: assistantMessage.width,
+        height: assistantMessage.height,
+        quality: assistantMessage.quality || imageQuality.value,
+      },
+      { signal: controller.signal },
+    )
+    if (created.userMessage && currentUserMessage) Object.assign(currentUserMessage, created.userMessage)
+    applyAssistantRunUpdate(conversation, assistantMessage, created)
+    await monitorAssistantRun(conversation, assistantMessage, created.run.id, controller)
   } catch (error) {
-    if (resolvedMode === 'image') stopImageProgress(assistantMessage)
     if (error?.name === 'AbortError') {
-      assistantMessage.statusStage = 'stopped'
-      assistantMessage.content ||= '已停止生成'
+      if (stoppingConversationIds.value.has(conversation.id)) {
+        assistantMessage.statusStage = 'stopped'
+        assistantMessage.pending = false
+        assistantMessage.content ||= '已停止生成'
+      }
     } else {
       assistantMessage.statusStage = 'failed'
       assistantMessage.error = error?.message || '生成失败，请稍后重试'
       assistantMessage.content ||= assistantMessage.error
     }
   } finally {
-    if (!assistantMessage.error && assistantMessage.statusStage !== 'stopped') {
-      assistantMessage.statusStage = 'complete'
+    if (runControllers.get(conversation.id) === controller) {
+      runControllers.delete(conversation.id)
+      clearConversationRun(conversation.id)
+      setConversationStopping(conversation.id, false)
     }
-    assistantMessage.pending = false
-    assistantMessage.routing = false
-    conversation.updatedAt = new Date().toISOString()
-    isGenerating.value = false
-    isStopping.value = false
-    activeController = null
-    followConversationBottom()
-    await persistHistoryNow()
+    if (activeId.value === conversation.id) followConversationBottom()
   }
 }
 
 async function sendMessage() {
   const prompt = draft.value.trim()
   if (!canSend.value) return
+  if (activeRunCount.value >= 4 && !conversationHasActiveRun(activeId.value)) {
+    notificationService.warning('最多可同时运行 4 个对话任务，请等待其中一个完成')
+    return
+  }
   const requestedImage = currentImageRequestSize()
   const requestedImageCount = imageCountFromPrompt(prompt)
 
-  const conversation = ensureConversation()
+  const conversation = await ensureConversation()
+  if (!conversation) return
   if (!conversation.messages.length) conversation.title = conversationTitle(prompt)
   conversation.updatedAt = new Date().toISOString()
-  conversation.messages.push({
+  const userMessage = {
     id: uid(),
     role: 'user',
     content: prompt,
@@ -1087,7 +1228,8 @@ async function sendMessage() {
     quoted: quotedMessage.value ? { ...quotedMessage.value } : null,
     skill: selectedSkill.value?.name || '',
     referenceImages: referenceImages.value.map((image) => ({ ...image })),
-  })
+  }
+  conversation.messages.push(userMessage)
   const responseMode =
     mode.value === 'image' ? 'image' : creationType.value === 'agent' ? 'agent' : 'chat'
   const assistantMessage = {
@@ -1110,6 +1252,7 @@ async function sendMessage() {
     height: requestedImage.height,
     quality: imageQuality.value,
     progress: 0,
+    userMessageId: userMessage.id,
   }
   conversation.messages.push(assistantMessage)
   draft.value = ''
@@ -1117,7 +1260,6 @@ async function sendMessage() {
   referenceImages.value = []
   closeInlineMenu()
   resizePromptInput()
-  void persistHistoryNow()
   await generateResponse(conversation, prompt, assistantMessage, responseMode)
 }
 
@@ -1131,18 +1273,44 @@ async function retryAssistant(message) {
   message.content = ''
   message.images = []
   message.feedback = ''
-  await generateResponse(conversation, prompt, message, responseMode)
+  message.pending = true
+  message.statusStage = responseMode === 'image' ? 'preparing-image' : 'thinking'
+  await generateResponse(conversation, prompt, message, responseMode, {
+    sourceUserMessageId: conversation.messages[index - 1].id,
+  })
 }
 
-function stopGeneration() {
-  if (!isGenerating.value || isStopping.value) return
-  isStopping.value = true
-  const pendingMessage = [...messages.value]
+async function stopGeneration(conversationId = activeId.value) {
+  const runId = activeRunIds.value[conversationId]
+  if (!runId || stoppingConversationIds.value.has(conversationId)) return
+  setConversationStopping(conversationId, true)
+  const conversation = conversations.value.find((item) => item.id === conversationId)
+  const pendingMessage = [...(conversation?.messages || [])]
     .reverse()
     .find((message) => message.role === 'assistant' && message.pending)
   if (pendingMessage) pendingMessage.statusStage = 'stopping'
-  activeController?.abort()
-  if (progressTimer) window.clearInterval(progressTimer)
+  let canceled = false
+  try {
+    if (!runId.startsWith('creating:')) {
+      await cancelAssistantRun(runId)
+    } else {
+      runControllers.get(conversationId)?.abort()
+      const activeRuns = await listActiveAssistantRuns()
+      const created = activeRuns.find((run) => run.conversationId === conversationId)
+      if (created) await cancelAssistantRun(created.id)
+    }
+    canceled = true
+  } catch (error) {
+    notificationService.error(error?.message || '停止任务失败')
+  } finally {
+    if (!canceled) {
+      setConversationStopping(conversationId, false)
+      if (pendingMessage) pendingMessage.statusStage = 'running'
+    }
+  }
+  if (!canceled) return
+  runControllers.get(conversationId)?.abort()
+  if (pendingMessage) stopImageProgress(pendingMessage)
 }
 
 function handleComposerKeydown(event) {
@@ -1294,20 +1462,6 @@ function openReferencePicker() {
   referenceInput.value?.click()
 }
 
-function readImageFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () =>
-      resolve({
-        id: uid(),
-        name: file.name || `剪贴板图片-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`,
-        dataUrl: String(reader.result || ''),
-      })
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
 async function appendReferenceFiles(files, { pasted = false } = {}) {
   const imageFiles = [...files].filter((file) => file?.type?.startsWith('image/'))
   const available = Math.max(0, 4 - referenceImages.value.length)
@@ -1317,19 +1471,57 @@ async function appendReferenceFiles(files, { pasted = false } = {}) {
     return 0
   }
   try {
-    const images = await Promise.all(imageFiles.slice(0, available).map(readImageFile))
-    const existing = new Set(referenceImages.value.map((image) => image.dataUrl))
-    const uniqueImages = images.filter((image) => image.dataUrl && !existing.has(image.dataUrl))
+    isUploadingReferences.value = true
+    const uploaded = await Promise.all(
+      imageFiles.slice(0, available).map(async (file) => {
+        const result = await uploadFile(file)
+        return {
+          id: uid(),
+          name:
+            file.name ||
+            `剪贴板图片-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`,
+          dataUrl: result.url,
+          thumbnailUrl: result.thumbnailUrl,
+          fileKey: result.key,
+        }
+      }),
+    )
+    const existing = new Set(referenceImages.value.map((image) => image.fileKey || image.dataUrl))
+    const uniqueImages = uploaded.filter(
+      (image) => image.dataUrl && !existing.has(image.fileKey || image.dataUrl),
+    )
     referenceImages.value.push(...uniqueImages)
     if (imageFiles.length > available) notificationService.info('图片最多保留 4 张')
-    else if (uniqueImages.length < images.length) notificationService.info('已忽略重复图片')
+    else if (uniqueImages.length < uploaded.length) notificationService.info('已忽略重复图片')
     if (pasted && uniqueImages.length) {
       notificationService.success(`已粘贴 ${uniqueImages.length} 张图片，可直接提问`)
     }
     return uniqueImages.length
-  } catch {
-    notificationService.error(pasted ? '剪贴板图片读取失败，请重试' : '图片读取失败，请重新选择')
+  } catch (error) {
+    notificationService.error(error?.message || (pasted ? '剪贴板图片上传失败' : '图片上传失败'))
     return 0
+  } finally {
+    isUploadingReferences.value = false
+  }
+}
+
+async function ensureReferenceUploaded(image) {
+  if (image?.fileKey) return image
+  const source = String(image?.dataUrl || '').trim()
+  if (!source) return null
+  const response = await fetch(source, { credentials: 'include' })
+  if (!response.ok) throw new Error('参考图读取失败，请重新添加')
+  const blob = await response.blob()
+  const extension = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg'
+  const file = new File([blob], image?.name || `assistant-reference.${extension}`, {
+    type: blob.type || 'image/jpeg',
+  })
+  const uploaded = await uploadFile(file)
+  return {
+    ...image,
+    dataUrl: uploaded.url,
+    thumbnailUrl: uploaded.thumbnailUrl,
+    fileKey: uploaded.key,
   }
 }
 
@@ -1468,8 +1660,9 @@ async function submitUserMessageEdit(message) {
   conversation.messages.push(assistantMessage)
   conversation.updatedAt = assistantMessage.createdAt
   cancelUserMessageEdit()
-  void persistHistoryNow()
-  await generateResponse(conversation, prompt, assistantMessage, responseMode)
+  await generateResponse(conversation, prompt, assistantMessage, responseMode, {
+    sourceUserMessageId: message.id,
+  })
 }
 
 function handleUserMessageEditEnter(event, message) {
@@ -1615,9 +1808,39 @@ function toggleSidebar() {
     sidebarOpen.value = !sidebarOpen.value
     return
   }
-  sidebarCollapsed.value = !sidebarCollapsed.value
+  if (sidebarAnimating.value) return
+  const shouldCollapse = !sidebarCollapsed.value
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    sidebarCollapsed.value = shouldCollapse
+    try {
+      localStorage.setItem('starclouds:assistant-sidebar-collapsed', String(shouldCollapse))
+    } catch {
+      /* ignore */
+    }
+    return
+  }
+  sidebarAnimating.value = true
+  sidebarContentHidden.value = true
+  if (sidebarTransitionTimer) window.clearTimeout(sidebarTransitionTimer)
+  if (sidebarCollapseTimer) window.clearTimeout(sidebarCollapseTimer)
+
+  if (shouldCollapse) {
+    // Let the list leave the paint tree before changing the grid track.
+    sidebarCollapseTimer = window.setTimeout(() => {
+      sidebarCollapsed.value = true
+      sidebarCollapseTimer = null
+    }, 70)
+  } else {
+    sidebarCollapsed.value = false
+  }
+
+  sidebarTransitionTimer = window.setTimeout(() => {
+    sidebarAnimating.value = false
+    sidebarContentHidden.value = false
+    sidebarTransitionTimer = null
+  }, shouldCollapse ? 310 : 250)
   try {
-    localStorage.setItem('starclouds:assistant-sidebar-collapsed', String(sidebarCollapsed.value))
+    localStorage.setItem('starclouds:assistant-sidebar-collapsed', String(shouldCollapse))
   } catch {
     /* ignore */
   }
@@ -1627,7 +1850,41 @@ async function loadServiceConfig() {
   serviceLoading.value = true
   serviceError.value = ''
   try {
-    await fetchAssistantConfig()
+    const config = await fetchAssistantConfig()
+    const options = Array.isArray(config?.conversationModels)
+      ? config.conversationModels
+          .map((item) => ({
+            label: String(item?.label || item?.model || '').trim(),
+            model: String(item?.model || '').trim(),
+            source: String(item?.source || 'upstream'),
+            description:
+              item?.source === 'configured'
+                ? '后台配置的模型映射'
+                : item?.source === 'default'
+                  ? '后台默认对话模型'
+                  : '由当前 BaseURL 自动读取',
+          }))
+          .filter((item) => item.label && item.model)
+      : []
+    if (!options.length && config?.chatModel) {
+      options.push({
+        label: String(config.chatModel),
+        model: String(config.chatModel),
+        source: 'default',
+        description: '后台默认对话模型',
+      })
+    }
+    conversationModels.value = options
+    const savedModel = conversationModel.value || (mode.value !== 'image' ? generationModel.value : '')
+    conversationModel.value =
+      options.find((item) => item.model === savedModel)?.model ||
+      options.find((item) => item.model === config?.chatModel)?.model ||
+      options[0]?.model ||
+      String(config?.chatModel || '')
+    if (mode.value !== 'image') generationModel.value = conversationModel.value
+    else if (!imageGenerationModels.some((item) => item.model === generationModel.value)) {
+      generationModel.value = imageGenerationModel.value
+    }
   } catch (error) {
     serviceError.value = error?.message || 'AI 服务尚未配置'
   } finally {
@@ -1696,18 +1953,6 @@ watch(
 )
 
 watch(
-  conversations,
-  () => {
-    if (!hydrated.value) return
-    if (saveTimer) window.clearTimeout(saveTimer)
-    saveTimer = window.setTimeout(() => {
-      void persistHistoryNow()
-    }, 350)
-  },
-  { deep: true },
-)
-
-watch(
   [activeId, () => messages.value.length],
   () => {
     nextTick(scheduleMessageNavigatorSync)
@@ -1738,7 +1983,61 @@ watch(
 
 function handlePageHide() {
   persistWorkspaceState()
-  void persistHistoryNow()
+}
+
+async function prepareLegacyAssistantHistory(stored) {
+  const prepared = []
+  for (const conversation of restoreConversations(stored)) {
+    const messages = []
+    for (const original of conversation.messages.slice(-160)) {
+      const message = { ...original }
+      for (const field of ['referenceImages', 'images']) {
+        const migrated = []
+        for (const image of Array.isArray(message[field]) ? message[field].slice(0, 4) : []) {
+          try {
+            const uploaded = await ensureReferenceUploaded(image)
+            if (uploaded) migrated.push(uploaded)
+          } catch {
+            // Preserve text history even when a legacy temporary image is no longer readable.
+          }
+        }
+        message[field] = migrated
+      }
+      if (message.pending) {
+        message.pending = false
+        message.routing = false
+        message.statusStage = 'stopped'
+        message.content ||= '任务已中断，可重新生成'
+      }
+      messages.push(message)
+    }
+    prepared.push({ ...conversation, messages })
+  }
+  return prepared
+}
+
+async function resumeAssistantRun(run) {
+  const conversation = conversations.value.find((item) => item.id === run.conversationId)
+  const assistantMessage = conversation?.messages.find(
+    (message) => message.id === run.assistantMessageId,
+  )
+  if (!conversation || !assistantMessage) return
+  const controller = new AbortController()
+  setConversationRun(conversation.id, run.id)
+  runControllers.set(conversation.id, controller)
+  try {
+    await monitorAssistantRun(conversation, assistantMessage, run.id, controller)
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      assistantMessage.error = error?.message || '任务状态恢复失败'
+    }
+  } finally {
+    if (runControllers.get(conversation.id) === controller) {
+      runControllers.delete(conversation.id)
+      clearConversationRun(conversation.id)
+      setConversationStopping(conversation.id, false)
+    }
+  }
 }
 
 onMounted(async () => {
@@ -1754,16 +2053,41 @@ onMounted(async () => {
   window.addEventListener('resize', clampImageViewerPan, { passive: true })
   await authStore.initAuth().catch(() => null)
   const workspaceState = loadAssistantWorkspaceState(scope.value)
-  const [stored] = await Promise.all([loadAssistantHistory(scope.value), loadServiceConfig()])
-  conversations.value = restoreConversations(stored)
+  await loadServiceConfig()
+  historySyncing.value = true
+  try {
+    let stored = await listAssistantConversations()
+    if (!stored.length) {
+      const legacy = await loadAssistantHistory(scope.value)
+      if (legacy.length) {
+        const prepared = await prepareLegacyAssistantHistory(legacy)
+        await importAssistantConversations(prepared)
+        await clearAssistantHistory(scope.value)
+        stored = await listAssistantConversations()
+        notificationService.success('旧对话已迁移到云端')
+      }
+    }
+    conversations.value = restoreConversations(stored)
+  } catch (error) {
+    notificationService.error(error?.message || '对话记录加载失败')
+    conversations.value = []
+  } finally {
+    historySyncing.value = false
+  }
   restoreWorkspaceState(workspaceState)
   activeId.value = conversations.value.some((item) => item.id === workspaceState.activeId)
     ? workspaceState.activeId
     : conversations.value[0]?.id || ''
   hydrated.value = true
-  if (!activeId.value) newConversation()
+  if (!activeId.value) await newConversation()
   resizePromptInput()
   scrollToBottom()
+  try {
+    const activeRuns = await listActiveAssistantRuns()
+    for (const run of activeRuns.slice(0, 4)) void resumeAssistantRun(run)
+  } catch {
+    // Conversation data remains usable if a status refresh temporarily fails.
+  }
 })
 
 onBeforeUnmount(() => {
@@ -1772,15 +2096,17 @@ onBeforeUnmount(() => {
   window.removeEventListener('click', handleGlobalClick)
   window.removeEventListener('pagehide', handlePageHide)
   window.removeEventListener('resize', clampImageViewerPan)
-  activeController?.abort()
-  if (progressTimer) window.clearInterval(progressTimer)
-  if (saveTimer) window.clearTimeout(saveTimer)
+  for (const controller of runControllers.values()) controller.abort()
+  runControllers.clear()
+  for (const timer of progressTimers.values()) window.clearInterval(timer)
+  progressTimers.clear()
   if (copiedMessageTimer) window.clearTimeout(copiedMessageTimer)
   if (navigatorFrame) window.cancelAnimationFrame(navigatorFrame)
+  if (sidebarTransitionTimer) window.clearTimeout(sidebarTransitionTimer)
+  if (sidebarCollapseTimer) window.clearTimeout(sidebarCollapseTimer)
   clearReturnToBottomTimer()
   if (hydrated.value) {
     persistWorkspaceState()
-    void persistHistoryNow()
   }
 })
 </script>
@@ -1791,6 +2117,8 @@ onBeforeUnmount(() => {
     :class="{
       'is-dark': appearanceStore.isDark,
       'is-sidebar-collapsed': sidebarCollapsed,
+      'is-sidebar-animating': sidebarAnimating,
+      'is-sidebar-content-hidden': sidebarContentHidden,
     }"
   >
     <button
@@ -1826,8 +2154,21 @@ onBeforeUnmount(() => {
 
       <div class="conversation-section">
         <p class="conversation-label">
-          <span>最近</span>
+          <span>最近</span><small>{{ conversations.length }}</small>
         </p>
+        <label class="conversation-search">
+          <i class="bi bi-search"></i>
+          <input v-model="conversationSearch" type="search" placeholder="搜索对话" />
+          <button
+            v-if="conversationSearch"
+            type="button"
+            title="清空搜索"
+            aria-label="清空搜索"
+            @click="conversationSearch = ''"
+          >
+            <i class="bi bi-x"></i>
+          </button>
+        </label>
         <div class="conversation-list">
           <div
             v-for="conversation in visibleConversations"
@@ -1844,6 +2185,7 @@ onBeforeUnmount(() => {
                 class="conversation-thumb"
                 :class="{
                   'has-image': conversationPreviewImage(conversation),
+                  'is-running': conversationHasActiveRun(conversation.id),
                 }"
               >
                 <img
@@ -1852,10 +2194,17 @@ onBeforeUnmount(() => {
                   alt=""
                 />
                 <i v-else class="bi bi-chat-square"></i>
+                <i
+                  v-if="conversationHasActiveRun(conversation.id)"
+                  class="bi bi-arrow-repeat conversation-run-indicator"
+                  aria-label="任务处理中"
+                ></i>
               </span>
               <span class="conversation-copy">
                 <span>{{ conversation.title }}</span>
-                <small>{{ formatTime(conversation.updatedAt) }}</small>
+                <small>
+                  {{ conversationHasActiveRun(conversation.id) ? '处理中' : formatTime(conversation.updatedAt) }}
+                </small>
               </span>
             </button>
             <button
@@ -1885,15 +2234,14 @@ onBeforeUnmount(() => {
           >
             <i class="bi bi-layout-sidebar"></i>
           </button>
-          <h1>今天</h1>
+          <div class="topbar-conversation-title">
+            <h1>{{ activeConversation?.title || 'AI 助手' }}</h1>
+            <span :class="{ 'is-active': workspaceStatus.active }">
+              <i class="bi" :class="workspaceStatus.icon"></i>{{ workspaceStatus.label }}
+            </span>
+          </div>
         </div>
         <div class="topbar-filters">
-          <button class="filter-search" type="button" title="搜索" aria-label="搜索">
-            <i class="bi bi-search"></i>
-          </button>
-          <button type="button"><span>时间</span><i class="bi bi-chevron-down"></i></button>
-          <button type="button"><span>生成模式</span><i class="bi bi-chevron-down"></i></button>
-          <button type="button"><span>操作类型</span><i class="bi bi-chevron-down"></i></button>
           <button
             type="button"
             :class="{ active: assetLibraryOpen }"
@@ -1902,22 +2250,13 @@ onBeforeUnmount(() => {
           >
             <i class="bi bi-archive"></i><span>资产库</span>
           </button>
-          <button
-            class="icon-button theme-toggle"
-            type="button"
-            :title="appearanceStore.isDark ? '切换亮色模式' : '切换暗色模式'"
-            :aria-label="appearanceStore.isDark ? '切换亮色模式' : '切换暗色模式'"
-            @click="appearanceStore.toggle()"
-          >
-            <i class="bi" :class="appearanceStore.isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
-          </button>
         </div>
       </header>
 
       <div ref="messageScroller" class="assistant-messages" @scroll.passive="handleMessageScroll">
         <section v-if="serviceLoading" class="assistant-loading-state" aria-live="polite">
           <span class="thinking-spark"><i></i><i></i></span>
-          <strong>认真思考中...</strong>
+          <strong>正在连接 AI 助手...</strong>
         </section>
         <section
           v-else-if="!messages.length"
@@ -2046,7 +2385,7 @@ onBeforeUnmount(() => {
                 >
                   <div class="image-generation-summary">
                     <strong>{{ message.prompt || '正在生成图片' }}</strong>
-                    <span>{{ message.model || generationModel }}</span>
+                    <span>{{ modelDisplayName(message.model || generationModel) }}</span>
                     <i></i>
                     <span>{{ message.ratio || '智能' }}</span>
                     <i></i>
@@ -2271,15 +2610,17 @@ onBeforeUnmount(() => {
           </section>
 
           <section
-            v-if="mode === 'image' && modelMenuOpen && !preferencesOpen"
+            v-if="modelMenuOpen && !preferencesOpen"
             class="composer-popover image-model-menu"
           >
-            <p class="popover-eyebrow">选择图片模型</p>
+            <p class="popover-eyebrow">
+              {{ mode === 'image' ? '选择图片模型' : '选择对话模型' }}
+            </p>
             <button
               v-for="model in generationModels"
-              :key="model.label"
+              :key="`${model.source}:${model.model}`"
               type="button"
-              :class="{ active: generationModel === model.label }"
+              :class="{ active: generationModel === model.model }"
               @click="selectGenerationModel(model)"
             >
               <span class="model-mark"><i class="bi bi-stars"></i></span>
@@ -2287,8 +2628,9 @@ onBeforeUnmount(() => {
                 <strong>{{ model.label }}</strong>
                 <small>{{ model.description }}</small>
               </span>
-              <i v-if="generationModel === model.label" class="bi bi-check-lg menu-check"></i>
+              <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
             </button>
+            <p v-if="!generationModels.length" class="skill-empty">后台暂未提供可用模型</p>
           </section>
 
           <section
@@ -2392,7 +2734,7 @@ onBeforeUnmount(() => {
                 :class="{ active: modelMenuOpen }"
                 @click.stop="toggleModelMenu"
               >
-                <i class="bi bi-box"></i><span>{{ generationModel }}</span>
+                <i class="bi bi-box"></i><span>{{ generationModelLabel }}</span>
                 <i class="bi" :class="modelMenuOpen ? 'bi-chevron-up' : 'bi-chevron-down'"></i>
               </button>
               <button
@@ -2406,12 +2748,12 @@ onBeforeUnmount(() => {
             </div>
 
             <section v-if="modelMenuOpen" class="nested-selection-menu model-selection-menu">
-              <p>当前模型：{{ generationModel }}</p>
+              <p>当前模型：{{ generationModelLabel }}</p>
               <button
                 v-for="model in generationModels"
-                :key="model.label"
+                :key="`${model.source}:${model.model}`"
                 type="button"
-                :class="{ active: generationModel === model.label }"
+                :class="{ active: generationModel === model.model }"
                 @click="selectGenerationModel(model)"
               >
                 <span class="model-mark"><i class="bi bi-stars"></i></span>
@@ -2419,7 +2761,7 @@ onBeforeUnmount(() => {
                   <strong>{{ model.label }}</strong>
                   <small>{{ model.description }}</small>
                 </span>
-                <i v-if="generationModel === model.label" class="bi bi-check-lg menu-check"></i>
+                <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
               </button>
             </section>
 
@@ -2622,7 +2964,7 @@ onBeforeUnmount(() => {
                 :class="{ active: modelMenuOpen }"
                 @click.stop="toggleImageModelMenu"
               >
-                <i class="bi bi-box"></i><span>{{ generationModel }}</span
+                <i class="bi bi-box"></i><span>{{ generationModelLabel }}</span
                 ><i class="bi bi-stars"></i>
               </button>
               <button
@@ -2636,12 +2978,13 @@ onBeforeUnmount(() => {
               </button>
               <button
                 v-if="mode !== 'image'"
-                class="composer-tool-button"
+                class="composer-tool-button image-model-button"
                 type="button"
-                :class="{ active: preferencesOpen }"
-                @click.stop="toggleComposerPanel('preferences')"
+                :class="{ active: modelMenuOpen }"
+                @click.stop="toggleImageModelMenu"
               >
-                <i class="bi bi-sliders2"></i><span>{{ generationAuto ? '自动' : '自定义' }}</span>
+                <i class="bi bi-cpu"></i><span>{{ generationModelLabel }}</span>
+                <i class="bi bi-chevron-down"></i>
               </button>
               <button
                 v-if="mode !== 'image'"
@@ -2783,10 +3126,17 @@ onBeforeUnmount(() => {
         aria-modal="true"
         aria-labelledby="delete-dialog-title"
       >
-        <span class="dialog-icon is-danger"><i class="bi bi-trash3"></i></span>
+        <span class="dialog-icon is-danger">
+          <i :class="pendingDeleteHasActiveRun ? 'bi bi-stop-circle' : 'bi bi-trash3'"></i>
+        </span>
         <div>
-          <h2 id="delete-dialog-title">删除这个对话？</h2>
-          <p>{{ pendingDeleteConversation.title }}</p>
+          <h2 id="delete-dialog-title">
+            {{ pendingDeleteHasActiveRun ? '停止任务并删除对话？' : '删除这个对话？' }}
+          </h2>
+          <p v-if="pendingDeleteHasActiveRun">
+            “{{ pendingDeleteConversation.title }}”仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。
+          </p>
+          <p v-else>“{{ pendingDeleteConversation.title }}”及其中的消息将被永久删除。</p>
         </div>
         <div class="dialog-actions">
           <button type="button" @click="pendingDeleteId = ''">取消</button>
@@ -2795,7 +3145,7 @@ onBeforeUnmount(() => {
             class="is-danger"
             @click="deleteConversation(pendingDeleteConversation.id)"
           >
-            删除
+            {{ pendingDeleteHasActiveRun ? '停止任务并删除' : '删除' }}
           </button>
         </div>
       </section>
@@ -3366,9 +3716,6 @@ input:focus-visible {
 }
 .mobile-sidebar-button {
   display: none;
-}
-.theme-toggle i {
-  color: var(--assistant-accent-ink);
 }
 
 .assistant-messages {
@@ -4465,6 +4812,7 @@ input:focus-visible {
 }
 
 .conversation-thumb {
+  position: relative;
   display: grid;
   width: 32px;
   height: 32px;
@@ -4473,6 +4821,28 @@ input:focus-visible {
   border-radius: 6px;
   color: var(--assistant-text-soft);
   background: var(--assistant-card);
+}
+
+.conversation-run-indicator {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  display: grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--assistant-accent-ink);
+  background: var(--assistant-card);
+  box-shadow: 0 0 0 1px var(--assistant-border);
+  font-size: 9px;
+  animation: assistant-run-spin 1.2s linear infinite;
+}
+
+@keyframes assistant-run-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .conversation-thumb.has-image {
@@ -4562,14 +4932,6 @@ input:focus-visible {
 
 .topbar-filters > button i {
   font-size: 11px;
-}
-
-.topbar-filters .filter-search,
-.topbar-filters .theme-toggle {
-  width: 32px;
-  min-width: 32px;
-  padding: 0;
-  justify-content: center;
 }
 
 .assistant-messages {
@@ -4883,7 +5245,84 @@ input:focus-visible {
   }
 }
 
+/* Server-synced workbench header and compact conversation search. */
+.conversation-search {
+  margin: 0 7px 8px;
+  border-color: color-mix(in srgb, var(--assistant-border) 72%, transparent);
+  background: color-mix(in srgb, var(--assistant-card) 72%, transparent);
+}
+
+.conversation-list {
+  height: calc(100% - 122px);
+}
+
+.topbar-title {
+  gap: 10px;
+  padding-left: 0;
+}
+
+.topbar-conversation-title {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.topbar-title .topbar-conversation-title h1 {
+  overflow: hidden;
+  max-width: min(48vw, 560px);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-conversation-title > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--assistant-muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.topbar-conversation-title > span.is-active i {
+  animation: assistant-sync-pulse 1.4s ease-in-out infinite;
+}
+
+.topbar-filters {
+  gap: 2px;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--assistant-card) 58%, transparent);
+  box-shadow: none;
+}
+
+@keyframes assistant-sync-pulse {
+  50% {
+    opacity: 0.45;
+    transform: rotate(10deg) scale(0.94);
+  }
+}
+
+@media (max-width: 640px) {
+  .assistant-topbar {
+    padding-inline: 12px;
+  }
+
+  .topbar-title .topbar-conversation-title h1 {
+    max-width: 42vw;
+  }
+
+  .topbar-conversation-title > span {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .topbar-conversation-title > span.is-active i {
+    animation: none;
+  }
+
   .thinking-spark i {
     animation: none;
   }
@@ -6123,7 +6562,8 @@ input:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .image-dream-slot::before {
+  .image-dream-slot::before,
+  .conversation-run-indicator {
     animation: none;
   }
 }
@@ -7068,15 +7508,45 @@ input:focus-visible {
 }
 
 /* Single-layer glass sidebar. Child controls stay blur-free to limit GPU compositing. */
+.assistant-workspace {
+  transition: grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .assistant-sidebar {
   position: relative;
   isolation: isolate;
+  overflow: hidden;
   border-right-color: color-mix(in srgb, var(--assistant-border-strong) 28%, transparent);
   background: color-mix(in srgb, var(--assistant-card) 66%, transparent);
   box-shadow: 10px 0 24px rgb(34 45 47 / 2.5%);
   backdrop-filter: blur(14px) saturate(1.14);
   -webkit-backdrop-filter: blur(14px) saturate(1.14);
-  contain: paint;
+  contain: layout paint style;
+}
+
+.assistant-brand strong,
+.new-chat-button span,
+.conversation-section,
+.account-meta {
+  transition:
+    opacity 70ms linear,
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.is-sidebar-content-hidden .assistant-brand strong,
+.is-sidebar-content-hidden .new-chat-button span,
+.is-sidebar-content-hidden .conversation-section,
+.is-sidebar-content-hidden .account-meta {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-6px);
+}
+
+/* Backdrop blur is expensive while its clipping area changes every frame. */
+.is-sidebar-animating .assistant-sidebar {
+  background: color-mix(in srgb, var(--assistant-panel) 96%, var(--assistant-bg));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .is-dark .assistant-sidebar {
@@ -7167,6 +7637,16 @@ input:focus-visible {
     background: var(--assistant-panel);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace,
+  .assistant-brand strong,
+  .new-chat-button span,
+  .conversation-section,
+  .account-meta {
+    transition: none;
   }
 }
 

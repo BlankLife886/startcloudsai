@@ -1,7 +1,15 @@
 import preserve4kUpscalePrompt from './preserve-4k-upscale/SKILL.md?raw'
 
-/** Built-in skills are metadata plus an explicit prompt contract. */
+/** Built-in skills use UI metadata plus either a client or server prompt contract. */
 export const BUILTIN_WALLPAPER_SKILLS = [
+  {
+    id: 'female-portrait-director',
+    name: '人像导演',
+    icon: 'bi-person-bounding-box',
+    description: '智能编排成年女性人像的造型、镜头、光线与场景',
+    serverManaged: true,
+    builtin: true,
+  },
   {
     id: 'prompt-architect',
     name: 'Prompt Architect',
@@ -33,6 +41,14 @@ export const BUILTIN_WALLPAPER_SKILLS = [
     description: '强化高清细节与瑕疵规避',
     prompt:
       'Prefer clean, physically plausible details and reject blur, noise, broken anatomy, malformed objects, unwanted text, and watermarks.',
+  },
+  {
+    id: 'clean-hd-render',
+    name: '高清净化',
+    icon: 'bi-badge-hd',
+    description: '放大保持清晰，抑制脏点、糊边和伪细节',
+    prompt:
+      'Create a clean high-fidelity image that remains clear when viewed large. Preserve the user requested style and intentional texture, while prioritizing coherent macro and micro details, naturally crisp edges, clean gradients, controlled surface texture, accurate material boundaries, and low-noise shadows. Avoid blur, smearing, muddy colors, unintended dirty or grimy texture, oversharpening halos, JPEG artifacts, color banding, chromatic noise, duplicated details, random micro-text, signatures, logos, and watermarks. Do not remove dirt, grain, text, or rough texture when the user explicitly requests it.',
   },
   {
     id: 'motion-planner',
@@ -104,6 +120,7 @@ export function resolveActiveWallpaperSkills({
 
 export function buildWallpaperSkillPrompt(skills = []) {
   const prompts = skills
+    .filter((skill) => skill?.serverManaged !== true)
     .map((skill) => String(skill?.prompt || '').trim())
     .filter(Boolean)
   if (!prompts.length) return ''

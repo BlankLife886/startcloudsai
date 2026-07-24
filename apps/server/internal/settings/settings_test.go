@@ -21,6 +21,7 @@ func TestResolveSub2APIUsesStoredOverrides(t *testing.T) {
 		"sub2api_base_url":     "http://stored.example",
 		"sub2api_api_key":      encryptedKey,
 		"sub2api_chat_model":   "stored-chat",
+		"sub2api_chat_models":  map[string]string{"快速模型": "stored-fast"},
 		"sub2api_image_model":  "stored-image",
 		"sub2api_timeout_secs": 420,
 	}
@@ -42,7 +43,8 @@ func TestResolveSub2APIUsesStoredOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.BaseURL != "http://stored.example" || got.APIKey != "stored-api-key" ||
-		got.ChatModel != "stored-chat" || got.ImageModel != "stored-image" || got.TimeoutSecs != 420 {
+		got.ChatModel != "stored-chat" || got.ChatModels["快速模型"] != "stored-fast" ||
+		got.ImageModel != "stored-image" || got.TimeoutSecs != 420 {
 		t.Fatalf("resolved config = %#v", got)
 	}
 }
@@ -57,7 +59,8 @@ func TestResolveSub2APIFallsBackToEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if got.BaseURL != want.BaseURL || got.APIKey != want.APIKey || got.ChatModel != want.ChatModel ||
+		got.ImageModel != want.ImageModel || got.TimeoutSecs != want.TimeoutSecs || len(got.ChatModels) != 0 {
 		t.Fatalf("resolved config = %#v, want %#v", got, want)
 	}
 }

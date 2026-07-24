@@ -33,6 +33,7 @@ export function shortId(id: string | null | undefined): string {
 export const TASK_TYPES = ['t2i', 'coloring', 'ui_design', 'model_sheet', 'game_art', 'puzzle'] as const
 
 export const TASK_TYPE_LABELS: Record<string, string> = {
+  assistant: 'AI助手',
   t2i: '文生图',
   coloring: '插画染色',
   ui_design: 'UI设计稿',

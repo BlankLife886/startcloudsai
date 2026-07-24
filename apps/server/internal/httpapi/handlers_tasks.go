@@ -14,6 +14,10 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
+// 用户输入框限制为 2 万字；任务提示词还会附加站内处理指令和 Skills，
+// 因此服务端为编译后的完整提示词保留额外空间。
+const maxTaskPromptRunes = 40000
+
 // outputURLsFor 返回站内受保护文件地址，避免把客户端是否能直连 R2
 // 变成任务结果能否展示的额外前提。
 func (s *Server) outputURLsFor(c *gin.Context, t *store.Task) []string {
@@ -101,8 +105,8 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "type: 无效的任务类型", 422))
 		return
 	}
-	if body.Prompt == "" || len([]rune(body.Prompt)) > 8000 {
-		fail(c, apperr.E("validation_error", "prompt: 长度须在 1-8000 之间", 422))
+	if body.Prompt == "" || len([]rune(body.Prompt)) > maxTaskPromptRunes {
+		fail(c, apperr.E("validation_error", "prompt: 完整任务内容过长", 422))
 		return
 	}
 	count := 1

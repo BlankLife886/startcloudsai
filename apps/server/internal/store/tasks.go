@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,6 +52,26 @@ func InsertTask(ctx context.Context, q Q, n NewTask) (*Task, error) {
 func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1`, id))
 	return nilOnNoRows(t, err)
+}
+
+func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Task, error) {
+	out := make(map[uuid.UUID]*Task, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[task.ID] = task
+	}
+	return out, rows.Err()
 }
 
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
@@ -112,6 +133,126 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+const adminTaskSourceSQL = `
+		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
+			output_keys, thumbnail_keys, cost_cents, idempotency_key, error_code,
+			error_message, attempt, started_at, finished_at, created_at
+		FROM tasks
+		UNION ALL
+		SELECT run.id, run.user_id, 'assistant'::text AS type,
+			COALESCE(run.params->>'model', '') AS model, run.status, run.prompt,
+			(run.params - 'referenceImages') || jsonb_build_object(
+				'conversationId', run.conversation_id::text,
+				'mode', run.mode,
+				'resolvedMode', run.resolved_mode,
+				'stage', run.stage
+			) AS params,
+			CASE WHEN COALESCE(run.params->>'count', '') ~ '^[1-4]$'
+				THEN (run.params->>'count')::integer ELSE 1 END AS count,
+			COALESCE((
+				SELECT jsonb_agg(ref->>'fileKey')
+				FROM jsonb_array_elements(COALESCE(run.params->'referenceImages', '[]'::jsonb)) ref
+				WHERE COALESCE(ref->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS input_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(COALESCE(message.metadata->'images', '[]'::jsonb)) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS output_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(COALESCE(message.metadata->'images', '[]'::jsonb)) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS thumbnail_keys,
+			0::bigint AS cost_cents, NULL::text AS idempotency_key,
+			run.error_code, run.error_message, 0::integer AS attempt,
+			run.started_at, run.finished_at, run.created_at
+		FROM assistant_runs run
+		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
+	`
+
+// ListAdminTasks merges regular generation tasks with AI assistant runs while
+// keeping assistant_runs as the single source of truth for assistant state.
+func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
+	sql := `SELECT ` + taskCols + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	args := []any{}
+	if taskType != "" {
+		args = append(args, taskType)
+		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		sql += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	if errorCode != "" {
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
+		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
+	}
+	if userIDs != nil {
+		args = append(args, userIDs)
+		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+	}
+	sql, args = appendCursor(sql, args, cursor, limit)
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, task)
+	}
+	return out, rows.Err()
+}
+
+type AdminTaskOverview struct {
+	Total     int64 `json:"total"`
+	Queued    int64 `json:"queued"`
+	Running   int64 `json:"running"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+	Canceled  int64 `json:"canceled"`
+	Today     int64 `json:"today"`
+}
+
+// GetAdminTaskOverview returns status totals for the current type/user/error
+// scope. Status itself is intentionally excluded so the UI can switch between
+// status tabs without losing the surrounding overview.
+func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID) (*AdminTaskOverview, error) {
+	sql := `SELECT
+		count(*) AS total,
+		count(*) FILTER (WHERE status = 'queued') AS queued,
+		count(*) FILTER (WHERE status = 'running') AS running,
+		count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+		count(*) FILTER (WHERE status = 'failed') AS failed,
+		count(*) FILTER (WHERE status = 'canceled') AS canceled,
+		count(*) FILTER (WHERE created_at >= date_trunc('day', now())) AS today
+		FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	args := []any{}
+	if taskType != "" {
+		args = append(args, taskType)
+		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+	}
+	if errorCode != "" {
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
+		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
+	}
+	if userIDs != nil {
+		args = append(args, userIDs)
+		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+	}
+	var overview AdminTaskOverview
+	err := q.QueryRow(ctx, sql, args...).Scan(
+		&overview.Total, &overview.Queued, &overview.Running, &overview.Succeeded,
+		&overview.Failed, &overview.Canceled, &overview.Today,
+	)
+	return &overview, err
 }
 
 // ListRecentTasks 用户最近 n 条任务。

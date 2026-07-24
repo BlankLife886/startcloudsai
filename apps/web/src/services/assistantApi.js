@@ -1,4 +1,4 @@
-import { ApiError, apiPost, buildApiPath } from './apiClient'
+import { ApiError, apiDelete, apiGet, apiPost, buildApiPath } from './apiClient'
 
 function extractDelta(payload) {
   if (!payload || typeof payload !== 'object') return ''
@@ -191,4 +191,100 @@ export async function fetchAssistantConfig(signal) {
     })
   }
   return payload.data
+}
+
+export async function listAssistantConversations({ signal } = {}) {
+  const data = await apiGet('/assistant/conversations', {
+    signal,
+    fallbackMessage: '对话记录加载失败',
+  })
+  return Array.isArray(data?.conversations) ? data.conversations : []
+}
+
+export async function createAssistantConversation(title = '新对话') {
+  return apiPost('/assistant/conversations', { title }, { fallbackMessage: '新建对话失败' })
+}
+
+export async function deleteAssistantConversation(id, { cancelActive = false } = {}) {
+  return apiDelete(`/assistant/conversations/${encodeURIComponent(id)}`, {
+    query: cancelActive ? { cancelActive: true } : null,
+    fallbackMessage: '删除对话失败',
+  })
+}
+
+export async function deleteAssistantMessage(id) {
+  return apiDelete(`/assistant/messages/${encodeURIComponent(id)}`, {
+    fallbackMessage: '删除内容失败',
+  })
+}
+
+export async function importAssistantConversations(conversations) {
+  return apiPost(
+    '/assistant/import',
+    { conversations },
+    { fallbackMessage: '旧对话迁移失败' },
+  )
+}
+
+export async function createAssistantRun(input, { signal } = {}) {
+  return apiPost('/assistant/runs', input, { signal, fallbackMessage: '任务创建失败' })
+}
+
+export async function getAssistantRun(id, { signal } = {}) {
+  return apiGet(`/assistant/runs/${encodeURIComponent(id)}`, {
+    signal,
+    fallbackMessage: '任务状态读取失败',
+  })
+}
+
+export async function listActiveAssistantRuns({ signal } = {}) {
+  const data = await apiGet('/assistant/runs', { signal, fallbackMessage: '任务状态读取失败' })
+  return Array.isArray(data?.runs) ? data.runs : []
+}
+
+export async function cancelAssistantRun(id) {
+  return apiPost(
+    `/assistant/runs/${encodeURIComponent(id)}/cancel`,
+    {},
+    { fallbackMessage: '停止任务失败' },
+  )
+}
+
+function abortError() {
+  try {
+    return new DOMException('Aborted', 'AbortError')
+  } catch {
+    const error = new Error('Aborted')
+    error.name = 'AbortError'
+    return error
+  }
+}
+
+export async function waitForAssistantRun(
+  id,
+  { signal, onUpdate, intervalMs = 700, maxWaitMs = 20 * 60 * 1000 } = {},
+) {
+  const startedAt = Date.now()
+  for (;;) {
+    if (signal?.aborted) throw abortError()
+    const data = await getAssistantRun(id, { signal })
+    onUpdate?.(data)
+    if (['succeeded', 'failed', 'canceled'].includes(data?.run?.status)) return data
+    if (Date.now() - startedAt > maxWaitMs) {
+      throw new ApiError('任务仍在后台运行，可稍后回到该对话查看', {
+        code: 'assistant_run_timeout',
+      })
+    }
+    await new Promise((resolve, reject) => {
+      const timer = window.setTimeout(resolve, intervalMs)
+      signal?.addEventListener(
+        'abort',
+        () => {
+          window.clearTimeout(timer)
+          reject(abortError())
+        },
+        { once: true },
+      )
+    })
+  }
 }

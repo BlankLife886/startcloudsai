@@ -4,6 +4,7 @@ import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsD
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { gsap } from 'gsap'
 import ColoringFrameMedia from './components/ColoringFrameMedia.vue'
+import ColoringLibraryDrawer from './components/ColoringLibraryDrawer.vue'
 import ColoringSettingsDialog from './components/ColoringSettingsDialog.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
@@ -23,8 +24,9 @@ const holdoverResultUrl = ref('')
 const resultRevealing = ref(false)
 const pendingDeleteHistoryItem = ref(null)
 const batchGridMode = ref(true)
-const selectedStyleCategoryId = ref('base')
 const sharePublishOpen = ref(false)
+const libraryOpen = ref(false)
+const libraryTab = ref('assets')
 const revealedBatchCardIds = ref(new Set())
 const revealingBatchCardIds = ref(new Set())
 const awaitingBatchRevealIds = ref(new Set())
@@ -50,10 +52,10 @@ let studioMotion = null
 let stageMotion = null
 
 const {
-  COLORING_STYLE_PRESETS,
-  COLORING_STYLE_CATEGORIES,
+  COLORING_BATCH_COUNT_OPTIONS,
+  COLORING_OUTPUT_ORIENTATION_OPTIONS,
+  COLORING_OUTPUT_SIZE_OPTIONS,
   MAX_REFERENCE_IMAGES,
-  styleId,
   workTitle,
   customPrompt,
   customPromptLength,
@@ -63,6 +65,7 @@ const {
   sourceMeta,
   imageOrientation,
   frameAspectStyle,
+  outputSizePreview,
   resultUrl,
   statusText,
   coloringElapsedText,
@@ -92,7 +95,6 @@ const {
   canSubmit,
   newTaskMode,
   beginNewColoringTask,
-  activeStyle,
   authStore,
   settings,
   settingsOpen,
@@ -100,9 +102,11 @@ const {
   debugInfo,
   submittingShare,
   publicModels,
+  selectedPublicModel,
   openSettings,
   closeSettings,
   saveSettings,
+  updateSettings,
   toggleDebugPanel,
   closeDebugPanel,
   handleFileInput,
@@ -132,6 +136,8 @@ const {
   availableCredits,
   closeCreditsDialog,
 } = useIllustrationColoringState()
+
+fitMode.value = settings.value.fitMode || 'contain'
 
 const canPan = () => fitMode.value === 'cover'
 
@@ -189,82 +195,24 @@ const HISTORY_PICKER_CARD_WIDTH = 220
 const HISTORY_PICKER_GAP = 10
 const HISTORY_PICKER_EDGE = 16
 
-const selectedStyleCategory = computed(
-  () =>
-    COLORING_STYLE_CATEGORIES.value.find((item) => item.id === selectedStyleCategoryId.value) ||
-    COLORING_STYLE_CATEGORIES.value[0] || {
-      id: '',
-      label: '暂无可用分类',
-      icon: 'bi-palette2',
-      hint: '',
-    },
-)
-
-const hasReferenceStyle = computed(() => referenceImages.value.length > 0)
-
-const visibleStylePresets = computed(() => {
-  const rows = COLORING_STYLE_PRESETS.value.filter(
-    (item) => item.categoryId === selectedStyleCategoryId.value,
-  )
-  return rows.length
-    ? rows
-    : COLORING_STYLE_PRESETS.value.filter((item) => item.categoryId === 'base')
-})
-
-const styleCategoryMenuOpen = ref(false)
-let styleCategoryCloseTimer = 0
-
-const clearStyleCategoryCloseTimer = () => {
-  if (styleCategoryCloseTimer) {
-    window.clearTimeout(styleCategoryCloseTimer)
-    styleCategoryCloseTimer = 0
-  }
+function openLibrary(tab) {
+  libraryTab.value = tab
+  libraryOpen.value = true
 }
 
-const openStyleCategoryMenu = () => {
-  if (hasReferenceStyle.value || controlsLocked.value) return
-  clearStyleCategoryCloseTimer()
-  styleCategoryMenuOpen.value = true
+function selectLibraryHistory(item) {
+  selectHistoryItem(item)
+  libraryOpen.value = false
 }
 
-const scheduleCloseStyleCategoryMenu = () => {
-  clearStyleCategoryCloseTimer()
-  styleCategoryCloseTimer = window.setTimeout(() => {
-    styleCategoryMenuOpen.value = false
-    styleCategoryCloseTimer = 0
-  }, 220)
+function applyLibraryPrompt(item) {
+  customPrompt.value = String(item?.prompt || '').trim()
+  libraryOpen.value = false
+  nextTick(() => studioRoot.value?.querySelector('.coloring-textarea')?.focus())
 }
 
-const selectStyleCategory = (categoryId) => {
-  selectedStyleCategoryId.value = categoryId
-  const rows = COLORING_STYLE_PRESETS.value.filter((item) => item.categoryId === categoryId)
-  if (!rows.some((item) => item.id === styleId.value)) {
-    styleId.value = rows[0]?.id || 'watercolor'
-  }
-  clearStyleCategoryCloseTimer()
-  styleCategoryMenuOpen.value = false
-}
-
-// 点击始终展开：hover 设备上 mouseenter 已先打开菜单，若此处做 toggle 会立刻又关闭；
-// 触屏设备 tap 会依次触发 mouseenter 与 click，toggle 会导致菜单永远打不开。
-const toggleStyleCategoryMenu = () => {
-  if (hasReferenceStyle.value || controlsLocked.value) return
-  clearStyleCategoryCloseTimer()
-  styleCategoryMenuOpen.value = true
-}
-
-const onDocumentPointerDown = (event) => {
-  if (!styleCategoryMenuOpen.value) return
-  if (event.target?.closest?.('.coloring-style-menu')) return
-  clearStyleCategoryCloseTimer()
-  styleCategoryMenuOpen.value = false
-}
-
-const onDocumentKeydown = (event) => {
-  if (event.key === 'Escape' && styleCategoryMenuOpen.value) {
-    clearStyleCategoryCloseTimer()
-    styleCategoryMenuOpen.value = false
-  }
+function setLibraryTab(tab) {
+  libraryTab.value = ['assets', 'history', 'prompts'].includes(tab) ? tab : 'assets'
 }
 
 const showFailedResult = () =>
@@ -482,10 +430,29 @@ const historyMediaUrl = (...candidates) =>
   candidates
     .map((value) => String(value || '').trim())
     .find((value) => value && !value.startsWith('blob:')) || ''
+
+function historyGroupId(item = {}) {
+  const batchId = String(item.batchId || '').trim()
+  if (batchId) return batchId
+  const source = historyMediaUrl(item.sourceRemoteUrl, item.sourcePreview, item.sourceThumbUrl)
+    .replace(/[?#].*$/, '')
+    .slice(-160)
+  if (!source) return String(item.id)
+  const title = String(item.title || item.styleLabel || '插画染色')
+    .replace(/\s*#\d+$/, '')
+    .trim()
+  const prompt = String(item.customPrompt || '').trim().slice(0, 120)
+  const createdAt =
+    Date.parse(String(item.createdAt || '')) || Number(item.startedAt || item.finishedAt || 0)
+  // 兼容旧版本：同一次多图生成没有保存 batchId，但各任务会在数秒内创建。
+  const timeBucket = createdAt > 0 ? Math.floor(createdAt / 15_000) : String(item.id)
+  return `legacy:${source}|${title}|${prompt}|${timeBucket}`
+}
+
 const historyGroups = computed(() => {
   const groups = new Map()
   historyItems.value.forEach((item) => {
-    const groupId = String(item.batchId || item.id)
+    const groupId = historyGroupId(item)
     const group = groups.get(groupId) || { id: groupId, items: [] }
     group.items.push(item)
     groups.set(groupId, group)
@@ -510,6 +477,9 @@ const historyGroups = computed(() => {
       )
       const runningCount = items.filter((item) => isRunningStatus(item.status)).length
       const completedCount = items.filter((item) => item.resultUrl || item.outputs?.[0]).length
+      const failedCount = items.filter((item) =>
+        ['failed', 'cancelled', 'canceled'].includes(String(item.status || '').toLowerCase()),
+      ).length
       return {
         ...group,
         items,
@@ -523,6 +493,7 @@ const historyGroups = computed(() => {
         running: runningCount > 0,
         runningCount,
         completedCount,
+        failedCount,
         variantCount: items.length,
         active: items.some((item) => item.id === activeHistoryId.value),
         status: representative?.status || 'queued',
@@ -530,7 +501,11 @@ const historyGroups = computed(() => {
           items.length > 1
             ? runningCount
               ? `生成中 ${completedCount}/${items.length}`
-              : `已生成 ${completedCount}/${items.length}`
+              : failedCount === items.length
+                ? `${items.length} 张均失败`
+                : completedCount
+                  ? `已完成 ${completedCount}/${items.length}`
+                  : historyStatusLabel(representative)
             : historyStatusLabel(representative),
         timeLabel: historyTimeLabel(representative),
       }
@@ -823,8 +798,6 @@ onMounted(async () => {
   await nextTick()
   document.addEventListener('fullscreenchange', onFullscreenChange)
   window.addEventListener('resize', onWindowResize)
-  document.addEventListener('pointerdown', onDocumentPointerDown, true)
-  document.addEventListener('keydown', onDocumentKeydown)
   if (!studioRoot.value || shouldReduceMotion()) return
   studioMotion = gsap.context(() => {
     const timeline = gsap.timeline({ defaults: { ease: 'power3.out' } })
@@ -836,7 +809,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  clearStyleCategoryCloseTimer()
   resetPan()
   stageMotion?.kill()
   stageMotion = null
@@ -845,45 +817,14 @@ onUnmounted(() => {
   if (boardTransitionTimer) window.clearTimeout(boardTransitionTimer)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   window.removeEventListener('resize', onWindowResize)
-  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-  document.removeEventListener('keydown', onDocumentKeydown)
 })
 
 watch(fitMode, async () => {
+  updateSettings({ fitMode: fitMode.value })
   resetPan()
   await nextTick()
   refreshLayout()
 })
-
-watch(
-  styleId,
-  (nextStyleId) => {
-    const preset = COLORING_STYLE_PRESETS.value.find((item) => item.id === nextStyleId)
-    if (preset?.categoryId && preset.categoryId !== selectedStyleCategoryId.value) {
-      selectedStyleCategoryId.value = preset.categoryId
-    }
-  },
-  { immediate: true },
-)
-
-watch(
-  [COLORING_STYLE_CATEGORIES, COLORING_STYLE_PRESETS],
-  ([categories, presets]) => {
-    if (!categories.length || !presets.length) return
-    const currentPreset = presets.find((item) => item.id === styleId.value)
-    if (currentPreset) {
-      selectedStyleCategoryId.value = currentPreset.categoryId
-      return
-    }
-    const selectedCategory = categories.find((item) => item.id === selectedStyleCategoryId.value)
-    const fallbackCategory = selectedCategory || categories[0]
-    const fallbackStyle =
-      presets.find((item) => item.categoryId === fallbackCategory.id) || presets[0]
-    selectedStyleCategoryId.value = fallbackStyle.categoryId
-    styleId.value = fallbackStyle.id
-  },
-  { immediate: true },
-)
 
 watch(displayResultUrl, (nextUrl, prevUrl) => {
   const next = String(nextUrl || '').trim()
@@ -1023,7 +964,7 @@ watch([sourcePreview, displayResultUrl], async () => {
             </div>
             <div>
               <strong>登录后开始染色</strong>
-              <p>上传线稿、选择风格，一键 AI 上色</p>
+              <p>上传线稿、描述配色，一键 AI 上色</p>
             </div>
             <button type="button" class="coloring-login-btn" @click="goLogin">去登录</button>
           </div>
@@ -1097,93 +1038,21 @@ watch([sourcePreview, displayResultUrl], async () => {
             <input ref="fileInput" type="file" accept="image/*" hidden @change="handleFileInput" />
           </section>
 
-          <section class="coloring-block coloring-block--style">
-            <header class="coloring-block-head">
-              <span>风格分类</span>
-              <small v-if="hasReferenceStyle">已由参考图接管</small>
-              <small v-else-if="activeHistoryItem"
-                >来自历史 · {{ activeStyle.categoryLabel }}</small
-              >
-              <small v-else>{{ selectedStyleCategory.label }}</small>
-            </header>
-            <div
-              class="coloring-style-menu"
-              :class="{
-                'is-open': styleCategoryMenuOpen,
-                'is-disabled': hasReferenceStyle || controlsLocked,
-              }"
-              @mouseenter="openStyleCategoryMenu"
-              @mouseleave="scheduleCloseStyleCategoryMenu"
-            >
-              <button
-                type="button"
-                class="coloring-style-menu-trigger"
-                :disabled="hasReferenceStyle || controlsLocked"
-                :aria-expanded="styleCategoryMenuOpen"
-                aria-haspopup="listbox"
-                aria-label="选择风格分类"
-                @click="toggleStyleCategoryMenu"
-              >
-                <i class="bi" :class="selectedStyleCategory.icon || 'bi-palette2'"></i>
-                <span>{{ selectedStyleCategory.label }}</span>
-                <i class="bi bi-chevron-down coloring-style-menu-arrow"></i>
-              </button>
-              <div class="coloring-style-menu-panel" role="listbox" aria-label="风格分类列表">
-                <div class="coloring-style-menu-panel-inner">
-                  <button
-                    v-for="category in COLORING_STYLE_CATEGORIES"
-                    :key="category.id"
-                    type="button"
-                    class="coloring-style-menu-option"
-                    role="option"
-                    :aria-selected="selectedStyleCategoryId === category.id"
-                    :class="{ active: selectedStyleCategoryId === category.id }"
-                    :disabled="hasReferenceStyle || controlsLocked"
-                    @click="selectStyleCategory(category.id)"
-                  >
-                    <i class="bi" :class="category.icon || 'bi-palette2'"></i>
-                    <span>{{ category.label }}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <header class="coloring-block-head coloring-block-head--sub">
-              <span>具体风格</span>
-              <small>{{ hasReferenceStyle ? '参考图风格' : activeStyle.label }}</small>
-            </header>
-            <div class="coloring-style-grid">
-              <button
-                v-for="preset in visibleStylePresets"
-                :key="preset.id"
-                type="button"
-                class="coloring-style-chip"
-                :class="{ active: styleId === preset.id, 'has-preview': preset.previewUrl }"
-                :title="`${preset.label}：${preset.hint}`"
-                :disabled="hasReferenceStyle || controlsLocked"
-                @click="styleId = preset.id"
-              >
-                <span v-if="preset.previewUrl" class="coloring-style-chip-preview">
-                  <img :src="preset.previewUrl" alt="" loading="lazy" />
-                </span>
-                <i v-else class="bi" :class="preset.icon || 'bi-palette2'"></i>
-                <span>
-                  <strong>{{ preset.label }}</strong>
-                </span>
-              </button>
-            </div>
-            <p class="coloring-style-summary">
-              {{
-                hasReferenceStyle
-                  ? '参考图模式 · 只从参考图提取配色、材质、光影和氛围，不叠加预设风格'
-                  : `${activeStyle.categoryLabel} · ${activeStyle.hint}`
-              }}
-            </p>
+          <section class="coloring-library-launcher" aria-label="染色资源">
+            <button type="button" @click="openLibrary('assets')">
+              <i class="bi bi-images"></i><span>资产库</span>
+            </button>
+            <button type="button" @click="openLibrary('history')">
+              <i class="bi bi-clock-history"></i><span>历史记录</span>
+            </button>
+            <button type="button" @click="openLibrary('prompts')">
+              <i class="bi bi-journal-text"></i><span>提示词库</span>
+            </button>
           </section>
 
-          <section v-if="styleId === 'custom' && !hasReferenceStyle" class="coloring-block">
+          <section class="coloring-block">
             <header class="coloring-block-head">
-              <span>自定义描述</span>
+              <span>配色描述</span>
               <small>{{ customPromptLength }} 字</small>
             </header>
             <textarea
@@ -1192,6 +1061,77 @@ watch([sourcePreview, displayResultUrl], async () => {
               :disabled="controlsLocked"
               placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…"
             ></textarea>
+          </section>
+
+          <section class="coloring-block coloring-parameter-block">
+            <header class="coloring-block-head">
+              <span>模型</span>
+              <small>{{ selectedPublicModel?.label || 'GPT Image 2' }}</small>
+            </header>
+            <select
+              class="coloring-parameter-select"
+              :value="settings.publicModelKey || selectedPublicModel?.publicModelKey || selectedPublicModel?.id"
+              :disabled="controlsLocked"
+              aria-label="生成模型"
+              @change="updateSettings({ publicModelKey: $event.target.value })"
+            >
+              <option
+                v-for="model in publicModels"
+                :key="model.publicModelKey || model.id"
+                :value="model.publicModelKey || model.id"
+              >
+                {{ model.label || model.publicModelKey || model.id }}
+              </option>
+            </select>
+
+            <header class="coloring-block-head coloring-block-head--sub">
+              <span>输出比例</span>
+              <small>{{ outputSizePreview.label }}</small>
+            </header>
+            <div class="coloring-parameter-ratios">
+              <button
+                v-for="item in COLORING_OUTPUT_ORIENTATION_OPTIONS"
+                :key="item.id"
+                type="button"
+                :class="{ active: settings.outputOrientation === item.id }"
+                :disabled="controlsLocked"
+                @click="updateSettings({ outputOrientation: item.id })"
+              >
+                {{ item.id === 'source' ? '原图' : item.id }}
+              </button>
+            </div>
+
+            <header class="coloring-block-head coloring-block-head--sub">
+              <span>分辨率</span>
+            </header>
+            <div class="coloring-parameter-segments">
+              <button
+                v-for="item in COLORING_OUTPUT_SIZE_OPTIONS"
+                :key="item.id"
+                type="button"
+                :class="{ active: settings.outputSize === item.id }"
+                :disabled="controlsLocked"
+                @click="updateSettings({ outputSize: item.id })"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+
+            <header class="coloring-block-head coloring-block-head--sub">
+              <span>生成张数</span>
+            </header>
+            <div class="coloring-parameter-segments">
+              <button
+                v-for="count in COLORING_BATCH_COUNT_OPTIONS"
+                :key="count"
+                type="button"
+                :class="{ active: settings.generationCount === count }"
+                :disabled="controlsLocked"
+                @click="updateSettings({ generationCount: count })"
+              >
+                {{ count }} 张
+              </button>
+            </div>
           </section>
         </div>
 
@@ -1261,7 +1201,7 @@ watch([sourcePreview, displayResultUrl], async () => {
             取消任务
           </button>
           <p v-if="hasRunningJobs && !submitting" class="coloring-hint-text">
-            已有任务在后台处理，可继续配置并开始新任务（最多同时 5 个）。
+            已有任务在后台处理，可继续配置并开始新任务（最多同时 4 个）。
           </p>
           <Teleport to="body">
           <details v-if="activeHistoryItem?.serverJobId && showExecutionTrace" class="coloring-execution-trace" open role="dialog" aria-modal="true">
@@ -1472,7 +1412,7 @@ watch([sourcePreview, displayResultUrl], async () => {
             <aside
               class="coloring-ref-float"
               :class="{ 'is-collapsed': referencePanelCollapsed }"
-              aria-label="风格参考图"
+              aria-label="配色参考图"
             >
               <button
                 v-if="referencePanelCollapsed"
@@ -1557,7 +1497,7 @@ watch([sourcePreview, displayResultUrl], async () => {
                   @click="triggerUpload(referenceInput)"
                 >
                   <i class="bi bi-images"></i>
-                  <span>添加风格参考图</span>
+                  <span>添加配色参考图</span>
                 </button>
               </div>
 
@@ -1662,7 +1602,7 @@ watch([sourcePreview, displayResultUrl], async () => {
                       <div>
                         <strong>批量结果对比</strong>
                         <small
-                          >同一风格生成
+                          >同一配置生成
                           {{ activeBatchItems.length }} 张，完成后可点选查看高清结果</small
                         >
                       </div>
@@ -1786,7 +1726,7 @@ watch([sourcePreview, displayResultUrl], async () => {
                   <div class="coloring-frame-empty">
                     <div class="coloring-empty-mark" aria-hidden="true"></div>
                     <i class="bi bi-palette2"></i>
-                    <p>选择风格后开始染色</p>
+                    <p>上传线稿后开始染色</p>
                   </div>
                 </div>
               </article>
@@ -2041,12 +1981,20 @@ watch([sourcePreview, displayResultUrl], async () => {
       </section>
     </div>
 
+    <ColoringLibraryDrawer
+      :show="libraryOpen"
+      :active-tab="libraryTab"
+      :history-items="historyItems"
+      :active-history-id="activeHistoryId"
+      @close="libraryOpen = false"
+      @change-tab="setLibraryTab"
+      @select-history="selectLibraryHistory"
+      @apply-prompt="applyLibraryPrompt"
+    />
+
     <ColoringSettingsDialog
       :show="settingsOpen"
       :settings="settings"
-      :models="publicModels"
-      :source-width="sourceMeta.width"
-      :source-height="sourceMeta.height"
       @close="closeSettings"
       @save="saveSettings"
     />
@@ -2112,7 +2060,7 @@ watch([sourcePreview, displayResultUrl], async () => {
     <SharePublishDialog
       :open="sharePublishOpen"
       :title="activeHistoryItem?.title || workTitle || ''"
-      :style-label="activeHistoryItem?.styleLabel || activeStyle?.label || ''"
+      :style-label="activeHistoryItem?.styleLabel || '插画染色'"
       :submitting="submittingShare"
       @close="sharePublishOpen = false"
       @submit="confirmSharePublish"

@@ -17,6 +17,7 @@ import {
   mapServerJobToTask,
   shouldKeepExistingTaskSnapshot,
 } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
+import { resolveServerJobsPagination } from '@/features/ai-wallpaper/domain/historyPagination'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
 import {
   AI_WALLPAPER_STUDIO_DRAFT_KEY,
@@ -131,7 +132,9 @@ export function useWallpaperTasks(deps = {}) {
   let disposed = false
   let taskMutationVersion = 0
   let refreshJobsPromise = null
+  let loadMoreJobsPromise = null
   let refreshRequested = false
+  let serverJobsPageDepth = 0
   let localTaskSequence = 0
   const taskAbortControllers = new Map()
   const serverJobPollers = new Map()
@@ -549,7 +552,7 @@ export function useWallpaperTasks(deps = {}) {
         count: 1,
       }),
     )
-    tasks.value = [...batchTasks, ...tasks.value].slice(0, 30)
+    tasks.value = [...batchTasks, ...tasks.value]
     taskMutationVersion += 1
     activeTaskId.value = batchTasks[0].id
     selectedOutputIndex.value = 0
@@ -652,7 +655,7 @@ export function useWallpaperTasks(deps = {}) {
       logs: ['正在准备局部编辑任务'],
     })
 
-    tasks.value = [task, ...tasks.value].slice(0, 30)
+    tasks.value = [task, ...tasks.value]
     taskMutationVersion += 1
     activeTaskId.value = task.id
     selectedOutputIndex.value = 0
@@ -1419,6 +1422,10 @@ export function useWallpaperTasks(deps = {}) {
 
   function refreshServerAiJobs() {
     if (disposed || !authStore.isAuthenticated) return Promise.resolve()
+    if (loadMoreJobsPromise) {
+      refreshRequested = true
+      return loadMoreJobsPromise
+    }
     if (refreshJobsPromise) {
       refreshRequested = true
       return refreshJobsPromise
@@ -1435,20 +1442,34 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   async function loadMoreServerJobs() {
+    if (loadMoreJobsPromise) return loadMoreJobsPromise
     if (
       disposed ||
       !authStore.isAuthenticated ||
-      serverJobsLoadingMore.value ||
       !serverJobsHasMore.value ||
       !serverJobsNextCursor.value
     ) {
-      return
+      return false
+    }
+    while (refreshJobsPromise) {
+      await refreshJobsPromise
+      if (disposed) return false
+    }
+    if (!serverJobsHasMore.value || !serverJobsNextCursor.value) {
+      return false
     }
     serverJobsLoadingMore.value = true
+    const request = refreshServerAiJobsOnce({ append: true })
+    loadMoreJobsPromise = request
     try {
-      await refreshServerAiJobsOnce({ append: true })
+      return await request
     } finally {
+      if (loadMoreJobsPromise === request) loadMoreJobsPromise = null
       serverJobsLoadingMore.value = false
+      if (refreshRequested && !disposed) {
+        refreshRequested = false
+        void refreshServerAiJobs()
+      }
     }
   }
 
@@ -1457,9 +1478,9 @@ export function useWallpaperTasks(deps = {}) {
       const response = await listServerAiJobs(12, {
         cursor: append ? serverJobsNextCursor.value : '',
       })
-      if (disposed) return
-      serverJobsNextCursor.value = String(response?.pagination?.nextCursor || '')
-      serverJobsHasMore.value = response?.pagination?.hasMore === true
+      if (disposed) return false
+      const responseNextCursor = String(response?.pagination?.nextCursor || '')
+      const responseHasMore = response?.pagination?.hasMore === true
       const remoteJobs = (Array.isArray(response.jobs) ? response.jobs : []).filter((job) =>
         isWallpaperJobKind(job?.kind),
       )
@@ -1505,7 +1526,6 @@ export function useWallpaperTasks(deps = {}) {
           (left, right) =>
             Date.parse(String(right.createdAt || '')) - Date.parse(String(left.createdAt || '')),
         )
-        .slice(0, 120)
       const hydrationBaseVersion = taskMutationVersion
       const hydratedTasks = await Promise.all(
         mergedTasks.map(async (task) => {
@@ -1513,24 +1533,41 @@ export function useWallpaperTasks(deps = {}) {
             ? remoteJobs.find((item) => item.id === task.serverJobId)
             : null
           if (!job) return task
-          return hydrateServerJobTaskOutputs(task, job)
+          try {
+            return await hydrateServerJobTaskOutputs(task, job)
+          } catch {
+            return task
+          }
         }),
       )
-      if (disposed) return
+      if (disposed) return false
       if (taskMutationVersion !== hydrationBaseVersion) {
         refreshRequested = true
-        return
+        return false
       }
       tasks.value = hydratedTasks
       taskMutationVersion += 1
+      const pagination = resolveServerJobsPagination({
+        append,
+        pageDepth: serverJobsPageDepth,
+        currentCursor: serverJobsNextCursor.value,
+        currentHasMore: serverJobsHasMore.value,
+        nextCursor: responseNextCursor,
+        hasMore: responseHasMore,
+      })
+      serverJobsNextCursor.value = pagination.cursor
+      serverJobsHasMore.value = pagination.hasMore
+      serverJobsPageDepth = pagination.pageDepth
       if (activeTaskId.value && !tasks.value.some((task) => task.id === activeTaskId.value)) {
         activeTaskId.value = tasks.value[0]?.id || ''
       }
       persistTasks({ immediate: true })
       restoreRunningTaskUi()
       resumeServerJobPolling()
+      return true
     } catch {
       /* 云端任务列表失败不影响本地创作 */
+      return false
     }
   }
 
@@ -1761,6 +1798,8 @@ export function useWallpaperTasks(deps = {}) {
     localUpscalePromises.clear()
     serverJobPollsInFlight.clear()
     completedResultMisses.clear()
+    loadMoreJobsPromise = null
+    serverJobsLoadingMore.value = false
     if (persistTasksTimer && typeof window !== 'undefined') window.clearTimeout(persistTasksTimer)
     persistTasksTimer = null
   }

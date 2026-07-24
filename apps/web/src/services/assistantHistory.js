@@ -109,6 +109,21 @@ export async function saveAssistantHistory(scope, conversations) {
   return queued
 }
 
+// IndexedDB is read only for the one-time migration to server-owned history.
+export async function clearAssistantHistory(scope) {
+  try {
+    const db = await openDatabase()
+    await transact(db, 'readwrite', (store) => store.delete(scope))
+  } catch {
+    // The server copy is already authoritative; stale fallback data is removed below.
+  }
+  try {
+    localStorage.removeItem(FALLBACK_PREFIX + scope)
+  } catch {
+    /* ignore */
+  }
+}
+
 export function loadAssistantWorkspaceState(scope) {
   try {
     return JSON.parse(localStorage.getItem(WORKSPACE_PREFIX + scope) || 'null') || {}
@@ -121,6 +136,6 @@ export function saveAssistantWorkspaceState(scope, state) {
   try {
     localStorage.setItem(WORKSPACE_PREFIX + scope, JSON.stringify(plainSnapshot(state, {})))
   } catch {
-    // Workspace state is an optimization; conversation history remains in IndexedDB.
+    // Workspace state is only a UI optimization; conversation history is server-owned.
   }
 }

@@ -235,9 +235,17 @@ async function downloadActive() {
   }
 }
 
-function selectOutput(output) {
+function selectOutput(output, openPreview = false) {
   activeOutput.value = output
   mediaError.value = ''
+  if (openPreview) fullscreenOpen.value = true
+}
+
+function stepOutput(direction) {
+  if (outputs.value.length < 2) return
+  const current = Math.max(0, outputs.value.indexOf(activeOutput.value))
+  const next = (current + direction + outputs.value.length) % outputs.value.length
+  activeOutput.value = outputs.value[next]
 }
 </script>
 
@@ -525,7 +533,8 @@ function selectOutput(output) {
               type="button"
               :class="{ 'is-on': activeOutput === output }"
               :aria-pressed="activeOutput === output"
-              @click="selectOutput(output)"
+              :title="`查看 V${outputs.length - index} 大图`"
+              @click="selectOutput(output, true)"
             >
               <AuthenticatedImage :src="output" alt="" :max-dimension="320" />
               <em>V{{ outputs.length - index }}</em>
@@ -551,7 +560,25 @@ function selectOutput(output) {
           <button type="button" aria-label="关闭大图" @click="fullscreenOpen = false">
             <i class="bi bi-x-lg" aria-hidden="true"></i>
           </button>
+          <button
+            v-if="outputs.length > 1"
+            type="button"
+            class="dws-fullscreen-nav is-prev"
+            aria-label="上一张"
+            @click="stepOutput(-1)"
+          >
+            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+          </button>
           <AuthenticatedImage :src="activeOutput" alt="UI 设计稿大图" loading="eager" />
+          <button
+            v-if="outputs.length > 1"
+            type="button"
+            class="dws-fullscreen-nav is-next"
+            aria-label="下一张"
+            @click="stepOutput(1)"
+          >
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          </button>
         </div>
       </Transition>
     </Teleport>
@@ -585,19 +612,20 @@ function selectOutput(output) {
 
 .dws-shell {
   display: grid;
-  grid-template-columns: 384px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 12px;
   width: 100%;
-  padding: 16px;
-  min-height: calc(100vh - var(--app-header-offset, 64px));
+  height: calc(100vh - var(--app-header-offset, 64px));
+  min-height: 620px;
+  padding: 12px;
   box-sizing: border-box;
 }
 
 /* ---------- 左侧参数面板 ---------- */
 .dws-panel {
   overflow-y: auto;
-  max-height: calc(100vh - var(--app-header-offset, 64px) - 32px);
-  padding: 22px;
+  max-height: 100%;
+  padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 20px;
   background:
@@ -626,12 +654,12 @@ function selectOutput(output) {
 }
 
 .dws-block {
-  margin-top: 20px;
+  margin-top: 14px;
 }
 
 .dws-label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   color: var(--dws-muted);
   font-size: 0.76rem;
   font-weight: 600;
@@ -1062,6 +1090,7 @@ function selectOutput(output) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 20px;
   background:
@@ -1138,7 +1167,8 @@ function selectOutput(output) {
   display: grid;
   place-items: center;
   min-height: 0;
-  padding: clamp(18px, 3vw, 42px);
+  padding: clamp(12px, 2vw, 28px);
+  overflow: hidden;
 }
 
 .dws-artboard {
@@ -1265,6 +1295,8 @@ function selectOutput(output) {
 }
 
 .dws-versions-wrap {
+  flex: 0 0 auto;
+  max-height: 126px;
   border-top: 1px solid var(--dws-line);
 }
 
@@ -1292,7 +1324,7 @@ function selectOutput(output) {
 .dws-versions {
   display: flex;
   gap: 10px;
-  padding: 10px 18px 16px;
+  padding: 8px 18px 12px;
   overflow-x: auto;
   scrollbar-width: thin;
 }
@@ -1400,6 +1432,25 @@ function selectOutput(output) {
   background: rgba(255, 255, 255, 0.18);
 }
 
+.dws-fullscreen > .dws-fullscreen-nav {
+  z-index: 2;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  transform: translateY(-50%);
+  background: rgba(18, 18, 28, 0.78);
+  backdrop-filter: blur(12px);
+}
+
+.dws-fullscreen > .dws-fullscreen-nav.is-prev {
+  right: auto;
+  left: 18px;
+}
+
+.dws-fullscreen > .dws-fullscreen-nav.is-next {
+  right: 18px;
+}
+
 .dws-zoom-enter-active,
 .dws-zoom-leave-active {
   transition: opacity 0.18s ease;
@@ -1452,6 +1503,7 @@ function selectOutput(output) {
 @media (max-width: 1080px) {
   .dws-shell {
     grid-template-columns: 1fr;
+    height: auto;
     padding: 12px;
   }
 

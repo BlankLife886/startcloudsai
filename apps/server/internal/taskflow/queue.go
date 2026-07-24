@@ -11,7 +11,10 @@ import (
 	"github.com/hibiken/asynq"
 )
 
-const TypeRunTask = "task:run"
+const (
+	TypeRunTask      = "task:run"
+	TypeRunAssistant = "assistant:run"
+)
 
 // 后台允许把 C2A 超时动态调到 600 秒。队列超时必须覆盖这个上限，
 // 否则后台调大上游超时后，Asynq 仍会按启动时的较小默认值提前取消任务。
@@ -21,10 +24,15 @@ type RunTaskPayload struct {
 	TaskID string `json:"task_id"`
 }
 
+type RunAssistantPayload struct {
+	RunID string `json:"run_id"`
+}
+
 // Queue 封装 Asynq 客户端入队 run_task。
 type Queue struct {
-	client  *asynq.Client
-	timeout time.Duration
+	client    *asynq.Client
+	inspector *asynq.Inspector
+	timeout   time.Duration
 }
 
 // NewQueue timeoutSecs 为任务执行超时（上游超时×2 + 上传余量）。
@@ -37,12 +45,20 @@ func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 		c2aTimeoutSecs = maxC2ATimeoutSecs
 	}
 	return &Queue{
-		client:  asynq.NewClient(opt),
-		timeout: time.Duration(c2aTimeoutSecs*2+120) * time.Second,
+		client:    asynq.NewClient(opt),
+		inspector: asynq.NewInspector(opt),
+		timeout:   time.Duration(c2aTimeoutSecs*2+120) * time.Second,
 	}, nil
 }
 
-func (q *Queue) Close() error { return q.client.Close() }
+func (q *Queue) Close() error {
+	clientErr := q.client.Close()
+	inspectorErr := q.inspector.Close()
+	if clientErr != nil {
+		return clientErr
+	}
+	return inspectorErr
+}
 
 // Ping 检查 Redis 连通性（健康检查用）。
 func (q *Queue) Ping() error { return q.client.Ping() }
@@ -74,4 +90,32 @@ func (q *Queue) enqueueRunTask(ctx context.Context, taskID, queueTaskID string) 
 		return nil
 	}
 	return err
+}
+
+func (q *Queue) EnqueueAssistantRun(ctx context.Context, runID string) error {
+	return q.enqueueAssistantRun(ctx, runID, runID)
+}
+
+func (q *Queue) EnqueueAssistantRunRecovery(ctx context.Context, runID string) error {
+	return q.enqueueAssistantRun(ctx, runID, runID+":recover:"+uuid.NewString())
+}
+
+func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID string) error {
+	payload, err := json.Marshal(RunAssistantPayload{RunID: runID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunAssistant, payload),
+		asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+// CancelAssistantRun interrupts an active worker task and removes a pending copy.
+// Either operation may report that the task is not in that state, which is harmless.
+func (q *Queue) CancelAssistantRun(runID string) {
+	_ = q.inspector.CancelProcessing(runID)
+	_ = q.inspector.DeleteTask("default", runID)
 }

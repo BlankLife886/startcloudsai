@@ -1,7 +1,6 @@
 import { isIllustrationColoringJobKind } from '@/features/ai-shared/aiJobKinds'
 import { extractServerJobOutputs } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
 import { COMPLETED_WITHOUT_OUTPUT_ERROR } from '@/features/ai-illustration-coloring/domain/coloringStability'
-import { findColoringStylePreset } from '@/services/aiIllustrationColoring'
 import { normalizeColoringHistoryItem } from '@/services/aiIllustrationColoringState'
 import { buildApiUrl } from '@/services/apiBase'
 
@@ -61,10 +60,6 @@ export function resolveColoringJobPollStartedAt(item = {}, now = Date.now()) {
   if (Number.isFinite(startedAt) && startedAt > 0) return Math.min(currentTime, startedAt)
   if (Number.isFinite(createdAt) && createdAt > 0) return Math.min(currentTime, createdAt)
   return currentTime
-}
-
-function resolveStyleLabel(styleId = '') {
-  return findColoringStylePreset(styleId)?.label || '插画染色'
 }
 
 function toAbsoluteMediaUrl(pathOrUrl = '') {
@@ -152,7 +147,7 @@ function resolveMappedJobStatus(job = {}, existingItem = null) {
 
 export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
   const input = job?.input || job?.params || {}
-  const styleId = String(input.styleId || existingItem?.styleId || 'watercolor').trim()
+  const styleId = String(input.styleId || existingItem?.styleId || 'coloring').trim()
   const referenceImageUrls = Array.isArray(input.referenceImageUrls)
     ? input.referenceImageUrls
         .map((item) => pickPersistableUrl(item))
@@ -231,7 +226,7 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
     title: String(input.title || existingItem?.title || ''),
     styleId,
     customPrompt: String(input.customPrompt || existingItem?.customPrompt || ''),
-    styleLabel: String(input.styleLabel || existingItem?.styleLabel || resolveStyleLabel(styleId)),
+    styleLabel: String(input.styleLabel || existingItem?.styleLabel || '插画染色'),
     batchId: String(input.batchId || existingItem?.batchId || ''),
     variantIndex: Number(input.variantIndex || existingItem?.variantIndex || 1),
     variantCount: Number(input.variantCount || existingItem?.variantCount || 1),

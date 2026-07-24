@@ -25,6 +25,35 @@ func TestSizeExtractedFromParams(t *testing.T) {
 	}
 }
 
+func TestFemalePortraitDirectorSkillAppliedToT2I(t *testing.T) {
+	p, size := prompt.Compile("t2i", "窗边的新中式女性人像", map[string]any{
+		"size":     "1024x1536",
+		"skillIds": []any{"female-portrait-director"},
+	})
+	if size != "1024x1536" {
+		t.Fatalf("size = %q, want exact task size", size)
+	}
+	for _, expected := range []string{
+		"窗边的新中式女性人像",
+		"FEMALE-PORTRAIT-DIRECTOR-V1.6",
+		"任务参数中的画幅比例",
+		"只选择一个最匹配的主风格",
+	} {
+		if !strings.Contains(p, expected) {
+			t.Fatalf("compiled prompt missing %q", expected)
+		}
+	}
+}
+
+func TestFemalePortraitDirectorSkillOnlyAppliesToT2I(t *testing.T) {
+	p, _ := prompt.Compile("coloring", "USERPROMPT", map[string]any{
+		"skillIds": []string{"female-portrait-director"},
+	})
+	if strings.Contains(p, "FEMALE-PORTRAIT-DIRECTOR") {
+		t.Fatalf("portrait director must not affect coloring tasks: %q", p)
+	}
+}
+
 func TestTypeTemplatesIncludeUserPrompt(t *testing.T) {
 	for _, taskType := range []string{"coloring", "ui_design", "model_sheet", "game_art", "puzzle"} {
 		p, _ := prompt.Compile(taskType, "USERPROMPT", map[string]any{"style": "赛博朋克"})

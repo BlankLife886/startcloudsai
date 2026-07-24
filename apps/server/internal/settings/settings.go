@@ -4,6 +4,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -29,6 +30,7 @@ var Defaults = map[string]json.RawMessage{
 	"sub2api_base_url":     json.RawMessage(`""`),
 	"sub2api_api_key":      json.RawMessage(`""`),
 	"sub2api_chat_model":   json.RawMessage(`""`),
+	"sub2api_chat_models":  json.RawMessage(`{}`),
 	"sub2api_image_model":  json.RawMessage(`""`),
 	"sub2api_timeout_secs": json.RawMessage(`0`),
 }
@@ -202,6 +204,7 @@ type Sub2APIConfig struct {
 	BaseURL     string
 	APIKey      string
 	ChatModel   string
+	ChatModels  map[string]string
 	ImageModel  string
 	TimeoutSecs int
 }
@@ -231,6 +234,23 @@ func ResolveSub2API(ctx context.Context, q store.Q, env Sub2APIConfig, masterKey
 		}
 		if value != "" {
 			*target = value
+		}
+	}
+	rawModels, err := Get(ctx, q, "sub2api_chat_models")
+	if err != nil {
+		return cfg, err
+	}
+	if rawModels != nil {
+		var models map[string]string
+		if json.Unmarshal(rawModels, &models) == nil {
+			cfg.ChatModels = make(map[string]string, len(models))
+			for label, model := range models {
+				label = strings.TrimSpace(label)
+				model = strings.TrimSpace(model)
+				if label != "" && model != "" {
+					cfg.ChatModels[label] = model
+				}
+			}
 		}
 	}
 	storedKey, err := readString("sub2api_api_key")

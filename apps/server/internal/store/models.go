@@ -8,6 +8,7 @@ import (
 
 var (
 	TaskTypes          = []string{"t2i", "coloring", "ui_design", "model_sheet", "game_art", "puzzle"}
+	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
 	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
@@ -192,6 +193,45 @@ type Task struct {
 	CreatedAt      time.Time
 }
 
+type AssistantConversation struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Title     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type AssistantMessage struct {
+	ID             uuid.UUID
+	ConversationID uuid.UUID
+	Role           string
+	Content        string
+	Kind           string
+	Status         string
+	Metadata       map[string]any
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type AssistantRun struct {
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	ConversationID     uuid.UUID
+	UserMessageID      uuid.UUID
+	AssistantMessageID uuid.UUID
+	Mode               string
+	ResolvedMode       string
+	Status             string
+	Stage              string
+	Prompt             string
+	Params             map[string]any
+	ErrorCode          *string
+	ErrorMessage       *string
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	CreatedAt          time.Time
+}
+
 type GallerySubmission struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID
@@ -219,16 +259,20 @@ type GalleryCategory struct {
 }
 
 type PromptEntry struct {
-	ID        uuid.UUID
-	Title     string
-	Prompt    string
-	TaskType  string
-	Category  *string
-	Tags      []string
-	CoverKey  *string
-	Sort      int
-	Active    bool
-	CreatedAt time.Time
+	ID                  uuid.UUID
+	Title               string
+	Prompt              string
+	TaskType            string
+	Category            *string
+	Tags                []string
+	CoverKey            *string
+	GallerySubmissionID *uuid.UUID
+	Sort                int
+	LikeCount           int
+	FavoriteCount       int
+	UseCount            int
+	Active              bool
+	CreatedAt           time.Time
 }
 
 // GalleryAuthor 创作者聚合行（按用户分组统计投稿）。

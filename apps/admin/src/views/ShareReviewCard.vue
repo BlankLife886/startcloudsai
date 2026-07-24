@@ -15,6 +15,7 @@ const emit = defineEmits<{
   approve: [item: AdminSubmission]
   reject: [item: AdminSubmission]
   violation: [item: AdminSubmission]
+  prompt: [item: AdminSubmission]
 }>()
 
 function cleanText(value: unknown): string {
@@ -113,6 +114,15 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
         </div>
 
         <div class="share-card__actions">
+          <button
+            v-if="item.status === 'approved'"
+            type="button"
+            class="share-action is-prompt"
+            :disabled="operating || Boolean(item.promptEntryId)"
+            @click="emit('prompt', item)"
+          >
+            {{ item.promptEntryId ? '已加入词库' : '加入提示词' }}
+          </button>
           <button
             type="button"
             class="share-action is-approve"
@@ -447,6 +457,13 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
     border-color: color-mix(in srgb, var(--success) 35%, transparent);
     background: var(--success-soft);
     color: var(--success);
+  }
+
+  &.is-prompt {
+    grid-column: 1 / -1;
+    border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
   }
 
   &.is-reject {

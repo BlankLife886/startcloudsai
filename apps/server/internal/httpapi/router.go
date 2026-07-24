@@ -20,6 +20,21 @@ import (
 
 var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, "PUT": true}
 
+func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
+	limit := int64(1 << 20)
+	switch {
+	case path == "/api/uploads":
+		return uploadMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/assistant/"):
+		return 20 << 20
+	case strings.HasPrefix(path, "/api/admin/prompt-library/") && strings.HasSuffix(path, "/cover"):
+		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
+		return promptCoverMaxBytes + (1 << 20)
+	default:
+		return limit
+	}
+}
+
 type Server struct {
 	Cfg               *config.Config
 	St                *store.Store
@@ -90,12 +105,7 @@ func (s *Server) Router() *gin.Engine {
 		c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
 	}))
 	r.Use(func(c *gin.Context) {
-		limit := int64(1 << 20)
-		if c.Request.URL.Path == "/api/uploads" {
-			limit = s.Cfg.UploadMaxBytes + (1 << 20)
-		} else if c.Request.URL.Path == "/api/assistant/chat" || c.Request.URL.Path == "/api/assistant/images" {
-			limit = 20 << 20
-		}
+		limit := requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes)
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		c.Next()
 	})
@@ -125,6 +135,15 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/config", s.assistantConfig)
 	api.POST("/assistant/chat", s.assistantChat)
 	api.POST("/assistant/images", s.assistantImages)
+	api.GET("/assistant/conversations", s.assistantConversations)
+	api.POST("/assistant/conversations", s.createAssistantConversation)
+	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
+	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
+	api.POST("/assistant/import", s.importAssistantConversations)
+	api.GET("/assistant/runs", s.assistantRuns)
+	api.POST("/assistant/runs", s.createAssistantRun)
+	api.GET("/assistant/runs/:id", s.assistantRun)
+	api.POST("/assistant/runs/:id/cancel", s.cancelAssistantRun)
 
 	// me
 	api.PATCH("/me/profile", s.patchProfile)
@@ -158,6 +177,7 @@ func (s *Server) Router() *gin.Engine {
 
 	// prompts（提示词库，公开）
 	api.GET("/prompts", s.publicPrompts)
+	api.POST("/prompts/:id/engagement", s.promptEngagement)
 
 	// plans（只读）。支付、订单创建和 webhook 仍未注册。
 	api.GET("/plans", s.listPlans)
@@ -209,9 +229,13 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/gallery/authors", s.adminOnly(s.adminGalleryAuthors))
 	admin.GET("/prompt-library", s.adminOnly(s.adminListPrompts))
 	admin.POST("/prompt-library", s.adminOnly(s.adminCreatePrompt))
+	admin.POST("/prompt-library/reorder", s.adminOnly(s.adminReorderPrompts))
+	admin.GET("/prompt-library/:id/position", s.adminOnly(s.adminPromptPosition))
+	admin.POST("/prompt-library/:id/move", s.adminOnly(s.adminMovePrompt))
 	admin.PATCH("/prompt-library/:id", s.adminOnly(s.adminPatchPrompt))
 	admin.DELETE("/prompt-library/:id", s.adminOnly(s.adminDeletePrompt))
 	admin.POST("/prompt-library/:id/cover", s.adminOnly(s.adminUploadPromptCover))
+	admin.POST("/gallery/submissions/:id/prompt", s.adminOnly(s.adminCreatePromptFromSubmission))
 	admin.GET("/prompt-sources", s.adminOnly(s.adminListPromptSources))
 	admin.POST("/prompt-sources", s.adminOnly(s.adminCreatePromptSource))
 	admin.PATCH("/prompt-sources/:id", s.adminOnly(s.adminPatchPromptSource))

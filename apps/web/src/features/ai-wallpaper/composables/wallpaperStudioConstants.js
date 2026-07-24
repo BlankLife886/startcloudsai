@@ -55,10 +55,10 @@ export const T2I_QUALITY_OPTIONS = [
 ]
 
 export const T2I_COUNT_OPTIONS = [
-  { value: 1, label: '1 张', icon: 'bi-image' },
-  { value: 2, label: '2 张', icon: 'bi-images' },
-  { value: 3, label: '3 张', icon: 'bi-images' },
-  { value: 4, label: '4 张', icon: 'bi-collection' },
+  { value: 1, label: '1' },
+  { value: 2, label: '2' },
+  { value: 3, label: '3' },
+  { value: 4, label: '4' },
 ]
 
 export const T2I_OUTPUT_FORMAT_OPTIONS = [
