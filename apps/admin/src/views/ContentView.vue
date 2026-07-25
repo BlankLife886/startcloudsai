@@ -10,19 +10,25 @@ const activeTab = ref('announcements')
 interface Announcement {
   id: string
   title: string
-  body: string
+  body: string | null
   active?: boolean
   createdAt?: string
 }
 
 const annLoading = ref(false)
+const annError = ref('')
 const announcements = ref<Announcement[]>([])
 
 async function loadAnnouncements() {
   annLoading.value = true
+  annError.value = ''
   try {
-    const data = await request<Announcement[] | { items: Announcement[] }>('/api/admin/announcements')
-    announcements.value = normalizeList(data).items
+    const data = await request<Announcement[] | { items: Announcement[] }>('/api/admin/announcements', { silent: true })
+    const items = normalizeList(data).items
+    announcements.value = Array.isArray(items) ? items.map((item) => ({ ...item, body: item.body ?? '' })) : []
+  } catch (error) {
+    announcements.value = []
+    annError.value = error instanceof Error ? error.message : '公告读取失败'
   } finally {
     annLoading.value = false
   }
@@ -41,7 +47,11 @@ function openAnnCreate() {
 
 function openAnnEdit(item: Announcement) {
   annEditingId.value = item.id
-  Object.assign(annForm, { title: item.title, body: item.body, active: item.active ?? true })
+  Object.assign(annForm, {
+    title: item.title || '',
+    body: item.body || '',
+    active: item.active ?? true,
+  })
   annDialogVisible.value = true
 }
 
@@ -50,32 +60,43 @@ async function submitAnn() {
     ElMessage.warning('请填写标题与内容')
     return
   }
-  const body = { title: annForm.title.trim(), body: annForm.body.trim(), active: annForm.active }
+  const body = {
+    title: annForm.title.trim(),
+    body: annForm.body.trim(),
+    active: annForm.active,
+  }
   annSubmitting.value = true
   try {
     if (annEditingId.value) {
-      await request(`/api/admin/announcements/${annEditingId.value}`, { method: 'PATCH', body })
+      await request(`/api/admin/announcements/${annEditingId.value}`, {
+        method: 'PATCH',
+        body,
+      })
       ElMessage.success('公告已更新')
     } else {
       await request('/api/admin/announcements', { method: 'POST', body })
       ElMessage.success('公告已发布')
     }
     annDialogVisible.value = false
-    loadAnnouncements()
+    await loadAnnouncements()
   } finally {
     annSubmitting.value = false
   }
 }
 
 async function removeAnn(item: Announcement) {
-  await ElMessageBox.confirm(`确认删除公告「${item.title}」？`, '删除公告', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-  })
+  try {
+    await ElMessageBox.confirm(`确认删除公告「${item.title}」？`, '删除公告', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   await request(`/api/admin/announcements/${item.id}`, { method: 'DELETE' })
   ElMessage.success('已删除')
-  loadAnnouncements()
+  await loadAnnouncements()
 }
 
 // ---------- 更新说明 changelog ----------
@@ -89,16 +110,25 @@ interface ChangelogEntry {
   items: string[]
 }
 
-const TAG_LABELS: Record<string, string> = { feature: '新功能', experience: '体验优化' }
+const TAG_LABELS: Record<string, string> = {
+  feature: '新功能',
+  experience: '体验优化',
+}
 
 const logLoading = ref(false)
+const logError = ref('')
 const changelog = ref<ChangelogEntry[]>([])
 
 async function loadChangelog() {
   logLoading.value = true
+  logError.value = ''
   try {
-    const data = await request<ChangelogEntry[] | { items: ChangelogEntry[] }>('/api/admin/changelog')
-    changelog.value = normalizeList(data).items
+    const data = await request<ChangelogEntry[] | { items: ChangelogEntry[] }>('/api/admin/changelog', { silent: true })
+    const items = normalizeList(data).items
+    changelog.value = Array.isArray(items) ? items : []
+  } catch (error) {
+    changelog.value = []
+    logError.value = error instanceof Error ? error.message : '更新说明读取失败'
   } finally {
     logLoading.value = false
   }
@@ -161,33 +191,40 @@ async function submitLog() {
   logSubmitting.value = true
   try {
     if (logEditingId.value) {
-      await request(`/api/admin/changelog/${logEditingId.value}`, { method: 'PATCH', body })
+      await request(`/api/admin/changelog/${logEditingId.value}`, {
+        method: 'PATCH',
+        body,
+      })
       ElMessage.success('更新说明已保存')
     } else {
       await request('/api/admin/changelog', { method: 'POST', body })
       ElMessage.success('更新说明已发布')
     }
     logDialogVisible.value = false
-    loadChangelog()
+    await loadChangelog()
   } finally {
     logSubmitting.value = false
   }
 }
 
 async function removeLog(entry: ChangelogEntry) {
-  await ElMessageBox.confirm(`确认删除更新说明 ${entry.version}「${entry.title}」？`, '删除更新说明', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-  })
+  try {
+    await ElMessageBox.confirm(`确认删除更新说明 ${entry.version}「${entry.title}」？`, '删除更新说明', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   await request(`/api/admin/changelog/${entry.id}`, { method: 'DELETE' })
   ElMessage.success('已删除')
-  loadChangelog()
+  await loadChangelog()
 }
 
 onMounted(() => {
-  loadAnnouncements()
-  loadChangelog()
+  void loadAnnouncements()
+  void loadChangelog()
 })
 </script>
 
@@ -199,6 +236,11 @@ onMounted(() => {
           <template #actions>
             <el-button type="primary" size="small" @click="openAnnCreate">发布公告</el-button>
           </template>
+          <el-alert v-if="annError" class="content-load-error" type="error" :title="annError" show-icon :closable="false">
+            <template #default>
+              <el-button size="small" @click="loadAnnouncements">重新加载</el-button>
+            </template>
+          </el-alert>
           <el-table v-loading="annLoading" :data="announcements" size="small">
             <template #empty>
               <el-empty description="暂无公告" :image-size="60">
@@ -232,6 +274,11 @@ onMounted(() => {
           <template #actions>
             <el-button type="primary" size="small" @click="openLogCreate">新增条目</el-button>
           </template>
+          <el-alert v-if="logError" class="content-load-error" type="error" :title="logError" show-icon :closable="false">
+            <template #default>
+              <el-button size="small" @click="loadChangelog">重新加载</el-button>
+            </template>
+          </el-alert>
           <el-table v-loading="logLoading" :data="changelog" size="small">
             <template #empty>
               <el-empty description="暂无更新说明" :image-size="60">
@@ -312,3 +359,9 @@ onMounted(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.content-load-error {
+  margin-bottom: 12px;
+}
+</style>

@@ -62,6 +62,11 @@ body.download-session-locked {
   overflow: visible;
 }
 
+.app-container.app--document-scroll {
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
 .app-container.app--search-gallery {
   background:
     radial-gradient(circle at 10% 0%, rgba(160, 139, 255, 0.12), transparent 22%),
@@ -108,9 +113,11 @@ html.color-scheme-dark .main-content.main--search-gallery {
 .main-content.main--share-gallery,
 .main-content.main--wallpaper-detail,
 .main-content.main--search-gallery,
-.main-content.main--updates-gallery {
+.main-content.main--updates-gallery,
+.main-content.main--document-scroll {
   padding-bottom: 0;
-  overflow: visible;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 /* Share：顶栏贴齐，去掉默认 +0.5rem 白缝 */
@@ -175,7 +182,8 @@ html.color-scheme-dark .main-content.main--history-gallery {
 .main-content.main--pricing-console {
   padding-top: var(--app-header-offset, 82px);
   padding-bottom: 0;
-  overflow: hidden;
+  overflow-x: clip;
+  overflow-y: visible;
   background: #0c0e16;
 }
 

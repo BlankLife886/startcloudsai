@@ -16,7 +16,8 @@
 .starcloud-home {
   position: relative;
   isolation: isolate;
-  overflow: clip;
+  overflow-x: clip;
+  overflow-y: visible;
   touch-action: pan-y;
   min-height: 100vh;
   padding: clamp(24px, 3.5vw, 54px) clamp(18px, 4vw, 72px) clamp(48px, 6vw, 88px);
@@ -1801,6 +1802,5 @@ html.settings-no-animations .home-skeleton-block {
 html.settings-no-animations .home-cursor {
   display: none;
 }
-
 
 /* 夜场皮肤（亮暗主题统一）见 features/home-motion/styles/home-motion.css */

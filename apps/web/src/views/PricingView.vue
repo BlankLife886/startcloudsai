@@ -383,7 +383,8 @@ onMounted(async () => {
   --price-warn: #ff9c8d;
   min-height: 100vh;
   position: relative;
-  overflow: hidden;
+  overflow-x: clip;
+  overflow-y: visible;
   color: var(--price-ink);
   background: var(--price-bg);
 }

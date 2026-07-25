@@ -133,16 +133,21 @@ function clearCarouselTimer() {
 
 function lockBodyScroll(lock) {
   if (typeof document === 'undefined') return
+  const body = document.body
   if (lock) {
-    if (document.body.dataset.announcementScrollLock === '1') return
-    previousBodyOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    document.body.dataset.announcementScrollLock = '1'
+    if (body.dataset.announcementScrollLock === '1') return
+    previousBodyOverflow = body.style.overflow
+    body.dataset.announcementPreviousOverflow = previousBodyOverflow
+    body.style.overflow = 'hidden'
+    body.dataset.announcementScrollLock = '1'
     return
   }
-  if (document.body.dataset.announcementScrollLock !== '1') return
-  document.body.style.overflow = previousBodyOverflow
-  delete document.body.dataset.announcementScrollLock
+  if (body.dataset.announcementScrollLock !== '1') return
+  if (body.style.overflow === 'hidden') {
+    body.style.overflow = body.dataset.announcementPreviousOverflow || previousBodyOverflow
+  }
+  delete body.dataset.announcementScrollLock
+  delete body.dataset.announcementPreviousOverflow
   previousBodyOverflow = ''
 }
 
@@ -549,8 +554,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   padding: 28px;
   background:
-    radial-gradient(circle at 100% 0%, var(--an-accent-soft), transparent 42%),
-    var(--an-surface);
+    radial-gradient(circle at 100% 0%, var(--an-accent-soft), transparent 42%), var(--an-surface);
 }
 
 .announcement-copy__meta {

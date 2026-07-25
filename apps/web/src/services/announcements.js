@@ -1,7 +1,11 @@
 import { getActiveAnnouncements } from './metaApi'
 
 export async function fetchRuntimeAnnouncements() {
-  return getActiveAnnouncements().catch(() => [])
+  const items = await getActiveAnnouncements().catch(() => [])
+  return items.map((item) => ({
+    ...item,
+    content: item?.content ?? item?.body ?? '',
+  }))
 }
 
 /** 新后端不统计公告曝光/点击事件，保留空实现兼容旧调用。 */

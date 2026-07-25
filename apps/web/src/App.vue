@@ -28,6 +28,9 @@ const isPricingConsoleRoute = computed(() => route.name === 'pricing')
 const isProfileConsoleRoute = computed(() => route.name === 'profile')
 const isShareGalleryRoute = computed(() => route.name === 'share')
 const isUpdatesGalleryRoute = computed(() => route.name === 'updates')
+const isDocumentScrollRoute = computed(() =>
+  ['home', 'pricing', 'updates'].includes(String(route.name || '')),
+)
 const isStudioConsoleRoute = computed(() =>
   [
     'text-to-image',
@@ -67,23 +70,30 @@ function applyPreferenceHtmlClasses() {
 
 function recoverDocumentScroll() {
   if (typeof document === 'undefined') return
-  if (!['home', 'updates'].includes(String(route.name || ''))) return
+  if (!isDocumentScrollRoute.value) return
 
-  // 这两个页面使用文档滚动。仅在对应遮罩已经不存在时清理上个页面遗留的锁，
+  // 文档型页面使用 window 滚动。仅在对应遮罩已经不存在时清理上个页面遗留的锁，
   // 避免公告弹窗或移动端菜单仍打开时误放开背景页。
   if (document.querySelector('.announcement-layer, .msheet-root')) return
 
   const root = document.documentElement
   const body = document.body
   root.classList.remove('nav-mobile-open', 'assistant-image-viewer-open')
-  body.classList.remove('nav-mobile-open', 'share-detail-open', 'profile-overlay-open')
+  body.classList.remove(
+    'nav-mobile-open',
+    'share-detail-open',
+    'profile-overlay-open',
+    'download-session-locked',
+  )
   body.style.removeProperty('overflow')
   body.style.removeProperty('position')
   body.style.removeProperty('top')
   body.style.removeProperty('left')
   body.style.removeProperty('right')
   body.style.removeProperty('width')
+  body.style.removeProperty('height')
   delete body.dataset.announcementScrollLock
+  delete body.dataset.announcementPreviousOverflow
 }
 
 watch(
@@ -202,6 +212,7 @@ function scrollToTop() {
     :class="{
       'app--share-gallery': isShareGalleryRoute,
       'app--updates-gallery': isUpdatesGalleryRoute,
+      'app--document-scroll': isDocumentScrollRoute,
     }"
   >
     <!-- 导航栏 -->
@@ -219,6 +230,7 @@ function scrollToTop() {
         'main--studio-console': isStudioConsoleRoute,
         'main--share-gallery': isShareGalleryRoute,
         'main--updates-gallery': isUpdatesGalleryRoute,
+        'main--document-scroll': isDocumentScrollRoute,
         'main--no-header': !showAppChrome,
       }"
     >
