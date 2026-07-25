@@ -75,13 +75,13 @@ export const useAuthStore = defineStore('auth', () => {
     return initPromise
   }
 
-  async function loginWithPassword(credentials) {
+  async function loginWithEmailCode(credentials) {
     isLoading.value = true
     error.value = ''
     try {
       const result = await loginAccount({
         email: credentials.email,
-        password: credentials.password,
+        code: credentials.code,
       })
       applyUser(result.user)
       lastAuthCheckedAt = Date.now()
@@ -146,7 +146,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName,
     resetAuthState,
     initAuth,
-    loginWithPassword,
+    loginWithEmailCode,
     registerWithEmail,
     logout,
     patchUser,

@@ -85,7 +85,7 @@ docker compose --env-file .env up -d --build
 
 Compose 默认把网关绑定到 `127.0.0.1`。线上必须由宿主机或独立入口网关提供 HTTPS，再反向代理到 `127.0.0.1:8080`；不要把该 HTTP 端口直接映射到公网。只有确认外层 TLS、访问控制和防火墙均已配置时，才调整 `GATEWAY_BIND`。
 
-用户端提供独立的注册、登录和找回密码流程。用户注册时提交用户名、Gmail/Googlemail/QQ 邮箱、6 位邮箱验证码和密码；日常登录使用邮箱与密码；忘记密码时通过邮箱验证码设置新密码。GitHub 一键登录保留，Google 一键 OAuth 已移除，但 Gmail/Googlemail 邮箱仍可正常注册登录。验证码按 `register|reset` 用途绑定。开发环境未配置 SMTP 时响应会包含仅用于本地调试的 `developmentCode`；生产环境绝不会返回验证码。GitHub OAuth 回调地址由 `PUBLIC_BASE_URL` 生成，因此线上、线下 OAuth 应用不能混用。
+用户端仅支持 Gmail、Googlemail 和 QQ 邮箱验证码认证。注册提交用户名、邮箱和 6 位注册验证码；日常登录也必须获取 6 位登录验证码，不提供用户密码或第三方 OAuth 登录。验证码按 `register|login` 用途绑定，不能跨流程复用。开发环境未配置 SMTP 时响应会包含仅用于本地调试的 `developmentCode`；生产环境绝不会返回验证码。
 
 ## 本地开发
 

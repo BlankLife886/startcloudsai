@@ -10,23 +10,17 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
-	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-type passwordChange struct {
-	Old string `json:"old"`
-	New string `json:"new"`
-}
-
 type profilePatch struct {
-	Username           Opt[string]         `json:"username"`
-	AvatarURL          Opt[string]         `json:"avatarUrl"`
-	Bio                Opt[string]         `json:"bio"`
-	Location           Opt[string]         `json:"location"`
-	WebsiteURL         Opt[string]         `json:"websiteUrl"`
-	RequireCostConfirm Opt[bool]           `json:"requireCostConfirm"`
-	Password           Opt[passwordChange] `json:"password"`
+	Username           Opt[string] `json:"username"`
+	AvatarURL          Opt[string] `json:"avatarUrl"`
+	Bio                Opt[string] `json:"bio"`
+	Location           Opt[string] `json:"location"`
+	WebsiteURL         Opt[string] `json:"websiteUrl"`
+	RequireCostConfirm Opt[bool]   `json:"requireCostConfirm"`
+	Password           Opt[any]    `json:"password"`
 }
 
 func normalizeProfileWebsite(raw string) (string, bool) {
@@ -55,6 +49,10 @@ func (s *Server) patchProfile(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if body.Password.Valid {
+		fail(c, apperr.E("validation_error", "用户账号仅支持邮箱验证码登录，不能设置密码", 422))
+		return
+	}
 	if body.Username.Valid && (strings.TrimSpace(body.Username.Value) == "" || len([]rune(body.Username.Value)) > 64) {
 		fail(c, apperr.E("validation_error", "username: 长度须在 1-64 之间", 422))
 		return
@@ -73,16 +71,6 @@ func (s *Server) patchProfile(c *gin.Context) {
 		websiteURL, valid = normalizeProfileWebsite(body.WebsiteURL.Value)
 		if !valid {
 			fail(c, apperr.E("validation_error", "websiteUrl: 请输入完整的 http/https 地址", 422))
-			return
-		}
-	}
-	if body.Password.Valid {
-		if !auth.VerifyPassword(body.Password.Value.Old, user.PasswordHash) {
-			fail(c, apperr.E("invalid_credentials", "原密码错误", 422))
-			return
-		}
-		if auth.ValidateUserPassword(body.Password.Value.New) != nil {
-			fail(c, apperr.E("validation_error", "password.new: 长度须在 8-72 字节之间", 422))
 			return
 		}
 	}
@@ -134,36 +122,12 @@ func (s *Server) patchProfile(c *gin.Context) {
 		user.RequireCostConfirm = body.RequireCostConfirm.Value
 	}
 	ctx := c.Request.Context()
-	var passwordHash *string
-	if body.Password.Valid {
-		hash, hashErr := auth.HashPassword(body.Password.Value.New)
-		if hashErr != nil {
-			fail(c, hashErr)
-			return
-		}
-		passwordHash = &hash
-	}
-	var newSessionToken string
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if txErr := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, passwordHash); txErr != nil {
-			return txErr
-		}
-		if passwordHash == nil {
-			return nil
-		}
-		if _, txErr := store.DeleteSessionsByUser(ctx, tx, user.ID); txErr != nil {
-			return txErr
-		}
-		var txErr error
-		newSessionToken, txErr = s.createSession(c, tx, user.ID)
-		return txErr
+		return store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil)
 	})
 	if err != nil {
 		fail(c, err)
 		return
-	}
-	if newSessionToken != "" {
-		s.setSessionCookie(c, newSessionToken)
 	}
 	ok(c, gin.H{"user": userDict(user)})
 }

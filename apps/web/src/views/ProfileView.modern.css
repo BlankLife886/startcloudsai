@@ -1413,60 +1413,6 @@ button.pp-stats__foot {
   min-width: 132px;
 }
 
-.pp-password-input {
-  position: relative;
-  display: block;
-}
-
-.pp-account-form > label .pp-password-input input {
-  padding-right: 42px;
-}
-
-.pp-password-input > button {
-  position: absolute;
-  top: 50%;
-  right: 5px;
-  display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  place-items: center;
-  transform: translateY(-50%);
-  border: 0;
-  border-radius: 8px;
-  color: var(--pc-muted);
-  background: transparent;
-  cursor: pointer;
-}
-
-.pp-password-input > button:hover {
-  color: var(--pc-accent-strong);
-  background: var(--pc-accent-soft);
-}
-
-.pp-password-checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin: 14px 0 0;
-  padding: 12px;
-  border-radius: 10px;
-  color: var(--pc-muted);
-  background: var(--pc-surface-soft);
-  font-size: 0.66rem;
-  list-style: none;
-}
-
-.pp-password-checks li {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.pp-password-checks li.is-valid {
-  color: var(--pc-success);
-}
-
 .pp-account-form.is-identity dl {
   margin: 4px 0 0;
 }

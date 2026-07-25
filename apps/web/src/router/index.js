@@ -169,7 +169,7 @@ const routes = [
     component: () => import('../views/auth/AuthAccountView.vue'),
     meta: {
       title: `账号中心 - ${siteName}`,
-      description: '通过 GitHub 或邮箱密码登录星空云绘账号。',
+      description: '通过 Gmail、Googlemail 或 QQ 邮箱验证码登录星空云绘账号。',
       immersive: true,
     },
   },

@@ -92,31 +92,39 @@ function authModeQuery(mode) {
         <p data-auth-hero class="auth-hero-lead">{{ lead }}</p>
         <ul class="auth-hero-features" aria-label="账号职责">
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-stars"></i></span>
+            <span class="auth-hero-feature__icon" aria-hidden="true"
+              ><i class="bi bi-stars"></i
+            ></span>
             <div class="auth-hero-feature__body">
               <strong>六大创作工作台</strong>
               <p>文生图、插画染色、UI 设计稿、模型图、游戏设计与 AI 拼图</p>
             </div>
           </li>
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-cloud-arrow-up"></i></span>
+            <span class="auth-hero-feature__icon" aria-hidden="true"
+              ><i class="bi bi-cloud-arrow-up"></i
+            ></span>
             <div class="auth-hero-feature__body">
               <strong>云端任务</strong>
               <p>任务队列云端执行，历史记录与创作产物跨设备同步</p>
             </div>
           </li>
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-images"></i></span>
+            <span class="auth-hero-feature__icon" aria-hidden="true"
+              ><i class="bi bi-images"></i
+            ></span>
             <div class="auth-hero-feature__body">
               <strong>共享画廊</strong>
               <p>一键投稿作品到社区画廊，浏览官方精选与分类展墙</p>
             </div>
           </li>
           <li data-auth-feature class="auth-hero-feature">
-            <span class="auth-hero-feature__icon" aria-hidden="true"><i class="bi bi-wallet2"></i></span>
+            <span class="auth-hero-feature__icon" aria-hidden="true"
+              ><i class="bi bi-wallet2"></i
+            ></span>
             <div class="auth-hero-feature__body">
               <strong>安全登录</strong>
-              <p>密码独立加密保存，邮箱验证码保护注册与找回流程</p>
+              <p>邮箱验证码保护每次注册与登录</p>
             </div>
           </li>
         </ul>

@@ -144,7 +144,6 @@ APP_ENV=production
 APP_SECRET=<64位随机字符串>
 
 ALLOWED_ORIGINS=https://starcloudisai.com
-PUBLIC_BASE_URL=https://starcloudisai.com
 TRUSTED_PROXIES=172.30.10.254/32
 
 POSTGRES_PASSWORD=<数据库密码>
@@ -174,9 +173,6 @@ SMTP_USER=<完整邮箱地址>
 SMTP_PASSWORD=<邮箱客户端专用密码>
 SMTP_FROM=<完整发件邮箱>
 
-GITHUB_CLIENT_ID=
-GITHUB_CLIENT_SECRET=
-
 WORKER_CONCURRENCY=1
 USER_MAX_RUNNING_TASKS=3
 
@@ -189,36 +185,25 @@ GATEWAY_PORT=8080
 - `C2A_BASE_URL` 填 ChatGPT2API 根地址，不加后台路径。
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - R2 未配置时，上传和生成图片无法正常持久化。
-- 生产环境未配置 SMTP 时，注册和找回密码验证码无法发送。
+- 生产环境未配置 SMTP 时，用户无法获取注册和登录验证码。
 - 2 GB 服务器建议先使用 `WORKER_CONCURRENCY=1`。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
-### 3.4 配置 GitHub 登录
+### 3.4 配置邮箱验证码
 
-GitHub 登录不能使用仓库访问 Token，也不能复用 GitHub CLI 登录。必须在 GitHub 账号中创建 OAuth App：
-
-1. 打开 GitHub `Settings -> Developer settings -> OAuth Apps`。
-2. 选择 `New OAuth App`。
-3. `Application name` 填写 `StarCloudsAI`。
-4. `Homepage URL` 填写 `https://starcloudisai.com`。
-5. `Authorization callback URL` 必须准确填写：
-
-```text
-https://starcloudisai.com/api/auth/oauth/github/callback
-```
-
-创建后，将 Client ID 和新生成的 Client Secret 写入服务器 `.env`：
+用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码注册和登录。生产环境必须在 `.env` 配置可用的 SMTP 发件账号：
 
 ```env
-PUBLIC_BASE_URL=https://starcloudisai.com
-GITHUB_CLIENT_ID=<GitHub OAuth App Client ID>
-GITHUB_CLIENT_SECRET=<GitHub OAuth App Client Secret>
+SMTP_ADDR=<SMTP服务器:587>
+SMTP_USER=<完整发件邮箱>
+SMTP_PASSWORD=<客户端授权码或应用专用密码>
+SMTP_FROM=<完整发件邮箱>
 ```
 
-重新创建后端容器以加载环境变量：
+QQ 邮箱可使用 `smtp.qq.com:587` 和邮箱设置中生成的授权码；Gmail 可使用 `smtp.gmail.com:587` 和应用专用密码。配置后重新创建后端容器：
 
 ```bash
-docker compose --env-file .env up -d --force-recreate server worker gateway
+docker compose --env-file .env up -d --force-recreate server
 ```
 
 验证：
@@ -227,7 +212,7 @@ docker compose --env-file .env up -d --force-recreate server worker gateway
 curl -s https://starcloudisai.com/api/auth/providers
 ```
 
-响应中的 `github` 必须为 `true`。若仍为 `false`，说明容器没有读到完整的 Client ID 和 Client Secret；不要把这两个值发到聊天或截图中。
+响应中的 `email` 必须为 `true`。不要把 SMTP 授权码发送到聊天、截图或提交到 Git。
 
 检查关键配置但不输出密钥：
 
@@ -376,7 +361,7 @@ unset ADMIN_PASSWORD
 依次验证：
 
 - 用户端首页、更新页和画廊可以打开和滚动。
-- 用户注册、登录、退出和找回密码正常。
+- 用户邮箱验证码注册、登录和退出正常。
 - 管理员可以登录 `/admin/`。
 - 后台系统设置能读取上游模型。
 - 文生图可以提交、扣积分、完成并显示历史记录。
@@ -602,7 +587,6 @@ client_max_body_size 20m;
 ```env
 APP_ENV=production
 ALLOWED_ORIGINS=https://starcloudisai.com
-PUBLIC_BASE_URL=https://starcloudisai.com
 ```
 
 域名、协议和端口必须完全一致。修改后强制重建 `server`。

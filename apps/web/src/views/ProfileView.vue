@@ -193,8 +193,6 @@ const profileForm = reactive({
   saving: false,
   avatarUploading: false,
 })
-const passwordForm = reactive({ old: '', next: '', confirm: '', saving: false })
-const passwordVisible = reactive({ old: false, next: false, confirm: false })
 const avatarInput = ref(null)
 const preferenceSaving = ref(false)
 const requireCostConfirm = computed(() => authStore.user?.requireCostConfirm !== false)
@@ -222,20 +220,6 @@ const websiteError = computed(() => {
 })
 const profileCanSave = computed(
   () => profileDirty.value && !usernameError.value && !websiteError.value && !profileForm.saving,
-)
-const passwordStarted = computed(() =>
-  Boolean(passwordForm.old || passwordForm.next || passwordForm.confirm),
-)
-const passwordChecks = computed(() => ({
-  length: passwordForm.next.length >= 8,
-  matches: Boolean(passwordForm.confirm) && passwordForm.next === passwordForm.confirm,
-}))
-const passwordCanSave = computed(
-  () =>
-    Boolean(passwordForm.old) &&
-    passwordChecks.value.length &&
-    passwordChecks.value.matches &&
-    !passwordForm.saving,
 )
 
 const confirmDialog = reactive({
@@ -823,33 +807,6 @@ async function removeAvatar() {
     notificationService.error(error?.message || '头像移除失败')
   } finally {
     profileForm.avatarUploading = false
-  }
-}
-
-async function savePassword() {
-  if (!passwordForm.old || !passwordForm.next) {
-    notificationService.warning('请填写旧密码和新密码')
-    return
-  }
-  if (passwordForm.next.length < 8) {
-    notificationService.warning('新密码至少 8 位')
-    return
-  }
-  if (passwordForm.next !== passwordForm.confirm) {
-    notificationService.warning('两次输入的新密码不一致')
-    return
-  }
-  passwordForm.saving = true
-  try {
-    await updateProfile({ password: { old: passwordForm.old, new: passwordForm.next } })
-    passwordForm.old = ''
-    passwordForm.next = ''
-    passwordForm.confirm = ''
-    notificationService.success('密码已更新')
-  } catch (error) {
-    notificationService.error(error?.message || '密码修改失败')
-  } finally {
-    passwordForm.saving = false
   }
 }
 
@@ -1562,80 +1519,6 @@ onBeforeUnmount(() => {
                 {{ preferenceSaving ? '正在保存账号偏好…' : '已同步到当前账号' }}
               </div>
             </section>
-
-            <form class="pp-account-form" @submit.prevent="savePassword">
-              <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
-              <label>
-                <span>当前密码</span>
-                <span class="pp-password-input">
-                  <input
-                    v-model="passwordForm.old"
-                    :type="passwordVisible.old ? 'text' : 'password'"
-                    autocomplete="current-password"
-                  />
-                  <button
-                    type="button"
-                    :aria-label="passwordVisible.old ? '隐藏当前密码' : '显示当前密码'"
-                    @click="passwordVisible.old = !passwordVisible.old"
-                  >
-                    <i class="bi" :class="passwordVisible.old ? 'bi-eye-slash' : 'bi-eye'"></i>
-                  </button>
-                </span>
-              </label>
-              <label>
-                <span>新密码（至少 8 位）</span>
-                <span class="pp-password-input">
-                  <input
-                    v-model="passwordForm.next"
-                    :type="passwordVisible.next ? 'text' : 'password'"
-                    autocomplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    :aria-label="passwordVisible.next ? '隐藏新密码' : '显示新密码'"
-                    @click="passwordVisible.next = !passwordVisible.next"
-                  >
-                    <i class="bi" :class="passwordVisible.next ? 'bi-eye-slash' : 'bi-eye'"></i>
-                  </button>
-                </span>
-              </label>
-              <label>
-                <span>确认新密码</span>
-                <span class="pp-password-input">
-                  <input
-                    v-model="passwordForm.confirm"
-                    :type="passwordVisible.confirm ? 'text' : 'password'"
-                    autocomplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    :aria-label="passwordVisible.confirm ? '隐藏确认密码' : '显示确认密码'"
-                    @click="passwordVisible.confirm = !passwordVisible.confirm"
-                  >
-                    <i class="bi" :class="passwordVisible.confirm ? 'bi-eye-slash' : 'bi-eye'"></i>
-                  </button>
-                </span>
-              </label>
-              <ul v-if="passwordStarted" class="pp-password-checks" aria-live="polite">
-                <li :class="{ 'is-valid': passwordChecks.length }">
-                  <i
-                    class="bi"
-                    :class="passwordChecks.length ? 'bi-check-circle-fill' : 'bi-circle'"
-                  ></i>
-                  至少 8 个字符
-                </li>
-                <li :class="{ 'is-valid': passwordChecks.matches }">
-                  <i
-                    class="bi"
-                    :class="passwordChecks.matches ? 'bi-check-circle-fill' : 'bi-circle'"
-                  ></i>
-                  两次输入一致
-                </li>
-              </ul>
-              <button type="submit" class="pp-btn is-primary" :disabled="!passwordCanSave">
-                {{ passwordForm.saving ? '保存中…' : '更新密码' }}
-              </button>
-            </form>
 
             <section class="pp-account-form is-identity">
               <h3><i class="bi bi-fingerprint"></i> 账号信息</h3>

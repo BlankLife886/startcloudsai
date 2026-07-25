@@ -39,17 +39,14 @@
 
 | 方法 | 路径 | 认证 | 请求/说明 |
 | --- | --- | --- | --- |
-| GET | `/api/auth/providers` | 公开 | 返回 `github`、`email`、`password` 和允许的邮箱域名；不提供 Google OAuth |
-| POST | `/api/auth/email/code` | 公开 | `{email,purpose:register|reset}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
-| POST | `/api/auth/register` | 公开 | `{username,email,code,password}`；验证码用途必须为 `register`，成功后创建用户、钱包和 session |
-| POST | `/api/auth/login` | 公开 | `{email,password}`；成功后设置 `sc_session` |
-| POST | `/api/auth/password/reset` | 公开 | `{email,code,password}`；验证码用途必须为 `reset`，成功后更新密码并撤销全部用户 session |
-| GET | `/api/auth/oauth/github` | 公开 | 创建一次性 state 后跳转 GitHub OAuth |
-| GET | `/api/auth/oauth/github/callback` | 公开 | 校验 state、交换 token、验证邮箱后创建用户 session 并跳回 `/auth` |
+| GET | `/api/auth/providers` | 公开 | 返回邮箱验证码可用状态和允许的邮箱域名 |
+| POST | `/api/auth/email/code` | 公开 | `{email,purpose:register|login}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
+| POST | `/api/auth/register` | 公开 | `{username,email,code}`；验证码用途必须为 `register`，成功后创建用户、钱包和 session |
+| POST | `/api/auth/login` | 公开 | `{email,code}`；验证码用途必须为 `login`，成功后设置 `sc_session` |
 | POST | `/api/auth/logout` | 可匿名 | 删除当前 session 并清 Cookie |
 | GET | `/api/auth/me` | 可匿名 | 返回 `{user}`；未登录时 `user:null` |
 
-用户状态为 banned 时不能登录或调用受保护能力。GitHub identity 按 `(provider,subject)` 唯一绑定；邮箱验证码只保存绑定 email、purpose 和 code 的 HMAC，不保存明文。注册只允许新账号并受 `registrationEnabled` 控制，密码长度为 8-72 字节。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
+用户状态为 banned 时不能登录或调用受保护能力。邮箱验证码只保存绑定 email、purpose 和 code 的 HMAC，不保存明文。注册只允许新账号并受 `registrationEnabled` 控制。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
 
 ## 管理员认证
 

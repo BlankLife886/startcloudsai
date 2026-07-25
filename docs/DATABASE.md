@@ -30,11 +30,11 @@
 
 ### `user_identities`
 
-保存 OAuth identity：`provider`、provider 侧唯一 `subject`、已验证邮箱和绑定用户。当前只创建 GitHub identity；迁移约束仍允许历史 Google identity 留存，但运行时不再提供 Google OAuth。`(provider, subject)` 唯一；删除用户时级联删除。邮箱密码认证不创建 identity，而是直接关联 `users.email`。
+保留历史 OAuth identity 数据以兼容旧账号；当前运行时不再提供或创建任何第三方 OAuth identity。删除用户时历史 identity 会级联删除。
 
 ### `email_login_codes`
 
-每个邮箱最多一条验证码记录，保存 `register|reset` 用途、HMAC `code_hash`、过期时间、失败次数、请求 IP 和创建时间。HMAC 同时绑定邮箱、用途和验证码，不能跨流程使用。验证码 10 分钟有效，成功后删除；错误次数以行锁和独立提交累积，达到 5 次后锁定。
+每个邮箱最多一条验证码记录，保存 `register|login` 用途、HMAC `code_hash`、过期时间、失败次数、请求 IP 和创建时间。HMAC 同时绑定邮箱、用途和验证码，不能跨流程使用。验证码 10 分钟有效，成功后删除；错误次数以行锁和独立提交累积，达到 5 次后锁定。
 
 ### `oauth_login_states`
 

@@ -679,52 +679,6 @@ body:has(.auth-page) .main-content {
   opacity: 1;
 }
 
-.auth-strength {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0;
-}
-
-.auth-strength-track {
-  height: 4px;
-  overflow: hidden;
-  border-radius: 0;
-  background: color-mix(in srgb, var(--auth-line) 80%, transparent);
-}
-
-.auth-strength-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--auth-warning), #e8c56a);
-  transition: width 0.18s var(--auth-ease);
-}
-
-.auth-strength-track span.is-strong {
-  background: linear-gradient(90deg, var(--auth-accent), #9b88f2);
-}
-
-.auth-strength small {
-  display: none;
-}
-
-.auth-password-rules {
-  display: none;
-}
-
-.auth-password-rules li {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--auth-faint);
-  font-size: 0.74rem;
-}
-
-.auth-password-rules li.is-passed {
-  color: var(--auth-accent);
-}
-
 .auth-notice {
   display: flex;
   align-items: flex-start;

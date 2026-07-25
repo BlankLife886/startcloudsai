@@ -70,7 +70,6 @@ type registerIn struct {
 	Email    string `json:"email"`
 	Username string `json:"username"`
 	Code     string `json:"code"`
-	Password string `json:"password"`
 }
 
 func (s *Server) register(c *gin.Context) {
@@ -92,10 +91,6 @@ func (s *Server) register(c *gin.Context) {
 	}
 	if len(code) != 6 {
 		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
-		return
-	}
-	if auth.ValidateUserPassword(body.Password) != nil {
-		fail(c, apperr.E("validation_error", "password: 长度须在 8-72 字节之间", 422))
 		return
 	}
 	ctx := c.Request.Context()
@@ -121,7 +116,8 @@ func (s *Server) register(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	passwordHash, err := auth.HashPassword(body.Password)
+	// 用户端采用邮箱验证码认证；保留不可知的随机密码哈希只是为了兼容旧表结构。
+	passwordHash, err := auth.HashPassword(auth.NewSessionToken())
 	if err != nil {
 		fail(c, err)
 		return
@@ -165,8 +161,8 @@ func (s *Server) register(c *gin.Context) {
 }
 
 type loginIn struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email string `json:"email"`
+	Code  string `json:"code"`
 }
 
 func (s *Server) login(c *gin.Context) {
@@ -176,12 +172,17 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
+	code := strings.TrimSpace(body.Code)
 	if !validEmail(email) || !supportedLoginEmail(email) {
 		fail(c, apperr.E("validation_error", "仅支持 Gmail、Googlemail 和 QQ 邮箱", 422))
 		return
 	}
+	if len(code) != 6 {
+		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
+		return
+	}
 	clientIP := c.ClientIP()
-	if remain, allowed := s.LoginLimiter.Reserve(email, clientIP); !allowed {
+	if remain, allowed := s.LoginLimiter.Check(email, clientIP); !allowed {
 		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
 		return
 	}
@@ -191,12 +192,16 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if user == nil || user.Role != "user" || !auth.VerifyPassword(body.Password, user.PasswordHash) {
-		fail(c, apperr.E("invalid_credentials", "邮箱或密码错误", 401))
+	if user == nil || user.Role != "user" {
+		fail(c, apperr.E("registration_required", "该邮箱尚未注册", 404))
 		return
 	}
 	if user.Status != "active" {
 		fail(c, apperr.E("invalid_credentials", "账号已被禁用", 403))
+		return
+	}
+	if err = s.consumeEmailCode(ctx, email, "login", code); err != nil {
+		fail(c, err)
 		return
 	}
 	var token string
@@ -215,62 +220,6 @@ func (s *Server) login(c *gin.Context) {
 	s.LoginLimiter.SuccessAttempt(email, clientIP)
 	s.setSessionCookie(c, token)
 	ok(c, gin.H{"user": userDict(user)})
-}
-
-func (s *Server) resetUserPassword(c *gin.Context) {
-	var body struct {
-		Email    string `json:"email"`
-		Code     string `json:"code"`
-		Password string `json:"password"`
-	}
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	email := strings.ToLower(strings.TrimSpace(body.Email))
-	code := strings.TrimSpace(body.Code)
-	if !validEmail(email) || !supportedLoginEmail(email) || len(code) != 6 {
-		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
-		return
-	}
-	if auth.ValidateUserPassword(body.Password) != nil {
-		fail(c, apperr.E("validation_error", "password: 长度须在 8-72 字节之间", 422))
-		return
-	}
-	ctx := c.Request.Context()
-	user, err := store.GetUserByEmail(ctx, s.St.Pool, email)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if user == nil || user.Role != "user" {
-		fail(c, apperr.E("registration_required", "该邮箱尚未注册", 404))
-		return
-	}
-	if err = s.consumeEmailCode(ctx, email, "reset", code); err != nil {
-		fail(c, err)
-		return
-	}
-	hash, err := auth.HashPassword(body.Password)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if txErr := store.UpdateUserPassword(ctx, tx, user.ID, hash); txErr != nil {
-			return txErr
-		}
-		_, txErr := store.DeleteSessionsByUser(ctx, tx, user.ID)
-		return txErr
-	})
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(s.Cfg.SessionCookieName, "", -1, "/", "", s.Cfg.AppEnv == "production", true)
-	s.LoginLimiter.SuccessAttempt(email, c.ClientIP())
-	ok(c, gin.H{})
 }
 
 func (s *Server) logout(c *gin.Context) {

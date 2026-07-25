@@ -125,9 +125,6 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/auth/email/code", s.requestEmailLoginCode)
 	api.POST("/auth/register", s.register)
 	api.POST("/auth/login", s.login)
-	api.POST("/auth/password/reset", s.resetUserPassword)
-	api.GET("/auth/oauth/github", s.oauthStart)
-	api.GET("/auth/oauth/github/callback", s.oauthCallback)
 	api.POST("/auth/logout", s.logout)
 	api.GET("/auth/me", s.authMe)
 

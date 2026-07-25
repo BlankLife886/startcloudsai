@@ -43,42 +43,41 @@ export async function fetchAuthProviders() {
 }
 
 export async function requestEmailAuthCode(email, purpose) {
-  return apiPost('/auth/email/code', {
-    email: String(email || '').trim(),
-    purpose: purpose === 'reset' ? 'reset' : 'register',
-  }, { fallbackMessage: '验证码发送失败' })
+  return apiPost(
+    '/auth/email/code',
+    {
+      email: String(email || '').trim(),
+      purpose: purpose === 'login' ? 'login' : 'register',
+    },
+    { fallbackMessage: '验证码发送失败' },
+  )
 }
 
-export async function registerAccount({ username, email, code, password }) {
-  const data = await apiPost('/auth/register', {
-    username: String(username || '').trim(),
-    email: String(email || '').trim(),
-    code: String(code || '').trim(),
-    password: String(password || ''),
-  }, { fallbackMessage: '注册失败' })
+export async function registerAccount({ username, email, code }) {
+  const data = await apiPost(
+    '/auth/register',
+    {
+      username: String(username || '').trim(),
+      email: String(email || '').trim(),
+      code: String(code || '').trim(),
+    },
+    { fallbackMessage: '注册失败' },
+  )
   if (data?.user?.id) setAuthSession({ user: data.user })
   return data
 }
 
-export async function loginAccount({ email, password }) {
-  const data = await apiPost('/auth/login', {
-    email: String(email || '').trim(),
-    password: String(password || ''),
-  }, { fallbackMessage: '登录失败' })
+export async function loginAccount({ email, code }) {
+  const data = await apiPost(
+    '/auth/login',
+    {
+      email: String(email || '').trim(),
+      code: String(code || '').trim(),
+    },
+    { fallbackMessage: '登录失败' },
+  )
   if (data?.user?.id) setAuthSession({ user: data.user })
   return data
-}
-
-export async function resetAccountPassword({ email, code, password }) {
-  return apiPost('/auth/password/reset', {
-    email: String(email || '').trim(),
-    code: String(code || '').trim(),
-    password: String(password || ''),
-  }, { fallbackMessage: '密码重置失败' })
-}
-
-export function oauthLoginURL(provider) {
-  return `/api/auth/oauth/${encodeURIComponent(provider)}`
 }
 
 /** 当前用户；未登录返回 null（后端返回 data.user = null）。 */

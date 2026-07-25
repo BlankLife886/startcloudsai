@@ -48,7 +48,7 @@ func TestPlansAreReadOnlyWhilePaymentIsDisabled(t *testing.T) {
 	}
 }
 
-func TestUserPasswordChangeRotatesSessions(t *testing.T) {
+func TestUserPasswordChangeIsRejected(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	hash, _ := auth.HashPassword("old-password")
@@ -70,13 +70,13 @@ func TestUserPasswordChangeRotatesSessions(t *testing.T) {
 	w := authRequest(t, s.Router(), http.MethodPatch, "/api/me/profile", gin.H{
 		"password": gin.H{"old": "old-password", "new": "new-password"},
 	}, &http.Cookie{Name: cfg.SessionCookieName, Value: tokens[0]})
-	if w.Code != http.StatusOK || len(w.Result().Cookies()) == 0 {
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("password change = %d %s", w.Code, w.Body.String())
 	}
 	for _, token := range tokens {
 		session, err := store.GetSessionByTokenHash(ctx, st.Pool, auth.HashToken(token))
-		if err != nil || session != nil {
-			t.Fatalf("old session survived password change: session=%v err=%v", session, err)
+		if err != nil || session == nil {
+			t.Fatalf("session changed after rejected password update: session=%v err=%v", session, err)
 		}
 	}
 }

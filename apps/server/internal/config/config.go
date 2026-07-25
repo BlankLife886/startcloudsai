@@ -13,17 +13,14 @@ type Config struct {
 	AppSecret      string
 	AllowedOrigins string
 	TrustedProxies string
-	PublicBaseURL  string
 	// Historical handlers keep these zero-valued; no environment loads payment settings.
 	PaymentMockEnabled   bool
 	PaymentWebhookSecret string
 
-	GitHubClientID     string
-	GitHubClientSecret string
-	SMTPAddr           string
-	SMTPUser           string
-	SMTPPassword       string
-	SMTPFrom           string
+	SMTPAddr     string
+	SMTPUser     string
+	SMTPPassword string
+	SMTPFrom     string
 
 	DatabaseURL string
 	RedisURL    string
@@ -98,14 +95,10 @@ func Load() *Config {
 		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
-		PublicBaseURL:  getenv("PUBLIC_BASE_URL", "http://localhost:8080"),
-
-		GitHubClientID:     getenv("GITHUB_CLIENT_ID", ""),
-		GitHubClientSecret: getenv("GITHUB_CLIENT_SECRET", ""),
-		SMTPAddr:           getenv("SMTP_ADDR", ""),
-		SMTPUser:           getenv("SMTP_USER", ""),
-		SMTPPassword:       getenv("SMTP_PASSWORD", ""),
-		SMTPFrom:           getenv("SMTP_FROM", ""),
+		SMTPAddr:       getenv("SMTP_ADDR", ""),
+		SMTPUser:       getenv("SMTP_USER", ""),
+		SMTPPassword:   getenv("SMTP_PASSWORD", ""),
+		SMTPFrom:       getenv("SMTP_FROM", ""),
 
 		DatabaseURL: getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
 		RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"),
