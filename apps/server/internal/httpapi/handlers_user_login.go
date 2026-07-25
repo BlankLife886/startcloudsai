@@ -342,13 +342,29 @@ func (s *Server) oauthCallback(c *gin.Context) {
 	state := c.Query("state")
 	cookieState, _ := c.Cookie("sc_oauth_state")
 	c.SetCookie("sc_oauth_state", "", -1, "/api/auth/oauth/", "", s.Cfg.AppEnv == "production", true)
-	if !enabled || state == "" || cookieState == "" || !hmac.Equal([]byte(state), []byte(cookieState)) {
-		s.oauthFailure(c, "登录状态已失效")
+	if !enabled {
+		s.oauthFailureAt(c, "configuration", "GitHub 登录尚未配置", errors.New("GitHub OAuth credentials are missing"))
+		return
+	}
+	if state == "" || cookieState == "" || !hmac.Equal([]byte(state), []byte(cookieState)) {
+		s.oauthFailureAt(c, "state_cookie", "登录状态已失效，请重新发起 GitHub 登录", errors.New("OAuth state cookie is missing or mismatched"))
 		return
 	}
 	valid, err := store.ConsumeOAuthState(c.Request.Context(), s.St.Pool, auth.HashToken(state), provider, time.Now().UTC())
-	if err != nil || !valid || c.Query("code") == "" {
-		s.oauthFailure(c, "登录授权失败")
+	if err != nil {
+		s.oauthFailureAt(c, "state_store", "登录授权校验失败，请稍后重试", err)
+		return
+	}
+	if !valid {
+		s.oauthFailureAt(c, "state_expired", "登录状态已过期，请重新发起 GitHub 登录", errors.New("OAuth state is missing, expired or already consumed"))
+		return
+	}
+	if c.Query("code") == "" {
+		providerError := c.Query("error")
+		if providerError == "" {
+			providerError = "authorization code is missing"
+		}
+		s.oauthFailureAt(c, "authorization", "未完成 GitHub 授权，请重新登录", fmt.Errorf("GitHub authorization failed: %s", providerError))
 		return
 	}
 	values := url.Values{"client_id": {cfg.clientID}, "client_secret": {cfg.clientSecret}, "code": {c.Query("code")}, "redirect_uri": {s.oauthCallbackURL()}}
