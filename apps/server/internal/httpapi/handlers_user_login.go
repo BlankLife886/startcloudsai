@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/smtp"
@@ -352,14 +353,28 @@ func (s *Server) oauthCallback(c *gin.Context) {
 	}
 	values := url.Values{"client_id": {cfg.clientID}, "client_secret": {cfg.clientSecret}, "code": {c.Query("code")}, "redirect_uri": {s.oauthCallbackURL()}}
 	var tokenResp struct {
-		AccessToken string `json:"access_token"`
+		AccessToken      string `json:"access_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
-	if err = oauthJSON(c.Request.Context(), http.MethodPost, cfg.tokenURL, values, "", &tokenResp); err != nil || tokenResp.AccessToken == "" {
-		s.oauthFailure(c, "登录授权失败")
+	if err = oauthJSON(c.Request.Context(), http.MethodPost, cfg.tokenURL, values, "", &tokenResp); err != nil {
+		s.oauthFailureAt(c, "token_exchange", "GitHub 授权校验失败，请稍后重试", err)
+		return
+	}
+	if tokenResp.AccessToken == "" {
+		tokenErr := errors.New("GitHub did not return an access token")
+		if tokenResp.Error != "" {
+			tokenErr = fmt.Errorf("GitHub OAuth error %q: %s", tokenResp.Error, tokenResp.ErrorDescription)
+		}
+		s.oauthFailureAt(c, "token_response", "GitHub 授权配置无效，请联系管理员", tokenErr)
 		return
 	}
 	email, username, subject, verified, err := s.oauthProfile(c.Request.Context(), cfg.userURL, tokenResp.AccessToken)
-	if err != nil || !verified || !validEmail(email) {
+	if err != nil {
+		s.oauthFailureAt(c, "profile", "无法读取 GitHub 账号信息，请稍后重试", err)
+		return
+	}
+	if !verified || !validEmail(email) {
 		s.oauthFailure(c, "第三方账号未提供已验证邮箱")
 		return
 	}
@@ -379,7 +394,11 @@ func (s *Server) oauthCallback(c *gin.Context) {
 		return err
 	})
 	if err != nil {
-		s.oauthFailure(c, "账号登录失败")
+		message := "账号登录失败，请稍后重试"
+		if appErr, ok := apperr.As(err); ok {
+			message = appErr.Message
+		}
+		s.oauthFailureAt(c, "account", message, err)
 		return
 	}
 	s.setSessionCookie(c, sessionToken)
@@ -424,4 +443,11 @@ func (s *Server) oauthProfile(ctx context.Context, endpoint, token string) (emai
 
 func (s *Server) oauthFailure(c *gin.Context, message string) {
 	c.Redirect(http.StatusFound, "/auth?error="+url.QueryEscape(message))
+}
+
+// oauthFailureAt records only the failed stage and sanitized error. OAuth codes,
+// access tokens and client secrets are deliberately never included in the log.
+func (s *Server) oauthFailureAt(c *gin.Context, stage, message string, err error) {
+	log.Printf("github oauth callback failed at %s: %v", stage, err)
+	s.oauthFailure(c, message)
 }
