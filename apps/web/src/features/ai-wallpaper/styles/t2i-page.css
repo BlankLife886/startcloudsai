@@ -688,6 +688,15 @@
   filter: brightness(1.06);
 }
 
+.t2i-generate small {
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in srgb, var(--t2i-on-accent) 34%, transparent);
+  color: color-mix(in srgb, var(--t2i-on-accent) 86%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
 .t2i-generate:disabled {
   opacity: 0.4;
   cursor: not-allowed;

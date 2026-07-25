@@ -16,11 +16,11 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-const userCols = `id, email, username, password_hash, avatar_url, bio, location, website_url, role, status, last_login_at, submission_banned_until, created_at`
+const userCols = `id, email, username, password_hash, avatar_url, bio, location, website_url, require_cost_confirm, role, status, last_login_at, submission_banned_until, created_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.RequireCostConfirm, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func InsertUser(ctx context.Context, q Q, email, username, passwordHash, role st
 		email, username, passwordHash, role, lastLoginAt))
 }
 
-func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, bio, location, websiteURL, passwordHash *string) error {
+func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, bio, location, websiteURL *string, requireCostConfirm *bool, passwordHash *string) error {
 	_, err := q.Exec(ctx,
 		`UPDATE users SET
 			username = COALESCE($2, username),
@@ -58,9 +58,10 @@ func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string,
 			bio = COALESCE($5, bio),
 			location = COALESCE($6, location),
 			website_url = COALESCE($7, website_url),
-			password_hash = COALESCE($8, password_hash)
+			require_cost_confirm = COALESCE($8, require_cost_confirm),
+			password_hash = COALESCE($9, password_hash)
 		 WHERE id = $1`,
-		id, username, avatarURL != nil, avatarDeref(avatarURL), bio, location, websiteURL, passwordHash)
+		id, username, avatarURL != nil, avatarDeref(avatarURL), bio, location, websiteURL, requireCostConfirm, passwordHash)
 	return err
 }
 

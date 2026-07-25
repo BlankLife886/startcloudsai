@@ -3,7 +3,7 @@
  */
 import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
 
-/** 修改资料：{ username?, avatarUrl?, bio?, location?, websiteUrl?, password?: {old,new} } */
+/** 修改资料：{ username?, avatarUrl?, bio?, location?, websiteUrl?, requireCostConfirm?, password?: {old,new} } */
 export async function updateProfile(payload = {}) {
   return apiPatch('/me/profile', payload, { fallbackMessage: '资料保存失败' })
 }

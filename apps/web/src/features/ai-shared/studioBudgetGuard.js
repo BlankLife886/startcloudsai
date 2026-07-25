@@ -21,8 +21,7 @@ function resolveModelBilling(
   count = 1,
 ) {
   const units = Math.max(1, count)
-  const featureConfig =
-    typeof getFeatureConfig === 'function' ? getFeatureConfig() || {} : {}
+  const featureConfig = typeof getFeatureConfig === 'function' ? getFeatureConfig() || {} : {}
   const publicModel = findPublicModel(modelId)
   if (publicModel) {
     return {
@@ -41,6 +40,7 @@ function resolveModelBilling(
 /** 壁纸 Studio 预算守卫（对齐 Preview AI 的 aiBudgetGuard） */
 export function createStudioBudgetGuard({
   settingsStore,
+  getRequireCostConfirm = null,
   getRuntimeModelCatalog = () => null,
   getProvider = () => 'gptsapi',
   getPublicModels = () => [],
@@ -119,7 +119,10 @@ export function createStudioBudgetGuard({
   }
 
   async function confirmCostIfNeeded(modelId, count, confirmAiCost) {
-    const requireConfirm = !!settingsStore.getSetting('ai_require_cost_confirm', true)
+    const requireConfirm =
+      typeof getRequireCostConfirm === 'function'
+        ? getRequireCostConfirm() !== false
+        : !!settingsStore.getSetting('ai_require_cost_confirm', true)
     if (!requireConfirm) return true
     if (typeof confirmAiCost !== 'function') return true
     return await confirmAiCost(getCostSnapshot(modelId, count))

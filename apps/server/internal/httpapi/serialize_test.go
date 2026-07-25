@@ -18,14 +18,18 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 
 func TestUserDictIncludesProfileDetails(t *testing.T) {
 	user := &store.User{
-		ID:         uuid.New(),
-		Username:   "星云画师",
-		Bio:        "专注角色与场景设计",
-		Location:   "上海",
-		WebsiteURL: "https://example.com/portfolio",
+		ID:                 uuid.New(),
+		Username:           "星云画师",
+		Bio:                "专注角色与场景设计",
+		Location:           "上海",
+		WebsiteURL:         "https://example.com/portfolio",
+		RequireCostConfirm: true,
 	}
 	dict := userDict(user)
 	if dict["bio"] != user.Bio || dict["location"] != user.Location || dict["websiteUrl"] != user.WebsiteURL {
 		t.Fatalf("profile details not serialized: %#v", dict)
+	}
+	if dict["requireCostConfirm"] != true {
+		t.Fatalf("requireCostConfirm = %v, want true", dict["requireCostConfirm"])
 	}
 }

@@ -20,12 +20,13 @@ type passwordChange struct {
 }
 
 type profilePatch struct {
-	Username   Opt[string]         `json:"username"`
-	AvatarURL  Opt[string]         `json:"avatarUrl"`
-	Bio        Opt[string]         `json:"bio"`
-	Location   Opt[string]         `json:"location"`
-	WebsiteURL Opt[string]         `json:"websiteUrl"`
-	Password   Opt[passwordChange] `json:"password"`
+	Username           Opt[string]         `json:"username"`
+	AvatarURL          Opt[string]         `json:"avatarUrl"`
+	Bio                Opt[string]         `json:"bio"`
+	Location           Opt[string]         `json:"location"`
+	WebsiteURL         Opt[string]         `json:"websiteUrl"`
+	RequireCostConfirm Opt[bool]           `json:"requireCostConfirm"`
+	Password           Opt[passwordChange] `json:"password"`
 }
 
 func normalizeProfileWebsite(raw string) (string, bool) {
@@ -127,6 +128,11 @@ func (s *Server) patchProfile(c *gin.Context) {
 		website = &websiteURL
 		user.WebsiteURL = websiteURL
 	}
+	var requireCostConfirm *bool
+	if body.RequireCostConfirm.Valid {
+		requireCostConfirm = &body.RequireCostConfirm.Value
+		user.RequireCostConfirm = body.RequireCostConfirm.Value
+	}
 	ctx := c.Request.Context()
 	var passwordHash *string
 	if body.Password.Valid {
@@ -139,7 +145,7 @@ func (s *Server) patchProfile(c *gin.Context) {
 	}
 	var newSessionToken string
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if txErr := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, passwordHash); txErr != nil {
+		if txErr := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, passwordHash); txErr != nil {
 			return txErr
 		}
 		if passwordHash == nil {

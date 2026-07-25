@@ -9,10 +9,7 @@ import { enrichStudioCreditCostSnapshot } from '@/features/ai-shared/studioUsage
 import { useInsufficientCreditsPrompt } from '@/composables/useInsufficientCreditsPrompt'
 import { recordAiUsage } from '@/services/aiUsageLedger'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
-import {
-  fetchImageBlobForAi,
-  uploadAiTempBlob,
-} from '@/features/ai-shared/aiImageIO'
+import { fetchImageBlobForAi, uploadAiTempBlob } from '@/features/ai-shared/aiImageIO'
 import { pickPreviewSourceImageUrl } from '@/features/ai-shared/aiSourcePicker'
 import { normalizeImageOutput } from '@/features/ai-shared/aiPreviewUtils'
 import {
@@ -322,6 +319,7 @@ export function useIllustrationColoringState() {
 
   const budgetGuard = createStudioBudgetGuard({
     settingsStore,
+    getRequireCostConfirm: () => authStore.user?.requireCostConfirm !== false,
     getPublicModels: () => publicModels.value,
     getFeatureConfig: () => featureConfig.value,
     featureKey: ILLUSTRATION_COLORING_FEATURE_KEY,
@@ -839,8 +837,7 @@ export function useIllustrationColoringState() {
       return
     }
     if (isFailedOrCancelledHistoryStatus(item.status)) {
-      statusText.value =
-        safeError || (item.status === 'failed' ? '染色失败' : '任务已取消')
+      statusText.value = safeError || (item.status === 'failed' ? '染色失败' : '任务已取消')
       return
     }
     if (isPausedStatus(item.status)) {
@@ -1041,9 +1038,7 @@ export function useIllustrationColoringState() {
       }),
     )
     if (!removableIds.size) {
-      notificationService.error(
-        formatColoringErrorText(failures[0] || '历史记录删除失败'),
-      )
+      notificationService.error(formatColoringErrorText(failures[0] || '历史记录删除失败'))
       return
     }
     const activeWasRemoved = removableIds.has(activeHistoryId.value)
@@ -1304,9 +1299,7 @@ export function useIllustrationColoringState() {
       notificationService.success('已选用收藏壁纸作为线稿')
     } catch (error) {
       statusText.value = ''
-      notificationService.error(
-        formatColoringErrorText(error?.message || '载入收藏壁纸失败'),
-      )
+      notificationService.error(formatColoringErrorText(error?.message || '载入收藏壁纸失败'))
     } finally {
       if (favoriteRevision === sourceRevision) {
         sourceUploading.value = false
@@ -1673,9 +1666,7 @@ export function useIllustrationColoringState() {
         uploaded.push(toColoringMediaUrl(resolved.url))
         if (resolved.recovered) {
           referenceImages.value = referenceImages.value.map((entry) =>
-            entry.id === item.id
-              ? { ...entry, remoteUrl: resolved.url, status: 'ready' }
-              : entry,
+            entry.id === item.id ? { ...entry, remoteUrl: resolved.url, status: 'ready' } : entry,
           )
         }
         continue
@@ -1956,9 +1947,7 @@ export function useIllustrationColoringState() {
       .forEach((item) => startServerJobPolling(item.id))
   }
 
-  async function listAllServerColoringJobs(
-    limit = ILLUSTRATION_COLORING_VISIBLE_HISTORY_LIMIT,
-  ) {
+  async function listAllServerColoringJobs(limit = ILLUSTRATION_COLORING_VISIBLE_HISTORY_LIMIT) {
     const jobs = []
     const seenIds = new Set()
     const seenCursors = new Set()
@@ -2017,7 +2006,11 @@ export function useIllustrationColoringState() {
       )
       const remoteClientRequestIds = new Set(
         remoteJobs
-          .map((job) => String(job?.clientRequestId || '').trim().toLowerCase())
+          .map((job) =>
+            String(job?.clientRequestId || '')
+              .trim()
+              .toLowerCase(),
+          )
           .filter(Boolean),
       )
       const orphanLocal = historyItems.value.filter(
@@ -2170,8 +2163,7 @@ export function useIllustrationColoringState() {
       ? historyItems.value.find((item) => item.id === retryHistoryId) || null
       : null
     const replayUnknownCreate =
-      options.replayUnknownCreate === true &&
-      shouldReplayUnknownColoringCreate(retryHistoryItem)
+      options.replayUnknownCreate === true && shouldReplayUnknownColoringCreate(retryHistoryItem)
     const replayCreateRequest = replayUnknownCreate ? retryHistoryItem.createRequest : null
     const modelKey = replayCreateRequest?.publicModelKey || resolvedPublicModelKey.value
     const batchCount = retryHistoryItem ? 1 : generationCount.value
@@ -2204,8 +2196,8 @@ export function useIllustrationColoringState() {
     resultUrl.value = ''
     revealResult.value = false
     statusText.value = '准备提交…'
-    const batchId = replayCreateRequest?.batchId ||
-      `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const batchId =
+      replayCreateRequest?.batchId || `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     sessionStartedJobs.add(batchId)
     const styleLabel = '插画染色'
     const baseTitle = String(workTitle.value || '').trim() || styleLabel || '插画染色'
@@ -2250,8 +2242,7 @@ export function useIllustrationColoringState() {
         inputBytes: sourceMeta.value.bytes || 0,
         inputType: sourceMeta.value.type || '',
         outputSize: replayCreateRequest?.outputSize || settings.value.outputSize,
-        outputOrientation:
-          replayCreateRequest?.outputOrientation || outputOrientation.value,
+        outputOrientation: replayCreateRequest?.outputOrientation || outputOrientation.value,
         requestedOutputWidth: 0,
         requestedOutputHeight: 0,
         resultWidth: 0,
@@ -2349,8 +2340,7 @@ export function useIllustrationColoringState() {
         inputBytes: inputMeta.bytes || sourceMeta.value.bytes || 0,
         inputType: inputMeta.type || sourceMeta.value.type || '',
         outputSize: replayCreateRequest?.outputSize || settings.value.outputSize,
-        outputOrientation:
-          replayCreateRequest?.outputOrientation || outputOrientation.value,
+        outputOrientation: replayCreateRequest?.outputOrientation || outputOrientation.value,
         requestedOutputWidth: requested.width,
         requestedOutputHeight: requested.height,
         publicModelKey: modelKey,
@@ -2374,10 +2364,14 @@ export function useIllustrationColoringState() {
           variantCount: batchCount,
           styleLabel,
         }
-        updateHistoryItem(entry.id, { ...sharedPreparedPatch, createRequest: entry.createRequest }, {
-          persistImmediately: entry.id === primaryHistoryId,
-          notifyFailure: false,
-        })
+        updateHistoryItem(
+          entry.id,
+          { ...sharedPreparedPatch, createRequest: entry.createRequest },
+          {
+            persistImmediately: entry.id === primaryHistoryId,
+            notifyFailure: false,
+          },
+        )
       })
       statusText.value =
         batchCount > 1 ? `AI 正在并发染色（${batchCount} 张）…` : 'AI 正在染色，请稍候…'
@@ -2526,9 +2520,7 @@ export function useIllustrationColoringState() {
       )
       return true
     } catch (error) {
-      notificationService.error(
-        formatColoringErrorText(error?.message || '提交共享审核失败'),
-      )
+      notificationService.error(formatColoringErrorText(error?.message || '提交共享审核失败'))
       return false
     } finally {
       submittingShare.value = false

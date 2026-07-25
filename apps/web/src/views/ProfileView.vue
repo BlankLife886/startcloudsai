@@ -52,7 +52,7 @@ const TABS = [
   {
     id: 'account',
     label: '账号设置',
-    description: '更新公开资料、头像和登录密码。',
+    description: '管理公开资料、创作偏好和账号安全。',
     icon: 'bi-person-gear',
   },
 ]
@@ -196,6 +196,8 @@ const profileForm = reactive({
 const passwordForm = reactive({ old: '', next: '', confirm: '', saving: false })
 const passwordVisible = reactive({ old: false, next: false, confirm: false })
 const avatarInput = ref(null)
+const preferenceSaving = ref(false)
+const requireCostConfirm = computed(() => authStore.user?.requireCostConfirm !== false)
 
 const normalizedProfileForm = computed(() => ({
   username: profileForm.username.trim(),
@@ -730,6 +732,24 @@ async function saveProfile() {
     notificationService.error(error?.message || '保存失败')
   } finally {
     profileForm.saving = false
+  }
+}
+
+async function setCostConfirmPreference(enabled) {
+  if (preferenceSaving.value) return
+  const previous = requireCostConfirm.value
+  const next = Boolean(enabled)
+  authStore.patchUser({ requireCostConfirm: next })
+  preferenceSaving.value = true
+  try {
+    const result = await updateProfile({ requireCostConfirm: next })
+    authStore.patchUser(result?.user || { requireCostConfirm: next })
+    notificationService.success(next ? '已开启生成前费用确认' : '已关闭生成前费用确认')
+  } catch (error) {
+    authStore.patchUser({ requireCostConfirm: previous })
+    notificationService.error(error?.message || '创作偏好保存失败')
+  } finally {
+    preferenceSaving.value = false
   }
 }
 
@@ -1508,6 +1528,40 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </form>
+
+            <section id="generation-preferences" class="pp-account-form is-preferences">
+              <h3><i class="bi bi-sliders2"></i> 创作偏好</h3>
+              <p class="pp-preference-intro">
+                调整生成流程中的确认方式。余额不足、预算超限等安全拦截始终保留。
+              </p>
+              <label class="pp-preference-row" :class="{ 'is-saving': preferenceSaving }">
+                <span class="pp-preference-copy">
+                  <strong>生成前费用确认</strong>
+                  <small>
+                    {{
+                      requireCostConfirm
+                        ? '每次提交付费生成前显示费用明细'
+                        : '校验通过后直接提交生成任务'
+                    }}
+                  </small>
+                </span>
+                <input
+                  type="checkbox"
+                  :checked="requireCostConfirm"
+                  :disabled="preferenceSaving"
+                  aria-label="生成前费用确认"
+                  @change="setCostConfirmPreference($event.target.checked)"
+                />
+                <span class="pp-preference-switch" aria-hidden="true"><i></i></span>
+              </label>
+              <div class="pp-preference-state" :data-enabled="requireCostConfirm">
+                <i
+                  class="bi"
+                  :class="preferenceSaving ? 'bi-arrow-repeat spin' : 'bi-check2-circle'"
+                ></i>
+                {{ preferenceSaving ? '正在保存账号偏好…' : '已同步到当前账号' }}
+              </div>
+            </section>
 
             <form class="pp-account-form" @submit.prevent="savePassword">
               <h3><i class="bi bi-shield-lock"></i> 修改密码</h3>
@@ -2453,6 +2507,115 @@ a.pp-stats__foot,
 }
 
 .pp-account-form h3 i {
+  color: var(--pp-gold);
+}
+
+.pp-account-form.is-preferences {
+  align-content: start;
+}
+
+.pp-preference-intro {
+  margin: -2px 0 2px;
+  color: var(--pp-faint);
+  font-size: 0.75rem;
+  line-height: 1.65;
+}
+
+.pp-account-form .pp-preference-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 68px;
+  padding: 14px 0;
+  border-top: 1px solid var(--pp-hairline);
+  border-bottom: 1px solid var(--pp-hairline);
+  cursor: pointer;
+}
+
+.pp-account-form .pp-preference-row.is-saving {
+  cursor: wait;
+}
+
+.pp-account-form .pp-preference-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pp-account-form .pp-preference-copy strong {
+  color: var(--pp-ink);
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.pp-account-form .pp-preference-copy small {
+  color: var(--pp-faint);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.pp-account-form .pp-preference-row input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pp-preference-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.pp-preference-switch i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--pp-muted);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition:
+    transform 0.22s ease,
+    background 0.2s ease;
+}
+
+.pp-preference-row input:checked + .pp-preference-switch {
+  border-color: rgba(226, 201, 143, 0.62);
+  background: rgba(226, 201, 143, 0.2);
+}
+
+.pp-preference-row input:checked + .pp-preference-switch i {
+  transform: translateX(18px);
+  background: var(--pp-gold);
+}
+
+.pp-preference-row input:focus-visible + .pp-preference-switch {
+  outline: 2px solid rgba(226, 201, 143, 0.54);
+  outline-offset: 3px;
+}
+
+.pp-preference-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--pp-faint);
+  font-size: 0.68rem;
+}
+
+.pp-preference-state[data-enabled='true'] i {
   color: var(--pp-gold);
 }
 

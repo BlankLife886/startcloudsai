@@ -11,6 +11,7 @@ import { WALLPAPER_INSPECTOR_TABS } from '@/features/ai-wallpaper/composables/wa
 import { getDisplayImageUrl } from '@/services/aiWallpaper'
 import { resolveAiFeatureRuntimeConfig } from '@/config/aiFeatureSettings'
 import notificationService from '@/services/notification'
+import { getFeatureUnitPriceCents } from '@/services/pricing'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from '@/services/aiWallpaperState'
 import { useAuthStore } from '@/stores/auth'
@@ -42,6 +43,7 @@ export function useAiWallpaperStudioState() {
   const rightCollapsed = ref(false)
   const costConfirmVisible = ref(false)
   const costConfirmPayload = ref(null)
+  const generationUnitPriceCents = ref(null)
   const isPageLoading = ref(true)
 
   let persistDraftTimer = null
@@ -211,6 +213,31 @@ export function useAiWallpaperStudioState() {
       ? { '--ai-ambient-image': `url("${ambientBackgroundImage.value}")` }
       : {},
   )
+  const generationCostLabel = computed(() => {
+    const count = outputType.value === 'image' ? Math.max(1, Number(inputs.imageCount.value)) : 1
+    if (generationUnitPriceCents.value != null) {
+      const total = (Math.max(0, Number(generationUnitPriceCents.value)) * count) / 100
+      if (total === 0) return '免费'
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(total)} 积分`
+    }
+    const dispatchModel =
+      outputType.value === 'video'
+        ? models.videoDispatchModel.value
+        : models.imageDispatchModel.value
+    if (!dispatchModel) return ''
+    const snapshot = studioBudgetGuard.getCostSnapshot(dispatchModel, count)
+    const total = Math.max(0, Number(snapshot?.unitCost || 0))
+    if (!total) return ''
+    if (snapshot?.billingMode === 'credits') {
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(total)} 积分`
+    }
+    return `$${total.toFixed(4)}`
+  })
+
+  async function loadGenerationUnitPrice() {
+    const unitPriceCents = await getFeatureUnitPriceCents('wallpaper')
+    if (unitPriceCents != null) generationUnitPriceCents.value = unitPriceCents
+  }
 
   async function requestCreateTask() {
     if (!canCreateTask.value) return
@@ -227,7 +254,7 @@ export function useAiWallpaperStudioState() {
       notificationService.error(error?.message || '预算不足')
       return
     }
-    if (!settingsStore.getSetting('ai_require_cost_confirm', true)) {
+    if (authStore.user?.requireCostConfirm === false) {
       tasks.createTask()
       return
     }
@@ -321,7 +348,9 @@ export function useAiWallpaperStudioState() {
       if (Number(draft.imageCount) > 0) inputs.imageCount.value = Number(draft.imageCount)
       if (draft.imageQuality) inputs.imageQuality.value = draft.imageQuality
       if (draft.resolutionScale) inputs.resolutionScale.value = draft.resolutionScale
-      if (['auto', 'png', 'webp', 'jpeg', 'jpg'].includes(String(draft.upscaleOutputFormat || ''))) {
+      if (
+        ['auto', 'png', 'webp', 'jpeg', 'jpg'].includes(String(draft.upscaleOutputFormat || ''))
+      ) {
         inputs.upscaleOutputFormat.value = draft.upscaleOutputFormat
       }
       if (Number(draft.duration) > 0) inputs.duration.value = Number(draft.duration)
@@ -480,6 +509,7 @@ export function useAiWallpaperStudioState() {
 
   onMounted(() => {
     initPage()
+    void loadGenerationUnitPrice()
     window.addEventListener('pagehide', handlePageLifecyclePersist)
     document.addEventListener('visibilitychange', handleVisibilityPersist)
     window.addEventListener('walleven:ai_job-updated', handleRealtimeAiJobUpdated)
@@ -520,6 +550,7 @@ export function useAiWallpaperStudioState() {
     resolutionScale: inputs.resolutionScale,
     upscaleOutputFormat: inputs.upscaleOutputFormat,
     outputSizeLabel: inputs.outputSizeLabel,
+    generationCostLabel,
     duration: inputs.duration,
     creativity: inputs.creativity,
     styleStrength: inputs.styleStrength,

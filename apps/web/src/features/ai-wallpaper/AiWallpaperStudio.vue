@@ -55,6 +55,7 @@ const {
   imageQuality,
   resolutionScale,
   upscaleOutputFormat,
+  generationCostLabel,
   inputMode,
   isRunning,
   isPageLoading,
@@ -2334,6 +2335,7 @@ function setMainTab(tab) {
 
       <button type="button" class="t2i-generate" :disabled="!canCreateTask" @click="handleGenerate">
         <span>{{ isRunning ? '再生成一张' : '立即生成' }}</span>
+        <small v-if="generationCostLabel">{{ generationCostLabel }}</small>
         <i class="bi" :class="isRunning ? 'bi-plus-lg' : 'bi-stars'"></i>
       </button>
     </aside>
@@ -2729,7 +2731,9 @@ function setMainTab(tab) {
                     {{ Number(item.batchIndex ?? item.index) + 1 }}/{{ item.total }}
                   </span>
                   <span class="t2i-history-image-overlay">
-                    <span class="t2i-history-image-prompt">{{ taskPrompt(item.task) }}</span>
+                    <span v-if="isDone(item.task)" class="t2i-history-image-prompt">
+                      {{ taskPrompt(item.task) }}
+                    </span>
                     <span class="t2i-history-image-specs">
                       <span>
                         <i class="bi bi-aspect-ratio" aria-hidden="true"></i>
@@ -2762,9 +2766,6 @@ function setMainTab(tab) {
                 </div>
 
                 <div v-if="item.kind !== 'image'" class="t2i-masonry-body">
-                  <p class="t2i-history-prompt">
-                    {{ taskPrompt(item.task) }}
-                  </p>
                   <small v-if="friendlyError(item.task)" class="t2i-history-error">{{
                     friendlyError(item.task)
                   }}</small>

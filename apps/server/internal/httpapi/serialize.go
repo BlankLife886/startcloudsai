@@ -11,15 +11,16 @@ import (
 
 func userDict(u *store.User) gin.H {
 	return gin.H{
-		"id":         u.ID.String(),
-		"email":      u.Email,
-		"username":   u.Username,
-		"avatarUrl":  u.AvatarURL,
-		"bio":        u.Bio,
-		"location":   u.Location,
-		"websiteUrl": u.WebsiteURL,
-		"role":       u.Role,
-		"createdAt":  isoValue(u.CreatedAt),
+		"id":                 u.ID.String(),
+		"email":              u.Email,
+		"username":           u.Username,
+		"avatarUrl":          u.AvatarURL,
+		"bio":                u.Bio,
+		"location":           u.Location,
+		"websiteUrl":         u.WebsiteURL,
+		"requireCostConfirm": u.RequireCostConfirm,
+		"role":               u.Role,
+		"createdAt":          isoValue(u.CreatedAt),
 	}
 }
 

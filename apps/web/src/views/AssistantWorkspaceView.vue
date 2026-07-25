@@ -82,6 +82,7 @@ const generationModel = ref('')
 const conversationModel = ref('')
 const imageGenerationModel = ref('gpt-image-2')
 const conversationModels = ref([])
+const modelSearch = ref('')
 const generationResolution = ref('1K')
 const generationCount = ref(2)
 const customImageWidth = ref(1024)
@@ -139,6 +140,23 @@ const imageGenerationModels = [
 const generationModels = computed(() =>
   mode.value === 'image' ? imageGenerationModels : conversationModels.value,
 )
+const filteredGenerationModels = computed(() => {
+  const query = modelSearch.value.trim().toLowerCase()
+  return generationModels.value
+    .filter((item) => {
+      if (!query) return true
+      return [item.label, item.model, item.description].some((value) =>
+        String(value || '')
+          .toLowerCase()
+          .includes(query),
+      )
+    })
+    .sort(
+      (left, right) =>
+        Number(right.model === generationModel.value) -
+        Number(left.model === generationModel.value),
+    )
+})
 const selectedGenerationModel = computed(
   () =>
     generationModels.value.find((item) => item.model === generationModel.value) ||
@@ -307,20 +325,6 @@ const inlineMenuItems = computed(() => {
     `${item.name || item.label}${item.description || ''}`.toLowerCase().includes(query),
   )
 })
-const workspaceStatus = computed(() => {
-  if (historySyncing.value) return { label: '同步对话中', icon: 'bi-arrow-repeat', active: true }
-  if (isUploadingReferences.value)
-    return { label: '上传图片中', icon: 'bi-cloud-arrow-up', active: true }
-  if (isGenerating.value) return { label: '后台处理中', icon: 'bi-stars', active: true }
-  if (activeRunCount.value)
-    return {
-      label: `${activeRunCount.value} 个对话处理中`,
-      icon: 'bi-arrow-repeat',
-      active: true,
-    }
-  return { label: '已保存到云端', icon: 'bi-cloud-check', active: false }
-})
-
 function uid() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -499,6 +503,7 @@ function closeComposerPanels() {
   preferencesOpen.value = false
   skillMenuOpen.value = false
   modelMenuOpen.value = false
+  modelSearch.value = ''
   qualityMenuOpen.value = false
   activeMessageMenuId.value = ''
   closeInlineMenu()
@@ -543,6 +548,7 @@ function selectGenerationModel(model) {
   if (mode.value === 'image') imageGenerationModel.value = model.model
   else conversationModel.value = model.model
   modelMenuOpen.value = false
+  modelSearch.value = ''
 }
 
 function modelDisplayName(model) {
@@ -557,6 +563,7 @@ function modelDisplayName(model) {
 
 function toggleModelMenu() {
   modelMenuOpen.value = !modelMenuOpen.value
+  if (modelMenuOpen.value) modelSearch.value = ''
   qualityMenuOpen.value = false
 }
 
@@ -644,19 +651,18 @@ function messageDateKey(message) {
 }
 
 function shouldShowMessageDate(message, index) {
-  if (index === 0) return formatMessageDate(message.createdAt) !== '今天'
+  if (index === 0) return true
   return messageDateKey(message) !== messageDateKey(messages.value[index - 1])
 }
 
 function formatMessageDate(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  const today = new Date()
-  const yesterday = new Date(today)
-  yesterday.setDate(today.getDate() - 1)
-  if (date.toDateString() === today.toDateString()) return '今天'
-  if (date.toDateString() === yesterday.toDateString()) return '昨天'
-  return date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
+  return date.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
 }
 
 function messagePreview(content) {
@@ -905,11 +911,7 @@ function handleMessageScroll() {
   syncMessageScrollState()
   if (!isNavigatingByMarker.value) scheduleMessageNavigatorSync()
   const scroller = messageScroller.value
-  if (
-    !isNavigatingByMarker.value &&
-    scroller?.scrollTop <= 36 &&
-    hiddenMessageCount.value > 0
-  ) {
+  if (!isNavigatingByMarker.value && scroller?.scrollTop <= 36 && hiddenMessageCount.value > 0) {
     void loadEarlierMessages()
   }
 }
@@ -1009,7 +1011,9 @@ function followConversationBottom() {
 }
 
 function promptNeedsRecentVisual(prompt) {
-  const text = String(prompt || '').trim().toLowerCase()
+  const text = String(prompt || '')
+    .trim()
+    .toLowerCase()
   if (!text) return false
   const previousVisualCue =
     /(这张|这幅|这个图|该图|那张|上图|上一张|前一张|刚才.{0,8}(图|图片|画面)|之前.{0,8}(图|图片|画面)|图中|图片中|照片中|截图中|画面中|它|其中|上述)/i
@@ -1118,7 +1122,8 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
   })
   applyAssistantRunUpdate(conversation, assistantMessage, data)
   if (data?.run?.status === 'failed') {
-    assistantMessage.error = data.run.errorMessage || assistantMessage.error || '生成失败，请稍后重试'
+    assistantMessage.error =
+      data.run.errorMessage || assistantMessage.error || '生成失败，请稍后重试'
   }
   return data
 }
@@ -1133,9 +1138,7 @@ async function generateResponse(
   const visualContext = resolveVisualContext(conversation, prompt)
   const hasReferenceImage = visualContext.length > 0
   const immediateIntent =
-    responseMode === 'agent'
-      ? fallbackAgentIntent(prompt, { hasReferenceImage })
-      : responseMode
+    responseMode === 'agent' ? fallbackAgentIntent(prompt, { hasReferenceImage }) : responseMode
   assistantMessage.kind = immediateIntent === 'image' ? 'image' : responseMode
   assistantMessage.pending = true
   assistantMessage.error = ''
@@ -1181,7 +1184,8 @@ async function generateResponse(
       },
       { signal: controller.signal },
     )
-    if (created.userMessage && currentUserMessage) Object.assign(currentUserMessage, created.userMessage)
+    if (created.userMessage && currentUserMessage)
+      Object.assign(currentUserMessage, created.userMessage)
     applyAssistantRunUpdate(conversation, assistantMessage, created)
     await monitorAssistantRun(conversation, assistantMessage, created.run.id, controller)
   } catch (error) {
@@ -1478,8 +1482,7 @@ async function appendReferenceFiles(files, { pasted = false } = {}) {
         return {
           id: uid(),
           name:
-            file.name ||
-            `剪贴板图片-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`,
+            file.name || `剪贴板图片-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`,
           dataUrl: result.url,
           thumbnailUrl: result.thumbnailUrl,
           fileKey: result.key,
@@ -1584,11 +1587,7 @@ async function copyMessage(content, messageId = '') {
 }
 
 function startEditingUserMessage(message) {
-  if (
-    isGenerating.value ||
-    message?.role !== 'user' ||
-    message.id !== lastUserMessageId.value
-  ) {
+  if (isGenerating.value || message?.role !== 'user' || message.id !== lastUserMessageId.value) {
     return
   }
   editingMessageId.value = message.id
@@ -1834,11 +1833,14 @@ function toggleSidebar() {
     sidebarCollapsed.value = false
   }
 
-  sidebarTransitionTimer = window.setTimeout(() => {
-    sidebarAnimating.value = false
-    sidebarContentHidden.value = false
-    sidebarTransitionTimer = null
-  }, shouldCollapse ? 310 : 250)
+  sidebarTransitionTimer = window.setTimeout(
+    () => {
+      sidebarAnimating.value = false
+      sidebarContentHidden.value = false
+      sidebarTransitionTimer = null
+    },
+    shouldCollapse ? 310 : 250,
+  )
   try {
     localStorage.setItem('starclouds:assistant-sidebar-collapsed', String(shouldCollapse))
   } catch {
@@ -1875,7 +1877,8 @@ async function loadServiceConfig() {
       })
     }
     conversationModels.value = options
-    const savedModel = conversationModel.value || (mode.value !== 'image' ? generationModel.value : '')
+    const savedModel =
+      conversationModel.value || (mode.value !== 'image' ? generationModel.value : '')
     conversationModel.value =
       options.find((item) => item.model === savedModel)?.model ||
       options.find((item) => item.model === config?.chatModel)?.model ||
@@ -2203,7 +2206,11 @@ onBeforeUnmount(() => {
               <span class="conversation-copy">
                 <span>{{ conversation.title }}</span>
                 <small>
-                  {{ conversationHasActiveRun(conversation.id) ? '处理中' : formatTime(conversation.updatedAt) }}
+                  {{
+                    conversationHasActiveRun(conversation.id)
+                      ? '处理中'
+                      : formatTime(conversation.updatedAt)
+                  }}
                 </small>
               </span>
             </button>
@@ -2234,12 +2241,6 @@ onBeforeUnmount(() => {
           >
             <i class="bi bi-layout-sidebar"></i>
           </button>
-          <div class="topbar-conversation-title">
-            <h1>{{ activeConversation?.title || 'AI 助手' }}</h1>
-            <span :class="{ 'is-active': workspaceStatus.active }">
-              <i class="bi" :class="workspaceStatus.icon"></i>{{ workspaceStatus.label }}
-            </span>
-          </div>
         </div>
         <div class="topbar-filters">
           <button
@@ -2402,7 +2403,11 @@ onBeforeUnmount(() => {
                     }"
                     :style="{ '--image-skeleton-ratio': imageSkeletonRatio(message) }"
                   >
-                    <div v-for="slot in message.count || 2" :key="slot" class="image-dream-slot"></div>
+                    <div
+                      v-for="slot in message.count || 2"
+                      :key="slot"
+                      class="image-dream-slot"
+                    ></div>
                   </div>
                   <div class="image-generation-queue">
                     <span>{{
@@ -2613,24 +2618,49 @@ onBeforeUnmount(() => {
             v-if="modelMenuOpen && !preferencesOpen"
             class="composer-popover image-model-menu"
           >
-            <p class="popover-eyebrow">
-              {{ mode === 'image' ? '选择图片模型' : '选择对话模型' }}
-            </p>
-            <button
-              v-for="model in generationModels"
-              :key="`${model.source}:${model.model}`"
-              type="button"
-              :class="{ active: generationModel === model.model }"
-              @click="selectGenerationModel(model)"
-            >
-              <span class="model-mark"><i class="bi bi-stars"></i></span>
-              <span class="model-copy">
-                <strong>{{ model.label }}</strong>
-                <small>{{ model.description }}</small>
-              </span>
-              <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
-            </button>
-            <p v-if="!generationModels.length" class="skill-empty">后台暂未提供可用模型</p>
+            <header class="model-menu-head">
+              <p class="popover-eyebrow">
+                {{ mode === 'image' ? '选择图片模型' : '选择对话模型' }}
+              </p>
+              <span>{{ generationModels.length }} 个模型</span>
+            </header>
+            <div v-if="generationModels.length > 6" class="model-menu-search">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <input
+                v-model="modelSearch"
+                type="search"
+                placeholder="搜索模型名称"
+                autocomplete="off"
+              />
+              <button
+                v-if="modelSearch"
+                type="button"
+                aria-label="清空模型搜索"
+                title="清空"
+                @click="modelSearch = ''"
+              >
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div class="model-menu-options">
+              <button
+                v-for="model in filteredGenerationModels"
+                :key="`${model.source}:${model.model}`"
+                type="button"
+                :class="{ active: generationModel === model.model }"
+                :title="model.label"
+                @click="selectGenerationModel(model)"
+              >
+                <span class="model-mark"><i class="bi bi-stars"></i></span>
+                <span class="model-copy">
+                  <strong>{{ model.label }}</strong>
+                </span>
+                <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
+              </button>
+              <p v-if="!filteredGenerationModels.length" class="skill-empty">
+                {{ modelSearch ? '没有匹配的模型' : '后台暂未提供可用模型' }}
+              </p>
+            </div>
           </section>
 
           <section
@@ -3134,7 +3164,9 @@ onBeforeUnmount(() => {
             {{ pendingDeleteHasActiveRun ? '停止任务并删除对话？' : '删除这个对话？' }}
           </h2>
           <p v-if="pendingDeleteHasActiveRun">
-            “{{ pendingDeleteConversation.title }}”仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。
+            “{{
+              pendingDeleteConversation.title
+            }}”仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。
           </p>
           <p v-else>“{{ pendingDeleteConversation.title }}”及其中的消息将被永久删除。</p>
         </div>
@@ -5261,35 +5293,6 @@ input:focus-visible {
   padding-left: 0;
 }
 
-.topbar-conversation-title {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.topbar-title .topbar-conversation-title h1 {
-  overflow: hidden;
-  max-width: min(48vw, 560px);
-  font-size: 14px;
-  font-weight: 650;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.topbar-conversation-title > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--assistant-muted);
-  font-size: 10px;
-  line-height: 1.2;
-}
-
-.topbar-conversation-title > span.is-active i {
-  animation: assistant-sync-pulse 1.4s ease-in-out infinite;
-}
-
 .topbar-filters {
   gap: 2px;
   border-color: transparent;
@@ -5297,32 +5300,13 @@ input:focus-visible {
   box-shadow: none;
 }
 
-@keyframes assistant-sync-pulse {
-  50% {
-    opacity: 0.45;
-    transform: rotate(10deg) scale(0.94);
-  }
-}
-
 @media (max-width: 640px) {
   .assistant-topbar {
     padding-inline: 12px;
   }
-
-  .topbar-title .topbar-conversation-title h1 {
-    max-width: 42vw;
-  }
-
-  .topbar-conversation-title > span {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .topbar-conversation-title > span.is-active i {
-    animation: none;
-  }
-
   .thinking-spark i {
     animation: none;
   }
@@ -6446,33 +6430,160 @@ input:focus-visible {
 .image-model-menu {
   left: 104px;
   display: grid;
-  width: min(560px, calc(100% - 122px));
-  gap: 3px;
-  padding: 12px;
+  width: min(410px, calc(100% - 122px));
+  max-height: min(430px, calc(100vh - 150px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.model-menu-head {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 7px;
 }
 
 .image-model-menu .popover-eyebrow {
-  padding: 4px 9px 9px;
+  padding: 0;
+  color: var(--assistant-text-soft);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.image-model-menu > button {
+.model-menu-head > span {
+  flex: 0 0 auto;
+  color: var(--assistant-muted);
+  font-size: 10px;
+}
+
+.model-menu-search {
   display: grid;
-  min-height: 68px;
-  grid-template-columns: 48px minmax(0, 1fr) 24px;
+  height: 34px;
+  grid-template-columns: 18px minmax(0, 1fr) 26px;
   align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
+  gap: 5px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 9px;
+  color: var(--assistant-muted);
+  background: var(--assistant-panel-hover);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.model-menu-search:focus-within {
+  border-color: var(--assistant-border-strong);
+  background: var(--assistant-card);
+}
+
+.model-menu-search > i {
+  font-size: 12px;
+}
+
+.model-menu-search input {
+  min-width: 0;
   border: 0;
-  border-radius: 10px;
+  outline: 0;
+  color: var(--assistant-text);
+  background: transparent;
+  font-size: 12px;
+}
+
+.model-menu-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.model-menu-search input::placeholder {
+  color: var(--assistant-muted);
+}
+
+.model-menu-search button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: var(--assistant-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.model-menu-search button:hover {
+  color: var(--assistant-text);
+  background: var(--assistant-panel-active);
+}
+
+.model-menu-options {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--assistant-border-strong) transparent;
+}
+
+.model-menu-options > button {
+  display: grid;
+  width: 100%;
+  min-height: 40px;
+  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
   color: var(--assistant-text);
   background: transparent;
   text-align: left;
   cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
 }
 
-.image-model-menu > button:hover,
-.image-model-menu > button.active {
+.model-menu-options > button:hover,
+.model-menu-options > button.active {
   background: var(--assistant-panel-active);
+}
+
+.model-menu-options .model-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.model-menu-options .model-copy {
+  overflow: hidden;
+}
+
+.model-menu-options .model-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-menu-options .model-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.model-menu-options .menu-check {
+  justify-self: center;
+  color: var(--assistant-accent-ink);
+  font-size: 12px;
+}
+
+.model-menu-options .skill-empty {
+  margin: 4px 0;
+  padding: 24px 12px;
+  text-align: center;
 }
 
 .image-model-button > i:last-child,
@@ -8348,11 +8459,7 @@ input:focus-visible {
 }
 
 .composer-zone:not(.is-scrolled-away) .assistant-composer:focus-within {
-  border-color: color-mix(
-    in srgb,
-    var(--composer-focus-color) 42%,
-    var(--assistant-border-strong)
-  );
+  border-color: color-mix(in srgb, var(--composer-focus-color) 42%, var(--assistant-border-strong));
   background: var(--assistant-card);
   box-shadow:
     0 2px 5px rgb(23 27 25 / 6%),

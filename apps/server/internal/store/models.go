@@ -33,6 +33,7 @@ type User struct {
 	Bio                   string
 	Location              string
 	WebsiteURL            string
+	RequireCostConfirm    bool
 	Role                  string
 	Status                string
 	LastLoginAt           *time.Time
