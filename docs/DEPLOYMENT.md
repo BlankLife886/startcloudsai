@@ -185,13 +185,13 @@ GATEWAY_PORT=8080
 - `C2A_BASE_URL` 填 ChatGPT2API 根地址，不加后台路径。
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - R2 未配置时，上传和生成图片无法正常持久化。
-- 生产环境未配置 SMTP 时，用户无法获取注册和登录验证码。
+- 生产环境未配置 SMTP 时，用户无法获取账号验证码。
 - 2 GB 服务器建议先使用 `WORKER_CONCURRENCY=1`。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
 ### 3.4 配置邮箱验证码
 
-用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码注册和登录。生产环境必须在 `.env` 配置可用的 SMTP 发件账号：
+用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码认证，首次验证会自动创建账号。生产环境必须在 `.env` 配置可用的 SMTP 发件账号：
 
 ```env
 SMTP_ADDR=<SMTP服务器:587>
@@ -361,7 +361,7 @@ unset ADMIN_PASSWORD
 依次验证：
 
 - 用户端首页、更新页和画廊可以打开和滚动。
-- 用户邮箱验证码注册、登录和退出正常。
+- 用户邮箱验证码认证、首次自动建号和退出正常。
 - 管理员可以登录 `/admin/`。
 - 后台系统设置能读取上游模型。
 - 文生图可以提交、扣积分、完成并显示历史记录。

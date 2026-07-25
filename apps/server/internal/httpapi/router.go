@@ -123,8 +123,7 @@ func (s *Server) Router() *gin.Engine {
 	// auth
 	api.GET("/auth/providers", s.authProviders)
 	api.POST("/auth/email/code", s.requestEmailLoginCode)
-	api.POST("/auth/register", s.register)
-	api.POST("/auth/login", s.login)
+	api.POST("/auth/email/verify", s.verifyEmailCode)
 	api.POST("/auth/logout", s.logout)
 	api.GET("/auth/me", s.authMe)
 

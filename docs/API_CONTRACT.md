@@ -40,13 +40,12 @@
 | 方法 | 路径 | 认证 | 请求/说明 |
 | --- | --- | --- | --- |
 | GET | `/api/auth/providers` | 公开 | 返回邮箱验证码可用状态和允许的邮箱域名 |
-| POST | `/api/auth/email/code` | 公开 | `{email,purpose:register|login}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
-| POST | `/api/auth/register` | 公开 | `{username,email,code}`；验证码用途必须为 `register`，成功后创建用户、钱包和 session |
-| POST | `/api/auth/login` | 公开 | `{email,code}`；验证码用途必须为 `login`，成功后设置 `sc_session` |
+| POST | `/api/auth/email/code` | 公开 | `{email}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
+| POST | `/api/auth/email/verify` | 公开 | `{email,code}`；已有用户直接登录，首次邮箱原子创建用户、钱包、初始积分和 session；返回 `isNewUser` |
 | POST | `/api/auth/logout` | 可匿名 | 删除当前 session 并清 Cookie |
 | GET | `/api/auth/me` | 可匿名 | 返回 `{user}`；未登录时 `user:null` |
 
-用户状态为 banned 时不能登录或调用受保护能力。邮箱验证码只保存绑定 email、purpose 和 code 的 HMAC，不保存明文。注册只允许新账号并受 `registrationEnabled` 控制。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
+用户状态为 banned 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
 
 ## 管理员认证
 

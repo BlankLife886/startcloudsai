@@ -85,7 +85,7 @@ docker compose --env-file .env up -d --build
 
 Compose 默认把网关绑定到 `127.0.0.1`。线上必须由宿主机或独立入口网关提供 HTTPS，再反向代理到 `127.0.0.1:8080`；不要把该 HTTP 端口直接映射到公网。只有确认外层 TLS、访问控制和防火墙均已配置时，才调整 `GATEWAY_BIND`。
 
-用户端仅支持 Gmail、Googlemail 和 QQ 邮箱验证码认证。注册提交用户名、邮箱和 6 位注册验证码；日常登录也必须获取 6 位登录验证码，不提供用户密码或第三方 OAuth 登录。验证码按 `register|login` 用途绑定，不能跨流程复用。开发环境未配置 SMTP 时响应会包含仅用于本地调试的 `developmentCode`；生产环境绝不会返回验证码。
+用户端仅支持 Gmail、Googlemail 和 QQ 邮箱验证码认证。已注册邮箱验证后直接登录，首次验证成功会自动创建账号、钱包与初始积分，并弹出可跳过的资料完善窗口；不提供用户密码或第三方 OAuth 登录。Gmail 点号、加号标签和 Googlemail 地址会规范为同一账号，防止重复注册。开发环境未配置 SMTP 时响应会包含仅用于本地调试的 `developmentCode`；生产环境绝不会返回验证码。
 
 ## 本地开发
 

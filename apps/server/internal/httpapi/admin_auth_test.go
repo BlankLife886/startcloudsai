@@ -60,11 +60,11 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	}
 	engine := server.Router()
 
-	// 用户和管理员允许邮箱相同，但密码与会话完全独立。
+	// 用户端没有密码登录入口；管理员密码与用户会话完全独立。
 	if w := authRequest(t, engine, "POST", "/api/auth/login", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
-	}); w.Code != 401 {
-		t.Fatalf("admin password entered on user login: %d %s", w.Code, w.Body.String())
+	}); w.Code != 404 {
+		t.Fatalf("removed user password login accepted admin password: %d %s", w.Code, w.Body.String())
 	}
 	if w := authRequest(t, engine, "POST", "/api/admin/auth/login", gin.H{
 		"email": "same@gmail.com", "password": "user-password",

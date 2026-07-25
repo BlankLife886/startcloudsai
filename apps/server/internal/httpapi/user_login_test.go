@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
@@ -37,78 +38,130 @@ func developmentCode(t *testing.T, responseBody []byte) string {
 	return response.Data.DevelopmentCode
 }
 
-func TestEmailRegistrationAndCodeLogin(t *testing.T) {
+func requestDevelopmentCode(t *testing.T, engine http.Handler, email string) string {
+	t.Helper()
+	w := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email})
+	if w.Code != http.StatusOK {
+		t.Fatalf("send code for %q = %d %s", email, w.Code, w.Body.String())
+	}
+	return developmentCode(t, w.Body.Bytes())
+}
+
+type verifyEmailResponse struct {
+	Data struct {
+		IsNewUser bool `json:"isNewUser"`
+		User      struct {
+			ID       string `json:"id"`
+			Email    string `json:"email"`
+			Username string `json:"username"`
+		} `json:"user"`
+	} `json:"data"`
+}
+
+func decodeVerifyEmailResponse(t *testing.T, body []byte) verifyEmailResponse {
+	t.Helper()
+	var response verifyEmailResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode verify response: %v body=%s", err, body)
+	}
+	return response
+}
+
+func TestUnifiedEmailAuthenticationCreatesThenLogsIn(t *testing.T) {
 	st := testdb.Setup(t)
 	s := newUserLoginTestServer(st)
 	engine := s.Router()
-	email := "verified.user@gmail.com"
+	firstAlias := "first.user+campaign@googlemail.com"
+	code := requestDevelopmentCode(t, engine, firstAlias)
 
-	sent := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email, "purpose": "register"})
-	if sent.Code != http.StatusOK {
-		t.Fatalf("send register code = %d %s", sent.Code, sent.Body.String())
+	wrong := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": firstAlias, "code": "000000"})
+	if wrong.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong code = %d %s", wrong.Code, wrong.Body.String())
 	}
-	registered := authRequest(t, engine, http.MethodPost, "/api/auth/register", gin.H{
-		"email": email, "username": "Verified User", "code": developmentCode(t, sent.Body.Bytes()),
-	})
-	if registered.Code != http.StatusOK || len(registered.Result().Cookies()) == 0 {
-		t.Fatalf("register = %d %s", registered.Code, registered.Body.String())
+	created := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": firstAlias, "code": code})
+	if created.Code != http.StatusOK || len(created.Result().Cookies()) == 0 {
+		t.Fatalf("first verify = %d %s", created.Code, created.Body.String())
 	}
-	if duplicate := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email, "purpose": "register"}); duplicate.Code != http.StatusConflict {
-		t.Fatalf("duplicate register code = %d %s", duplicate.Code, duplicate.Body.String())
+	createdBody := decodeVerifyEmailResponse(t, created.Body.Bytes())
+	if !createdBody.Data.IsNewUser || createdBody.Data.User.Email != "firstuser@gmail.com" || !strings.HasPrefix(createdBody.Data.User.Username, "星空用户 ") {
+		t.Fatalf("unexpected first user response: %s", created.Body.String())
 	}
-	loginCodeResponse := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email, "purpose": "login"})
-	if loginCodeResponse.Code != http.StatusOK {
-		t.Fatalf("send login code = %d %s", loginCodeResponse.Code, loginCodeResponse.Body.String())
+
+	user, err := store.GetUserByEmail(context.Background(), st.Pool, "firstuser@gmail.com")
+	if err != nil || user == nil {
+		t.Fatalf("canonical user missing: user=%v err=%v", user, err)
 	}
-	loginCode := developmentCode(t, loginCodeResponse.Body.Bytes())
-	if wrong := authRequest(t, engine, http.MethodPost, "/api/auth/login", gin.H{"email": email, "code": "000000"}); wrong.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong login code = %d %s", wrong.Code, wrong.Body.String())
+	wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
+	if err != nil || wallet == nil || wallet.BalanceCents != 100 {
+		t.Fatalf("signup bonus wallet=%v err=%v", wallet, err)
 	}
-	if login := authRequest(t, engine, http.MethodPost, "/api/auth/login", gin.H{"email": email, "code": loginCode}); login.Code != http.StatusOK || len(login.Result().Cookies()) == 0 {
-		t.Fatalf("code login = %d %s", login.Code, login.Body.String())
+
+	returningAlias := "f.i.r.s.t.u.s.e.r+return@gmail.com"
+	returningCode := requestDevelopmentCode(t, engine, returningAlias)
+	returning := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": returningAlias, "code": returningCode})
+	if returning.Code != http.StatusOK {
+		t.Fatalf("returning verify = %d %s", returning.Code, returning.Body.String())
+	}
+	returningBody := decodeVerifyEmailResponse(t, returning.Body.Bytes())
+	if returningBody.Data.IsNewUser || returningBody.Data.User.ID != createdBody.Data.User.ID {
+		t.Fatalf("alias created duplicate user: %s", returning.Body.String())
+	}
+	wallet, err = store.GetWallet(context.Background(), st.Pool, user.ID)
+	if err != nil || wallet.BalanceCents != 100 {
+		t.Fatalf("returning login changed signup bonus: wallet=%v err=%v", wallet, err)
 	}
 }
 
-func TestEmailCodeExpiryPurposeAndAttemptLimit(t *testing.T) {
+func TestUnifiedEmailAuthenticationPreservesCodeWhenRegistrationClosed(t *testing.T) {
 	st := testdb.Setup(t)
 	s := newUserLoginTestServer(st)
+	engine := s.Router()
 	ctx := context.Background()
-	email := "attempts@googlemail.com"
-	if err := store.UpsertEmailLoginCode(ctx, st.Pool, email, "register", s.loginCodeHash(email, "register", "123456"), time.Now().Add(-time.Minute), nil); err != nil {
+	if err := settings.Set(ctx, st.Pool, "registration_enabled", json.RawMessage(`false`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.consumeEmailCode(ctx, email, "register", "123456"); err == nil {
-		t.Fatal("expired code accepted")
+	email := "closed.registration@qq.com"
+	code := requestDevelopmentCode(t, engine, email)
+
+	closed := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": email, "code": code})
+	if closed.Code != http.StatusForbidden {
+		t.Fatalf("closed registration = %d %s", closed.Code, closed.Body.String())
 	}
-	if err := store.UpsertEmailLoginCode(ctx, st.Pool, email, "register", s.loginCodeHash(email, "register", "123456"), time.Now().Add(time.Minute), nil); err != nil {
+	if err := settings.Set(ctx, st.Pool, "registration_enabled", json.RawMessage(`true`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.consumeEmailCode(ctx, email, "login", "123456"); err == nil {
-		t.Fatal("cross-purpose code accepted")
-	}
-	for i := 0; i < 4; i++ {
-		if err := s.consumeEmailCode(ctx, email, "register", "654321"); err == nil {
-			t.Fatalf("wrong attempt %d accepted", i+1)
-		}
-	}
-	if err := s.consumeEmailCode(ctx, email, "register", "123456"); err == nil {
-		t.Fatal("locked code accepted")
+	retry := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": email, "code": code})
+	if retry.Code != http.StatusOK {
+		t.Fatalf("code was consumed by rolled back registration = %d %s", retry.Code, retry.Body.String())
 	}
 }
 
-func TestEmailDomainRestrictionAndOAuthRemoval(t *testing.T) {
+func TestNormalizeLoginEmail(t *testing.T) {
+	tests := map[string]string{
+		" First.User+tag@GoogleMail.com ": "firstuser@gmail.com",
+		"first.user@gmail.com":            "firstuser@gmail.com",
+		"123456@qq.com":                   "123456@qq.com",
+	}
+	for input, expected := range tests {
+		actual, ok := normalizeLoginEmail(input)
+		if !ok || actual != expected {
+			t.Fatalf("normalize %q = %q, %v; want %q", input, actual, ok, expected)
+		}
+	}
+	for _, input := range []string{"user@outlook.com", "user@example.com", "user@qq.com.evil.test", "@gmail.com"} {
+		if actual, ok := normalizeLoginEmail(input); ok {
+			t.Fatalf("unsupported email %q normalized to %q", input, actual)
+		}
+	}
+}
+
+func TestRemovedUserAuthRoutesAndProviders(t *testing.T) {
 	s := newUserLoginTestServer(nil)
 	engine := s.Router()
-	for _, email := range []string{"user@outlook.com", "user@example.com", "user@qq.com.evil.test"} {
-		w := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email, "purpose": "register"})
-		if w.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("unsupported email %q = %d %s", email, w.Code, w.Body.String())
-		}
-	}
-	if w := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": "user@gmail.com", "purpose": "reset"}); w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("removed reset purpose = %d %s", w.Code, w.Body.String())
-	}
-	for _, path := range []string{"/api/auth/oauth/google", "/api/auth/oauth/github", "/api/auth/oauth/github/callback", "/api/auth/password/reset"} {
+	for _, path := range []string{
+		"/api/auth/register", "/api/auth/login", "/api/auth/password/reset",
+		"/api/auth/oauth/google", "/api/auth/oauth/github", "/api/auth/oauth/github/callback",
+	} {
 		if w := authRequest(t, engine, http.MethodGet, path, nil); w.Code != http.StatusNotFound {
 			t.Fatalf("removed auth route %s = %d %s", path, w.Code, w.Body.String())
 		}

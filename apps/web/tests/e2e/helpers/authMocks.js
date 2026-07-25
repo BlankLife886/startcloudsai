@@ -17,8 +17,7 @@ export async function mockBootstrapConfig(page) {
           '/search': { enabled: true },
           '/settings': { enabled: true },
           '/profile': { enabled: true },
-          '/auth/login': { enabled: true },
-          '/auth/register': { enabled: true },
+          '/auth': { enabled: true },
           '/access-limited': { enabled: true },
         },
         features: {

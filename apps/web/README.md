@@ -41,7 +41,7 @@ npm run test:coloring-upload-compression
 | `/profile` | 我的作品、投稿、钱包/兑换码、通知，以及头像、个人资料和密码安全设置 |
 | `/app-space` | 应用空间 |
 | `/updates` | 更新说明 |
-| `/auth` | 登录/注册：仅支持 Gmail、Googlemail、QQ 邮箱验证码 |
+| `/auth` | 邮箱验证：已有用户登录，首次邮箱自动创建账号 |
 | `/access-limited` | 访问受限状态页 |
 
 `/ai-wallpaper` 是兼容旧链接的重定向，不是独立页面。
@@ -79,7 +79,7 @@ docker run --rm -p 8080:80 starcloudsai-web
 
 单独运行该容器只能浏览静态页面，`/api` 应由根目录 `gateway` 或等效反向代理提供。完整部署请在仓库根目录运行 `docker compose up -d --build`。
 
-用户端仅支持 `gmail.com`、`googlemail.com`、`qq.com` 邮箱验证码注册和登录。验证码分别绑定 `register|login` 用途，不能跨流程使用；不提供用户密码或第三方 OAuth 登录。文生图画布底部胶片条、历史瀑布流和个人中心列表只加载 `thumbnailUrls`；主画布与主动打开的放大预览会先显示缩略图，再按需加载 `originalUrls`，下载与后续编辑也使用原图。
+用户端仅保留一个 `gmail.com`、`googlemail.com`、`qq.com` 邮箱验证码入口。已有用户验证后直接登录，首次邮箱自动创建账号并显示可跳过的资料完善弹窗；不提供用户密码或第三方 OAuth 登录。文生图画布底部胶片条、历史瀑布流和个人中心列表只加载 `thumbnailUrls`；主画布与主动打开的放大预览会先显示缩略图，再按需加载 `originalUrls`，下载与后续编辑也使用原图。
 
 个人中心素材库支持用户上传 PNG/JPEG/WebP。上传时服务端同步生成 512px 缩略图；列表仅请求缩略图，点击预览后才读取原图。前端限制单张 10MB、单次最多 6 张，后端限制每账号最多 200 项。
 

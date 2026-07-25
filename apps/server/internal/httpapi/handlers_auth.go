@@ -66,114 +66,20 @@ func (s *Server) createSession(c *gin.Context, q store.Q, userID uuid.UUID) (str
 	return token, nil
 }
 
-type registerIn struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	Code     string `json:"code"`
-}
-
-func (s *Server) register(c *gin.Context) {
-	var body registerIn
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	email := strings.ToLower(strings.TrimSpace(body.Email))
-	username := strings.TrimSpace(body.Username)
-	code := strings.TrimSpace(body.Code)
-	if !validEmail(email) || !supportedLoginEmail(email) {
-		fail(c, apperr.E("validation_error", "仅支持 Gmail、Googlemail 和 QQ 邮箱", 422))
-		return
-	}
-	if username == "" || len([]rune(username)) > 64 {
-		fail(c, apperr.E("validation_error", "username: 长度须在 1-64 之间", 422))
-		return
-	}
-	if len(code) != 6 {
-		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
-		return
-	}
-	ctx := c.Request.Context()
-	enabled, err := settings.GetBool(ctx, s.St.Pool, "registration_enabled")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if !enabled {
-		fail(c, apperr.E("registration_closed", "当前未开放注册", 403))
-		return
-	}
-	existing, err := store.GetUserByEmail(ctx, s.St.Pool, email)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if existing != nil {
-		fail(c, apperr.E("email_exists", "该邮箱已注册，请直接登录", 409))
-		return
-	}
-	if err = s.consumeEmailCode(ctx, email, "register", code); err != nil {
-		fail(c, err)
-		return
-	}
-	// 用户端采用邮箱验证码认证；保留不可知的随机密码哈希只是为了兼容旧表结构。
-	passwordHash, err := auth.HashPassword(auth.NewSessionToken())
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var user *store.User
-	var token string
-	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		now := time.Now().UTC()
-		var txErr error
-		user, txErr = store.InsertUser(ctx, tx, email, username, passwordHash, "user", &now)
-		if txErr != nil {
-			return txErr
-		}
-		if txErr = store.InsertWallet(ctx, tx, user.ID); txErr != nil {
-			return txErr
-		}
-		bonus, txErr := settings.GetInt(ctx, tx, "signup_bonus_cents")
-		if txErr != nil {
-			return txErr
-		}
-		if bonus > 0 {
-			reason := "邮箱验证注册赠送"
-			if _, txErr = wallet.Grant(ctx, tx, user.ID, bonus, "grant", "signup_bonus", user.ID.String(), &reason); txErr != nil {
-				return txErr
-			}
-		}
-		token, txErr = s.createSession(c, tx, user.ID)
-		return txErr
-	})
-	if err != nil {
-		if store.IsUniqueViolation(err, "") {
-			fail(c, apperr.E("email_exists", "该邮箱已注册，请直接登录", 409))
-			return
-		}
-		fail(c, err)
-		return
-	}
-	s.setSessionCookie(c, token)
-	s.LoginLimiter.SuccessAttempt(email, c.ClientIP())
-	ok(c, gin.H{"user": userDict(user)})
-}
-
-type loginIn struct {
+type verifyEmailIn struct {
 	Email string `json:"email"`
 	Code  string `json:"code"`
 }
 
-func (s *Server) login(c *gin.Context) {
-	var body loginIn
+func (s *Server) verifyEmailCode(c *gin.Context) {
+	var body verifyEmailIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(body.Email))
+	email, emailOK := normalizeLoginEmail(body.Email)
 	code := strings.TrimSpace(body.Code)
-	if !validEmail(email) || !supportedLoginEmail(email) {
+	if !emailOK {
 		fail(c, apperr.E("validation_error", "仅支持 Gmail、Googlemail 和 QQ 邮箱", 422))
 		return
 	}
@@ -187,29 +93,57 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	user, err := store.GetUserByEmail(ctx, s.St.Pool, email)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if user == nil || user.Role != "user" {
-		fail(c, apperr.E("registration_required", "该邮箱尚未注册", 404))
-		return
-	}
-	if user.Status != "active" {
-		fail(c, apperr.E("invalid_credentials", "账号已被禁用", 403))
-		return
-	}
-	if err = s.consumeEmailCode(ctx, email, "login", code); err != nil {
-		fail(c, err)
-		return
-	}
+	var user *store.User
 	var token string
-	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if txErr := store.TouchLastLogin(ctx, tx, user.ID, time.Now().UTC()); txErr != nil {
+	created := false
+	codeState := emailCodeValid
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		codeState, txErr = s.consumeEmailCodeTx(ctx, tx, email, code)
+		if txErr != nil || codeState != emailCodeValid {
 			return txErr
 		}
-		var txErr error
+		user, txErr = store.GetUserByEmail(ctx, tx, email)
+		if txErr != nil {
+			return txErr
+		}
+		now := time.Now().UTC()
+		if user == nil {
+			enabled, settingErr := settings.GetBool(ctx, tx, "registration_enabled")
+			if settingErr != nil {
+				return settingErr
+			}
+			if !enabled {
+				return apperr.E("registration_closed", "当前未开放新用户注册", 403)
+			}
+			passwordHash, hashErr := auth.HashPassword(auth.NewSessionToken())
+			if hashErr != nil {
+				return hashErr
+			}
+			user, txErr = store.InsertUser(ctx, tx, email, randomProfileName(), passwordHash, "user", &now)
+			if txErr != nil {
+				return txErr
+			}
+			if txErr = store.InsertWallet(ctx, tx, user.ID); txErr != nil {
+				return txErr
+			}
+			bonus, bonusErr := settings.GetInt(ctx, tx, "signup_bonus_cents")
+			if bonusErr != nil {
+				return bonusErr
+			}
+			if bonus > 0 {
+				reason := "邮箱验证注册赠送"
+				if _, txErr = wallet.Grant(ctx, tx, user.ID, bonus, "grant", "signup_bonus", user.ID.String(), &reason); txErr != nil {
+					return txErr
+				}
+			}
+			created = true
+		} else if user.Role != "user" || user.Status != "active" {
+			return apperr.E("invalid_credentials", "账号已被禁用", 403)
+		}
+		if txErr = store.TouchLastLogin(ctx, tx, user.ID, now); txErr != nil {
+			return txErr
+		}
 		token, txErr = s.createSession(c, tx, user.ID)
 		return txErr
 	})
@@ -217,9 +151,17 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if codeState == emailCodeLocked {
+		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
+		return
+	}
+	if codeState != emailCodeValid {
+		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
+		return
+	}
 	s.LoginLimiter.SuccessAttempt(email, clientIP)
 	s.setSessionCookie(c, token)
-	ok(c, gin.H{"user": userDict(user)})
+	ok(c, gin.H{"user": userDict(user), "isNewUser": created})
 }
 
 func (s *Server) logout(c *gin.Context) {

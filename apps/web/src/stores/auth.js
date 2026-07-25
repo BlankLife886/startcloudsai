@@ -2,9 +2,8 @@ import {
   clearAuthSession,
   fetchCurrentAccount,
   getAuthSession,
-  loginAccount,
   logoutAccount,
-  registerAccount,
+  verifyEmailAccount,
 } from '@/services/auth'
 import storageService from '@/services/storage'
 import { defineStore } from 'pinia'
@@ -15,6 +14,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref(session.value?.user || null)
   const isLoading = ref(false)
   const error = ref('')
+  const showProfileOnboarding = ref(false)
   let initPromise = null
   let lastAuthCheckedAt = 0
   const AUTH_SESSION_RECHECK_MS = 5 * 60 * 1000
@@ -40,6 +40,7 @@ export const useAuthStore = defineStore('auth', () => {
     clearAuthSession()
     applyUser(null)
     error.value = ''
+    showProfileOnboarding.value = false
   }
 
   async function initAuth(options = {}) {
@@ -75,39 +76,28 @@ export const useAuthStore = defineStore('auth', () => {
     return initPromise
   }
 
-  async function loginWithEmailCode(credentials) {
+  async function authenticateWithEmailCode(credentials) {
     isLoading.value = true
     error.value = ''
     try {
-      const result = await loginAccount({
+      const result = await verifyEmailAccount({
         email: credentials.email,
         code: credentials.code,
       })
       applyUser(result.user)
+      showProfileOnboarding.value = result.isNewUser === true
       lastAuthCheckedAt = Date.now()
       return result
     } catch (err) {
-      error.value = err?.message || '登录失败'
+      error.value = err?.message || '验证失败'
       throw err
     } finally {
       isLoading.value = false
     }
   }
 
-  async function registerWithEmail(credentials) {
-    isLoading.value = true
-    error.value = ''
-    try {
-      const result = await registerAccount(credentials)
-      applyUser(result.user)
-      lastAuthCheckedAt = Date.now()
-      return result
-    } catch (err) {
-      error.value = err?.message || '注册失败'
-      throw err
-    } finally {
-      isLoading.value = false
-    }
+  function dismissProfileOnboarding() {
+    showProfileOnboarding.value = false
   }
 
   async function logout() {
@@ -142,12 +132,13 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     isLoading,
     error,
+    showProfileOnboarding,
     isAuthenticated,
     displayName,
     resetAuthState,
     initAuth,
-    loginWithEmailCode,
-    registerWithEmail,
+    authenticateWithEmailCode,
+    dismissProfileOnboarding,
     logout,
     patchUser,
   }

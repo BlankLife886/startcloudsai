@@ -42,39 +42,24 @@ export async function fetchAuthProviders() {
   return apiGet('/auth/providers', { fallbackMessage: '登录方式读取失败' })
 }
 
-export async function requestEmailAuthCode(email, purpose) {
+export async function requestEmailAuthCode(email) {
   return apiPost(
     '/auth/email/code',
     {
       email: String(email || '').trim(),
-      purpose: purpose === 'login' ? 'login' : 'register',
     },
     { fallbackMessage: '验证码发送失败' },
   )
 }
 
-export async function registerAccount({ username, email, code }) {
+export async function verifyEmailAccount({ email, code }) {
   const data = await apiPost(
-    '/auth/register',
-    {
-      username: String(username || '').trim(),
-      email: String(email || '').trim(),
-      code: String(code || '').trim(),
-    },
-    { fallbackMessage: '注册失败' },
-  )
-  if (data?.user?.id) setAuthSession({ user: data.user })
-  return data
-}
-
-export async function loginAccount({ email, code }) {
-  const data = await apiPost(
-    '/auth/login',
+    '/auth/email/verify',
     {
       email: String(email || '').trim(),
       code: String(code || '').trim(),
     },
-    { fallbackMessage: '登录失败' },
+    { fallbackMessage: '验证失败' },
   )
   if (data?.user?.id) setAuthSession({ user: data.user })
   return data

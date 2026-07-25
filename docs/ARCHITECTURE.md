@@ -39,7 +39,7 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 
 ## 请求与鉴权
 
-1. 用户仅可使用 Gmail、Googlemail、QQ 邮箱验证码注册和登录。验证码 HMAC 按 `register|login` 用途保存且只能消费一次；成功后创建 `sessions` 与 HttpOnly Cookie `sc_session`，会话为 30 天滑动续期。
+1. 用户仅可使用 Gmail、Googlemail、QQ 邮箱验证码认证。验证码 HMAC 只能消费一次；验证、首次建号、钱包、初始积分与 session 在同一事务内完成，已有用户直接创建 session。Gmail 点号、加号标签和 Googlemail 地址先统一规范化。成功后写入 HttpOnly Cookie `sc_session`，会话为 30 天滑动续期。
 2. 管理员登录只使用邮箱和密码，查询独立的 `admin_accounts`、`admin_sessions`，并设置 HttpOnly Cookie `sc_admin_session`；会话为 12 小时滑动续期。管理员密钥及其接口已移除。
 3. 两种 session token 都只以 SHA-256 hash 入库，用户与管理员密码分别使用 bcrypt 保存。管理员与用户允许使用同一邮箱，但身份、密码、状态和会话完全独立；任一种 Cookie 都不能通过另一侧鉴权。
 4. `POST`、`PUT`、`PATCH`、`DELETE` 如果携带 `Origin`，必须命中 `ALLOWED_ORIGINS`。无 Origin 的非浏览器客户端允许访问。

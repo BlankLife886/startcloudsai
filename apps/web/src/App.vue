@@ -12,6 +12,7 @@ import { RouterView, useRoute } from 'vue-router'
 import { navigationTarget } from './router'
 import NotificationContainer from './components/common/NotificationContainer.vue'
 import ClientLocaleBridge from './components/common/ClientLocaleBridge.vue'
+import ProfileOnboardingDialog from './components/auth/ProfileOnboardingDialog.vue'
 import FooterComponent from './components/layout/FooterComponent.vue'
 import NavBar from './components/layout/NavBar.vue'
 import { useAuthStore } from './stores/auth'
@@ -257,6 +258,7 @@ function scrollToTop() {
 
     <!-- 全局通知容器 -->
     <NotificationContainer />
+    <ProfileOnboardingDialog />
     <ClientLocaleBridge />
     <AnnouncementCenter v-if="showAppChrome" />
   </div>

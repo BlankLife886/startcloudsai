@@ -192,7 +192,6 @@ const EN = {
   访问受限: 'Access limited',
   页面未找到: 'Page not found',
   登录账号: 'Sign in',
-  注册账号: 'Create account',
   忘记密码: 'Forgot password',
   邮箱: 'Email',
   密码: 'Password',
@@ -506,12 +505,9 @@ Object.assign(EN, {
   '一键投稿作品到社区画廊，浏览官方精选与分类展墙':
     'Submit to the community gallery and explore curated collections',
   安全登录: 'Secure sign-in',
-  邮箱验证码保护每次注册与登录: 'Email verification codes protect every sign-up and sign-in',
+  邮箱验证码保护每次账号验证: 'Email verification codes protect every account verification',
   'Gmail / QQ 邮箱': 'Gmail / QQ Mail',
   '登录 →': 'Sign in →',
-  '还没有账号？ 立即注册': 'New here? Create an account',
-  '还没有账号？': 'New here?',
-  立即注册: 'Create an account',
 })
 
 // Remaining user-side interface copy found by the cross-page locale audit.
@@ -935,7 +931,6 @@ const TW_PHRASES = {
   登录: '登入',
   注册: '註冊',
   登录账号: '登入帳號',
-  注册账号: '註冊帳號',
   忘记密码: '忘記密碼',
   邮箱: '信箱',
   验证码: '驗證碼',

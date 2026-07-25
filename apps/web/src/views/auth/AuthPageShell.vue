@@ -124,7 +124,7 @@ function authModeQuery(mode) {
             ></span>
             <div class="auth-hero-feature__body">
               <strong>安全登录</strong>
-              <p>邮箱验证码保护每次注册与登录</p>
+              <p>邮箱验证码保护每次账号验证</p>
             </div>
           </li>
         </ul>
