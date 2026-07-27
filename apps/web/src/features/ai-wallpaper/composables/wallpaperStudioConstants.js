@@ -55,18 +55,18 @@ export const T2I_QUALITY_OPTIONS = [
 ]
 
 export const T2I_COUNT_OPTIONS = [
-  { value: 1, label: '1' },
-  { value: 2, label: '2' },
-  { value: 3, label: '3' },
-  { value: 4, label: '4' },
+  { value: 1, label: '1张' },
+  { value: 2, label: '2张' },
+  { value: 3, label: '3张' },
+  { value: 4, label: '4张' },
 ]
 
 export const T2I_OUTPUT_FORMAT_OPTIONS = [
   { value: 'auto', label: '自动格式', icon: 'bi-magic' },
-  { value: 'png', label: 'PNG 无损', icon: 'bi-filetype-png' },
-  { value: 'webp', label: 'WebP 无损', icon: 'bi-filetype-webp' },
-  { value: 'jpeg', label: 'JPEG 最高质量', icon: 'bi-filetype-jpg' },
-  { value: 'jpg', label: 'JPG 最高质量', icon: 'bi-filetype-jpg' },
+  { value: 'png', label: 'PNG', icon: 'bi-filetype-png' },
+  { value: 'webp', label: 'WebP', icon: 'bi-file-earmark-image' },
+  { value: 'jpeg', label: 'JPEG', icon: 'bi-filetype-jpg' },
+  { value: 'jpg', label: 'JPG', icon: 'bi-filetype-jpg' },
 ]
 
 export const T2I_PROMPT_LIBRARY = [

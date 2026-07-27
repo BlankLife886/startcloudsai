@@ -51,6 +51,7 @@ export function useCreativeImageJob(options = {}) {
   let cancelRequested = false
   const activeJobIds = new Set()
   const featureKey = String(options.featureKey || 'ai.optimize')
+  const preferOriginalOutputs = options.preferOriginalOutputs === true
   const creditsPrompt = useInsufficientCreditsPrompt()
   // 服务端任务单价（分/张），null 表示读取失败（提交按钮附近显示「以服务端结算为准」）
   const unitPriceCents = ref(null)
@@ -100,6 +101,33 @@ export function useCreativeImageJob(options = {}) {
   function buildJobKind(variant, mode) {
     const suffix = String(variant || '').trim()
     return suffix ? `${jobKindPrefix}-${suffix}-${mode}` : `${jobKindPrefix}-${mode}`
+  }
+
+  function resolveJobOutputUrls(job = {}, result = null) {
+    const originals = [
+      ...(Array.isArray(job?.originalMediaUrls) ? job.originalMediaUrls : []),
+      ...(Array.isArray(job?.originalResultMediaUrls) ? job.originalResultMediaUrls : []),
+      job?.originalMediaUrl,
+      job?.originalResultMediaUrl,
+    ]
+    const extracted = result ? extractServerJobOutputs(result) : []
+    if (preferOriginalOutputs) {
+      const originalCandidates = [...originals, ...extracted]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+      if (originalCandidates.length) return Array.from(new Set(originalCandidates))
+    }
+    return Array.from(
+      new Set(
+        [
+          ...(Array.isArray(job?.resultMediaUrls) ? job.resultMediaUrls : []),
+          job?.resultMediaUrl,
+          ...extracted,
+        ]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean),
+      ),
+    )
   }
 
   // 历史查询覆盖的 kind 全集：各子类型 + 未带子类型的早期任务。
@@ -235,6 +263,8 @@ export function useCreativeImageJob(options = {}) {
       outputSize,
       count,
       transparentPngEnabled: input.transparentPngEnabled === true,
+      upscaleOutputFormat:
+        input.transparentPngEnabled === true ? 'png' : String(input.upscaleOutputFormat || 'auto'),
       ...(input.quality ? { quality: String(input.quality) } : {}),
       viewId: String(input.viewId || ''),
       viewLabel: String(input.viewLabel || ''),
@@ -274,14 +304,7 @@ export function useCreativeImageJob(options = {}) {
     } finally {
       activeJobIds.delete(jobId)
     }
-    const nextOutputs = Array.from(
-      new Set(
-        [
-          String(completed.job?.resultMediaUrl || '').trim(),
-          ...extractServerJobOutputs(completed.result),
-        ].filter(Boolean),
-      ),
-    )
+    const nextOutputs = resolveJobOutputUrls(completed.job, completed.result)
     if (!nextOutputs.length) throw new Error('任务已完成，但没有返回可用图片')
     rememberOutputKind(nextOutputs, jobKind)
     return { jobId, outputs: nextOutputs }
@@ -559,14 +582,7 @@ export function useCreativeImageJob(options = {}) {
                 status.value = message
               },
             })
-            const urls = Array.from(
-              new Set(
-                [
-                  String(completed.job?.resultMediaUrl || '').trim(),
-                  ...extractServerJobOutputs(completed.result),
-                ].filter(Boolean),
-              ),
-            )
+            const urls = resolveJobOutputUrls(completed.job, completed.result)
             if (urls.length) {
               prependOutputs(urls, jobId, outputGroups.value[urls[0]] || jobId)
               recovered.push(...urls)
@@ -600,12 +616,7 @@ export function useCreativeImageJob(options = {}) {
     for (const job of sorted) {
       const jobStatus = String(job?.status || '').toLowerCase()
       if (!['completed', 'done'].includes(jobStatus)) continue
-      const urls = [
-        ...(Array.isArray(job?.resultMediaUrls) ? job.resultMediaUrls : []),
-        job?.resultMediaUrl,
-      ]
-        .map((item) => String(item || '').trim())
-        .filter(Boolean)
+      const urls = resolveJobOutputUrls(job)
       rememberOutputJob(urls, String(job?.id || ''))
       rememberOutputKind(urls, String(job?.kind || ''))
       // 已有本地分组（同一次批量）优先；否则按任务分组（count>1 的多图归一组）。

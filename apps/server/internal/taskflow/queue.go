@@ -118,4 +118,26 @@ func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID stri
 func (q *Queue) CancelAssistantRun(runID string) {
 	_ = q.inspector.CancelProcessing(runID)
 	_ = q.inspector.DeleteTask("default", runID)
+	// 恢复任务使用唯一的 Asynq TaskID（runID:recover:*）。按载荷补充查找，
+	// 否则 Worker 重启后的图片请求只能改数据库状态，无法立刻取消上下文。
+	for _, list := range []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
+		q.inspector.ListActiveTasks,
+		q.inspector.ListPendingTasks,
+	} {
+		tasks, err := list("default", asynq.PageSize(100))
+		if err != nil {
+			continue
+		}
+		for _, task := range tasks {
+			if task == nil || task.Type != TypeRunAssistant || task.ID == runID {
+				continue
+			}
+			var payload RunAssistantPayload
+			if json.Unmarshal(task.Payload, &payload) != nil || payload.RunID != runID {
+				continue
+			}
+			_ = q.inspector.CancelProcessing(task.ID)
+			_ = q.inspector.DeleteTask(task.Queue, task.ID)
+		}
+	}
 }

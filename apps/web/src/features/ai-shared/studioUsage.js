@@ -56,7 +56,9 @@ export function studioFeatureLabel(featureKey = '') {
 }
 
 export function inferStudioFeatureFromUsageRow(row = {}) {
-  const resourceType = String(row.resourceType || row.resource_type || '').trim().toLowerCase()
+  const resourceType = String(row.resourceType || row.resource_type || '')
+    .trim()
+    .toLowerCase()
   if (resourceType.includes('wallpaper')) return 'ai.wallpaperGeneration'
   if (resourceType.includes('ui-design')) return 'ai.uiDesign'
   if (resourceType.includes('ultra-reference')) return 'ai.ultraModelSheet'
@@ -75,7 +77,8 @@ export function inferStudioFeatureFromUsageRow(row = {}) {
 }
 
 export function buildLocalStudioUsageRows(ledger = {}) {
-  const byFeature = ledger?.byFeature && typeof ledger.byFeature === 'object' ? ledger.byFeature : {}
+  const byFeature =
+    ledger?.byFeature && typeof ledger.byFeature === 'object' ? ledger.byFeature : {}
   return Object.entries(byFeature)
     .map(([featureKey, bucket]) => {
       const month = bucket?.byMonth || {}
@@ -113,19 +116,42 @@ export function summarizeStudioCreditSpendFromLedger(ledgerRows = [], referenceD
   return { dayCost, monthCost }
 }
 
-export async function fetchStudioCreditAccountSnapshot() {
-  const { getWallet } = await import('@/services/meApi')
-  const wallet = await getWallet()
-  const creditAvailable = Math.max(
-    0,
-    (Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0)) / 100,
-  )
-  return {
-    creditAvailable,
-    dayCost: 0,
-    monthCost: 0,
-    usageSource: 'server',
+// 钱包快照带 15s 缓存与并发去重：提交前的余额预检不再每次点击都阻塞一个网络往返。
+// 服务端仍是余额的最终权威（insufficient_balance），缓存只影响预检与弹窗展示。
+const CREDIT_SNAPSHOT_TTL_MS = 15000
+let creditSnapshotCache = null
+let creditSnapshotInflight = null
+
+export function invalidateStudioCreditSnapshot() {
+  creditSnapshotCache = null
+}
+
+export async function fetchStudioCreditAccountSnapshot({ maxAgeMs = CREDIT_SNAPSHOT_TTL_MS } = {}) {
+  if (creditSnapshotCache && Date.now() - creditSnapshotCache.at <= maxAgeMs) {
+    return creditSnapshotCache.data
   }
+  if (creditSnapshotInflight) return creditSnapshotInflight
+  creditSnapshotInflight = (async () => {
+    try {
+      const { getWallet } = await import('@/services/meApi')
+      const wallet = await getWallet()
+      const creditAvailable = Math.max(
+        0,
+        (Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0)) / 100,
+      )
+      const data = {
+        creditAvailable,
+        dayCost: 0,
+        monthCost: 0,
+        usageSource: 'server',
+      }
+      creditSnapshotCache = { at: Date.now(), data }
+      return data
+    } finally {
+      creditSnapshotInflight = null
+    }
+  })()
+  return creditSnapshotInflight
 }
 
 /**
@@ -136,8 +162,15 @@ export async function fetchStudioCreditAccountSnapshot() {
  */
 export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
   let enriched = { ...snapshot }
-  try {
-    const unitPriceCents = await getFeatureUnitPriceCents(snapshot?.featureKey)
+  const [pricingResult, accountResult] = await Promise.allSettled([
+    getFeatureUnitPriceCents(snapshot?.featureKey),
+    snapshot?.billingMode === 'credits'
+      ? fetchStudioCreditAccountSnapshot()
+      : Promise.resolve(null),
+  ])
+
+  if (pricingResult.status === 'fulfilled') {
+    const unitPriceCents = pricingResult.value
     if (unitPriceCents != null) {
       const count = Math.max(1, Number(snapshot?.count || 1))
       enriched.unitPriceCents = unitPriceCents
@@ -145,12 +178,13 @@ export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
     } else {
       enriched.serverPricingUnavailable = true
     }
-  } catch {
+  } else {
     enriched.serverPricingUnavailable = true
   }
+
   if (snapshot?.billingMode !== 'credits') return enriched
-  try {
-    const server = await fetchStudioCreditAccountSnapshot()
+  if (accountResult.status === 'fulfilled' && accountResult.value) {
+    const server = accountResult.value
     return {
       ...enriched,
       creditAvailable: server.creditAvailable,
@@ -158,7 +192,6 @@ export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
       monthCost: server.monthCost,
       usageSource: server.usageSource,
     }
-  } catch {
-    return enriched
   }
+  return enriched
 }

@@ -26,6 +26,14 @@ import (
 // promptCoverMaxBytes 提示词封面上限 8MB，与后台选择器保持一致。
 const promptCoverMaxBytes = 8 * 1024 * 1024
 
+var promptDayLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func promptTodayRange(now time.Time) (time.Time, time.Time) {
+	local := now.In(promptDayLocation)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, promptDayLocation)
+	return start.UTC(), start.AddDate(0, 0, 1).UTC()
+}
+
 // ---------- 提示词库（公开） ----------
 
 func (s *Server) publicPrompts(c *gin.Context) {
@@ -39,23 +47,40 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的提示词排序", 422))
 		return
 	}
+	scope := c.Query("scope")
+	if scope != "" && scope != "favorites" && scope != "today" {
+		fail(c, apperr.E("validation_error", "无效的提示词范围", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	user, err := s.currentUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), Order: order, ActiveOnly: true}
+	if scope == "favorites" {
+		if user == nil {
+			fail(c, apperr.E("auth_required", "请先登录后查看收藏", 401))
+			return
+		}
+		filter.FavoritedBy = user.ID
+	}
+	if scope == "today" {
+		from, before := promptTodayRange(time.Now())
+		filter.CreatedFrom = &from
+		filter.CreatedBefore = &before
+	}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	user, err := s.currentUser(c)
 	if err != nil {
 		fail(c, err)
 		return

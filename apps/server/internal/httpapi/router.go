@@ -129,8 +129,9 @@ func (s *Server) Router() *gin.Engine {
 
 	// assistant workspace (Sub2API server-side bridge)
 	api.GET("/assistant/config", s.assistantConfig)
-	api.POST("/assistant/chat", s.assistantChat)
-	api.POST("/assistant/images", s.assistantImages)
+	// 遗留直连端点已下线：免费且无限额,前端零引用（生图/对话统一走 /assistant/runs）
+	// api.POST("/assistant/chat", s.assistantChat)
+	// api.POST("/assistant/images", s.assistantImages)
 	api.GET("/assistant/conversations", s.assistantConversations)
 	api.POST("/assistant/conversations", s.createAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
@@ -139,6 +140,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/runs", s.assistantRuns)
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
+	api.GET("/assistant/runs/:id/stream", s.assistantRunStream)
 	api.POST("/assistant/runs/:id/cancel", s.cancelAssistantRun)
 
 	// me

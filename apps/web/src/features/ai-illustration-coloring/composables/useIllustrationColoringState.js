@@ -72,7 +72,7 @@ import {
 import { submitShareItem } from '@/services/shareGallery'
 
 const SERVER_JOB_POLL_INTERVAL_MS = COLORING_JOB_POLL_INTERVAL_MS
-const MAX_REFERENCE_IMAGES = 4
+const MAX_REFERENCE_IMAGES = 3 // 服务端 inputKeys 上限 4 张,线稿占 1,参考图最多 3
 const notifiedTerminalJobs = new Set()
 
 function sanitizeColoringHistoryError(item) {

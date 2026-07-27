@@ -1,0 +1,77 @@
+.preview-info-panel .preview-info-tag {
+  font-size: 0.76rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
+  font-weight: 400;
+}
+
+.preview-info-panel .preview-info-tag-clickable {
+  cursor: pointer;
+}
+
+.preview-info-panel .preview-info-tag-clickable:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.preview-info-panel .tag-general {
+  background: rgba(91, 140, 255, 0.15);
+  color: #dbe6ff;
+}
+
+.preview-info-panel .tag-anime {
+  background: rgba(140, 108, 255, 0.15);
+  color: #efe6ff;
+}
+
+.preview-info-panel .tag-people {
+  background: rgba(208, 107, 107, 0.15);
+  color: #ffe3e3;
+}
+
+.preview-info-panel .tag-photography {
+  background: rgba(47, 143, 131, 0.15);
+  color: #d9f4ef;
+}
+
+.preview-info-panel .tag-artists {
+  background: rgba(197, 123, 47, 0.15);
+  color: #ffe8cf;
+}
+
+.preview-info-panel .tag-digital {
+  background: rgba(79, 134, 198, 0.15);
+  color: #dceaff;
+}
+
+.preview-info-panel .tag-clothing {
+  background: rgba(124, 108, 156, 0.15);
+  color: #eee7ff;
+}
+
+.preview-info-panel .tag-colors {
+  background: rgba(77, 179, 111, 0.15);
+  color: #dcffe5;
+}
+
+.preview-info-panel .tag-vehicles {
+  background: rgba(96, 125, 139, 0.15);
+  color: #e2edf3;
+}
+
+.preview-info-panel .tag-animals {
+  background: rgba(156, 123, 80, 0.15);
+  color: #fff0d9;
+}
+
+.preview-info-panel .tag-sketchy {
+  background: rgba(212, 138, 42, 0.15);
+  color: #fff0d8;
+}
+
+.preview-info-panel .tag-other {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}

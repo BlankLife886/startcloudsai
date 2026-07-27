@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -306,6 +305,13 @@ func contains(values []string, value string) bool {
 }
 
 func (c *Client) GenerateImage(ctx context.Context, prompt, size, quality string, count int, referenceImages []string) ([]Image, error) {
+	return c.GenerateImageProgressive(ctx, prompt, size, quality, count, referenceImages, nil)
+}
+
+// GenerateImageProgressive fans out multi-image requests and calls onImage as
+// soon as each indexed result is available. The returned slice remains ordered
+// by requested index for callers that only need the final aggregate.
+func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, quality string, count int, referenceImages []string, onImage func(index int, image Image) error) ([]Image, error) {
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
@@ -313,25 +319,50 @@ func (c *Client) GenerateImage(ctx context.Context, prompt, size, quality string
 		return nil, errors.New("image count must be between 1 and 4")
 	}
 	if count == 1 {
-		return c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+		generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+		if err != nil {
+			return nil, err
+		}
+		if onImage != nil {
+			if err := onImage(0, generated[0]); err != nil {
+				return nil, err
+			}
+		}
+		return generated, nil
 	}
 
+	type result struct {
+		index int
+		image Image
+		err   error
+	}
 	images := make([]Image, count)
-	var wg sync.WaitGroup
 	errorsByIndex := make([]error, count)
+	results := make(chan result, count)
 	for index := 0; index < count; index++ {
-		wg.Add(1)
 		go func(index int) {
-			defer wg.Done()
 			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
 			if err != nil {
-				errorsByIndex[index] = err
+				results <- result{index: index, err: err}
 				return
 			}
-			images[index] = generated[0]
+			results <- result{index: index, image: generated[0]}
 		}(index)
 	}
-	wg.Wait()
+	for completed := 0; completed < count; completed++ {
+		result := <-results
+		if result.err != nil {
+			errorsByIndex[result.index] = result.err
+			continue
+		}
+		if onImage != nil {
+			if err := onImage(result.index, result.image); err != nil {
+				errorsByIndex[result.index] = err
+				continue
+			}
+		}
+		images[result.index] = result.image
+	}
 	completed := images[:0]
 	var firstErr error
 	for index, image := range images {

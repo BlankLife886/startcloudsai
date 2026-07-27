@@ -173,7 +173,7 @@ SMTP_USER=<完整邮箱地址>
 SMTP_PASSWORD=<邮箱客户端专用密码>
 SMTP_FROM=<完整发件邮箱>
 
-WORKER_CONCURRENCY=1
+WORKER_CONCURRENCY=2
 USER_MAX_RUNNING_TASKS=3
 
 GATEWAY_BIND=127.0.0.1
@@ -186,7 +186,7 @@ GATEWAY_PORT=8080
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - R2 未配置时，上传和生成图片无法正常持久化。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
-- 2 GB 服务器建议先使用 `WORKER_CONCURRENCY=1`。
+- 2 核 2 GB 服务器建议使用 `WORKER_CONCURRENCY=2`。生图任务会长时间等待上游，设置为 `1` 会让后续任务全部串行排队；不要在 2 GB 机器上直接提高到 `4` 以上。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
 ### 3.4 配置邮箱验证码

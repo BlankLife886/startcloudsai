@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { useLocaleStore } from '@/stores/locale'
 import { navigationTarget } from '@/router'
+import { setBodyScrollLock } from '@/utils/bodyScrollLock'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,7 +30,7 @@ const siteHeaderEl = ref(null)
 const mobileBottomNavEl = ref(null)
 let headerResizeObserver = null
 let mobileNavMq = null
-let bodyScrollLockY = 0
+const MOBILE_NAV_SCROLL_LOCK = 'mobile-navigation'
 
 const effectiveRoutePath = computed(() => navigationTarget.path || route.path)
 
@@ -434,33 +435,12 @@ function syncMobileNavMode() {
 }
 
 function syncBodyScrollLock() {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return
+  if (typeof document === 'undefined') return
   const locked = isMobileNav.value && Boolean(mobileSheetKind.value)
 
   document.documentElement.classList.toggle('nav-mobile-open', locked)
-
-  if (locked) {
-    bodyScrollLockY = window.scrollY
-    document.body.style.position = 'fixed'
-    document.body.style.top = `-${bodyScrollLockY}px`
-    document.body.style.left = '0'
-    document.body.style.right = '0'
-    document.body.style.width = '100%'
-    document.body.classList.add('nav-mobile-open')
-    return
-  }
-
-  document.body.style.position = ''
-  document.body.style.top = ''
-  document.body.style.left = ''
-  document.body.style.right = ''
-  document.body.style.width = ''
-  document.body.classList.remove('nav-mobile-open')
-
-  if (bodyScrollLockY) {
-    window.scrollTo(0, bodyScrollLockY)
-    bodyScrollLockY = 0
-  }
+  document.body.classList.toggle('nav-mobile-open', locked)
+  setBodyScrollLock(MOBILE_NAV_SCROLL_LOCK, locked, { freezeViewport: true })
 }
 
 function toggleDropdown(name) {
@@ -623,15 +603,7 @@ onBeforeUnmount(() => {
   mobileNavMq = null
   document.documentElement.classList.remove('nav-mobile-open')
   document.body.classList.remove('nav-mobile-open')
-  document.body.style.position = ''
-  document.body.style.top = ''
-  document.body.style.left = ''
-  document.body.style.right = ''
-  document.body.style.width = ''
-  if (bodyScrollLockY) {
-    window.scrollTo(0, bodyScrollLockY)
-    bodyScrollLockY = 0
-  }
+  setBodyScrollLock(MOBILE_NAV_SCROLL_LOCK, false)
   window.removeEventListener('resize', publishHeaderOffset)
   window.removeEventListener('resize', syncMobileNavMode)
   document.removeEventListener('click', handleDocumentClick)

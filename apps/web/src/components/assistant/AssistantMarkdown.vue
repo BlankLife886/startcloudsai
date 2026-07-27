@@ -11,6 +11,9 @@ const props = defineProps({
 const emit = defineEmits(['copied'])
 const markdownRoot = ref(null)
 let copiedTimer = null
+// 逐块显影：v-html 每次更新会整体重建 DOM，CSS 动画会在所有节点上重放。
+// 这里记录“已见块数”，只给严格新增的块打 .md-block-in，旧块与增长中的块保持静止。
+let seenBlockCount = 0
 
 const renderedMarkdown = computed(() =>
   DOMPurify.sanitize(
@@ -28,10 +31,22 @@ function codeLanguage(code) {
   return languageClass ? languageClass.slice(9) : '代码'
 }
 
+function revealNewBlocks(root) {
+  const blocks = [...root.children]
+  if (blocks.length < seenBlockCount) seenBlockCount = 0
+  if (props.streaming) {
+    for (let index = seenBlockCount; index < blocks.length; index += 1) {
+      blocks[index].classList.add('md-block-in')
+    }
+  }
+  seenBlockCount = blocks.length
+}
+
 function decorateMarkdown() {
   nextTick(() => {
     const root = markdownRoot.value
     if (!root) return
+    revealNewBlocks(root)
 
     root.querySelectorAll('a').forEach((link) => {
       link.target = '_blank'
@@ -295,17 +310,41 @@ onBeforeUnmount(() => {
   border-radius: 2px;
   background: var(--assistant-accent);
   vertical-align: -0.12em;
-  animation: markdown-caret 0.9s steps(2, end) infinite;
+  animation: markdown-caret 1.2s ease-in-out infinite;
 }
 
 @keyframes markdown-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
   50% {
-    opacity: 0.2;
+    opacity: 0.25;
+  }
+}
+
+/* 逐块显影：新落地的块上浮淡入一次 */
+.assistant-markdown :deep(.md-block-in) {
+  animation: md-block-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes md-block-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-markdown.is-streaming :deep(> :last-child)::after {
+    animation: none;
+  }
+
+  .assistant-markdown :deep(.md-block-in) {
     animation: none;
   }
 }

@@ -18,6 +18,10 @@ import {
   shouldKeepExistingTaskSnapshot,
 } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
 import { resolveServerJobsPagination } from '@/features/ai-wallpaper/domain/historyPagination'
+import {
+  pickMaskEditUpstreamSize,
+  prepareMaskEditCrop,
+} from '@/features/ai-wallpaper/domain/maskEditCrop'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
 import {
   AI_WALLPAPER_STUDIO_DRAFT_KEY,
@@ -130,7 +134,8 @@ export function useWallpaperTasks(deps = {}) {
   let timer = null
   let persistTasksTimer = null
   let disposed = false
-  let taskMutationVersion = 0
+  // 刷新不再整批丢弃重放,写入版本号退役;各写点直接落地
+  let taskMutationVersion = 0 // eslint-disable-line no-unused-vars
   let refreshJobsPromise = null
   let loadMoreJobsPromise = null
   let refreshRequested = false
@@ -340,7 +345,11 @@ export function useWallpaperTasks(deps = {}) {
       const { next, changed } = reconcileGhostTasks(stableMediaTasks)
       tasks.value = next
       taskMutationVersion += 1
-      if (mediaMigrated || changed || tasks.value.length !== (Array.isArray(raw) ? raw.length : 0)) {
+      if (
+        mediaMigrated ||
+        changed ||
+        tasks.value.length !== (Array.isArray(raw) ? raw.length : 0)
+      ) {
         persistTasks({ immediate: true })
       }
     } catch {
@@ -535,7 +544,7 @@ export function useWallpaperTasks(deps = {}) {
     }
   }
 
-  async function createTask() {
+  async function createTask({ skipClientBudgetCheck = false } = {}) {
     if (!canCreateTask.value) return
     if (autoSaveConfig.value) saveStudioConfig()
     const batchSize =
@@ -568,6 +577,7 @@ export function useWallpaperTasks(deps = {}) {
         runServerTask(task.id, {
           preparedSourceUrls,
           silentNotifications: batchSize > 1,
+          skipClientBudgetCheck,
         }),
       ),
     )
@@ -612,9 +622,13 @@ export function useWallpaperTasks(deps = {}) {
       `local-edit-source-${Date.now()}.${sourceExtension}`,
       { type: sourceBlob.type || 'image/jpeg' },
     )
-    const [uploadedSourceUrl, maskUrl] = await Promise.all([
+    // crop-and-stitch：只把蒙版外扩后的局部裁剪送上游编辑，
+    // 服务端用整图 + 裁剪蒙版把结果羽化贴回，未选区域保持逐像素不变。
+    const { rect, cropFile, cropMaskFile } = await prepareMaskEditCrop({ sourceBlob, maskFile })
+    const [uploadedBaseUrl, uploadedCropUrl, maskUrl] = await Promise.all([
       uploadAiInputFile(sourceFile),
-      uploadAiInputFile(maskFile),
+      uploadAiInputFile(cropFile),
+      uploadAiInputFile(cropMaskFile),
     ])
 
     const task = createTaskRecord({ count: 1 })
@@ -629,7 +643,7 @@ export function useWallpaperTasks(deps = {}) {
       kind: 'wallpaper-image-mask-edit',
       type: 'image',
       sourceMode: 'mask-edit',
-      sourceRemoteUrl: uploadedSourceUrl,
+      sourceRemoteUrl: uploadedCropUrl,
       sourcePreview: normalizedSourceUrl,
       sourceFile: null,
       styleReferenceFiles: [],
@@ -637,9 +651,12 @@ export function useWallpaperTasks(deps = {}) {
       styleReferencePreviews: [],
       sourceLabel: '局部蒙版编辑',
       maskUrl,
+      maskBaseUrl: uploadedBaseUrl,
+      maskRect: `${rect.x},${rect.y},${rect.width},${rect.height}`,
+      maskUpstreamSize: pickMaskEditUpstreamSize(rect),
       maskSourceUrl: normalizedSourceUrl,
       userPrompt: normalizedPrompt,
-      prompt: `${normalizedPrompt}\n\n只修改透明蒙版标记的区域，未被蒙版选中的像素、主体身份、构图、比例和光线必须保持不变。`,
+      prompt: `${normalizedPrompt}\n\n输入图是原作品中截取的局部画面。只按上述要求修改目标内容，其余画面保持与输入图完全一致：相同构图、光线、色彩、材质与纹理，不要改变图像比例。`,
       promptPolishEnabled: false,
       autoTranslateEnabled: false,
       aspectRatio: sourceTask.aspectRatio || task.aspectRatio,
@@ -662,7 +679,7 @@ export function useWallpaperTasks(deps = {}) {
     canvasMode.value = 'result'
     resetCanvasView({ keepFit: true })
     persistTasks({ immediate: true })
-    await runServerTask(task.id, { preparedSourceUrls: [uploadedSourceUrl] })
+    await runServerTask(task.id, { preparedSourceUrls: [uploadedCropUrl] })
     return task
   }
 
@@ -893,7 +910,7 @@ export function useWallpaperTasks(deps = {}) {
 
   async function runServerTask(
     taskId,
-    { preparedSourceUrls = null, silentNotifications = false } = {},
+    { preparedSourceUrls = null, silentNotifications = false, skipClientBudgetCheck = false } = {},
   ) {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return
@@ -909,7 +926,9 @@ export function useWallpaperTasks(deps = {}) {
           task.gatewayModelId ||
           (task.type === 'video' ? videoDispatchModel.value : imageDispatchModel.value),
       ).trim()
-      await ensureWallpaperBudgetAvailable(dispatchModel, Math.max(1, Number(task.count || 1)))
+      if (!skipClientBudgetCheck) {
+        await ensureWallpaperBudgetAvailable(dispatchModel, Math.max(1, Number(task.count || 1)))
+      }
       appendLog(taskId, '正在准备任务参数')
       const resolvedSourceUrls = preparedSourceUrls
         ? await Promise.resolve(preparedSourceUrls)
@@ -950,9 +969,12 @@ export function useWallpaperTasks(deps = {}) {
           sourceUrl,
           sourceUrls,
           maskUrl: task.maskUrl || '',
+          maskBaseUrl: task.maskBaseUrl || '',
+          maskRect: task.maskRect || '',
           aspectRatio: task.aspectRatio,
           outputSize,
-          size: outputSize,
+          // 局部编辑送上游的是裁剪图，生成尺寸按裁剪比例挑选；整图尺寸仅用于展示
+          size: task.maskUpstreamSize || outputSize,
           resolutionScale: task.resolutionScale || '',
           quality,
           count: requestCount,
@@ -977,7 +999,7 @@ export function useWallpaperTasks(deps = {}) {
           publicModelKey: publicModel?.id || '',
           aspectRatio: task.aspectRatio,
           outputSize,
-          size: outputSize,
+          size: task.maskUpstreamSize || outputSize,
           resolutionScale: task.resolutionScale || '',
           quality,
           count: requestCount,
@@ -991,6 +1013,8 @@ export function useWallpaperTasks(deps = {}) {
           sourceUrl,
           sourceUrls,
           maskUrl: task.maskUrl || '',
+          maskBaseUrl: task.maskBaseUrl || '',
+          maskRect: task.maskRect || '',
           userPrompt: task.userPrompt || '',
           promptPolishEnabled: task.promptPolishEnabled === true,
           autoTranslateEnabled: task.autoTranslateEnabled === true,
@@ -1526,27 +1550,28 @@ export function useWallpaperTasks(deps = {}) {
           (left, right) =>
             Date.parse(String(right.createdAt || '')) - Date.parse(String(left.createdAt || '')),
         )
-      const hydrationBaseVersion = taskMutationVersion
-      const hydratedTasks = await Promise.all(
-        mergedTasks.map(async (task) => {
-          const job = task.serverJobId
-            ? remoteJobs.find((item) => item.id === task.serverJobId)
-            : null
-          if (!job) return task
-          try {
-            return await hydrateServerJobTaskOutputs(task, job)
-          } catch {
-            return task
-          }
-        }),
-      )
+      // 毫秒级首渲：合并结果立即上屏,缺失输出的任务在后台逐个补水。
+      // 旧实现等全部 hydrate 的 Promise.all,且轮询一动就整批丢弃重来,
+      // 任务运行期刷新会被饿死。
       if (disposed) return false
-      if (taskMutationVersion !== hydrationBaseVersion) {
-        refreshRequested = true
-        return false
-      }
-      tasks.value = hydratedTasks
+      tasks.value = mergedTasks
       taskMutationVersion += 1
+      for (const task of mergedTasks) {
+        const job = task.serverJobId
+          ? remoteJobs.find((item) => item.id === task.serverJobId)
+          : null
+        if (!job) continue
+        void hydrateServerJobTaskOutputs(task, job)
+          .then((hydrated) => {
+            if (disposed || hydrated === task) return
+            const index = tasks.value.findIndex((item) => item.id === task.id)
+            if (index < 0) return
+            if (shouldKeepExistingTaskSnapshot(tasks.value[index], hydrated)) return
+            tasks.value.splice(index, 1, hydrated)
+            taskMutationVersion += 1
+          })
+          .catch(() => {})
+      }
       const pagination = resolveServerJobsPagination({
         append,
         pageDepth: serverJobsPageDepth,
@@ -1583,27 +1608,35 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   async function ensureInputUrlsForTask(task) {
-    const mainUrl = await ensureUploadUrlForTask(task)
-    const referenceFiles = Array.isArray(task.styleReferenceFiles) ? task.styleReferenceFiles : []
-    const referenceUrls = []
-    for (const file of referenceFiles) {
-      if (file) referenceUrls.push(await uploadAiInputFile(file))
-    }
+    // 主图与所有参考图并行上传/转存；线上高延迟链路下这里曾是逐张串行的秒级等待。
+    const referenceFiles = (
+      Array.isArray(task.styleReferenceFiles) ? task.styleReferenceFiles : []
+    ).filter(Boolean)
     const storedReferenceUrls = Array.isArray(task.styleReferenceUrls)
       ? task.styleReferenceUrls.filter(Boolean)
       : []
-    for (const url of storedReferenceUrls) {
-      const blob = await fetchAuthenticatedMediaBlob(url, { cache: 'no-store' })
-      const extension = /png/i.test(blob.type) ? 'png' : /webp/i.test(blob.type) ? 'webp' : 'jpg'
-      referenceUrls.push(
-        await uploadAiInputFile(
-          new File([blob], `reference-${crypto.randomUUID()}.${extension}`, {
-            type: blob.type || 'image/jpeg',
-          }),
-        ),
-      )
-    }
-    return Array.from(new Set([mainUrl, ...referenceUrls].filter(Boolean))).slice(0, 4)
+    const [mainUrl, uploadedReferenceUrls, restoredReferenceUrls] = await Promise.all([
+      ensureUploadUrlForTask(task),
+      Promise.all(referenceFiles.map((file) => uploadAiInputFile(file))),
+      Promise.all(
+        storedReferenceUrls.map(async (url) => {
+          const blob = await fetchAuthenticatedMediaBlob(url, { cache: 'no-store' })
+          const extension = /png/i.test(blob.type)
+            ? 'png'
+            : /webp/i.test(blob.type)
+              ? 'webp'
+              : 'jpg'
+          return uploadAiInputFile(
+            new File([blob], `reference-${crypto.randomUUID()}.${extension}`, {
+              type: blob.type || 'image/jpeg',
+            }),
+          )
+        }),
+      ),
+    ])
+    return Array.from(
+      new Set([mainUrl, ...uploadedReferenceUrls, ...restoredReferenceUrls].filter(Boolean)),
+    ).slice(0, 4)
   }
 
   async function removeTask(taskId, { silent = false, requireCloudDelete = false } = {}) {

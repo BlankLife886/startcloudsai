@@ -33,6 +33,7 @@ function normalizePromptItem(raw = {}) {
  * @param {object} options
  * @param {string} [options.type] - 工作台类型：t2i / game_art / model_sheet / ui_design / coloring
  * @param {string} [options.category] - 分类筛选（可空）
+ * @param {string} [options.scope] - 用户范围（favorites 表示仅我的收藏）
  * @param {string} [options.cursor] - 分页游标（可空）
  * @param {number} [options.limit]
  * @param {AbortSignal} [options.signal]
@@ -41,17 +42,18 @@ function normalizePromptItem(raw = {}) {
 export async function listPrompts({
   type = '',
   category = '',
+  scope = '',
   sort = 'recommended',
   cursor = '',
   limit = 24,
   signal,
 } = {}) {
-  const cacheKey = [type, category, sort, cursor, limit].join('|')
+  const cacheKey = [type, category, scope, sort, cursor, limit].join('|')
   const hit = cache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit.data
 
   const data = await apiGet('/prompts', {
-    query: { type, category, sort, cursor, limit },
+    query: { type, category, scope, sort, cursor, limit },
     signal,
     fallbackMessage: '提示词库读取失败',
   })
@@ -67,7 +69,10 @@ export async function listPrompts({
           )
         : {},
   }
-  cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data: result })
+  cache.set(cacheKey, {
+    expiresAt: Date.now() + (scope === 'today' ? 30_000 : CACHE_TTL_MS),
+    data: result,
+  })
   return result
 }
 

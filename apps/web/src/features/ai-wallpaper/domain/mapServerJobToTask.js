@@ -249,7 +249,9 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
     skillIds: input.skillIds || job?.params?.skillIds || existingTask?.skillIds || [],
     mcpServers: existingTask?.mcpServers || [],
     outputs: seededOutputs,
-    originalOutputs: seededOutputs,
+    // 原图列表不允许缩略图混入：灯箱按 originalOutputs 优先取原图，
+    // 此前用缩略图回填会让全屏预览拿到 512px 图（表现为“打开很糊”）。
+    originalOutputs,
     thumbnailOutputs,
     hasDedicatedThumbnails,
     shareSubmitted: job?.shareSubmitted === true || existingTask?.shareSubmitted === true,

@@ -75,6 +75,7 @@ services:
     env_file: ${APP_ENV_FILE:-.env}
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
     depends_on:
       # server 健康 = 数据库迁移已完成，避免 worker 抢跑
       server:

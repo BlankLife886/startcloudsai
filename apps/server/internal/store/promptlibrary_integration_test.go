@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -169,5 +170,25 @@ func TestPromptEngagementAndPopularOrdering(t *testing.T) {
 	}
 	if !states[first.ID].Favorited || states[second.ID].Favorited {
 		t.Fatalf("unexpected engagement states: %#v", states)
+	}
+	favorites, err := store.ListPromptEntries(ctx, st.Pool, store.PromptFilter{
+		Order: "latest", FavoritedBy: user.ID,
+	}, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(favorites) != 1 || favorites[0].ID != first.ID {
+		t.Fatalf("favorite filter = %#v, want only %s", favorites, first.ID)
+	}
+	now := time.Now().UTC()
+	from, before := now.Add(-time.Hour), now.Add(time.Hour)
+	recent, err := store.ListPromptEntries(ctx, st.Pool, store.PromptFilter{
+		Order: "latest", CreatedFrom: &from, CreatedBefore: &before,
+	}, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("today filter returned %d prompts, want 2", len(recent))
 	}
 }

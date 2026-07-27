@@ -29,6 +29,15 @@ type communityEnv struct {
 	engine *gin.Engine
 }
 
+func TestPromptTodayRangeUsesBeijingCalendarDay(t *testing.T) {
+	from, before := promptTodayRange(time.Date(2026, 7, 25, 20, 30, 0, 0, time.UTC))
+	wantFrom := time.Date(2026, 7, 25, 16, 0, 0, 0, time.UTC)
+	wantBefore := time.Date(2026, 7, 26, 16, 0, 0, 0, time.UTC)
+	if !from.Equal(wantFrom) || !before.Equal(wantBefore) {
+		t.Fatalf("today range = %s..%s, want %s..%s", from, before, wantFrom, wantBefore)
+	}
+}
+
 func newCommunityEnv(t *testing.T) *communityEnv {
 	t.Helper()
 	st := testdb.Setup(t)

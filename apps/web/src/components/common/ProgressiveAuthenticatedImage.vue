@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import AuthenticatedImage from './AuthenticatedImage.vue'
+import { getAuthenticatedMediaMetadata } from '@/services/authenticatedMedia'
 
 defineOptions({ inheritAttrs: false })
 
@@ -14,6 +15,7 @@ const props = defineProps({
   rootMargin: { type: String, default: '240px 0px' },
   retryCount: { type: Number, default: 1 },
   loadOriginal: { type: Boolean, default: false },
+  hideStatus: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['load', 'error', 'preview-load', 'original-error'])
@@ -22,6 +24,7 @@ const previewFailed = ref(false)
 const originalActive = ref(false)
 const originalLoaded = ref(false)
 const originalFailed = ref(false)
+const originalCached = ref(false)
 
 const normalizedSource = computed(() => String(props.src || '').trim())
 const normalizedPreview = computed(() => String(props.previewSrc || '').trim())
@@ -30,7 +33,9 @@ const hasDistinctPreview = computed(
   () => Boolean(normalizedPreview.value) && normalizedPreview.value !== normalizedSource.value,
 )
 const shouldRenderPreview = computed(
-  () => Boolean(normalizedPreview.value) && (!shouldLoadOriginal.value || hasDistinctPreview.value),
+  () =>
+    Boolean(normalizedPreview.value) &&
+    (!shouldLoadOriginal.value || (hasDistinctPreview.value && !originalCached.value)),
 )
 const hasLoadTarget = computed(() =>
   shouldLoadOriginal.value ? Boolean(normalizedSource.value) : Boolean(normalizedPreview.value),
@@ -47,7 +52,11 @@ function reset() {
   previewFailed.value = false
   originalLoaded.value = false
   originalFailed.value = false
-  originalActive.value = shouldLoadOriginal.value && !hasDistinctPreview.value
+  // 原图已在媒体缓存时跳过预览层与淡入，直接呈现原图，避免多余的闪动
+  originalCached.value =
+    shouldLoadOriginal.value && Boolean(getAuthenticatedMediaMetadata(normalizedSource.value))
+  originalActive.value =
+    shouldLoadOriginal.value && (originalCached.value || !hasDistinctPreview.value)
 }
 
 function activateOriginal() {
@@ -99,6 +108,7 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
       'is-loading': hasLoadTarget && !targetLoaded && !targetFailed,
       'is-preview-loaded': previewLoaded && !originalLoaded,
       'is-original-loaded': originalLoaded,
+      'is-original-cached': originalCached,
       'is-thumbnail-only': !shouldLoadOriginal,
       'is-failed': targetFailed,
     }"
@@ -135,7 +145,7 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
       @error="handleOriginalError"
     />
     <span
-      v-if="hasLoadTarget && !targetLoaded"
+      v-if="!hideStatus && hasLoadTarget && !targetLoaded"
       class="progressive-authenticated-image__status"
       :class="{ 'is-failed': targetFailed }"
       aria-hidden="true"
@@ -186,6 +196,11 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
 
 .progressive-authenticated-image__layer.is-original.is-visible {
   opacity: 1;
+}
+
+/* 原图命中缓存：不做淡入过渡，加载即显示 */
+.progressive-authenticated-image.is-original-cached .progressive-authenticated-image__layer.is-original {
+  transition: none;
 }
 
 .progressive-authenticated-image__status {

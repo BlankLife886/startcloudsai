@@ -17,6 +17,8 @@ import { animate as animeAnimate } from '@/lib/anime'
 import { createTitleParticles } from '../scene/particleText'
 
 gsap.registerPlugin(ScrollTrigger)
+// 移动端地址栏伸缩不触发全量 refresh（重排风暴源）；滚动性能优先
+ScrollTrigger.config({ ignoreMobileResize: true })
 
 const REVEAL_SELECTOR = '[data-home-reveal]:not(.home-hero__copy):not(.home-hero__wall)'
 
@@ -245,7 +247,9 @@ export function useHomeMotion(rootRef, celestialRef) {
   /* ———— 展厅视差 + 页面进度 ———— */
 
   function setupScrollScene(el) {
-    const progressSetter = gsap.quickSetter(el, '--home-progress')
+    // 进度变量只写在进度条元素上：写容器会让整棵子树每帧做样式失效
+    const progressTarget = el.querySelector('.home-journey__rail b') || el
+    const progressSetter = gsap.quickSetter(progressTarget, '--home-progress')
     const journeyNumber = el.querySelector('.home-journey__number')
     const journeyName = el.querySelector('.home-journey__name')
     const halls = [...el.querySelectorAll('[data-home-hall]')]
@@ -257,30 +261,37 @@ export function useHomeMotion(rootRef, celestialRef) {
       onUpdate(self) {
         progressSetter(self.progress.toFixed(4))
         scene()?.setScroll(self.progress)
-
-        const focusLine = window.innerHeight * 0.42
-        const current =
-          halls.find((hall) => {
-            const rect = hall.getBoundingClientRect()
-            return rect.top <= focusLine && rect.bottom > focusLine
-          }) ||
-          halls.find((hall) => hall.getBoundingClientRect().top > focusLine) ||
-          halls.at(-1)
-        if (!current || current === activeHall) return
-        activeHall?.classList.remove('is-current-hall')
-        activeHall = current
-        activeHall.classList.add('is-current-hall')
-        const hallNumber = current.dataset.homeHall || '01'
-        if (journeyNumber) journeyNumber.textContent = hallNumber
-        if (journeyName) journeyName.textContent = current.dataset.homeHallName || 'Prologue'
-        // 环境光随展厅变色：聚光灯、巨号数字、巡馆指示统一渐变到该厅主题色
-        gsap.to(el, {
-          '--home-accent': HALL_ACCENTS[hallNumber] || HALL_ACCENTS['01'],
-          duration: 1.2,
-          ease: 'power2.out',
-          overwrite: 'auto',
-        })
       },
+    })
+
+    function focusHall(current) {
+      if (!current || current === activeHall) return
+      activeHall?.classList.remove('is-current-hall')
+      activeHall = current
+      activeHall.classList.add('is-current-hall')
+      const hallNumber = current.dataset.homeHall || '01'
+      if (journeyNumber) journeyNumber.textContent = hallNumber
+      if (journeyName) journeyName.textContent = current.dataset.homeHallName || 'Prologue'
+      // 环境光随展厅变色：聚光灯、巨号数字、巡馆指示统一渐变到该厅主题色
+      gsap.to(el, {
+        '--home-accent': HALL_ACCENTS[hallNumber] || HALL_ACCENTS['01'],
+        duration: 1.2,
+        ease: 'power2.out',
+        overwrite: 'auto',
+      })
+    }
+
+    // 展厅焦点检测：每厅一个 ScrollTrigger（位置有缓存）,
+    // 取代旧的“每个滚动帧对所有厅 getBoundingClientRect”布局抖动源
+    halls.forEach((hall) => {
+      ScrollTrigger.create({
+        trigger: hall,
+        start: 'top 42%',
+        end: 'bottom 42%',
+        onToggle(self) {
+          if (self.isActive) focusHall(hall)
+        },
+      })
     })
 
     // 每个展厅：巨号背景数字与头部按不同速率漂移，形成纵深

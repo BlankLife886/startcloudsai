@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestChatStreamUsesOpenAIContract(t *testing.T) {
@@ -153,6 +154,58 @@ func TestGenerateImageFansOutWithoutNAndCombinesResults(t *testing.T) {
 	defer mu.Unlock()
 	if requestCount != 2 {
 		t.Fatalf("requestCount = %d", requestCount)
+	}
+}
+
+func TestGenerateImageProgressivePublishesBeforeAllBranchesFinish(t *testing.T) {
+	var mu sync.Mutex
+	requestCount := 0
+	releaseSlow := make(chan struct{})
+	slowStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		requestCount++
+		requestNumber := requestCount
+		mu.Unlock()
+		if requestNumber == 2 {
+			close(slowStarted)
+			<-releaseSlow
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":[{"b64_json":"aW1hZ2U=","revised_prompt":"image %d"}]}`, requestNumber)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "gpt-image-2", 30)
+	callback := make(chan int, 2)
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.GenerateImageProgressive(context.Background(), "cloud", "1024x1024", "high", 2, nil,
+			func(index int, _ Image) error {
+				callback <- index
+				return nil
+			})
+		done <- err
+	}()
+
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow branch did not start")
+	}
+	select {
+	case <-callback:
+	case <-time.After(time.Second):
+		t.Fatal("first completed image was not published while another branch was pending")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("generation returned before slow branch was released: %v", err)
+	default:
+	}
+	close(releaseSlow)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

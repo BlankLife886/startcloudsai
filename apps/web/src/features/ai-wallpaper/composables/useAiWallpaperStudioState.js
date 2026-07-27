@@ -107,14 +107,20 @@ export function useAiWallpaperStudioState() {
     return canUseServerAi.value && !!inputs.prompt.value.trim()
   })
 
-  async function ensureWallpaperBudgetAvailable(model, count = 1) {
+  async function ensureWallpaperBudgetAvailable(model, count = 1, options = {}) {
     const snapshot = studioBudgetGuard.getCostSnapshot(model, count)
     if (snapshot.billingMode === 'credits' && snapshot.unitCost > 0) {
-      await creditsPrompt.ensureCreditsAvailable(snapshot.unitCost)
+      const available = Number(options.creditAvailable)
+      await creditsPrompt.ensureCreditsAvailable(snapshot.unitCost, {
+        ...(Number.isFinite(available) ? { available } : {}),
+      })
+      studioBudgetGuard.ensureBudgetAvailable(model, count, {
+        creditAvailable: Number.isFinite(available) ? available : undefined,
+      })
+      return snapshot
     }
-    studioBudgetGuard.ensureBudgetAvailable(model, count, {
-      getCreditAvailable: creditsPrompt.readAvailableCredits,
-    })
+    studioBudgetGuard.ensureBudgetAvailable(model, count)
+    return snapshot
   }
 
   const tasks = useWallpaperTasks({
@@ -241,28 +247,30 @@ export function useAiWallpaperStudioState() {
 
   async function requestCreateTask() {
     if (!canCreateTask.value) return
-    await runtimeConfigStore.loadRuntimeConfig({ force: true }).catch(() => {})
+    void runtimeConfigStore.refreshRuntimeConfigInBackground()
     const dispatchModel =
       outputType.value === 'video'
         ? models.videoDispatchModel.value
         : models.imageDispatchModel.value
     const count = outputType.value === 'image' ? inputs.imageCount.value : 1
+    if (authStore.user?.requireCostConfirm === false) {
+      tasks.createTask({ skipClientBudgetCheck: true })
+      return
+    }
+
+    const costSnapshot = await enrichStudioCreditCostSnapshot(
+      studioBudgetGuard.getCostSnapshot(dispatchModel, count),
+    )
     try {
-      await ensureWallpaperBudgetAvailable(dispatchModel, count)
+      await ensureWallpaperBudgetAvailable(dispatchModel, count, {
+        creditAvailable: costSnapshot.creditAvailable,
+      })
     } catch (error) {
       if (creditsPrompt.handleCreditError(error)) return
       notificationService.error(error?.message || '预算不足')
       return
     }
-    if (authStore.user?.requireCostConfirm === false) {
-      tasks.createTask()
-      return
-    }
-    const creditAvailable = await creditsPrompt.readAvailableCredits()
-    costConfirmPayload.value = await enrichStudioCreditCostSnapshot({
-      ...studioBudgetGuard.getCostSnapshot(dispatchModel, count),
-      creditAvailable,
-    })
+    costConfirmPayload.value = costSnapshot
     costConfirmVisible.value = true
   }
 
@@ -270,7 +278,7 @@ export function useAiWallpaperStudioState() {
     if (!costConfirmVisible.value) return
     costConfirmVisible.value = false
     costConfirmPayload.value = null
-    tasks.createTask()
+    tasks.createTask({ skipClientBudgetCheck: true })
   }
 
   function cancelCostConfirm() {
@@ -409,6 +417,8 @@ export function useAiWallpaperStudioState() {
         runtimeConfigStore.loadRuntimeConfig().catch(() => {}),
         authStore.initAuth().catch(() => null),
       ])
+      // 历史同步不等设置/能力位:auth 一就绪立刻并行拉取,砍掉两跳串行 RTT
+      const earlyJobsSync = tasks.refreshServerAiJobs().catch(() => false)
       await settingsStore.initSettings()
       const config = resolveAiFeatureRuntimeConfig(settingsStore, 'wallpaper')
       if (!models.studioProvider.value) models.studioProvider.value = config.provider
@@ -421,7 +431,7 @@ export function useAiWallpaperStudioState() {
       // 会在稍后回写时覆盖掉云端合并结果。草稿不在云端负载里，无需重载
       // （重载反而会把用户在网络等待期间刚改的参数冲回旧值）。
       tasks.loadTasks()
-      await tasks.refreshServerAiJobs()
+      await earlyJobsSync
       tasks.restoreRunningTaskUi()
       tasks.resumeServerJobPolling()
       const active = tasks.tasks.value.find((task) => task.id === tasks.activeTaskId.value)

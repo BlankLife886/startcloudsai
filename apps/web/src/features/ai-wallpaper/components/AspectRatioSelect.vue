@@ -10,6 +10,7 @@ const props = defineProps({
   useOptionLabel: { type: Boolean, default: false },
   compactText: { type: Boolean, default: false },
   compactMenu: { type: Boolean, default: false },
+  glassMenu: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -159,6 +160,7 @@ watch(
             'is-plain': !showRatioIcons,
             'is-compact-text': compactText,
             'is-compact-menu': compactMenu,
+            'is-glass-accent': glassMenu,
           }"
           :style="menuStyle"
           role="listbox"
@@ -355,6 +357,48 @@ watch(
 .ratio-select__option.is-selected {
   background: rgba(255, 255, 255, 0.09);
   color: #fff;
+}
+
+.ratio-select__menu.is-glass-accent {
+  border-color: rgba(109, 92, 255, 0.38);
+  background:
+    linear-gradient(145deg, rgba(43, 40, 61, 0.82), rgba(17, 17, 25, 0.74)),
+    rgba(18, 18, 26, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 24px 64px rgba(0, 0, 0, 0.56),
+    0 0 0 1px rgba(109, 92, 255, 0.08);
+  backdrop-filter: blur(22px) saturate(155%);
+  -webkit-backdrop-filter: blur(22px) saturate(155%);
+}
+
+.ratio-select__menu.is-glass-accent .ratio-select__option {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.ratio-select__menu.is-glass-accent .ratio-select__option-glyph {
+  color: rgba(139, 123, 255, 0.7);
+}
+
+.ratio-select__menu.is-glass-accent .ratio-select__option:hover,
+.ratio-select__menu.is-glass-accent .ratio-select__option:focus-visible {
+  color: #fff;
+  background: rgba(109, 92, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(139, 123, 255, 0.2);
+}
+
+.ratio-select__menu.is-glass-accent .ratio-select__option.is-selected {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(109, 92, 255, 0.42), rgba(109, 92, 255, 0.2));
+  box-shadow:
+    inset 0 0 0 1px rgba(169, 156, 255, 0.52),
+    0 8px 24px rgba(70, 51, 214, 0.2);
+  font-weight: 700;
+}
+
+.ratio-select__menu.is-glass-accent .ratio-select__option.is-selected .ratio-select__option-glyph {
+  color: #b8adff;
+  filter: drop-shadow(0 0 8px rgba(139, 123, 255, 0.55));
 }
 
 .ratio-select__icon {

@@ -39,10 +39,6 @@ html {
   scrollbar-gutter: stable;
 }
 
-body {
-  overscroll-behavior-y: none;
-}
-
 body.download-session-locked {
   overflow: hidden;
 }

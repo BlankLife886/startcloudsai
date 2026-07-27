@@ -1,204 +1,179 @@
 <script setup>
 import notificationService from '@/services/notification'
 import { computed } from 'vue'
-import ErrorNotification from './ErrorNotification.vue'
+import ToastNotification from './ToastNotification.vue'
 
-// 获取通知列表
-const notifications = computed(() => notificationService.notifications)
+// 全局 toast 出口：App.vue 挂载一次，页面只调 notificationService.*。
+// 进出场与列表位移由 TransitionGroup 统一处理（离场绝对定位让兄弟平滑补位）。
+const POSITIONS = [
+  'top-left',
+  'top-center',
+  'top-right',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right',
+]
 
-// 按位置分组通知
 const groupedNotifications = computed(() => {
-  const groups = {
-    'top-right': [],
-    'top-left': [],
-    'bottom-right': [],
-    'bottom-left': [],
-    'top-center': [],
-    'bottom-center': [],
-  }
-
-  notifications.value.forEach((notification) => {
+  const groups = {}
+  for (const notification of notificationService.notifications) {
     const position = notification.position || 'top-right'
-    groups[position].push(notification)
-  })
-
+    ;(groups[position] ||= []).push(notification)
+  }
   return groups
 })
 
-// 关闭通知
+const activePositions = computed(() =>
+  POSITIONS.filter((position) => groupedNotifications.value[position]?.length),
+)
+
 function closeNotification(id) {
   notificationService.removeNotification(id)
 }
 </script>
 
 <template>
-  <div class="notification-container">
-    <!-- 顶部左侧通知 -->
-    <div class="notification-group top-left">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['top-left']"
+  <div class="toaster-root" aria-label="通知">
+    <TransitionGroup
+      v-for="position in activePositions"
+      :key="position"
+      name="toast"
+      tag="div"
+      class="toaster-group"
+      :class="`is-${position}`"
+    >
+      <ToastNotification
+        v-for="notification in groupedNotifications[position]"
         :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="top-left"
+        :notification="notification"
         @close="closeNotification(notification.id)"
       />
-    </div>
-
-    <!-- 顶部中间通知 -->
-    <div class="notification-group top-center">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['top-center']"
-        :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="top-center"
-        @close="closeNotification(notification.id)"
-      />
-    </div>
-
-    <!-- 顶部右侧通知 -->
-    <div class="notification-group top-right">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['top-right']"
-        :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="top-right"
-        @close="closeNotification(notification.id)"
-      />
-    </div>
-
-    <!-- 底部左侧通知 -->
-    <div class="notification-group bottom-left">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['bottom-left']"
-        :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="bottom-left"
-        @close="closeNotification(notification.id)"
-      />
-    </div>
-
-    <!-- 底部中间通知 -->
-    <div class="notification-group bottom-center">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['bottom-center']"
-        :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="bottom-center"
-        @close="closeNotification(notification.id)"
-      />
-    </div>
-
-    <!-- 底部右侧通知 -->
-    <div class="notification-group bottom-right">
-      <ErrorNotification
-        v-for="notification in groupedNotifications['bottom-right']"
-        :key="notification.id"
-        :message="notification.message"
-        :type="notification.type"
-        :duration="notification.duration"
-        :closable="notification.closable"
-        position="bottom-right"
-        @close="closeNotification(notification.id)"
-      />
-    </div>
+    </TransitionGroup>
   </div>
 </template>
 
 <style scoped>
-.notification-container {
+.toaster-root {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  inset: 0;
   pointer-events: none;
   z-index: 9999;
 }
 
-.notification-group {
+.toaster-group {
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   width: min(330px, calc(100vw - 24px));
-  max-width: calc(100vw - 24px);
+}
+
+.toaster-group > :deep(*) {
   pointer-events: auto;
 }
 
-.top-right {
+.is-top-right {
   top: 12px;
   right: 12px;
 }
 
-.top-left {
+.is-top-left {
   top: 12px;
   left: 12px;
 }
 
-.bottom-right {
+.is-bottom-right {
   bottom: 12px;
   right: 12px;
+  flex-direction: column-reverse;
 }
 
-.bottom-left {
+.is-bottom-left {
   bottom: 12px;
   left: 12px;
+  flex-direction: column-reverse;
 }
 
-.top-center {
-  top: 20px;
+.is-top-center {
+  top: 16px;
   left: 50%;
   transform: translateX(-50%);
 }
 
-.bottom-center {
-  bottom: 20px;
+.is-bottom-center {
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
+  flex-direction: column-reverse;
+}
+
+/* 进出场：只动 transform/opacity；离场项脱离文档流，兄弟由 move 过渡平滑补位 */
+.toast-enter-active {
+  transition:
+    transform 0.24s cubic-bezier(0.21, 1.02, 0.55, 1),
+    opacity 0.24s ease;
+}
+
+.toast-leave-active {
+  position: absolute;
+  left: 0;
+  right: 0;
+  transition:
+    transform 0.18s ease-in,
+    opacity 0.18s ease-in;
+}
+
+.toast-move {
+  transition: transform 0.24s cubic-bezier(0.21, 1.02, 0.55, 1);
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.98);
+}
+
+.is-bottom-right .toast-enter-from,
+.is-bottom-left .toast-enter-from,
+.is-bottom-center .toast-enter-from {
+  transform: translateY(10px) scale(0.98);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
 }
 
 @media (max-width: 640px) {
-  .top-right,
-  .top-left,
-  .bottom-right,
-  .bottom-left {
+  .is-top-right,
+  .is-top-left {
     left: 12px;
     right: 12px;
     width: auto;
-    max-width: none;
   }
 
-  .top-right,
-  .top-left,
-  .top-center {
-    top: 12px;
+  .is-bottom-right,
+  .is-bottom-left {
+    left: 12px;
+    right: 12px;
+    width: auto;
   }
 
-  .bottom-right,
-  .bottom-left,
-  .bottom-center {
-    bottom: 12px;
-  }
-
-  .top-center,
-  .bottom-center {
+  .is-top-center,
+  .is-bottom-center {
     width: calc(100vw - 24px);
-    max-width: calc(100vw - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-enter-active,
+  .toast-leave-active,
+  .toast-move {
+    transition-duration: 0.01ms;
+  }
+
+  .toast-enter-from,
+  .toast-leave-to {
+    transform: none;
   }
 }
 </style>

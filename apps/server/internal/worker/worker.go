@@ -15,7 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
@@ -43,10 +45,16 @@ type Worker struct {
 	C2A        *c2a.Client
 	Queue      *taskflow.Queue
 	PromptSync *promptsync.Engine
+	// Stream 用于把助手回答增量推给 API 层 SSE；nil 时静默降级为纯轮询。
+	Stream *redis.Client
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Worker {
-	return &Worker{Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue, PromptSync: promptsync.New(st, cfg.AppEnv == "development")}
+	return &Worker{
+		Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue,
+		PromptSync: promptsync.New(st, cfg.AppEnv == "development"),
+		Stream:     assistantstream.NewClient(cfg.RedisURL),
+	}
 }
 
 // Run 启动 Asynq server + PeriodicTaskManager，阻塞运行。
@@ -69,6 +77,7 @@ func (w *Worker) Run() error {
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: w.Cfg.WorkerConcurrency,
 	})
+	log.Printf("worker ready concurrency=%d", w.Cfg.WorkerConcurrency)
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
 	mux.HandleFunc(taskflow.TypeRunAssistant, w.handleRunAssistant)
@@ -171,6 +180,60 @@ func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model strin
 	return client.GenerateImagesWithID(ctx, task.ID.String(), finalPrompt, model, task.Count, size)
 }
 
+func taskParamString(params map[string]any, key string) string {
+	if params == nil {
+		return ""
+	}
+	if value, ok := params[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// applyMaskEditComposite 局部编辑 crop-and-stitch 的贴回阶段：
+// 上游只编辑了蒙版外扩后的裁剪图，这里把结果羽化混合回整图，
+// 蒙版未选中的像素保持与原图一致。参数缺失时原样返回（非局部编辑任务）。
+func (w *Worker) applyMaskEditComposite(ctx context.Context, task *store.Task, imagesB64 []string) []string {
+	maskKey := taskParamString(task.Params, "maskKey")
+	baseKey := taskParamString(task.Params, "maskBaseKey")
+	rectRaw := taskParamString(task.Params, "maskRect")
+	if maskKey == "" || baseKey == "" || rectRaw == "" {
+		return imagesB64
+	}
+	rect, err := media.ParseMaskRect(rectRaw)
+	if err != nil {
+		log.Printf("task %s mask composite skipped: bad rect %q: %v", task.ID, rectRaw, err)
+		return imagesB64
+	}
+	baseData, err := w.Storage.GetBytes(ctx, baseKey)
+	if err != nil {
+		log.Printf("task %s mask composite skipped: load base: %v", task.ID, err)
+		return imagesB64
+	}
+	maskData, err := w.Storage.GetBytes(ctx, maskKey)
+	if err != nil {
+		log.Printf("task %s mask composite skipped: load mask: %v", task.ID, err)
+		return imagesB64
+	}
+	out := make([]string, 0, len(imagesB64))
+	for i, b64 := range imagesB64 {
+		resultData, derr := base64.StdEncoding.DecodeString(b64)
+		if derr != nil {
+			log.Printf("task %s mask composite output %d: bad base64: %v", task.ID, i, derr)
+			out = append(out, b64)
+			continue
+		}
+		merged, cerr := media.CompositeMaskedEdit(baseData, maskData, resultData, rect)
+		if cerr != nil {
+			log.Printf("task %s mask composite output %d failed, keep raw: %v", task.ID, i, cerr)
+			out = append(out, b64)
+			continue
+		}
+		out = append(out, base64.StdEncoding.EncodeToString(merged))
+	}
+	return out
+}
+
 func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage string) error {
 	var task *store.Task
 	won := false
@@ -221,6 +284,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s not claimable, skip", taskID)
 		return nil
 	}
+	queueWait := time.Since(task.CreatedAt)
+	if queueWait < 0 {
+		queueWait = 0
+	}
+	log.Printf(
+		"task %s claimed type=%s queue_wait_ms=%d",
+		taskID, task.Type, queueWait.Milliseconds(),
+	)
 
 	// 模型在任务创建时已经快照，避免排队期间后台配置变化导致展示值与实际执行值不一致。
 	model := strings.TrimSpace(task.Model)
@@ -263,6 +334,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	}
 
 	if imagesB64 != nil {
+		imagesB64 = w.applyMaskEditComposite(ctx, task, imagesB64)
 		var succeeded *store.Task
 		outputCount := 0
 		var uploadedKeys []string

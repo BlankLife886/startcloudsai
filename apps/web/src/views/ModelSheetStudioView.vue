@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { defineAsyncComponent } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import WallevenImagePreview from '@/components/common/WallevenImagePreview.vue'
 import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSelect.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
@@ -35,6 +36,7 @@ const {
   source: 'ultra-model-sheet',
   featureKey: 'ai.ultraModelSheet',
   jobKindPrefix: 'ultra-reference',
+  preferOriginalOutputs: true,
 })
 
 const SETTINGS_KEY = 'ultra-model-sheet-studio-v1'
@@ -104,7 +106,6 @@ const outputLabels = ref({})
 const studioRoot = ref(null)
 const localError = ref('')
 const fullscreenOpen = ref(false)
-const fullscreenGallery = ref([])
 const dragOver = ref(false)
 const background = ref('gray')
 const retryViews = ref([])
@@ -598,7 +599,7 @@ function setupPageMotion() {
       .from('.ms3-frame', { scale: 0.95, autoAlpha: 0, duration: 0.85, ease: 'expo.out' }, '-=0.62')
       .from('.ms3-spec', { y: -14, autoAlpha: 0, duration: 0.5 }, '-=0.55')
 
-    // 指针跟随只保留用户视线所在的画布：轻微 3D 倾斜 + 规格卡漂浮。
+    // 指针跟随只保留用户视线所在的画布轻微 3D 倾斜。
     // 大面积背景层已移除——被面板挡住看不见，还会拖慢合成。
     gsap.set('.ms3-frame', { transformPerspective: 1100 })
     parallaxSetters = []
@@ -610,8 +611,6 @@ function setupPageMotion() {
     }
     bind('.ms3-frame', 'rotationY', 3, 'x', 0.75)
     bind('.ms3-frame', 'rotationX', -2.2, 'y', 0.75)
-    bind('.ms3-spec', 'x', 10, 'x', 0.5)
-    bind('.ms3-spec', 'y', 8, 'y', 0.5)
   }, root)
 }
 
@@ -776,10 +775,6 @@ onBeforeUnmount(() => {
 })
 
 function handleKeydown(event) {
-  if (event.key === 'Escape' && fullscreenOpen.value) {
-    fullscreenOpen.value = false
-    return
-  }
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !running.value) {
     event.preventDefault()
     generate()
@@ -1149,16 +1144,12 @@ function selectOutput(output) {
 }
 
 function openHistoryGroup(group) {
-  fullscreenGallery.value = Array.isArray(group?.urls) ? group.urls : [group?.cover].filter(Boolean)
   selectOutput(group?.cover)
   fullscreenOpen.value = Boolean(activeOutput.value)
 }
 
-function stepFullscreen(direction) {
-  const gallery = fullscreenGallery.value.length ? fullscreenGallery.value : outputs.value
-  if (gallery.length < 2) return
-  const index = Math.max(0, gallery.indexOf(activeOutput.value))
-  activeOutput.value = gallery[(index + direction + gallery.length) % gallery.length]
+function openOutputViewer() {
+  fullscreenOpen.value = Boolean(activeOutput.value)
 }
 
 function refreshHistory() {
@@ -1484,7 +1475,7 @@ function refreshHistory() {
               </button>
             </div>
           </div>
-          <button type="button" :disabled="!activeOutput" title="全屏查看" @click="fullscreenOpen = true">
+          <button type="button" :disabled="!activeOutput" title="全屏查看" @click="openOutputViewer">
             <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i><span>大图</span>
           </button>
           <button type="button" :disabled="!activeOutput || !outputJobIds[activeOutput]" title="发布到广场" @click="openPublish()">
@@ -1513,10 +1504,6 @@ function refreshHistory() {
         <div class="ms3-frame" :style="frameStyle">
           <i class="ms3-ruler is-top" aria-hidden="true"></i>
           <i class="ms3-ruler is-left" aria-hidden="true"></i>
-          <i class="ms3-corner is-tl" aria-hidden="true"></i>
-          <i class="ms3-corner is-tr" aria-hidden="true"></i>
-          <i class="ms3-corner is-bl" aria-hidden="true"></i>
-          <i class="ms3-corner is-br" aria-hidden="true"></i>
           <AuthenticatedImage
             v-if="activeOutput"
             data-studio-output
@@ -1758,35 +1745,16 @@ function refreshHistory() {
       @submit="submitPublish"
     />
 
-    <Teleport to="body">
-      <Transition name="ms3-zoom">
-        <div
-          v-if="fullscreenOpen && activeOutput"
-          class="ms3-fullscreen"
-          role="dialog"
-          aria-modal="true"
-          aria-label="模型图大图"
-          @click.self="fullscreenOpen = false"
-        >
-          <button type="button" aria-label="关闭大图" @click="fullscreenOpen = false"><i class="bi bi-x-lg"></i></button>
-          <button
-            v-if="(fullscreenGallery.length || outputs.length) > 1"
-            type="button"
-            class="ms3-fullscreen-nav is-prev"
-            aria-label="上一张"
-            @click="stepFullscreen(-1)"
-          ><i class="bi bi-chevron-left"></i></button>
-          <AuthenticatedImage :src="activeOutput" alt="超高清模型图大图" loading="eager" />
-          <button
-            v-if="(fullscreenGallery.length || outputs.length) > 1"
-            type="button"
-            class="ms3-fullscreen-nav is-next"
-            aria-label="下一张"
-            @click="stepFullscreen(1)"
-          ><i class="bi bi-chevron-right"></i></button>
-        </div>
-      </Transition>
-    </Teleport>
+    <WallevenImagePreview
+      :open="fullscreenOpen"
+      :images="outputs"
+      :current-src="activeOutput"
+      title="超高清模型图"
+      filename="ultra-model-sheet.png"
+      :metadata="{ '生成模式': outputMode === 'board' ? '设定板' : '独立视图', '画面比例': aspectRatio, '视角数量': `${selectedViews.length} 组` }"
+      @close="fullscreenOpen = false"
+      @select="selectOutput"
+    />
 
     <InsufficientCreditsDialog
       :show="creditsPrompt.dialogOpen.value"
@@ -2839,30 +2807,45 @@ function refreshHistory() {
   flex: 1;
   min-height: 0;
   display: grid;
-  place-items: center;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: center;
+  justify-items: center;
+  gap: 10px;
   padding: 18px;
 }
 
 .ms3-spec {
-  position: absolute;
-  z-index: 4;
-  top: 14px;
-  left: 14px;
-  display: grid;
-  gap: 5px;
-  padding: 9px 11px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-sm);
-  background: #141418f2;
-  /* 规格卡悬浮在画布之上，跟随幅度更大 */
-  will-change: transform;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 0;
+  padding: 0 4px;
   pointer-events: none;
 }
 
 .ms3-spec div {
+  position: relative;
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  align-items: center;
+  gap: 7px;
+  margin-right: 14px;
+  padding-right: 14px;
+}
+
+.ms3-spec div:not(:last-child)::after {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 1px;
+  height: 12px;
+  background: var(--line-2);
+  content: '';
+  transform: translateY(-50%);
 }
 
 .ms3-spec span {
@@ -3614,21 +3597,6 @@ function refreshHistory() {
     repeating-linear-gradient(180deg, #ffffff59 0 1px, transparent 1px 60px) 0 0 / 7px 100% no-repeat;
 }
 
-.ms3-corner {
-  position: absolute;
-  z-index: 2;
-  width: 14px;
-  height: 14px;
-  border: 0 solid var(--accent);
-  opacity: 0.85;
-  pointer-events: none;
-}
-
-.ms3-corner.is-tl { top: 7px; left: 7px; border-top-width: 2px; border-left-width: 2px; }
-.ms3-corner.is-tr { top: 7px; right: 7px; border-top-width: 2px; border-right-width: 2px; }
-.ms3-corner.is-bl { bottom: 7px; left: 7px; border-bottom-width: 2px; border-left-width: 2px; }
-.ms3-corner.is-br { bottom: 7px; right: 7px; border-bottom-width: 2px; border-right-width: 2px; }
-
 /* 顶栏机加工斜纹 */
 .ms3-stage-bar {
   background-image: repeating-linear-gradient(-45deg, transparent 0 10px, #ffffff05 10px 11px);
@@ -3768,74 +3736,6 @@ function refreshHistory() {
   white-space: nowrap;
 }
 
-/* ================= 大图 ================= */
-.ms3-fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 10050;
-  display: grid;
-  place-items: center;
-  padding: 28px;
-  background: #08080be8;
-  backdrop-filter: blur(10px);
-}
-
-.ms3-fullscreen :deep(.authenticated-image) {
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 10px;
-  object-fit: contain;
-  box-shadow: 0 30px 90px #000c, 0 0 0 1px rgba(255, 92, 26, 0.18);
-}
-
-.ms3-fullscreen > button {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 42px;
-  height: 42px;
-  border: 1px solid var(--line-2);
-  border-radius: 10px;
-  background: #141418cc;
-  color: #fff;
-  font-size: 15px;
-  cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-
-.ms3-fullscreen > button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.ms3-fullscreen > .ms3-fullscreen-nav {
-  top: 50%;
-  width: 46px;
-  height: 46px;
-  transform: translateY(-50%);
-  border-radius: 50%;
-  backdrop-filter: blur(12px);
-}
-
-.ms3-fullscreen > .ms3-fullscreen-nav.is-prev {
-  right: auto;
-  left: 18px;
-}
-
-.ms3-fullscreen > .ms3-fullscreen-nav.is-next {
-  right: 18px;
-}
-
-.ms3-zoom-enter-active,
-.ms3-zoom-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.ms3-zoom-enter-from,
-.ms3-zoom-leave-to {
-  opacity: 0;
-}
-
 /* ================= 动效 ================= */
 .ms3-spin {
   animation: ms3-spin 1s linear infinite;
@@ -3947,7 +3847,7 @@ function refreshHistory() {
   }
 
   .ms3-spec {
-    display: none;
+    gap: 8px 0;
   }
 }
 </style>

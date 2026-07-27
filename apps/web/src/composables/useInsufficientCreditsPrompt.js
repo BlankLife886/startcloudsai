@@ -16,6 +16,10 @@ export function isInsufficientCreditsError(error) {
 
 export function useInsufficientCreditsPrompt() {
   const authStore = useAuthStore()
+  // 预热钱包快照：提交前的余额预检直接命中缓存，不再串行等待网络。
+  if (authStore.isAuthenticated) {
+    fetchStudioCreditAccountSnapshot().catch(() => {})
+  }
   const dialogOpen = ref(false)
   const requiredCredits = ref(0)
   const availableCredits = ref(0)

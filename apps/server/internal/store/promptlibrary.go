@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -51,12 +52,15 @@ func GetPromptEntryByGallerySubmission(ctx context.Context, q Q, submissionID uu
 
 // PromptFilter 提示词库列表筛选；ActiveOnly 用于公开接口。
 type PromptFilter struct {
-	TaskType   string
-	Category   string
-	Search     string
-	Status     string
-	Order      string
-	ActiveOnly bool
+	TaskType      string
+	Category      string
+	Search        string
+	Status        string
+	Order         string
+	ActiveOnly    bool
+	FavoritedBy   uuid.UUID
+	CreatedFrom   *time.Time
+	CreatedBefore *time.Time
 }
 
 func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) {
@@ -78,6 +82,21 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
 		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+	}
+	if f.FavoritedBy != uuid.Nil {
+		args = append(args, f.FavoritedBy)
+		sql += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM prompt_user_engagement pue
+			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
+		)`, len(args))
+	}
+	if f.CreatedFrom != nil {
+		args = append(args, *f.CreatedFrom)
+		sql += fmt.Sprintf(` AND created_at >= $%d`, len(args))
+	}
+	if f.CreatedBefore != nil {
+		args = append(args, *f.CreatedBefore)
+		sql += fmt.Sprintf(` AND created_at < $%d`, len(args))
 	}
 	return sql, args
 }
@@ -194,6 +213,21 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
 		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+	}
+	if f.FavoritedBy != uuid.Nil {
+		args = append(args, f.FavoritedBy)
+		sql += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM prompt_user_engagement pue
+			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
+		)`, len(args))
+	}
+	if f.CreatedFrom != nil {
+		args = append(args, *f.CreatedFrom)
+		sql += fmt.Sprintf(` AND created_at >= $%d`, len(args))
+	}
+	if f.CreatedBefore != nil {
+		args = append(args, *f.CreatedBefore)
+		sql += fmt.Sprintf(` AND created_at < $%d`, len(args))
 	}
 	sql += ` GROUP BY 1`
 

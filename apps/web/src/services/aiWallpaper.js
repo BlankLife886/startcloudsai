@@ -6,6 +6,7 @@
  * listServerAiJobs 等函数访问网络。这里把它们统一映射到 /api/tasks，
  * 上层组合式函数无需大改。
  */
+import { invalidateStudioCreditSnapshot } from '@/features/ai-shared/studioUsage'
 import {
   cancelTask,
   createTask,
@@ -325,6 +326,7 @@ export async function createServerAiJob(payload = {}) {
     ),
   )
   const maskUrl = String(input.maskUrl || legacyParams.maskUrl || '').trim()
+  const maskBaseUrl = String(input.maskBaseUrl || legacyParams.maskBaseUrl || '').trim()
 
   // 任一参考图/蒙版解析失败都会抛 input_image_lost，阻断本次提交
   const inputKeys = []
@@ -332,10 +334,15 @@ export async function createServerAiJob(payload = {}) {
     const key = await resolveInputKeyForUrl(url)
     if (key && !inputKeys.includes(key)) inputKeys.push(key)
   }
+  // 蒙版与合成底图只进 params 供 Worker 贴回原图使用，
+  // 不进 inputKeys——上游把它们当输入图会污染生成结果。
   let maskKey = ''
   if (maskUrl) {
     maskKey = await resolveInputKeyForUrl(maskUrl)
-    if (maskKey && !inputKeys.includes(maskKey)) inputKeys.push(maskKey)
+  }
+  let maskBaseKey = ''
+  if (maskBaseUrl) {
+    maskBaseKey = await resolveInputKeyForUrl(maskBaseUrl)
   }
 
   const task = await createTask({
@@ -347,11 +354,14 @@ export async function createServerAiJob(payload = {}) {
       count,
       _kind: kind,
       ...(maskKey ? { maskKey } : {}),
+      ...(maskBaseKey ? { maskBaseKey } : {}),
     },
     inputKeys,
     count,
     idempotencyKey: String(payload.clientRequestId || '').trim() || undefined,
   })
+  // 冻结额度已变化，让下一次余额预检重新读取。
+  invalidateStudioCreditSnapshot()
   return { job: taskToLegacyJob(task) }
 }
 

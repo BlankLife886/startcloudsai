@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -65,7 +66,6 @@ func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string,
 		return apperr.E("validation_error", "inputKeys: 最多允许 4 张参考图", 422)
 	}
 	seen := make(map[string]struct{}, len(keys))
-	var totalInputBytes int64
 	for _, key := range keys {
 		if len(key) > 512 {
 			return apperr.E("validation_error", "inputKeys: 文件键过长", 422)
@@ -78,12 +78,26 @@ func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string,
 			!strings.HasPrefix(key, "tasks/"+userID.String()+"/") {
 			return apperr.E("validation_error", "inputKeys 只能引用自己的文件", 422)
 		}
-		size, err := objectSize(ctx, key)
-		if err != nil {
+	}
+	// 对象大小并发查询：R2 HeadObject 逐个串行时，4 张参考图在跨境链路上会叠加数秒延迟。
+	sizes := make([]int64, len(keys))
+	sizeErrs := make([]error, len(keys))
+	var wg sync.WaitGroup
+	for i := range keys {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sizes[i], sizeErrs[i] = objectSize(ctx, keys[i])
+		}(i)
+	}
+	wg.Wait()
+	var totalInputBytes int64
+	for i := range keys {
+		if sizeErrs[i] != nil {
 			return apperr.E("validation_error", "inputKeys: 文件不存在", 422)
 		}
-		totalInputBytes += size
-		if size <= 0 || size > maxObjectBytes || totalInputBytes > 32<<20 {
+		totalInputBytes += sizes[i]
+		if sizes[i] <= 0 || sizes[i] > maxObjectBytes || totalInputBytes > 32<<20 {
 			return apperr.E("validation_error", "inputKeys: 图片累计大小超过限制", 422)
 		}
 	}
@@ -124,6 +138,19 @@ func (s *Server) createTask(c *gin.Context) {
 	if err := validateTaskInputKeys(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, s.Storage.ObjectSize); err != nil {
 		fail(c, err)
 		return
+	}
+	// 蒙版合成参数会被 Worker 直接按 key 读取存储，只允许引用自己的文件
+	for _, paramKey := range []string{"maskKey", "maskBaseKey"} {
+		raw, ok := body.Params[paramKey].(string)
+		if !ok || raw == "" {
+			continue
+		}
+		if len(raw) > 512 ||
+			(!strings.HasPrefix(raw, "uploads/"+user.ID.String()+"/") &&
+				!strings.HasPrefix(raw, "tasks/"+user.ID.String()+"/")) {
+			fail(c, apperr.E("validation_error", paramKey+" 只能引用自己的文件", 422))
+			return
+		}
 	}
 
 	task, created, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{

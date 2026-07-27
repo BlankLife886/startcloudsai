@@ -29,15 +29,6 @@ import {
 } from '@/features/ai-wallpaper/domain/galleryDisplay'
 import { formatOutputSize } from '@/features/ai-wallpaper/domain/outputSizeMetadata'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
-import {
-  createServerAiUpscaleExperiment,
-  listCloudUpscaleProviders,
-  listServerAiUpscaleExperiments,
-} from '@/services/aiWallpaper'
-
-const CloudUpscaleExperimentPanel = defineAsyncComponent(
-  () => import('./components/CloudUpscaleExperimentPanel.vue'),
-)
 const loadLocalMaskEditorDialog = () => import('./components/LocalMaskEditorDialog.vue')
 const LocalMaskEditorDialog = defineAsyncComponent(loadLocalMaskEditorDialog)
 
@@ -61,14 +52,12 @@ const {
   isPageLoading,
   requestCreateTask,
   canCreateTask,
-  superResolutionFeatureEnabled,
   skillOptions,
   selectedSkills,
   selectedSkillIds,
   toggleSkill,
   addCustomSkill,
   removeCustomSkill,
-  createUpscaleTask,
   createMaskedEditTask,
   createHint,
   taskStatusLabel,
@@ -116,25 +105,22 @@ const lightboxNaturalSize = ref({ width: 0, height: 0 })
 const lightboxCompareEnabled = ref(false)
 const lightboxComparePosition = ref(50)
 const lightboxCompareDragging = ref(false)
-const lightboxUpscaleMenuOpen = ref(false)
-const lightboxUpscaleScale = ref('2K')
-const lightboxBaseUrl = ref('')
-const cloudUpscalePanelOpen = ref(false)
-const cloudUpscaleProviders = ref([])
-const cloudUpscaleExperiments = ref([])
-const cloudUpscaleProviderId = ref('cloudflare-images')
-const cloudUpscaleTarget = ref('4K')
-const cloudUpscaleLoading = ref(false)
-const cloudUpscaleRunningProviderId = ref('')
-const cloudUpscaleError = ref('')
-const selectedCloudExperimentKey = ref('')
+const lightboxFlipping = ref(false)
+const lightboxClosing = ref(false)
+const lightboxPlainOpen = ref(false)
+const lightboxChromeVisible = ref(true)
+const lightboxImageLoading = ref(false)
+const stageSharedTransition = ref(false)
 const MAIN_TAB_STORAGE_KEY = 'ai-wallpaper-studio-main-tab-v1'
 const VALID_MAIN_TABS = new Set(['prompts', 'images', 'history', 'assets'])
 const storedMainTab = getScopedLocalItem(MAIN_TAB_STORAGE_KEY)
 const mainTab = ref(VALID_MAIN_TABS.has(storedMainTab) ? storedMainTab : 'images')
 const promptBoxRef = ref(null)
+const stageFrameRef = ref(null)
+const stageCanvasRef = ref(null)
+const stageCanvasAspect = ref(16 / 9)
+let stageCanvasResizeObserver = null
 const actionBusyId = ref('')
-const upscaleBusyId = ref('')
 const localMaskEditorOpen = ref(false)
 const localMaskEditorMounted = ref(false)
 const localMaskEditorBusy = ref(false)
@@ -155,7 +141,6 @@ const promptLibraryLoadingMore = ref(false)
 const promptPage = ref(1)
 const promptTotal = ref(0)
 const promptHasMore = ref(false)
-const promptCategoryCounts = ref({ all: 0 })
 const myAssets = ref([])
 const assetsLoading = ref(false)
 const assetsLoadingMore = ref(false)
@@ -163,7 +148,29 @@ const assetsCursor = ref('')
 const assetsTotal = ref(0)
 const assetsHasMore = ref(false)
 const failedAssetIds = ref({})
-const promptCategoryFilter = ref('all')
+const PROMPT_CATEGORY_STORAGE_KEY = 'ai-wallpaper-prompt-category-v1'
+const storedPromptCategory = getScopedLocalItem(PROMPT_CATEGORY_STORAGE_KEY)
+const VALID_PROMPT_CATEGORIES = new Set([
+  'today',
+  'my-favorites',
+  'portrait',
+  'photography',
+  'product',
+  'illustration',
+  'scene',
+  'design',
+  'game',
+  'typography',
+  'other',
+  'all',
+])
+const promptCategoryFilter = ref(
+  storedPromptCategory === 'latest'
+    ? 'today'
+    : VALID_PROMPT_CATEGORIES.has(storedPromptCategory)
+      ? storedPromptCategory
+      : 'today',
+)
 const promptSort = ref('recommended')
 const promptSentinelRef = ref(null)
 const assetSentinelRef = ref(null)
@@ -171,7 +178,8 @@ let promptLoadObserver = null
 let assetLoadObserver = null
 
 const PROMPT_CATEGORY_META = [
-  { value: 'all', label: '全部' },
+  { value: 'today', label: '今日最新' },
+  { value: 'my-favorites', label: '我的收藏' },
   { value: 'portrait', label: '人像人物' },
   { value: 'photography', label: '摄影写实' },
   { value: 'product', label: '产品商业' },
@@ -181,18 +189,25 @@ const PROMPT_CATEGORY_META = [
   { value: 'game', label: '游戏美术' },
   { value: 'typography', label: '文字排版' },
   { value: 'other', label: '其他' },
+  { value: 'all', label: '全部' },
 ]
 
 const LIGHTBOX_MIN_ZOOM = 0.5
 const LIGHTBOX_MAX_ZOOM = 5
 const LIGHTBOX_ZOOM_STEP = 0.25
-const LIGHTBOX_UPSCALE_OPTIONS = ['2K', '4K', '8K']
 const FILMSTRIP_THUMBNAIL_DIMENSION = 240
 const HISTORY_THUMBNAIL_DIMENSION = 720
 let lightboxPanStart = null
 let lightboxComparePointerId = null
-let cloudUpscaleLoadController = null
-let cloudUpscaleRunController = null
+let lightboxFlipClone = null
+let lightboxFlipSafetyTimer = null
+let lightboxFlipFadeTimer = null
+let lightboxChromeHideTimer = null
+let stageFlipClone = null
+let stageFlipSafetyTimer = null
+let stageFlipFadeTimer = null
+let stageFlipAnimationDone = false
+let stageFlipImageReady = false
 
 const PROMPT_MAX = 20_000
 const effectiveOutputFormat = computed({
@@ -236,13 +251,18 @@ const historyTasks = computed(() =>
 )
 const historyCount = computed(() => historyTasks.value.length)
 const assetCount = computed(() => Math.max(assetsTotal.value, myAssets.value.length))
-const promptCategoryOptions = computed(() => {
-  return PROMPT_CATEGORY_META.map((category) => ({
-    ...category,
-    count: Number(promptCategoryCounts.value[category.value] || 0),
-  }))
-})
+const promptCategoryOptions = PROMPT_CATEGORY_META
 const filteredPromptLibrary = computed(() => managedPromptLibrary.value)
+const promptLibraryEmptyTitle = computed(() => {
+  if (promptCategoryFilter.value === 'today') return '今日暂无新增提示词'
+  if (promptCategoryFilter.value === 'my-favorites') return '还没有收藏提示词'
+  return '该分类暂时没有提示词'
+})
+const promptLibraryEmptyDescription = computed(() =>
+  promptCategoryFilter.value === 'my-favorites'
+    ? '点击提示词卡片下方的心形按钮，收藏后可以在这里快速找到。'
+    : '选择其他分类继续浏览。',
+)
 const failedOrPausedTaskCount = computed(
   () =>
     historyTasks.value.filter((task) =>
@@ -253,20 +273,18 @@ const lightboxZoomLabel = computed(() => `${Math.round(lightboxZoom.value * 100)
 const lightboxImageStyle = computed(() => ({
   transform: `translate3d(${lightboxPanX.value}px, ${lightboxPanY.value}px, 0) scale(${lightboxZoom.value})`,
 }))
-const lightboxOriginalUrl = computed(() => {
-  if (selectedCloudExperimentKey.value) return String(lightboxBaseUrl.value || '').trim()
-  return String(lightboxTask.value?.originalOutputUrl || '').trim()
-})
+const lightboxOriginalUrl = computed(() =>
+  String(lightboxTask.value?.originalOutputUrl || '').trim(),
+)
 const lightboxCanCompare = computed(
   () =>
     Boolean(lightboxOriginalUrl.value) &&
     Boolean(lightboxUrl.value) &&
     lightboxOriginalUrl.value !== lightboxUrl.value,
 )
-const lightboxPreviewUrl = computed(() => {
-  if (selectedCloudExperimentKey.value) return ''
-  return taskThumbnailOutputs(lightboxTask.value)[lightboxIndex.value] || ''
-})
+const lightboxPreviewUrl = computed(
+  () => taskThumbnailOutputs(lightboxTask.value)[lightboxIndex.value] || '',
+)
 const lightboxLiveTask = computed(() => {
   const taskId = String(lightboxTask.value?.id || '')
   return tasks.value.find((task) => String(task.id || '') === taskId) || lightboxTask.value
@@ -276,16 +294,6 @@ const lightboxOriginalLabel = computed(() => {
   return size ? `原图 ${size}` : '原图'
 })
 const lightboxProcessedLabel = computed(() => {
-  const experiment = cloudUpscaleExperiments.value.find(
-    (item) => cloudExperimentKey(item) === selectedCloudExperimentKey.value,
-  )
-  if (experiment) {
-    const dimensions =
-      Number(experiment.width) && Number(experiment.height)
-        ? ` ${experiment.width}×${experiment.height}`
-        : ''
-    return `${experiment.providerLabel} ${experiment.target}${dimensions}`
-  }
   const size = String(
     lightboxTask.value?.actualOutputSize || lightboxTask.value?.outputSize || '',
   ).replace(/x/i, '×')
@@ -379,6 +387,73 @@ const featuredItem = computed(() => {
   if (!items.length) return null
   return items.find((item) => item.key === focusKey.value) || items[0]
 })
+// 同批次（batchId）或同任务多图归为一组：底部胶片一组一格，主画布整组同屏展示。
+function galleryGroupKey(item) {
+  const task = item?.task
+  return `${item?.kind === 'image' ? 'g' : 'p'}:${String(task?.batchId || task?.id || item?.key || '')}`
+}
+const filmstripGroups = computed(() => {
+  const groups = []
+  const byKey = new Map()
+  for (const item of imageGallery.value) {
+    const key = galleryGroupKey(item)
+    let group = byKey.get(key)
+    if (!group) {
+      group = { key, kind: item.kind, cover: item, items: [] }
+      byKey.set(key, group)
+      groups.push(group)
+    }
+    group.items.push(item)
+  }
+  return groups
+})
+const featuredGroup = computed(() => {
+  const item = featuredItem.value
+  if (!item) return null
+  const key = galleryGroupKey(item)
+  return filmstripGroups.value.find((group) => group.key === key) || null
+})
+const stageGridItems = computed(() => {
+  const group = featuredGroup.value
+  if (!group || group.kind !== 'image' || group.items.length < 2) return []
+  return group.items
+})
+// 按内容区宽高比挑选行列组合，尽量占满画布：只取无空槽的组合，3 张另备“左一右二”拼贴
+const stageGridLayout = computed(() => {
+  const count = stageGridItems.value.length
+  if (count < 2) return null
+  const [w, h] = String(featuredAspect.value).split('/').map(Number)
+  const imageRatio = Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? w / h : 1
+  const canvasRatio = stageCanvasAspect.value > 0 ? stageCanvasAspect.value : 16 / 9
+  const candidates = []
+  for (let cols = 1; cols <= count; cols += 1) {
+    if (count % cols !== 0) continue
+    candidates.push({ cols, rows: count / cols, collage: false })
+  }
+  if (count === 3) candidates.push({ cols: 2, rows: 2, collage: true })
+  let best = candidates[0]
+  let bestScore = Infinity
+  for (const candidate of candidates) {
+    const frameRatio = (imageRatio * candidate.cols) / candidate.rows
+    const score = Math.abs(Math.log(frameRatio / canvasRatio))
+    if (score < bestScore) {
+      bestScore = score
+      best = candidate
+    }
+  }
+  return best
+})
+
+watch(stageCanvasRef, (el) => {
+  stageCanvasResizeObserver?.disconnect()
+  stageCanvasResizeObserver = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  stageCanvasResizeObserver = new ResizeObserver((entries) => {
+    const rect = entries[0]?.contentRect
+    if (rect?.width && rect?.height) stageCanvasAspect.value = rect.width / rect.height
+  })
+  stageCanvasResizeObserver.observe(el)
+})
 const featuredAspect = computed(() => {
   const item = featuredItem.value
   const measuredAspect = featuredImageAspects.value[item?.key]
@@ -397,12 +472,18 @@ const featuredAspect = computed(() => {
 })
 const featuredAspectStyle = computed(() => {
   const [width, height] = String(featuredAspect.value).split('/').map(Number)
-  const ratio =
+  let ratio =
     Number.isFinite(width) && Number.isFinite(height) && height > 0 ? width / height : 16 / 9
+  let aspect = featuredAspect.value
+  const layout = stageGridLayout.value
+  if (layout) {
+    ratio = (ratio * layout.cols) / layout.rows
+    aspect = String(ratio)
+  }
   return {
-    aspectRatio: featuredAspect.value,
+    aspectRatio: aspect,
     '--t2i-stage-fit-width': `${ratio * 100}cqh`,
-    '--t2i-stage-max-width': ratio > 1 ? '1280px' : '920px',
+    '--t2i-stage-max-width': layout ? '1600px' : ratio > 1 ? '1280px' : '920px',
   }
 })
 const featuredPromptSummary = computed(() => {
@@ -411,13 +492,10 @@ const featuredPromptSummary = computed(() => {
   return promptText.length > maxLength ? `${promptText.slice(0, maxLength)}…` : promptText
 })
 
-function galleryItemBatchLabel(item) {
-  return Number(item?.total) > 1 ? `${Number(item.batchIndex ?? item.index) + 1}/${item.total}` : ''
-}
-
 const HISTORY_BATCH = 12
 const historyVisibleCount = ref(HISTORY_BATCH)
 const historySentinelRef = ref(null)
+const historyViewportRef = ref(null)
 const historyViewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
 const historyMeasuredAspects = ref({})
 const historyImageMetadata = ref({})
@@ -426,6 +504,7 @@ const promptImageMetadata = ref({})
 const assetMeasuredAspects = ref({})
 const assetImageMetadata = ref({})
 let historyLoadObserver = null
+let historyResizeObserver = null
 
 function timestamp(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0
@@ -765,27 +844,21 @@ const historyHasMore = computed(
   () =>
     historyVisibleCount.value < historyFeedItems.value.length || serverJobsHasMore.value === true,
 )
-const historyColumnCount = computed(() => {
-  const width = historyViewportWidth.value
-  if (width <= 640) return 1
-  if (width <= 820) return 2
-  if (width <= 960) return 3
-  if (width <= 1280) return 4
+function responsiveGalleryColumnCount(width) {
+  if (width <= 480) return 1
+  if (width <= 700) return 2
+  if (width <= 920) return 3
+  if (width <= 1160) return 4
   return 5
-})
+}
+const historyColumnCount = computed(() => responsiveGalleryColumnCount(historyViewportWidth.value))
 const libraryColumnCount = computed(() => {
   const width = historyViewportWidth.value
   if (width <= 640) return 1
   if (width <= 960) return 2
   return 3
 })
-const assetColumnCount = computed(() => {
-  const width = historyViewportWidth.value
-  if (width <= 640) return 1
-  if (width <= 820) return 2
-  if (width <= 960) return 3
-  return 5
-})
+const assetColumnCount = computed(() => responsiveGalleryColumnCount(historyViewportWidth.value))
 
 const historyMasonryColumns = computed(() =>
   buildBalancedMasonryColumns(visibleHistoryItems.value, historyColumnCount.value),
@@ -801,6 +874,10 @@ function normalizePromptCategory(value) {
 function promptCategoryLabel(value) {
   const key = normalizePromptCategory(value)
   return PROMPT_CATEGORY_META.find((item) => item.value === key)?.label || '其他'
+}
+
+function selectPromptCategory(value) {
+  promptCategoryFilter.value = value
 }
 
 async function loadMoreHistory() {
@@ -831,7 +908,7 @@ function resetHistoryWindow() {
 }
 
 function onHistoryViewportResize() {
-  historyViewportWidth.value = window.innerWidth
+  historyViewportWidth.value = historyViewportRef.value?.clientWidth || window.innerWidth
   if (lightboxOpen.value) nextTick(clampLightboxPan)
 }
 
@@ -902,8 +979,16 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
     const response = await listPromptLibrary('t2i', {
       pageNumber: nextPage,
       pageSize: 24,
-      category: promptCategoryFilter.value,
-      sort: promptSort.value,
+      category: ['today', 'my-favorites'].includes(promptCategoryFilter.value)
+        ? 'all'
+        : promptCategoryFilter.value,
+      scope:
+        promptCategoryFilter.value === 'my-favorites'
+          ? 'favorites'
+          : promptCategoryFilter.value === 'today'
+            ? 'today'
+            : '',
+      sort: promptCategoryFilter.value === 'today' ? 'latest' : promptSort.value,
       fallbackItems: T2I_PROMPT_LIBRARY,
     })
     const incoming = Array.isArray(response?.items) ? response.items : []
@@ -917,13 +1002,11 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
     promptPage.value = Number(response?.page || nextPage)
     promptTotal.value = Number(response?.total || managedPromptLibrary.value.length)
     promptHasMore.value = response?.hasMore === true
-    promptCategoryCounts.value = response?.categoryCounts || { all: promptTotal.value }
   } catch {
     if (reset) {
       managedPromptLibrary.value = []
       promptTotal.value = 0
       promptHasMore.value = false
-      promptCategoryCounts.value = { all: 0 }
     }
   } finally {
     promptLibraryLoading.value = false
@@ -997,6 +1080,12 @@ async function togglePromptEngagement(item, action) {
   try {
     const result = await recordPromptEngagement(item.id, action, !previous)
     applyPromptEngagementResult(item, result)
+    if (action === 'favorite' && previous && promptCategoryFilter.value === 'my-favorites') {
+      managedPromptLibrary.value = managedPromptLibrary.value.filter(
+        (entry) => entry.id !== item.id,
+      )
+      promptTotal.value = Math.max(0, promptTotal.value - 1)
+    }
   } catch (caught) {
     item[field] = previous
     item[countField] = Math.max(0, Number(item[countField] || 0) + (previous ? 1 : -1))
@@ -1031,8 +1120,8 @@ function assetTask(asset) {
   )
 }
 
-function openAsset(asset) {
-  openLightbox(assetTask(asset), 0)
+function openAsset(asset, event) {
+  openLightbox(assetTask(asset), 0, event)
 }
 
 function markAssetUnavailable(asset) {
@@ -1052,18 +1141,28 @@ onMounted(() => {
   setScopedLocalItem(MAIN_TAB_STORAGE_KEY, mainTab.value)
   window.addEventListener('keydown', handleLightboxKeydown)
   window.addEventListener('resize', onHistoryViewportResize, { passive: true })
+  if (typeof ResizeObserver !== 'undefined' && historyViewportRef.value) {
+    historyResizeObserver = new ResizeObserver(onHistoryViewportResize)
+    historyResizeObserver.observe(historyViewportRef.value)
+  }
+  onHistoryViewportResize()
   loadManagedPromptLibrary({ reset: true })
   void activateMainTab(mainTab.value)
 })
 
 onUnmounted(() => {
+  cancelLightboxFlip()
+  cancelStageFlip()
+  stageCanvasResizeObserver?.disconnect()
+  stageCanvasResizeObserver = null
   window.removeEventListener('keydown', handleLightboxKeydown)
+  clearLightboxChromeHideTimer()
   window.removeEventListener('resize', onHistoryViewportResize)
+  historyResizeObserver?.disconnect()
+  historyResizeObserver = null
   disconnectHistoryObserver()
   disconnectPromptObserver()
   disconnectAssetObserver()
-  cloudUpscaleLoadController?.abort()
-  cloudUpscaleRunController?.abort()
 })
 
 async function activateMainTab(tab) {
@@ -1095,6 +1194,7 @@ watch(mainTab, async (tab) => {
 })
 
 watch([promptCategoryFilter, promptSort], async () => {
+  setScopedLocalItem(PROMPT_CATEGORY_STORAGE_KEY, promptCategoryFilter.value)
   await loadManagedPromptLibrary({ reset: true })
   if (mainTab.value !== 'prompts') return
   await nextTick()
@@ -1167,22 +1267,172 @@ watch(
   { immediate: true },
 )
 
-function focusGalleryItem(item) {
+function applyFocusedGalleryItem(item) {
   if (!item?.key) return
   focusKey.value = item.key
   if (item.task) viewTask(item.task)
 }
 
+function focusGalleryItem(item, event) {
+  if (!item?.key || item.key === featuredItem.value?.key) return
+  if (galleryGroupKey(item) === (featuredGroup.value?.key ?? '')) {
+    applyFocusedGalleryItem(item)
+    return
+  }
+  const animate =
+    !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches &&
+    !document.documentElement.classList.contains('settings-no-animations')
+  const source = event?.currentTarget?.querySelector?.('.authenticated-image-media')
+  // 多图组直接整组上屏；原图已在缓存时立即显示原图，飞行动画只会徒增闪烁
+  const targetIsGrid =
+    (filmstripGroups.value.find((group) => group.key === galleryGroupKey(item))?.items.length ||
+      1) > 1
+  const originalReady = item.kind === 'image' && Boolean(getAuthenticatedMediaMetadata(item.url))
+  const canFlip =
+    animate &&
+    !targetIsGrid &&
+    !originalReady &&
+    item.kind === 'image' &&
+    source instanceof HTMLImageElement &&
+    Boolean(source.currentSrc || source.src) &&
+    typeof source.animate === 'function' &&
+    !lightboxOpen.value
+
+  if (!canFlip) {
+    cancelStageFlip()
+    applyFocusedGalleryItem(item)
+    return
+  }
+  void startStageFlip(source, item)
+}
+
+function cancelStageFlip() {
+  if (stageFlipSafetyTimer) {
+    window.clearTimeout(stageFlipSafetyTimer)
+    stageFlipSafetyTimer = null
+  }
+  if (stageFlipFadeTimer) {
+    window.clearTimeout(stageFlipFadeTimer)
+    stageFlipFadeTimer = null
+  }
+  if (stageFlipClone) {
+    stageFlipClone.remove()
+    stageFlipClone = null
+  }
+  stageFlipAnimationDone = false
+  stageFlipImageReady = false
+  stageSharedTransition.value = false
+}
+
+function markStageImageReady() {
+  stageFlipImageReady = true
+  maybeHandoverStageFlip()
+}
+
+function handleFeaturedImageLoad(item, event) {
+  markStageImageReady()
+  measureFeaturedImage(item, event)
+}
+
+function maybeHandoverStageFlip() {
+  if (!stageFlipClone || !stageFlipAnimationDone || !stageFlipImageReady) return
+  handoverStageFlip()
+}
+
+function handoverStageFlip() {
+  const clone = stageFlipClone
+  if (!clone) return
+  if (stageFlipSafetyTimer) {
+    window.clearTimeout(stageFlipSafetyTimer)
+    stageFlipSafetyTimer = null
+  }
+  stageSharedTransition.value = false
+  clone.style.transition = 'opacity 160ms ease'
+  clone.style.opacity = '0'
+  stageFlipFadeTimer = window.setTimeout(() => {
+    stageFlipFadeTimer = null
+    if (stageFlipClone === clone) stageFlipClone = null
+    clone.remove()
+  }, 180)
+}
+
+async function startStageFlip(source, item) {
+  cancelStageFlip()
+  const startRect = source.getBoundingClientRect()
+  const naturalWidth = Number(source.naturalWidth || 0) || startRect.width
+  const naturalHeight = Number(source.naturalHeight || 0) || startRect.height
+  if (!startRect.width || !startRect.height || !naturalWidth || !naturalHeight) {
+    applyFocusedGalleryItem(item)
+    return
+  }
+
+  const cloneSrc = source.currentSrc || source.src
+  stageSharedTransition.value = true
+  applyFocusedGalleryItem(item)
+  await nextTick()
+
+  const frameRect = stageFrameRef.value?.getBoundingClientRect()
+  if (!frameRect?.width || !frameRect?.height) {
+    cancelStageFlip()
+    return
+  }
+
+  const fitScale = Math.min(frameRect.width / naturalWidth, frameRect.height / naturalHeight)
+  const targetWidth = Math.max(1, naturalWidth * fitScale)
+  const targetHeight = Math.max(1, naturalHeight * fitScale)
+  const targetLeft = frameRect.left + (frameRect.width - targetWidth) / 2
+  const targetTop = frameRect.top + (frameRect.height - targetHeight) / 2
+
+  const clone = document.createElement('img')
+  clone.className = 't2i-stage-flip-clone'
+  clone.alt = ''
+  clone.decoding = 'async'
+  clone.setAttribute('aria-hidden', 'true')
+  clone.src = cloneSrc
+  clone.style.left = `${targetLeft}px`
+  clone.style.top = `${targetTop}px`
+  clone.style.width = `${targetWidth}px`
+  clone.style.height = `${targetHeight}px`
+  clone.addEventListener('error', cancelStageFlip, { once: true })
+  stageFlipClone = clone
+  document.body.appendChild(clone)
+  // 兜底：即使大图迟迟未就绪也按时交接，避免克隆图长期悬停
+  stageFlipSafetyTimer = window.setTimeout(() => {
+    stageFlipSafetyTimer = null
+    if (stageFlipClone === clone) handoverStageFlip()
+  }, 1200)
+
+  const deltaX = startRect.left - targetLeft
+  const deltaY = startRect.top - targetTop
+  const scaleX = startRect.width / targetWidth
+  const scaleY = startRect.height / targetHeight
+  try {
+    const animation = clone.animate(
+      [
+        { transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})` },
+        { transform: 'translate(0px, 0px) scale(1, 1)' },
+      ],
+      { duration: 300, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' },
+    )
+    await animation.finished
+    if (stageFlipClone !== clone) return
+    stageFlipAnimationDone = true
+    maybeHandoverStageFlip()
+  } catch {
+    if (stageFlipClone === clone) cancelStageFlip()
+  }
+}
+
 function stepFeatured(delta) {
-  const items = imageGallery.value
-  if (items.length < 2) return
-  const current = featuredItem.value
+  const groups = filmstripGroups.value
+  if (groups.length < 2) return
+  const currentKey = featuredGroup.value?.key
   const index = Math.max(
     0,
-    items.findIndex((item) => item.key === current?.key),
+    groups.findIndex((group) => group.key === currentKey),
   )
-  const next = items[(index + delta + items.length) % items.length]
-  focusGalleryItem(next)
+  const next = groups[(index + delta + groups.length) % groups.length]
+  applyFocusedGalleryItem(next.cover)
 }
 
 function resetLightboxView() {
@@ -1233,6 +1483,7 @@ function toggleLightboxZoom() {
 }
 
 function handleLightboxImageLoad(event) {
+  lightboxImageLoading.value = false
   lightboxNaturalSize.value = {
     width: Number(event?.target?.naturalWidth || 0),
     height: Number(event?.target?.naturalHeight || 0),
@@ -1318,14 +1569,9 @@ function stepLightbox(delta) {
   lightboxTask.value = next.task
   lightboxIndex.value = next.index
   lightboxUrl.value = next.url
-  lightboxBaseUrl.value = next.url
-  selectedCloudExperimentKey.value = ''
-  cloudUpscaleExperiments.value = []
-  cloudUpscalePanelOpen.value = false
+  lightboxImageLoading.value = Boolean(next.url)
   lightboxCompareEnabled.value = false
   lightboxComparePosition.value = 50
-  lightboxUpscaleMenuOpen.value = false
-  lightboxUpscaleScale.value = suggestedLightboxUpscaleScale(next.task)
   viewTask(next.task)
   lightboxNaturalSize.value = { width: 0, height: 0 }
   resetLightboxView()
@@ -1593,26 +1839,144 @@ async function submitHistoryToShare(options = {}) {
   }
 }
 
-function openLightbox(task, index = 0) {
+function applyLightboxContent(task, index, url) {
   const outputs = taskOutputs(task)
-  const url = outputs[index]
   viewTask(task)
-  if (!url) return
   lightboxTask.value = task
   lightboxIndex.value = index
-  lightboxUrl.value = url
-  lightboxBaseUrl.value = url
-  selectedCloudExperimentKey.value = ''
-  cloudUpscaleExperiments.value = []
-  cloudUpscaleError.value = ''
-  cloudUpscalePanelOpen.value = false
+  lightboxUrl.value = url || outputs[index]
+  lightboxImageLoading.value = Boolean(lightboxUrl.value)
   lightboxCompareEnabled.value = false
   lightboxComparePosition.value = 50
-  lightboxUpscaleMenuOpen.value = false
-  lightboxUpscaleScale.value = suggestedLightboxUpscaleScale(task)
   lightboxNaturalSize.value = { width: 0, height: 0 }
   resetLightboxView()
   lightboxOpen.value = true
+  wakeLightboxChrome()
+}
+
+function openLightbox(task, index = 0, event) {
+  const url = taskOutputs(task)[index]
+  if (!url) return
+
+  const animate =
+    !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches &&
+    !document.documentElement.classList.contains('settings-no-animations')
+  const source = event?.currentTarget?.querySelector?.('.authenticated-image-media')
+  const canFlip =
+    animate &&
+    source instanceof HTMLImageElement &&
+    Boolean(source.currentSrc || source.src) &&
+    typeof source.animate === 'function' &&
+    !lightboxFlipClone
+
+  if (!canFlip) {
+    lightboxPlainOpen.value = animate
+    applyLightboxContent(task, index, url)
+    if (animate) {
+      window.setTimeout(() => {
+        lightboxPlainOpen.value = false
+      }, 640)
+    }
+    return
+  }
+
+  void startLightboxFlip(source, task, index, url)
+}
+
+function cancelLightboxFlip() {
+  if (lightboxFlipSafetyTimer) {
+    window.clearTimeout(lightboxFlipSafetyTimer)
+    lightboxFlipSafetyTimer = null
+  }
+  if (lightboxFlipFadeTimer) {
+    window.clearTimeout(lightboxFlipFadeTimer)
+    lightboxFlipFadeTimer = null
+  }
+  if (lightboxFlipClone) {
+    lightboxFlipClone.remove()
+    lightboxFlipClone = null
+  }
+  lightboxFlipping.value = false
+}
+
+function handoverLightboxFlip() {
+  const clone = lightboxFlipClone
+  if (!clone) return
+  if (lightboxFlipSafetyTimer) {
+    window.clearTimeout(lightboxFlipSafetyTimer)
+    lightboxFlipSafetyTimer = null
+  }
+  lightboxFlipping.value = false
+  clone.style.transition = 'opacity 120ms ease'
+  clone.style.opacity = '0'
+  lightboxFlipFadeTimer = window.setTimeout(() => {
+    lightboxFlipFadeTimer = null
+    if (lightboxFlipClone === clone) lightboxFlipClone = null
+    clone.remove()
+  }, 140)
+}
+
+async function startLightboxFlip(source, task, index, url) {
+  const startRect = source.getBoundingClientRect()
+  const naturalWidth = Number(source.naturalWidth || 0) || startRect.width
+  const naturalHeight = Number(source.naturalHeight || 0) || startRect.height
+  if (!startRect.width || !startRect.height || !naturalWidth || !naturalHeight) {
+    lightboxPlainOpen.value = true
+    applyLightboxContent(task, index, url)
+    window.setTimeout(() => {
+      lightboxPlainOpen.value = false
+    }, 640)
+    return
+  }
+
+  const cloneSrc = source.currentSrc || source.src
+  lightboxFlipping.value = true
+  applyLightboxContent(task, index, url)
+  await nextTick()
+
+  const frameRect = lightboxFrameRef.value?.getBoundingClientRect()
+  const boxWidth = frameRect?.width || window.innerWidth
+  const boxHeight = frameRect?.height || window.innerHeight
+  const boxLeft = frameRect?.left || 0
+  const boxTop = frameRect?.top || 0
+  const fitScale = Math.min(boxWidth / naturalWidth, boxHeight / naturalHeight)
+  const targetWidth = Math.max(1, naturalWidth * fitScale)
+  const targetHeight = Math.max(1, naturalHeight * fitScale)
+  const targetLeft = boxLeft + (boxWidth - targetWidth) / 2
+  const targetTop = boxTop + (boxHeight - targetHeight) / 2
+
+  const clone = document.createElement('img')
+  clone.className = 't2i-lightbox-flip-clone'
+  clone.alt = ''
+  clone.decoding = 'async'
+  clone.setAttribute('aria-hidden', 'true')
+  clone.src = cloneSrc
+  clone.style.left = `${targetLeft}px`
+  clone.style.top = `${targetTop}px`
+  clone.style.width = `${targetWidth}px`
+  clone.style.height = `${targetHeight}px`
+  clone.addEventListener('error', cancelLightboxFlip, { once: true })
+  lightboxFlipClone = clone
+  document.body.appendChild(clone)
+  lightboxFlipSafetyTimer = window.setTimeout(cancelLightboxFlip, 500)
+
+  const deltaX = startRect.left - targetLeft
+  const deltaY = startRect.top - targetTop
+  const scaleX = startRect.width / targetWidth
+  const scaleY = startRect.height / targetHeight
+  try {
+    const animation = clone.animate(
+      [
+        { transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})` },
+        { transform: 'translate(0px, 0px) scale(1, 1)' },
+      ],
+      { duration: 320, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' },
+    )
+    await animation.finished
+    if (lightboxFlipClone === clone) handoverLightboxFlip()
+  } catch {
+    if (lightboxFlipClone === clone) cancelLightboxFlip()
+  }
 }
 
 function prefetchLocalMaskEditor() {
@@ -1659,23 +2023,52 @@ async function submitLocalMaskEdit(payload) {
   }
 }
 
+function clearLightboxChromeHideTimer() {
+  if (lightboxChromeHideTimer) {
+    window.clearTimeout(lightboxChromeHideTimer)
+    lightboxChromeHideTimer = null
+  }
+}
+
+function wakeLightboxChrome() {
+  lightboxChromeVisible.value = true
+  clearLightboxChromeHideTimer()
+  lightboxChromeHideTimer = window.setTimeout(() => {
+    lightboxChromeVisible.value = false
+    lightboxChromeHideTimer = null
+  }, 2500)
+}
+
 function closeLightbox() {
-  cloudUpscaleLoadController?.abort()
-  cloudUpscaleRunController?.abort()
+  if (lightboxClosing.value) return
+  cancelLightboxFlip()
+  const animate =
+    !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches &&
+    !document.documentElement.classList.contains('settings-no-animations')
+  if (!animate) {
+    finishCloseLightbox()
+    return
+  }
+  lightboxClosing.value = true
+  window.setTimeout(() => {
+    lightboxClosing.value = false
+    finishCloseLightbox()
+  }, 220)
+}
+
+function finishCloseLightbox() {
+  clearLightboxChromeHideTimer()
+  lightboxChromeVisible.value = true
   resetLightboxView()
   lightboxOpen.value = false
   lightboxUrl.value = ''
-  lightboxBaseUrl.value = ''
   lightboxTask.value = null
   lightboxIndex.value = 0
+  lightboxImageLoading.value = false
   lightboxCompareEnabled.value = false
   lightboxComparePosition.value = 50
   lightboxCompareDragging.value = false
   lightboxComparePointerId = null
-  lightboxUpscaleMenuOpen.value = false
-  cloudUpscalePanelOpen.value = false
-  cloudUpscaleExperiments.value = []
-  selectedCloudExperimentKey.value = ''
 }
 
 function toggleLightboxCompare() {
@@ -1698,19 +2091,6 @@ function downloadLightbox() {
 }
 
 function handleLightboxImageError() {
-  if (selectedCloudExperimentKey.value) {
-    const failedKey = selectedCloudExperimentKey.value
-    selectedCloudExperimentKey.value = ''
-    cloudUpscaleExperiments.value = cloudUpscaleExperiments.value.filter(
-      (item) => cloudExperimentKey(item) !== failedKey,
-    )
-    lightboxUrl.value = lightboxBaseUrl.value
-    lightboxCompareEnabled.value = false
-    lightboxNaturalSize.value = { width: 0, height: 0 }
-    resetLightboxView()
-    notificationService.warning('该云端实验图片暂时无法读取，已回到原图')
-    return
-  }
   const failedTask = lightboxTask.value
   const failedIndex = lightboxIndex.value
   const failedUrl = lightboxUrl.value
@@ -1722,230 +2102,6 @@ function handleLightboxImageError() {
 function handleLightboxOriginalImageError() {
   lightboxCompareEnabled.value = false
   notificationService.info('原始图片暂时无法读取，已退出前后对比')
-}
-
-function suggestedLightboxUpscaleScale(task) {
-  const size = String(task?.actualOutputSize || task?.outputSize || task?.originalOutputSize || '')
-  const match = size.match(/(\d+)\s*[x×]\s*(\d+)/i)
-  const longest = match ? Math.max(Number(match[1]), Number(match[2])) : 0
-  if (longest >= 3500) return '8K'
-  if (longest >= 1500) return '4K'
-  return '2K'
-}
-
-function toggleLightboxUpscaleMenu() {
-  if (upscaleBusyId.value) return
-  lightboxUpscaleMenuOpen.value = !lightboxUpscaleMenuOpen.value
-}
-
-async function selectLightboxUpscaleScale(scale) {
-  const normalized = String(scale || '')
-    .trim()
-    .toUpperCase()
-  if (!LIGHTBOX_UPSCALE_OPTIONS.includes(normalized)) return
-  lightboxUpscaleScale.value = normalized
-  lightboxUpscaleMenuOpen.value = false
-  await upscaleLightboxImage(normalized)
-}
-
-async function upscaleLightboxImage(targetScale = lightboxUpscaleScale.value) {
-  const task = lightboxTask.value
-  // Reprocess from the preserved provider image instead of sharpening an
-  // already-upscaled JPEG again. This also lets existing 4K results adopt
-  // newer local processing parameters without compounding artifacts.
-  const url = String(task?.originalOutputUrl || lightboxUrl.value).trim()
-  if (!task || !url || upscaleBusyId.value) return
-  upscaleBusyId.value = String(task.id || task.serverJobId || url)
-  try {
-    await createUpscaleTask(task, url, { targetScale })
-    const refreshed = tasks.value.find((item) => item.id === task.id)
-    const processedUrl = taskOutputs(refreshed)[0]
-    if (refreshed && processedUrl) {
-      lightboxTask.value = refreshed
-      lightboxIndex.value = 0
-      lightboxUrl.value = processedUrl
-      lightboxBaseUrl.value = processedUrl
-      selectedCloudExperimentKey.value = ''
-      lightboxNaturalSize.value = { width: 0, height: 0 }
-      lightboxCompareEnabled.value = Boolean(refreshed.originalOutputUrl)
-      lightboxComparePosition.value = 50
-      resetLightboxView()
-      if (lightboxCompareEnabled.value) nextTick(() => setLightboxZoom(2))
-    }
-  } catch (error) {
-    notificationService.error(error?.message || '高清放大失败')
-  } finally {
-    upscaleBusyId.value = ''
-  }
-}
-
-function cloudExperimentKey(experiment) {
-  return `${String(experiment?.provider || '')}:${String(experiment?.target || '')}`
-}
-
-function lightboxServerJobId() {
-  return String(lightboxTask.value?.serverJobId || lightboxTask.value?.id || '')
-    .replace(/^server-/, '')
-    .trim()
-}
-
-async function loadCloudUpscaleWorkspace() {
-  const jobId = lightboxServerJobId()
-  if (!jobId) {
-    cloudUpscaleError.value = '当前作品缺少服务端任务记录，无法进行云端对照测试'
-    return
-  }
-  cloudUpscaleLoadController?.abort()
-  const controller = new AbortController()
-  cloudUpscaleLoadController = controller
-  cloudUpscaleLoading.value = true
-  cloudUpscaleError.value = ''
-  try {
-    const [providerResponse, experimentResponse] = await Promise.all([
-      listCloudUpscaleProviders({ signal: controller.signal }),
-      listServerAiUpscaleExperiments(jobId, { signal: controller.signal }),
-    ])
-    if (controller.signal.aborted) return
-    cloudUpscaleProviders.value = Array.isArray(providerResponse?.providers)
-      ? providerResponse.providers
-      : []
-    cloudUpscaleExperiments.value = Array.isArray(experimentResponse?.experiments)
-      ? experimentResponse.experiments
-      : []
-    const selected =
-      cloudUpscaleProviders.value.find(
-        (provider) => provider.id === cloudUpscaleProviderId.value,
-      ) || cloudUpscaleProviders.value[0]
-    if (selected) selectCloudUpscaleProvider(selected.id)
-  } catch (error) {
-    if (error?.name !== 'AbortError') {
-      cloudUpscaleError.value = error?.message || '云端超清工作区加载失败'
-    }
-  } finally {
-    if (cloudUpscaleLoadController === controller) cloudUpscaleLoadController = null
-    if (!controller.signal.aborted) cloudUpscaleLoading.value = false
-  }
-}
-
-function toggleCloudUpscalePanel() {
-  cloudUpscalePanelOpen.value = !cloudUpscalePanelOpen.value
-  if (!cloudUpscalePanelOpen.value) return
-  lightboxUpscaleMenuOpen.value = false
-  void loadCloudUpscaleWorkspace()
-}
-
-function selectCloudUpscaleProvider(providerId) {
-  const provider = cloudUpscaleProviders.value.find((item) => item.id === providerId)
-  if (!provider) return
-  cloudUpscaleProviderId.value = provider.id
-  if (!provider.supportedTargets?.includes(cloudUpscaleTarget.value)) {
-    cloudUpscaleTarget.value = provider.supportedTargets?.includes('4K')
-      ? '4K'
-      : provider.supportedTargets?.[0] || '4K'
-  }
-  cloudUpscaleError.value = ''
-}
-
-function selectCloudUpscaleTarget(target) {
-  cloudUpscaleTarget.value = String(target || '').toUpperCase()
-  cloudUpscaleError.value = ''
-}
-
-function selectCloudUpscaleExperiment(experiment) {
-  const url = String(experiment?.mediaUrl || '').trim()
-  if (!url) return
-  selectedCloudExperimentKey.value = cloudExperimentKey(experiment)
-  lightboxUrl.value = url
-  lightboxNaturalSize.value = { width: 0, height: 0 }
-  lightboxCompareEnabled.value = Boolean(lightboxBaseUrl.value)
-  lightboxComparePosition.value = 50
-  resetLightboxView()
-}
-
-function selectCloudUpscaleOriginal() {
-  if (!lightboxBaseUrl.value) return
-  selectedCloudExperimentKey.value = ''
-  lightboxUrl.value = lightboxBaseUrl.value
-  lightboxCompareEnabled.value = false
-  lightboxNaturalSize.value = { width: 0, height: 0 }
-  resetLightboxView()
-}
-
-async function runCloudUpscaleExperiment() {
-  const jobId = lightboxServerJobId()
-  const provider = cloudUpscaleProviders.value.find(
-    (item) => item.id === cloudUpscaleProviderId.value,
-  )
-  if (!jobId || !provider || !provider.available || cloudUpscaleRunningProviderId.value) return
-  cloudUpscaleRunController?.abort()
-  const controller = new AbortController()
-  cloudUpscaleRunController = controller
-  cloudUpscaleRunningProviderId.value = provider.id
-  cloudUpscaleError.value = ''
-  try {
-    const requestInput = {
-      provider: provider.id,
-      target: cloudUpscaleTarget.value,
-      prompt: taskPrompt(lightboxTask.value),
-    }
-    let response
-    try {
-      response = await createServerAiUpscaleExperiment(jobId, requestInput, {
-        signal: controller.signal,
-      })
-    } catch (error) {
-      if (provider.id !== 'cloudflare-images' || !isTransientUpscaleConnectionError(error)) {
-        throw error
-      }
-      cloudUpscaleError.value = '连接暂时中断，正在自动恢复 Cloudflare Images 任务…'
-      await waitForCloudUpscaleRetry(1_500, controller.signal)
-      response = await createServerAiUpscaleExperiment(jobId, requestInput, {
-        signal: controller.signal,
-      })
-    }
-    const experiment = response?.experiment
-    if (!experiment) throw new Error('云端方案未返回可用结果')
-    cloudUpscaleExperiments.value = [
-      experiment,
-      ...cloudUpscaleExperiments.value.filter(
-        (item) => cloudExperimentKey(item) !== cloudExperimentKey(experiment),
-      ),
-    ]
-    selectCloudUpscaleExperiment(experiment)
-    notificationService.success(`${provider.label} ${cloudUpscaleTarget.value} 对照结果已生成`)
-  } catch (error) {
-    if (error?.name !== 'AbortError') {
-      cloudUpscaleError.value = isTransientUpscaleConnectionError(error)
-        ? `Cloudflare Images 连接不稳定，自动重试仍未成功。${cloudUpscaleTarget.value === '2K' ? '请稍后再试。' : '建议先测试 2K，网络恢复后再生成高分辨率。'}`
-        : error?.message || '云端超清实验失败'
-      notificationService.error(cloudUpscaleError.value)
-    }
-  } finally {
-    if (cloudUpscaleRunController === controller) cloudUpscaleRunController = null
-    if (!controller.signal.aborted) cloudUpscaleRunningProviderId.value = ''
-  }
-}
-
-function isTransientUpscaleConnectionError(error) {
-  const message = String(error?.message || error || '')
-  return /network connection lost|connection (?:lost|reset|closed)|fetch failed|network error|连接中断|连接不稳定|传输中断/i.test(
-    message,
-  )
-}
-
-function waitForCloudUpscaleRetry(ms, signal) {
-  if (signal?.aborted) return Promise.reject(new DOMException('云端超清已取消', 'AbortError'))
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        window.clearTimeout(timer)
-        reject(new DOMException('云端超清已取消', 'AbortError'))
-      },
-      { once: true },
-    )
-  })
 }
 
 async function editTask(task) {
@@ -2076,7 +2232,6 @@ async function confirmClearFailedTasks() {
 
 function closeMenus() {
   skillPanelOpen.value = false
-  lightboxUpscaleMenuOpen.value = false
 }
 
 function submitCustomSkill() {
@@ -2206,6 +2361,7 @@ function setMainTab(tab) {
                 :show-ratio-icons="false"
                 use-option-label
                 compact-text
+                glass-menu
               />
             </div>
             <div class="t2i-prompt-enhancers" aria-label="提示词智能处理">
@@ -2340,7 +2496,7 @@ function setMainTab(tab) {
       </button>
     </aside>
 
-    <main class="t2i-main" aria-label="创作结果">
+    <main ref="historyViewportRef" class="t2i-main" aria-label="创作结果">
       <header class="t2i-main-head">
         <div class="t2i-center-tabs" role="tablist" aria-label="主视图切换">
           <button
@@ -2443,9 +2599,13 @@ function setMainTab(tab) {
             <strong>创建您的第一个创作~</strong>
             <span>点左侧「立即生成」，大图会在这里展示；历史任务可在「历史记录」查看。</span>
           </div>
-          <div v-else-if="featuredItem" class="t2i-stage">
-            <div class="t2i-stage-canvas">
-              <div class="t2i-stage-frame" :style="featuredAspectStyle">
+          <div
+            v-else-if="featuredItem"
+            class="t2i-stage"
+            :class="{ 'is-image-transitioning': stageSharedTransition }"
+          >
+            <div ref="stageCanvasRef" class="t2i-stage-canvas">
+              <div ref="stageFrameRef" class="t2i-stage-frame" :style="featuredAspectStyle">
                 <div
                   v-if="featuredItem.kind === 'pending'"
                   class="t2i-stage-media is-skeleton"
@@ -2464,26 +2624,79 @@ function setMainTab(tab) {
                     <span class="t2i-pending-prompt">{{ featuredItem.title }}</span>
                   </div>
                 </div>
+                <div
+                  v-else-if="stageGridItems.length"
+                  class="t2i-stage-grid"
+                  :class="{ 'is-collage': stageGridLayout.collage }"
+                  :style="{ '--t2i-grid-cols': stageGridLayout.cols }"
+                  aria-label="同组图片"
+                >
+                  <div v-for="cell in stageGridItems" :key="cell.key" class="t2i-stage-cell">
+                    <button
+                      type="button"
+                      class="t2i-stage-cell-media"
+                      @click="openLightbox(cell.task, cell.index, $event)"
+                    >
+                      <ProgressiveAuthenticatedImage
+                        :src="cell.url"
+                        :preview-src="cell.thumbnailUrl"
+                        load-original
+                        hide-status
+                        alt=""
+                        loading="eager"
+                        @error="markImageUnavailable(cell.task, cell.index, cell.url)"
+                      />
+                    </button>
+                    <div class="t2i-stage-quick-actions is-cell" aria-label="图片快捷操作">
+                      <button
+                        type="button"
+                        aria-label="编辑图片"
+                        title="编辑"
+                        @click.stop="editTask(cell.task)"
+                      >
+                        <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="下载图片"
+                        title="下载"
+                        @click.stop="downloadTaskOutput(cell.task, cell.index)"
+                      >
+                        <i class="bi bi-download" aria-hidden="true"></i>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="设为参考图"
+                        title="设为参考图"
+                        @click.stop="useGeneratedAsReference(cell.task, cell.index)"
+                      >
+                        <i class="bi bi-images" aria-hidden="true"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
                 <button
                   v-else
                   type="button"
                   class="t2i-stage-media"
-                  @click="openLightbox(featuredItem.task, featuredItem.index)"
+                  @click="openLightbox(featuredItem.task, featuredItem.index, $event)"
                 >
                   <ProgressiveAuthenticatedImage
                     :src="featuredItem.url"
                     :preview-src="featuredItem.thumbnailUrl"
                     load-original
+                    hide-status
                     alt=""
                     loading="eager"
-                    @load="measureFeaturedImage(featuredItem, $event)"
+                    @preview-load="markStageImageReady"
+                    @load="handleFeaturedImageLoad(featuredItem, $event)"
                     @error="
                       markImageUnavailable(featuredItem.task, featuredItem.index, featuredItem.url)
                     "
                   />
                 </button>
                 <div
-                  v-if="featuredItem.kind === 'image'"
+                  v-if="featuredItem.kind === 'image' && !stageGridItems.length"
                   class="t2i-stage-quick-actions"
                   aria-label="图片快捷操作"
                 >
@@ -2631,46 +2844,54 @@ function setMainTab(tab) {
               </div>
             </div>
 
-            <div v-if="imageGallery.length > 1" class="t2i-filmstrip" aria-label="作品列表">
+            <div v-if="filmstripGroups.length > 1" class="t2i-filmstrip" aria-label="作品列表">
               <button
-                v-for="(item, galleryIndex) in imageGallery"
-                :key="item.key"
+                v-for="(group, groupIndex) in filmstripGroups"
+                :key="group.key"
                 type="button"
                 class="t2i-film-item"
                 :class="{
-                  'is-on': item.key === featuredItem.key,
-                  'is-pending': item.kind === 'pending',
-                  'is-upscaling': isLocalUpscaling(item.task),
+                  'is-on': group.key === featuredGroup?.key,
+                  'is-pending': group.kind === 'pending',
+                  'is-upscaling': isLocalUpscaling(group.cover.task),
                 }"
-                :title="item.kind === 'image' ? '单击查看，双击设为参考图' : '任务处理中'"
-                @click="focusGalleryItem(item)"
+                :title="
+                  group.kind !== 'image'
+                    ? '任务处理中'
+                    : group.items.length > 1
+                      ? '单击查看这组图片'
+                      : '单击查看，双击设为参考图'
+                "
+                @click="focusGalleryItem(group.cover, $event)"
                 @dblclick.stop="
-                  item.kind === 'image' && useGeneratedAsReference(item.task, item.index)
+                  group.kind === 'image' &&
+                  group.items.length === 1 &&
+                  useGeneratedAsReference(group.cover.task, group.cover.index)
                 "
               >
                 <span
-                  v-if="item.kind === 'pending'"
+                  v-if="group.kind === 'pending'"
                   class="t2i-film-pending"
                   role="status"
                   aria-label="任务处理中"
                 >
                   <span class="t2i-film-pending-spinner" aria-hidden="true"></span>
-                  <em>{{ formatTaskElapsed(item.task) || '即将开始' }}</em>
+                  <em>{{ formatTaskElapsed(group.cover.task) || '即将开始' }}</em>
                 </span>
                 <AuthenticatedImage
                   v-else
-                  :src="item.thumbnailUrl || item.url"
+                  :src="group.cover.thumbnailUrl || group.cover.url"
                   alt=""
-                  :loading="galleryIndex < 12 ? 'eager' : 'lazy'"
+                  :loading="groupIndex < 12 ? 'eager' : 'lazy'"
                   root-margin="180px 240px"
                   :max-dimension="FILMSTRIP_THUMBNAIL_DIMENSION"
-                  @error="markImageUnavailable(item.task, item.index, item.url)"
+                  @error="markImageUnavailable(group.cover.task, group.cover.index, group.cover.url)"
                 />
-                <span v-if="isLocalUpscaling(item.task)" class="t2i-film-upscale-progress">
-                  {{ Math.round(Number(item.task.localUpscaleProgress || 0)) }}%
+                <span v-if="isLocalUpscaling(group.cover.task)" class="t2i-film-upscale-progress">
+                  {{ Math.round(Number(group.cover.task.localUpscaleProgress || 0)) }}%
                 </span>
-                <span v-if="galleryItemBatchLabel(item)" class="t2i-film-batch-index">
-                  {{ galleryItemBatchLabel(item) }}
+                <span v-if="group.items.length > 1" class="t2i-film-batch-index">
+                  {{ group.items.length }} 张
                 </span>
               </button>
             </div>
@@ -2712,7 +2933,7 @@ function setMainTab(tab) {
                   type="button"
                   class="t2i-masonry-cover"
                   :style="{ aspectRatio: item.aspect }"
-                  @click="openLightbox(item.task, item.index)"
+                  @click="openLightbox(item.task, item.index, $event)"
                 >
                   <ProgressiveAuthenticatedImage
                     :src="item.url"
@@ -2885,19 +3106,7 @@ function setMainTab(tab) {
       </section>
 
       <section v-else-if="mainTab === 'prompts'" class="t2i-panel t2i-library-view">
-        <div v-if="promptLibraryLoading" class="t2i-history-skeleton" aria-label="提示词库加载中">
-          <div v-for="column in 3" :key="column" class="t2i-history-skeleton-col">
-            <article v-for="row in 3" :key="row" class="t2i-history-skeleton-card">
-              <div class="t2i-skeleton-shine"></div>
-            </article>
-          </div>
-        </div>
-        <div v-else-if="!managedPromptLibrary.length" class="t2i-empty">
-          <div class="t2i-empty-icon"><i class="bi bi-journal-text"></i></div>
-          <strong>提示词库暂时为空</strong>
-          <span>管理员添加并分配到“图片生成”后会显示在这里。</span>
-        </div>
-        <div v-else class="t2i-masonry-wrap">
+        <div class="t2i-masonry-wrap">
           <div class="t2i-library-toolbar">
             <nav class="t2i-library-categories" aria-label="提示词分类">
               <button
@@ -2905,17 +3114,15 @@ function setMainTab(tab) {
                 :key="category.value"
                 type="button"
                 :class="{ 'is-active': promptCategoryFilter === category.value }"
-                @click="promptCategoryFilter = category.value"
+                @click="selectPromptCategory(category.value)"
               >
                 {{ category.label }}
-                <em>{{ category.count }}</em>
               </button>
             </nav>
-            <label class="t2i-library-sort">
+            <label v-if="promptCategoryFilter !== 'today'" class="t2i-library-sort">
               <i class="bi bi-sort-down" aria-hidden="true"></i>
               <select v-model="promptSort" aria-label="提示词排序">
                 <option value="recommended">智能推荐</option>
-                <option value="latest">最新发布</option>
                 <option value="favorites">收藏最多</option>
                 <option value="likes">点赞最多</option>
                 <option value="usage">使用最多</option>
@@ -2923,10 +3130,18 @@ function setMainTab(tab) {
             </label>
           </div>
 
-          <div v-if="!promptLibraryFeedItems.length" class="t2i-empty t2i-collection-empty">
+          <div v-if="promptLibraryLoading" class="t2i-history-skeleton" aria-label="提示词库加载中">
+            <div v-for="column in 3" :key="column" class="t2i-history-skeleton-col">
+              <article v-for="row in 3" :key="row" class="t2i-history-skeleton-card">
+                <div class="t2i-skeleton-shine"></div>
+              </article>
+            </div>
+          </div>
+
+          <div v-else-if="!promptLibraryFeedItems.length" class="t2i-empty t2i-collection-empty">
             <div class="t2i-empty-icon"><i class="bi bi-filter"></i></div>
-            <strong>该分类暂时没有提示词</strong>
-            <span>选择其他分类继续浏览。</span>
+            <strong>{{ promptLibraryEmptyTitle }}</strong>
+            <span>{{ promptLibraryEmptyDescription }}</span>
           </div>
 
           <div v-else class="t2i-masonry" :style="{ '--t2i-masonry-cols': libraryColumnCount }">
@@ -3057,7 +3272,7 @@ function setMainTab(tab) {
                   type="button"
                   class="t2i-masonry-cover"
                   :style="{ aspectRatio: entry.aspect }"
-                  @click="openAsset(entry.asset)"
+                  @click="openAsset(entry.asset, $event)"
                 >
                   <AuthenticatedImage
                     :src="entry.asset.coverUrl || entry.asset.resultUrl"
@@ -3127,152 +3342,20 @@ function setMainTab(tab) {
       <div
         v-if="lightboxOpen"
         class="t2i-lightbox"
+        :class="{
+          'is-flip-open': lightboxFlipping,
+          'is-closing': lightboxClosing,
+          'is-plain-open': lightboxPlainOpen,
+          'is-chrome-hidden': !lightboxChromeVisible,
+        }"
         role="dialog"
         aria-modal="true"
         aria-label="全屏预览"
         @click.self="closeLightbox"
+        @mousemove="wakeLightboxChrome"
+        @touchstart.passive="wakeLightboxChrome"
       >
-        <div class="t2i-lightbox-actions" aria-label="预览操作" @click.stop>
-          <button
-            type="button"
-            aria-label="局部编辑图片"
-            title="局部编辑"
-            @pointerenter="prefetchLocalMaskEditor"
-            @focus="prefetchLocalMaskEditor"
-            @click="openLocalMaskEditor"
-          >
-            <i class="bi bi-brush" aria-hidden="true"></i>
-          </button>
-          <button
-            v-if="lightboxCanCompare"
-            type="button"
-            :class="{ 'is-on': lightboxCompareEnabled }"
-            :aria-pressed="lightboxCompareEnabled"
-            aria-label="对比原图和处理后图片"
-            :title="lightboxCompareEnabled ? '退出前后对比' : '前后对比'"
-            @click="toggleLightboxCompare"
-          >
-            <i class="bi bi-layout-split" aria-hidden="true"></i>
-          </button>
-          <div
-            v-if="superResolutionFeatureEnabled"
-            class="t2i-lightbox-upscale-picker"
-            :class="{ 'is-open': lightboxUpscaleMenuOpen, 'is-busy': Boolean(upscaleBusyId) }"
-          >
-            <button
-              type="button"
-              class="t2i-lightbox-upscale-trigger"
-              :disabled="Boolean(upscaleBusyId)"
-              aria-haspopup="menu"
-              :aria-expanded="lightboxUpscaleMenuOpen"
-              :aria-label="`选择并生成 ${lightboxUpscaleScale} 图片`"
-              :title="
-                lightboxTask?.originalOutputUrl
-                  ? '从原图重新优化（不调用模型）'
-                  : '本地高清放大（不调用模型）'
-              "
-              @click="toggleLightboxUpscaleMenu"
-            >
-              <i
-                class="bi"
-                :class="upscaleBusyId ? 'bi-arrow-repeat spin' : 'bi-arrows-angle-expand'"
-                aria-hidden="true"
-              ></i>
-              <span>{{ upscaleBusyId ? '处理中' : lightboxUpscaleScale }}</span>
-              <i class="bi bi-chevron-down" aria-hidden="true"></i>
-            </button>
-            <Transition name="t2i-upscale-menu">
-              <div
-                v-if="lightboxUpscaleMenuOpen"
-                class="t2i-lightbox-upscale-menu"
-                role="menu"
-                aria-label="选择高清尺寸"
-              >
-                <button
-                  v-for="scale in LIGHTBOX_UPSCALE_OPTIONS"
-                  :key="scale"
-                  type="button"
-                  role="menuitem"
-                  :class="{ 'is-on': lightboxUpscaleScale === scale }"
-                  @click="selectLightboxUpscaleScale(scale)"
-                >
-                  <span>{{ scale }}</span>
-                  <small>{{ scale === '2K' ? '快速' : scale === '4K' ? '高清' : '极致' }}</small>
-                </button>
-              </div>
-            </Transition>
-          </div>
-          <button
-            type="button"
-            :class="{ 'is-on': cloudUpscalePanelOpen }"
-            aria-label="打开云端超清对照实验"
-            title="云端超清对照实验"
-            @click="toggleCloudUpscalePanel"
-          >
-            <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
-          </button>
-          <button type="button" aria-label="下载图片" title="下载" @click="downloadLightbox">
-            <i class="bi bi-download" aria-hidden="true"></i>
-          </button>
-          <button
-            type="button"
-            class="is-danger"
-            aria-label="删除图片"
-            title="删除"
-            @click="handleRemoveTask(lightboxTask)"
-          >
-            <i class="bi bi-trash" aria-hidden="true"></i>
-          </button>
-          <button type="button" aria-label="关闭预览" title="关闭" @click="closeLightbox">
-            <i class="bi bi-x-lg" aria-hidden="true"></i>
-          </button>
-        </div>
-
-        <CloudUpscaleExperimentPanel
-          :open="cloudUpscalePanelOpen"
-          :providers="cloudUpscaleProviders"
-          :experiments="cloudUpscaleExperiments"
-          :provider-id="cloudUpscaleProviderId"
-          :target="cloudUpscaleTarget"
-          :running-provider-id="cloudUpscaleRunningProviderId"
-          :loading="cloudUpscaleLoading"
-          :error="cloudUpscaleError"
-          :selected-experiment-key="selectedCloudExperimentKey"
-          @close="cloudUpscalePanelOpen = false"
-          @select-provider="selectCloudUpscaleProvider"
-          @select-target="selectCloudUpscaleTarget"
-          @run="runCloudUpscaleExperiment"
-          @select-experiment="selectCloudUpscaleExperiment"
-          @select-original="selectCloudUpscaleOriginal"
-        />
-
-        <UpscaleProcessingOverlay
-          v-if="lightboxLiveTask && isLocalUpscaling(lightboxLiveTask)"
-          :task="lightboxLiveTask"
-          fullscreen
-          :cancelling="actionBusyId === String(lightboxLiveTask.id)"
-          @cancel="handleCancelTask(lightboxLiveTask)"
-        />
-
-        <header class="t2i-lightbox-head">
-          <div class="t2i-lightbox-title">
-            <strong>全屏预览</strong>
-            <small v-if="lightboxPositionLabel">{{ lightboxPositionLabel }}</small>
-            <small v-else-if="lightboxTask">{{ taskPrompt(lightboxTask) }}</small>
-            <small v-if="lightboxTask" class="is-size">{{ lightboxProcessedLabel }}</small>
-          </div>
-        </header>
-
         <div class="t2i-lightbox-stage">
-          <button
-            v-if="lightboxGalleryItems.length > 1"
-            type="button"
-            class="t2i-lightbox-nav is-prev"
-            aria-label="上一张"
-            @click.stop="stepLightbox(-1)"
-          >
-            <i class="bi bi-chevron-left" aria-hidden="true"></i>
-          </button>
           <div
             ref="lightboxFrameRef"
             class="t2i-lightbox-frame"
@@ -3293,12 +3376,14 @@ function setMainTab(tab) {
                 :src="lightboxUrl"
                 :preview-src="lightboxPreviewUrl"
                 load-original
+                hide-status
                 alt=""
                 class="is-processed"
                 loading="eager"
                 draggable="false"
                 @load="handleLightboxImageLoad"
                 @error="handleLightboxImageError"
+                @original-error="lightboxImageLoading = false"
                 @dragstart.prevent
               />
             </div>
@@ -3346,41 +3431,129 @@ function setMainTab(tab) {
               </button>
             </template>
           </div>
+        </div>
+
+        <UpscaleProcessingOverlay
+          v-if="lightboxLiveTask && isLocalUpscaling(lightboxLiveTask)"
+          :task="lightboxLiveTask"
+          fullscreen
+          :cancelling="actionBusyId === String(lightboxLiveTask.id)"
+          @cancel="handleCancelTask(lightboxLiveTask)"
+        />
+
+        <template v-if="lightboxGalleryItems.length > 1">
           <button
-            v-if="lightboxGalleryItems.length > 1"
             type="button"
-            class="t2i-lightbox-nav is-next"
+            class="t2i-lightbox-hotzone is-prev"
+            aria-label="上一张"
+            title="上一张"
+            @click.stop="stepLightbox(-1)"
+          >
+            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+          </button>
+          <button
+            type="button"
+            class="t2i-lightbox-hotzone is-next"
             aria-label="下一张"
+            title="下一张"
             @click.stop="stepLightbox(1)"
           >
             <i class="bi bi-chevron-right" aria-hidden="true"></i>
           </button>
+        </template>
+
+        <div
+          class="t2i-lightbox-load-chip"
+          :class="{ 'is-visible': lightboxImageLoading }"
+          aria-hidden="true"
+        >
+          <span class="t2i-lightbox-load-chip-dot"></span>
+          <span>图片加载中</span>
         </div>
 
-        <div class="t2i-lightbox-zoom-tools" aria-label="图片缩放工具" @click.stop>
-          <button
-            type="button"
-            :disabled="lightboxZoom <= LIGHTBOX_MIN_ZOOM"
-            aria-label="缩小图片"
-            @click="zoomLightbox(-LIGHTBOX_ZOOM_STEP)"
-          >
-            <i class="bi bi-zoom-out"></i>
-            <span>缩小</span>
-          </button>
-          <output>{{ lightboxZoomLabel }}</output>
-          <button
-            type="button"
-            :disabled="lightboxZoom >= LIGHTBOX_MAX_ZOOM"
-            aria-label="放大图片"
-            @click="zoomLightbox(LIGHTBOX_ZOOM_STEP)"
-          >
-            <i class="bi bi-zoom-in"></i>
-            <span>放大</span>
-          </button>
-          <button type="button" aria-label="适应屏幕" @click="resetLightboxView">
-            <i class="bi bi-arrows-angle-contract"></i>
-            <span>适应屏幕</span>
-          </button>
+        <div class="t2i-lightbox-controls" aria-label="预览操作" @click.stop>
+          <div class="t2i-lightbox-controls-info">
+            <strong
+              class="t2i-lightbox-controls-title"
+              :title="lightboxTask ? taskPrompt(lightboxTask) : ''"
+            >
+              {{ (lightboxTask && taskPrompt(lightboxTask)) || '图片预览' }}
+            </strong>
+            <span v-if="lightboxPositionLabel" class="t2i-lightbox-controls-count">{{
+              lightboxPositionLabel
+            }}</span>
+            <span v-if="lightboxProcessedLabel" class="t2i-lightbox-controls-size">{{
+              lightboxProcessedLabel
+            }}</span>
+          </div>
+          <div v-if="lightboxGalleryItems.length > 1" class="t2i-lightbox-controls-nav">
+            <button type="button" aria-label="上一张" title="上一张" @click="stepLightbox(-1)">
+              <i class="bi bi-chevron-left" aria-hidden="true"></i>
+            </button>
+            <button type="button" aria-label="下一张" title="下一张" @click="stepLightbox(1)">
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="t2i-lightbox-controls-tools">
+            <button
+              type="button"
+              :disabled="lightboxZoom <= LIGHTBOX_MIN_ZOOM"
+              aria-label="缩小图片"
+              @click="zoomLightbox(-LIGHTBOX_ZOOM_STEP)"
+            >
+              <i class="bi bi-zoom-out" aria-hidden="true"></i>
+            </button>
+            <output class="t2i-lightbox-controls-zoom">{{ lightboxZoomLabel }}</output>
+            <button
+              type="button"
+              :disabled="lightboxZoom >= LIGHTBOX_MAX_ZOOM"
+              aria-label="放大图片"
+              @click="zoomLightbox(LIGHTBOX_ZOOM_STEP)"
+            >
+              <i class="bi bi-zoom-in" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="is-fit" aria-label="适应屏幕" @click="resetLightboxView">
+              <i class="bi bi-arrows-angle-contract" aria-hidden="true"></i>
+              <span>适应</span>
+            </button>
+            <button
+              v-if="lightboxCanCompare"
+              type="button"
+              :class="{ 'is-on': lightboxCompareEnabled }"
+              :aria-pressed="lightboxCompareEnabled"
+              aria-label="对比原图和处理后图片"
+              :title="lightboxCompareEnabled ? '退出前后对比' : '前后对比'"
+              @click="toggleLightboxCompare"
+            >
+              <i class="bi bi-layout-split" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              aria-label="局部编辑图片"
+              title="局部编辑"
+              @pointerenter="prefetchLocalMaskEditor"
+              @focus="prefetchLocalMaskEditor"
+              @click="openLocalMaskEditor"
+            >
+              <i class="bi bi-brush" aria-hidden="true"></i>
+            </button>
+            <button type="button" aria-label="下载图片" title="下载" @click="downloadLightbox">
+              <i class="bi bi-download" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              class="is-danger"
+              aria-label="删除图片"
+              title="删除"
+              @click="handleRemoveTask(lightboxTask)"
+            >
+              <i class="bi bi-trash" aria-hidden="true"></i>
+            </button>
+            <span class="t2i-lightbox-controls-divider" aria-hidden="true"></span>
+            <button type="button" aria-label="关闭预览" title="关闭" @click="closeLightbox">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </div>
         </div>
       </div>
     </Teleport>

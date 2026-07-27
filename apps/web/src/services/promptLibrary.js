@@ -92,9 +92,16 @@ function buildFallbackResponse(fallbackItems, category) {
  * @returns {Promise<{items: Array, page: number, total: number, hasMore: boolean, categoryCounts: object}>}
  */
 export async function listPromptLibrary(type, options = {}) {
-  const { pageNumber = 1, pageSize = 24, category = '', sort = 'recommended', fallbackItems = [] } = options
+  const {
+    pageNumber = 1,
+    pageSize = 24,
+    category = '',
+    scope = '',
+    sort = 'recommended',
+    fallbackItems = [],
+  } = options
   const normalizedCategory = category === 'all' ? '' : String(category || '')
-  const key = chainKey(type, normalizedCategory, sort)
+  const key = chainKey(type, normalizedCategory, `${scope}:${sort}`)
   const chain = cursorChains.get(key) || ['']
   const page = Math.max(1, Number(pageNumber) || 1)
 
@@ -109,6 +116,7 @@ export async function listPromptLibrary(type, options = {}) {
     const { items, nextCursor, categoryCounts } = await listPrompts({
       type,
       category: normalizedCategory,
+      scope,
       sort,
       cursor,
       limit: pageSize,
@@ -116,7 +124,7 @@ export async function listPromptLibrary(type, options = {}) {
     if (page === 1 && (!normalizedCategory || Number(categoryCounts?.all || 0) > 0)) {
       serverHasData.set(type, items.length > 0 || Number(categoryCounts?.all || 0) > 0)
     }
-    if (page === 1 && !items.length && !serverHasData.get(type)) {
+    if (page === 1 && !scope && !items.length && !serverHasData.get(type)) {
       return buildFallbackResponse(fallbackItems, normalizedCategory)
     }
     const nextChain = chain.slice(0, page)
@@ -138,7 +146,11 @@ export async function listPromptLibrary(type, options = {}) {
       categoryCounts: countsByType.get(type) || countCategories(legacyItems),
     }
   } catch {
-    if (page === 1) return buildFallbackResponse(fallbackItems, normalizedCategory)
+    if (page === 1) {
+      return scope
+        ? { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
+        : buildFallbackResponse(fallbackItems, normalizedCategory)
+    }
     return { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
   }
 }

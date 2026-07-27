@@ -1,8 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { gsap } from 'gsap'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import WallevenImagePreview from '@/components/common/WallevenImagePreview.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
+import { withTransparentPngInstruction } from '@/features/ai-shared/transparentPng'
 import { readImageFile } from '@/features/design-workshop/imageWorkshop'
 import { useCanvasDeck } from '@/features/creative-studios/useCanvasDeck'
 import { useCreativeImageJob } from '@/features/creative-studios/useCreativeImageJob'
@@ -30,19 +33,352 @@ const ASSET_TYPES = [
     ],
     aspects: ['3:4', '1:1', '9:16'],
     defaultAspect: '3:4',
+    controlGroups: [
+      { id: 'composition', label: '构图与镜头', output: true },
+      { id: 'identity', label: '角色塑造' },
+      { id: 'face', label: '面部与发型' },
+      { id: 'performance', label: '动作与表演' },
+      { id: 'wardrobe', label: '服装与装备' },
+      { id: 'surface', label: '材质与状态' },
+      { id: 'narrative', label: '阵营与特效' },
+      { id: 'lighting', label: '灯光与色彩' },
+      { id: 'production', label: '生产约束' },
+      { id: 'reference', label: '参考图约束' },
+    ],
     selects: [
       {
-        key: 'pose',
-        label: '呈现方式',
+        key: 'framing',
+        group: 'composition',
+        label: '画面用途',
         options: [
           { id: 'full-body', label: '全身立绘', prompt: '完整全身立绘，主体居中无裁切，脚部完整' },
           { id: 'turnaround', label: '三视图', prompt: '同一角色的正面、侧面、背面三视图并排，比例严格一致' },
           { id: 'bust', label: '半身特写', prompt: '半身像特写，突出面部神态与上身服装细节' },
-          { id: 'action', label: '动态动作', prompt: '战斗动态姿势，动作张力强，剪影依然清晰可读' },
+          { id: 'splash', label: '宣传立绘', prompt: '游戏宣传级角色立绘，构图具有叙事张力和强视觉焦点' },
+        ],
+      },
+      {
+        key: 'camera',
+        group: 'composition',
+        label: '镜头机位',
+        options: [
+          { id: 'auto', label: '智能机位', prompt: '' },
+          { id: 'three-quarter', label: '经典 3/4', prompt: '经典三分之四视角，面部与身体结构同时清晰可见' },
+          { id: 'eye-level', label: '平视', prompt: '平视机位，角色比例自然稳定' },
+          { id: 'low-angle', label: '低机位', prompt: '轻微低机位仰拍，强化角色力量感与英雄气质' },
+          { id: 'high-angle', label: '高机位', prompt: '轻微高机位俯拍，强化角色轮廓和叙事氛围' },
+        ],
+      },
+      {
+        key: 'archetype',
+        group: 'identity',
+        label: '角色定位',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'hero', label: '主角', prompt: '主角定位，拥有鲜明识别点与可持续成长的视觉设计' },
+          { id: 'companion', label: '伙伴', prompt: '核心伙伴定位，亲和但不抢夺主角视觉中心' },
+          { id: 'villain', label: '反派', prompt: '主要反派定位，危险感与压迫感明确，动机气质可信' },
+          { id: 'boss', label: '首领', prompt: 'Boss 首领定位，体量感强，拥有阶段性战斗设计线索' },
+          { id: 'npc', label: 'NPC', prompt: '功能型 NPC 定位，职业和阵营信息一眼可读' },
+        ],
+      },
+      {
+        key: 'subjectForm',
+        group: 'identity',
+        label: '角色形态',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'humanoid', label: '人形', prompt: '人形或类人形角色，人体结构、关节与穿戴关系可信' },
+          { id: 'creature', label: '生物', prompt: '非人类生物角色，解剖结构、运动方式与生态特征自洽' },
+          { id: 'mechanical', label: '机械', prompt: '机械角色，关节、动力核心、装甲分件与功能结构合理' },
+          { id: 'spirit', label: '灵体', prompt: '能量或灵体角色，实体轮廓可读，透明与发光层次受控' },
+        ],
+      },
+      {
+        key: 'age',
+        group: 'identity',
+        label: '视觉年龄',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'young', label: '青年', prompt: '青年角色的面部与身体年龄特征' },
+          { id: 'adult', label: '成年', prompt: '成熟成年角色的面部与身体年龄特征' },
+          { id: 'mature', label: '中年', prompt: '阅历丰富的中年角色特征，适度年龄纹理' },
+          { id: 'elder', label: '长者', prompt: '高龄长者特征，年龄结构真实且保持角色魅力' },
+        ],
+      },
+      {
+        key: 'build',
+        group: 'identity',
+        label: '体型轮廓',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'balanced', label: '匀称', prompt: '匀称可信的身体比例，轮廓均衡' },
+          { id: 'agile', label: '敏捷', prompt: '修长敏捷体型，动作轻盈，轮廓锐利' },
+          { id: 'powerful', label: '强壮', prompt: '强壮有力体型，肌肉结构与装备承重合理' },
+          { id: 'heavy', label: '厚重', prompt: '厚重高体量轮廓，稳定感与压迫感强' },
+        ],
+      },
+      {
+        key: 'proportion',
+        group: 'identity',
+        label: '比例风格',
+        options: [
+          { id: 'auto', label: '匹配描述', prompt: '' },
+          { id: 'realistic', label: '写实比例', prompt: '接近真实人体的自然比例与解剖结构' },
+          { id: 'heroic', label: '英雄比例', prompt: '适度拉长的英雄比例，肩颈与四肢更具力量美感' },
+          { id: 'stylized', label: '风格化', prompt: '风格化角色比例，形体夸张但结构自洽' },
+          { id: 'chibi', label: 'Q 版', prompt: 'Q 版大头短身比例，轮廓可爱且细节简洁可读' },
+        ],
+      },
+      {
+        key: 'faceShape',
+        group: 'face',
+        label: '面部结构',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'soft', label: '柔和', prompt: '柔和流畅的面部结构与轮廓转折' },
+          { id: 'angular', label: '棱角', prompt: '棱角分明的骨相与面部轮廓，结构清晰' },
+          { id: 'rugged', label: '硬朗', prompt: '硬朗粗粝的面部结构，保留真实皮肤与年龄细节' },
+          { id: 'stylized', label: '风格化', prompt: '风格化面部比例，五官夸张但身份稳定且不崩坏' },
+        ],
+      },
+      {
+        key: 'hairDesign',
+        group: 'face',
+        label: '发型轮廓',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'short', label: '短发', prompt: '短发大形清晰，发束方向服从头部结构' },
+          { id: 'long', label: '长发', prompt: '长发轮廓具有流动感，发丝层级清晰且不遮挡主体结构' },
+          { id: 'tied', label: '束发', prompt: '束发或编发结构，固定方式和发饰逻辑清楚' },
+          { id: 'covered', label: '头盔/兜帽', prompt: '头盔或兜帽作为主要头部轮廓，结构与服装设计统一' },
+        ],
+      },
+      {
+        key: 'facialDetail',
+        group: 'face',
+        label: '面部记忆点',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'clean', label: '干净', prompt: '面部保持干净克制，依靠五官比例建立识别度' },
+          { id: 'scar', label: '伤痕', prompt: '加入有叙事意义的伤痕，位置合理且不过度猎奇' },
+          { id: 'marking', label: '纹身/印记', prompt: '加入阵营纹身或能量印记，图形设计与世界观统一' },
+          { id: 'makeup', label: '妆容', prompt: '具有角色身份感的妆容，色彩与服装主色呼应' },
+        ],
+      },
+      {
+        key: 'stance',
+        group: 'performance',
+        label: '身体姿态',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'ready', label: '准备姿态', prompt: '自然准备姿态，重心明确，双手和装备无遮挡' },
+          { id: 'neutral', label: '中性站姿', prompt: '中性稳定站姿，便于完整读取服装与身体结构' },
+          { id: 'combat', label: '战斗动作', prompt: '战斗动态姿势，动作张力强，剪影依然清晰可读' },
+          { id: 'casting', label: '施法动作', prompt: '施法动作，手势和能量流向明确，特效不遮挡主体' },
+          { id: 'movement', label: '运动瞬间', prompt: '奔跑或跃动中的关键帧姿态，动态方向清晰' },
+        ],
+      },
+      {
+        key: 'expression',
+        group: 'performance',
+        label: '面部表情',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'determined', label: '坚定', prompt: '坚定专注的表情，眼神方向明确' },
+          { id: 'calm', label: '冷静', prompt: '冷静克制的表情，情绪细腻自然' },
+          { id: 'fierce', label: '凌厉', prompt: '凌厉具有威胁感的表情，避免夸张变形' },
+          { id: 'mysterious', label: '神秘', prompt: '神秘疏离的表情与目光，保留情绪解读空间' },
+          { id: 'warm', label: '亲和', prompt: '自然亲和的表情，避免僵硬商业微笑' },
+        ],
+      },
+      {
+        key: 'gaze',
+        group: 'performance',
+        label: '视线方向',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'camera', label: '看向镜头', prompt: '目光看向镜头，与观者建立直接联系' },
+          { id: 'off-camera', label: '看向画外', prompt: '目光看向画外目标，形成叙事方向' },
+          { id: 'target', label: '锁定目标', prompt: '目光锁定战斗或施法目标，与身体动作方向一致' },
+          { id: 'downcast', label: '垂眸', prompt: '视线轻微向下，塑造内敛沉思的情绪' },
+        ],
+      },
+      {
+        key: 'costume',
+        group: 'wardrobe',
+        label: '服装结构',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'layered', label: '多层服装', prompt: '内中外多层服装结构，穿着逻辑和层级关系清晰' },
+          { id: 'light', label: '轻装', prompt: '轻量服装与护具，强调灵活性和活动范围' },
+          { id: 'armor', label: '重甲', prompt: '分件式重型护甲，关节活动结构与防护逻辑合理' },
+          { id: 'ceremonial', label: '礼服', prompt: '仪式性礼服结构，身份符号、纹章与装饰秩序明确' },
+        ],
+      },
+      {
+        key: 'detailDensity',
+        group: 'wardrobe',
+        label: '细节密度',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'production', label: '生产均衡', prompt: '生产可控的中等细节密度，主次关系明确，避免无意义碎细节' },
+          { id: 'restrained', label: '简洁', prompt: '克制简洁的形面与装饰，依靠轮廓和配色建立识别度' },
+          { id: 'rich', label: '丰富', prompt: '丰富但有秩序的服装、材质和工艺细节' },
+          { id: 'ornate', label: '华丽', prompt: '高密度华丽装饰，纹样与结构服从角色身份和视觉焦点' },
+        ],
+      },
+      {
+        key: 'equipment',
+        group: 'wardrobe',
+        label: '装备展示',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'signature', label: '标志武器', prompt: '清晰展示一件标志性主武器或核心道具，与角色设计语言统一' },
+          { id: 'none', label: '无武器', prompt: '不展示武器，把视觉重点集中在角色本体与服装' },
+          { id: 'dual', label: '双持装备', prompt: '展示成对或双持装备，左右关系明确且不遮挡身体' },
+          { id: 'loadout', label: '完整配装', prompt: '展示完整战斗配装，主副武器、收纳和携行位置合理' },
+        ],
+      },
+      {
+        key: 'materialSystem',
+        group: 'surface',
+        label: '主材质组合',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'fabric-leather', label: '布料/皮革', prompt: '以布料和皮革为主，软硬、粗细和反光层级清楚' },
+          { id: 'metal', label: '金属装甲', prompt: '以金属装甲为主，不同金属粗糙度、边缘磨损和厚度可信' },
+          { id: 'organic', label: '生物材质', prompt: '骨骼、甲壳、皮肤或植物等生物材质层次自然自洽' },
+          { id: 'tech', label: '科技复合', prompt: '科技复合材料、能源结构与功能分件具有工业设计逻辑' },
+        ],
+      },
+      {
+        key: 'surfaceCondition',
+        group: 'surface',
+        label: '表面状态',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'pristine', label: '崭新', prompt: '崭新洁净表面，工艺边缘锐利，避免塑料感' },
+          { id: 'used', label: '使用痕迹', prompt: '适量真实使用痕迹集中在接触区、关节和边缘' },
+          { id: 'battle-worn', label: '战损', prompt: '可信战损、刮痕和修补痕迹，保持主体结构完整可读' },
+          { id: 'ancient', label: '古旧', prompt: '年代久远的氧化、褪色和沉积痕迹，材质差异仍然清晰' },
+        ],
+      },
+      {
+        key: 'factionTone',
+        group: 'narrative',
+        label: '阵营气质',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'heroic', label: '英雄', prompt: '英雄阵营气质，开放稳定的形状语言与可信荣誉符号' },
+          { id: 'dark', label: '暗黑', prompt: '暗黑危险阵营气质，尖锐压迫的形状语言但避免无意义堆刺' },
+          { id: 'sacred', label: '神圣', prompt: '神圣秩序阵营气质，对称结构与仪式符号克制明确' },
+          { id: 'rogue', label: '游侠', prompt: '自由游侠阵营气质，非对称实用装备与旅行痕迹丰富' },
+        ],
+      },
+      {
+        key: 'powerSource',
+        group: 'narrative',
+        label: '力量来源',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'none', label: '无特效', prompt: '不使用能量特效，完全依靠形体、材质与装备表达能力' },
+          { id: 'magic', label: '魔法', prompt: '魔法能量来源明确，符文、施法媒介与颜色系统统一' },
+          { id: 'technology', label: '科技', prompt: '科技动力来源明确，能源核心、导线与发光区域具有功能逻辑' },
+          { id: 'nature', label: '自然', prompt: '自然元素力量，植物、风、水、火或岩石与角色结构自然融合' },
+          { id: 'corruption', label: '侵蚀', prompt: '受控的侵蚀或异化力量，扩散路径和材质变化具有叙事逻辑' },
+        ],
+      },
+      {
+        key: 'vfxIntensity',
+        group: 'narrative',
+        label: '特效强度',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'subtle', label: '轻量', prompt: '轻量能量特效，仅强调关键视觉焦点，不遮挡角色' },
+          { id: 'none', label: '关闭', prompt: '不添加环境粒子、能量光带或装饰特效' },
+          { id: 'medium', label: '适中', prompt: '适中强度特效围绕动作与装备组织，主体保持清晰' },
+          { id: 'strong', label: '强烈', prompt: '高强度宣传级特效，保留完整轮廓、面部和装备可读性' },
+        ],
+      },
+      {
+        key: 'lighting',
+        group: 'lighting',
+        label: '布光方式',
+        options: [
+          { id: 'auto', label: '自动布光', prompt: '' },
+          { id: 'studio', label: '影棚光', prompt: '中性柔和影棚布光，材质、肤色和服装细节均清晰可辨' },
+          { id: 'cinematic', label: '电影光', prompt: '电影感主辅光关系，明暗层次塑造角色气质' },
+          { id: 'rim', label: '轮廓光', prompt: '清晰轮廓光分离主体与背景，边缘不过曝' },
+          { id: 'dramatic', label: '戏剧光', prompt: '强方向性戏剧布光，保留暗部结构与关键细节' },
+        ],
+      },
+      {
+        key: 'colorDirection',
+        group: 'lighting',
+        label: '色彩关系',
+        options: [
+          { id: 'auto', label: '匹配描述', prompt: '' },
+          { id: 'balanced', label: '自然平衡', prompt: '自然平衡配色，主色、辅色和强调色比例清晰' },
+          { id: 'warm-cool', label: '冷暖对比', prompt: '冷暖色对比明确，色温服务于角色阵营与情绪' },
+          { id: 'complementary', label: '互补色', prompt: '克制的互补色关系，强调色集中在视觉焦点' },
+          { id: 'monochrome', label: '单色强调', prompt: '近似色主导，使用少量高纯度强调色建立记忆点' },
+        ],
+      },
+      {
+        key: 'background',
+        group: 'lighting',
+        label: '背景呈现',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'studio', label: '纯色影棚', prompt: '克制纯色影棚背景，主体与背景明度清晰分离' },
+          { id: 'gradient', label: '渐变氛围', prompt: '简洁渐变氛围背景，不出现抢夺主体的具体物件' },
+          { id: 'environment', label: '叙事场景', prompt: '与角色身份匹配的简化叙事场景，背景细节服从主体' },
+        ],
+      },
+      {
+        key: 'variationMode',
+        group: 'production',
+        label: '批次策略',
+        requiresBatch: true,
+        options: [
+          { id: 'balanced', label: '平衡探索', prompt: '批量结果保持同一需求，每张探索不同但合理的设计方向' },
+          { id: 'diverse', label: '扩大差异', prompt: '批量结果显著改变轮廓、服装结构与配色方向，避免近似复制' },
+          { id: 'consistent', label: '锁定角色', prompt: '批量结果严格保持同一角色身份、脸部、体型和核心服装，只改变姿态或细节方案' },
+          { id: 'costume', label: '服装变体', prompt: '批量结果保持同一角色身份和体型，重点探索同世界观下的服装变体' },
+        ],
+      },
+      {
+        key: 'silhouetteLanguage',
+        group: 'production',
+        label: '轮廓语言',
+        options: [
+          { id: 'auto', label: '自动', prompt: '' },
+          { id: 'compact', label: '紧凑', prompt: '紧凑稳定轮廓，挂件收束，适合高频战斗读取' },
+          { id: 'flowing', label: '飘逸', prompt: '飘逸外轮廓，长摆、披风或发束形成清晰动势' },
+          { id: 'angular', label: '锐利', prompt: '锐利方向性轮廓，尖角集中在关键识别区' },
+          { id: 'massive', label: '巨型', prompt: '巨型高体量轮廓，重心、承重与比例关系可信' },
+        ],
+      },
+      {
+        key: 'referenceFidelity',
+        group: 'reference',
+        label: '还原强度',
+        requiresReference: true,
+        options: [
+          { id: 'balanced', label: '平衡还原', prompt: '保留参考图身份、脸部、轮廓与核心服装，同时进行生产级优化' },
+          { id: 'strict', label: '严格还原', prompt: '严格保持参考图角色身份、脸部、发型、体型、服装和配色，不重新设计' },
+          { id: 'identity', label: '锁定身份', prompt: '锁定参考图人物身份和脸部特征，允许重新设计服装、装备与姿态' },
+          { id: 'inspiration', label: '仅作灵感', prompt: '仅提取参考图的视觉气质与设计语言，不复制具体身份和造型' },
         ],
       },
     ],
-    toggles: [{ key: 'transparent', label: '透明背景', prompt: '纯净透明背景，主体边缘干净' }],
+    toggles: [
+      { key: 'transparent', group: 'composition', label: '透明背景', icon: 'bi-transparency', prompt: '纯净透明背景，主体边缘干净' },
+      { key: 'visibleFace', group: 'production', label: '面部无遮挡', icon: 'bi-person-bounding-box', prompt: '脸部和双眼清晰可见，不被头发、特效、武器或阴影遮挡' },
+      { key: 'visibleHands', group: 'production', label: '双手完整', icon: 'bi-hand-index', prompt: '双手完整可见，手指结构自然，持握关系正确，不被裁切' },
+      { key: 'modularParts', group: 'production', label: '支持拆件', icon: 'bi-boxes', prompt: '服装、护甲、武器和挂件分层明确，连接点清楚，适合后续建模拆件' },
+    ],
     line: '游戏角色概念设计，轮廓剪影可识别，服装与装备结构清晰可拆解，适合建模与立绘使用。',
     shareCategory: 'illustration',
   },
@@ -268,6 +604,7 @@ const {
   // 任务 kind 按资产类型细分（game-art-character-generation…），
   // 历史记录据此归类到各自的 tab，不再六类混在一条胶片里。
   kindVariants: ASSET_TYPES.map((type) => type.id),
+  preferOriginalOutputs: true,
 })
 
 const assetType = ref('character')
@@ -393,6 +730,11 @@ function outputTypeLabel(url) {
 const typeOutputs = computed(() =>
   outputs.value.filter((url) => outputTypeOf(url) === assetType.value),
 )
+const fullscreenOutputs = computed(() => {
+  const list = typeOutputs.value.length ? typeOutputs.value : outputs.value
+  const current = String(activeOutput.value || '')
+  return current && !list.includes(current) ? [current, ...list] : list
+})
 // 未细分类型前生成的早期作品，统一收在资产库里查看。
 const legacyOutputs = computed(() => outputs.value.filter((url) => !outputTypeOf(url)))
 
@@ -515,22 +857,72 @@ function openFullscreen(url) {
   fullscreenOpen.value = true
 }
 
-function stepFullscreen(direction) {
-  const gallery = canvasOutputs.value.length ? canvasOutputs.value : outputs.value
-  if (gallery.length < 2) return
-  const index = Math.max(0, gallery.indexOf(activeOutput.value))
-  activeOutput.value = gallery[(index + direction + gallery.length) % gallery.length]
-}
 // 中西文混排时补空格：「游戏 UI 设计」而非「游戏 UI设计」
 const currentTypeHeading = computed(() => {
   const label = currentType.value.label
   return /[A-Za-z0-9]$/.test(label) ? `${label} 设计` : `${label}设计`
 })
 const currentState = computed(() => typeState[assetType.value])
+const hasReference = computed(() => Boolean(inputFile.value || referenceUrl.value))
+
+function isSelectRelevant(select) {
+  if (select.requiresReference && !hasReference.value) return false
+  if (select.requiresBatch && imageCount.value < 2) return false
+  if (select.key === 'background' && transparentEnabled.value) return false
+  if (
+    select.key === 'vfxIntensity' &&
+    ['auto', 'none'].includes(currentState.value.selects.powerSource)
+  ) {
+    return false
+  }
+  if (
+    assetType.value === 'character' &&
+    currentState.value.selects.framing === 'turnaround' &&
+    ['camera', 'stance', 'expression', 'gaze'].includes(select.key)
+  ) {
+    return false
+  }
+  return true
+}
+
+const currentControlGroups = computed(() => {
+  const definitions = currentType.value.controlGroups || [
+    { id: 'specs', label: '呈现与规格', output: true },
+  ]
+  return definitions
+    .map((group) => ({
+      ...group,
+      selects: currentType.value.selects.filter(
+        (select) => (select.group || 'specs') === group.id && isSelectRelevant(select),
+      ),
+      toggles: currentType.value.toggles.filter(
+        (toggle) => (toggle.group || 'specs') === group.id,
+      ),
+    }))
+    .filter((group) => group.output || group.selects.length || group.toggles.length)
+    .map((group, index) => ({ ...group, number: String(index + 1).padStart(2, '0') }))
+})
+
+const styleSectionNumber = computed(() => String(currentControlGroups.value.length + 1).padStart(2, '0'))
+const qualitySectionNumber = computed(() => String(currentControlGroups.value.length + 2).padStart(2, '0'))
 const currentStyle = computed(() => STYLE_OPTIONS.find((item) => item.id === style.value) || STYLE_OPTIONS[0])
 const transparentEnabled = computed(() => currentState.value.toggles.transparent === true)
 const publishJobId = computed(() => outputJobIds.value[publishTargetUrl.value] || '')
 const costLabel = computed(() => formatCostEstimate(imageCount.value))
+const costDisplay = computed(() => {
+  const text = String(costLabel.value || '').trim()
+  const value = text.replace(/^预计\s*/, '')
+  const detailStart = value.indexOf('（')
+  if (detailStart >= 0 && value.endsWith('）')) {
+    return {
+      price: value.slice(0, detailStart).trim(),
+      detail: value.slice(detailStart + 1, -1).trim(),
+    }
+  }
+  const perImage = value.match(/^((?:¥|\$)\s*\d+(?:\.\d+)?)\s*(\/\s*张)$/)
+  if (perImage) return { price: perImage[1], detail: perImage[2] }
+  return { price: value, detail: '' }
+})
 const showBatchProgress = computed(() => progressEntries.value.length > 1)
 
 // 资产库历史筛选：全部 / 仅早期未分类作品
@@ -552,27 +944,111 @@ const promptBlueprint = computed(() => {
   const lines = [state.prompt.trim() || type.defaultPrompt]
   lines.push(`游戏资产类型：${type.label}。${type.line}`)
   for (const select of type.selects || []) {
+    if (!isSelectRelevant(select)) continue
     const option = select.options.find((item) => item.id === state.selects[select.key])
-    if (option) lines.push(`${select.label}：${option.prompt}。`)
+    if (option?.prompt) lines.push(`${select.label}：${option.prompt}。`)
+  }
+  if (type.id === 'character' && state.selects.framing === 'turnaround') {
+    lines.push('三视图制作约束：中性 A-pose，正交相机，无透视畸变，正面、侧面和背面高度完全一致，无遮挡。')
   }
   lines.push(`美术风格：${currentStyle.value.prompt}。`)
   for (const toggle of type.toggles || []) {
-    if (state.toggles[toggle.key]) lines.push(`${toggle.prompt}。`)
+    if (toggle.key !== 'transparent' && state.toggles[toggle.key]) lines.push(`${toggle.prompt}。`)
   }
   lines.push(
     '生产要求：可直接用于游戏开发的高清资产，轮廓明确，材质可辨识，光照服务于形体，完整展示主体，细节经得起放大。',
   )
-  lines.push(`画质要求：${QUALITY_POSITIVE}。`)
+  lines.push(
+    transparentEnabled.value
+      ? '画质要求：干净高清主体，平滑抗锯齿轮廓，细腻材质，纯净色彩，清晰边缘，边缘透明度自然。'
+      : `画质要求：${QUALITY_POSITIVE}。`,
+  )
   // 像素美术本身就要像素颗粒与像素化，冲突项不排除
   const qualityNegative = QUALITY_NEGATIVE.filter(
     (item) => style.value !== 'pixel-art' || !['像素化', '颗粒感'].includes(item),
   )
   const negativeParts = [negative.value.trim(), qualityNegative.join('、')].filter(Boolean)
   lines.push(`负面约束：${negativeParts.join('，')}。`)
-  return lines.join('\n')
+  return withTransparentPngInstruction(lines.join('\n'), transparentEnabled.value)
 })
 
 useStudioMotion(studioRoot, activeOutput)
+
+let renderMotion = null
+
+watch(
+  busy,
+  async (active) => {
+    renderMotion?.revert()
+    renderMotion = null
+    if (!active) return
+    await nextTick()
+    if (!busy.value || !studioRoot.value) return
+
+    renderMotion = gsap.matchMedia()
+    renderMotion.add(
+      {
+        allowMotion: '(prefers-reduced-motion: no-preference)',
+        reduceMotion: '(prefers-reduced-motion: reduce)',
+      },
+      ({ conditions }) => {
+        if (conditions.reduceMotion) {
+          gsap.set('.ga-render-stage, .ga-render-copy, .ga-render-actions', { autoAlpha: 1 })
+          return
+        }
+
+        gsap.from('.ga-render-stage', {
+          autoAlpha: 0,
+          scale: 0.9,
+          duration: 0.7,
+          ease: 'power3.out',
+        })
+        gsap.from('.ga-render-copy, .ga-progress, .ga-render-actions', {
+          autoAlpha: 0,
+          y: 10,
+          duration: 0.5,
+          ease: 'power2.out',
+          stagger: 0.07,
+        })
+        gsap.to('.ga-signal-orbit.is-outer', {
+          rotation: 360,
+          duration: 9,
+          ease: 'none',
+          repeat: -1,
+        })
+        gsap.to('.ga-signal-orbit.is-inner', {
+          rotation: -360,
+          duration: 5.5,
+          ease: 'none',
+          repeat: -1,
+        })
+        gsap.to('.ga-signal-sweep', {
+          rotation: 360,
+          duration: 3.6,
+          ease: 'none',
+          repeat: -1,
+        })
+        gsap.to('.ga-signal-wave', {
+          autoAlpha: 0,
+          scale: 1.45,
+          duration: 2.2,
+          ease: 'power2.out',
+          stagger: 0.72,
+          repeat: -1,
+        })
+        gsap.to('.ga-signal-bar', {
+          scaleY: (index) => [0.45, 1, 0.68, 0.9][index] || 0.6,
+          duration: 0.58,
+          ease: 'sine.inOut',
+          stagger: { each: 0.09, repeat: -1, yoyo: true },
+          transformOrigin: '50% 100%',
+        })
+      },
+      studioRoot.value,
+    )
+  },
+  { flush: 'post' },
+)
 
 onMounted(() => {
   initialize()
@@ -581,6 +1057,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  renderMotion?.revert()
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('paste', handlePaste)
   window.clearTimeout(freshRevealTimer)
@@ -674,6 +1151,7 @@ function generate() {
     count: imageCount.value,
     quality: hdMode.value ? 'high' : 'medium',
     transparentPngEnabled: transparentEnabled.value,
+    upscaleOutputFormat: transparentEnabled.value ? 'png' : 'auto',
     viewLabel: currentType.value.label,
     kindVariant: assetType.value,
   })
@@ -990,8 +1468,25 @@ function assetStatusLabel(statusValue) {
               <span>点一个灵感填入描述，或直接在下方输入框写下你的想法</span>
             </div>
             <div v-if="busy" class="ga-render">
-              <div class="ga-loader"></div>
-              <strong>{{ overlayStatus }}</strong>
+              <div class="ga-render-stage" aria-hidden="true">
+                <span class="ga-signal-wave is-one"></span>
+                <span class="ga-signal-wave is-two"></span>
+                <span class="ga-signal-wave is-three"></span>
+                <span class="ga-signal-sweep"></span>
+                <span class="ga-signal-orbit is-outer"><i></i><i></i><i></i></span>
+                <span class="ga-signal-orbit is-inner"><i></i><i></i></span>
+                <span class="ga-signal-core">
+                  <i class="bi bi-stars"></i>
+                  <span class="ga-signal-bars">
+                    <i v-for="index in 4" :key="index" class="ga-signal-bar"></i>
+                  </span>
+                </span>
+              </div>
+              <div class="ga-render-copy" role="status" aria-live="polite" aria-atomic="true">
+                <span class="ga-render-live"><i></i>RENDER PROCESS</span>
+                <strong>{{ cancelling ? '正在终止云端任务' : overlayStatus }}</strong>
+                <small>{{ cancelling ? '正在同步停止状态，请稍候' : '任务已进入云端渲染队列' }}</small>
+              </div>
               <ul v-if="showBatchProgress" class="ga-progress" aria-label="生成进度">
                 <li v-for="(entry, index) in progressEntries" :key="index" :class="`is-${entry.status}`">
                   <i
@@ -1007,10 +1502,20 @@ function assetStatusLabel(statusValue) {
                   {{ entry.label }} {{ index + 1 }}
                 </li>
               </ul>
-              <small v-else>云端任务可安全离开页面后继续运行</small>
-              <button type="button" class="ga-cancel" :disabled="cancelling" @click="cancelGeneration()">
-                <i class="bi bi-x-lg"></i>{{ cancelling ? '正在取消…' : '取消生成' }}
-              </button>
+              <div class="ga-render-actions">
+                <button
+                  type="button"
+                  class="ga-cancel"
+                  :class="{ 'is-cancelling': cancelling }"
+                  :disabled="cancelling"
+                  :aria-busy="cancelling"
+                  @click="cancelGeneration()"
+                >
+                  <span class="ga-cancel-icon"><i class="bi" :class="cancelling ? 'bi-arrow-repeat spin' : 'bi-stop-fill'"></i></span>
+                  <span><strong>{{ cancelling ? '正在停止' : '停止生成' }}</strong><small>{{ cancelling ? '同步任务状态' : '立即终止本次任务' }}</small></span>
+                </button>
+                <span v-if="!cancelling" class="ga-render-safe"><i class="bi bi-cloud-check"></i>可离开页面</span>
+              </div>
             </div>
             <p v-if="deckActive && canvasOutputs.length > 1" class="ga-deck-hint">
               <i class="bi bi-arrows-vertical" aria-hidden="true"></i>滚轮或拖拽循环翻阅 · 点卡片看大图
@@ -1071,21 +1576,39 @@ function assetStatusLabel(statusValue) {
               </div>
             </div>
             <div class="ga-composer-run">
-              <button class="ga-generate" type="button" :disabled="busy" @click="generate">
-                <i class="bi" :class="busy ? 'bi-arrow-repeat spin' : 'bi-play-fill'"></i>
-                <span>{{ busy ? '正在渲染' : '启动生成' }}</span>
-                <kbd>↵</kbd>
+              <button
+                class="ga-generate"
+                :class="{ 'is-busy': busy }"
+                type="button"
+                :disabled="busy"
+                :aria-label="busy ? `正在渲染，${costLabel}` : `启动生成，${costLabel}`"
+                @click="generate"
+              >
+                <span class="ga-generate-icon" aria-hidden="true">
+                  <i class="bi" :class="busy ? 'bi-stars' : 'bi-play-fill'"></i>
+                  <span v-if="busy" class="ga-generate-orbit"></span>
+                </span>
+                <span class="ga-generate-copy">
+                  <span class="ga-generate-action">
+                    {{ busy ? '正在渲染' : '启动生成' }}
+                    <em v-if="costLabel">预计扣费</em>
+                    <span v-if="busy" class="ga-generate-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                  </span>
+                  <span v-if="costLabel" class="ga-generate-price">
+                    <strong>{{ costDisplay.price }}</strong>
+                    <small v-if="costDisplay.detail">{{ costDisplay.detail }}</small>
+                  </span>
+                </span>
+                <span class="ga-generate-trailing" aria-hidden="true">
+                  <span v-if="busy" class="ga-generate-live"><i></i>LIVE</span>
+                  <kbd v-else>↵</kbd>
+                </span>
+                <span v-if="busy" class="ga-generate-track" aria-hidden="true"><i></i></span>
               </button>
-              <p class="ga-cost">{{ costLabel }}</p>
             </div>
           </div>
 
           <input ref="fileInput" hidden type="file" accept="image/*" @change="chooseFile" />
-          <p v-if="typeOutputs.length > canvasOutputs.length" class="ga-more-hint">
-            <button type="button" @click="openLibrary('history')">
-              <i class="bi bi-collection"></i>画布只展示最近一批，全部 {{ typeOutputs.length }} 张作品都在资产库
-            </button>
-          </p>
         </section>
 
         <aside class="ga-console" data-studio-enter>
@@ -1094,73 +1617,88 @@ function assetStatusLabel(statusValue) {
           <div class="ga-console-body">
             <Transition name="ga-type" mode="out-in">
               <div :key="assetType" class="ga-type-section">
-                <div class="ga-sec"><b>01</b><span>呈现与规格</span></div>
-                <div class="ga-sec-body">
-                  <div v-for="select in currentType.selects" :key="select.key" class="ga-field">
-                    <span class="ga-field-label">{{ select.label }}</span>
-                    <div class="ga-chiprow" role="group" :aria-label="select.label">
+                <details
+                  v-for="group in currentControlGroups"
+                  :key="group.id"
+                  class="ga-control-group"
+                  :open="group.id === currentControlGroups[0]?.id"
+                >
+                  <summary class="ga-sec">
+                    <b>{{ group.number }}</b><span>{{ group.label }}</span>
+                    <em>{{ group.selects.length + group.toggles.length }}</em>
+                    <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                  </summary>
+                  <div class="ga-sec-body">
+                    <div v-for="select in group.selects" :key="select.key" class="ga-field">
+                      <span class="ga-field-label">{{ select.label }}</span>
+                      <div class="ga-chiprow" role="group" :aria-label="select.label">
+                        <button
+                          v-for="option in select.options"
+                          :key="option.id"
+                          type="button"
+                          :class="{ 'is-on': currentState.selects[select.key] === option.id }"
+                          :title="option.prompt"
+                          @click="currentState.selects[select.key] = option.id"
+                        >
+                          {{ option.label }}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div v-if="group.toggles.length" class="ga-toggles">
                       <button
-                        v-for="option in select.options"
-                        :key="option.id"
+                        v-for="toggle in group.toggles"
+                        :key="toggle.key"
                         type="button"
-                        :class="{ 'is-on': currentState.selects[select.key] === option.id }"
-                        :title="option.prompt"
-                        @click="currentState.selects[select.key] = option.id"
+                        :class="{ 'is-on': currentState.toggles[toggle.key] }"
+                        :title="toggle.prompt"
+                        role="switch"
+                        :aria-checked="currentState.toggles[toggle.key]"
+                        @click="currentState.toggles[toggle.key] = !currentState.toggles[toggle.key]"
                       >
-                        {{ option.label }}
+                        <span class="ga-toggle-copy">
+                          <i class="bi" :class="toggle.icon || 'bi-toggle2-off'" aria-hidden="true"></i>{{ toggle.label }}
+                        </span>
+                        <span class="ga-mini-switch" aria-hidden="true"><span></span></span>
                       </button>
                     </div>
-                  </div>
 
-                  <div v-if="currentType.toggles.length" class="ga-toggles">
-                    <button
-                      v-for="toggle in currentType.toggles"
-                      :key="toggle.key"
-                      type="button"
-                      :class="{ 'is-on': currentState.toggles[toggle.key] }"
-                      :title="toggle.prompt"
-                      @click="currentState.toggles[toggle.key] = !currentState.toggles[toggle.key]"
-                    >
-                      <i class="bi" :class="currentState.toggles[toggle.key] ? 'bi-toggle-on' : 'bi-toggle-off'"></i>
-                      {{ toggle.label }}
-                    </button>
-                  </div>
-
-                  <div class="ga-pair">
-                    <div class="ga-field">
-                      <span class="ga-field-label">输出比例</span>
-                      <div class="ga-chiprow" role="group" aria-label="输出比例">
-                        <button
-                          v-for="ratio in currentType.aspects"
-                          :key="ratio"
-                          type="button"
-                          :class="{ 'is-on': currentState.aspect === ratio }"
-                          @click="currentState.aspect = ratio"
-                        >
-                          {{ ratio }}
-                        </button>
+                    <div v-if="group.output" class="ga-pair">
+                      <div class="ga-field">
+                        <span class="ga-field-label">输出比例</span>
+                        <div class="ga-chiprow" role="group" aria-label="输出比例">
+                          <button
+                            v-for="ratio in currentType.aspects"
+                            :key="ratio"
+                            type="button"
+                            :class="{ 'is-on': currentState.aspect === ratio }"
+                            @click="currentState.aspect = ratio"
+                          >
+                            {{ ratio }}
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div class="ga-field">
-                      <span class="ga-field-label">生成数量</span>
-                      <div class="ga-chiprow" role="group" aria-label="生成数量">
-                        <button
-                          v-for="count in [1, 2, 3, 4]"
-                          :key="count"
-                          type="button"
-                          :class="{ 'is-on': imageCount === count }"
-                          @click="imageCount = count"
-                        >
-                          {{ count }}
-                        </button>
+                      <div class="ga-field">
+                        <span class="ga-field-label">生成数量</span>
+                        <div class="ga-chiprow" role="group" aria-label="生成数量">
+                          <button
+                            v-for="count in [1, 2, 3, 4]"
+                            :key="count"
+                            type="button"
+                            :class="{ 'is-on': imageCount === count }"
+                            @click="imageCount = count"
+                          >
+                            {{ count }}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                </details>
               </div>
             </Transition>
 
-            <div class="ga-sec"><b>02</b><span>美术风格</span></div>
+            <div class="ga-sec"><b>{{ styleSectionNumber }}</b><span>美术风格</span></div>
             <div class="ga-sec-body">
               <div class="ga-stylegrid" role="group" aria-label="美术风格">
                 <button
@@ -1178,7 +1716,7 @@ function assetStatusLabel(statusValue) {
               <p class="ga-style-hint">{{ currentStyle.prompt }}</p>
             </div>
 
-            <div class="ga-sec"><b>03</b><span>质量控制</span></div>
+            <div class="ga-sec"><b>{{ qualitySectionNumber }}</b><span>质量控制</span></div>
             <div class="ga-sec-body">
               <details><summary>负面约束<i class="bi bi-chevron-down"></i></summary><textarea v-model="negative" rows="3"></textarea></details>
             </div>
@@ -1316,35 +1854,16 @@ function assetStatusLabel(statusValue) {
       </Transition>
     </Teleport>
 
-    <Teleport to="body">
-      <Transition name="ga-zoom">
-        <div
-          v-if="fullscreenOpen && activeOutput"
-          class="ga-fullscreen"
-          role="dialog"
-          aria-modal="true"
-          aria-label="资产大图"
-          @click.self="fullscreenOpen = false"
-        >
-          <button type="button" aria-label="关闭大图" @click="fullscreenOpen = false"><i class="bi bi-x-lg"></i></button>
-          <button
-            v-if="(canvasOutputs.length || outputs.length) > 1"
-            type="button"
-            class="ga-fullscreen-nav is-prev"
-            aria-label="上一张"
-            @click="stepFullscreen(-1)"
-          ><i class="bi bi-chevron-left"></i></button>
-          <AuthenticatedImage :src="activeOutput" alt="游戏美术资产大图" loading="eager" />
-          <button
-            v-if="(canvasOutputs.length || outputs.length) > 1"
-            type="button"
-            class="ga-fullscreen-nav is-next"
-            aria-label="下一张"
-            @click="stepFullscreen(1)"
-          ><i class="bi bi-chevron-right"></i></button>
-        </div>
-      </Transition>
-    </Teleport>
+    <WallevenImagePreview
+      :open="fullscreenOpen"
+      :images="fullscreenOutputs"
+      :current-src="activeOutput"
+      :title="currentTypeHeading"
+      :filename="`game-${assetType}.png`"
+      :metadata="{ id: outputJobIds[activeOutput] || activeOutput, category: currentType.label, ratio: currentState.aspect, style: currentStyle.label }"
+      @close="fullscreenOpen = false"
+      @select="openFullscreen"
+    />
 
     <SharePublishDialog
       :open="publishOpen"
@@ -1581,6 +2100,67 @@ function assetStatusLabel(statusValue) {
   min-width: 0;
 }
 
+.ga-console .ga-control-group {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ga-console .ga-control-group > summary.ga-sec {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-top: 0;
+  padding: 12px 0 9px;
+  border-bottom: 1px solid #24282c;
+  color: inherit;
+  list-style: none;
+}
+
+.ga-console .ga-control-group > summary.ga-sec::-webkit-details-marker {
+  display: none;
+}
+
+.ga-control-group > summary.ga-sec > em {
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 5px;
+  background: #252a2e;
+  color: #737b80;
+  font: 700 8px/1 monospace;
+  font-style: normal;
+}
+
+.ga-control-group > summary.ga-sec > i {
+  color: #646c71;
+  font-size: 9px;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.ga-control-group[open] > summary.ga-sec > i {
+  color: var(--acid);
+  transform: rotate(180deg);
+}
+
+.ga-control-group[open] > summary.ga-sec > em {
+  background: #b8ff3511;
+  color: #9dcf43;
+}
+
+.ga-control-group > .ga-sec-body {
+  padding-bottom: 5px;
+}
+
+.ga-control-group:not([open]) > summary.ga-sec:hover span {
+  color: #fff;
+}
+
 .ga-style-hint {
   margin: 8px 0 0;
   font-size: 10px;
@@ -1812,7 +2392,9 @@ function assetStatusLabel(statusValue) {
 .ga-toggles button {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 144px;
   padding: 7px 11px;
   border: 1px solid #363b40;
   border-radius: 8px;
@@ -1823,13 +2405,52 @@ function assetStatusLabel(statusValue) {
   transition: border-color 0.15s ease, color 0.15s ease;
 }
 
-.ga-toggles button i {
-  font-size: 14px;
+.ga-toggle-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ga-toggle-copy > i {
+  font-size: 12px;
 }
 
 .ga-toggles button.is-on {
   border-color: var(--acid);
+  background: #1b201b;
   color: var(--acid);
+}
+
+.ga-mini-switch {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid #4b5257;
+  border-radius: 999px;
+  background: #171a1d;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.ga-mini-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #858d92;
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease;
+}
+
+.ga-toggles button.is-on .ga-mini-switch {
+  border-color: #b8ff3570;
+  background: #b8ff3517;
+}
+
+.ga-toggles button.is-on .ga-mini-switch > span {
+  background: var(--acid);
+  transform: translateX(12px);
 }
 
 .ga-quality {
@@ -1878,13 +2499,6 @@ function assetStatusLabel(statusValue) {
   color: #7b8288;
 }
 
-.ga-cost {
-  margin: 9px 0 0;
-  color: #6d747a;
-  font: 700 9px/1 monospace;
-  text-align: center;
-}
-
 .ga-login-hint {
   display: flex;
   align-items: center;
@@ -1902,10 +2516,180 @@ function assetStatusLabel(statusValue) {
 }
 
 /* ---------- 渲染进度与取消 ---------- */
-.ga-progress {
+.ga-render {
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, #101316f5, #0d1012fa),
+    #0d0f11;
+  backdrop-filter: none;
+}
+
+.ga-render-stage {
+  position: relative;
   display: grid;
+  width: 150px;
+  height: 150px;
+  place-items: center;
+  isolation: isolate;
+}
+
+.ga-render-stage::before,
+.ga-render-stage::after {
+  position: absolute;
+  content: '';
+  pointer-events: none;
+}
+
+.ga-render-stage::before {
+  inset: 8px;
+  border: 1px solid #ffffff0a;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 22px #ffffff03;
+}
+
+.ga-render-stage::after {
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(transparent, #b8ff351c 35%, #b8ff351c 65%, transparent);
+}
+
+.ga-signal-sweep {
+  position: absolute;
+  inset: 15px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 76%, #b8ff3505 84%, #b8ff352b 96%, transparent);
+  will-change: transform;
+}
+
+.ga-signal-orbit {
+  position: absolute;
+  border-radius: 50%;
+  will-change: transform;
+}
+
+.ga-signal-orbit.is-outer {
+  inset: 16px;
+  border: 1px dashed #64706475;
+}
+
+.ga-signal-orbit.is-inner {
+  inset: 39px;
+  border: 1px solid #35dcff42;
+}
+
+.ga-signal-orbit > i {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--acid);
+  box-shadow: 0 0 10px #b8ff357a;
+}
+
+.ga-signal-orbit.is-outer > i:nth-child(1) { top: -3px; left: 50%; }
+.ga-signal-orbit.is-outer > i:nth-child(2) { right: 8px; bottom: 18px; width: 3px; height: 3px; }
+.ga-signal-orbit.is-outer > i:nth-child(3) { bottom: 9px; left: 17px; width: 3px; height: 3px; background: var(--cyan); }
+.ga-signal-orbit.is-inner > i:nth-child(1) { top: 8px; right: 4px; width: 4px; height: 4px; background: var(--cyan); }
+.ga-signal-orbit.is-inner > i:nth-child(2) { bottom: 5px; left: 10px; width: 3px; height: 3px; }
+
+.ga-signal-wave {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border: 1px solid #b8ff3559;
+  border-radius: 50%;
+  opacity: 0.72;
+  will-change: transform, opacity;
+}
+
+.ga-signal-wave.is-two { opacity: 0.42; }
+.ga-signal-wave.is-three { opacity: 0.2; }
+
+.ga-signal-core {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  width: 54px;
+  height: 54px;
+  align-items: center;
+  justify-content: center;
   gap: 5px;
-  max-height: 120px;
+  border: 1px solid #b8ff355c;
+  border-radius: 12px;
+  background: #111812;
+  color: var(--acid);
+  box-shadow: inset 0 0 20px #b8ff350b, 0 0 24px #0009;
+}
+
+.ga-signal-core > i {
+  font-size: 15px;
+}
+
+.ga-signal-bars {
+  display: flex;
+  height: 15px;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.ga-signal-bar {
+  display: block;
+  width: 2px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--acid);
+  will-change: transform;
+}
+
+.ga-render-copy {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.ga-render-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #7c8580;
+  font: 750 8px/1 monospace;
+  letter-spacing: 0.12em;
+}
+
+.ga-render-live > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--acid);
+  box-shadow: 0 0 8px #b8ff356b;
+}
+
+.ga-render-copy > strong {
+  max-width: min(440px, 80vw);
+  color: #eef2ee;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.ga-render-copy > small {
+  color: #707873;
+  font-size: 9px;
+}
+
+.ga-progress {
+  display: flex;
+  max-width: min(420px, 82vw);
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-height: 86px;
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -1916,16 +2700,23 @@ function assetStatusLabel(statusValue) {
 .ga-progress li {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font: 600 10px/1.4 monospace;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #343a3e;
+  border-radius: 7px;
+  background: #111416;
+  font: 650 9px/1.4 monospace;
   color: #8a9197;
 }
 
 .ga-progress li.is-running {
+  border-color: #b8ff3547;
   color: #fff;
 }
 
 .ga-progress li.is-done {
+  border-color: #b8ff352e;
   color: var(--acid);
 }
 
@@ -1937,30 +2728,125 @@ function assetStatusLabel(statusValue) {
   color: #666;
 }
 
-.ga-cancel {
-  display: inline-flex;
+.ga-render-actions {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid #ffffff30;
-  border-radius: 8px;
-  background: transparent;
-  color: #fff;
-  font: 700 10px/1 monospace;
+  gap: 13px;
+}
+
+.ga-cancel {
+  display: grid;
+  grid-template-columns: 34px auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 156px;
+  height: 48px;
+  padding: 0 13px 0 7px;
+  border: 1px solid #4a5054;
+  border-radius: 10px;
+  background: #15181a;
+  color: #e9ecea;
+  text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.ga-cancel-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 7px;
+  background: #ffffff08;
+  color: #aeb5b1;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.ga-cancel > span:last-child {
+  display: grid;
+  gap: 4px;
+}
+
+.ga-cancel strong {
+  color: inherit;
+  font: 750 10px/1 inherit;
+}
+
+.ga-cancel small {
+  color: #747c77;
+  font: 600 7.5px/1 inherit;
 }
 
 .ga-cancel:hover:not(:disabled) {
-  border-color: var(--acid);
-  background: #b8ff3514;
+  border-color: #e06b6b8f;
+  background: #211718;
+  transform: translateY(-1px);
+}
+
+.ga-cancel:hover:not(:disabled) .ga-cancel-icon {
+  background: #d9515123;
+  color: #ff8585;
+}
+
+.ga-cancel:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+}
+
+.ga-cancel:focus-visible {
+  outline: 2px solid #ff7777;
+  outline-offset: 3px;
 }
 
 .ga-cancel:disabled {
-  opacity: 0.55;
   cursor: wait;
+}
+
+.ga-cancel.is-cancelling {
+  border-color: #b8ff3545;
+  color: var(--acid);
+}
+
+.ga-render-safe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #6f7772;
+  font: 650 8px/1 monospace;
+  white-space: nowrap;
+}
+
+.ga-render-safe > i {
+  color: #859184;
+  font-size: 11px;
+}
+
+@media (max-width: 560px) {
+  .ga-render {
+    gap: 13px;
+    padding: 16px;
+  }
+
+  .ga-render-stage {
+    width: 116px;
+    height: 116px;
+  }
+
+  .ga-signal-orbit.is-outer { inset: 9px; }
+  .ga-signal-orbit.is-inner { inset: 29px; }
+  .ga-signal-sweep { inset: 8px; }
+  .ga-render-safe { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ga-signal-orbit,
+  .ga-signal-sweep,
+  .ga-signal-wave,
+  .ga-signal-bar {
+    will-change: auto;
+  }
 }
 
 /* ---------- 结果卡片：贴合图片比例，居中排布，无黑边 ---------- */
@@ -2172,12 +3058,14 @@ function assetStatusLabel(statusValue) {
 
 .ga-results.is-deck .ga-card-actions {
   opacity: 0;
+  pointer-events: none;
 }
 
 .ga-results.is-deck .ga-card.is-front:hover .ga-card-actions,
 .ga-results.is-deck .ga-card.is-front:focus-within .ga-card-actions {
   opacity: 1;
-  transform: none;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
 }
 
 .ga-deck-hint {
@@ -2248,41 +3136,54 @@ function assetStatusLabel(statusValue) {
 .ga-card-actions {
   position: absolute;
   left: 50%;
-  bottom: 10px;
+  bottom: 14px;
   z-index: 2;
   display: flex;
-  gap: 4px;
-  padding: 5px;
-  border: 1px solid #ffffff14;
-  border-radius: 10px;
-  /* 不用 backdrop-filter：卡片逐帧移动时实时背景模糊代价极高 */
-  background: #0d0f11f2;
+  gap: 7px;
   opacity: 0;
-  transform: translate(-50%, 8px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transform: translate(-50%, 6px) scale(0.98);
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ga-card:hover .ga-card-actions,
 .ga-card:focus-within .ga-card-actions {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, 0) scale(1);
+  pointer-events: auto;
 }
 
 .ga-card-actions button {
-  width: 32px;
-  height: 30px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: #aab0b6;
-  font-size: 12px;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #ffffff1a;
+  border-radius: 50%;
+  background: #101316d9;
+  color: #c1c6ca;
+  box-shadow: 0 5px 16px #0000003d;
+  font-size: 13px;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
 }
 
 .ga-card-actions button:hover:not(:disabled) {
-  background: #24282c;
+  border-color: #b8ff3559;
+  background: #20252aeb;
   color: var(--acid);
+  transform: translateY(-1px);
+}
+
+.ga-card-actions button:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
 }
 
 .ga-card-actions button:disabled {
@@ -2291,8 +3192,18 @@ function assetStatusLabel(statusValue) {
 }
 
 .ga-card-actions button.is-armed {
-  background: #d64545;
+  border-color: #ef6a6a;
+  background: #d64545e8;
   color: #fff;
+}
+
+@media (hover: none) {
+  .ga-card-actions,
+  .ga-results.is-deck .ga-card.is-front .ga-card-actions {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+    pointer-events: auto;
+  }
 }
 
 /* 出错卡片：图像加载失败时渲染故障图形 */
@@ -2531,29 +3442,6 @@ function assetStatusLabel(statusValue) {
   }
 }
 
-.ga-more-hint {
-  margin: 8px 0 0;
-  text-align: center;
-}
-
-.ga-more-hint button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 0;
-  background: transparent;
-  color: #6d747a;
-  font: 700 9.5px/1 monospace;
-  letter-spacing: 0.05em;
-  cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.ga-more-hint button:hover {
-  color: var(--acid);
-}
-
 @media (max-width: 700px) {
   .ga-results {
     gap: 10px;
@@ -2753,14 +3641,231 @@ function assetStatusLabel(statusValue) {
 }
 
 .ga-composer-run {
-  display: grid;
-  gap: 5px;
-  align-content: center;
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
 }
 
-.ga-composer-run .ga-cost {
-  margin: 0;
+.ga-composer-run .ga-generate {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 236px;
+  height: 64px;
+  padding: 0 13px 0 10px;
+  gap: 11px;
+  overflow: hidden;
+  border: 1px solid #3a4147;
+  background: #0f1214;
+  color: #f2f4f2;
+  box-shadow: inset 0 1px 0 #ffffff0d, 0 8px 20px #0000002e;
+  isolation: isolate;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ga-composer-run .ga-generate:hover:not(:disabled) {
+  border-color: #b8ff3570;
+  background: #141816;
+  box-shadow: inset 0 1px 0 #ffffff12, 0 10px 26px #00000042, 0 0 0 3px #b8ff350b;
+  filter: none;
+  transform: translateY(-1px);
+}
+
+.ga-composer-run .ga-generate:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.ga-composer-run .ga-generate:focus-visible {
+  outline: 2px solid var(--acid);
+  outline-offset: 3px;
+}
+
+.ga-composer-run .ga-generate:disabled {
+  cursor: wait;
+  opacity: 1;
+}
+
+.ga-generate-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #b8ff353d;
+  border-radius: 9px;
+  background: #b8ff3510;
+  color: var(--acid);
+  box-shadow: inset 0 0 14px #b8ff3508;
+}
+
+.ga-generate-icon > i {
+  position: relative;
+  z-index: 1;
+  font-size: 14px;
+}
+
+.ga-generate-orbit {
+  position: absolute;
+  inset: 4px;
+  border: 1px solid transparent;
+  border-top-color: var(--acid);
+  border-right-color: #b8ff3540;
+  border-radius: 50%;
+  animation: ga-generate-orbit 1.2s linear infinite;
+}
+
+.ga-generate-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  text-align: left;
+}
+
+.ga-generate-action {
+  display: flex;
+  align-items: center;
+  min-height: 10px;
+  color: #aeb4b0;
+  font: 750 9.5px/1 inherit;
+  line-height: 1;
+}
+
+.ga-generate-action > em {
+  margin-left: 7px;
+  padding-left: 7px;
+  border-left: 1px solid #3a413c;
+  color: #737b76;
+  font: 600 7.5px/1 inherit;
+  font-style: normal;
+}
+
+.ga-generate-price {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.ga-generate-price > strong {
+  color: var(--acid);
+  font: 850 15px/1 monospace;
+  text-shadow: 0 0 14px #b8ff3524;
+}
+
+.ga-generate-price > small {
+  overflow: hidden;
+  color: #858d88;
+  font: 600 8px/1.2 monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ga-generate-trailing {
+  display: grid;
+  min-width: 28px;
+  place-items: center end;
+}
+
+.ga-generate-trailing kbd {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #3d454b;
+  border-radius: 6px;
+  background: #171b1e;
+  color: #7f878c;
+  box-shadow: inset 0 -1px 0 #0008;
+  font: 700 9px/1 monospace;
+}
+
+.ga-generate-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #b8ff35b8;
+  font: 800 7px/1 monospace;
+  letter-spacing: 0.08em;
+}
+
+.ga-generate-live > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--acid);
+  box-shadow: 0 0 8px #b8ff35cc;
+  animation: ga-generate-pulse 1.25s ease-in-out infinite;
+}
+
+.ga-generate-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 8px;
+  margin-left: 5px;
+}
+
+.ga-generate-dots > i {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--acid);
+  animation: ga-generate-dot 1s ease-in-out infinite;
+}
+
+.ga-generate-dots > i:nth-child(2) { animation-delay: 0.14s; }
+.ga-generate-dots > i:nth-child(3) { animation-delay: 0.28s; }
+
+.ga-composer-run .ga-generate.is-busy {
+  border-color: #b8ff3545;
+  background: #111612;
+  box-shadow: inset 0 1px 0 #ffffff0d, 0 10px 26px #00000038, 0 0 22px #b8ff3509;
+}
+
+.ga-generate-track {
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  left: 10px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px 2px 0 0;
+  background: #b8ff3517;
+}
+
+.ga-generate-track > i {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--acid) 58%, #e6ffac);
+  box-shadow: 0 0 8px #b8ff357d;
+  animation: ga-generate-scan 1.55s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes ga-generate-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ga-generate-pulse {
+  50% { opacity: 0.35; transform: scale(0.72); }
+}
+
+@keyframes ga-generate-dot {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+@keyframes ga-generate-scan {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(285%); }
 }
 
 @media (max-width: 700px) {
@@ -2775,6 +3880,8 @@ function assetStatusLabel(statusValue) {
 
   .ga-composer-run .ga-generate {
     width: 100%;
+    min-width: 0;
+    height: 58px;
   }
 
   .ga-composer-tools .ga-examples button:nth-child(n + 3) {
@@ -2783,6 +3890,15 @@ function assetStatusLabel(statusValue) {
 
   .ga-model-pick select {
     max-width: 96px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ga-generate-orbit,
+  .ga-generate-live > i,
+  .ga-generate-dots > i,
+  .ga-generate-track > i {
+    animation: none;
   }
 }
 
@@ -3005,72 +4121,6 @@ function assetStatusLabel(statusValue) {
 .ga-drawer-enter-from .ga-drawer,
 .ga-drawer-leave-to .ga-drawer {
   transform: translateX(40px);
-}
-
-/* ---------- 大图 ---------- */
-.ga-fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 10050;
-  display: grid;
-  place-items: center;
-  padding: 28px;
-  background: #070809e8;
-  backdrop-filter: blur(10px);
-}
-
-.ga-fullscreen :deep(.authenticated-image) {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  box-shadow: 0 30px 90px #000c, 0 0 0 1px #b8ff3522;
-}
-
-.ga-fullscreen > button {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 42px;
-  height: 42px;
-  border: 1px solid #3c4247;
-  border-radius: 8px;
-  background: #121417cc;
-  color: #fff;
-  font-size: 15px;
-  cursor: pointer;
-}
-
-.ga-fullscreen > button:hover {
-  border-color: var(--acid);
-  color: var(--acid);
-}
-
-.ga-fullscreen > .ga-fullscreen-nav {
-  top: 50%;
-  width: 46px;
-  height: 46px;
-  transform: translateY(-50%);
-  border-radius: 50%;
-  backdrop-filter: blur(12px);
-}
-
-.ga-fullscreen > .ga-fullscreen-nav.is-prev {
-  right: auto;
-  left: 18px;
-}
-
-.ga-fullscreen > .ga-fullscreen-nav.is-next {
-  right: 18px;
-}
-
-.ga-zoom-enter-active,
-.ga-zoom-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.ga-zoom-enter-from,
-.ga-zoom-leave-to {
-  opacity: 0;
 }
 
 @keyframes ga-shimmer {

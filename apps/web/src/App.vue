@@ -17,6 +17,7 @@ import FooterComponent from './components/layout/FooterComponent.vue'
 import NavBar from './components/layout/NavBar.vue'
 import { useAuthStore } from './stores/auth'
 import { useSettingsStore } from './stores/settings'
+import { hasBodyScrollLocks } from './utils/bodyScrollLock'
 
 const AnnouncementCenter = defineAsyncComponent(
   () => import('./components/common/AnnouncementCenter.vue'),
@@ -73,19 +74,22 @@ function recoverDocumentScroll() {
   if (typeof document === 'undefined') return
   if (!isDocumentScrollRoute.value) return
 
-  // 文档型页面使用 window 滚动。仅在对应遮罩已经不存在时清理上个页面遗留的锁，
-  // 避免公告弹窗或移动端菜单仍打开时误放开背景页。
-  if (document.querySelector('.announcement-layer, .msheet-root')) return
-
   const root = document.documentElement
   const body = document.body
-  root.classList.remove('nav-mobile-open', 'assistant-image-viewer-open')
+  if (!document.querySelector('.msheet-root')) {
+    root.classList.remove('nav-mobile-open')
+    body.classList.remove('nav-mobile-open')
+  }
+  root.classList.remove('assistant-image-viewer-open')
   body.classList.remove(
-    'nav-mobile-open',
     'share-detail-open',
     'profile-overlay-open',
     'download-session-locked',
   )
+
+  // 公告和移动菜单由各自的 owner 锁管理；仅在没有活动锁时清理旧版本遗留样式。
+  if (hasBodyScrollLocks()) return
+
   body.style.removeProperty('overflow')
   body.style.removeProperty('position')
   body.style.removeProperty('top')
@@ -93,8 +97,6 @@ function recoverDocumentScroll() {
   body.style.removeProperty('right')
   body.style.removeProperty('width')
   body.style.removeProperty('height')
-  delete body.dataset.announcementScrollLock
-  delete body.dataset.announcementPreviousOverflow
 }
 
 watch(

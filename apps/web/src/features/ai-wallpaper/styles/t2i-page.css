@@ -716,6 +716,8 @@
 /* ── Right main ───────────────────────────────────────────────────────── */
 
 .t2i-main {
+  container-name: t2i-main;
+  container-type: inline-size;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1129,6 +1131,59 @@
   background: #050508;
 }
 
+/* 主画布交接由 Progressive 双层透明度完成，跳过 blur 揭示动画，避免大图滤镜重绘 */
+.t2i-stage-media .authenticated-image.is-loaded,
+.t2i-stage-cell-media .authenticated-image.is-loaded {
+  animation: none;
+}
+
+/* 同组多图：整组平铺在主画布内 */
+.t2i-stage-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  grid-template-columns: repeat(var(--t2i-grid-cols, 2), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.t2i-stage-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #050508;
+}
+
+/* 3 张拼贴布局：首图占满左列，避免出现空槽 */
+.t2i-stage-grid.is-collage .t2i-stage-cell:first-child {
+  grid-row: span 2;
+}
+
+.t2i-stage-cell-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.t2i-stage-cell-media .authenticated-image,
+.t2i-stage-cell-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #050508;
+}
+
 .t2i-stage-media .authenticated-image.is-loading,
 .t2i-film-item .authenticated-image.is-loading,
 .t2i-masonry-cover .authenticated-image.is-loading {
@@ -1297,6 +1352,21 @@
   transform: translate(-50%, 0);
 }
 
+/* 多图单元格内的快捷操作只随所在单元格显隐 */
+.t2i-stage-frame:hover .t2i-stage-quick-actions.is-cell,
+.t2i-stage-frame:focus-within .t2i-stage-quick-actions.is-cell {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 7px);
+}
+
+.t2i-stage-cell:hover .t2i-stage-quick-actions.is-cell,
+.t2i-stage-cell:focus-within .t2i-stage-quick-actions.is-cell {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
 .t2i-stage-quick-actions button {
   width: 38px;
   height: 38px;
@@ -1354,6 +1424,23 @@
   gap: 16px;
   flex-wrap: wrap;
   padding: 0 4px;
+  transition: opacity 200ms ease 80ms;
+}
+
+.t2i-stage.is-image-transitioning .t2i-stage-bar,
+.t2i-stage.is-image-transitioning .t2i-stage-quick-actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 克隆图飞行期间隐藏真实画布图层，交接时 180ms 淡入 */
+.t2i-stage-media > .progressive-authenticated-image {
+  transition: opacity 180ms ease-out;
+}
+
+.t2i-stage.is-image-transitioning .t2i-stage-media > .progressive-authenticated-image {
+  opacity: 0;
+  transition: none;
 }
 
 .t2i-stage-copy {
@@ -1732,6 +1819,64 @@
   overflow: hidden;
 }
 
+.t2i-history-card .t2i-history-image-prompt,
+.t2i-collection-card .t2i-history-image-prompt {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@container t2i-main (max-width: 1160px) {
+  .t2i-collection-card {
+    gap: 8px;
+    padding: 8px;
+    border-radius: 14px;
+  }
+
+  .t2i-collection-card .t2i-masonry-cover {
+    border-radius: 10px;
+  }
+
+  .t2i-history-card .t2i-history-image-overlay,
+  .t2i-collection-card .t2i-history-image-overlay {
+    gap: 6px;
+    padding: 38px 9px 9px;
+  }
+
+  .t2i-history-card .t2i-history-image-prompt,
+  .t2i-collection-card .t2i-history-image-prompt {
+    font-size: 0.76rem;
+    line-height: 1.3;
+  }
+
+  .t2i-history-card .t2i-history-image-specs,
+  .t2i-collection-card .t2i-history-image-specs {
+    gap: 4px;
+  }
+
+  .t2i-history-card .t2i-history-image-specs > span,
+  .t2i-collection-card .t2i-history-image-specs > span {
+    min-height: 21px;
+    gap: 4px;
+    padding: 0 7px;
+    font-size: 0.62rem;
+  }
+
+  .t2i-collection-card .t2i-masonry-cover > .t2i-asset-status {
+    top: 8px;
+    right: 8px;
+    padding: 5px 8px;
+    font-size: 0.62rem;
+  }
+
+  .t2i-collection-card .t2i-entry-actions button {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 0.72rem;
+  }
+}
+
 .t2i-history-image-specs {
   display: flex;
   align-items: center;
@@ -2002,19 +2147,6 @@
   color: #fff;
 }
 
-.t2i-library-categories em {
-  min-width: 19px;
-  height: 19px;
-  display: inline-grid;
-  place-items: center;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--t2i-faint);
-  font-size: 0.64rem;
-  font-style: normal;
-}
-
 .t2i-collection-card .t2i-masonry-placeholder {
   cursor: pointer;
 }
@@ -2071,7 +2203,9 @@
   cursor: pointer;
 }
 
-/* ── Lightbox（挂到 body，避免被页面 overflow / 顶栏挡住） ─────────────── */
+/* ── Lightbox · 全屏预览（整段重写，替代历史多层补丁） ─────────────────
+   纯黑场 #050508，图片全出血居中；唯一 chrome 为底部悬浮胶囊控制栏；
+   左右 18vw 透明翻页热区；动画仅三处：打开 / 关闭 / 控制栏显隐。 */
 
 .t2i-lightbox {
   position: fixed;
@@ -2079,141 +2213,542 @@
   width: 100vw;
   height: 100dvh;
   z-index: 10050;
-  display: block;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 0%, rgba(109, 92, 255, 0.18), transparent 42%), #040408;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: #050508;
+  color: #fff;
+  isolation: isolate;
 }
 
-.t2i-lightbox-actions {
-  position: absolute;
-  top: calc(16px + env(safe-area-inset-top, 0px));
-  right: 16px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: rgba(14, 14, 22, 0.76);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-.t2i-lightbox-actions button {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  padding: 0;
+/* 画布聚焦（stage）FLIP：克隆图从缩略图矩形飞至 contain 适配矩形（仅 transform/opacity，
+   由 JS 以 WAAPI 驱动 300ms cubic-bezier(0.22,1,0.36,1)），不再依赖整页 View Transition 快照。 */
+.t2i-stage-flip-clone {
+  position: fixed;
+  z-index: 90;
+  margin: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 14px;
+  object-fit: cover;
+  transform-origin: 0 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  background: #050508;
+}
+
+/* 打开 · FLIP：克隆图从缩略图矩形飞至 contain 适配矩形（仅 transform/opacity，
+   由 JS 以 WAAPI 驱动 320ms cubic-bezier(0.22,1,0.36,1)）；背景 260ms 淡入；
+   真实图层交接前隐藏，克隆 120ms 淡出交接。 */
+.t2i-lightbox.is-flip-open {
+  animation: t2iLightboxFadeIn 260ms ease-out both;
+}
+
+.t2i-lightbox.is-flip-open .t2i-lightbox-frame {
+  opacity: 0;
+}
+
+.t2i-lightbox-flip-clone {
+  position: fixed;
+  z-index: 10060;
+  margin: 0;
+  border: 0;
+  object-fit: cover;
+  transform-origin: 0 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* 打开 · 无共享元素回退（FLIP 不可用时）：淡入 + 画面 0.97 → 1 */
+.t2i-lightbox.is-plain-open {
+  animation: t2iLightboxFadeIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.t2i-lightbox.is-plain-open .t2i-lightbox-frame {
+  animation: t2iLightboxRiseIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+/* 关闭 · 200ms 反向（JS 定时 220ms 收尾） */
+.t2i-lightbox.is-closing {
+  pointer-events: none;
+  animation: t2iLightboxFadeOut 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.t2i-lightbox.is-closing .t2i-lightbox-frame {
+  animation: t2iLightboxRiseOut 200ms cubic-bezier(0.4, 0, 1, 1) both;
+  will-change: transform, opacity;
+}
+
+@keyframes t2iLightboxFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes t2iLightboxFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes t2iLightboxRiseIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes t2iLightboxRiseOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* 舞台：全出血，图片后一圈极淡中央柔光 */
+.t2i-lightbox-stage {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    50% 42% at 50% 50%,
+    rgba(var(--t2i-accent-rgb), 0.06),
+    transparent 74%
+  );
+}
+
+.t2i-lightbox-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+  cursor: zoom-in;
+  touch-action: none;
+  user-select: none;
+}
+
+.t2i-lightbox-frame.is-zoomed {
+  cursor: grab;
+}
+
+.t2i-lightbox-frame.is-panning {
+  cursor: grabbing;
+}
+
+.t2i-lightbox-frame.is-comparing {
+  cursor: ew-resize;
+}
+
+.t2i-lightbox-image-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: center;
+  transition: transform 180ms ease-out;
+  will-change: transform;
+}
+
+.t2i-lightbox-frame.is-panning .t2i-lightbox-image-layer {
+  transition: none;
+}
+
+.t2i-lightbox-frame .authenticated-image,
+.t2i-lightbox-frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 前后对比 */
+.t2i-lightbox-original-clip {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.t2i-lightbox-compare-badge {
+  position: absolute;
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  z-index: 3;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: rgba(13, 13, 19, 0.88);
+  color: rgba(255, 255, 255, 0.9);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.t2i-lightbox-compare-badge.is-original {
+  left: 18px;
+}
+
+.t2i-lightbox-compare-badge.is-processed {
+  right: 18px;
+}
+
+.t2i-lightbox-compare-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 42px;
+  margin: 0;
+  padding: 0;
+  transform: translateX(-50%);
+  border: 0;
   background: transparent;
   color: #fff;
-  font-size: 1rem;
-  cursor: pointer;
-  transition:
-    color 160ms ease,
-    background-color 160ms ease;
+  cursor: ew-resize;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.t2i-lightbox-actions button:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.t2i-lightbox-actions button.is-on {
-  background: rgba(124, 105, 255, 0.24);
-  color: #c8beff;
-}
-
-.t2i-lightbox-actions button:disabled {
-  cursor: wait;
-  opacity: 0.68;
-}
-
-.t2i-lightbox-actions button.is-danger:hover {
-  background: rgba(255, 104, 104, 0.14);
-  color: #ff9a9a;
-}
-
-.t2i-lightbox-upscale-picker {
-  position: relative;
-}
-
-.t2i-lightbox-actions .t2i-lightbox-upscale-trigger {
-  width: auto;
-  min-width: 84px;
-  grid-template-columns: auto auto auto;
-  gap: 6px;
-  padding: 0 10px;
-  border-radius: 999px;
-  color: #d8d2ff;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.t2i-lightbox-upscale-trigger .bi-chevron-down {
-  font-size: 0.66rem;
-  transition: transform 180ms ease;
-}
-
-.t2i-lightbox-upscale-picker.is-open .bi-chevron-down {
-  transform: rotate(180deg);
-}
-
-.t2i-lightbox-upscale-menu {
+.t2i-lightbox-compare-divider::before {
   position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  width: 132px;
-  display: grid;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 15px;
-  background: rgba(14, 14, 22, 0.94);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  content: '';
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.72);
 }
 
-.t2i-lightbox-actions .t2i-lightbox-upscale-menu button {
-  width: 100%;
-  height: 38px;
+.t2i-lightbox-compare-divider i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(13, 13, 19, 0.94);
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+/* 左右 18vw 透明翻页热区：hover 浮现 44px 裸 chevron + 12% 黑色渐变提示 */
+.t2i-lightbox-hotzone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 18vw;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  border-radius: 10px;
-  color: rgba(255, 255, 255, 0.78);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 44px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.t2i-lightbox-actions .t2i-lightbox-upscale-menu button.is-on,
-.t2i-lightbox-actions .t2i-lightbox-upscale-menu button:hover {
-  background: rgba(124, 105, 255, 0.2);
+.t2i-lightbox-hotzone:hover,
+.t2i-lightbox-hotzone:focus-visible {
+  opacity: 1;
+}
+
+.t2i-lightbox-hotzone.is-prev {
+  left: 0;
+  justify-content: flex-start;
+  padding-left: 20px;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.12), transparent);
+}
+
+.t2i-lightbox-hotzone.is-next {
+  right: 0;
+  justify-content: flex-end;
+  padding-right: 20px;
+  background: linear-gradient(270deg, rgba(0, 0, 0, 0.12), transparent);
+}
+
+/* 底部居中悬浮胶囊控制栏（唯一 chrome） */
+.t2i-lightbox-controls {
+  position: absolute;
+  left: 50%;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(960px, calc(100vw - 24px));
+  padding: 8px 10px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(13, 13, 19, 0.94);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  transition:
+    opacity 200ms ease,
+    transform 200ms ease;
+}
+
+/* 鼠标静止 2.5s 淡出；FLIP 打开进行中也保持静默 */
+.t2i-lightbox.is-chrome-hidden .t2i-lightbox-controls,
+.t2i-lightbox.is-flip-open .t2i-lightbox-controls {
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  pointer-events: none;
+}
+
+.t2i-lightbox.is-flip-open .t2i-lightbox-hotzone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.t2i-lightbox-controls-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 6px;
+}
+
+.t2i-lightbox-controls-title {
+  overflow: hidden;
+  max-width: min(26vw, 300px);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t2i-lightbox-controls-count {
+  color: rgba(255, 255, 255, 0.6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.t2i-lightbox-controls-size {
+  color: rgba(255, 255, 255, 0.42);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.t2i-lightbox-controls-nav,
+.t2i-lightbox-controls-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.t2i-lightbox-controls button {
+  min-width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.t2i-lightbox-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
 }
 
-.t2i-lightbox-upscale-menu small {
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 0.66rem;
+.t2i-lightbox-controls button.is-on {
+  background: rgba(var(--t2i-accent-rgb), 0.28);
+  color: #fff;
 }
 
-.t2i-upscale-menu-enter-active,
-.t2i-upscale-menu-leave-active {
-  transition:
-    opacity 160ms ease,
-    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
-  transform-origin: top right;
+.t2i-lightbox-controls button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
-.t2i-upscale-menu-enter-from,
-.t2i-upscale-menu-leave-to {
+.t2i-lightbox-controls button.is-danger:hover {
+  background: rgba(255, 91, 111, 0.16);
+  color: #ff9bab;
+}
+
+.t2i-lightbox-controls button.is-fit {
+  padding: 0 10px;
+  font-size: 0.9rem;
+}
+
+.t2i-lightbox-controls button.is-fit span {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.t2i-lightbox-controls-zoom {
+  min-width: 46px;
+  padding: 0 2px;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.t2i-lightbox-controls-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 底部加载指示 chip：原图就绪前显示（含 FLIP 飞入期间），就绪后 200ms 淡出 */
+.t2i-lightbox-load-chip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  transform: translate(-50%, 4px);
+  border-radius: 999px;
+  background: rgba(13, 13, 19, 0.9);
+  color: rgba(255, 255, 255, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1;
+  white-space: nowrap;
   opacity: 0;
-  transform: translateY(-6px) scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity 200ms ease,
+    transform 200ms ease;
+}
+
+.t2i-lightbox-load-chip.is-visible {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
+.t2i-lightbox-load-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  animation: t2iLightboxDotBreathe 1.2s ease-in-out infinite;
+}
+
+@keyframes t2iLightboxDotBreathe {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 焦点可见性（唯一允许的描边） */
+.t2i-lightbox-controls button:focus-visible,
+.t2i-lightbox-hotzone:focus-visible,
+.t2i-lightbox-compare-divider:focus-visible {
+  outline: 2px solid rgba(var(--t2i-accent-rgb), 0.85);
+  outline-offset: 2px;
+}
+
+/* 小屏收敛 */
+@media (max-width: 860px) {
+  .t2i-lightbox-controls {
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .t2i-lightbox-controls-size {
+    display: none;
+  }
+
+  .t2i-lightbox-controls-title {
+    max-width: 20vw;
+  }
+
+  .t2i-lightbox-controls button {
+    min-width: 32px;
+    height: 32px;
+    font-size: 0.9rem;
+  }
+
+  .t2i-lightbox-load-chip {
+    bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .t2i-lightbox-compare-badge {
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    font-size: 0.66rem;
+  }
+}
+
+/* 动画偏好 / 站内动画开关：全部静默（JS 同步跳过定时直接开合） */
+@media (prefers-reduced-motion: reduce) {
+  .t2i-lightbox.is-flip-open,
+  .t2i-lightbox.is-plain-open,
+  .t2i-lightbox.is-plain-open .t2i-lightbox-frame,
+  .t2i-lightbox.is-closing,
+  .t2i-lightbox.is-closing .t2i-lightbox-frame,
+  .t2i-lightbox-controls,
+  .t2i-lightbox-hotzone,
+  .t2i-lightbox-load-chip,
+  .t2i-lightbox-load-chip-dot,
+  .t2i-lightbox-image-layer {
+    animation: none;
+    transition: none;
+  }
+}
+
+html.settings-no-animations .t2i-lightbox.is-flip-open,
+html.settings-no-animations .t2i-lightbox.is-plain-open,
+html.settings-no-animations .t2i-lightbox.is-plain-open .t2i-lightbox-frame,
+html.settings-no-animations .t2i-lightbox.is-closing,
+html.settings-no-animations .t2i-lightbox.is-closing .t2i-lightbox-frame,
+html.settings-no-animations .t2i-lightbox-controls,
+html.settings-no-animations .t2i-lightbox-hotzone,
+html.settings-no-animations .t2i-lightbox-load-chip,
+html.settings-no-animations .t2i-lightbox-load-chip-dot,
+html.settings-no-animations .t2i-lightbox-image-layer {
+  animation: none;
+  transition: none;
 }
 
 .t2i-cloud-upscale-panel {
@@ -2309,6 +2844,13 @@
   );
   background-size: 220% 100%;
   animation: t2iSkeleton 1.35s linear infinite;
+}
+
+/* 修复：t2iSkeleton 此前从未定义，云端模型骨架屏的闪光一直不生效 */
+@keyframes t2iSkeleton {
+  to {
+    background-position: -120% 0;
+  }
 }
 
 .t2i-cloud-provider-card {
@@ -2518,289 +3060,6 @@
   transform: translateX(20px) scale(0.98);
 }
 
-.t2i-lightbox-head {
-  position: absolute;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 16px;
-  background: rgba(14, 14, 22, 0.72);
-  color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-.t2i-lightbox-head {
-  top: calc(16px + env(safe-area-inset-top, 0px));
-  left: 16px;
-  max-width: calc(100vw - 180px);
-  justify-content: flex-start;
-}
-
-.t2i-lightbox-title {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.t2i-lightbox-title strong {
-  font-size: 0.98rem;
-}
-
-.t2i-lightbox-title small {
-  overflow: hidden;
-  max-width: min(48vw, 420px);
-  color: rgba(255, 255, 255, 0.52);
-  font-size: 0.8rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.t2i-lightbox-title small.is-size {
-  color: rgba(255, 255, 255, 0.82);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.t2i-lightbox-stage {
-  position: absolute;
-  inset: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.t2i-lightbox-frame {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: transparent;
-  cursor: zoom-in;
-  touch-action: none;
-  user-select: none;
-}
-
-.t2i-lightbox-frame.is-zoomed {
-  cursor: grab;
-}
-
-.t2i-lightbox-frame.is-panning {
-  cursor: grabbing;
-}
-
-.t2i-lightbox-frame.is-comparing {
-  cursor: ew-resize;
-}
-
-.t2i-lightbox-image-layer {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  transform-origin: center;
-  transition: transform 180ms ease-out;
-  will-change: transform;
-}
-
-.t2i-lightbox-frame.is-panning .t2i-lightbox-image-layer {
-  transition: none;
-}
-
-.t2i-lightbox-frame .authenticated-image,
-.t2i-lightbox-frame img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  object-position: center;
-  display: block;
-  background: transparent;
-  pointer-events: none;
-  user-select: none;
-}
-
-.t2i-lightbox-original-clip {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.t2i-lightbox-compare-badge {
-  position: absolute;
-  top: calc(70px + env(safe-area-inset-top, 0px));
-  z-index: 3;
-  padding: 7px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: rgba(8, 8, 14, 0.72);
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 0.76rem;
-  line-height: 1;
-  pointer-events: none;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.t2i-lightbox-compare-badge.is-original {
-  left: 18px;
-}
-
-.t2i-lightbox-compare-badge.is-processed {
-  right: 18px;
-}
-
-.t2i-lightbox-compare-divider {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  z-index: 5;
-  width: 42px;
-  margin: 0;
-  padding: 0;
-  transform: translateX(-50%);
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: #fff;
-  cursor: ew-resize;
-  touch-action: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.t2i-lightbox-compare-divider::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: 2px;
-  content: '';
-  transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 0 16px rgba(0, 0, 0, 0.72);
-}
-
-.t2i-lightbox-compare-divider i {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  transform: translate(-50%, -50%);
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 50%;
-  background: rgba(10, 10, 16, 0.82);
-  color: #fff;
-  font-size: 0.9rem;
-  transition:
-    transform 140ms ease,
-    background-color 140ms ease,
-    border-color 140ms ease;
-}
-
-.t2i-lightbox-compare-divider:hover i,
-.t2i-lightbox-compare-divider:focus-visible i,
-.t2i-lightbox-frame.is-comparing .t2i-lightbox-compare-divider i {
-  transform: translate(-50%, -50%) scale(1.1);
-  border-color: rgba(255, 255, 255, 0.72);
-  background: rgba(31, 27, 54, 0.94);
-}
-
-.t2i-lightbox-nav {
-  position: absolute;
-  top: 50%;
-  z-index: 4;
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transform: translateY(-50%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  font-size: 1.2rem;
-  cursor: pointer;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.t2i-lightbox-nav.is-prev {
-  left: 16px;
-}
-
-.t2i-lightbox-nav.is-next {
-  right: 16px;
-}
-
-.t2i-lightbox-nav:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.t2i-lightbox-zoom-tools {
-  position: absolute;
-  left: 50%;
-  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: calc(100vw - 24px);
-  padding: 8px;
-  transform: translateX(-50%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 16px;
-  background: rgba(14, 14, 22, 0.72);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-.t2i-lightbox-zoom-tools button {
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  cursor: pointer;
-}
-
-.t2i-lightbox-zoom-tools button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.t2i-lightbox-zoom-tools button:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-
-.t2i-lightbox-zoom-tools output {
-  min-width: 58px;
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 0.82rem;
-  text-align: center;
-}
-
 .t2i-image-actions button.is-primary {
   border-color: rgba(var(--t2i-accent-rgb), 0.55);
   background: rgba(var(--t2i-accent-rgb), 0.22);
@@ -2872,74 +3131,6 @@
   .t2i-film-item {
     width: 84px;
   }
-
-  .t2i-lightbox-head {
-    top: calc(10px + env(safe-area-inset-top, 0px));
-    left: 10px;
-    max-width: calc(100vw - 158px);
-    padding: 8px 12px;
-  }
-
-  .t2i-lightbox-title small {
-    display: none;
-  }
-
-  .t2i-lightbox-actions {
-    top: calc(10px + env(safe-area-inset-top, 0px));
-    right: 10px;
-    padding: 4px;
-  }
-
-  .t2i-lightbox-actions button {
-    width: 34px;
-    height: 34px;
-  }
-
-  .t2i-lightbox-actions .t2i-lightbox-upscale-trigger {
-    width: auto;
-    min-width: 76px;
-    padding: 0 8px;
-  }
-
-  .t2i-cloud-upscale-panel {
-    top: calc(58px + env(safe-area-inset-top, 0px));
-    right: 10px;
-    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
-    width: min(400px, calc(100vw - 20px));
-    padding: 13px;
-    border-radius: 19px;
-  }
-
-  .t2i-lightbox-zoom-tools {
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .t2i-lightbox-compare-badge {
-    top: calc(58px + env(safe-area-inset-top, 0px));
-  }
-
-  .t2i-lightbox-zoom-tools button span {
-    display: none;
-  }
-
-  .t2i-lightbox-zoom-tools button:last-child span {
-    display: inline;
-  }
-
-  .t2i-lightbox-nav {
-    min-width: 40px;
-    width: 40px;
-    height: 40px;
-    padding: 0;
-  }
-
-  .t2i-lightbox-nav.is-prev {
-    left: 10px;
-  }
-
-  .t2i-lightbox-nav.is-next {
-    right: 10px;
-  }
 }
 
 @media (max-width: 640px) {
@@ -2965,8 +3156,7 @@
   .t2i-pending-orb i,
   .t2i-pending-bar i,
   .t2i-film-pending::before,
-  .t2i-film-pending-spinner,
-  .t2i-lightbox-image-layer {
+  .t2i-film-pending-spinner {
     animation: none;
     transition: none;
   }
@@ -2976,11 +3166,7 @@
   .t2i-page-skeleton-line,
   .t2i-page-skeleton-actions span,
   .t2i-page-skeleton-film span,
-  .t2i-history-skeleton-card,
-  .t2i-upscale-menu-enter-active,
-  .t2i-upscale-menu-leave-active,
-  .t2i-cloud-panel-enter-active,
-  .t2i-cloud-panel-leave-active {
+  .t2i-history-skeleton-card {
     animation: none;
     transition: none;
   }
@@ -2989,4 +3175,140 @@
   .t2i-center-tabs button {
     transition: none;
   }
+}
+
+/* ————————————————————————————————————————————————
+   交互打磨层（增量覆盖）：统一缓动、按压反馈、结果显现
+   只使用 transform / opacity / box-shadow 等合成属性
+   ———————————————————————————————————————————————— */
+
+.t2i-generate {
+  transition:
+    transform 0.16s cubic-bezier(0.22, 0.8, 0.24, 1),
+    box-shadow 0.2s ease,
+    filter 0.16s ease;
+  will-change: transform;
+}
+
+.t2i-generate:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 38px rgba(91, 77, 255, 0.45);
+}
+
+.t2i-generate:not(:disabled):active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 8px 20px rgba(91, 77, 255, 0.3);
+  transition-duration: 0.06s;
+}
+
+.t2i-generate:focus-visible {
+  outline: 2px solid #9a7bff;
+  outline-offset: 3px;
+}
+
+/* 提交中：按钮呼吸，让「几百毫秒的网络提交」也有活着的反馈 */
+.t2i-generate:disabled .spin {
+  animation-duration: 0.7s;
+}
+
+/* 胶片条：未选中轻微退后，悬停上浮、选中点亮 */
+.t2i-film-item {
+  opacity: 0.85;
+  contain: layout paint style;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+
+.t2i-film-item:hover {
+  opacity: 1;
+  transform: translateY(-2px);
+}
+
+.t2i-film-item.is-on {
+  opacity: 1;
+  box-shadow:
+    0 0 0 1px rgba(var(--t2i-accent-rgb), 0.35),
+    0 8px 20px rgba(var(--t2i-accent-rgb), 0.28);
+}
+
+.t2i-film-item:focus-visible {
+  outline: 2px solid rgba(var(--t2i-accent-rgb), 0.9);
+  outline-offset: 2px;
+}
+
+/* 工具按钮族：统一悬停/按压手感 */
+.t2i-icon-btn,
+.t2i-nav-btn,
+.t2i-prompt-toggle,
+.t2i-mini-switch {
+  transition:
+    transform 0.15s cubic-bezier(0.22, 0.8, 0.24, 1),
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.t2i-icon-btn:not(:disabled):active,
+.t2i-nav-btn:not(:disabled):active {
+  transform: scale(0.92);
+  transition-duration: 0.06s;
+}
+
+/* 历史瀑布流卡片：悬停上浮 + 封面微缩放 */
+.t2i-masonry-card {
+  transition:
+    transform 0.22s cubic-bezier(0.22, 0.8, 0.24, 1),
+    box-shadow 0.22s ease;
+}
+
+.t2i-masonry-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+}
+
+.t2i-masonry-card .t2i-masonry-cover {
+  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+
+.t2i-masonry-card:hover .t2i-masonry-cover {
+  transform: scale(1.03);
+}
+
+/* 动画偏好：新增交互层全部静默 */
+@media (prefers-reduced-motion: reduce) {
+  .t2i-generate,
+  .t2i-film-item,
+  .t2i-film-item .authenticated-image-media,
+  .t2i-icon-btn,
+  .t2i-nav-btn,
+  .t2i-prompt-toggle,
+  .t2i-mini-switch,
+  .t2i-masonry-card,
+  .t2i-masonry-card .t2i-masonry-cover {
+    transition: none;
+  }
+
+  .t2i-generate:not(:disabled):hover,
+  .t2i-generate:not(:disabled):active,
+  .t2i-film-item:hover,
+  .t2i-film-item:hover .authenticated-image-media,
+  .t2i-masonry-card:hover,
+  .t2i-masonry-card:hover .t2i-masonry-cover {
+    transform: none;
+  }
+}
+
+html.settings-no-animations
+  .t2i-stage-frame
+  .authenticated-image.is-loaded
+  .authenticated-image-media {
+  animation: none;
+}
+
+html.settings-no-animations .t2i-film-item,
+html.settings-no-animations .t2i-generate,
+html.settings-no-animations .t2i-masonry-card {
+  transition: none;
 }

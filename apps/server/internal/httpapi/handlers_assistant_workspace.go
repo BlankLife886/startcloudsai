@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -511,7 +512,6 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		return
 	}
 	if canceled {
-		s.Queue.CancelAssistantRun(id.String())
 		metadata := map[string]any{}
 		if message, _ := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); message != nil {
 			for key, value := range message.Metadata {
@@ -523,6 +523,10 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		metadata["statusStage"] = "stopped"
 		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID, "已停止生成",
 			assistantResolvedMode(run), "stopped", metadata)
+		assistantstream.Publish(c.Request.Context(), s.assistantStreamRedis(), id.String(), assistantstream.Event{
+			Kind: assistantResolvedMode(run), Stage: "stopped", Done: true, Status: "canceled",
+		})
+		s.Queue.CancelAssistantRun(id.String())
 	}
 	updated, _ := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
 	ok(c, gin.H{"run": assistantRunDict(updated), "canceled": canceled})

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppearanceStore } from '@/stores/appearance'
+import { setBodyScrollLock } from '@/utils/bodyScrollLock'
 import {
   fetchRuntimeAnnouncements,
   markAnnouncementDismissed,
@@ -16,7 +17,7 @@ const router = useRouter()
 const appearanceStore = useAppearanceStore()
 let carouselTimer = null
 let realtimeReloadTimer = null
-let previousBodyOverflow = ''
+const ANNOUNCEMENT_SCROLL_LOCK = 'announcement-center'
 
 const activeAnnouncement = computed(() => announcements.value[activeIndex.value] || null)
 const activeAssets = computed(() =>
@@ -132,23 +133,7 @@ function clearCarouselTimer() {
 }
 
 function lockBodyScroll(lock) {
-  if (typeof document === 'undefined') return
-  const body = document.body
-  if (lock) {
-    if (body.dataset.announcementScrollLock === '1') return
-    previousBodyOverflow = body.style.overflow
-    body.dataset.announcementPreviousOverflow = previousBodyOverflow
-    body.style.overflow = 'hidden'
-    body.dataset.announcementScrollLock = '1'
-    return
-  }
-  if (body.dataset.announcementScrollLock !== '1') return
-  if (body.style.overflow === 'hidden') {
-    body.style.overflow = body.dataset.announcementPreviousOverflow || previousBodyOverflow
-  }
-  delete body.dataset.announcementScrollLock
-  delete body.dataset.announcementPreviousOverflow
-  previousBodyOverflow = ''
+  setBodyScrollLock(ANNOUNCEMENT_SCROLL_LOCK, lock)
 }
 
 function handleKeydown(event) {

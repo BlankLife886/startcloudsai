@@ -207,8 +207,20 @@ func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys,
 		return false, err
 	}
 	if task.CostCents > 0 {
-		if _, err := wallet.SettleForTask(ctx, q, task.UserID, task.ID, task.CostCents, nil); err != nil {
+		// 按实际交付张数结算：上游部分成功（如 4 张只回 3 张）只收对应份额,
+		// 未交付部分显式退回（冻结时已扣余额,Settle 只消耗冻结,差额必须 Release）。
+		settleCents := task.CostCents
+		if task.Count > 1 && len(outputKeys) > 0 && len(outputKeys) < task.Count {
+			settleCents = task.CostCents / int64(task.Count) * int64(len(outputKeys))
+		}
+		if _, err := wallet.SettleForTask(ctx, q, task.UserID, task.ID, settleCents, nil); err != nil {
 			return false, err
+		}
+		if refund := task.CostCents - settleCents; refund > 0 {
+			reason := fmt.Sprintf("部分交付退款：%d/%d 张", len(outputKeys), task.Count)
+			if _, err := wallet.ReleaseForTask(ctx, q, task.UserID, task.ID, refund, &reason); err != nil {
+				return false, err
+			}
 		}
 	}
 	return true, nil

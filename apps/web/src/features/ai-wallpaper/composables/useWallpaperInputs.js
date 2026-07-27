@@ -7,6 +7,7 @@ import {
 } from '@/services/aiWallpaper'
 import { proxyWallhavenImageUrl, wallpaperApi } from '@/services/api'
 import notificationService from '@/services/notification'
+import { TRANSPARENT_PNG_PROMPT_INSTRUCTION } from '@/features/ai-shared/transparentPng'
 import { computed, ref, watch } from 'vue'
 import {
   T2I_PROMPT_LIBRARY,
@@ -559,9 +560,7 @@ export function useWallpaperInputs(deps = {}) {
       )
     }
     if (transparentPngEnabled.value) {
-      instructions.push(
-        'Return a real transparent PNG with an actual alpha channel. Use smooth anti-aliased contours, clean subpixel alpha coverage, crisp vector-like silhouette edges, and enough transparent padding around the subject. Never draw a checkerboard, white backdrop, solid-color backdrop, frame, halo, matte fringe, or fake transparency pattern.',
-      )
+      instructions.push(TRANSPARENT_PNG_PROMPT_INSTRUCTION)
     }
 
     return [
