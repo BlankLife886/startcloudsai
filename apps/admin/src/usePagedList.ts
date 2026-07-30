@@ -19,6 +19,7 @@ export function usePagedList<T>(
   /** 最近一次加载失败的提示文案，成功后清空 */
   const error = ref<string | null>(null)
   const nextCursor = ref<string | null>(null)
+  const total = ref<number | null>(null)
   const currentCursor = ref<string | null>(null)
   const prevCursors = ref<(string | null)[]>([])
 
@@ -39,6 +40,7 @@ export function usePagedList<T>(
       const page = await fetcher(cursor)
       items.value = page.items
       nextCursor.value = page.nextCursor
+      total.value = page.total ?? page.scopeTotal ?? null
       currentCursor.value = cursor
     } catch (e) {
       // request.ts 已弹过 toast，这里落地为可见的错误条状态
@@ -87,6 +89,8 @@ export function usePagedList<T>(
     items,
     loading,
     error,
+    total,
+    page: computed(() => prevCursors.value.length + 1),
     hasPrev: computed(() => prevCursors.value.length > 0),
     hasNext: computed(() => nextCursor.value !== null),
     reset,

@@ -112,7 +112,11 @@ export function resolveActiveWallpaperSkills({
   return all.filter((skill) => {
     if (!selected.has(skill.id)) return false
     if (skill.featureGate === 'superResolution') {
-      return outputType === 'image' && superResolutionEnabled && resolutionScale !== '1K'
+      return (
+        outputType === 'image' &&
+        superResolutionEnabled &&
+        ['2K', '4K', '8K'].includes(String(resolutionScale || '').toUpperCase())
+      )
     }
     return true
   })

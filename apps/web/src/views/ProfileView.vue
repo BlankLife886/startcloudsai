@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useAppearanceStore } from '@/stores/appearance'
 import {
   deleteMyGallerySubmission,
   deleteUserAsset,
@@ -16,9 +17,16 @@ import {
   redeemWalletCode,
   updateProfile,
 } from '@/services/meApi'
-import { deleteTask, listTasks, TASK_TYPE_LABELS, uploadFile } from '@/services/tasksApi'
+import {
+  deleteTask,
+  listTasks,
+  TASK_TYPE_LABELS,
+  TASK_UPDATE_EVENT,
+  subscribeTask,
+  uploadFile,
+} from '@/services/tasksApi'
 import { listGalleryCategories, submitShareItem } from '@/services/shareGallery'
-import { formatCents } from '@/services/billingApi'
+import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
@@ -26,6 +34,7 @@ import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
+const appearanceStore = useAppearanceStore()
 
 const TAB_IDS = ['works', 'materials', 'submissions', 'wallet', 'notifications', 'account']
 const TABS = [
@@ -80,6 +89,7 @@ const loggingOut = ref(false)
 const submittingTaskId = ref('')
 const taskSearch = ref('')
 const taskStatusFilter = ref('')
+const taskSubscriptions = new Map()
 
 const hasTaskFilters = computed(() =>
   Boolean(taskSearch.value.trim() || taskStatusFilter.value || taskTypeFilter.value),
@@ -314,6 +324,20 @@ async function loadOverview() {
   }
 }
 
+let realtimeRefreshTimer = null
+function handleRealtimeTaskUpdate(event) {
+  if (!event?.detail?.task || !['succeeded', 'failed', 'canceled'].includes(event.detail.task.status)) {
+    return
+  }
+  if (realtimeRefreshTimer) window.clearTimeout(realtimeRefreshTimer)
+  realtimeRefreshTimer = window.setTimeout(() => {
+    realtimeRefreshTimer = null
+    void loadOverview()
+    if (notificationsLoaded.value) void loadNotifications()
+    if (activeTab.value === 'works') void loadTasks()
+  }, 120)
+}
+
 async function loadTasks({ append = false } = {}) {
   if (tasksLoading.value) return
   tasksLoading.value = true
@@ -325,10 +349,39 @@ async function loadTasks({ append = false } = {}) {
     })
     tasks.value = append ? [...tasks.value, ...items] : items
     tasksCursor.value = nextCursor
+	  syncTaskSubscriptions()
   } catch (error) {
     notificationService.error(error?.message || '任务列表读取失败')
   } finally {
     tasksLoading.value = false
+  }
+}
+
+function syncTaskSubscriptions() {
+  const active = new Map(
+    tasks.value
+      .filter((task) => ['queued', 'running'].includes(String(task.status || '').toLowerCase()))
+      .map((task) => [task.id, task]),
+  )
+  for (const [taskId, unsubscribe] of taskSubscriptions) {
+    if (active.has(taskId)) continue
+    unsubscribe()
+    taskSubscriptions.delete(taskId)
+  }
+  for (const taskId of active.keys()) {
+    if (taskSubscriptions.has(taskId)) continue
+    taskSubscriptions.set(
+      taskId,
+      subscribeTask(taskId, {
+        onUpdate: (current) => {
+          tasks.value = tasks.value.map((task) => (task.id === current.id ? current : task))
+          if (!['queued', 'running'].includes(String(current.status || '').toLowerCase())) {
+            taskSubscriptions.get(taskId)?.()
+            taskSubscriptions.delete(taskId)
+          }
+        },
+      }),
+    )
   }
 }
 
@@ -501,7 +554,7 @@ async function submitRedeem() {
   redeeming.value = true
   try {
     const result = await redeemWalletCode(code)
-    notificationService.success(`已入账 ${formatCents(result?.grantCents || 0)}`)
+    notificationService.success(`已入账 ${formatPoints(result?.grantCents || 0)}`)
     redeemCode.value = ''
     await Promise.all([loadWallet(), loadLedger(), loadOverview()])
   } catch (error) {
@@ -838,6 +891,7 @@ async function handleLogout() {
 }
 
 onMounted(async () => {
+	window.addEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
   await authStore.initAuth().catch(() => null)
   syncProfileForm()
   void loadOverview()
@@ -846,12 +900,16 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+	window.removeEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
+	if (realtimeRefreshTimer) window.clearTimeout(realtimeRefreshTimer)
+	for (const unsubscribe of taskSubscriptions.values()) unsubscribe()
+	taskSubscriptions.clear()
   if (typeof document !== 'undefined') document.body.classList.remove('profile-overlay-open')
 })
 </script>
 
 <template>
-  <div class="pp-page">
+  <div class="pp-page" :class="{ 'is-light': !appearanceStore.isDark }">
     <div class="pp-atmosphere" aria-hidden="true"></div>
 
     <div class="pp-shell">
@@ -1047,7 +1105,7 @@ onBeforeUnmount(() => {
                 {{ task.cleanPrompt }}
               </p>
               <small class="pp-work__caption">
-                {{ formatTime(task.createdAt) }} · {{ formatCents(task.costCents) }}
+                {{ formatTime(task.createdAt) }} · {{ formatPoints(task.costCents) }}
               </small>
               <div class="pp-work__actions">
                 <button
@@ -1279,11 +1337,11 @@ onBeforeUnmount(() => {
             <div class="pp-wallet-hero">
               <div>
                 <span class="pp-wallet-hero__label">可用余额</span>
-                <strong class="pp-wallet-hero__amount">{{ formatCents(availableCents) }}</strong>
+                <strong class="pp-wallet-hero__amount">{{ formatPoints(availableCents) }}</strong>
                 <div class="pp-wallet-hero__meta">
-                  <span>总余额 {{ formatCents(wallet?.balanceCents || 0) }}</span>
+                  <span>总余额 {{ formatPoints(wallet?.balanceCents || 0) }}</span>
                   <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
-                    冻结 {{ formatCents(wallet?.frozenCents || 0) }}
+                    冻结 {{ formatPoints(wallet?.frozenCents || 0) }}
                   </span>
                 </div>
               </div>
@@ -1329,12 +1387,12 @@ onBeforeUnmount(() => {
                     <span>{{ ledgerKindLabel(entry.kind) }}</span>
                     <strong :class="Number(entry.deltaCents) >= 0 ? 'is-income' : 'is-spend'">
                       {{ Number(entry.deltaCents) >= 0 ? '+' : ''
-                      }}{{ formatCents(entry.deltaCents) }}
+                      }}{{ formatPoints(entry.deltaCents) }}
                     </strong>
                   </div>
                   <small>
                     {{ formatTime(entry.createdAt) }} · 余额
-                    {{ formatCents(entry.balanceAfterCents) }}
+                    {{ formatPoints(entry.balanceAfterCents) }}
                     <template v-if="entry.reason"> · {{ entry.reason }}</template>
                   </small>
                 </li>
@@ -1544,7 +1602,12 @@ onBeforeUnmount(() => {
 
     <!-- 投稿到画廊 -->
     <Teleport to="body">
-      <div v-if="submitDialog.open" class="pp-backdrop" @click.self="closeSubmitDialog">
+      <div
+        v-if="submitDialog.open"
+        class="pp-backdrop"
+        :class="{ 'is-light': !appearanceStore.isDark }"
+        @click.self="closeSubmitDialog"
+      >
         <div class="pp-dialog" role="dialog" aria-modal="true" aria-label="投稿到画廊">
           <header>
             <strong>投稿到画廊</strong>
@@ -1597,6 +1660,7 @@ onBeforeUnmount(() => {
       <div
         v-if="previewMaterial"
         class="pp-backdrop pp-viewport-backdrop"
+        :class="{ 'is-light': !appearanceStore.isDark }"
         tabindex="-1"
         @click.self="previewMaterial = null"
         @keydown.esc="previewMaterial = null"
@@ -1623,6 +1687,7 @@ onBeforeUnmount(() => {
       <div
         v-if="previewTask"
         class="pp-backdrop pp-viewport-backdrop pp-task-preview-backdrop"
+        :class="{ 'is-light': !appearanceStore.isDark }"
         tabindex="-1"
         @click.self="previewTask = null"
         @keydown.esc="previewTask = null"
@@ -1666,6 +1731,7 @@ onBeforeUnmount(() => {
       <div
         v-if="confirmDialog.open"
         class="pp-backdrop"
+        :class="{ 'is-light': !appearanceStore.isDark }"
         @click.self="closeConfirmation(false)"
         @keydown.esc="closeConfirmation(false)"
       >

@@ -64,3 +64,65 @@ func TestResolveSub2APIFallsBackToEnvironment(t *testing.T) {
 		t.Fatalf("resolved config = %#v, want %#v", got, want)
 	}
 }
+
+func TestTaskPricesFiltersRetiredTaskTypes(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := Set(ctx, st.Pool, "task_prices", json.RawMessage(`{"t2i":20,"retired_type":999}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	prices, raw, err := TaskPrices(ctx, st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prices["t2i"] != 20 {
+		t.Fatalf("t2i price = %d, want 20", prices["t2i"])
+	}
+	if _, exists := prices["retired_type"]; exists {
+		t.Fatal("retired task type leaked through TaskPrices")
+	}
+	if string(raw) != `{"t2i":20}` {
+		t.Fatalf("filtered raw prices = %s", raw)
+	}
+}
+
+func TestImageServiceProviderDefaultsAndOverrides(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+
+	provider, err := ImageServiceProvider(ctx, st.Pool, "t2i")
+	if err != nil || provider != "c2a" {
+		t.Fatalf("default t2i provider = %q, err=%v", provider, err)
+	}
+	provider, err = ImageServiceProvider(ctx, st.Pool, "ui_design_asset")
+	if err != nil || provider != "sub2api" {
+		t.Fatalf("default UI asset provider = %q, err=%v", provider, err)
+	}
+	if err := Set(ctx, st.Pool, "image_service_routes", json.RawMessage(`{"t2i":"sub2api"}`)); err != nil {
+		t.Fatal(err)
+	}
+	provider, err = ImageServiceProvider(ctx, st.Pool, "t2i")
+	if err != nil || provider != "sub2api" {
+		t.Fatalf("overridden t2i provider = %q, err=%v", provider, err)
+	}
+	if err := Set(ctx, st.Pool, "image_service_routes", json.RawMessage(`{"t2i":"crun"}`)); err != nil {
+		t.Fatal(err)
+	}
+	provider, err = ImageServiceProvider(ctx, st.Pool, "t2i")
+	if err != nil || provider != "crun" {
+		t.Fatalf("CRUN t2i provider = %q, err=%v", provider, err)
+	}
+}
+
+func TestResolveCRUNFallsBackToEnvironment(t *testing.T) {
+	st := testdb.Setup(t)
+	want := CRUNConfig{BaseURL: "https://api.crun.ai", APIKey: "env-key", TimeoutSecs: 1200}
+	got, err := ResolveCRUN(context.Background(), st.Pool, want, "test-master-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("resolved CRUN config = %#v, want %#v", got, want)
+	}
+}

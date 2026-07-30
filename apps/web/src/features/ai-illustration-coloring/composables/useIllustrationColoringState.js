@@ -2839,7 +2839,7 @@ export function useIllustrationColoringState() {
     resumeServerJobPolling()
     syncStatusFromActive()
     pageReady.value = true
-    void runtimeConfigStore.loadRuntimeConfig({ background: true }).catch(() => null)
+    void runtimeConfigStore.loadRuntimeConfig({ background: true, force: true }).catch(() => null)
     void authStore
       .initAuth({
         reloadLocal: false,

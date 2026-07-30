@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Download, Hide, Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { normalizeList, request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
-import { fenToYuan, formatTime, yuanToFen } from '@/utils'
+import { formatPoints, formatTime, normalizePoints } from '@/utils'
 
 /** 兑换码（契约「兑换码 CDK（v5 增补）」） */
 interface RedemptionCode {
@@ -53,7 +53,7 @@ const STATUS_FILTERS = [
 // ---------- 码列表 ----------
 const filters = reactive({ status: '', batchId: '', search: '' })
 
-const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<RedemptionCode>(
     (cursor) =>
       request<Page<RedemptionCode>>('/api/admin/redemption-codes', {
@@ -145,7 +145,7 @@ const selectedBatch = computed(() => batches.value.find((batch) => batch.batchId
 
 function batchOptionLabel(batch: CodeBatch) {
   const note = String(batch.note || '').trim()
-  return `${note || batch.batchId} · ${fenToYuan(batch.grantCents)} 元 · ${batch.total} 个`
+  return `${note || batch.batchId} · ${formatPoints(batch.grantCents)} 积分 · ${batch.total} 个`
 }
 
 function setStatus(value: string) {
@@ -164,14 +164,14 @@ const genVisible = ref(false)
 const genSubmitting = ref(false)
 const genForm = reactive<{
   count: number
-  valueYuan: number
+  valuePoints: number
   expiresAt: Date | null
   note: string
-}>({ count: 100, valueYuan: 10, expiresAt: null, note: '' })
+}>({ count: 100, valuePoints: 1000, expiresAt: null, note: '' })
 
 function openGenerate() {
   genForm.count = 100
-  genForm.valueYuan = 10
+  genForm.valuePoints = 1000
   genForm.expiresAt = null
   genForm.note = ''
   genVisible.value = true
@@ -192,9 +192,9 @@ async function submitGenerate() {
     ElMessage.warning('数量范围为 1 - 1000')
     return
   }
-  const grantCents = yuanToFen(genForm.valueYuan)
+  const grantCents = normalizePoints(genForm.valuePoints)
   if (grantCents <= 0) {
-    ElMessage.warning('面值必须大于 0 元')
+    ElMessage.warning('面值必须大于 0 积分')
     return
   }
   if (genForm.expiresAt && genForm.expiresAt.getTime() <= Date.now()) {
@@ -310,15 +310,25 @@ function downloadCodes() {
         <span class="mono">{{ selectedBatch.batchId }}</span>
         <strong>{{ selectedBatch.note || '无备注批次' }}</strong>
         <small>
-          面值 {{ fenToYuan(selectedBatch.grantCents) }} 元 · 共 {{ selectedBatch.total }} 个 · 已兑换
+          面值 {{ formatPoints(selectedBatch.grantCents) }} 积分 · 共 {{ selectedBatch.total }} 个 · 已兑换
           {{ selectedBatch.redeemed }} 个 · 已禁用 {{ selectedBatch.disabled }} 个
         </small>
       </div>
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
-      <div class="codes-table-shell">
-        <el-table v-loading="loading" :data="items" size="small" table-layout="fixed">
+      <AdminListShell
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :page="page"
+        :count="items.length"
+        :total="total"
+        @prev="prev"
+        @next="next"
+      >
+        <div class="codes-table-shell">
+        <el-table v-loading="loading" :data="items" height="100%" size="small" table-layout="fixed">
         <template #empty>
           <el-empty description="暂无兑换码" :image-size="60">
             <div class="empty-sub">调整筛选条件，或生成新的兑换码</div>
@@ -356,7 +366,7 @@ function downloadCodes() {
           </template>
         </el-table-column>
         <el-table-column label="面值" width="92" align="right" class-name="col-num">
-          <template #default="{ row }"><strong class="value-cell tnum">{{ fenToYuan(row.grantCents) }} 元</strong></template>
+          <template #default="{ row }"><strong class="value-cell tnum">{{ formatPoints(row.grantCents) }} 积分</strong></template>
         </el-table-column>
         <el-table-column label="状态" width="92">
           <template #default="{ row }">
@@ -395,12 +405,8 @@ function downloadCodes() {
           </template>
         </el-table-column>
         </el-table>
-      </div>
-
-      <footer class="codes-list-footer">
-        <span>本页 {{ items.length }} 条</span>
-        <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
-      </footer>
+        </div>
+      </AdminListShell>
     </section>
 
     <!-- 生成兑换码 -->
@@ -410,16 +416,16 @@ function downloadCodes() {
           <el-input-number v-model="genForm.count" :min="1" :max="1000" :step="10" style="width: 180px" />
           <span class="text-muted" style="margin-left: 8px">单批 1 - 1000 个</span>
         </el-form-item>
-        <el-form-item label="面值（元）" required>
+        <el-form-item label="面值（积分）" required>
           <el-input-number
-            v-model="genForm.valueYuan"
-            :min="0.01"
+            v-model="genForm.valuePoints"
+            :min="1"
             :max="100000"
-            :precision="2"
-            :step="1"
+            :precision="0"
+            :step="100"
             style="width: 180px"
           />
-          <span class="text-muted" style="margin-left: 8px">= {{ yuanToFen(genForm.valueYuan) }} 分 / 码</span>
+          <span class="text-muted" style="margin-left: 8px">每个兑换码入账积分</span>
         </el-form-item>
         <el-form-item label="有效期">
           <el-date-picker
@@ -446,7 +452,7 @@ function downloadCodes() {
         <p class="result-warning">明文码仅此一次展示，关闭后无法再次查看，请立即复制或下载保存。</p>
         <div class="result-meta text-muted">
           批次 <span class="mono">{{ genResult.batchId }}</span> · 共 {{ genResult.codes.length }} 个 · 面值
-          {{ fenToYuan(genResult.grantCents) }} 元 / 码
+          {{ formatPoints(genResult.grantCents) }} 积分 / 码
         </div>
         <div class="result-codes mono">
           <div v-for="code in genResult.codes" :key="code">{{ code }}</div>
@@ -614,8 +620,9 @@ function downloadCodes() {
 }
 
 .codes-table-shell {
+  height: 100%;
   min-width: 0;
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 .codes-table-shell :deep(.el-table__header-wrapper th.el-table__cell) {
@@ -710,25 +717,6 @@ function downloadCodes() {
 
 .time-cell.is-expired {
   color: var(--warning);
-}
-
-.codes-list-footer {
-  display: flex;
-  min-height: 52px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-}
-
-.codes-list-footer > span {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.codes-list-footer :deep(.pager-bar) {
-  margin-top: 0;
 }
 
 /* ---- 生成结果 ---- */

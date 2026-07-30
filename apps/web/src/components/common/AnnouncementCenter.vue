@@ -171,144 +171,155 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="activeAnnouncement && isBanner"
-      class="announcement-banner"
-      :class="{ 'is-dark': appearanceStore.isDark }"
-      role="status"
-    >
-      <img
-        v-if="activeAnnouncement.decorImageUrl"
-        class="announcement-banner__decor"
-        :src="activeAnnouncement.decorImageUrl"
-        alt=""
-      />
-      <div class="announcement-banner__text">
-        <em>公告</em>
-        <strong>{{ activeAnnouncement.title }}</strong>
-        <span v-if="activeAnnouncement.content">{{ activeAnnouncement.content }}</span>
-      </div>
-      <div class="announcement-banner__actions">
-        <button
-          v-if="activeAnnouncement.ctaText && activeAnnouncement.ctaUrl"
-          class="announcement-banner__cta"
-          type="button"
-          @click="handleCta"
-        >
-          {{ activeAnnouncement.ctaText }}
-        </button>
-        <button
-          v-if="canClose"
-          class="announcement-banner__close"
-          type="button"
-          aria-label="关闭公告"
-          @click="dismissCurrent"
-        >
-          <i class="bi bi-x-lg" aria-hidden="true"></i>
-        </button>
-      </div>
-    </div>
-
-    <div
-      v-if="activeAnnouncement && isModal"
-      class="announcement-layer"
-      :class="{ 'is-dark': appearanceStore.isDark }"
-    >
+    <Transition name="announcement-banner-motion">
       <div
-        class="announcement-backdrop"
-        :class="{ 'is-static': !canClose }"
-        @click="canClose ? dismissCurrent() : undefined"
-      ></div>
-
-      <section
-        class="announcement-panel"
-        :class="contentClass"
-        role="dialog"
-        aria-modal="true"
-        :aria-labelledby="'announcement-title'"
-        @click.stop
+        v-if="activeAnnouncement && isBanner"
+        class="announcement-banner"
+        :class="{ 'is-dark': appearanceStore.isDark }"
+        role="status"
+        aria-live="polite"
       >
+        <span class="announcement-signal" aria-hidden="true"><i></i></span>
         <img
           v-if="activeAnnouncement.decorImageUrl"
-          class="announcement-panel__watermark"
+          class="announcement-banner__decor"
           :src="activeAnnouncement.decorImageUrl"
           alt=""
         />
+        <div class="announcement-banner__text">
+          <em>平台公告</em>
+          <strong>{{ activeAnnouncement.title }}</strong>
+          <span v-if="activeAnnouncement.content">{{ activeAnnouncement.content }}</span>
+        </div>
+        <div class="announcement-banner__actions">
+          <button
+            v-if="activeAnnouncement.ctaText && activeAnnouncement.ctaUrl"
+            class="announcement-banner__cta"
+            type="button"
+            @click="handleCta"
+          >
+            {{ activeAnnouncement.ctaText }}
+          </button>
+          <button
+            v-if="canClose"
+            class="announcement-banner__close"
+            type="button"
+            aria-label="关闭公告"
+            @click="dismissCurrent"
+          >
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    </Transition>
 
-        <button
-          v-if="canClose"
-          class="announcement-panel__close"
-          type="button"
-          aria-label="关闭公告"
-          @click="dismissCurrent"
+    <Transition name="announcement-modal-motion">
+      <div
+        v-if="activeAnnouncement && isModal"
+        class="announcement-layer"
+        :class="{ 'is-dark': appearanceStore.isDark }"
+      >
+        <div
+          class="announcement-backdrop"
+          :class="{ 'is-static': !canClose }"
+          @click="canClose ? dismissCurrent() : undefined"
+        ></div>
+
+        <section
+          class="announcement-panel"
+          :class="contentClass"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="'announcement-title'"
+          @click.stop
         >
-          <i class="bi bi-x-lg" aria-hidden="true"></i>
-        </button>
+          <div class="announcement-panel__rail" aria-hidden="true">
+            <span><i></i> STAR CLOUDS</span>
+            <em>NOTICE</em>
+          </div>
+          <img
+            v-if="activeAnnouncement.decorImageUrl"
+            class="announcement-panel__watermark"
+            :src="activeAnnouncement.decorImageUrl"
+            alt=""
+          />
 
-        <div v-if="activeAssets.length" class="announcement-media">
-          <template v-if="contentClass['is-grid']">
-            <img
-              v-for="asset in activeAssets"
-              :key="asset.url"
-              :src="asset.url"
-              :alt="asset.alt || activeAnnouncement.title"
-            />
-          </template>
-          <template v-else>
-            <img :src="currentSlide.url" :alt="currentSlide.alt || activeAnnouncement.title" />
-            <div v-if="activeAssets.length > 1" class="announcement-slider">
-              <button type="button" aria-label="上一张" @click="prevSlide">
-                <i class="bi bi-chevron-left" aria-hidden="true"></i>
-              </button>
-              <div class="announcement-slider__dots" role="tablist" aria-label="公告图片">
-                <button
-                  v-for="(asset, index) in activeAssets"
-                  :key="asset.url"
-                  type="button"
-                  role="tab"
-                  :class="{ active: index === slideIndex }"
-                  :aria-selected="index === slideIndex"
-                  :aria-label="`第 ${index + 1} 张`"
-                  @click="goSlide(index)"
-                ></button>
+          <button
+            v-if="canClose"
+            class="announcement-panel__close"
+            type="button"
+            aria-label="关闭公告"
+            @click="dismissCurrent"
+          >
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
+          </button>
+
+          <div v-if="activeAssets.length" class="announcement-media">
+            <template v-if="contentClass['is-grid']">
+              <img
+                v-for="asset in activeAssets"
+                :key="asset.url"
+                :src="asset.url"
+                :alt="asset.alt || activeAnnouncement.title"
+              />
+            </template>
+            <template v-else>
+              <img :src="currentSlide.url" :alt="currentSlide.alt || activeAnnouncement.title" />
+              <div v-if="activeAssets.length > 1" class="announcement-slider">
+                <button type="button" aria-label="上一张" @click="prevSlide">
+                  <i class="bi bi-chevron-left" aria-hidden="true"></i>
+                </button>
+                <div class="announcement-slider__dots" role="tablist" aria-label="公告图片">
+                  <button
+                    v-for="(asset, index) in activeAssets"
+                    :key="asset.url"
+                    type="button"
+                    role="tab"
+                    :class="{ active: index === slideIndex }"
+                    :aria-selected="index === slideIndex"
+                    :aria-label="`第 ${index + 1} 张`"
+                    @click="goSlide(index)"
+                  ></button>
+                </div>
+                <button type="button" aria-label="下一张" @click="nextSlide">
+                  <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                </button>
               </div>
-              <button type="button" aria-label="下一张" @click="nextSlide">
-                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </template>
+          </div>
+
+          <div class="announcement-copy">
+            <div class="announcement-copy__meta">
+              <span class="announcement-kicker"><i></i> 平台公告</span>
+              <span v-if="queueLabel" class="announcement-queue">{{ queueLabel }}</span>
+            </div>
+            <h3 id="announcement-title">{{ activeAnnouncement.title }}</h3>
+            <p v-if="activeAnnouncement.content" class="announcement-content">
+              {{ activeAnnouncement.content }}
+            </p>
+            <div class="announcement-actions">
+              <button
+                v-if="activeAnnouncement.ctaText && activeAnnouncement.ctaUrl"
+                class="announcement-primary"
+                type="button"
+                @click="handleCta"
+              >
+                {{ activeAnnouncement.ctaText }}
+                <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
+              </button>
+              <button
+                v-if="canClose"
+                class="announcement-secondary"
+                type="button"
+                @click="dismissCurrent"
+              >
+                {{ activeAnnouncement.closeText || '我知道了' }}
               </button>
             </div>
-          </template>
-        </div>
-
-        <div class="announcement-copy">
-          <div class="announcement-copy__meta">
-            <span class="announcement-kicker">公告</span>
-            <span v-if="queueLabel" class="announcement-queue">{{ queueLabel }}</span>
           </div>
-          <h3 id="announcement-title">{{ activeAnnouncement.title }}</h3>
-          <p v-if="activeAnnouncement.content" class="announcement-content">
-            {{ activeAnnouncement.content }}
-          </p>
-          <div class="announcement-actions">
-            <button
-              v-if="activeAnnouncement.ctaText && activeAnnouncement.ctaUrl"
-              class="announcement-primary"
-              type="button"
-              @click="handleCta"
-            >
-              {{ activeAnnouncement.ctaText }}
-            </button>
-            <button
-              v-if="canClose"
-              class="announcement-secondary"
-              type="button"
-              @click="dismissCurrent"
-            >
-              {{ activeAnnouncement.closeText || '我知道了' }}
-            </button>
-          </div>
-        </div>
-      </section>
-    </div>
+        </section>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -776,6 +787,435 @@ onBeforeUnmount(() => {
   .announcement-banner__actions {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+</style>
+
+<style scoped>
+/* 文生图工作台视觉：暗色网格、半透明面板、低噪声紫色强调。 */
+.announcement-layer,
+.announcement-banner {
+  --an-bg: #09090c;
+  --an-ink: rgba(255, 255, 255, 0.96);
+  --an-muted: rgba(255, 255, 255, 0.6);
+  --an-line: rgba(255, 255, 255, 0.09);
+  --an-accent: #8b7bff;
+  --an-accent-soft: rgba(109, 92, 255, 0.16);
+  --an-surface: rgba(18, 18, 24, 0.96);
+  --an-media: #0d0d12;
+  --an-on-primary: #fff;
+  --an-primary: #7565ff;
+  --an-shadow: 0 30px 90px rgba(0, 0, 0, 0.48);
+  --an-song: inherit;
+  --an-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
+}
+
+.announcement-layer.is-dark,
+.announcement-banner.is-dark {
+  --an-bg: #07070a;
+  --an-surface: rgba(16, 16, 22, 0.98);
+  --an-media: #0a0a0e;
+  --an-shadow: 0 34px 100px rgba(0, 0, 0, 0.62);
+}
+
+.announcement-layer {
+  padding: max(20px, calc(var(--app-header-offset, 76px) + 10px)) 20px 20px;
+}
+
+.announcement-backdrop,
+.announcement-layer.is-dark .announcement-backdrop {
+  background: rgba(5, 5, 8, 0.68);
+  backdrop-filter: blur(14px) saturate(0.9);
+  -webkit-backdrop-filter: blur(14px) saturate(0.9);
+}
+
+.announcement-panel {
+  width: min(700px, 100%);
+  max-height: min(80vh, 720px);
+  padding-top: 42px;
+  overflow: hidden;
+  border: 1px solid var(--an-line);
+  border-radius: 20px;
+  background-color: var(--an-surface);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 24px 24px;
+  box-shadow: var(--an-shadow);
+}
+
+.announcement-panel.is-image-left,
+.announcement-panel.is-image-right {
+  width: min(900px, 100%);
+  grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1fr);
+}
+
+.announcement-panel.is-text-only {
+  width: min(560px, 100%);
+}
+
+.announcement-panel__rail {
+  position: absolute;
+  z-index: 2;
+  inset: 0 0 auto;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--an-line);
+  background: rgba(9, 9, 12, 0.72);
+  color: rgba(255, 255, 255, 0.46);
+  font-family: var(--an-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.announcement-panel__rail span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.announcement-panel__rail i,
+.announcement-signal i,
+.announcement-kicker i {
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  border-radius: 50%;
+  background: #69d6a3;
+  box-shadow: 0 0 12px rgba(105, 214, 163, 0.62);
+}
+
+.announcement-kicker i {
+  background: #8b7bff;
+  box-shadow: 0 0 12px rgba(139, 123, 255, 0.72);
+}
+
+.announcement-panel__rail em {
+  padding-right: 42px;
+  color: rgba(255, 255, 255, 0.28);
+  font-style: normal;
+}
+
+.announcement-panel__watermark {
+  top: 52px;
+  right: -12px;
+  opacity: 0.08;
+  filter: grayscale(0.35);
+}
+
+.announcement-panel__close,
+.announcement-banner__close {
+  border: 1px solid var(--an-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.announcement-panel__close:hover,
+.announcement-banner__close:hover {
+  border-color: rgba(139, 123, 255, 0.5);
+  background: rgba(109, 92, 255, 0.14);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.announcement-panel__close {
+  top: 7px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+}
+
+.announcement-media {
+  min-height: 250px;
+  max-height: min(46vh, 430px);
+  border-color: var(--an-line);
+  background: var(--an-media);
+}
+
+.announcement-panel.is-image-left .announcement-media,
+.announcement-panel.is-image-right .announcement-media {
+  border-color: var(--an-line);
+}
+
+.announcement-media img {
+  object-fit: cover;
+}
+
+.announcement-panel.is-grid .announcement-media {
+  gap: 8px;
+  padding: 8px;
+  border-color: var(--an-line);
+}
+
+.announcement-panel.is-grid .announcement-media img {
+  min-height: 130px;
+  border: 0;
+  border-radius: 10px;
+}
+
+.announcement-slider {
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+}
+
+.announcement-slider button {
+  width: 32px;
+  height: 32px;
+  border-color: rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background: rgba(9, 9, 12, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.announcement-slider__dots button {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.announcement-slider__dots button.active {
+  width: 18px;
+  background: #8b7bff;
+  box-shadow: none;
+}
+
+.announcement-copy {
+  gap: 14px;
+  padding: 30px;
+  background: transparent;
+}
+
+.announcement-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #a99eff;
+  font-size: 0.64rem;
+  letter-spacing: 0.12em;
+}
+
+.announcement-queue {
+  padding: 3px 8px;
+  border: 1px solid var(--an-line);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.58rem;
+  letter-spacing: 0;
+}
+
+.announcement-copy h3 {
+  color: var(--an-ink);
+  font-family: inherit;
+  font-size: clamp(1.28rem, 2.3vw, 1.72rem);
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.announcement-content {
+  color: var(--an-muted);
+  font-size: 0.92rem;
+  line-height: 1.78;
+}
+
+.announcement-actions {
+  gap: 9px;
+  padding-top: 12px;
+}
+
+.announcement-primary,
+.announcement-secondary,
+.announcement-banner__cta {
+  min-height: 38px;
+  gap: 8px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  letter-spacing: 0;
+}
+
+.announcement-primary,
+.announcement-banner__cta {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--an-primary);
+  box-shadow: 0 8px 24px rgba(109, 92, 255, 0.2);
+}
+
+.announcement-primary:hover,
+.announcement-banner__cta:hover {
+  transform: translateY(-1px);
+  background: #8475ff;
+  box-shadow: 0 12px 30px rgba(109, 92, 255, 0.28);
+}
+
+.announcement-secondary {
+  border-color: var(--an-line);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.announcement-secondary:hover {
+  border-color: rgba(139, 123, 255, 0.44);
+  background: rgba(109, 92, 255, 0.1);
+  color: #fff;
+}
+
+.announcement-banner {
+  top: calc(var(--app-header-offset, 72px) + 12px);
+  width: min(940px, calc(100vw - 28px));
+  min-height: 72px;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--an-line);
+  border-radius: 16px;
+  background-color: rgba(18, 18, 24, 0.94);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 24px 24px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(16px) saturate(0.92);
+  -webkit-backdrop-filter: blur(16px) saturate(0.92);
+}
+
+.announcement-signal {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(139, 123, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(109, 92, 255, 0.1);
+}
+
+.announcement-banner__decor {
+  width: 46px;
+  height: 46px;
+  border: 0;
+  border-radius: 10px;
+}
+
+.announcement-banner__text {
+  gap: 3px;
+}
+
+.announcement-banner__text em {
+  color: #a99eff;
+  font-family: var(--an-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+}
+
+.announcement-banner__text strong {
+  color: var(--an-ink);
+  font-family: inherit;
+  font-size: 0.94rem;
+  letter-spacing: 0;
+}
+
+.announcement-banner__text span {
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.78rem;
+}
+
+.announcement-banner__close {
+  width: 32px;
+  height: 32px;
+}
+
+.announcement-modal-motion-enter-active,
+.announcement-modal-motion-leave-active,
+.announcement-modal-motion-enter-active .announcement-panel,
+.announcement-modal-motion-leave-active .announcement-panel,
+.announcement-banner-motion-enter-active,
+.announcement-banner-motion-leave-active {
+  transition:
+    opacity 0.22s cubic-bezier(0.22, 0.8, 0.24, 1),
+    transform 0.28s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+
+.announcement-modal-motion-enter-from,
+.announcement-modal-motion-leave-to,
+.announcement-banner-motion-enter-from,
+.announcement-banner-motion-leave-to {
+  opacity: 0;
+}
+
+.announcement-modal-motion-enter-from .announcement-panel {
+  transform: translateY(18px) scale(0.975);
+}
+
+.announcement-modal-motion-leave-to .announcement-panel {
+  transform: translateY(10px) scale(0.985);
+}
+
+.announcement-banner-motion-enter-from,
+.announcement-banner-motion-leave-to {
+  transform: translate(-50%, -12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .announcement-modal-motion-enter-active,
+  .announcement-modal-motion-leave-active,
+  .announcement-modal-motion-enter-active .announcement-panel,
+  .announcement-modal-motion-leave-active .announcement-panel,
+  .announcement-banner-motion-enter-active,
+  .announcement-banner-motion-leave-active {
+    transition-duration: 0.01ms;
+  }
+}
+
+@media (max-width: 720px) {
+  .announcement-layer {
+    padding: 12px;
+  }
+
+  .announcement-panel,
+  .announcement-panel.is-image-left,
+  .announcement-panel.is-image-right {
+    max-height: 88vh;
+    border-radius: 18px;
+  }
+
+  .announcement-panel.is-image-left .announcement-media,
+  .announcement-panel.is-image-right .announcement-media {
+    min-height: 170px;
+    max-height: 31vh;
+  }
+
+  .announcement-copy {
+    padding: 22px;
+  }
+
+  .announcement-banner {
+    top: calc(var(--app-header-offset, 56px) + 8px);
+    gap: 9px;
+    min-height: 64px;
+    padding: 9px;
+  }
+
+  .announcement-signal {
+    display: none;
+  }
+
+  .announcement-banner__actions {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .announcement-banner__cta {
+    min-height: 32px;
+    padding: 0 10px;
   }
 }
 </style>

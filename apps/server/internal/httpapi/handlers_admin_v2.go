@@ -15,6 +15,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 // ---------- users ----------
@@ -69,9 +70,9 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 	for _, n := range byStatus {
 		tasksTotal += n
 	}
-	walletOut := gin.H{"balanceCents": int64(0), "frozenCents": int64(0)}
+	walletOut := walletDict(0, 0)
 	if wallet != nil {
-		walletOut = gin.H{"balanceCents": wallet.BalanceCents, "frozenCents": wallet.FrozenCents}
+		walletOut = walletDict(wallet.BalanceCents, wallet.FrozenCents)
 	}
 	ok(c, gin.H{
 		"user":   adminUserDict(user, nil),
@@ -416,6 +417,10 @@ func (s *Server) adminCancelTask(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	streamEvent := taskstream.Event{TaskID: task.ID.String(), Stage: "canceled", Status: "canceled", Done: true}
+	streamClient := s.assistantStreamRedis()
+	taskstream.Publish(c.Request.Context(), streamClient, task.ID.String(), streamEvent)
+	taskstream.PublishUser(c.Request.Context(), streamClient, task.UserID.String(), streamEvent)
 	ok(c, adminTaskDict(task, nil))
 }
 
@@ -444,6 +449,10 @@ func (s *Server) adminForceFailTask(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	streamEvent := taskstream.Event{TaskID: task.ID.String(), Stage: "failed", Status: "failed", Done: true}
+	streamClient := s.assistantStreamRedis()
+	taskstream.Publish(c.Request.Context(), streamClient, task.ID.String(), streamEvent)
+	taskstream.PublishUser(c.Request.Context(), streamClient, task.UserID.String(), streamEvent)
 	ok(c, adminTaskDict(task, nil))
 }
 

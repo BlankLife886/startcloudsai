@@ -95,12 +95,12 @@ let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
 const items = ref<PromptItem[]>([])
 const promptScopeTotal = ref(0)
 const loading = ref(false)
-const loadingMore = ref(false)
 const error = ref<string | null>(null)
 const nextCursor = ref<string | null>(null)
+const currentCursor = ref<string | null>(null)
+const previousPromptCursors = ref<(string | null)[]>([])
+const promptPage = ref(1)
 const promptContentRef = ref<HTMLElement | null>(null)
-const promptSentinelRef = ref<HTMLElement | null>(null)
-let promptLoadObserver: IntersectionObserver | null = null
 let promptRequestVersion = 0
 let coverLoadObserver: IntersectionObserver | null = null
 let bodyResizeObserver: ResizeObserver | null = null
@@ -112,6 +112,7 @@ const isGridScrolling = ref(false)
 let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
 
 const hasNext = computed(() => nextCursor.value !== null)
+const hasPrev = computed(() => previousPromptCursors.value.length > 0)
 const initialLoading = computed(() => loading.value && items.value.length === 0)
 const refreshing = computed(() => loading.value && items.value.length > 0)
 
@@ -126,10 +127,10 @@ function promptQueryParams(cursor: string | null) {
   }
 }
 
-async function reset() {
+async function loadPromptPage(cursor: string | null) {
   const version = ++promptRequestVersion
   const hadItems = items.value.length > 0
-  const params = promptQueryParams(null)
+  const params = promptQueryParams(cursor)
   loading.value = true
   error.value = null
   try {
@@ -140,6 +141,7 @@ async function reset() {
     )
     if (version !== promptRequestVersion) return
     items.value = page.items
+    currentCursor.value = cursor
     nextCursor.value = page.nextCursor
     promptScopeTotal.value = page.scopeTotal ?? page.total ?? page.items.length
     const loadedIds = new Set(page.items.map((item) => item.id))
@@ -148,7 +150,6 @@ async function reset() {
     }
     await nextTick()
     promptContentRef.value?.scrollTo({ top: 0, behavior: 'auto' })
-    setupPromptObserver()
   } catch (cause) {
     if (version !== promptRequestVersion) return
     if (!hadItems) items.value = []
@@ -158,30 +159,25 @@ async function reset() {
   }
 }
 
-async function loadMorePrompts() {
+function reset() {
+  previousPromptCursors.value = []
+  promptPage.value = 1
+  return loadPromptPage(null)
+}
+
+async function nextPromptPage() {
   const cursor = nextCursor.value
-  if (!cursor || loading.value || loadingMore.value) return
-  const version = promptRequestVersion
-  loadingMore.value = true
-  try {
-    const page = normalizeList(
-      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
-        query: promptQueryParams(cursor),
-      }),
-    )
-    if (version !== promptRequestVersion) return
-    const merged = new Map(items.value.map((item) => [item.id, item]))
-    for (const item of page.items) merged.set(item.id, item)
-    items.value = [...merged.values()]
-    nextCursor.value = page.nextCursor
-    error.value = null
-  } catch (cause) {
-    if (version === promptRequestVersion) {
-      error.value = cause instanceof Error && cause.message ? cause.message : '加载更多失败，请重试'
-    }
-  } finally {
-    if (version === promptRequestVersion) loadingMore.value = false
-  }
+  if (!cursor || loading.value) return
+  previousPromptCursors.value.push(currentCursor.value)
+  promptPage.value += 1
+  await loadPromptPage(cursor)
+}
+
+async function prevPromptPage() {
+  if (!previousPromptCursors.value.length || loading.value) return
+  const cursor = previousPromptCursors.value.pop() ?? null
+  promptPage.value = Math.max(1, promptPage.value - 1)
+  await loadPromptPage(cursor)
 }
 
 function refresh() {
@@ -189,20 +185,7 @@ function refresh() {
 }
 
 function retry() {
-  return items.value.length ? loadMorePrompts() : reset()
-}
-
-function setupPromptObserver() {
-  promptLoadObserver?.disconnect()
-  promptLoadObserver = null
-  if (typeof IntersectionObserver === 'undefined' || !promptSentinelRef.value) return
-  promptLoadObserver = new IntersectionObserver(
-    (entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void loadMorePrompts()
-    },
-    { root: promptContentRef.value, rootMargin: '560px 0px', threshold: 0.01 },
-  )
-  promptLoadObserver.observe(promptSentinelRef.value)
+  return loadPromptPage(currentCursor.value)
 }
 
 function setupCoverObserver() {
@@ -602,8 +585,6 @@ const sortDirty = computed(
 )
 const sortSelectedItem = computed(() => sortItems.value.find((item) => item.id === sortSelectedId.value) ?? null)
 const sortIsSearching = computed(() => Boolean(sortQuery.value.trim()))
-const sortRangeStart = computed(() => (sortPage.value - 1) * SORT_PAGE_SIZE + (sortItems.value.length ? 1 : 0))
-const sortRangeEnd = computed(() => (sortPage.value - 1) * SORT_PAGE_SIZE + sortItems.value.length)
 
 async function loadSortItems(resetPaging = false) {
   if (resetPaging) {
@@ -1100,7 +1081,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateGridColumnCount)
-  promptLoadObserver?.disconnect()
   coverLoadObserver?.disconnect()
   bodyResizeObserver?.disconnect()
   coverElements.clear()
@@ -1123,7 +1103,9 @@ onBeforeUnmount(() => {
           <p>管理内容分类、投放功能、封面素材与启停排序</p>
         </div>
         <div class="library-header__actions">
-          <el-tag type="success" effect="light" round size="small">已加载 {{ items.length }} 条内容</el-tag>
+          <el-tag type="success" effect="light" round size="small"
+            >当前页 {{ items.length }} / 共 {{ promptScopeTotal }} 条</el-tag
+          >
           <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
             <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
           </el-badge>
@@ -1194,7 +1176,8 @@ onBeforeUnmount(() => {
           </button>
         </aside>
 
-        <main ref="promptContentRef" class="prompt-content" @scroll.passive="onPromptScroll">
+        <main class="prompt-content">
+          <div ref="promptContentRef" class="prompt-content__scroll" @scroll.passive="onPromptScroll">
           <ListError :error="error" :loading="loading" @retry="retry" />
 
           <div v-if="selectionMode" class="prompt-bulk-bar" :class="{ 'is-active': selectedItems.length }">
@@ -1432,13 +1415,18 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div ref="promptSentinelRef" class="prompt-load-sentinel" aria-hidden="true" />
-          <div v-if="loadingMore" class="prompt-load-state" aria-live="polite">
-            <el-icon class="is-spinning"><Refresh /></el-icon>
-            <span>正在加载更多提示词</span>
           </div>
-          <div v-else-if="items.length && !hasNext" class="prompt-load-state is-complete">
-            <span>已加载全部 {{ items.length }} 条</span>
+          <div class="prompt-library-pagination">
+            <CursorPager
+              :has-prev="hasPrev"
+              :has-next="hasNext"
+              :loading="loading"
+              :page="promptPage"
+              :count="items.length"
+              :total="promptScopeTotal"
+              @prev="prevPromptPage"
+              @next="nextPromptPage"
+            />
           </div>
         </main>
       </div>
@@ -1617,15 +1605,17 @@ onBeforeUnmount(() => {
         </draggable>
 
         <div v-if="!sortLoading && sortItems.length" class="prompt-sort-pagination">
-          <span>
-            显示 {{ sortRangeStart }}–{{ sortRangeEnd }} / {{ sortMatchTotal }}
-            <template v-if="sortIsSearching">（排序范围共 {{ sortScopeTotal }} 条）</template>
-          </span>
-          <div>
-            <el-button :disabled="sortPage <= 1 || sortLoading" @click="changeSortPage(-1)">上一页</el-button>
-            <strong>第 {{ sortPage }} 页</strong>
-            <el-button :disabled="!sortNextCursor || sortLoading" @click="changeSortPage(1)">下一页</el-button>
-          </div>
+          <span v-if="sortIsSearching">当前排序范围共 {{ sortScopeTotal }} 条</span>
+          <CursorPager
+            :has-prev="sortPage > 1"
+            :has-next="Boolean(sortNextCursor)"
+            :loading="sortLoading"
+            :page="sortPage"
+            :count="sortItems.length"
+            :total="sortMatchTotal"
+            @prev="changeSortPage(-1)"
+            @next="changeSortPage(1)"
+          />
         </div>
 
         <footer class="prompt-sort-footer">
@@ -2172,6 +2162,14 @@ onBeforeUnmount(() => {
 }
 
 .prompt-content {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.prompt-content__scroll {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
@@ -2180,6 +2178,12 @@ onBeforeUnmount(() => {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--accent) 28%, transparent) transparent;
   padding: 18px;
+}
+
+.prompt-library-pagination {
+  padding: 4px 18px;
+  border-top: 1px solid var(--library-border);
+  background: var(--surface-2);
 }
 
 .prompt-toolbar {
@@ -2320,30 +2324,6 @@ onBeforeUnmount(() => {
 
   &.is-short {
     width: 46%;
-  }
-}
-
-.prompt-load-sentinel {
-  width: 100%;
-  height: 1px;
-}
-
-.prompt-load-state {
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  color: var(--library-muted);
-  font-size: 11px;
-
-  .is-spinning {
-    color: var(--accent-ink);
-    animation: prompt-load-spin 0.85s linear infinite;
-  }
-
-  &.is-complete {
-    opacity: 0.72;
   }
 }
 
@@ -3493,7 +3473,15 @@ onBeforeUnmount(() => {
   }
 
   .prompt-content {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .prompt-content__scroll {
     padding: 12px;
+  }
+
+  .prompt-library-pagination {
+    padding: 6px 12px;
   }
 
   .toolbar-select,
@@ -3982,16 +3970,9 @@ onBeforeUnmount(() => {
   background: var(--surface-2);
 }
 
-.prompt-sort-pagination > div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.prompt-sort-pagination strong {
-  min-width: 58px;
-  color: var(--ink-2);
-  text-align: center;
+.prompt-sort-pagination :deep(.cursor-pager) {
+  min-width: 0;
+  flex: 1;
 }
 
 .prompt-sort-footer {

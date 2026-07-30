@@ -1,6 +1,7 @@
 <script setup>
 import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
+import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSelect.vue'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { gsap } from 'gsap'
 import ColoringFrameMedia from './components/ColoringFrameMedia.vue'
@@ -8,11 +9,13 @@ import ColoringLibraryDrawer from './components/ColoringLibraryDrawer.vue'
 import ColoringSettingsDialog from './components/ColoringSettingsDialog.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
+import { useAppearanceStore } from '@/stores/appearance'
 import { useColoringCanvasPan } from './composables/useColoringCanvasPan'
 import { useIllustrationColoringState } from './composables/useIllustrationColoringState'
 import { formatColoringErrorText } from './domain/coloringStability'
 import '@/features/ai-illustration-coloring/styles/illustration-coloring.css'
 
+const appearanceStore = useAppearanceStore()
 const fileInput = ref(null)
 const referenceInput = ref(null)
 const studioRoot = ref(null)
@@ -137,6 +140,49 @@ const {
   closeCreditsDialog,
 } = useIllustrationColoringState()
 
+const coloringModelSelectOptions = computed(() =>
+  publicModels.value.map((model) => ({
+    value: model.publicModelKey || model.id,
+    label: model.label || model.publicModelKey || model.id || '未命名模型',
+    icon: 'bi-cpu',
+    pricePoints: model.pricePoints,
+    standardPricePoints: model.standardPricePoints,
+    discountPricePoints: model.discountPricePoints,
+  })),
+)
+const coloringOrientationSelectOptions = COLORING_OUTPUT_ORIENTATION_OPTIONS.map((item) => ({
+  value: item.id,
+  label: item.label,
+}))
+const coloringOutputSizeSelectOptions = COLORING_OUTPUT_SIZE_OPTIONS.map((item) => ({
+  value: item.id,
+  label: item.label,
+}))
+const coloringBatchCountSelectOptions = COLORING_BATCH_COUNT_OPTIONS.map((count) => ({
+  value: count,
+  label: `${count} 张`,
+}))
+const coloringModelValue = computed({
+  get: () =>
+    settings.value.publicModelKey ||
+    selectedPublicModel.value?.publicModelKey ||
+    selectedPublicModel.value?.id ||
+    '',
+  set: (publicModelKey) => updateSettings({ publicModelKey }),
+})
+const coloringOrientationValue = computed({
+  get: () => settings.value.outputOrientation,
+  set: (outputOrientation) => updateSettings({ outputOrientation }),
+})
+const coloringOutputSizeValue = computed({
+  get: () => settings.value.outputSize,
+  set: (outputSize) => updateSettings({ outputSize }),
+})
+const coloringBatchCountValue = computed({
+  get: () => settings.value.generationCount,
+  set: (generationCount) => updateSettings({ generationCount: Number(generationCount) }),
+})
+
 fitMode.value = settings.value.fitMode || 'contain'
 
 const canPan = () => fitMode.value === 'cover'
@@ -251,35 +297,89 @@ function executionDurationMs(item = {}) {
 }
 
 function executionStatusLabel(status) {
-  return ({ completed: '已完成', done: '已完成', queued: '排队中', running: '处理中', waiting_provider: '等待服务商', paused: '已暂停', failed: '失败', cancelled: '已取消', canceled: '已取消' })[String(status || '').toLowerCase()] || '处理中'
+  return (
+    {
+      completed: '已完成',
+      done: '已完成',
+      queued: '排队中',
+      running: '处理中',
+      waiting_provider: '等待服务商',
+      paused: '已暂停',
+      failed: '失败',
+      cancelled: '已取消',
+      canceled: '已取消',
+    }[String(status || '').toLowerCase()] || '处理中'
+  )
 }
 
 function executionStageLabel(stage) {
-  return ({ job_created: 'API 已创建任务', queue_dispatch_started: '正在投递任务队列', queue_dispatched: '任务已进入队列', queue_dispatch_failed: '队列投递失败，启用兜底', worker_claimed: 'Worker 已领取', provider_request_started: '已发送上游请求', provider_polling: '等待并查询上游任务', provider_response_received: '已收到上游响应', provider_receipt_saved: '已保全原始回包', result_media_saved: '图片已写入存储', result_media_missing: '图片写入失败', job_finalizing: '正在完成任务', job_completed: '任务状态已完成', usage_settled: '用量与资源已结算', client_notification_sent: '已通知用户端取图', execution_interrupted: '任务执行中断' })[String(stage || '').toLowerCase()] || '执行步骤'
+  return (
+    {
+      job_created: 'API 已创建任务',
+      queue_dispatch_started: '正在投递任务队列',
+      queue_dispatched: '任务已进入队列',
+      queue_dispatch_failed: '队列投递失败，启用兜底',
+      worker_claimed: 'Worker 已领取',
+      provider_request_started: '已发送上游请求',
+      provider_polling: '等待并查询上游任务',
+      provider_response_received: '已收到上游响应',
+      provider_receipt_saved: '已保全原始回包',
+      result_media_saved: '图片已写入存储',
+      result_media_missing: '图片写入失败',
+      job_finalizing: '正在完成任务',
+      job_completed: '任务状态已完成',
+      usage_settled: '用量与资源已结算',
+      client_notification_sent: '已通知用户端取图',
+      execution_interrupted: '任务执行中断',
+    }[String(stage || '').toLowerCase()] || '执行步骤'
+  )
 }
 
 const EXECUTION_DETAIL_LABELS = {
-  taskType: '任务类型', provider: '服务商', model: '模型', publicModel: '公开模型',
-  sourceFileCount: '源图数量', estimatedCostUsd: '预计成本（美元）', endpoint: '请求接口',
-  profile: '适配配置', requestMode: '请求模式', resultMode: '结果模式', outputType: '输出类型',
-  asynchronous: '异步任务', requestBody: '发送给上游的请求数据', providerStatus: '上游状态',
-  providerTaskId: '上游任务编号', hasResultUrl: '是否提供结果地址', responseSummary: '上游响应摘要',
-  receiptSaved: '原始回包已保全', contentType: '图片格式', bytes: '图片字节数',
-  width: '图片宽度（像素）', height: '图片高度（像素）', resultPath: '结果读取地址', storageSaved: '图片已写入存储',
+  taskType: '任务类型',
+  provider: '服务商',
+  model: '模型',
+  publicModel: '公开模型',
+  sourceFileCount: '源图数量',
+  estimatedCostUsd: '预计成本（美元）',
+  endpoint: '请求接口',
+  profile: '适配配置',
+  requestMode: '请求模式',
+  resultMode: '结果模式',
+  outputType: '输出类型',
+  asynchronous: '异步任务',
+  requestBody: '发送给上游的请求数据',
+  providerStatus: '上游状态',
+  providerTaskId: '上游任务编号',
+  hasResultUrl: '是否提供结果地址',
+  responseSummary: '上游响应摘要',
+  receiptSaved: '原始回包已保全',
+  contentType: '图片格式',
+  bytes: '图片字节数',
+  width: '图片宽度（像素）',
+  height: '图片高度（像素）',
+  resultPath: '结果读取地址',
+  storageSaved: '图片已写入存储',
 }
 
 function executionDetailRows(details = {}) {
   if (!details || typeof details !== 'object' || Array.isArray(details)) return []
-  return Object.entries(details).map(([key, value]) => ({
-    key,
-    label: EXECUTION_DETAIL_LABELS[key] || '详细字段',
-    value:
-      typeof value === 'object' && value !== null
-        ? JSON.stringify(value, null, 2)
-        : typeof value === 'boolean'
-          ? value ? '是' : '否'
-          : key === 'bytes' ? `${Number(value || 0).toLocaleString('zh-CN')} 字节` : String(value ?? ''),
-  })).filter((item) => item.value !== '')
+  return Object.entries(details)
+    .map(([key, value]) => ({
+      key,
+      label: EXECUTION_DETAIL_LABELS[key] || '详细字段',
+      value:
+        typeof value === 'object' && value !== null
+          ? JSON.stringify(value, null, 2)
+          : typeof value === 'boolean'
+            ? value
+              ? '是'
+              : '否'
+            : key === 'bytes'
+              ? `${Number(value || 0).toLocaleString('zh-CN')} 字节`
+              : String(value ?? ''),
+    }))
+    .filter((item) => item.value !== '')
 }
 
 function uniqueExecutionTrace(entries = []) {
@@ -296,7 +396,10 @@ function executionAttempts(entries = []) {
   const attempts = []
   let current = []
   for (const entry of uniqueExecutionTrace(entries)) {
-    if (entry.stage === 'worker_claimed' && current.some((item) => item.stage === 'worker_claimed')) {
+    if (
+      entry.stage === 'worker_claimed' &&
+      current.some((item) => item.stage === 'worker_claimed')
+    ) {
       attempts.push(current)
       current = []
     }
@@ -306,7 +409,9 @@ function executionAttempts(entries = []) {
   return attempts
 }
 
-const executionAttemptGroups = computed(() => executionAttempts(activeHistoryItem.value?.executionTrace))
+const executionAttemptGroups = computed(() =>
+  executionAttempts(activeHistoryItem.value?.executionTrace),
+)
 const currentExecutionTrace = computed(() => executionAttemptGroups.value.at(-1) || [])
 
 function executionElapsedMs(entries = [], index = 0) {
@@ -441,7 +546,9 @@ function historyGroupId(item = {}) {
   const title = String(item.title || item.styleLabel || '插画染色')
     .replace(/\s*#\d+$/, '')
     .trim()
-  const prompt = String(item.customPrompt || '').trim().slice(0, 120)
+  const prompt = String(item.customPrompt || '')
+    .trim()
+    .slice(0, 120)
   const createdAt =
     Date.parse(String(item.createdAt || '')) || Number(item.startedAt || item.finishedAt || 0)
   // 兼容旧版本：同一次多图生成没有保存 batchId，但各任务会在数秒内创建。
@@ -954,6 +1061,25 @@ watch([sourcePreview, displayResultUrl], async () => {
     <div class="coloring-workspace">
       <aside class="coloring-sidebar">
         <div class="coloring-side-scroll">
+          <section class="coloring-model-engine" aria-label="生成模型">
+            <span class="coloring-model-engine-icon" aria-hidden="true">
+              <i class="bi bi-cpu"></i>
+            </span>
+            <AspectRatioSelect
+              v-model="coloringModelValue"
+              class="coloring-model-select"
+              :options="coloringModelSelectOptions"
+              :show-ratio-icons="false"
+              :disabled="controlsLocked"
+              use-option-label
+              compact-menu
+              glass-menu
+              menu-placement="bottom"
+              aria-label="生成模型"
+              placeholder="选择生成模型"
+            />
+          </section>
+
           <div v-if="disabledMessage" class="coloring-disabled-banner">
             {{ disabledMessage }}
           </div>
@@ -1065,72 +1191,55 @@ watch([sourcePreview, displayResultUrl], async () => {
 
           <section class="coloring-block coloring-parameter-block">
             <header class="coloring-block-head">
-              <span>模型</span>
-              <small>{{ selectedPublicModel?.label || 'GPT Image 2' }}</small>
-            </header>
-            <select
-              class="coloring-parameter-select"
-              :value="settings.publicModelKey || selectedPublicModel?.publicModelKey || selectedPublicModel?.id"
-              :disabled="controlsLocked"
-              aria-label="生成模型"
-              @change="updateSettings({ publicModelKey: $event.target.value })"
-            >
-              <option
-                v-for="model in publicModels"
-                :key="model.publicModelKey || model.id"
-                :value="model.publicModelKey || model.id"
-              >
-                {{ model.label || model.publicModelKey || model.id }}
-              </option>
-            </select>
-
-            <header class="coloring-block-head coloring-block-head--sub">
-              <span>输出比例</span>
+              <span>输出设置</span>
               <small>{{ outputSizePreview.label }}</small>
             </header>
-            <div class="coloring-parameter-ratios">
-              <button
-                v-for="item in COLORING_OUTPUT_ORIENTATION_OPTIONS"
-                :key="item.id"
-                type="button"
-                :class="{ active: settings.outputOrientation === item.id }"
-                :disabled="controlsLocked"
-                @click="updateSettings({ outputOrientation: item.id })"
-              >
-                {{ item.id === 'source' ? '原图' : item.id }}
-              </button>
-            </div>
-
-            <header class="coloring-block-head coloring-block-head--sub">
-              <span>分辨率</span>
-            </header>
-            <div class="coloring-parameter-segments">
-              <button
-                v-for="item in COLORING_OUTPUT_SIZE_OPTIONS"
-                :key="item.id"
-                type="button"
-                :class="{ active: settings.outputSize === item.id }"
-                :disabled="controlsLocked"
-                @click="updateSettings({ outputSize: item.id })"
-              >
-                {{ item.label }}
-              </button>
-            </div>
-
-            <header class="coloring-block-head coloring-block-head--sub">
-              <span>生成张数</span>
-            </header>
-            <div class="coloring-parameter-segments">
-              <button
-                v-for="count in COLORING_BATCH_COUNT_OPTIONS"
-                :key="count"
-                type="button"
-                :class="{ active: settings.generationCount === count }"
-                :disabled="controlsLocked"
-                @click="updateSettings({ generationCount: count })"
-              >
-                {{ count }} 张
-              </button>
+            <div class="coloring-parameter-selectors">
+              <div class="coloring-selector-field is-wide">
+                <span>输出比例</span>
+                <AspectRatioSelect
+                  v-model="coloringOrientationValue"
+                  :options="coloringOrientationSelectOptions"
+                  :show-ratio-icons="false"
+                  :disabled="controlsLocked"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="输出比例"
+                />
+              </div>
+              <div class="coloring-selector-field">
+                <span>分辨率</span>
+                <AspectRatioSelect
+                  v-model="coloringOutputSizeValue"
+                  :options="coloringOutputSizeSelectOptions"
+                  :show-ratio-icons="false"
+                  :disabled="controlsLocked"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="分辨率"
+                />
+              </div>
+              <div class="coloring-selector-field">
+                <span>生成张数</span>
+                <AspectRatioSelect
+                  v-model="coloringBatchCountValue"
+                  :options="coloringBatchCountSelectOptions"
+                  :show-ratio-icons="false"
+                  :disabled="controlsLocked"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="生成张数"
+                />
+              </div>
             </div>
           </section>
         </div>
@@ -1204,47 +1313,104 @@ watch([sourcePreview, displayResultUrl], async () => {
             已有任务在后台处理，可继续配置并开始新任务（最多同时 4 个）。
           </p>
           <Teleport to="body">
-          <details v-if="activeHistoryItem?.serverJobId && showExecutionTrace" class="coloring-execution-trace" open role="dialog" aria-modal="true">
-            <summary>
-              <span>执行时间线 · {{ executionStatusLabel(activeHistoryItem.status) }}</span>
-              <button type="button" class="coloring-execution-close" aria-label="关闭执行日志" @click.stop.prevent="showExecutionTrace = false">
-                <i class="bi bi-x-lg" aria-hidden="true"></i>
-                关闭
-              </button>
-            </summary>
-            <ol>
-              <li><b>任务创建</b><time>{{ formatExecutionTime(activeHistoryItem.createdAt) }}</time></li>
-              <li><b>Worker 开始处理</b><time>{{ formatExecutionTime(activeHistoryItem.startedAt) }}</time></li>
-              <li><b>服务端最后更新</b><time>{{ formatExecutionTime(activeHistoryItem.updatedAt) }}</time></li>
-              <li v-if="activeHistoryItem.finishedAt"><b>任务结束</b><time>{{ formatExecutionTime(activeHistoryItem.finishedAt) }}</time></li>
-              <li><b>服务端执行耗时</b><time>{{ formatExecutionDuration(executionDurationMs(activeHistoryItem)) }}</time></li>
-            </ol>
-            <div v-if="currentExecutionTrace.length" class="coloring-execution-events">
-              <p>本次服务端真实事件 · 第 {{ executionAttemptGroups.length }} 次执行</p>
+            <details
+              v-if="activeHistoryItem?.serverJobId && showExecutionTrace"
+              class="coloring-execution-trace"
+              :class="{ 'is-light': !appearanceStore.isDark }"
+              open
+              role="dialog"
+              aria-modal="true"
+            >
+              <summary>
+                <span>执行时间线 · {{ executionStatusLabel(activeHistoryItem.status) }}</span>
+                <button
+                  type="button"
+                  class="coloring-execution-close"
+                  aria-label="关闭执行日志"
+                  @click.stop.prevent="showExecutionTrace = false"
+                >
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                  关闭
+                </button>
+              </summary>
               <ol>
-                <li v-for="(entry, index) in currentExecutionTrace" :key="`${entry.stage}-${entry.at}`">
-                  <time>{{ formatExecutionTime(entry.at) }}</time>
-                  <span>
-                    <b>{{ executionStageLabel(entry.stage) }}</b>
-                    <em>本步 +{{ formatPreciseElapsed(executionElapsedMs(currentExecutionTrace, index)) }} · 本次累计 {{ formatPreciseElapsed(executionTotalMs(currentExecutionTrace, index)) }}</em>
-                    {{ entry.message ? `：${entry.message}` : '' }}
-                    <details v-if="executionDetailRows(entry.details).length" class="coloring-execution-detail">
-                      <summary>查看发送／接收详细数据</summary>
-                      <dl>
-                        <template v-for="row in executionDetailRows(entry.details)" :key="`${entry.stage}-${row.key}`">
-                          <dt>{{ row.label }}</dt>
-                          <dd><pre>{{ row.value }}</pre></dd>
-                        </template>
-                      </dl>
-                    </details>
-                  </span>
+                <li>
+                  <b>任务创建</b><time>{{ formatExecutionTime(activeHistoryItem.createdAt) }}</time>
+                </li>
+                <li>
+                  <b>Worker 开始处理</b
+                  ><time>{{ formatExecutionTime(activeHistoryItem.startedAt) }}</time>
+                </li>
+                <li>
+                  <b>服务端最后更新</b
+                  ><time>{{ formatExecutionTime(activeHistoryItem.updatedAt) }}</time>
+                </li>
+                <li v-if="activeHistoryItem.finishedAt">
+                  <b>任务结束</b
+                  ><time>{{ formatExecutionTime(activeHistoryItem.finishedAt) }}</time>
+                </li>
+                <li>
+                  <b>服务端执行耗时</b
+                  ><time>{{
+                    formatExecutionDuration(executionDurationMs(activeHistoryItem))
+                  }}</time>
                 </li>
               </ol>
-              <small v-if="executionAttemptGroups.length > 1">此前 {{ executionAttemptGroups.length - 1 }} 次执行已分开，不计入本次累计耗时。</small>
-            </div>
-            <small v-else-if="['completed', 'done', 'failed', 'cancelled', 'canceled', 'paused'].includes(activeHistoryItem.status)">该任务创建于详细日志上线前，当前显示数据库记录的时间与自动计算耗时。</small>
-            <small v-else>任务尚未被 Worker 领取；当前仅显示数据库时间。</small>
-          </details>
+              <div v-if="currentExecutionTrace.length" class="coloring-execution-events">
+                <p>本次服务端真实事件 · 第 {{ executionAttemptGroups.length }} 次执行</p>
+                <ol>
+                  <li
+                    v-for="(entry, index) in currentExecutionTrace"
+                    :key="`${entry.stage}-${entry.at}`"
+                  >
+                    <time>{{ formatExecutionTime(entry.at) }}</time>
+                    <span>
+                      <b>{{ executionStageLabel(entry.stage) }}</b>
+                      <em
+                        >本步 +{{
+                          formatPreciseElapsed(executionElapsedMs(currentExecutionTrace, index))
+                        }}
+                        · 本次累计
+                        {{
+                          formatPreciseElapsed(executionTotalMs(currentExecutionTrace, index))
+                        }}</em
+                      >
+                      {{ entry.message ? `：${entry.message}` : '' }}
+                      <details
+                        v-if="executionDetailRows(entry.details).length"
+                        class="coloring-execution-detail"
+                      >
+                        <summary>查看发送／接收详细数据</summary>
+                        <dl>
+                          <template
+                            v-for="row in executionDetailRows(entry.details)"
+                            :key="`${entry.stage}-${row.key}`"
+                          >
+                            <dt>{{ row.label }}</dt>
+                            <dd>
+                              <pre>{{ row.value }}</pre>
+                            </dd>
+                          </template>
+                        </dl>
+                      </details>
+                    </span>
+                  </li>
+                </ol>
+                <small v-if="executionAttemptGroups.length > 1"
+                  >此前
+                  {{ executionAttemptGroups.length - 1 }} 次执行已分开，不计入本次累计耗时。</small
+                >
+              </div>
+              <small
+                v-else-if="
+                  ['completed', 'done', 'failed', 'cancelled', 'canceled', 'paused'].includes(
+                    activeHistoryItem.status,
+                  )
+                "
+                >该任务创建于详细日志上线前，当前显示数据库记录的时间与自动计算耗时。</small
+              >
+              <small v-else>任务尚未被 Worker 领取；当前仅显示数据库时间。</small>
+            </details>
           </Teleport>
         </div>
       </aside>
@@ -2046,6 +2212,7 @@ watch([sourcePreview, displayResultUrl], async () => {
     <AiCostConfirmDialog
       :show="costConfirmOpen"
       :cost="pendingCost"
+      :light="!appearanceStore.isDark"
       @confirm="resolveCostConfirm(true)"
       @cancel="resolveCostConfirm(false)"
     />
@@ -2054,6 +2221,7 @@ watch([sourcePreview, displayResultUrl], async () => {
       :show="creditsDialogOpen"
       :required="requiredCredits"
       :available="availableCredits"
+      :light="!appearanceStore.isDark"
       @close="closeCreditsDialog"
     />
 
@@ -2062,6 +2230,7 @@ watch([sourcePreview, displayResultUrl], async () => {
       :title="activeHistoryItem?.title || workTitle || ''"
       :style-label="activeHistoryItem?.styleLabel || '插画染色'"
       :submitting="submittingShare"
+      :light="!appearanceStore.isDark"
       @close="sharePublishOpen = false"
       @submit="confirmSharePublish"
     />

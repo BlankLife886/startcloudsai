@@ -35,6 +35,10 @@ type Config struct {
 	Sub2APIImageModel  string
 	Sub2APITimeoutSecs int
 
+	CRUNBaseURL     string
+	CRUNAPIKey      string
+	CRUNTimeoutSecs int
+
 	R2Endpoint          string
 	R2AccessKeyID       string
 	R2SecretAccessKey   string
@@ -112,6 +116,10 @@ func Load() *Config {
 		Sub2APIChatModel:   getenv("SUB2API_CHAT_MODEL", "gpt-5.4"),
 		Sub2APIImageModel:  getenv("SUB2API_IMAGE_MODEL", "gpt-image-2"),
 		Sub2APITimeoutSecs: getenvInt("SUB2API_TIMEOUT_SECS", 300),
+
+		CRUNBaseURL:     getenv("CRUN_BASE_URL", "https://api.crun.ai"),
+		CRUNAPIKey:      getenv("CRUN_API_KEY", ""),
+		CRUNTimeoutSecs: getenvInt("CRUN_TIMEOUT_SECS", 1200),
 
 		R2Endpoint:          getenv("R2_ENDPOINT", ""),
 		R2AccessKeyID:       getenv("R2_ACCESS_KEY_ID", ""),

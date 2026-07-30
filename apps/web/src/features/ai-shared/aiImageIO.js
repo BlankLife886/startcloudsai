@@ -123,12 +123,12 @@ function normalizeScaleSteps(values) {
 }
 
 /** 上传输入图 blob，返回可展示/可下发的 URL（内部走 /api/uploads）。 */
-export async function uploadAiTempBlob(blob, _options = {}) {
+export async function uploadAiTempBlob(blob, { signal } = {}) {
   const file = new File([blob], `ai-input-${Date.now()}.jpg`, {
     type: blob.type || 'image/jpeg',
   })
   const { registerUploadedUrl } = await import('@/services/aiWallpaper').catch(() => ({}))
-  const uploaded = await uploadFile(file)
+  const uploaded = await uploadFile(file, { signal })
   if (typeof registerUploadedUrl === 'function') registerUploadedUrl(uploaded.url, uploaded.key)
   const tempUrl = String(uploaded?.url || '').trim()
   if (!tempUrl) throw new Error('上传未返回可用 URL')

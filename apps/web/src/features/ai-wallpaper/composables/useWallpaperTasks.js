@@ -9,6 +9,7 @@ import {
   replaceServerAiJobResultWithLocalUpscale,
   uploadAiInputFile,
 } from '@/services/aiWallpaper'
+import { subscribeTask } from '@/services/tasksApi'
 import {
   extractServerJobOutputs,
   hydrateServerJobTaskOutputs,
@@ -23,6 +24,7 @@ import {
   prepareMaskEditCrop,
 } from '@/features/ai-wallpaper/domain/maskEditCrop'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
+import { getModelAutoAspectRatioCandidates } from '@/features/ai-shared/modelImageCapabilities'
 import {
   AI_WALLPAPER_STUDIO_DRAFT_KEY,
   AI_WALLPAPER_TASKS_KEY,
@@ -72,9 +74,10 @@ export function useWallpaperTasks(deps = {}) {
     composePrompt = () => '',
     aspectRatio = ref('1:1'),
     imageCount = ref(1),
-    imageQuality = ref('standard'),
+    imageQuality = ref('medium'),
     resolutionScale = ref('1K'),
     upscaleOutputFormat = ref('auto'),
+    moderationLevel = ref(''),
     duration = ref(5),
     creativity = ref(46),
     styleStrength = ref(58),
@@ -143,6 +146,7 @@ export function useWallpaperTasks(deps = {}) {
   let localTaskSequence = 0
   const taskAbortControllers = new Map()
   const serverJobPollers = new Map()
+	const serverJobStreams = new Map()
   const serverJobPollsInFlight = new Map()
   const serverJobPollControllers = new Map()
   const pendingCancelTaskIds = new Set()
@@ -426,6 +430,8 @@ export function useWallpaperTasks(deps = {}) {
     const poller = serverJobPollers.get(taskId)
     if (poller && typeof window !== 'undefined') window.clearInterval(poller)
     serverJobPollers.delete(taskId)
+	serverJobStreams.get(taskId)?.()
+	serverJobStreams.delete(taskId)
     serverJobPollControllers.get(taskId)?.abort()
     serverJobPollControllers.delete(taskId)
     serverJobPollsInFlight.delete(taskId)
@@ -433,7 +439,11 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   function stopAllServerJobPolling() {
-    const taskIds = new Set([...serverJobPollers.keys(), ...serverJobPollControllers.keys()])
+	const taskIds = new Set([
+	  ...serverJobPollers.keys(),
+	  ...serverJobPollControllers.keys(),
+	  ...serverJobStreams.keys(),
+	])
     taskIds.forEach(stopServerJobPolling)
   }
 
@@ -464,18 +474,25 @@ export function useWallpaperTasks(deps = {}) {
   function createTaskRecord(overrides = {}) {
     const now = Date.now()
     const userPrompt = String(prompt.value || '').trim()
-    const taskReferences = outputType.value === 'image' ? referenceImages.value.slice(0, 4) : []
+    const publicModelKey = String(
+      outputType.value === 'video' ? videoDispatchModel.value : imageDispatchModel.value || '',
+    ).trim()
+    const publicModel = publicModelOptions.value.find((item) => item.id === publicModelKey)
+    const referenceLimit = Math.max(0, Number(publicModel?.maxReferenceImages) || 0)
+    const taskReferences =
+      outputType.value === 'image' ? referenceImages.value.slice(0, referenceLimit) : []
     const kind =
       outputType.value === 'video'
         ? 'wallpaper-video-generation'
         : inputMode.value === 'text' && !taskReferences.length
           ? 'wallpaper-image-generation'
           : 'wallpaper-image-edit'
-    const outputSize = resolveT2iOutputSize(aspectRatio.value, resolutionScale.value)
-    const publicModelKey = String(
-      outputType.value === 'video' ? videoDispatchModel.value : imageDispatchModel.value || '',
-    ).trim()
-    const publicModel = publicModelOptions.value.find((item) => item.id === publicModelKey)
+    const requestedAspectRatio = aspectRatio.value
+    const autoAspectRatioCandidates =
+      requestedAspectRatio === 'auto'
+        ? getModelAutoAspectRatioCandidates(publicModel, resolutionScale.value)
+        : []
+    const outputSize = resolveT2iOutputSize(requestedAspectRatio, resolutionScale.value)
     const activeSkills = resolveActiveWallpaperSkills({
       outputType: outputType.value,
       resolutionScale: resolutionScale.value,
@@ -514,7 +531,9 @@ export function useWallpaperTasks(deps = {}) {
       promptPolishEnabled: promptPolishEnabled.value,
       autoTranslateEnabled: autoTranslateEnabled.value,
       transparentPngEnabled: outputType.value === 'image' && transparentPngEnabled.value,
-      aspectRatio: aspectRatio.value,
+      aspectRatio: requestedAspectRatio,
+      requestedAspectRatio,
+      autoAspectRatioCandidates,
       outputSize,
       upstreamOutputSize: outputSize,
       upscaleTargetSize: '',
@@ -522,6 +541,14 @@ export function useWallpaperTasks(deps = {}) {
       actualOutputSize: '',
       resolutionScale: resolutionScale.value,
       upscaleOutputFormat: transparentPngEnabled.value === true ? 'png' : upscaleOutputFormat.value,
+      outputFormat: publicModel?.outputFormats?.length
+        ? transparentPngEnabled.value === true && publicModel.outputFormats.includes('png')
+          ? 'png'
+          : upscaleOutputFormat.value
+        : '',
+      moderationLevel: publicModel?.moderationLevels?.includes(moderationLevel.value)
+        ? moderationLevel.value
+        : publicModel?.moderationLevels?.[0] || '',
       quality: imageQuality.value,
       count: Math.max(
         1,
@@ -933,11 +960,12 @@ export function useWallpaperTasks(deps = {}) {
       const resolvedSourceUrls = preparedSourceUrls
         ? await Promise.resolve(preparedSourceUrls)
         : await ensureInputUrlsForTask(task)
+      const publicModel = publicModelOptions.value.find((item) => item.id === dispatchModel)
+      const referenceLimit = Math.max(0, Number(publicModel?.maxReferenceImages) || 0)
       const sourceUrls = Array.from(
         new Set((Array.isArray(resolvedSourceUrls) ? resolvedSourceUrls : []).filter(Boolean)),
-      ).slice(0, 4)
+      ).slice(0, referenceLimit)
       const sourceUrl = sourceUrls[0] || ''
-      const publicModel = publicModelOptions.value.find((item) => item.id === dispatchModel)
       const pricing = publicModel
         ? { usd: Number(publicModel.userPriceUsd || 0) }
         : getRuntimeImageModelPricing(
@@ -972,6 +1000,8 @@ export function useWallpaperTasks(deps = {}) {
           maskBaseUrl: task.maskBaseUrl || '',
           maskRect: task.maskRect || '',
           aspectRatio: task.aspectRatio,
+          requestedAspectRatio: task.requestedAspectRatio || task.aspectRatio,
+          autoAspectRatioCandidates: task.autoAspectRatioCandidates || [],
           outputSize,
           // 局部编辑送上游的是裁剪图，生成尺寸按裁剪比例挑选；整图尺寸仅用于展示
           size: task.maskUpstreamSize || outputSize,
@@ -989,6 +1019,9 @@ export function useWallpaperTasks(deps = {}) {
           promptPolishEnabled: task.promptPolishEnabled === true,
           autoTranslateEnabled: task.autoTranslateEnabled === true,
           transparentPngEnabled: task.transparentPngEnabled === true,
+          transparentBackground: task.transparentPngEnabled === true,
+          ...(task.outputFormat ? { outputFormat: task.outputFormat } : {}),
+          ...(task.moderationLevel ? { moderationLevel: task.moderationLevel } : {}),
           upscaleOutputFormat: task.upscaleOutputFormat || 'auto',
           skills: task.skills || [],
           skillIds: task.skillIds || [],
@@ -998,6 +1031,8 @@ export function useWallpaperTasks(deps = {}) {
           modelHint: dispatchModel,
           publicModelKey: publicModel?.id || '',
           aspectRatio: task.aspectRatio,
+          requestedAspectRatio: task.requestedAspectRatio || task.aspectRatio,
+          autoAspectRatioCandidates: task.autoAspectRatioCandidates || [],
           outputSize,
           size: task.maskUpstreamSize || outputSize,
           resolutionScale: task.resolutionScale || '',
@@ -1019,6 +1054,9 @@ export function useWallpaperTasks(deps = {}) {
           promptPolishEnabled: task.promptPolishEnabled === true,
           autoTranslateEnabled: task.autoTranslateEnabled === true,
           transparentPngEnabled: task.transparentPngEnabled === true,
+          transparentBackground: task.transparentPngEnabled === true,
+          ...(task.outputFormat ? { outputFormat: task.outputFormat } : {}),
+          ...(task.moderationLevel ? { moderationLevel: task.moderationLevel } : {}),
           upscaleOutputFormat: task.upscaleOutputFormat || 'auto',
           skills: task.skills || [],
           skillIds: task.skillIds || [],
@@ -1166,6 +1204,14 @@ export function useWallpaperTasks(deps = {}) {
       pollServerTask(taskId)
     }, pollIntervalMs)
     serverJobPollers.set(taskId, poller)
+	serverJobStreams.set(
+	  taskId,
+	  subscribeTask(task.serverJobId, {
+		onUpdate: () => {
+		  void pollServerTask(taskId)
+		},
+	  }),
+	)
   }
 
   function pollServerTask(taskId) {
@@ -1550,28 +1596,48 @@ export function useWallpaperTasks(deps = {}) {
           (left, right) =>
             Date.parse(String(right.createdAt || '')) - Date.parse(String(left.createdAt || '')),
         )
-      // 毫秒级首渲：合并结果立即上屏,缺失输出的任务在后台逐个补水。
-      // 旧实现等全部 hydrate 的 Promise.all,且轮询一动就整批丢弃重来,
-      // 任务运行期刷新会被饿死。
+      // 任务元数据立即上屏；缺失的图片继续并发补全。调用方会等首轮补全结束，
+      // 避免页面初始化先结束、必须切换历史记录后才重新触发图片恢复。
       if (disposed) return false
       tasks.value = mergedTasks
       taskMutationVersion += 1
-      for (const task of mergedTasks) {
+      persistTasks({ immediate: true })
+      const hydrationRequests = mergedTasks.map(async (task) => {
         const job = task.serverJobId
           ? remoteJobs.find((item) => item.id === task.serverJobId)
           : null
-        if (!job) continue
-        void hydrateServerJobTaskOutputs(task, job)
-          .then((hydrated) => {
-            if (disposed || hydrated === task) return
-            const index = tasks.value.findIndex((item) => item.id === task.id)
-            if (index < 0) return
-            if (shouldKeepExistingTaskSnapshot(tasks.value[index], hydrated)) return
-            tasks.value.splice(index, 1, hydrated)
-            taskMutationVersion += 1
-          })
-          .catch(() => {})
-      }
+        if (!job) return false
+        const existingOriginalOutputs = Array.isArray(task.originalOutputs)
+          ? task.originalOutputs.filter(Boolean)
+          : []
+        const usableOutputs = existingOriginalOutputs.length
+          ? existingOriginalOutputs
+          : task.hasDedicatedThumbnails === true
+            ? []
+            : Array.isArray(task.outputs)
+              ? task.outputs.filter(Boolean)
+              : []
+        const expectedOutputCount = Math.max(
+          1,
+          Number(task.count || job?.input?.count || job?.params?.count || 1),
+        )
+        if (usableOutputs.length >= expectedOutputCount) return false
+        const hydrated = await hydrateServerJobTaskOutputs(task, job)
+        if (disposed || hydrated === task) return false
+        const index = tasks.value.findIndex((item) => item.id === task.id)
+        if (index < 0) return false
+        const current = tasks.value[index]
+        if (shouldKeepExistingTaskSnapshot(current.status, hydrated.status)) return false
+        tasks.value.splice(index, 1, { ...current, ...hydrated })
+        taskMutationVersion += 1
+        return true
+      })
+      const hydrationResults = await Promise.allSettled(hydrationRequests)
+      const hydratedAnyTask = hydrationResults.some(
+        (result) => result.status === 'fulfilled' && result.value === true,
+      )
+      if (disposed) return false
+      if (hydratedAnyTask) persistTasks({ immediate: true })
       const pagination = resolveServerJobsPagination({
         append,
         pageDepth: serverJobsPageDepth,
@@ -1789,7 +1855,7 @@ export function useWallpaperTasks(deps = {}) {
     if (['auto', 'png', 'webp', 'jpeg', 'jpg'].includes(String(task.upscaleOutputFormat || ''))) {
       upscaleOutputFormat.value = task.upscaleOutputFormat
     }
-    aspectRatio.value = task.aspectRatio || aspectRatio.value
+    aspectRatio.value = task.requestedAspectRatio || task.aspectRatio || aspectRatio.value
     if (task.resolutionScale) resolutionScale.value = task.resolutionScale
     if (task.quality) imageQuality.value = task.quality
     // 故意不回填「张数」：老任务可能带着 count=2/4，会悄悄覆盖用户当前选择，

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -306,6 +307,7 @@ type Announcement struct {
 	Active    bool
 	StartsAt  *time.Time
 	EndsAt    *time.Time
+	Config    json.RawMessage
 	CreatedAt time.Time
 }
 

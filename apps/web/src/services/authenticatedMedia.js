@@ -3,7 +3,7 @@
 
 const mediaCache = new Map()
 const inFlightMediaFetches = new Map()
-const MAX_MEDIA_CACHE_ENTRIES = 36
+const MAX_MEDIA_CACHE_ENTRIES = 72
 const MAX_MEDIA_CACHE_BYTES = 48 * 1024 * 1024
 const MAX_THUMBNAIL_DIMENSION = 1200
 const THUMBNAIL_RESIZE_CONCURRENCY = 1

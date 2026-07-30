@@ -6,7 +6,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { listPlans, formatCents } from '@/services/billingApi'
+import { listPlans, formatCents, formatPoints } from '@/services/billingApi'
 import { getTaskPricing } from '@/services/metaApi'
 import { getWallet } from '@/services/meApi'
 import { TASK_TYPE_LABELS } from '@/services/tasksApi'
@@ -110,7 +110,7 @@ const previewPlans = [
 ]
 
 const taskPriceRows = computed(() => {
-  const values = pricing.value?.taskPrices || {}
+  const values = pricing.value?.taskPointPrices || pricing.value?.taskPrices || {}
   return Object.entries(TASK_TYPE_LABELS).map(([type, label]) => ({
     type,
     label,
@@ -209,7 +209,7 @@ const faqs = [
 
 function planPrice(plan) {
   if (plan.priceMode === 'unit') {
-    return minimumTaskPrice.value > 0 ? formatCents(minimumTaskPrice.value) : '按量计费'
+    return minimumTaskPrice.value > 0 ? formatPoints(minimumTaskPrice.value) : '按量计费'
   }
   if (plan.priceMode === 'coming') return '待公布'
   return formatCents(plan.priceCents)
@@ -217,7 +217,7 @@ function planPrice(plan) {
 
 function taskPriceLabel(priceCents) {
   if (priceCents === null || !Number.isFinite(priceCents)) return '暂不可用'
-  return formatCents(priceCents)
+  return formatPoints(priceCents)
 }
 
 function planSuffix(plan) {
@@ -232,17 +232,25 @@ function planQuota(plan) {
   if (plan.preview) return ''
   if (plan.kind === 'subscription') {
     return Number(plan.dailyGrantCents || 0) > 0
-      ? `每天发放 ${formatCents(plan.dailyGrantCents)} 创作额度`
+      ? `每天发放 ${formatPoints(plan.dailyGrantCents)} 创作额度`
       : ''
   }
   const total = Number(plan.grantCents || 0) + Number(plan.bonusCents || 0)
-  return total > 0 ? `共入账 ${formatCents(total)} 创作额度` : ''
+  return total > 0 ? `共入账 ${formatPoints(total)} 创作额度` : ''
 }
 
 function planFeatures(plan) {
-  return Array.isArray(plan.features) && plan.features.length
-    ? plan.features
-    : ['套餐信息已配置', '支付接入后开放购买', '当前不会创建订单']
+  if (plan.preview) return plan.features
+  const configured = Array.isArray(plan.features) ? plan.features : []
+  const retained = configured.filter((item) => !/余额\s*[\d.]+\s*元|约\s*\d+\s*张/.test(item))
+  const total = Number(plan.grantPoints ?? plan.grantCents ?? 0) + Number(plan.bonusPoints ?? plan.bonusCents ?? 0)
+  const pointsFeatures = []
+  if (total > 0) pointsFeatures.push(`${formatPoints(total)} 创作额度`)
+  if (total > 0 && minimumTaskPrice.value > 0) {
+    pointsFeatures.push(`约可生成 ${Math.floor(total / minimumTaskPrice.value)} 张（按最低积分单价）`)
+  }
+  const items = [...pointsFeatures, ...retained]
+  return items.length ? items : ['套餐信息已配置', '支付接入后开放购买', '当前不会创建订单']
 }
 
 function planChart(index) {
@@ -441,7 +449,7 @@ onBeforeUnmount(() => {
           <dl class="pp-metrics" aria-label="价格概览">
             <div>
               <dt>最低单价</dt>
-              <dd v-if="minimumTaskPrice > 0">{{ formatCents(minimumTaskPrice) }}</dd>
+              <dd v-if="minimumTaskPrice > 0">{{ formatPoints(minimumTaskPrice) }}</dd>
               <dd v-else>读取中</dd>
             </div>
             <div>
@@ -464,7 +472,7 @@ onBeforeUnmount(() => {
           <p class="pp-console__label">钱包概览</p>
           <div v-if="authStore.isAuthenticated" class="pp-console__balance">
             <small>当前可用额度</small>
-            <b>{{ formatCents(availableCents) }}</b>
+            <b>{{ formatPoints(availableCents) }}</b>
           </div>
           <div v-else class="pp-console__balance is-guest">
             <small>登录后查看余额</small>

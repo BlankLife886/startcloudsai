@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -51,6 +54,8 @@ type assistantRunIn struct {
 	Width                    int              `json:"width"`
 	Height                   int              `json:"height"`
 	Quality                  string           `json:"quality"`
+	ServiceKey               string           `json:"serviceKey"`
+	FastMode                 bool             `json:"fastMode"`
 }
 
 func (s *Server) assistantConversations(c *gin.Context) {
@@ -256,11 +261,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	assistantClient, err := s.assistantClient(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
 	var body assistantRunIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
@@ -275,16 +275,46 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的创作模式", 422))
 		return
 	}
+	body.ServiceKey = strings.TrimSpace(body.ServiceKey)
+	if body.ServiceKey != "" && body.ServiceKey != "assistant_image" && body.ServiceKey != "ui_design_asset" {
+		fail(c, apperr.E("validation_error", "serviceKey: 不支持的服务路由", 422))
+		return
+	}
+	if body.ServiceKey == "" {
+		body.ServiceKey = "assistant_image"
+	}
+	workspace := modelconfig.WorkspaceAssistant
+	if body.ServiceKey == "ui_design_asset" {
+		workspace = modelconfig.WorkspaceUIDesign
+	}
+	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	body.Model = strings.TrimSpace(body.Model)
-	if body.Model == "" || (body.Mode != "image" && body.Model == assistantClient.ImageModel()) {
-		body.Model = assistantClient.ChatModel()
+	requestedKind := modelconfig.ModelKindChat
+	if body.Mode == "image" {
+		requestedKind = modelconfig.ModelKindImage
+	}
+	selectedModel, modelConfigured := modelconfig.SelectPublicForWorkspace(modelCfg, workspace, requestedKind, body.Model)
+	if modelConfigured {
+		body.Model = selectedModel.Model.ID
+	} else if len(modelCfg.Models) > 0 {
+		fail(c, apperr.E("validation_error", "所选模型不可用，请刷新模型列表后重试", 422))
+		return
+	} else {
+		assistantClient, clientErr := s.assistantClient(c)
+		if clientErr != nil {
+			fail(c, clientErr)
+			return
+		}
+		if body.Model == "" || (body.Mode != "image" && body.Model == assistantClient.ImageModel()) {
+			body.Model = assistantClient.ChatModel()
+		}
 	}
 	if len([]rune(body.Model)) > 120 {
 		fail(c, apperr.E("validation_error", "模型名称不能超过 120 个字符", 422))
-		return
-	}
-	if len(body.ReferenceImages) > maxAssistantReferences {
-		fail(c, apperr.E("validation_error", "最多允许 4 张参考图", 422))
 		return
 	}
 	if body.Count == 0 {
@@ -307,6 +337,83 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if !containsString([]string{"low", "medium", "high"}, body.Quality) {
 		fail(c, apperr.E("validation_error", "不支持的图片质量", 422))
 		return
+	}
+	serviceProvider := ""
+	requestedAutoRatio := false
+	var imageSelection *modelconfig.Selection
+	var chatSelection *modelconfig.Selection
+	if modelConfigured {
+		if selectedModel.Model.Kind == modelconfig.ModelKindImage {
+			imageSelection = selectedModel
+		} else {
+			chatSelection = selectedModel
+		}
+	}
+	if body.Mode == "agent" {
+		imageSelection, _ = modelconfig.SelectPublicForWorkspace(
+			modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "",
+		)
+		if len(modelCfg.Models) > 0 && imageSelection == nil {
+			fail(c, apperr.E("validation_error", "AI 助手还没有可用的图片模型", 422))
+			return
+		}
+	}
+	if imageSelection != nil && len(imageSelection.Model.Resolutions) > 0 {
+		resolutionSupported := false
+		for _, resolution := range imageSelection.Model.Resolutions {
+			if strings.EqualFold(body.Resolution, resolution) {
+				body.Resolution = resolution
+				resolutionSupported = true
+				break
+			}
+		}
+		if body.Resolution == "" || (body.Mode == "agent" && !resolutionSupported) {
+			body.Resolution = imageSelection.Model.Resolutions[0]
+		} else if !resolutionSupported {
+			fail(c, apperr.E("validation_error", "所选模型不支持该分辨率，请刷新模型配置后重试", 422))
+			return
+		}
+	}
+	if imageSelection != nil {
+		if len(body.ReferenceImages) > imageSelection.Model.MaxReferenceImages {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("所选模型最多允许 %d 张参考图", imageSelection.Model.MaxReferenceImages), 422))
+			return
+		}
+		ratio := strings.ToLower(strings.TrimSpace(body.Ratio))
+		if ratio == "" || ratio == "自动" {
+			ratio = "auto"
+		}
+		allowedRatios := modelconfig.AspectRatiosForResolution(imageSelection.Model, body.Resolution)
+		if !containsString(allowedRatios, ratio) {
+			if body.Mode == "agent" {
+				ratio = allowedRatios[0]
+			} else {
+				fail(c, apperr.E("validation_error", "所选模型不支持该宽高比", 422))
+				return
+			}
+		}
+		requestedAutoRatio = ratio == "auto"
+		body.Ratio = ratio
+		if !containsString(imageSelection.Model.Qualities, body.Quality) {
+			if body.Mode == "agent" {
+				body.Quality = imageSelection.Model.Qualities[0]
+			} else {
+				fail(c, apperr.E("validation_error", "所选模型不支持该图片质量", 422))
+				return
+			}
+		}
+	} else if len(body.ReferenceImages) > maxAssistantReferences {
+		fail(c, apperr.E("validation_error", "最多允许 4 张参考图", 422))
+		return
+	}
+	if imageSelection != nil {
+		serviceProvider = imageSelection.Provider.Adapter
+	} else if len(modelCfg.Models) == 0 {
+		serviceProvider, err = settings.ImageServiceProvider(c.Request.Context(), s.St.Pool, body.ServiceKey)
+		if err != nil {
+			fail(c, err)
+			return
+		}
 	}
 	conversationID, err := uuid.Parse(body.ConversationID)
 	if err != nil {
@@ -332,6 +439,39 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"referenceImages": references, "prompt": body.Prompt, "model": body.Model, "ratio": body.Ratio,
 		"resolution": body.Resolution, "count": body.Count, "requestSize": body.RequestSize,
 		"width": body.Width, "height": body.Height, "quality": body.Quality,
+		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
+	}
+	if requestedAutoRatio {
+		params["requestedAspectRatio"] = "auto"
+		params["autoAspectRatioCandidates"] = modelconfig.AutoAspectRatioCandidates(
+			imageSelection.Model, body.Resolution,
+		)
+	}
+	if imageSelection != nil {
+		params["_imageModelConfigId"] = imageSelection.Model.ID
+		params["_imageProviderConfigId"] = imageSelection.Provider.ID
+		params["_imageProviderDisplayName"] = imageSelection.Provider.Name
+		params["_imageModel"] = imageSelection.Model.UpstreamModel
+		params["_imageModelDisplayName"] = imageSelection.Model.Name
+		params["_modelDisplayName"] = imageSelection.Model.Name
+		params["_modelFastMode"] = imageSelection.Model.FastMode
+		params["_modelResolutions"] = imageSelection.Model.Resolutions
+		params["_modelAspectRatios"] = imageSelection.Model.AspectRatios
+		params["_modelAspectRatiosByResolution"] = imageSelection.Model.AspectRatiosByResolution
+		params["_modelQualities"] = imageSelection.Model.Qualities
+		params["_modelTransparentBackground"] = imageSelection.Model.TransparentBackground
+		params["_modelOutputFormats"] = imageSelection.Model.OutputFormats
+		params["_modelModerationLevels"] = imageSelection.Model.ModerationLevels
+		params["_modelMaxReferenceImages"] = imageSelection.Model.MaxReferenceImages
+		params["_unitPriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)
+	}
+	if chatSelection != nil {
+		params["_chatModelConfigId"] = chatSelection.Model.ID
+		params["_chatProviderConfigId"] = chatSelection.Provider.ID
+		params["_chatProviderDisplayName"] = chatSelection.Provider.Name
+		params["_chatModel"] = chatSelection.Model.UpstreamModel
+		params["_chatModelDisplayName"] = chatSelection.Model.Name
+		params["_modelDisplayName"] = chatSelection.Model.Name
 	}
 	var userMessage, assistantMessage *store.AssistantMessage
 	var run *store.AssistantRun

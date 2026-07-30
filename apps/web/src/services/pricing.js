@@ -1,10 +1,11 @@
 /**
  * 任务单价服务：GET /api/meta/pricing 的 5 分钟缓存层。
  *
- * 单价一律以「分」为单位（与契约 *Cents 约定一致）。
+ * 单价一律以整数积分为单位。接口字段保留 *Cents 后缀用于兼容旧客户端。
  * 接口失败时返回 null，调用方展示「以服务端结算为准」且不阻断提交。
  */
 import { getTaskPricing } from '@/services/metaApi'
+import { formatPoints } from '@/services/billingApi'
 
 const PRICING_CACHE_TTL_MS = 5 * 60 * 1000
 
@@ -42,7 +43,7 @@ export async function fetchTaskPricing({ force = false } = {}) {
 }
 
 /**
- * 某任务类型的单价（分/张）。
+ * 某任务类型的单价（积分/张）。
  * @returns {Promise<number|null>} null 表示单价不可用（接口失败或未配置）
  */
 export async function getTaskUnitPriceCents(taskType) {
@@ -50,21 +51,24 @@ export async function getTaskUnitPriceCents(taskType) {
   if (!type) return null
   try {
     const pricing = await fetchTaskPricing()
-    const value = Number(pricing?.taskPrices?.[type])
+    const values = pricing?.taskPointPrices || pricing?.taskPrices
+    const value = Number(values?.[type])
     return Number.isFinite(value) && value >= 0 ? value : null
   } catch {
     return null
   }
 }
 
-/** featureKey → 单价（分/张）。 */
+/** featureKey → 单价（积分/张）。 */
 export async function getFeatureUnitPriceCents(featureKey) {
   const type = FEATURE_TASK_TYPE_MAP[String(featureKey || '').trim()] || ''
   return getTaskUnitPriceCents(type)
 }
 
-/** 分 → '¥X.XX' */
+/** @deprecated 历史名称，返回整数积分文案。 */
 export function formatPriceCents(cents) {
-  const value = Number(cents || 0) / 100
-  return `¥${value.toFixed(2)}`
+  return formatPoints(cents)
 }
+
+
+export { formatPoints }

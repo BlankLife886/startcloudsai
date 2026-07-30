@@ -19,3 +19,10 @@ export function formatCents(cents, { withSymbol = true } = {}) {
   })
   return withSymbol ? `¥${text}` : text
 }
+
+/** 钱包历史字段以 Cents 结尾，但值为整数积分，不做货币换算。 */
+export function formatPoints(points, { withUnit = true } = {}) {
+  const value = Number(points || 0)
+  const text = (Number.isFinite(value) ? Math.round(value) : 0).toLocaleString('zh-CN')
+  return withUnit ? `${text} 积分` : text
+}

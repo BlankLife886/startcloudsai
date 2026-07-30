@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
@@ -75,6 +76,83 @@ func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
 }
 
 func (s *Server) assistantConfig(c *gin.Context) {
+	if _, err := s.requireUser(c); err != nil {
+		fail(c, err)
+		return
+	}
+	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	type modelOption struct {
+		Label                    string              `json:"label"`
+		Model                    string              `json:"model"`
+		Source                   string              `json:"source"`
+		Provider                 string              `json:"provider"`
+		Description              string              `json:"description"`
+		StandardPricePoints      *int64              `json:"standardPricePoints,omitempty"`
+		DiscountPricePoints      *int64              `json:"discountPricePoints"`
+		PricePoints              *int64              `json:"pricePoints,omitempty"`
+		Resolutions              []string            `json:"resolutions,omitempty"`
+		Default                  bool                `json:"default,omitempty"`
+		FastMode                 bool                `json:"fastMode,omitempty"`
+		AspectRatios             []string            `json:"aspectRatios,omitempty"`
+		AspectRatiosByResolution map[string][]string `json:"aspectRatiosByResolution,omitempty"`
+		Qualities                []string            `json:"qualities,omitempty"`
+		TransparentBackground    bool                `json:"transparentBackground"`
+		OutputFormats            []string            `json:"outputFormats"`
+		ModerationLevels         []string            `json:"moderationLevels"`
+		MaxReferenceImages       int                 `json:"maxReferenceImages"`
+	}
+	buildOptions := func(kind string) []modelOption {
+		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, kind)
+		options := make([]modelOption, 0, len(selections))
+		for index, selection := range selections {
+			standardPrice := selection.Model.PriceCents
+			effectivePrice := modelconfig.EffectivePrice(selection.Model)
+			description := selection.Model.Description
+			if description == "" {
+				if kind == modelconfig.ModelKindImage {
+					description = "图片生成模型"
+				} else {
+					description = "对话与图片理解模型"
+				}
+			}
+			options = append(options, modelOption{
+				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
+				Provider: selection.Provider.Name, Description: description,
+				StandardPricePoints: &standardPrice,
+				DiscountPricePoints: selection.Model.DiscountPriceCents,
+				PricePoints:         &effectivePrice,
+				Resolutions:         selection.Model.Resolutions, Default: index == 0, FastMode: selection.Model.FastMode,
+				AspectRatios: selection.Model.AspectRatios, AspectRatiosByResolution: selection.Model.AspectRatiosByResolution,
+				Qualities:             selection.Model.Qualities,
+				TransparentBackground: selection.Model.TransparentBackground,
+				OutputFormats:         selection.Model.OutputFormats, ModerationLevels: selection.Model.ModerationLevels,
+				MaxReferenceImages: selection.Model.MaxReferenceImages,
+			})
+		}
+		return options
+	}
+	conversationOptions := buildOptions(modelconfig.ModelKindChat)
+	imageOptions := buildOptions(modelconfig.ModelKindImage)
+	if len(conversationOptions) > 0 || len(imageOptions) > 0 {
+		chatModel, imageModel := "", ""
+		if len(conversationOptions) > 0 {
+			chatModel = conversationOptions[0].Model
+		}
+		if len(imageOptions) > 0 {
+			imageModel = imageOptions[0].Model
+		}
+		ok(c, gin.H{
+			"chatModel": chatModel, "imageModel": imageModel,
+			"conversationModels": conversationOptions, "imageModels": imageOptions,
+			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
+		})
+		return
+	}
+
 	client, err := s.requireAssistant(c)
 	if err != nil {
 		fail(c, err)
@@ -84,11 +162,6 @@ func (s *Server) assistantConfig(c *gin.Context) {
 	if resolveErr != nil {
 		fail(c, resolveErr)
 		return
-	}
-	type modelOption struct {
-		Label  string `json:"label"`
-		Model  string `json:"model"`
-		Source string `json:"source"`
 	}
 	options := make([]modelOption, 0, len(resolved.ChatModels)+8)
 	configuredCatalog := len(resolved.ChatModels) > 0
@@ -103,7 +176,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		if model == "" {
 			continue
 		}
-		options = append(options, modelOption{Label: label, Model: model, Source: "configured"})
+		options = append(options, modelOption{Label: label, Model: model, Source: "legacy"})
 		seenModels[model] = true
 	}
 	if !seenModels[client.ChatModel()] {
@@ -129,8 +202,10 @@ func (s *Server) assistantConfig(c *gin.Context) {
 	}
 	ok(c, gin.H{
 		"chatModel": client.ChatModel(), "imageModel": client.ImageModel(),
-		"conversationModels": options, "modelDiscoveryAvailable": modelErr == nil,
-		"conversationModelMode": modelMode,
+		"conversationModels":      options,
+		"imageModels":             []modelOption{{Label: client.ImageModel(), Model: client.ImageModel(), Source: "legacy"}},
+		"modelDiscoveryAvailable": modelErr == nil,
+		"conversationModelMode":   modelMode,
 	})
 }
 

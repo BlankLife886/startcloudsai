@@ -5,6 +5,7 @@ import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import WallevenImagePreview from '@/components/common/WallevenImagePreview.vue'
 import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSelect.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
+import { withTransparentPngInstruction } from '@/features/ai-shared/transparentPng'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import { createLocalUpscaledImage } from '@/features/ai-wallpaper/services/localImageUpscale'
 import { uploadAiInputFile } from '@/services/aiWallpaper'
@@ -20,18 +21,38 @@ import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalSt
 import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
 import notificationService from '@/services/notification'
+import { useAppearanceStore } from '@/stores/appearance'
 import { gsap } from 'gsap'
 import { prefersReducedMotion } from '@/lib/anime'
+
+const appearanceStore = useAppearanceStore()
 
 const {
   authStore,
   creditsPrompt,
-  modelId, models, status, error, running, cancelling, historyLoading, historyHasMore,
-  outputs, activeOutput,
-  outputJobIds, outputGroups, batchProgress,
-  initialize, generate: generateImage, generateBatch, generateMaskedEdit,
+  modelId,
+  models,
+  status,
+  error,
+  running,
+  cancelling,
+  historyLoading,
+  historyHasMore,
+  outputs,
+  activeOutput,
+  outputJobIds,
+  outputGroups,
+  outputGroupIndexes,
+  batchProgress,
+  initialize,
+  generate: generateImage,
+  generateBatch,
+  generateMaskedEdit,
   cancel: cancelGeneration,
-  deleteOutput, formatCostEstimate, loadHistory, loadMoreHistory,
+  deleteOutput,
+  formatCostEstimate,
+  loadHistory,
+  loadMoreHistory,
 } = useCreativeImageJob({
   source: 'ultra-model-sheet',
   featureKey: 'ai.ultraModelSheet',
@@ -64,8 +85,14 @@ const ASPECT_OPTIONS = ['16:9', '21:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16
 const ASPECT_SELECT_OPTIONS = ASPECT_OPTIONS.map((value) => ({ value }))
 
 const BRIEF_EXAMPLES = [
-  { label: '机甲角色', text: '全身机甲战士角色，硬表面装甲，可动关节结构清晰，冷灰主色配警示橙细节' },
-  { label: '国风少女', text: '国风水墨风格少女角色，长发束带，襦裙层次分明，服饰纹样与配饰结构完整' },
+  {
+    label: '机甲角色',
+    text: '全身机甲战士角色，硬表面装甲，可动关节结构清晰，冷灰主色配警示橙细节',
+  },
+  {
+    label: '国风少女',
+    text: '国风水墨风格少女角色，长发束带，襦裙层次分明，服饰纹样与配饰结构完整',
+  },
   { label: '产品设备', text: '便携咖啡机产品，铝合金外壳，可拆卸水箱和滤杯，接缝与按键布局清晰' },
 ]
 
@@ -100,7 +127,9 @@ const aspectRatio = ref('16:9')
 const detail = ref(85)
 const outputMode = ref('board')
 const boardCount = ref(1)
-const prompt = ref('保留原始主体的身份、比例、材质和结构特征，制作可供后续建模与生产使用的超高清标准模型参考图。')
+const prompt = ref(
+  '保留原始主体的身份、比例、材质和结构特征，制作可供后续建模与生产使用的超高清标准模型参考图。',
+)
 const selectedViews = ref(['front', 'side', 'back', 'three-quarter'])
 const outputLabels = ref({})
 const studioRoot = ref(null)
@@ -145,7 +174,8 @@ try {
     if (Number.isFinite(saved.detail)) detail.value = Math.min(100, Math.max(40, saved.detail))
     if (['board', 'separate'].includes(saved.outputMode)) outputMode.value = saved.outputMode
     if ([1, 2, 3, 4].includes(saved.boardCount)) boardCount.value = saved.boardCount
-    if (BACKGROUND_OPTIONS.some((item) => item.id === saved.background)) background.value = saved.background
+    if (BACKGROUND_OPTIONS.some((item) => item.id === saved.background))
+      background.value = saved.background
     if (Array.isArray(saved.customViews)) {
       customViews.value = saved.customViews
         .filter((item) => item && typeof item.id === 'string' && typeof item.label === 'string')
@@ -163,7 +193,11 @@ try {
       referenceItems.value = saved.referenceItems
         .filter((item) => item && item.type === 'url' && typeof item.url === 'string' && item.url)
         .slice(0, MAX_REFERENCES)
-        .map((item) => ({ id: item.id || `ref-${Math.random().toString(36).slice(2, 8)}`, type: 'url', url: item.url }))
+        .map((item) => ({
+          id: item.id || `ref-${Math.random().toString(36).slice(2, 8)}`,
+          type: 'url',
+          url: item.url,
+        }))
     }
     if (typeof saved.activeSubjectId === 'string') activeSubjectId.value = saved.activeSubjectId
   }
@@ -194,7 +228,20 @@ try {
 // 设置持久化做防抖：避免输入提示词时每个按键都同步序列化 + 写 localStorage。
 let settingsSaveTimer = 0
 watch(
-  [prompt, subjectType, fidelity, aspectRatio, detail, outputMode, boardCount, background, selectedViews, customViews, referenceItems, activeSubjectId],
+  [
+    prompt,
+    subjectType,
+    fidelity,
+    aspectRatio,
+    detail,
+    outputMode,
+    boardCount,
+    background,
+    selectedViews,
+    customViews,
+    referenceItems,
+    activeSubjectId,
+  ],
   () => {
     window.clearTimeout(settingsSaveTimer)
     settingsSaveTimer = window.setTimeout(() => {
@@ -283,9 +330,21 @@ const estimatedUnits = computed(() =>
   outputMode.value === 'board' ? boardCount.value : Math.max(1, selectedViews.value.length),
 )
 const costLabel = computed(() => formatCostEstimate(estimatedUnits.value))
-const showBatchProgress = computed(
-  () => running.value && batchProgress.value.length > 1,
-)
+const costDisplay = computed(() => {
+  const text = String(costLabel.value || '').trim()
+  const value = text.replace(/^预计\s*/, '')
+  const detailStart = value.indexOf('（')
+  if (detailStart >= 0 && value.endsWith('）')) {
+    return {
+      price: value.slice(0, detailStart).trim(),
+      detail: value.slice(detailStart + 1, -1).trim(),
+    }
+  }
+  const perImage = value.match(/^((?:(?:¥|\$)\s*)?\d+(?:\.\d+)?(?:\s*积分)?)\s*(\/\s*张)$/)
+  if (perImage) return { price: perImage[1], detail: perImage[2] }
+  return { price: value, detail: '' }
+})
+const showBatchProgress = computed(() => running.value && batchProgress.value.length > 1)
 const batchDoneCount = computed(
   () => batchProgress.value.filter((entry) => entry.status === 'done').length,
 )
@@ -304,7 +363,13 @@ const galleryGroups = computed(() => {
     if (!map.has(gid)) map.set(gid, { id: gid, urls: [], firstIndex: index })
     map.get(gid).urls.push(url)
   })
-  return Array.from(map.values()).map((group) => ({ ...group, cover: group.urls[0] }))
+  return Array.from(map.values()).map((group) => {
+    group.urls.sort(
+      (a, b) =>
+        (Number(outputGroupIndexes.value[a]) || 0) - (Number(outputGroupIndexes.value[b]) || 0),
+    )
+    return { ...group, cover: group.urls[0] }
+  })
 })
 const filteredGroups = computed(() => {
   const query = galleryQuery.value.trim().toLowerCase()
@@ -385,7 +450,9 @@ async function loadPromptEntries(reset = false) {
     const incoming = Array.isArray(response?.items) ? response.items : []
     promptItems.value = reset
       ? incoming
-      : Array.from(new Map([...promptItems.value, ...incoming].map((item) => [item.id, item])).values())
+      : Array.from(
+          new Map([...promptItems.value, ...incoming].map((item) => [item.id, item])).values(),
+        )
     promptPage.value = Number(response?.page || nextPage)
     promptHasMore.value = response?.hasMore === true
     promptLoaded.value = true
@@ -432,13 +499,18 @@ function assetStatusLabel(statusValue) {
   if (statusValue === 'rejected') return '未通过'
   return '审核中'
 }
-const finalPrompt = computed(() => `${prompt.value}
+const finalPrompt = computed(() =>
+  withTransparentPngInstruction(
+    `${prompt.value}
 ${subjectLine.value}
 主体类型：${subjectType.value === 'character' ? '人物/角色' : '物体/产品'}。
 输出视角：${selectedViewLabels.value}。
 还原策略：${fidelity.value === 'strict' ? '严格忠于参考图，不改变身份和造型' : '保持主体特征并进行专业生产级优化'}。
 细节强度：${detail.value}/100。
-制作标准：单张完整模型设定板，正交视图比例一致，无遮挡，边缘清晰，中性影棚光，${backgroundLine.value}，无景深，无文字水印，超高清纹理，适合 3D 建模、雕刻、材质拆解和 LoRA 数据准备。`)
+制作标准：单张完整模型设定板，正交视图比例一致，无遮挡，边缘清晰，中性影棚光，${backgroundLine.value}，无景深，无文字水印，超高清纹理，适合 3D 建模、雕刻、材质拆解和 LoRA 数据准备。`,
+    transparentEnabled.value,
+  ),
+)
 const frameStyle = computed(() => {
   const [width = 1, height = 1] = aspectRatio.value.split(':').map(Number)
   const ratio = width / Math.max(1, height)
@@ -450,16 +522,16 @@ const frameStyle = computed(() => {
 })
 const generateLabel = computed(() => {
   if (running.value) return '渲染中…'
-  if (outputMode.value === 'board') return boardCount.value > 1 ? `生成 ${boardCount.value} 个方案` : '生成设定板'
+  if (outputMode.value === 'board')
+    return boardCount.value > 1 ? `生成 ${boardCount.value} 个方案` : '生成设定板'
   return `生成 ${selectedViews.value.length} 张视图`
 })
 
 useStudioMotion(studioRoot, activeOutput)
 
-// —— GSAP 动效编排：入场时间线 + quickTo 指针视差 + 渲染特效 ——
+// —— GSAP 动效编排：入场时间线 + 渲染特效 ——
 let motionCtx = null
 let renderCtx = null
-let parallaxSetters = []
 
 // —— Canvas 粒子场：斜向星尘带（数百颗带景深的光点，单画布 + GSAP ticker） ——
 let fxCanvas = null
@@ -526,7 +598,7 @@ function startParticleField(overlay) {
   if (!fxCtx) return
   fxCtx.scale(dpr, dpr)
   if (!fxSprites.length) fxSprites = buildParticleSprites()
-  const count = Math.round(Math.min(620, Math.max(220, (fxWidth * fxHeight) / 2400)))
+  const count = Math.round(Math.min(360, Math.max(96, (fxWidth * fxHeight) / 4000)))
   fxParticles = Array.from({ length: count }, () => spawnFxParticle(true))
 
   // 尘埃带：从左下角流向右上角，右上端更亮更密（对应参考图的光核）
@@ -593,34 +665,18 @@ function setupPageMotion() {
       .from('.ms3-gallery', { x: 40, autoAlpha: 0, duration: 0.7 }, '-=0.58')
       .from(
         '.ms3-panel .ms3-block',
-        { y: 18, autoAlpha: 0, stagger: 0.055, duration: 0.5, clearProps: 'transform,opacity,visibility' },
+        {
+          y: 18,
+          autoAlpha: 0,
+          stagger: 0.055,
+          duration: 0.5,
+          clearProps: 'transform,opacity,visibility',
+        },
         '-=0.48',
       )
       .from('.ms3-frame', { scale: 0.95, autoAlpha: 0, duration: 0.85, ease: 'expo.out' }, '-=0.62')
       .from('.ms3-spec', { y: -14, autoAlpha: 0, duration: 0.5 }, '-=0.55')
-
-    // 指针跟随只保留用户视线所在的画布轻微 3D 倾斜。
-    // 大面积背景层已移除——被面板挡住看不见，还会拖慢合成。
-    gsap.set('.ms3-frame', { transformPerspective: 1100 })
-    parallaxSetters = []
-    const bind = (selector, prop, amplitude, axis, duration = 0.6) => {
-      const targets = root.querySelectorAll(selector)
-      if (!targets.length) return
-      const to = gsap.quickTo(targets, prop, { duration, ease: 'power3' })
-      parallaxSetters.push({ to, amplitude, axis })
-    }
-    bind('.ms3-frame', 'rotationY', 3, 'x', 0.75)
-    bind('.ms3-frame', 'rotationX', -2.2, 'y', 0.75)
   }, root)
-}
-
-function handleParallax(event) {
-  if (!parallaxSetters.length) return
-  const x = event.clientX / window.innerWidth - 0.5
-  const y = event.clientY / window.innerHeight - 0.5
-  for (const setter of parallaxSetters) {
-    setter.to((setter.axis === 'x' ? x : y) * setter.amplitude)
-  }
 }
 
 // —— 渲染特效：多阶段仪器序列（GSAP 时间线 + anime.js 粒子） ——
@@ -649,13 +705,28 @@ function startRenderFx() {
     // 双向测量光束持续扫掠
     gsap.fromTo(
       '.ms3-beam.is-h',
-      { top: '4%' },
-      { top: '96%', duration: 2.6, repeat: -1, yoyo: true, ease: 'sine.inOut' },
+      { y: 4 },
+      {
+        y: () => Math.max(4, overlay.clientHeight - 6),
+        duration: 2.6,
+        repeat: -1,
+        repeatRefresh: true,
+        yoyo: true,
+        ease: 'sine.inOut',
+      },
     )
     gsap.fromTo(
       '.ms3-beam.is-v',
-      { left: '4%' },
-      { left: '96%', duration: 3.4, repeat: -1, yoyo: true, ease: 'sine.inOut', delay: 0.6 },
+      { x: 4 },
+      {
+        x: () => Math.max(4, overlay.clientWidth - 6),
+        duration: 3.4,
+        repeat: -1,
+        repeatRefresh: true,
+        yoyo: true,
+        ease: 'sine.inOut',
+        delay: 0.6,
+      },
     )
 
     // 相位标签循环
@@ -761,16 +832,13 @@ onMounted(() => {
   initialize()
   setupPageMotion()
   window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('pointermove', handleParallax, { passive: true })
   setupGalleryObserver()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
-  window.removeEventListener('pointermove', handleParallax)
   stopRenderFx()
   motionCtx?.revert()
-  parallaxSetters = []
   galleryObserver?.disconnect()
 })
 
@@ -788,7 +856,12 @@ async function acceptFiles(files) {
     const preview = await readImageFile(file)
     referenceItems.value = [
       ...referenceItems.value,
-      { id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, type: 'file', file, preview },
+      {
+        id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        type: 'file',
+        file,
+        preview,
+      },
     ]
   }
   localError.value = ''
@@ -975,13 +1048,16 @@ function buildSeparateViewPrompt(view, { chained = false } = {}) {
   const subject = chained
     ? '严格以提供的参考图为唯一主体来源，保持同一人物/物体、同一服装、同一材质。'
     : subjectLine.value
-  return `${prompt.value}
+  return withTransparentPngInstruction(
+    `${prompt.value}
 ${subject}
 本次只生成一个独立的「${view.label}」视图，不要拼图、不要分镜、不要在同一画面放多个角度。
 主体类型：${subjectType.value === 'character' ? '人物/角色' : '物体/产品'}。
 还原策略：${fidelity.value === 'strict' ? '严格忠于参考图，不改变身份、造型、比例、服装和材质' : '保持主体身份与关键特征并进行专业生产级优化'}。
 细节强度：${detail.value}/100。
-制作标准：主体完整、居中、无遮挡，中性影棚光，${backgroundLine.value}，无景深，无文字水印。必须与同批次其他视图保持同一主体、同一服装、同一材质、同一比例和同一光照。`
+制作标准：主体完整、居中、无遮挡，中性影棚光，${backgroundLine.value}，无景深，无文字水印。必须与同批次其他视图保持同一主体、同一服装、同一材质、同一比例和同一光照。`,
+    transparentEnabled.value,
+  )
 }
 
 const lastBatchGroupId = ref('')
@@ -1025,7 +1101,13 @@ async function runSeparateViews(views, { sourceOverride = '', groupId = '' } = {
 }
 
 const modelSelectOptions = computed(() =>
-  models.value.map((model) => ({ value: model.id, label: model.label })),
+  models.value.map((model) => ({
+    value: model.id,
+    label: model.label,
+    pricePoints: model.pricePoints,
+    standardPricePoints: model.standardPricePoints,
+    discountPricePoints: model.discountPricePoints,
+  })),
 )
 
 function addCustomView() {
@@ -1132,7 +1214,10 @@ async function downloadOutput() {
   localError.value = ''
   const label = outputLabels.value[activeOutput.value] || 'board'
   try {
-    await downloadAuthenticatedMedia(activeOutput.value, `ultra-model-sheet-${label}-${Date.now()}.png`)
+    await downloadAuthenticatedMedia(
+      activeOutput.value,
+      `ultra-model-sheet-${label}-${Date.now()}.png`,
+    )
   } catch (caught) {
     localError.value = caught?.message || '模型图下载失败'
   }
@@ -1145,7 +1230,6 @@ function selectOutput(output) {
 
 function openHistoryGroup(group) {
   selectOutput(group?.cover)
-  fullscreenOpen.value = Boolean(activeOutput.value)
 }
 
 function openOutputViewer() {
@@ -1159,7 +1243,7 @@ function refreshHistory() {
 </script>
 
 <template>
-  <main ref="studioRoot" class="ms3">
+  <main ref="studioRoot" class="ms3" :class="{ 'is-light': !appearanceStore.isDark }">
     <h1 class="ms3-visually-hidden">超高清模型图</h1>
 
     <!-- 左：参数面板 -->
@@ -1168,7 +1252,9 @@ function refreshHistory() {
         <section class="ms3-block">
           <div class="ms3-block-head">
             <span>参考主体</span>
-            <em v-if="referenceItems.length">{{ referenceItems.length }}/{{ MAX_REFERENCES }} 张</em>
+            <em v-if="referenceItems.length"
+              >{{ referenceItems.length }}/{{ MAX_REFERENCES }} 张</em
+            >
             <em v-else>可选</em>
           </div>
           <div
@@ -1179,10 +1265,20 @@ function refreshHistory() {
             @drop.prevent="handleDrop"
           >
             <div v-for="(item, index) in referenceItems" :key="item.id" class="ms3-ref-slot">
-              <AuthenticatedImage v-if="item.type === 'url'" :src="item.url" alt="参考主体" :max-dimension="240" />
+              <AuthenticatedImage
+                v-if="item.type === 'url'"
+                :src="item.url"
+                alt="参考主体"
+                :max-dimension="240"
+              />
               <img v-else :src="item.preview" alt="参考主体" />
               <span v-if="index === 0" class="ms3-ref-primary">主</span>
-              <button type="button" class="ms3-source-del" title="移除这张参考" @click="removeReference(item.id)">
+              <button
+                type="button"
+                class="ms3-source-del"
+                title="移除这张参考"
+                @click="removeReference(item.id)"
+              >
                 <i class="bi bi-x-lg"></i>
               </button>
             </div>
@@ -1208,10 +1304,17 @@ function refreshHistory() {
             @drop.prevent="handleDrop"
           >
             <i class="bi bi-image" aria-hidden="true"></i>
-            <strong>点击 / 拖拽图片到这里</strong>
-            <small>支持多张（正面 / 侧面 / 材质），不导入时按下方描述创建主体</small>
+            <strong>添加参考图</strong>
+            <small>最多 {{ MAX_REFERENCES }} 张</small>
           </button>
-          <input ref="fileInput" hidden type="file" accept="image/*" multiple @change="chooseFile" />
+          <input
+            ref="fileInput"
+            hidden
+            type="file"
+            accept="image/*"
+            multiple
+            @change="chooseFile"
+          />
 
           <!-- 主体档案 -->
           <div class="ms3-subjects">
@@ -1237,7 +1340,11 @@ function refreshHistory() {
                 @keydown.enter.prevent="saveCurrentAsSubject"
                 @keydown.esc="subjectSaveOpen = false"
               />
-              <button type="button" :disabled="!subjectNameDraft.trim() || subjectSaving" @click="saveCurrentAsSubject">
+              <button
+                type="button"
+                :disabled="!subjectNameDraft.trim() || subjectSaving"
+                @click="saveCurrentAsSubject"
+              >
                 {{ subjectSaving ? '保存中…' : '保存' }}
               </button>
               <button type="button" class="is-ghost" @click="subjectSaveOpen = false">取消</button>
@@ -1265,7 +1372,11 @@ function refreshHistory() {
                   @click.stop="requestDeleteSubject(subject)"
                   @keydown.enter.stop="requestDeleteSubject(subject)"
                 >
-                  <i class="bi" :class="subjectDeleteArmId === subject.id ? 'bi-question-lg' : 'bi-x'" aria-hidden="true"></i>
+                  <i
+                    class="bi"
+                    :class="subjectDeleteArmId === subject.id ? 'bi-question-lg' : 'bi-x'"
+                    aria-hidden="true"
+                  ></i>
                 </b>
               </button>
             </div>
@@ -1276,16 +1387,31 @@ function refreshHistory() {
               :title="`把画布当前图设为「${activeSubject.name}」的标准参考`"
               @click="updateSubjectStandard"
             >
-              <i class="bi bi-bookmark-check" aria-hidden="true"></i>设当前图为「{{ activeSubject.name }}」标准参考
+              <i class="bi bi-bookmark-check" aria-hidden="true"></i>设当前图为「{{
+                activeSubject.name
+              }}」标准参考
             </button>
           </div>
         </section>
 
         <section class="ms3-block">
-          <div class="ms3-block-head"><span>主体描述</span><em>{{ prompt.length }}/1500</em></div>
-          <textarea v-model="prompt" class="ms3-textarea" rows="4" maxlength="1500" placeholder="描述主体与制作要求…"></textarea>
+          <div class="ms3-block-head">
+            <span>主体描述</span><em>{{ prompt.length }}/1500</em>
+          </div>
+          <textarea
+            v-model="prompt"
+            class="ms3-textarea"
+            rows="4"
+            maxlength="1500"
+            placeholder="描述主体与制作要求…"
+          ></textarea>
           <div class="ms3-chips">
-            <button v-for="example in BRIEF_EXAMPLES" :key="example.label" type="button" @click="applyBriefExample(example.text)">
+            <button
+              v-for="example in BRIEF_EXAMPLES"
+              :key="example.label"
+              type="button"
+              @click="applyBriefExample(example.text)"
+            >
               {{ example.label }}
             </button>
           </div>
@@ -1294,22 +1420,44 @@ function refreshHistory() {
         <section class="ms3-block">
           <div class="ms3-block-head"><span>输出方式</span></div>
           <div class="ms3-seg">
-            <button type="button" :class="{ 'is-on': outputMode === 'board' }" @click="outputMode = 'board'">单张设定板</button>
-            <button type="button" :class="{ 'is-on': outputMode === 'separate' }" @click="outputMode = 'separate'">多张独立视图</button>
+            <button
+              type="button"
+              :class="{ 'is-on': outputMode === 'board' }"
+              @click="outputMode = 'board'"
+            >
+              单张设定板
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-on': outputMode === 'separate' }"
+              @click="outputMode = 'separate'"
+            >
+              多张独立视图
+            </button>
           </div>
           <div v-if="outputMode === 'board'" class="ms3-row">
             <span>方案数量</span>
             <div class="ms3-seg is-mini">
-              <button v-for="count in [1, 2, 3, 4]" :key="count" type="button" :class="{ 'is-on': boardCount === count }" @click="boardCount = count">
+              <button
+                v-for="count in [1, 2, 3, 4]"
+                :key="count"
+                type="button"
+                :class="{ 'is-on': boardCount === count }"
+                @click="boardCount = count"
+              >
                 {{ count }}
               </button>
             </div>
           </div>
-          <p v-else class="ms3-note">每个视角单独出图，共 {{ selectedViews.length }} 张，自动保持同一主体</p>
+          <p v-else class="ms3-note">
+            每个视角单独出图，共 {{ selectedViews.length }} 张，自动保持同一主体
+          </p>
         </section>
 
         <section class="ms3-block">
-          <div class="ms3-block-head"><span>输出视角</span><em>{{ selectedViews.length }}/6</em></div>
+          <div class="ms3-block-head">
+            <span>输出视角</span><em>{{ selectedViews.length }}/6</em>
+          </div>
           <div class="ms3-views">
             <button
               v-for="view in allViewOptions"
@@ -1354,8 +1502,12 @@ function refreshHistory() {
               @keydown.enter.prevent="addCustomView"
               @keydown.esc="customViewInputOpen = false"
             />
-            <button type="button" :disabled="!customViewDraft.trim()" @click="addCustomView">添加</button>
-            <button type="button" class="is-ghost" @click="customViewInputOpen = false">取消</button>
+            <button type="button" :disabled="!customViewDraft.trim()" @click="addCustomView">
+              添加
+            </button>
+            <button type="button" class="is-ghost" @click="customViewInputOpen = false">
+              取消
+            </button>
           </div>
         </section>
 
@@ -1363,8 +1515,20 @@ function refreshHistory() {
           <div class="ms3-row">
             <span>主体类型</span>
             <div class="ms3-seg is-mini">
-              <button type="button" :class="{ 'is-on': subjectType === 'character' }" @click="subjectType = 'character'">人物</button>
-              <button type="button" :class="{ 'is-on': subjectType === 'object' }" @click="subjectType = 'object'">物体</button>
+              <button
+                type="button"
+                :class="{ 'is-on': subjectType === 'character' }"
+                @click="subjectType = 'character'"
+              >
+                人物
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-on': subjectType === 'object' }"
+                @click="subjectType = 'object'"
+              >
+                物体
+              </button>
             </div>
           </div>
           <div class="ms3-row">
@@ -1394,8 +1558,22 @@ function refreshHistory() {
           <div class="ms3-row">
             <span>还原策略</span>
             <div class="ms3-seg is-mini">
-              <button type="button" :class="{ 'is-on': fidelity === 'strict' }" title="严格忠于参考图" @click="fidelity = 'strict'">严格</button>
-              <button type="button" :class="{ 'is-on': fidelity === 'enhance' }" title="生产级优化" @click="fidelity = 'enhance'">优化</button>
+              <button
+                type="button"
+                :class="{ 'is-on': fidelity === 'strict' }"
+                title="严格忠于参考图"
+                @click="fidelity = 'strict'"
+              >
+                严格
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-on': fidelity === 'enhance' }"
+                title="生产级优化"
+                @click="fidelity = 'enhance'"
+              >
+                优化
+              </button>
             </div>
           </div>
           <div class="ms3-row is-slider">
@@ -1420,9 +1598,17 @@ function refreshHistory() {
         <details class="ms3-prompt-preview" :open="promptPreviewOpen">
           <summary @click.prevent="promptPreviewOpen = !promptPreviewOpen">
             <i class="bi bi-braces" aria-hidden="true"></i>查看将要发送的完整提示词
-            <i class="bi bi-chevron-down" :class="{ 'is-open': promptPreviewOpen }" aria-hidden="true"></i>
+            <i
+              class="bi bi-chevron-down"
+              :class="{ 'is-open': promptPreviewOpen }"
+              aria-hidden="true"
+            ></i>
           </summary>
-          <pre>{{ outputMode === 'board' ? finalPrompt : `独立视图模式：每个视角单独发送一条提示词。\n—— 以「${allViewOptions.find((view) => view.id === selectedViews[0])?.label || '正面'}」为例 ——\n${buildSeparateViewPrompt(allViewOptions.find((view) => view.id === selectedViews[0]) || VIEW_OPTIONS[0])}` }}</pre>
+          <pre>{{
+            outputMode === 'board'
+              ? finalPrompt
+              : `独立视图模式：每个视角单独发送一条提示词。\n—— 以「${allViewOptions.find((view) => view.id === selectedViews[0])?.label || '正面'}」为例 ——\n${buildSeparateViewPrompt(allViewOptions.find((view) => view.id === selectedViews[0]) || VIEW_OPTIONS[0])}`
+          }}</pre>
         </details>
 
         <p v-if="!authStore.isAuthenticated" class="ms3-hint">
@@ -1431,13 +1617,34 @@ function refreshHistory() {
       </div>
 
       <footer class="ms3-panel-footer">
-        <div class="ms3-cost"><i class="bi bi-stopwatch" aria-hidden="true"></i>约 1-2 分钟 / 张<b>·</b>{{ costLabel }}</div>
-        <button class="ms3-generate" type="button" :disabled="running" @click="generate">
-          <i class="bi" :class="running ? 'bi-arrow-repeat ms3-spin' : 'bi-stars'" aria-hidden="true"></i>
-          <span>{{ generateLabel }}</span>
-          <kbd>⌘↵</kbd>
+        <button
+          class="ms3-generate"
+          type="button"
+          :disabled="running"
+          :aria-label="`${generateLabel}，${costLabel || '价格待确认'}`"
+          aria-keyshortcuts="Meta+Enter"
+          @click="generate"
+        >
+          <span class="ms3-generate-icon" aria-hidden="true">
+            <i class="bi" :class="running ? 'bi-arrow-repeat ms3-spin' : 'bi-stars'"></i>
+          </span>
+          <span class="ms3-generate-copy">
+            <strong>{{ generateLabel }}</strong>
+            <small><i class="bi bi-stopwatch" aria-hidden="true"></i>约 1-2 分钟 / 张</small>
+          </span>
+          <span v-if="costLabel" class="ms3-generate-price">
+            <small>预计扣费</small>
+            <strong>{{ costDisplay.price }}</strong>
+            <em v-if="costDisplay.detail">{{ costDisplay.detail }}</em>
+          </span>
         </button>
-        <button v-if="running" class="ms3-cancel-inline" type="button" :disabled="cancelling" @click="cancelGeneration">
+        <button
+          v-if="running"
+          class="ms3-cancel-inline"
+          type="button"
+          :disabled="cancelling"
+          @click="cancelGeneration"
+        >
           {{ cancelling ? '正在取消…' : '取消生成' }}
         </button>
       </footer>
@@ -1453,10 +1660,20 @@ function refreshHistory() {
           <span class="ms3-tag is-accent">{{ sheetNumber }}</span>
         </div>
         <div class="ms3-stage-actions">
-          <button type="button" :disabled="!activeOutput || running" title="以当前结果作为参考主体继续生成" @click="useOutputAsReference">
+          <button
+            type="button"
+            :disabled="!activeOutput || running"
+            title="以当前结果作为参考主体继续生成"
+            @click="useOutputAsReference"
+          >
             <i class="bi bi-pin-angle" aria-hidden="true"></i><span>用作参考</span>
           </button>
-          <button type="button" :disabled="!activeOutput || running" title="涂抹修正当前图的局部（其余保持不变）" @click="maskEditorOpen = true">
+          <button
+            type="button"
+            :disabled="!activeOutput || running"
+            title="涂抹修正当前图的局部（其余保持不变）"
+            @click="maskEditorOpen = true"
+          >
             <i class="bi bi-bandaid" aria-hidden="true"></i><span>修正</span>
           </button>
           <div class="ms3-enhance" :class="{ 'is-open': enhanceMenuOpen }">
@@ -1466,22 +1683,53 @@ function refreshHistory() {
               :title="enhanceBusy ? `增强中 ${enhanceProgress}%` : '本地高清增强导出（不调用模型）'"
               @click="enhanceMenuOpen = !enhanceMenuOpen"
             >
-              <i class="bi" :class="enhanceBusy ? 'bi-arrow-repeat ms3-spin' : 'bi-badge-hd'" aria-hidden="true"></i>
+              <i
+                class="bi"
+                :class="enhanceBusy ? 'bi-arrow-repeat ms3-spin' : 'bi-badge-hd'"
+                aria-hidden="true"
+              ></i>
               <span>{{ enhanceBusy ? `${enhanceProgress}%` : '增强' }}</span>
             </button>
-            <div v-if="enhanceMenuOpen" class="ms3-enhance-menu" role="menu" aria-label="高清增强档位">
-              <button v-for="scale in ['2K', '4K', '8K']" :key="scale" type="button" role="menuitem" @click="enhanceDownload(scale)">
-                {{ scale }}<small>{{ scale === '2K' ? '快速' : scale === '4K' ? '高清' : '极致' }}</small>
+            <div
+              v-if="enhanceMenuOpen"
+              class="ms3-enhance-menu"
+              role="menu"
+              aria-label="高清增强档位"
+            >
+              <button
+                v-for="scale in ['2K', '4K', '8K']"
+                :key="scale"
+                type="button"
+                role="menuitem"
+                @click="enhanceDownload(scale)"
+              >
+                {{ scale
+                }}<small>{{ scale === '2K' ? '快速' : scale === '4K' ? '高清' : '极致' }}</small>
               </button>
             </div>
           </div>
-          <button type="button" :disabled="!activeOutput" title="全屏查看" @click="openOutputViewer">
+          <button
+            type="button"
+            :disabled="!activeOutput"
+            title="全屏查看"
+            @click="openOutputViewer"
+          >
             <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i><span>大图</span>
           </button>
-          <button type="button" :disabled="!activeOutput || !outputJobIds[activeOutput]" title="发布到广场" @click="openPublish()">
+          <button
+            type="button"
+            :disabled="!activeOutput || !outputJobIds[activeOutput]"
+            title="发布到广场"
+            @click="openPublish()"
+          >
             <i class="bi bi-broadcast" aria-hidden="true"></i><span>发布</span>
           </button>
-          <button type="button" :disabled="!activeOutput" title="下载当前模型图" @click="downloadOutput">
+          <button
+            type="button"
+            :disabled="!activeOutput"
+            title="下载当前模型图"
+            @click="downloadOutput"
+          >
             <i class="bi bi-download" aria-hidden="true"></i><span>下载</span>
           </button>
         </div>
@@ -1490,18 +1738,32 @@ function refreshHistory() {
       <p v-if="error || localError" class="ms3-error" role="alert">
         <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
         <span>{{ localError || error }}</span>
-        <button v-if="retryViews.length && !running" type="button" class="ms3-retry" @click="retryFailedViews">
-          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>重试失败视图（{{ retryViews.length }}）
+        <button
+          v-if="retryViews.length && !running"
+          type="button"
+          class="ms3-retry"
+          @click="retryFailedViews"
+        >
+          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>重试失败视图（{{
+            retryViews.length
+          }}）
         </button>
       </p>
 
       <div class="ms3-viewport">
         <div class="ms3-spec" aria-hidden="true">
-          <div><span>视角</span><b>{{ selectedViews.length }} 组</b></div>
-          <div><span>质量</span><b>{{ qualityLabel }}档 {{ detail }}</b></div>
-          <div><span>背景</span><b>{{ BACKGROUND_OPTIONS.find((item) => item.id === background)?.label }}</b></div>
+          <div>
+            <span>视角</span><b>{{ selectedViews.length }} 组</b>
+          </div>
+          <div>
+            <span>质量</span><b>{{ qualityLabel }}档 {{ detail }}</b>
+          </div>
+          <div>
+            <span>背景</span
+            ><b>{{ BACKGROUND_OPTIONS.find((item) => item.id === background)?.label }}</b>
+          </div>
         </div>
-        <div class="ms3-frame" :style="frameStyle">
+        <div class="ms3-frame" :class="{ 'has-output': activeOutput }" :style="frameStyle">
           <i class="ms3-ruler is-top" aria-hidden="true"></i>
           <i class="ms3-ruler is-left" aria-hidden="true"></i>
           <AuthenticatedImage
@@ -1513,28 +1775,19 @@ function refreshHistory() {
             :retry-count="2"
             @error="localError = '结果图加载失败，请选择其他版本或重新生成'"
           />
-          <div v-else class="ms3-silhouette" :style="{ gridTemplateColumns: `repeat(${silhouetteViews.length}, 1fr)` }">
+          <div
+            v-else
+            class="ms3-silhouette"
+            :style="{ gridTemplateColumns: `repeat(${silhouetteViews.length}, 1fr)` }"
+          >
             <div v-for="view in silhouetteViews" :key="view">
-              <i class="bi" :class="subjectType === 'character' ? 'bi-person-standing' : 'bi-box-seam'" aria-hidden="true"></i>
+              <i
+                class="bi"
+                :class="subjectType === 'character' ? 'bi-person-standing' : 'bi-box-seam'"
+                aria-hidden="true"
+              ></i>
               <span>{{ view }}</span>
             </div>
-          </div>
-          <div v-if="activeGroup && !running" class="ms3-groupbar" aria-label="同组视图切换">
-            <button
-              v-for="(url, index) in activeGroup.urls"
-              :key="url"
-              type="button"
-              :class="{ 'is-on': activeOutput === url }"
-              :title="outputLabels[url] || `视图 ${index + 1}`"
-              @click="selectOutput(url)"
-            >
-              <AuthenticatedImage :src="url" alt="" :max-dimension="160" loading="lazy" />
-              <em>{{ outputLabels[url] || index + 1 }}</em>
-            </button>
-            <button type="button" class="ms3-group-download" :title="`打包下载整组 ${activeGroup.urls.length} 张`" @click="downloadGroup(activeGroup)">
-              <i class="bi bi-download" aria-hidden="true"></i>
-              <em>整组</em>
-            </button>
           </div>
           <div v-if="running" class="ms3-rendering" aria-live="polite">
             <span class="ms3-flash" aria-hidden="true"></span>
@@ -1570,7 +1823,9 @@ function refreshHistory() {
                 </span>
               </div>
               <div class="ms3-hud-right">
-                <span v-if="showBatchProgress" class="ms3-render-count">{{ batchDoneCount }}/{{ batchProgress.length }}</span>
+                <span v-if="showBatchProgress" class="ms3-render-count"
+                  >{{ batchDoneCount }}/{{ batchProgress.length }}</span
+                >
                 <b class="ms3-render-timer">{{ elapsedLabel }}</b>
                 <button
                   type="button"
@@ -1580,11 +1835,37 @@ function refreshHistory() {
                   :aria-label="cancelling ? '正在取消…' : '取消生成'"
                   @click="cancelGeneration"
                 >
-                  <i class="bi" :class="cancelling ? 'bi-arrow-repeat ms3-spin' : 'bi-x-lg'" aria-hidden="true"></i>
+                  <i
+                    class="bi"
+                    :class="cancelling ? 'bi-arrow-repeat ms3-spin' : 'bi-x-lg'"
+                    aria-hidden="true"
+                  ></i>
                 </button>
               </div>
             </div>
           </div>
+        </div>
+        <div v-if="activeGroup && !running" class="ms3-groupbar" aria-label="同组视图切换">
+          <button
+            v-for="(url, index) in activeGroup.urls"
+            :key="url"
+            type="button"
+            :class="{ 'is-on': activeOutput === url }"
+            :title="outputLabels[url] || `视图 ${index + 1}`"
+            @click="selectOutput(url)"
+          >
+            <AuthenticatedImage :src="url" alt="" :max-dimension="160" loading="lazy" />
+            <em>{{ outputLabels[url] || index + 1 }}</em>
+          </button>
+          <button
+            type="button"
+            class="ms3-group-download"
+            :title="`打包下载整组 ${activeGroup.urls.length} 张`"
+            @click="downloadGroup(activeGroup)"
+          >
+            <i class="bi bi-download" aria-hidden="true"></i>
+            <em>整组</em>
+          </button>
         </div>
       </div>
     </section>
@@ -1592,13 +1873,25 @@ function refreshHistory() {
     <!-- 右：词库 / 历史 / 资产 -->
     <aside class="ms3-gallery">
       <div class="ms3-tabs" role="tablist" aria-label="右侧面板">
-        <button type="button" :class="{ 'is-on': panelTab === 'prompts' }" @click="switchPanelTab('prompts')">
+        <button
+          type="button"
+          :class="{ 'is-on': panelTab === 'prompts' }"
+          @click="switchPanelTab('prompts')"
+        >
           <i class="bi bi-journal-text" aria-hidden="true"></i>词库
         </button>
-        <button type="button" :class="{ 'is-on': panelTab === 'history' }" @click="switchPanelTab('history')">
+        <button
+          type="button"
+          :class="{ 'is-on': panelTab === 'history' }"
+          @click="switchPanelTab('history')"
+        >
           <i class="bi bi-clock-history" aria-hidden="true"></i>历史
         </button>
-        <button type="button" :class="{ 'is-on': panelTab === 'assets' }" @click="switchPanelTab('assets')">
+        <button
+          type="button"
+          :class="{ 'is-on': panelTab === 'assets' }"
+          @click="switchPanelTab('assets')"
+        >
           <i class="bi bi-collection" aria-hidden="true"></i>资产
         </button>
       </div>
@@ -1607,14 +1900,31 @@ function refreshHistory() {
       <template v-if="panelTab === 'prompts'">
         <div class="ms3-gallery-search">
           <i class="bi bi-search" aria-hidden="true"></i>
-          <input v-model="promptQuery" type="search" placeholder="搜索提示词…" aria-label="搜索提示词" />
+          <input
+            v-model="promptQuery"
+            type="search"
+            placeholder="搜索提示词…"
+            aria-label="搜索提示词"
+          />
         </div>
         <div class="ms3-gallery-body">
-          <p v-if="promptLoading && !promptItems.length" class="ms3-gallery-note"><i class="bi bi-arrow-repeat ms3-spin"></i>正在载入词库…</p>
-          <p v-else-if="!promptItems.length" class="ms3-gallery-note">提示词库暂时为空<br />管理员分配后会显示在这里</p>
-          <p v-else-if="!filteredPrompts.length" class="ms3-gallery-note">没有匹配「{{ promptQuery }}」的提示词</p>
+          <p v-if="promptLoading && !promptItems.length" class="ms3-gallery-note">
+            <i class="bi bi-arrow-repeat ms3-spin"></i>正在载入词库…
+          </p>
+          <p v-else-if="!promptItems.length" class="ms3-gallery-note">
+            提示词库暂时为空<br />管理员分配后会显示在这里
+          </p>
+          <p v-else-if="!filteredPrompts.length" class="ms3-gallery-note">
+            没有匹配「{{ promptQuery }}」的提示词
+          </p>
           <div v-else class="ms3-prompt-list">
-            <button v-for="item in filteredPrompts" :key="item.id" type="button" class="ms3-prompt-item" @click="usePromptEntry(item)">
+            <button
+              v-for="item in filteredPrompts"
+              :key="item.id"
+              type="button"
+              class="ms3-prompt-item"
+              @click="usePromptEntry(item)"
+            >
               <span class="ms3-prompt-cover">
                 <AuthenticatedImage
                   v-if="item.coverUrl || item.imageUrl"
@@ -1631,8 +1941,18 @@ function refreshHistory() {
                 <em><i class="bi bi-stars" aria-hidden="true"></i>点击填入</em>
               </span>
             </button>
-            <button v-if="promptHasMore" type="button" class="ms3-prompt-more" :disabled="promptLoading" @click="loadPromptEntries(false)">
-              <i class="bi" :class="promptLoading ? 'bi-arrow-repeat ms3-spin' : 'bi-chevron-down'" aria-hidden="true"></i>
+            <button
+              v-if="promptHasMore"
+              type="button"
+              class="ms3-prompt-more"
+              :disabled="promptLoading"
+              @click="loadPromptEntries(false)"
+            >
+              <i
+                class="bi"
+                :class="promptLoading ? 'bi-arrow-repeat ms3-spin' : 'bi-chevron-down'"
+                aria-hidden="true"
+              ></i>
               {{ promptLoading ? '载入中…' : '加载更多' }}
             </button>
           </div>
@@ -1646,19 +1966,36 @@ function refreshHistory() {
           <small v-if="assetsLoading">载入中…</small>
           <small v-else>{{ myAssets.length }} 件</small>
           <button type="button" title="刷新资产" :disabled="assetsLoading" @click="loadMyAssets">
-            <i class="bi bi-arrow-clockwise" :class="{ 'ms3-spin': assetsLoading }" aria-hidden="true"></i>
+            <i
+              class="bi bi-arrow-clockwise"
+              :class="{ 'ms3-spin': assetsLoading }"
+              aria-hidden="true"
+            ></i>
           </button>
         </header>
         <div class="ms3-gallery-body">
-          <p v-if="assetsLoading && !myAssets.length" class="ms3-gallery-note"><i class="bi bi-arrow-repeat ms3-spin"></i>正在载入我的资产…</p>
-          <p v-else-if="!authStore.isAuthenticated" class="ms3-gallery-note">登录后可查看我的资产<br />发布到广场的作品会集中显示在这里</p>
-          <p v-else-if="!myAssets.length" class="ms3-gallery-note">还没有发布过作品<br />选中一张输出点「发布」，审核通过后会出现在广场</p>
+          <p v-if="assetsLoading && !myAssets.length" class="ms3-gallery-note">
+            <i class="bi bi-arrow-repeat ms3-spin"></i>正在载入我的资产…
+          </p>
+          <p v-else-if="!authStore.isAuthenticated" class="ms3-gallery-note">
+            登录后可查看我的资产<br />发布到广场的作品会集中显示在这里
+          </p>
+          <p v-else-if="!myAssets.length" class="ms3-gallery-note">
+            还没有发布过作品<br />选中一张输出点「发布」，审核通过后会出现在广场
+          </p>
           <div v-else class="ms3-gallery-grid">
             <div v-for="asset in myAssets" :key="asset.id" class="ms3-card is-asset">
               <div class="ms3-card-pick is-static">
-                <AuthenticatedImage :src="asset.resultUrl" :alt="asset.title" :max-dimension="360" loading="lazy" />
+                <AuthenticatedImage
+                  :src="asset.resultUrl"
+                  :alt="asset.title"
+                  :max-dimension="360"
+                  loading="lazy"
+                />
               </div>
-              <span class="ms3-asset-status" :data-status="asset.status">{{ assetStatusLabel(asset.status) }}</span>
+              <span class="ms3-asset-status" :data-status="asset.status">{{
+                assetStatusLabel(asset.status)
+              }}</span>
               <span class="ms3-card-tag" :title="asset.title">{{ asset.title }}</span>
             </div>
           </div>
@@ -1672,55 +2009,87 @@ function refreshHistory() {
           <small v-if="historyLoading">载入中…</small>
           <small v-else>{{ outputs.length }} 张</small>
           <button type="button" title="刷新历史" :disabled="historyLoading" @click="refreshHistory">
-            <i class="bi bi-arrow-clockwise" :class="{ 'ms3-spin': historyLoading }" aria-hidden="true"></i>
+            <i
+              class="bi bi-arrow-clockwise"
+              :class="{ 'ms3-spin': historyLoading }"
+              aria-hidden="true"
+            ></i>
           </button>
         </header>
         <div class="ms3-gallery-search">
           <i class="bi bi-search" aria-hidden="true"></i>
-          <input v-model="galleryQuery" type="search" placeholder="按视角 / 标签筛选…" aria-label="筛选历史输出" />
+          <input
+            v-model="galleryQuery"
+            type="search"
+            placeholder="按视角 / 标签筛选…"
+            aria-label="筛选历史输出"
+          />
         </div>
         <div ref="galleryBodyRef" class="ms3-gallery-body">
-        <p v-if="historyLoading && !outputs.length" class="ms3-gallery-note"><i class="bi bi-arrow-repeat ms3-spin"></i>正在载入历史…</p>
-        <p v-else-if="!outputs.length" class="ms3-gallery-note">还没有生成记录<br />配置左侧参数后点击「生成」</p>
-        <p v-else-if="!filteredGroups.length" class="ms3-gallery-note">没有匹配「{{ galleryQuery }}」的输出</p>
-        <div v-else class="ms3-gallery-grid">
-          <div
-            v-for="group in filteredGroups"
-            :key="group.id"
-            class="ms3-card"
-            :class="{ 'is-on': group.urls.includes(activeOutput), 'is-stack': group.urls.length > 1 }"
-          >
-            <button
-              type="button"
-              class="ms3-card-pick"
-              :aria-pressed="group.urls.includes(activeOutput)"
-              :title="group.urls.length > 1 ? `包含 ${group.urls.length} 张视图，点击展开查看` : '查看'"
-              @click="openHistoryGroup(group)"
+          <p v-if="historyLoading && !outputs.length" class="ms3-gallery-note">
+            <i class="bi bi-arrow-repeat ms3-spin"></i>正在载入历史…
+          </p>
+          <p v-else-if="!outputs.length" class="ms3-gallery-note">暂无生成记录</p>
+          <p v-else-if="!filteredGroups.length" class="ms3-gallery-note">
+            没有匹配「{{ galleryQuery }}」的输出
+          </p>
+          <div v-else class="ms3-gallery-grid">
+            <div
+              v-for="group in filteredGroups"
+              :key="group.id"
+              class="ms3-card"
+              :class="{
+                'is-on': group.urls.includes(activeOutput),
+                'is-stack': group.urls.length > 1,
+              }"
             >
-              <AuthenticatedImage :src="group.cover" alt="" :max-dimension="360" loading="lazy" />
-            </button>
-            <span v-if="group.urls.length > 1" class="ms3-card-count">
-              <i class="bi bi-stack" aria-hidden="true"></i>{{ group.urls.length }}
-            </span>
-            <span class="ms3-card-tag">{{ groupLabel(group) }}</span>
-            <button
-              type="button"
-              class="ms3-card-del"
-              :class="{ 'is-armed': pendingDeleteUrl === group.id }"
-              :title="pendingDeleteUrl === group.id ? '再点一次确认删除整组' : group.urls.length > 1 ? '删除整组输出' : '删除这张输出'"
-              :aria-label="pendingDeleteUrl === group.id ? '再点一次确认删除整组' : '删除输出'"
-              @click.stop="requestDeleteGroup(group)"
-            >
-              <i class="bi" :class="pendingDeleteUrl === group.id ? 'bi-question-lg' : 'bi-x-lg'" aria-hidden="true"></i>
-            </button>
+              <button
+                type="button"
+                class="ms3-card-pick"
+                :aria-pressed="group.urls.includes(activeOutput)"
+                :title="
+                  group.urls.length > 1
+                    ? `在画布中查看这组 ${group.urls.length} 张视图`
+                    : '在画布中查看'
+                "
+                @click="openHistoryGroup(group)"
+              >
+                <AuthenticatedImage :src="group.cover" alt="" :max-dimension="360" loading="lazy" />
+              </button>
+              <span v-if="group.urls.length > 1" class="ms3-card-count">
+                <i class="bi bi-stack" aria-hidden="true"></i>{{ group.urls.length }}
+              </span>
+              <span class="ms3-card-tag">{{ groupLabel(group) }}</span>
+              <button
+                type="button"
+                class="ms3-card-del"
+                :class="{ 'is-armed': pendingDeleteUrl === group.id }"
+                :title="
+                  pendingDeleteUrl === group.id
+                    ? '再点一次确认删除整组'
+                    : group.urls.length > 1
+                      ? '删除整组输出'
+                      : '删除这张输出'
+                "
+                :aria-label="pendingDeleteUrl === group.id ? '再点一次确认删除整组' : '删除输出'"
+                @click.stop="requestDeleteGroup(group)"
+              >
+                <i
+                  class="bi"
+                  :class="pendingDeleteUrl === group.id ? 'bi-question-lg' : 'bi-x-lg'"
+                  aria-hidden="true"
+                ></i>
+              </button>
+            </div>
           </div>
+          <div ref="gallerySentinelRef" class="ms3-gallery-sentinel" aria-hidden="true"></div>
+          <p v-if="historyLoading && outputs.length" class="ms3-gallery-note is-inline">
+            <i class="bi bi-arrow-repeat ms3-spin" aria-hidden="true"></i>正在加载更多…
+          </p>
+          <p v-else-if="!historyHasMore && outputs.length > 8" class="ms3-gallery-note is-inline">
+            已经到底了
+          </p>
         </div>
-        <div ref="gallerySentinelRef" class="ms3-gallery-sentinel" aria-hidden="true"></div>
-        <p v-if="historyLoading && outputs.length" class="ms3-gallery-note is-inline">
-          <i class="bi bi-arrow-repeat ms3-spin" aria-hidden="true"></i>正在加载更多…
-        </p>
-        <p v-else-if="!historyHasMore && outputs.length > 8" class="ms3-gallery-note is-inline">已经到底了</p>
-      </div>
       </template>
     </aside>
 
@@ -1738,9 +2107,8 @@ function refreshHistory() {
       :open="publishOpen"
       :title="prompt.slice(0, 24) || '超高清模型图'"
       style-label="模型设定图"
-      :default-category="subjectType === 'character' ? 'illustration' : 'other'"
-      :suggested-tags="['模型设定图', subjectType === 'character' ? '角色三视图' : '产品设定']"
       :submitting="submittingShare"
+      :light="!appearanceStore.isDark"
       @close="publishOpen = false"
       @submit="submitPublish"
     />
@@ -1751,7 +2119,11 @@ function refreshHistory() {
       :current-src="activeOutput"
       title="超高清模型图"
       filename="ultra-model-sheet.png"
-      :metadata="{ '生成模式': outputMode === 'board' ? '设定板' : '独立视图', '画面比例': aspectRatio, '视角数量': `${selectedViews.length} 组` }"
+      :metadata="{
+        生成模式: outputMode === 'board' ? '设定板' : '独立视图',
+        画面比例: aspectRatio,
+        视角数量: `${selectedViews.length} 组`,
+      }"
       @close="fullscreenOpen = false"
       @select="selectOutput"
     />
@@ -1760,6 +2132,7 @@ function refreshHistory() {
       :show="creditsPrompt.dialogOpen.value"
       :required="creditsPrompt.requiredCredits.value"
       :available="creditsPrompt.availableCredits.value"
+      :light="!appearanceStore.isDark"
       @close="creditsPrompt.closePrompt"
     />
   </main>
@@ -1868,7 +2241,10 @@ function refreshHistory() {
   background: var(--field);
   color: var(--ink);
   cursor: pointer;
-  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .ms3-upload i {
@@ -1951,7 +2327,9 @@ function refreshHistory() {
   color: var(--dim);
   font-size: 14px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-ref-add:hover,
@@ -1999,7 +2377,9 @@ function refreshHistory() {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-subjects-head button:hover:not(:disabled) {
@@ -2083,7 +2463,9 @@ function refreshHistory() {
   background: var(--field);
   cursor: pointer;
   overflow: hidden;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .ms3-subject-card:hover {
@@ -2131,7 +2513,10 @@ function refreshHistory() {
   font-size: 9px;
   opacity: 0;
   cursor: pointer;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-subject-card:hover > b,
@@ -2157,7 +2542,9 @@ function refreshHistory() {
   color: var(--muted);
   font-size: 10px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-subject-update:hover {
@@ -2198,7 +2585,9 @@ function refreshHistory() {
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-enhance-menu button:hover {
@@ -2225,7 +2614,9 @@ function refreshHistory() {
   color: var(--danger);
   font-size: 10px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-source-del:hover {
@@ -2271,7 +2662,10 @@ function refreshHistory() {
   color: var(--muted);
   font-size: 10px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
 }
 
 .ms3-chips button:hover {
@@ -2301,7 +2695,9 @@ function refreshHistory() {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.16s ease, color 0.16s ease;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
 }
 
 .ms3-seg button:hover:not(.is-on) {
@@ -2311,7 +2707,9 @@ function refreshHistory() {
 .ms3-seg button.is-on {
   background: var(--panel-2);
   color: var(--accent);
-  box-shadow: 0 0 0 1px var(--line-2), 0 2px 8px #0006;
+  box-shadow:
+    0 0 0 1px var(--line-2),
+    0 2px 8px #0006;
 }
 
 .ms3-seg.is-mini button {
@@ -2378,7 +2776,11 @@ function refreshHistory() {
   background: var(--field);
   color: var(--muted);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .ms3-views button:hover {
@@ -2436,7 +2838,9 @@ function refreshHistory() {
   background: transparent;
   color: var(--dim);
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-view-add:hover {
@@ -2596,49 +3000,35 @@ function refreshHistory() {
   background: var(--panel-2);
 }
 
-.ms3-cost {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-bottom: 9px;
-  color: var(--dim);
-  font-size: 10px;
-}
-
-.ms3-cost b {
-  color: var(--dim);
-}
-
-.ms3-cost i {
-  color: var(--accent);
-}
-
 .ms3-generate {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  min-height: 44px;
-  border: 0;
+  min-height: 62px;
+  padding: 7px 9px 7px 8px;
+  border: 1px solid rgba(255, 92, 26, 0.58);
   border-radius: 10px;
-  background: var(--accent);
-  color: #1a0a02;
-  font-size: 13px;
-  font-weight: 700;
+  background: #171418;
+  color: var(--ink);
+  text-align: left;
   cursor: pointer;
   overflow: hidden;
-  box-shadow: none;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    0 8px 24px #0004;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
 }
-
 
 .ms3-generate:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.05);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 130, 76, 0.92);
+  background: #1d171a;
 }
 
 .ms3-generate:active:not(:disabled) {
@@ -2647,15 +3037,82 @@ function refreshHistory() {
 
 .ms3-generate:disabled {
   cursor: wait;
-  opacity: 0.85;
+  opacity: 0.76;
 }
 
-.ms3-generate kbd {
-  padding: 3px 6px;
-  border: 1px solid #2a16031f;
-  border-radius: 6px;
-  background: #ffffff2e;
-  font: 700 9px/1 monospace;
+.ms3-generate-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(255, 92, 26, 0.34);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.ms3-generate-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.ms3-generate-copy strong {
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms3-generate-copy small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ms3-generate-copy small i {
+  color: var(--accent);
+}
+
+.ms3-generate-price {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  min-width: 58px;
+  white-space: nowrap;
+}
+
+.ms3-generate-price small {
+  color: var(--dim);
+  font-size: 8px;
+  line-height: 1;
+}
+
+.ms3-generate-price strong {
+  color: var(--accent);
+  font:
+    800 16px/1 'SF Mono',
+    ui-monospace,
+    monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.ms3-generate-price em {
+  max-width: 94px;
+  overflow: hidden;
+  color: var(--muted);
+  font:
+    600 8px/1 'SF Mono',
+    ui-monospace,
+    monospace;
+  font-style: normal;
+  text-overflow: ellipsis;
 }
 
 .ms3-cancel-inline {
@@ -2669,7 +3126,9 @@ function refreshHistory() {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 
 .ms3-cancel-inline:hover:not(:disabled) {
@@ -2751,7 +3210,10 @@ function refreshHistory() {
   font-size: 10.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease;
 }
 
 .ms3-stage-actions button:hover:not(:disabled) {
@@ -2794,7 +3256,9 @@ function refreshHistory() {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-retry:hover {
@@ -2868,14 +3332,22 @@ function refreshHistory() {
   overflow: hidden;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-sm);
-  will-change: transform;
   background-color: #121216;
   background-image:
     linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
   background-size: 48px 48px;
   box-shadow: 0 16px 40px #0008;
-  transition: aspect-ratio 0.28s ease, width 0.28s ease;
+  transition:
+    aspect-ratio 0.28s ease,
+    width 0.28s ease;
+}
+
+.ms3-frame.has-output {
+  width: 100% !important;
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto !important;
 }
 
 .ms3-frame :deep(.authenticated-image) {
@@ -2884,6 +3356,19 @@ function refreshHistory() {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: center;
+}
+
+.ms3-frame.has-output :deep(.authenticated-image[data-studio-output]) {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ms3-frame :deep(.authenticated-image-media) {
+  object-fit: contain !important;
+  object-position: center;
 }
 
 .ms3-silhouette {
@@ -2927,18 +3412,13 @@ function refreshHistory() {
   background: #0c0c10d9;
 }
 
-
-
-
 .ms3-render-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 12px var(--accent);
-  animation: ms3-dot 1.1s ease-in-out infinite;
 }
-
 
 .ms3-render-count {
   display: inline-block;
@@ -2964,13 +3444,15 @@ function refreshHistory() {
   top: 0;
   bottom: 0;
   width: 42%;
-  background: linear-gradient(90deg, transparent, var(--accent), #ffe9c4, var(--accent), transparent);
-  animation: ms3-bar 1.5s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    #ffe9c4,
+    var(--accent),
+    transparent
+  );
 }
-
-
-
-
 
 /* ================= 右：我的生成 ================= */
 .ms3-gallery {
@@ -3005,7 +3487,10 @@ function refreshHistory() {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease;
 }
 
 .ms3-tabs button:hover:not(.is-on) {
@@ -3055,7 +3540,9 @@ function refreshHistory() {
   color: var(--muted);
   font-size: 11px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-gallery-head button:hover:not(:disabled) {
@@ -3139,7 +3626,10 @@ function refreshHistory() {
   border-radius: var(--radius-sm);
   background: var(--field);
   overflow: hidden;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .ms3-card:hover {
@@ -3214,7 +3704,10 @@ function refreshHistory() {
   font-size: 9.5px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-card:hover .ms3-card-del,
@@ -3245,7 +3738,10 @@ function refreshHistory() {
   color: var(--ink);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    transform 0.16s ease;
 }
 
 .ms3-prompt-cover {
@@ -3325,7 +3821,9 @@ function refreshHistory() {
   color: var(--muted);
   font-size: 10.5px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .ms3-prompt-more:hover:not(:disabled) {
@@ -3378,9 +3876,16 @@ function refreshHistory() {
 .ms3-beam.is-h {
   left: 0;
   right: 0;
-  top: 50%;
+  top: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent) 24%, #ffd9c2 50%, var(--accent) 76%, transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent) 24%,
+    #ffd9c2 50%,
+    var(--accent) 76%,
+    transparent
+  );
   box-shadow: 0 0 18px rgba(255, 92, 26, 0.55);
 }
 
@@ -3396,13 +3901,19 @@ function refreshHistory() {
 .ms3-beam.is-v {
   top: 0;
   bottom: 0;
-  left: 50%;
+  left: 0;
   width: 2px;
-  background: linear-gradient(180deg, transparent, rgba(255, 92, 26, 0.7) 30%, #ffd9c2 50%, rgba(255, 92, 26, 0.7) 70%, transparent);
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(255, 92, 26, 0.7) 30%,
+    #ffd9c2 50%,
+    rgba(255, 92, 26, 0.7) 70%,
+    transparent
+  );
   box-shadow: 0 0 14px rgba(255, 92, 26, 0.4);
   opacity: 0.7;
 }
-
 
 /* 底部仪器读出条：贴合画布下边缘，不遮挡画面 */
 .ms3-hud {
@@ -3443,7 +3954,10 @@ function refreshHistory() {
   display: inline-block;
   flex: none;
   color: var(--ink);
-  font: 700 12px/1 'SF Mono', ui-monospace, monospace;
+  font:
+    700 12px/1 'SF Mono',
+    ui-monospace,
+    monospace;
   letter-spacing: 0.06em;
   will-change: transform, opacity;
 }
@@ -3519,7 +4033,10 @@ function refreshHistory() {
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
 }
 
 .ms3-hud-cancel:hover:not(:disabled) {
@@ -3533,16 +4050,17 @@ function refreshHistory() {
   cursor: wait;
 }
 
-
 .ms3-render-timer {
   color: var(--ink);
-  font: 700 20px/1 'SF Mono', ui-monospace, monospace;
+  font:
+    700 20px/1 'SF Mono',
+    ui-monospace,
+    monospace;
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
   display: inline-block;
   will-change: transform;
 }
-
 
 .ms3-fx-canvas {
   position: absolute;
@@ -3552,7 +4070,6 @@ function refreshHistory() {
   height: 100%;
   pointer-events: none;
 }
-
 
 /* ================= 仪器面板细节 ================= */
 /* 左栏分区编号：01 · 参考主体 …… */
@@ -3565,7 +4082,10 @@ function refreshHistory() {
   content: counter(ms3-section, decimal-leading-zero);
   margin-right: 8px;
   color: var(--accent);
-  font: 700 10px/1 'SF Mono', ui-monospace, monospace;
+  font:
+    700 10px/1 'SF Mono',
+    ui-monospace,
+    monospace;
   letter-spacing: 0.08em;
 }
 
@@ -3593,8 +4113,10 @@ function refreshHistory() {
   left: 0;
   width: 7px;
   background:
-    repeating-linear-gradient(180deg, #ffffff38 0 1px, transparent 1px 12px) 0 0 / 4px 100% no-repeat,
-    repeating-linear-gradient(180deg, #ffffff59 0 1px, transparent 1px 60px) 0 0 / 7px 100% no-repeat;
+    repeating-linear-gradient(180deg, #ffffff38 0 1px, transparent 1px 12px) 0 0 / 4px 100%
+      no-repeat,
+    repeating-linear-gradient(180deg, #ffffff59 0 1px, transparent 1px 60px) 0 0 / 7px 100%
+      no-repeat;
 }
 
 /* 顶栏机加工斜纹 */
@@ -3604,7 +4126,10 @@ function refreshHistory() {
 
 /* 细节强度大数字读出 */
 .ms3-row.is-slider em {
-  font: 700 17px/1 'SF Mono', ui-monospace, monospace;
+  font:
+    700 17px/1 'SF Mono',
+    ui-monospace,
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3643,11 +4168,8 @@ function refreshHistory() {
 }
 
 .ms3-groupbar {
-  position: absolute;
+  position: relative;
   z-index: 4;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   gap: 6px;
   max-width: 92%;
@@ -3671,7 +4193,9 @@ function refreshHistory() {
   background: var(--field);
   overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .ms3-groupbar button:hover {
@@ -3742,25 +4266,27 @@ function refreshHistory() {
 }
 
 @keyframes ms3-spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes ms3-bar {
-  0% { left: -45%; }
-  100% { left: 105%; }
-}
-
-@keyframes ms3-dot {
-  50% { opacity: 0.35; transform: scale(0.82); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes ms3-card-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes ms3-beam {
-  55%, 100% { transform: translateX(130%); }
+  55%,
+  100% {
+    transform: translateX(130%);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3813,24 +4339,69 @@ function refreshHistory() {
 
 @media (max-width: 900px) {
   .ms3 {
-    height: auto;
-    overflow: visible;
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--app-header-offset, 64px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
-  .ms3-panel {
-    grid-row: auto;
-    order: 2;
-  }
-
-  .ms3-panel-scroll {
-    overflow: visible;
+  .ms3-stage,
+  .ms3-panel,
+  .ms3-gallery {
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .ms3-stage {
     order: 1;
     min-height: 58vh;
+  }
+
+  .ms3-panel {
+    order: 2;
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .ms3-panel-scroll {
+    flex: none;
+    overflow: visible;
+  }
+
+  .ms3-gallery {
+    order: 3;
+    height: min(60vh, 520px);
+    min-height: 360px;
+    max-height: 60vh;
+  }
+
+  .ms3-stage-bar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+    padding: 10px 12px;
+  }
+
+  .ms3-stage-meta {
+    flex-wrap: wrap;
+  }
+
+  .ms3-stage-actions {
+    width: 100%;
+    padding-bottom: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .ms3-stage-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ms3-stage-actions > button,
+  .ms3-stage-actions > div {
+    flex: 0 0 auto;
   }
 
   .ms3-viewport {
@@ -3841,13 +4412,173 @@ function refreshHistory() {
     width: 100% !important;
   }
 
-  .ms3-gallery {
-    order: 3;
-    max-height: 60vh;
-  }
-
   .ms3-spec {
     gap: 8px 0;
   }
+}
+
+@media (max-width: 460px) {
+  .ms3 {
+    gap: 9px;
+    padding: 9px;
+  }
+
+  .ms3-generate {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .ms3-generate-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .ms3-generate-price em {
+    display: none;
+  }
+}
+
+/* Light appearance */
+.ms3.is-light {
+  --bg: #f2f3f7;
+  --panel: #ffffff;
+  --panel-2: #f7f7fa;
+  --field: #f2f3f7;
+  --line: #e4e5ec;
+  --line-2: #d5d7e0;
+  --ink: #23242d;
+  --muted: #686a78;
+  --dim: #9698a5;
+  --accent: #e84f12;
+  --accent-2: #ff6a2e;
+  --accent-soft: rgba(232, 79, 18, 0.1);
+  --danger: #c94f5e;
+  color-scheme: light;
+}
+
+.ms3.is-light .ms3-panel,
+.ms3.is-light .ms3-stage,
+.ms3.is-light .ms3-gallery {
+  box-shadow: 0 14px 38px rgba(40, 42, 58, 0.07);
+}
+
+.ms3.is-light .ms3-upload,
+.ms3.is-light .ms3-ref-slot,
+.ms3.is-light .ms3-subject-card,
+.ms3.is-light .ms3-textarea,
+.ms3.is-light .ms3-seg,
+.ms3.is-light .ms3-views button,
+.ms3.is-light .ms3-view-input input,
+.ms3.is-light .ms3-prompt-preview,
+.ms3.is-light .ms3-stage-actions button,
+.ms3.is-light .ms3-gallery-head button,
+.ms3.is-light .ms3-gallery-search input,
+.ms3.is-light .ms3-card,
+.ms3.is-light .ms3-prompt-item {
+  color: var(--ink);
+}
+
+.ms3.is-light .ms3-enhance-menu,
+.ms3.is-light .ms3-groupbar {
+  border-color: var(--line-2);
+  background: rgba(255, 255, 255, 0.98);
+  color: var(--ink);
+  box-shadow: 0 18px 44px rgba(40, 42, 58, 0.14);
+}
+
+.ms3.is-light .ms3-enhance-menu button {
+  color: var(--muted);
+}
+
+.ms3.is-light .ms3-enhance-menu button:hover {
+  color: var(--accent);
+}
+
+.ms3.is-light .ms3-generate {
+  background: linear-gradient(135deg, #e84f12, #ff6a2e);
+  color: #ffffff;
+  box-shadow: 0 12px 28px rgba(232, 79, 18, 0.2);
+}
+
+.ms3.is-light .ms3-generate:hover:not(:disabled) {
+  background: linear-gradient(135deg, #d9470f, #f45c20);
+}
+
+.ms3.is-light .ms3-generate-icon {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.ms3.is-light .ms3-generate-copy small,
+.ms3.is-light .ms3-generate-price small,
+.ms3.is-light .ms3-generate-price em {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.ms3.is-light .ms3-generate-price strong {
+  color: #ffffff;
+}
+
+.ms3.is-light .ms3-error {
+  border-color: rgba(201, 79, 94, 0.24);
+  background: rgba(201, 79, 94, 0.08);
+  color: #a73e4c;
+}
+
+.ms3.is-light .ms3-frame {
+  background-color: #eef0f4;
+  background-image:
+    linear-gradient(rgba(37, 39, 52, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 39, 52, 0.045) 1px, transparent 1px);
+  box-shadow: 0 16px 42px rgba(40, 42, 58, 0.12);
+}
+
+.ms3.is-light .ms3-silhouette i {
+  color: #d6d8e0;
+}
+
+.ms3.is-light .ms3-card:hover,
+.ms3.is-light .ms3-card.is-stack:hover {
+  box-shadow: 0 10px 24px rgba(40, 42, 58, 0.12);
+}
+
+.ms3.is-light .ms3-card.is-stack {
+  box-shadow:
+    3px 3px 0 -1px var(--panel-2),
+    3px 3px 0 0 var(--line-2),
+    6px 6px 0 -1px var(--panel),
+    6px 6px 0 0 var(--line);
+}
+
+.ms3.is-light .ms3-prompt-cover {
+  background: radial-gradient(circle at 32% 20%, rgba(232, 79, 18, 0.1), transparent 54%), #eceef3;
+}
+
+.ms3.is-light .ms3-tabs button:hover:not(.is-on),
+.ms3.is-light .ms3-gallery-head button:hover:not(:disabled),
+.ms3.is-light .ms3-prompt-item:hover,
+.ms3.is-light .ms3-views button:hover {
+  color: var(--accent);
+}
+
+.ms3.is-light .ms3-ruler.is-top,
+.ms3.is-light .ms3-ruler.is-left {
+  opacity: 0.42;
+}
+
+.ms3.is-light .ms3-groupbar button {
+  border-color: var(--line-2);
+  background: var(--field);
+}
+
+.ms3.is-light .ms3-rendering,
+.ms3.is-light .ms3-hud {
+  background: rgba(245, 245, 248, 0.9);
+  color: var(--ink);
+}
+
+.ms3.is-light .ms3-render-bar {
+  background: rgba(37, 39, 52, 0.1);
 }
 </style>

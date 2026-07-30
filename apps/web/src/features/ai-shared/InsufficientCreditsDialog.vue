@@ -5,6 +5,7 @@ defineProps({
   show: { type: Boolean, default: false },
   required: { type: Number, default: 0 },
   available: { type: Number, default: 0 },
+  light: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close'])
@@ -13,7 +14,7 @@ const router = useRouter()
 function formatCredits(value = 0) {
   const num = Number(value || 0)
   if (!Number.isFinite(num)) return '0'
-  return num >= 1000 ? Math.round(num).toLocaleString() : String(Math.round(num * 1000) / 1000)
+  return Math.round(num).toLocaleString('zh-CN')
 }
 
 function goWallet() {
@@ -23,16 +24,20 @@ function goWallet() {
 </script>
 
 <template>
-  <div v-if="show" class="insufficient-credits-layer" @click.self="emit('close')">
+  <div
+    v-if="show"
+    class="insufficient-credits-layer"
+    :class="{ 'is-light': light }"
+    @click.self="emit('close')"
+  >
     <section class="insufficient-credits-panel" role="dialog" aria-modal="true">
       <div class="insufficient-credits-icon">
         <i class="bi bi-coin"></i>
       </div>
       <h3>钱包余额不足</h3>
       <p v-if="required > 0">
-        本次预计需要 <strong>¥{{ formatCredits(required) }}</strong
-        >，当前可用 <strong>¥{{ formatCredits(available) }}</strong
-        >。
+        本次预计需要 <strong>{{ formatCredits(required) }} 积分</strong>，当前可用
+        <strong>{{ formatCredits(available) }} 积分</strong>。
       </p>
       <p v-else>当前钱包余额不足以提交本次任务。</p>
       <p class="insufficient-credits-hint">
@@ -116,5 +121,28 @@ function goWallet() {
   border: none;
   background: linear-gradient(135deg, #7c3aed, #6366f1);
   color: #fff;
+}
+
+.insufficient-credits-layer.is-light {
+  background: rgba(48, 49, 62, 0.3);
+}
+
+.insufficient-credits-layer.is-light .insufficient-credits-panel {
+  border-color: rgba(34, 36, 50, 0.1);
+  background: #ffffff;
+  color: #242531;
+  box-shadow: 0 24px 70px rgba(48, 44, 78, 0.18);
+}
+
+.insufficient-credits-layer.is-light .insufficient-credits-panel p {
+  color: rgba(43, 45, 60, 0.72);
+}
+
+.insufficient-credits-layer.is-light .insufficient-credits-hint {
+  color: rgba(43, 45, 60, 0.56);
+}
+
+.insufficient-credits-layer.is-light .insufficient-credits-actions button {
+  border-color: rgba(34, 36, 50, 0.12);
 }
 </style>

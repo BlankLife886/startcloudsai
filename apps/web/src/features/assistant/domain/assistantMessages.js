@@ -50,6 +50,7 @@ export function createAssistantPlaceholder({
     prompt,
     model: previous?.model || defaults.model,
     ratio: previous?.ratio || defaults.ratio,
+    requestRatio: previous?.requestRatio || defaults.requestRatio || defaults.ratio,
     resolution: previous?.resolution || defaults.resolution,
     count: responseMode === 'chat' ? 0 : defaults.count || previous?.count || 2,
     requestSize: previous?.requestSize || defaults.requestSize,

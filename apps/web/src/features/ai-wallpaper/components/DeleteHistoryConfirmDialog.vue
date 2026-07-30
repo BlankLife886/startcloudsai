@@ -9,6 +9,7 @@ const props = defineProps({
   description: { type: String, default: '' },
   confirmLabel: { type: String, default: '确认删除' },
   busyLabel: { type: String, default: '删除中…' },
+  light: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'confirm'])
@@ -38,7 +39,12 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 <template>
   <Teleport to="body">
     <Transition name="delete-confirm">
-      <div v-if="open" class="delete-confirm__backdrop" @click.self="close">
+      <div
+        v-if="open"
+        class="delete-confirm__backdrop"
+        :class="{ 'is-light': light }"
+        @click.self="close"
+      >
         <section
           class="delete-confirm__dialog"
           role="alertdialog"
@@ -68,12 +74,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
             >
               取消
             </button>
-            <button
-              type="button"
-              class="is-confirm"
-              :disabled="busy"
-              @click="emit('confirm')"
-            >
+            <button type="button" class="is-confirm" :disabled="busy" @click="emit('confirm')">
               <i v-if="busy" class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
               {{ busy ? busyLabel : confirmLabel }}
             </button>
@@ -215,5 +216,29 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
   .delete-confirm__actions .spin {
     animation: none;
   }
+}
+
+.delete-confirm__backdrop.is-light {
+  background: rgba(48, 49, 62, 0.3);
+}
+
+.delete-confirm__backdrop.is-light .delete-confirm__dialog {
+  border-color: rgba(34, 36, 50, 0.1);
+  background: #ffffff;
+  color: #242531;
+  box-shadow: 0 26px 76px rgba(48, 44, 78, 0.2);
+}
+
+.delete-confirm__backdrop.is-light .delete-confirm__copy p {
+  color: rgba(43, 45, 60, 0.56);
+}
+
+.delete-confirm__backdrop.is-light .delete-confirm__actions button {
+  border-color: rgba(34, 36, 50, 0.11);
+}
+
+.delete-confirm__backdrop.is-light .delete-confirm__actions .is-cancel {
+  background: #f5f6f9;
+  color: rgba(43, 45, 60, 0.72);
 }
 </style>

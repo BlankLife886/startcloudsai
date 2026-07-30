@@ -17,6 +17,7 @@ var Defaults = map[string]json.RawMessage{
 	"signup_bonus_cents":     json.RawMessage(`100`),
 	"registration_enabled":   json.RawMessage(`true`),
 	"task_models":            json.RawMessage(`{"default": "gpt-image-2"}`),
+	"image_service_routes":   json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
 	"free_daily_cents":       json.RawMessage(`0`),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
@@ -33,7 +34,47 @@ var Defaults = map[string]json.RawMessage{
 	"sub2api_chat_models":  json.RawMessage(`{}`),
 	"sub2api_image_model":  json.RawMessage(`""`),
 	"sub2api_timeout_secs": json.RawMessage(`0`),
+	// CRUN 异步图片服务（空 = 使用环境变量）
+	"crun_base_url":     json.RawMessage(`""`),
+	"crun_api_key":      json.RawMessage(`""`),
+	"crun_timeout_secs": json.RawMessage(`0`),
 }
+
+var ImageServiceRouteKeys = []string{
+	"t2i", "coloring", "ui_design", "model_sheet", "game_art", "assistant_image", "ui_design_asset",
+}
+
+func validImageServiceRoute(key string) bool {
+	for _, candidate := range ImageServiceRouteKeys {
+		if candidate == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ImageServiceProvider returns the configured image provider for a page/task route.
+// Existing task pages remain on C2A; assistant image flows default to Sub2API.
+func ImageServiceProvider(ctx context.Context, q store.Q, routeKey string) (string, error) {
+	raw, err := Get(ctx, q, "image_service_routes")
+	if err != nil {
+		return "", err
+	}
+	routes := map[string]string{}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &routes)
+	}
+	provider := strings.ToLower(strings.TrimSpace(routes[routeKey]))
+	if provider == "c2a" || provider == "sub2api" || provider == "crun" {
+		return provider, nil
+	}
+	if routeKey == "assistant_image" || routeKey == "ui_design_asset" {
+		return "sub2api", nil
+	}
+	return "c2a", nil
+}
+
+func ValidImageServiceRoute(key string) bool { return validImageServiceRoute(key) }
 
 // AllowedKeys 后台可读写的配置键。
 var AllowedKeys = func() map[string]bool {
@@ -114,7 +155,13 @@ func TaskPrices(ctx context.Context, q store.Q) (map[string]int64, json.RawMessa
 	if raw != nil {
 		_ = json.Unmarshal(raw, &prices)
 	}
-	return prices, raw, nil
+	for taskType := range prices {
+		if !store.Contains(store.TaskTypes, taskType) {
+			delete(prices, taskType)
+		}
+	}
+	filtered, _ := json.Marshal(prices)
+	return prices, filtered, nil
 }
 
 // TaskPriceCents 某类型单价（DB 值缺项时回落到默认表）。
@@ -265,6 +312,57 @@ func ResolveSub2API(ctx context.Context, q store.Q, env Sub2APIConfig, masterKey
 		cfg.APIKey = plain
 	}
 	rawTimeout, err := Get(ctx, q, "sub2api_timeout_secs")
+	if err != nil {
+		return cfg, err
+	}
+	var timeout int
+	if rawTimeout != nil {
+		_ = json.Unmarshal(rawTimeout, &timeout)
+	}
+	if timeout > 0 {
+		cfg.TimeoutSecs = timeout
+	}
+	return cfg, nil
+}
+
+type CRUNConfig struct {
+	BaseURL     string
+	APIKey      string
+	TimeoutSecs int
+}
+
+// ResolveCRUN returns the effective CRUN configuration with admin settings
+// taking precedence over environment variables.
+func ResolveCRUN(ctx context.Context, q store.Q, env CRUNConfig, masterKey string) (CRUNConfig, error) {
+	cfg := env
+	readString := func(key string) (string, error) {
+		raw, err := Get(ctx, q, key)
+		if err != nil {
+			return "", err
+		}
+		var value string
+		if raw != nil {
+			_ = json.Unmarshal(raw, &value)
+		}
+		return strings.TrimSpace(value), nil
+	}
+	if value, err := readString("crun_base_url"); err != nil {
+		return cfg, err
+	} else if value != "" {
+		cfg.BaseURL = value
+	}
+	storedKey, err := readString("crun_api_key")
+	if err != nil {
+		return cfg, err
+	}
+	if storedKey != "" {
+		plain, decryptErr := DecryptSecret(storedKey, masterKey)
+		if decryptErr != nil {
+			return cfg, decryptErr
+		}
+		cfg.APIKey = plain
+	}
+	rawTimeout, err := Get(ctx, q, "crun_timeout_secs")
 	if err != nil {
 		return cfg, err
 	}

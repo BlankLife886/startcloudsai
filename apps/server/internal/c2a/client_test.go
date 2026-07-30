@@ -87,6 +87,60 @@ func TestGenerateImagesUsesNonStreamingContract(t *testing.T) {
 	}
 }
 
+func TestGenerateImagesWithIDHonorsExplicitQuality(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"task-high","status":"success","data":[{"b64_json":"image-data"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.GenerateImagesWithID(
+		context.Background(), "task-high", "draw sharp UI", "gpt-image-2", 1, "2048x1152", "high",
+	)
+	if err != nil {
+		t.Fatalf("GenerateImagesWithID: %v", err)
+	}
+	if len(images) != 1 || images[0] != "image-data" {
+		t.Fatalf("images = %#v", images)
+	}
+	if payload["quality"] != "high" {
+		t.Fatalf("quality = %#v, want high", payload["quality"])
+	}
+}
+
+func TestGenerateImagesWithOptionsForwardsConfiguredCapabilities(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"task-options","status":"success","data":[{"b64_json":"image-data"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	_, err := client.GenerateImagesWithOptions(
+		context.Background(), "task-options", "draw a logo", "gpt-image-2", 1, "1024x1024",
+		ImageOptions{Quality: "medium", TransparentBackground: true, OutputFormat: "webp", ModerationLevel: "low"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"quality": "medium", "background": "transparent", "output_format": "webp", "moderation": "low",
+	} {
+		if payload[key] != want {
+			t.Fatalf("%s = %#v, want %#v", key, payload[key], want)
+		}
+	}
+}
+
 func TestGenerateImagesRecoversCompletedImageBeforeTaskTerminalState(t *testing.T) {
 	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nQAAAABJRU5ErkJggg==")
 	if err != nil {

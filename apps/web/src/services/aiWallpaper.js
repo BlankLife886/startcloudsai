@@ -273,7 +273,8 @@ function taskToLegacyJob(task = {}) {
     error: task.errorMessage || '',
     errorCode: task.errorCode || '',
     costCents: Number(task.costCents || 0),
-    estimatedCostUsd: Number(task.costCents || 0) / 100,
+    costPoints: Number(task.costPoints ?? task.costCents ?? 0),
+    estimatedCostUsd: 0,
     createdAt: task.createdAt || '',
     startedAt: task.startedAt || '',
     finishedAt: task.finishedAt || '',
@@ -329,21 +330,27 @@ export async function createServerAiJob(payload = {}) {
   const maskBaseUrl = String(input.maskBaseUrl || legacyParams.maskBaseUrl || '').trim()
 
   // 任一参考图/蒙版解析失败都会抛 input_image_lost，阻断本次提交
-  const inputKeys = []
-  for (const url of sourceUrls) {
-    const key = await resolveInputKeyForUrl(url)
-    if (key && !inputKeys.includes(key)) inputKeys.push(key)
-  }
+  const inputKeys = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(payload.inputKeys) ? payload.inputKeys : []),
+        ...(Array.isArray(input.inputKeys) ? input.inputKeys : []),
+        ...(Array.isArray(legacyParams.inputKeys) ? legacyParams.inputKeys : []),
+      ]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    ),
+  )
+	const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url)))
+	for (const key of resolvedSourceKeys) {
+	  if (key && !inputKeys.includes(key)) inputKeys.push(key)
+	}
   // 蒙版与合成底图只进 params 供 Worker 贴回原图使用，
   // 不进 inputKeys——上游把它们当输入图会污染生成结果。
-  let maskKey = ''
-  if (maskUrl) {
-    maskKey = await resolveInputKeyForUrl(maskUrl)
-  }
-  let maskBaseKey = ''
-  if (maskBaseUrl) {
-    maskBaseKey = await resolveInputKeyForUrl(maskBaseUrl)
-  }
+	const [maskKey, maskBaseKey] = await Promise.all([
+	  maskUrl ? resolveInputKeyForUrl(maskUrl) : '',
+	  maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
+	])
 
   const task = await createTask({
     type,
@@ -419,7 +426,7 @@ export async function cancelServerAiJob(jobId) {
  */
 export async function waitForServerAiJob(
   jobId,
-  { onStatus = null, maxPolls = 450, signal = undefined } = {},
+  { onStatus = null, onUpdate = null, onImage = null, maxPolls = 450, signal = undefined } = {},
 ) {
   if (!jobId) throw new Error('AI 任务 ID 无效')
   // 轮询统一 2s 间隔（无视旧调用方各自的 intervalMs 配置）
@@ -429,6 +436,12 @@ export async function waitForServerAiJob(
     intervalMs: interval,
     maxWaitMs: interval * Math.max(1, Number(maxPolls) || 450),
     onUpdate: (current) => {
+	  const currentJob = taskToLegacyJob(current)
+	  const currentResult = legacyResultFromTask(current)
+	  if (typeof onUpdate === 'function') onUpdate(currentJob, currentResult)
+	  if (typeof onImage === 'function' && currentResult.outputs.length) {
+		onImage(currentResult.outputs, currentJob, currentResult)
+	  }
       if (typeof onStatus === 'function') {
         onStatus(formatServerAiJobStatus(String(current?.status || '').toLowerCase()))
       }

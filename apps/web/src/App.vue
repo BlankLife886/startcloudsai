@@ -18,6 +18,8 @@ import NavBar from './components/layout/NavBar.vue'
 import { useAuthStore } from './stores/auth'
 import { useSettingsStore } from './stores/settings'
 import { hasBodyScrollLocks } from './utils/bodyScrollLock'
+import notificationService from './services/notification'
+import { subscribeUserTasks } from './services/tasksApi'
 
 const AnnouncementCenter = defineAsyncComponent(
   () => import('./components/common/AnnouncementCenter.vue'),
@@ -62,6 +64,29 @@ const showBackToTop = ref(false)
 let pageScrollbarTimer = null
 let scrollFrameId = 0
 let pageResizeObserver = null
+let closeUserTaskStream = () => {}
+const notifiedTaskStates = new Set()
+
+watch(
+  () => authStore.isAuthenticated,
+  (authenticated) => {
+    closeUserTaskStream()
+    closeUserTaskStream = () => {}
+    if (!authenticated) return
+    closeUserTaskStream = subscribeUserTasks({
+      onUpdate: (task) => {
+        const status = String(task?.status || '').toLowerCase()
+        if (!['succeeded', 'failed'].includes(status)) return
+        const key = `${task.id}:${status}`
+        if (notifiedTaskStates.has(key)) return
+        notifiedTaskStates.add(key)
+        if (status === 'succeeded') notificationService.success('图片已生成，结果已同步')
+        else notificationService.error(task.errorMessage || '图片生成失败')
+      },
+    })
+  },
+  { immediate: true },
+)
 
 function applyPreferenceHtmlClasses() {
   if (typeof document === 'undefined') return
@@ -81,11 +106,7 @@ function recoverDocumentScroll() {
     body.classList.remove('nav-mobile-open')
   }
   root.classList.remove('assistant-image-viewer-open')
-  body.classList.remove(
-    'share-detail-open',
-    'profile-overlay-open',
-    'download-session-locked',
-  )
+  body.classList.remove('share-detail-open', 'profile-overlay-open', 'download-session-locked')
 
   // 公告和移动菜单由各自的 owner 锁管理；仅在没有活动锁时清理旧版本遗留样式。
   if (hasBodyScrollLocks()) return
@@ -150,6 +171,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+	closeUserTaskStream()
   if (pageScrollbarTimer) {
     window.clearTimeout(pageScrollbarTimer)
     pageScrollbarTimer = null

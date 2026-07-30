@@ -12,9 +12,42 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
+
+func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	discount := int64(3)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
+		Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
+		Public: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"image-model"}},
+	}
+	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodGet, "/api/assistant/config", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, field := range []string{`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("assistant model price missing %s: %s", field, body)
+		}
+	}
+}
 
 func TestValidateAssistantMessages(t *testing.T) {
 	tests := []struct {
@@ -34,6 +67,19 @@ func TestValidateAssistantMessages(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestAssistantRunIsTerminal(t *testing.T) {
+	for _, status := range []string{"", "queued", "running", "unknown"} {
+		if assistantRunIsTerminal(status) {
+			t.Fatalf("status %q must remain streamable", status)
+		}
+	}
+	for _, status := range []string{"succeeded", "failed", "canceled"} {
+		if !assistantRunIsTerminal(status) {
+			t.Fatalf("status %q must close the stream", status)
+		}
 	}
 }
 

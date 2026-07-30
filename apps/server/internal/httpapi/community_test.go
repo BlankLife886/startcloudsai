@@ -335,35 +335,61 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, userToken := env.newUserSession(t, "user")
-	taskID := env.newSucceededTask(t, user.ID)
-
-	w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
-		"taskId": taskID.String(), "title": "我的资产图片回归测试",
-	}, userToken)
-	if w.Code != http.StatusOK {
-		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	ctx := context.Background()
+	expected := map[string]struct {
+		status   string
+		taskType string
+	}{
+		"审核中的角色图": {status: "pending", taskType: "game_art"},
+		"已发布的道具图": {status: "approved", taskType: "game_art"},
 	}
 
-	w = env.do(t, "GET", "/api/me/gallery/submissions?limit=20", nil, userToken)
+	for title, want := range expected {
+		taskID := env.newSucceededTask(t, user.ID)
+		if _, err := env.st.Pool.Exec(ctx, `UPDATE tasks SET type = $2 WHERE id = $1`, taskID, want.taskType); err != nil {
+			t.Fatalf("update task type: %v", err)
+		}
+		w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
+			"taskId": taskID.String(), "title": title,
+		}, userToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("submit %q: status %d body %s", title, w.Code, w.Body.String())
+		}
+		if _, err := env.st.Pool.Exec(ctx, `UPDATE gallery_submissions SET status = $2 WHERE task_id = $1`, taskID, want.status); err != nil {
+			t.Fatalf("update submission status: %v", err)
+		}
+	}
+
+	w := env.do(t, "GET", "/api/me/gallery/submissions?limit=20", nil, userToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("my submissions: status %d body %s", w.Code, w.Body.String())
 	}
 	data, _ := decode(t, w)
 	items, ok := data["items"].([]any)
-	if !ok || len(items) != 1 {
-		t.Fatalf("items = %#v, want one submission", data["items"])
+	if !ok || len(items) != len(expected) {
+		t.Fatalf("items = %#v, want %d submissions", data["items"], len(expected))
 	}
-	item, ok := items[0].(map[string]any)
-	if !ok {
-		t.Fatalf("item = %#v, want object", items[0])
-	}
-	coverURL, _ := item["coverUrl"].(string)
-	mediaURLs, _ := item["mediaUrls"].([]any)
-	if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
-		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
-	}
-	if len(mediaURLs) != 1 {
-		t.Fatalf("mediaUrls = %#v, want one original image", mediaURLs)
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("item = %#v, want object", raw)
+		}
+		title, _ := item["title"].(string)
+		want, exists := expected[title]
+		if !exists {
+			t.Fatalf("unexpected submission title %q", title)
+		}
+		if item["status"] != want.status || item["taskType"] != want.taskType {
+			t.Fatalf("submission %q status/taskType = %#v/%#v, want %q/%q", title, item["status"], item["taskType"], want.status, want.taskType)
+		}
+		coverURL, _ := item["coverUrl"].(string)
+		mediaURLs, _ := item["mediaUrls"].([]any)
+		if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
+			t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
+		}
+		if len(mediaURLs) != 1 {
+			t.Fatalf("mediaUrls = %#v, want one original image", mediaURLs)
+		}
 	}
 }
 

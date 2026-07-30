@@ -151,6 +151,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/me/wallet/redeem", s.redeemCode)
 	api.GET("/me/notifications", s.myNotifications)
 	api.POST("/me/notifications/read", s.markNotificationsRead)
+	api.GET("/me/tasks/stream", s.userTaskStream)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
 	api.GET("/me/assets", s.myAssets)
@@ -161,6 +162,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/tasks", s.createTask)
 	api.GET("/tasks", s.listTasks)
 	api.GET("/tasks/:id", s.getTask)
+	api.GET("/tasks/:id/stream", s.taskStream)
 	api.POST("/tasks/:id/cancel", s.cancelTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
 
@@ -182,6 +184,7 @@ func (s *Server) Router() *gin.Engine {
 
 	// meta
 	api.GET("/meta/pricing", s.pricing)
+	api.GET("/meta/runtime-config", s.runtimeConfig)
 	api.GET("/meta/changelog", s.metaChangelog)
 	api.GET("/meta/announcements", s.metaAnnouncements)
 	api.GET("/health", s.health)
@@ -251,6 +254,10 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/settings", s.adminOnly(s.adminPutSettings))
 	admin.POST("/settings/test-c2a", s.adminOnly(s.adminTestC2A))
 	admin.POST("/settings/test-sub2api", s.adminOnly(s.adminTestSub2API))
+	admin.POST("/settings/test-crun", s.adminOnly(s.adminTestCRUN))
+	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
+	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
+	admin.POST("/model-config/discover-models", s.adminOnly(s.adminDiscoverProviderModels))
 
 	return r
 }

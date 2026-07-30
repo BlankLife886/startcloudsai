@@ -458,13 +458,46 @@ func (c *Client) GenerateImages(ctx context.Context, prompt, model string, n int
 	return c.GenerateImagesWithID(ctx, uuid.NewString(), prompt, model, n, size)
 }
 
+type ImageOptions struct {
+	Quality               string
+	TransparentBackground bool
+	OutputFormat          string
+	ModerationLevel       string
+}
+
+func applyImageOptions(payload map[string]any, options ImageOptions) {
+	payload["quality"] = normalizedImageQuality(options.Quality)
+	if options.TransparentBackground {
+		payload["background"] = "transparent"
+	}
+	switch format := strings.ToLower(strings.TrimSpace(options.OutputFormat)); format {
+	case "jpg":
+		payload["output_format"] = "jpeg"
+	case "png", "jpeg", "webp":
+		payload["output_format"] = format
+	}
+	switch moderation := strings.ToLower(strings.TrimSpace(options.ModerationLevel)); moderation {
+	case "auto", "low":
+		payload["moderation"] = moderation
+	}
+}
+
 // GenerateImagesWithID 优先使用 chatgpt2api 异步图片任务接口；taskID 使重试幂等。
-func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model string, n int, size string) ([]string, error) {
+func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model string, n int, size string, requestedQuality ...string) ([]string, error) {
+	quality := ""
+	if len(requestedQuality) > 0 {
+		quality = requestedQuality[0]
+	}
+	return c.GenerateImagesWithOptions(ctx, taskID, prompt, model, n, size, ImageOptions{Quality: quality})
+}
+
+func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, error) {
 	payload := map[string]any{
 		"model": model, "prompt": prompt, "n": n,
-		"quality": "auto", "response_format": "b64_json",
+		"response_format":  "b64_json",
 		"history_disabled": true, "stream": false,
 	}
+	applyImageOptions(payload, options)
 	if size != "" {
 		payload["size"] = size
 	}
@@ -485,16 +518,25 @@ func (c *Client) EditImages(ctx context.Context, prompt, model string, n int, in
 }
 
 // EditImagesWithID 使用幂等异步任务提交图生图请求，并在旧上游不支持时回退同步接口。
-func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string) ([]string, error) {
+func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, requestedQuality ...string) ([]string, error) {
+	quality := ""
+	if len(requestedQuality) > 0 {
+		quality = requestedQuality[0]
+	}
+	return c.EditImagesWithOptions(ctx, taskID, prompt, model, n, inputImagesB64, size, ImageOptions{Quality: quality})
+}
+
+func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, error) {
 	images := make([]map[string]string, 0, len(inputImagesB64))
 	for _, b64 := range inputImagesB64 {
 		images = append(images, map[string]string{"b64_json": b64})
 	}
 	payload := map[string]any{
 		"model": model, "prompt": prompt, "n": n,
-		"quality": "auto", "response_format": "b64_json",
+		"response_format":  "b64_json",
 		"history_disabled": true, "stream": false, "images": images,
 	}
+	applyImageOptions(payload, options)
 	if size != "" {
 		payload["size"] = size
 	}
@@ -507,6 +549,18 @@ func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model str
 		return nil, err
 	}
 	return extractB64List(body)
+}
+
+func normalizedImageQuality(values ...string) string {
+	if len(values) == 0 {
+		return "auto"
+	}
+	switch quality := strings.ToLower(strings.TrimSpace(values[0])); quality {
+	case "low", "medium", "high", "auto":
+		return quality
+	default:
+		return "auto"
+	}
 }
 
 // ListModels 连通性测试 GET /v1/models（15s 超时）。

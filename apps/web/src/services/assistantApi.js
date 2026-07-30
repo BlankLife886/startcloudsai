@@ -75,7 +75,9 @@ export function openAssistantRunStream(id, { onEvent } = {}) {
       return
     }
     onEvent?.(payload)
-    if (payload?.done) source.close()
+    if (payload?.done && ['succeeded', 'failed', 'canceled'].includes(payload.status)) {
+      source.close()
+    }
   }
   source.onerror = () => {
     // EventSource 自带重连；服务端对终结任务会立即回 done 并关闭

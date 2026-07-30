@@ -16,6 +16,29 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 	}
 }
 
+func TestAdminTaskDictIncludesActualServiceProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		task     *store.Task
+		provider string
+	}{
+		{name: "configured task", task: &store.Task{ID: uuid.New(), Type: "t2i", Params: map[string]any{"_serviceProvider": "sub2api"}}, provider: "sub2api"},
+		{name: "legacy task", task: &store.Task{ID: uuid.New(), Type: "t2i"}, provider: "c2a"},
+		{name: "local puzzle", task: &store.Task{ID: uuid.New(), Type: "puzzle"}, provider: "local"},
+		{name: "assistant image", task: &store.Task{ID: uuid.New(), Type: "assistant", Params: map[string]any{"resolvedMode": "image", "_serviceProvider": "c2a"}}, provider: "c2a"},
+		{name: "CRUN task", task: &store.Task{ID: uuid.New(), Type: "ui_design", Params: map[string]any{"_serviceProvider": "crun"}}, provider: "crun"},
+		{name: "assistant chat", task: &store.Task{ID: uuid.New(), Type: "assistant", Params: map[string]any{"resolvedMode": "chat", "_serviceProvider": "c2a"}}, provider: "sub2api"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dict := adminTaskDict(test.task, nil)
+			if got := dict["serviceProvider"]; got != test.provider {
+				t.Fatalf("serviceProvider = %v, want %s", got, test.provider)
+			}
+		})
+	}
+}
+
 func TestUserDictIncludesProfileDetails(t *testing.T) {
 	user := &store.User{
 		ID:                 uuid.New(),

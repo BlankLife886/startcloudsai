@@ -1,5 +1,9 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import ModelPointPrice from '@/features/ai-shared/ModelPointPrice.vue'
+import { useAppearanceStore } from '@/stores/appearance'
+
+const appearanceStore = useAppearanceStore()
 
 const props = defineProps({
   modelValue: { type: [String, Number], required: true },
@@ -11,6 +15,13 @@ const props = defineProps({
   compactText: { type: Boolean, default: false },
   compactMenu: { type: Boolean, default: false },
   glassMenu: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false },
+  maxVisibleOptions: { type: Number, default: 0 },
+  menuPlacement: {
+    type: String,
+    default: 'top',
+    validator: (value) => ['top', 'bottom', 'auto'].includes(value),
+  },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -19,9 +30,15 @@ const open = ref(false)
 const triggerRef = ref(null)
 const menuRef = ref(null)
 const menuStyle = ref({})
+const opensDown = ref(false)
 
 const selectedOption = computed(
   () => props.options.find((option) => option.value === props.modelValue) || null,
+)
+const hasPricedOptions = computed(() =>
+  props.options.some(
+    (option) => option?.standardPricePoints != null || option?.pricePoints != null,
+  ),
 )
 
 function optionText(option) {
@@ -60,22 +77,45 @@ function updateMenuPosition() {
 
   const rect = trigger.getBoundingClientRect()
   const viewportPadding = 12
-  const menuWidth = props.compactMenu ? Math.max(96, rect.width) : Math.max(184, rect.width)
+  const desiredMenuWidth = Math.max(
+    props.compactMenu ? 96 : 184,
+    hasPricedOptions.value ? 342 : 0,
+    rect.width,
+  )
+  const menuWidth = Math.min(
+    desiredMenuWidth,
+    Math.max(96, window.innerWidth - viewportPadding * 2),
+  )
   const left = Math.min(
     Math.max(rect.left, viewportPadding),
     Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
   )
-  const availableHeight = Math.max(96, rect.top - viewportPadding - 10)
+  const spaceAbove = rect.top - viewportPadding - 10
+  const spaceBelow = window.innerHeight - rect.bottom - viewportPadding - 10
+  opensDown.value =
+    props.menuPlacement === 'bottom' || (props.menuPlacement === 'auto' && spaceBelow >= spaceAbove)
+  const availableHeight = Math.max(96, opensDown.value ? spaceBelow : spaceAbove)
+  const visibleOptionLimit = Math.min(
+    props.options.length,
+    Math.max(0, Math.floor(props.maxVisibleOptions)),
+  )
+  const limitedHeight = visibleOptionLimit
+    ? visibleOptionLimit *
+        (hasPricedOptions.value ? 48 : props.compactMenu ? 33 : props.compactText ? 39 : 45) +
+      (props.compactMenu ? 10 : 18)
+    : 360
 
   menuStyle.value = {
     left: `${Math.round(left)}px`,
-    bottom: `${Math.round(window.innerHeight - rect.top + 8)}px`,
+    top: opensDown.value ? `${Math.round(rect.bottom + 8)}px` : 'auto',
+    bottom: opensDown.value ? 'auto' : `${Math.round(window.innerHeight - rect.top + 8)}px`,
     width: `${Math.round(menuWidth)}px`,
-    maxHeight: `${Math.min(360, Math.round(availableHeight))}px`,
+    maxHeight: `${Math.min(360, limitedHeight, Math.round(availableHeight))}px`,
   }
 }
 
 async function toggleMenu() {
+  if (props.disabled) return
   if (open.value) {
     open.value = false
     return
@@ -84,9 +124,7 @@ async function toggleMenu() {
   updateMenuPosition()
   open.value = true
   await nextTick()
-  menuRef.value
-    ?.querySelector('[aria-selected="true"]')
-    ?.scrollIntoView({ block: 'nearest' })
+  menuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
 }
 
 function selectOption(value) {
@@ -132,10 +170,17 @@ watch(
     if (open.value) nextTick(updateMenuPosition)
   },
 )
+
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) open.value = false
+  },
+)
 </script>
 
 <template>
-  <div class="ratio-select" :class="{ 'is-open': open }">
+  <div class="ratio-select" :class="{ 'is-open': open, 'is-light': !appearanceStore.isDark }">
     <button
       ref="triggerRef"
       type="button"
@@ -144,9 +189,18 @@ watch(
       :aria-label="ariaLabel"
       aria-haspopup="listbox"
       :aria-expanded="open"
+      :disabled="disabled"
       @click="toggleMenu"
     >
-      <span class="ratio-select__value">{{ selectedLabel }}</span>
+      <span class="ratio-select__value-wrap">
+        <span
+          v-if="selectedOption?.swatch"
+          class="ratio-select__swatch"
+          :style="{ backgroundColor: selectedOption.swatch }"
+          aria-hidden="true"
+        ></span>
+        <span class="ratio-select__value">{{ selectedLabel }}</span>
+      </span>
       <i class="ratio-select__chevron bi bi-chevron-down" aria-hidden="true"></i>
     </button>
 
@@ -161,6 +215,9 @@ watch(
             'is-compact-text': compactText,
             'is-compact-menu': compactMenu,
             'is-glass-accent': glassMenu,
+            'has-priced-options': hasPricedOptions,
+            'opens-down': opensDown,
+            'is-light': !appearanceStore.isDark,
           }"
           :style="menuStyle"
           role="listbox"
@@ -173,7 +230,8 @@ watch(
             class="ratio-select__option"
             :class="{
               'is-selected': option.value === modelValue,
-              'has-icon': !showRatioIcons && option.icon,
+              'has-icon': !showRatioIcons && (option.icon || option.swatch),
+              'has-price': option.standardPricePoints != null || option.pricePoints != null,
             }"
             role="option"
             :aria-selected="option.value === modelValue"
@@ -185,13 +243,28 @@ watch(
                 :style="ratioIconStyle(option.value)"
               ></span>
             </span>
+            <span
+              v-else-if="option.swatch"
+              class="ratio-select__option-swatch"
+              :style="{ backgroundColor: option.swatch }"
+              aria-hidden="true"
+            ></span>
             <i
               v-else-if="option.icon"
               class="ratio-select__option-glyph bi"
               :class="option.icon"
               aria-hidden="true"
             ></i>
-            <span>{{ optionText(option) }}</span>
+            <span class="ratio-select__option-content">
+              <span class="ratio-select__option-label">{{ optionText(option) }}</span>
+            </span>
+            <ModelPointPrice
+              v-if="option.standardPricePoints != null || option.pricePoints != null"
+              :model="option"
+              compact
+              prominent
+              :light="!appearanceStore.isDark"
+            />
           </button>
         </div>
       </Transition>
@@ -232,6 +305,11 @@ watch(
   border-color: rgba(255, 255, 255, 0.18);
 }
 
+.ratio-select__trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .ratio-select__trigger:focus-visible,
 .ratio-select.is-open .ratio-select__trigger {
   border-color: #6d5cff;
@@ -243,6 +321,26 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ratio-select__value-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ratio-select__swatch,
+.ratio-select__option-swatch {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.ratio-select__option-swatch {
+  justify-self: center;
 }
 
 .ratio-select__chevron {
@@ -279,6 +377,10 @@ watch(
   transform-origin: bottom left;
 }
 
+.ratio-select__menu.opens-down {
+  transform-origin: top left;
+}
+
 .ratio-select__menu::-webkit-scrollbar {
   width: 6px;
 }
@@ -309,14 +411,41 @@ watch(
     background-color 140ms ease;
 }
 
+.ratio-select__option.has-price {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+}
+
 .ratio-select__menu.is-plain .ratio-select__option {
   grid-template-columns: minmax(0, 1fr);
   min-height: 42px;
   padding-inline: 12px;
 }
 
+.ratio-select__menu.is-plain .ratio-select__option.has-price {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .ratio-select__menu.is-plain .ratio-select__option.has-icon {
   grid-template-columns: 24px minmax(0, 1fr);
+}
+
+.ratio-select__menu.is-plain .ratio-select__option.has-icon.has-price {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+}
+
+.ratio-select__option-content {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.ratio-select__option-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ratio-select__option-glyph {
@@ -347,6 +476,36 @@ watch(
   font-size: 0.82rem;
 }
 
+.ratio-select__menu.is-compact-menu .ratio-select__option.has-price {
+  min-height: 46px;
+  padding-block: 4px;
+}
+
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options {
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+}
+
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options .ratio-select__option.has-price {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 14px;
+  padding-inline: 12px;
+}
+
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options
+  .ratio-select__option.has-icon.has-price {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+}
+
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options .ratio-select__option-label {
+  font-weight: 560;
+}
+
+.ratio-select__menu.has-priced-options .ratio-select__option :deep(.model-point-price) {
+  justify-self: end;
+}
+
 .ratio-select__option:hover,
 .ratio-select__option:focus-visible {
   background: rgba(255, 255, 255, 0.07);
@@ -362,8 +521,7 @@ watch(
 .ratio-select__menu.is-glass-accent {
   border-color: rgba(109, 92, 255, 0.38);
   background:
-    linear-gradient(145deg, rgba(43, 40, 61, 0.82), rgba(17, 17, 25, 0.74)),
-    rgba(18, 18, 26, 0.76);
+    linear-gradient(145deg, rgba(43, 40, 61, 0.82), rgba(17, 17, 25, 0.74)), rgba(18, 18, 26, 0.76);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.09),
     0 24px 64px rgba(0, 0, 0, 0.56),
@@ -430,6 +588,82 @@ watch(
   height: 24px;
 }
 
+.ratio-select.is-light .ratio-select__trigger {
+  border-color: rgba(27, 29, 42, 0.11);
+  background: #ffffff;
+  color: rgba(25, 27, 38, 0.94);
+  box-shadow: 0 1px 2px rgba(30, 32, 48, 0.03);
+}
+
+.ratio-select.is-light .ratio-select__trigger:hover {
+  border-color: rgba(109, 92, 255, 0.36);
+  background: #fbfaff;
+}
+
+.ratio-select.is-light .ratio-select__trigger:focus-visible,
+.ratio-select.is-light.is-open .ratio-select__trigger {
+  border-color: #6d5cff;
+  background: #fbfaff;
+  box-shadow: 0 0 0 3px rgba(109, 92, 255, 0.14);
+}
+
+.ratio-select.is-light .ratio-select__chevron {
+  color: rgba(39, 41, 55, 0.46);
+}
+
+.ratio-select__menu.is-light {
+  border-color: rgba(27, 29, 42, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 55px rgba(41, 38, 76, 0.16);
+  scrollbar-color: rgba(109, 92, 255, 0.24) transparent;
+}
+
+.ratio-select__menu.is-light .ratio-select__option {
+  color: rgba(35, 37, 50, 0.76);
+}
+
+.ratio-select__menu.is-light .ratio-select__icon > span {
+  color: rgba(43, 45, 60, 0.78);
+}
+
+.ratio-select__menu.is-light .ratio-select__option:hover,
+.ratio-select__menu.is-light .ratio-select__option:focus-visible {
+  background: rgba(109, 92, 255, 0.08);
+  color: #211c4b;
+}
+
+.ratio-select__menu.is-light .ratio-select__option.is-selected {
+  background: rgba(109, 92, 255, 0.12);
+  color: #4e3fd1;
+}
+
+.ratio-select__menu.is-light.is-glass-accent {
+  border-color: rgba(109, 92, 255, 0.2);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 20px 48px rgba(41, 38, 76, 0.14),
+    0 0 0 1px rgba(109, 92, 255, 0.04);
+  backdrop-filter: blur(22px) saturate(130%);
+  -webkit-backdrop-filter: blur(22px) saturate(130%);
+}
+
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option {
+  color: rgba(45, 47, 61, 0.76);
+}
+
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option:hover,
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option:focus-visible {
+  color: #30275f;
+  background: rgba(109, 92, 255, 0.075);
+}
+
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option.is-selected {
+  color: #4334bd;
+  background: rgba(109, 92, 255, 0.105);
+  box-shadow: inset 0 0 0 1px rgba(109, 92, 255, 0.18);
+}
+
 .ratio-popover-enter-active,
 .ratio-popover-leave-active {
   transition:
@@ -441,6 +675,11 @@ watch(
 .ratio-popover-leave-to {
   opacity: 0;
   transform: translateY(10px) scale(0.96);
+}
+
+.ratio-select__menu.opens-down.ratio-popover-enter-from,
+.ratio-select__menu.opens-down.ratio-popover-leave-to {
+  transform: translateY(-10px) scale(0.96);
 }
 
 @media (prefers-reduced-motion: reduce) {

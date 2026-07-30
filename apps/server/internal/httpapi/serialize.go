@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -30,9 +31,16 @@ func adminUserDict(u *store.User, wallet *store.Wallet) gin.H {
 	d["lastLoginAt"] = iso(u.LastLoginAt)
 	d["submissionBannedUntil"] = iso(u.SubmissionBannedUntil)
 	if wallet != nil {
-		d["wallet"] = gin.H{"balanceCents": wallet.BalanceCents, "frozenCents": wallet.FrozenCents}
+		d["wallet"] = walletDict(wallet.BalanceCents, wallet.FrozenCents)
 	}
 	return d
+}
+
+func walletDict(balancePoints, frozenPoints int64) gin.H {
+	return gin.H{
+		"balancePoints": balancePoints, "frozenPoints": frozenPoints,
+		"balanceCents": balancePoints, "frozenCents": frozenPoints,
+	}
 }
 
 func nonNilStrings(s []string) []string {
@@ -61,6 +69,7 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 		"thumbnailUrls": nonNilStrings(outputURLs),
 		"originalUrls":  nonNilStrings(originalURLs),
 		"thumbnailKeys": nonNilStrings(t.ThumbnailKeys),
+		"costPoints":    t.CostCents,
 		"costCents":     t.CostCents,
 		"errorCode":     t.ErrorCode,
 		"errorMessage":  t.ErrorMessage,
@@ -74,6 +83,7 @@ func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	d := taskDict(t, nil, nil)
 	d["userId"] = t.UserID.String()
 	d["attempt"] = t.Attempt
+	d["serviceProvider"] = adminTaskServiceProvider(t)
 	d["source"] = "task"
 	if t.Type == "assistant" {
 		d["source"] = "assistant"
@@ -84,32 +94,64 @@ func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	return d
 }
 
+func adminTaskServiceProvider(t *store.Task) string {
+	if t.Type == "puzzle" {
+		return "local"
+	}
+	provider, _ := t.Params["_serviceProvider"].(string)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if t.Type == "assistant" {
+		resolvedMode, _ := t.Params["resolvedMode"].(string)
+		requestedMode, _ := t.Params["mode"].(string)
+		if strings.TrimSpace(resolvedMode) == "chat" ||
+			(strings.TrimSpace(resolvedMode) == "" && strings.TrimSpace(requestedMode) == "chat") {
+			return "sub2api"
+		}
+		if provider == "c2a" || provider == "sub2api" || provider == "crun" {
+			return provider
+		}
+		// Provider snapshots were added after assistant runs already existed.
+		// Historical assistant image/chat runs all used Sub2API.
+		return "sub2api"
+	}
+	if provider == "sub2api" || provider == "crun" {
+		return provider
+	}
+	// Historical standard tasks predate provider routing and all used C2A.
+	return "c2a"
+}
+
 func ledgerDict(e *store.LedgerEntry) gin.H {
 	return gin.H{
-		"id":                e.ID.String(),
-		"kind":              e.Kind,
-		"deltaCents":        e.DeltaCents,
-		"balanceAfterCents": e.BalanceAfterCents,
-		"sourceType":        e.SourceType,
-		"sourceId":          e.SourceID,
-		"reason":            e.Reason,
-		"createdAt":         isoValue(e.CreatedAt),
+		"id":                 e.ID.String(),
+		"kind":               e.Kind,
+		"deltaCents":         e.DeltaCents,
+		"balanceAfterCents":  e.BalanceAfterCents,
+		"deltaPoints":        e.DeltaCents,
+		"balanceAfterPoints": e.BalanceAfterCents,
+		"sourceType":         e.SourceType,
+		"sourceId":           e.SourceID,
+		"reason":             e.Reason,
+		"createdAt":          isoValue(e.CreatedAt),
 	}
 }
 
 func planDict(p *store.Plan, includeAdmin bool) gin.H {
 	d := gin.H{
-		"id":              p.ID.String(),
-		"code":            p.Code,
-		"name":            p.Name,
-		"kind":            p.Kind,
-		"priceCents":      p.PriceCents,
-		"grantCents":      p.GrantCents,
-		"bonusCents":      p.BonusCents,
-		"durationDays":    p.DurationDays,
-		"dailyGrantCents": p.DailyGrantCents,
-		"features":        nonNilStrings(p.Features),
-		"sort":            p.Sort,
+		"id":               p.ID.String(),
+		"code":             p.Code,
+		"name":             p.Name,
+		"kind":             p.Kind,
+		"priceCents":       p.PriceCents,
+		"grantCents":       p.GrantCents,
+		"bonusCents":       p.BonusCents,
+		"grantPoints":      p.GrantCents,
+		"bonusPoints":      p.BonusCents,
+		"durationDays":     p.DurationDays,
+		"dailyGrantCents":  p.DailyGrantCents,
+		"dailyGrantPoints": p.DailyGrantCents,
+		"features":         nonNilStrings(p.Features),
+		"sort":             p.Sort,
 	}
 	if includeAdmin {
 		d["active"] = p.Active
@@ -126,6 +168,8 @@ func orderDict(o *store.Order, payURL *string) gin.H {
 		"amountCents": o.AmountCents,
 		"grantCents":  o.GrantCents,
 		"bonusCents":  o.BonusCents,
+		"grantPoints": o.GrantCents,
+		"bonusPoints": o.BonusCents,
 		"provider":    o.Provider,
 		"payUrl":      payURL,
 		"paidAt":      iso(o.PaidAt),
@@ -237,7 +281,11 @@ func promptDict(p *store.PromptEntry, includeAdmin bool) gin.H {
 }
 
 func announcementDict(a *store.Announcement) gin.H {
-	return gin.H{
+	config := gin.H{}
+	if len(a.Config) > 0 {
+		_ = json.Unmarshal(a.Config, &config)
+	}
+	d := gin.H{
 		"id":        a.ID.String(),
 		"title":     a.Title,
 		"body":      a.Body,
@@ -245,7 +293,12 @@ func announcementDict(a *store.Announcement) gin.H {
 		"startsAt":  iso(a.StartsAt),
 		"endsAt":    iso(a.EndsAt),
 		"createdAt": isoValue(a.CreatedAt),
+		"config":    config,
 	}
+	for key, value := range config {
+		d[key] = value
+	}
+	return d
 }
 
 func changelogDict(c *store.ChangelogEntry) gin.H {

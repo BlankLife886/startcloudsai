@@ -1,23 +1,4 @@
-/**
- * 运行时配置：新后端没有对应接口，改为静态默认「全部开放」。
- * 保留原有数据形状（routes/features/blacklist 等），router guard 与
- * 各 Studio 的 canUse/getFeaturePayload 调用无需修改。
- */
-
-/**
- * 新后端不再下发模型目录：站内统一由 GPT Image 2 生成（服务端调度）。
- * 这里给每个工作台提供唯一模型项，保证旧模型选择逻辑自动选中即可用；
- * 各工作台 UI 不再渲染选择器，仅展示固定的「GPT Image 2」标识。
- */
-const STANDARD_PUBLIC_MODEL = {
-  id: 'standard',
-  label: 'GPT Image 2',
-  description: '站内统一生成模型，由服务端调度',
-  capabilities: ['textToImage', 'imageToImage', 'image.edit'],
-  billingMode: 'wallet',
-  userPriceUsd: 0,
-  creditCost: 0,
-}
+import { apiGet } from './apiClient'
 
 const STUDIO_FEATURE_KEYS = [
   'ai.wallpaperGeneration',
@@ -31,16 +12,9 @@ const STUDIO_FEATURE_KEYS = [
 ]
 
 function buildDefaultFeatures() {
-  const features = {}
-  for (const key of STUDIO_FEATURE_KEYS) {
-    features[key] = {
-      enabled: true,
-      config: {
-        publicModels: [STANDARD_PUBLIC_MODEL],
-      },
-    }
-  }
-  return features
+  return Object.fromEntries(
+    STUDIO_FEATURE_KEYS.map((key) => [key, { enabled: true, config: { publicModels: [] } }]),
+  )
 }
 
 export function getDefaultRuntimeConfig() {
@@ -51,7 +25,7 @@ export function getDefaultRuntimeConfig() {
     aiModelCatalog: {
       providers: [],
       models: [],
-      publicModels: [STANDARD_PUBLIC_MODEL],
+      publicModels: [],
       featurePublicModels: [],
       updatedAt: '',
     },
@@ -61,9 +35,19 @@ export function getDefaultRuntimeConfig() {
 }
 
 export function normalizeRuntimeConfig(config = {}) {
-  return { ...getDefaultRuntimeConfig(), ...(config && typeof config === 'object' ? config : {}) }
+  const defaults = getDefaultRuntimeConfig()
+  const value = config && typeof config === 'object' ? config : {}
+  return {
+    ...defaults,
+    ...value,
+    features: { ...defaults.features, ...(value.features || {}) },
+    aiModelCatalog: { ...defaults.aiModelCatalog, ...(value.aiModelCatalog || {}) },
+  }
 }
 
 export async function fetchRuntimeConfig() {
-  return getDefaultRuntimeConfig()
+  const config = await apiGet('/meta/runtime-config', {
+    fallbackMessage: '模型配置读取失败',
+  })
+  return normalizeRuntimeConfig(config)
 }

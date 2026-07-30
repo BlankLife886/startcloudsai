@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -40,6 +41,15 @@ func writeAssistantStreamEvent(c *gin.Context, event assistantstream.Event) bool
 	return true
 }
 
+func assistantRunIsTerminal(status string) bool {
+	switch status {
+	case "succeeded", "failed", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
 // assistantRunStream 把 Worker 经 Redis 发布的增量回答以 SSE 推给客户端。
 // 轮询接口仍是状态机的权威来源，本端点只负责“打字机”体验。
 func (s *Server) assistantRunStream(c *gin.Context) {
@@ -63,6 +73,25 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 		return
 	}
 
+	terminal := assistantRunIsTerminal(run.Status)
+	ctx := c.Request.Context()
+	var pubsub *redis.PubSub
+	if !terminal {
+		if client := s.assistantStreamRedis(); client != nil {
+			candidate := client.Subscribe(ctx, assistantstream.Channel(runID.String()))
+			// Receive 确认服务端已经订阅成功，再读取持久化快照，关闭
+			// “先读快照、后订阅”造成首批增量丢失的竞态窗口。
+			subscribeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_, subscribeErr := candidate.Receive(subscribeCtx)
+			cancel()
+			if subscribeErr == nil {
+				pubsub = candidate
+			} else {
+				_ = candidate.Close()
+			}
+		}
+	}
+
 	header := c.Writer.Header()
 	header.Set("Content-Type", "text/event-stream")
 	header.Set("Cache-Control", "no-cache")
@@ -72,7 +101,6 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 	c.Writer.WriteHeader(http.StatusOK)
 	c.Writer.Flush()
 
-	terminal := run.Status != "queued" && run.Status != "running"
 	// 补发当前已生成内容，断线重连/迟到订阅都能立即对齐
 	if message, gerr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil && message.Content != "" {
 		writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Kind: message.Kind})
@@ -82,15 +110,11 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 		return
 	}
 
-	client := s.assistantStreamRedis()
-	if client == nil {
-		// Redis 不可用：直接结束，客户端回退纯轮询
-		writeAssistantStreamEvent(c, assistantstream.Event{Done: true, Status: run.Status})
+	if pubsub == nil {
+		// Redis 不可用时关闭连接，让客户端回退轮询。运行态绝不能伪装成
+		// done，否则界面会在模型真正回答前显示“回答已完成”。
 		return
 	}
-
-	ctx := c.Request.Context()
-	pubsub := client.Subscribe(ctx, assistantstream.Channel(runID.String()))
 	defer pubsub.Close()
 	events := pubsub.Channel()
 
@@ -115,7 +139,7 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 			if !writeAssistantStreamEvent(c, event) {
 				return
 			}
-			if event.Done {
+			if event.Done && assistantRunIsTerminal(event.Status) {
 				return
 			}
 		case <-heartbeat.C:
@@ -128,7 +152,7 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 			if gerr != nil || current == nil {
 				continue
 			}
-			if current.Status != "queued" && current.Status != "running" {
+			if assistantRunIsTerminal(current.Status) {
 				if message, gerr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil && message.Content != "" {
 					writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Kind: message.Kind})
 				}

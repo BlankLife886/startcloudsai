@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -302,13 +303,15 @@ type TaskDailyRow struct {
 	Date      string
 	Total     int64
 	Succeeded int64
+	Failed    int64
 }
 
 func TaskDailySince(ctx context.Context, q Q, since time.Time) (map[string]TaskDailyRow, error) {
 	rows, err := q.Query(ctx,
 		`SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day,
 		        count(*),
-		        count(*) FILTER (WHERE status = 'succeeded')
+		        count(*) FILTER (WHERE status = 'succeeded'),
+		        count(*) FILTER (WHERE status = 'failed')
 		 FROM tasks WHERE created_at >= $1 GROUP BY day`, since)
 	if err != nil {
 		return nil, err
@@ -317,12 +320,108 @@ func TaskDailySince(ctx context.Context, q Q, since time.Time) (map[string]TaskD
 	out := map[string]TaskDailyRow{}
 	for rows.Next() {
 		var r TaskDailyRow
-		if err := rows.Scan(&r.Date, &r.Total, &r.Succeeded); err != nil {
+		if err := rows.Scan(&r.Date, &r.Total, &r.Succeeded, &r.Failed); err != nil {
 			return nil, err
 		}
 		out[r.Date] = r
 	}
 	return out, rows.Err()
+}
+
+type TaskPerformanceSummary struct {
+	QueuedNow     int64 `json:"queuedNow"`
+	RunningNow    int64 `json:"runningNow"`
+	Created       int64 `json:"created"`
+	Succeeded     int64 `json:"succeeded"`
+	Failed        int64 `json:"failed"`
+	AvgQueueMs    int64 `json:"avgQueueMs"`
+	P95QueueMs    int64 `json:"p95QueueMs"`
+	AvgRunMs      int64 `json:"avgRunMs"`
+	P95RunMs      int64 `json:"p95RunMs"`
+	AvgEndToEndMs int64 `json:"avgEndToEndMs"`
+	P95EndToEndMs int64 `json:"p95EndToEndMs"`
+}
+
+// GetTaskPerformanceSummary returns operational metrics without loading task rows.
+func GetTaskPerformanceSummary(ctx context.Context, q Q, since time.Time) (*TaskPerformanceSummary, error) {
+	var summary TaskPerformanceSummary
+	err := q.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'queued'),
+			count(*) FILTER (WHERE status = 'running'),
+			count(*) FILTER (WHERE created_at >= $1),
+			count(*) FILTER (WHERE created_at >= $1 AND status = 'succeeded'),
+			count(*) FILTER (WHERE created_at >= $1 AND status = 'failed'),
+			COALESCE(avg(extract(epoch FROM (started_at - created_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND started_at IS NOT NULL), 0)::bigint,
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (
+				ORDER BY extract(epoch FROM (started_at - created_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND started_at IS NOT NULL), 0)::bigint,
+			COALESCE(avg(extract(epoch FROM (finished_at - started_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND started_at IS NOT NULL AND finished_at IS NOT NULL
+					AND status IN ('succeeded', 'failed')), 0)::bigint,
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (
+				ORDER BY extract(epoch FROM (finished_at - started_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND started_at IS NOT NULL AND finished_at IS NOT NULL
+					AND status IN ('succeeded', 'failed')), 0)::bigint,
+			COALESCE(avg(extract(epoch FROM (finished_at - created_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND finished_at IS NOT NULL
+					AND status IN ('succeeded', 'failed')), 0)::bigint,
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (
+				ORDER BY extract(epoch FROM (finished_at - created_at)) * 1000)
+				FILTER (WHERE created_at >= $1 AND finished_at IS NOT NULL
+					AND status IN ('succeeded', 'failed')), 0)::bigint
+		FROM tasks`, since).Scan(
+		&summary.QueuedNow, &summary.RunningNow,
+		&summary.Created, &summary.Succeeded, &summary.Failed,
+		&summary.AvgQueueMs, &summary.P95QueueMs,
+		&summary.AvgRunMs, &summary.P95RunMs,
+		&summary.AvgEndToEndMs, &summary.P95EndToEndMs,
+	)
+	return &summary, err
+}
+
+type ProviderPerformanceRow struct {
+	Provider      string `json:"provider"`
+	Total         int64  `json:"total"`
+	Succeeded     int64  `json:"succeeded"`
+	Failed        int64  `json:"failed"`
+	AvgDurationMs int64  `json:"avgDurationMs"`
+	P95DurationMs int64  `json:"p95DurationMs"`
+}
+
+func TaskProviderPerformanceSince(ctx context.Context, q Q, since time.Time) ([]ProviderPerformanceRow, error) {
+	rows, err := q.Query(ctx, `
+		SELECT
+			COALESCE(NULLIF(params ->> '_providerDisplayName', ''),
+				NULLIF(params ->> '_serviceProvider', ''), '未标记') AS provider,
+			count(*),
+			count(*) FILTER (WHERE status = 'succeeded'),
+			count(*) FILTER (WHERE status = 'failed'),
+			COALESCE(avg(extract(epoch FROM (finished_at - created_at)) * 1000)
+				FILTER (WHERE finished_at IS NOT NULL AND status IN ('succeeded', 'failed')), 0)::bigint,
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (
+				ORDER BY extract(epoch FROM (finished_at - created_at)) * 1000)
+				FILTER (WHERE finished_at IS NOT NULL AND status IN ('succeeded', 'failed')), 0)::bigint
+		FROM tasks
+		WHERE created_at >= $1
+		GROUP BY 1
+		ORDER BY count(*) DESC, provider
+		LIMIT 12`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]ProviderPerformanceRow, 0, 12)
+	for rows.Next() {
+		var row ProviderPerformanceRow
+		if err := rows.Scan(&row.Provider, &row.Total, &row.Succeeded, &row.Failed,
+			&row.AvgDurationMs, &row.P95DurationMs); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 // TaskTypeCountsSince 近 N 日全站任务量按类型聚合。
@@ -361,6 +460,27 @@ func SetTaskModel(ctx context.Context, q Q, id uuid.UUID, model string) error {
 	_, err := q.Exec(ctx,
 		`UPDATE tasks SET model = $2 WHERE id = $1 AND status = 'running' AND model = ''`, id, model)
 	return err
+}
+
+// SetTaskPartialOutputs persists images while generation is still running so
+// reconnecting clients can recover already completed results.
+func SetTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string) error {
+	if outputKeys == nil {
+		outputKeys = []string{}
+	}
+	if thumbnailKeys == nil {
+		thumbnailKeys = []string{}
+	}
+	tag, err := q.Exec(ctx,
+		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3 WHERE id = $1 AND status = 'running'`,
+		id, outputKeys, thumbnailKeys)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("task %s is no longer running", id)
+	}
+	return nil
 }
 
 func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (bool, error) {
@@ -406,12 +526,24 @@ func MarkTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCod
 
 func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'queued', error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL
+		`UPDATE tasks SET status = 'queued', error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
+			output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb,
+			params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
 		 WHERE id = $1 AND status = 'failed'`, id)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+func SetTaskCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string) error {
+	payload, err := json.Marshal(taskIDs)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE tasks SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_crunTaskIds}', $2::jsonb, true)
+		WHERE id = $1`, id, string(payload))
+	return err
 }
 
 // RequeueRunningTask 将失去 Worker 的 running 任务恢复到 queued。任务原有冻结金额

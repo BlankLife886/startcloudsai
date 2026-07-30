@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { getWallet } from '@/services/meApi'
 import { useAuthStore } from '@/stores/auth'
+import { formatPoints } from '@/services/billingApi'
 
 const walletSnapshot = ref(null)
 const walletLoading = ref(false)
@@ -12,7 +13,7 @@ export function useClientWalletBalance() {
   const balanceCents = computed(() => Number(walletSnapshot.value?.balanceCents || 0))
   const frozenCents = computed(() => Number(walletSnapshot.value?.frozenCents || 0))
   const availableCents = computed(() => Math.max(0, balanceCents.value - frozenCents.value))
-  const balanceDisplay = computed(() => `¥${(availableCents.value / 100).toFixed(2)}`)
+  const balanceDisplay = computed(() => formatPoints(availableCents.value))
   const walletFetchedAt = computed(() => walletSnapshot.value?.fetchedAt || 0)
 
   async function refreshWalletBalance({ force = false } = {}) {

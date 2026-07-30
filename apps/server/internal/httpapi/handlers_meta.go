@@ -2,31 +2,135 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
 func (s *Server) pricing(c *gin.Context) {
 	ctx := c.Request.Context()
-	_, raw, err := settings.TaskPrices(ctx, s.St.Pool)
+	legacyPrices, _, err := settings.TaskPrices(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if raw == nil {
-		raw = json.RawMessage(`{}`)
+	modelCfg, err := modelconfig.Load(ctx, s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	prices, priceRanges := modelconfig.OverlayTaskPrices(modelCfg, legacyPrices)
+	pointRanges := make(map[string]gin.H, len(priceRanges))
+	for taskType, priceRange := range priceRanges {
+		pointRanges[taskType] = gin.H{"minPoints": priceRange.MinCents, "maxPoints": priceRange.MaxCents}
 	}
 	freeDaily, err := settings.GetInt(ctx, s.St.Pool, "free_daily_cents")
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"taskPrices": raw, "freeDailyCents": freeDaily})
+	ok(c, gin.H{
+		"taskPointPrices": prices, "taskPointPriceRanges": pointRanges, "freeDailyPoints": freeDaily,
+		// Legacy aliases remain until older clients stop reading the historical Cents names.
+		"taskPrices": prices, "taskPriceRanges": priceRanges, "freeDailyCents": freeDaily,
+	})
+}
+
+func (s *Server) runtimeConfig(c *gin.Context) {
+	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	allModels := modelconfig.PublicModels(cfg, "")
+	allImageModels := make([]gin.H, 0)
+	catalogModels := make([]gin.H, 0, len(allModels))
+	providerModels := make(map[string][]gin.H)
+	imageItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
+		model := selection.Model
+		price := modelconfig.EffectivePrice(model)
+		return gin.H{
+			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"description": model.Description, "provider": selection.Provider.ID,
+			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
+			"capabilities": []string{"textToImage", "imageToImage", "image.generate", "image.edit"},
+			"billingMode":  "wallet", "creditCost": price, "pricePoints": price, "priceCents": price,
+			"standardPricePoints": model.PriceCents, "discountPricePoints": model.DiscountPriceCents,
+			"default": isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
+			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+		}
+	}
+	for _, selection := range allModels {
+		model := selection.Model
+		capabilities := []string{"text.chat", "text.analysis", "image.understand"}
+		if model.Kind == modelconfig.ModelKindImage {
+			capabilities = []string{"textToImage", "imageToImage", "image.generate", "image.edit"}
+		}
+		price := modelconfig.EffectivePrice(model)
+		item := gin.H{
+			"id": model.ID, "label": model.Name, "name": model.Name,
+			"provider": selection.Provider.ID, "providerId": selection.Provider.ID,
+			"providerName": selection.Provider.Name,
+			"kind":         model.Kind, "description": model.Description, "capabilities": capabilities,
+			"adapterReady": true, "default": model.Default, "fastMode": model.FastMode,
+			"resolutions": model.Resolutions, "aspectRatios": model.AspectRatios,
+			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"pricing": gin.H{
+				"points": price, "cents": price, "standardPoints": model.PriceCents,
+				"discountPoints": model.DiscountPriceCents,
+				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind == modelconfig.ModelKindImage],
+			},
+		}
+		catalogModels = append(catalogModels, item)
+		providerModels[selection.Provider.ID] = append(providerModels[selection.Provider.ID], item)
+		if model.Kind == modelconfig.ModelKindImage {
+			allImageModels = append(allImageModels, imageItem(selection, model.Default))
+		}
+	}
+	providers := make([]gin.H, 0, len(cfg.Providers))
+	for _, provider := range cfg.Providers {
+		if !provider.Enabled || len(providerModels[provider.ID]) == 0 {
+			continue
+		}
+		providers = append(providers, gin.H{
+			"id": provider.ID, "label": provider.Name, "adapter": provider.Adapter,
+			"note": "由后台统一连接", "models": providerModels[provider.ID],
+		})
+	}
+	workspaceImageModels := func(workspace string) []gin.H {
+		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindImage)
+		items := make([]gin.H, 0, len(selections))
+		for index, selection := range selections {
+			items = append(items, imageItem(selection, index == 0))
+		}
+		return items
+	}
+	features := gin.H{
+		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},
+		"ai.uiDesign":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceUIDesign)}},
+		"ai.ultraModelSheet":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
+		"ai.gameDesign":           gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
+		"ai.optimize":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.puzzle":               gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
+	}
+	ok(c, gin.H{
+		"routes": gin.H{}, "features": features, "pageLayout": gin.H{},
+		"aiModelCatalog": gin.H{
+			"providers": providers, "models": catalogModels, "publicModels": allImageModels,
+			"featurePublicModels": []any{}, "updatedAt": time.Now().UTC().Format(time.RFC3339),
+		},
+		"blacklist": gin.H{"blocked": false, "reason": ""}, "mqtt": nil,
+	})
 }
 
 func (s *Server) metaChangelog(c *gin.Context) {

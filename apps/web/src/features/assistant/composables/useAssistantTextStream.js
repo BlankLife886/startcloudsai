@@ -1,12 +1,34 @@
 import { onBeforeUnmount } from 'vue'
 
-const FRAME_MS = 28
-const MIN_ANSWERING_MS = 520
-const TARGET_DRAIN_STEPS = 42
-const MAX_CHUNK_SIZE = 18
+const FRAME_MS = 30
+const MIN_ANSWERING_MS = 700
+const SENTENCE_PAUSE_MS = 130
+const CLAUSE_PAUSE_MS = 70
 
 function textUnits(value) {
   return Array.from(String(value || ''))
+}
+
+function visibleChunkSize(remaining) {
+  if (remaining > 800) return 5
+  if (remaining > 400) return 4
+  if (remaining > 180) return 3
+  if (remaining > 48) return 2
+  return 1
+}
+
+function nextChunkEnd(units, start, remaining) {
+  const limit = Math.min(units.length, start + visibleChunkSize(remaining))
+  for (let index = start; index < limit; index += 1) {
+    if (/[，。！？；：、,.!?;:\n]/u.test(units[index])) return index + 1
+  }
+  return limit
+}
+
+function punctuationPause(lastUnit) {
+  if (/[。！？.!?\n]/u.test(lastUnit || '')) return SENTENCE_PAUSE_MS
+  if (/[，；：、,;:]/u.test(lastUnit || '')) return CLAUSE_PAUSE_MS
+  return FRAME_MS
 }
 
 export function useAssistantTextStream() {
@@ -58,16 +80,13 @@ export function useAssistantTextStream() {
       const currentUnits = textUnits(message.content)
       const remaining = targetUnits.length - currentUnits.length
       if (remaining > 0) {
-        const chunkSize = Math.min(
-          MAX_CHUNK_SIZE,
-          Math.max(1, Math.ceil(remaining / TARGET_DRAIN_STEPS)),
-        )
-        message.content = targetUnits.slice(0, currentUnits.length + chunkSize).join('')
+        const nextEnd = nextChunkEnd(targetUnits, currentUnits.length, remaining)
+        message.content = targetUnits.slice(0, nextEnd).join('')
         message.pending = true
         message.routing = false
         message.statusStage = 'answering'
         onProgress?.()
-        schedule()
+        schedule(punctuationPause(targetUnits[nextEnd - 1]))
         return
       }
 

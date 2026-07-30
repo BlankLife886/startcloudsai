@@ -78,13 +78,32 @@ func (s *Server) upload(c *gin.Context) {
 	fileID := uuid.NewString()
 	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
 	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s.jpg", user.ID, fileID)
-	if err := s.Storage.UploadBytes(c.Request.Context(), key, data, contentType); err != nil {
-		fail(c, err)
-		return
+	type uploadResult struct {
+		key string
+		err error
 	}
-	if err := s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail, "image/jpeg"); err != nil {
-		_ = s.Storage.DeleteKeys(c.Request.Context(), []string{key})
-		fail(c, err)
+	results := make(chan uploadResult, 2)
+	go func() {
+		results <- uploadResult{key: key, err: s.Storage.UploadBytes(c.Request.Context(), key, data, contentType)}
+	}()
+	go func() {
+		results <- uploadResult{key: thumbnailKey, err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail, "image/jpeg")}
+	}()
+	uploaded := make([]string, 0, 2)
+	var uploadErr error
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			uploadErr = result.err
+			continue
+		}
+		uploaded = append(uploaded, result.key)
+	}
+	if uploadErr != nil {
+		if len(uploaded) > 0 {
+			_ = s.Storage.DeleteKeys(c.Request.Context(), uploaded)
+		}
+		fail(c, uploadErr)
 		return
 	}
 	ok(c, gin.H{

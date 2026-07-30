@@ -7,7 +7,6 @@ import {
   createAuthRedirectLocation,
   createLoginRedirectQuery,
 } from '@/services/authRedirect'
-import DefaultHomeLayout from '../components/themes/DefaultHomeLayout.vue'
 
 if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
   window.history.scrollRestoration = 'manual'
@@ -20,10 +19,11 @@ const routes = [
   {
     path: '/',
     name: 'home',
-    component: DefaultHomeLayout,
+    component: () => import('../views/CommercialHomeView.vue'),
     meta: {
       title: `首页 - ${siteName}`,
-      description: '星空云绘是一座云上创作馆：AI 生成图像、社区画廊分享创作，一站完成。',
+      description: '星空云绘是一站式 AI 图像生产工作台：连接多模型、实时任务与高清交付。',
+      hideSiteFooter: true,
     },
   },
   {

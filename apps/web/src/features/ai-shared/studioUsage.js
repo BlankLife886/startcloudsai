@@ -4,7 +4,6 @@ import { getFeatureUnitPriceCents } from '@/services/pricing'
 export const STUDIO_PUBLIC_MODEL_KEYS = new Set([
   'walleven-image-edit',
   'walleven-illustration-coloring',
-  'walleven-image-to-3d',
 ])
 
 export const STUDIO_FEATURE_META = {
@@ -13,7 +12,6 @@ export const STUDIO_FEATURE_META = {
   wallpaper: { label: '文生图', shortLabel: '文生图' },
   preview: { label: 'AI 优化', shortLabel: 'AI 优化' },
   'ai.illustrationColoring': { label: '插画染色', shortLabel: '插画染色' },
-  'ai.imageToModel': { label: '图转 3D', shortLabel: '图转 3D' },
   'ai.uiDesign': { label: 'UI 设计稿', shortLabel: 'UI 设计' },
   'ai.ultraModelSheet': { label: '超高清模型图', shortLabel: '模型图' },
   'ai.gameDesign': { label: '游戏设计', shortLabel: '游戏设计' },
@@ -137,7 +135,7 @@ export async function fetchStudioCreditAccountSnapshot({ maxAgeMs = CREDIT_SNAPS
       const wallet = await getWallet()
       const creditAvailable = Math.max(
         0,
-        (Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0)) / 100,
+        Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0),
       )
       const data = {
         creditAvailable,
@@ -156,14 +154,19 @@ export async function fetchStudioCreditAccountSnapshot({ maxAgeMs = CREDIT_SNAPS
 
 /**
  * 打开费用确认弹窗前补齐：
- * 1. 服务端任务单价（GET /api/meta/pricing，5 分钟缓存）→ unitPriceCents/totalPriceCents；
+ * 1. 服务端任务单价（GET /api/meta/pricing，5 分钟缓存）→ 整数积分；
  *    单价拉取失败时置 serverPricingUnavailable，弹窗显示「以服务端结算为准」且不禁用确认。
  * 2. 账户余额与今日/本月消耗（刷新后仍准确）。
  */
 export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
   let enriched = { ...snapshot }
+  const modelUnitPrice = Number(snapshot?.unitCostPerUnit)
+  const hasModelUnitPrice =
+    snapshot?.billingMode === 'credits' && Number.isFinite(modelUnitPrice) && modelUnitPrice >= 0
   const [pricingResult, accountResult] = await Promise.allSettled([
-    getFeatureUnitPriceCents(snapshot?.featureKey),
+    hasModelUnitPrice
+      ? Promise.resolve(modelUnitPrice)
+      : getFeatureUnitPriceCents(snapshot?.featureKey),
     snapshot?.billingMode === 'credits'
       ? fetchStudioCreditAccountSnapshot()
       : Promise.resolve(null),
@@ -175,6 +178,7 @@ export async function enrichStudioCreditCostSnapshot(snapshot = {}) {
       const count = Math.max(1, Number(snapshot?.count || 1))
       enriched.unitPriceCents = unitPriceCents
       enriched.totalPriceCents = unitPriceCents * count
+      enriched.pricingSource = hasModelUnitPrice ? 'selected-model' : 'feature-fallback'
     } else {
       enriched.serverPricingUnavailable = true
     }

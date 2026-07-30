@@ -29,6 +29,7 @@ export const WALLPAPER_INSPIRATION_PROMPTS = [
 
 /** 文生图页：比例 / 分辨率 / 质量 / 提示词库 */
 export const T2I_ASPECT_OPTIONS = [
+  { value: 'auto', label: 'Auto 比例' },
   { value: '1:1', label: '1:1 方形' },
   { value: '2:3', label: '2:3 竖图' },
   { value: '3:2', label: '3:2 横图' },
@@ -39,6 +40,7 @@ export const T2I_ASPECT_OPTIONS = [
   { value: '9:16', label: '9:16 竖屏' },
   { value: '16:9', label: '16:9 横屏' },
   { value: '21:9', label: '21:9 超宽' },
+  { value: '9:21', label: '9:21 超长' },
 ]
 
 export const T2I_RESOLUTION_OPTIONS = [
@@ -49,9 +51,9 @@ export const T2I_RESOLUTION_OPTIONS = [
 ]
 
 export const T2I_QUALITY_OPTIONS = [
-  { value: 'standard', label: '标准', icon: 'bi-sliders' },
-  { value: 'high', label: '高清', icon: 'bi-stars' },
-  { value: 'hd', label: '精细', icon: 'bi-gem' },
+  { value: 'low', label: '低', icon: 'bi-speedometer' },
+  { value: 'medium', label: '中', icon: 'bi-sliders' },
+  { value: 'high', label: '高', icon: 'bi-stars' },
 ]
 
 export const T2I_COUNT_OPTIONS = [
@@ -62,11 +64,14 @@ export const T2I_COUNT_OPTIONS = [
 ]
 
 export const T2I_OUTPUT_FORMAT_OPTIONS = [
-  { value: 'auto', label: '自动格式', icon: 'bi-magic' },
   { value: 'png', label: 'PNG', icon: 'bi-filetype-png' },
   { value: 'webp', label: 'WebP', icon: 'bi-file-earmark-image' },
   { value: 'jpeg', label: 'JPEG', icon: 'bi-filetype-jpg' },
-  { value: 'jpg', label: 'JPG', icon: 'bi-filetype-jpg' },
+]
+
+export const T2I_MODERATION_OPTIONS = [
+  { value: 'auto', label: '自动审核', icon: 'bi-shield-check' },
+  { value: 'low', label: '低限制', icon: 'bi-shield' },
 ]
 
 export const T2I_PROMPT_LIBRARY = [
@@ -123,9 +128,12 @@ export const T2I_PROMPT_LIBRARY = [
 ]
 
 export function resolveT2iOutputSize(aspectRatio = '16:9', resolutionScale = '2K') {
+  if (String(aspectRatio || '').trim().toLowerCase() === 'auto') {
+    return 'auto'
+  }
   const scale =
     T2I_RESOLUTION_OPTIONS.find((item) => item.value === resolutionScale) ||
-    T2I_RESOLUTION_OPTIONS[1]
+    T2I_RESOLUTION_OPTIONS.find((item) => item.value === '2K')
   const longSide = Number(scale.longSide) || 2048
   const [rawW, rawH] = String(aspectRatio || '16:9')
     .split(':')

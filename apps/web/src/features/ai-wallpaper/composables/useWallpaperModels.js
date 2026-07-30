@@ -5,11 +5,9 @@ import {
   resolveAiFeatureRuntimeConfig,
 } from '@/config/aiFeatureSettings'
 import { resolvePublicModelCreditCost } from '@/features/ai-shared/resolveWallpaperCreditCost'
+import { normalizeImageModelCapabilities } from '@/features/ai-shared/modelImageCapabilities'
 import { aiCapabilityApi } from '@/services/api'
-import {
-  AI_WALLPAPER_CAPABILITY_KIT_KEY,
-  syncAiWallpaperState,
-} from '@/services/aiWallpaperState'
+import { AI_WALLPAPER_CAPABILITY_KIT_KEY, syncAiWallpaperState } from '@/services/aiWallpaperState'
 import notificationService from '@/services/notification'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { computed, ref, watch } from 'vue'
@@ -44,7 +42,7 @@ export function useWallpaperModels(deps = {}) {
   const studioProvider = deps.studioProvider || ref(initialWallpaperAiConfig.provider || 'gptsapi')
   const studioGatewayBaseUrl =
     deps.studioGatewayBaseUrl || ref(initialWallpaperAiConfig.baseUrl || 'https://api.gptsapi.net')
-  const imageModel = deps.imageModel || ref(initialWallpaperAiConfig.model || 'gpt-image-2-plus')
+  const imageModel = deps.imageModel || ref(initialWallpaperAiConfig.model || '')
   const videoModel = deps.videoModel || ref('seedance-1-0-pro-250528')
   const selectedPublicModel = deps.selectedPublicModel || ref('')
   const selectedSkillIds = deps.selectedSkillIds || ref(['preserve-4k-upscale'])
@@ -97,9 +95,7 @@ export function useWallpaperModels(deps = {}) {
   const activePublicModelOptions = computed(() =>
     outputType.value === 'video' ? videoPublicModelOptions.value : imagePublicModelOptions.value,
   )
-  const canUseAiWallpaper = computed(() =>
-    runtimeConfigStore.canUse('ai.wallpaperGeneration'),
-  )
+  const canUseAiWallpaper = computed(() => runtimeConfigStore.canUse('ai.wallpaperGeneration'))
   const providerOptions = computed(() => {
     const providers = Array.isArray(runtimeModelCatalog.value?.providers)
       ? runtimeModelCatalog.value.providers
@@ -185,14 +181,28 @@ export function useWallpaperModels(deps = {}) {
       .map((item) => {
         const id = String(item?.id || item?.publicModelKey || '').trim()
         if (!id) return null
+        const imageCapabilities = normalizeImageModelCapabilities(item)
         return {
           id,
           label: String(item?.label || id),
+          provider: String(item?.providerName || item?.provider || ''),
           description: String(item?.description || ''),
           capabilities: normalizeStringList(item?.capabilities),
+          resolutions: normalizeStringList(item?.resolutions).map((item) => item.toUpperCase()),
+          default: item?.default === true,
+          fastMode: item?.fastMode === true,
           billingMode: String(item?.billingMode || 'request'),
           userPriceUsd: Number(item?.userPriceUsd || 0),
           creditCost: resolvePublicModelCreditCost(item, featureConfig),
+          pricePoints: Number(item?.pricePoints ?? item?.creditCost ?? 0),
+          standardPricePoints: Number(
+            item?.standardPricePoints ?? item?.pricePoints ?? item?.creditCost ?? 0,
+          ),
+          discountPricePoints:
+            item?.discountPricePoints === null || item?.discountPricePoints === undefined
+              ? null
+              : Number(item.discountPricePoints),
+          ...imageCapabilities,
         }
       })
       .filter(Boolean)
@@ -338,13 +348,16 @@ export function useWallpaperModels(deps = {}) {
       notify.warning('请填写 Skill 名称和指令')
       return null
     }
-    const idBase = normalizedName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'custom-skill'
+    const idBase =
+      normalizedName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'custom-skill'
     let id = `custom-${idBase}`
     let suffix = 2
-    const existingIds = new Set([...WALLPAPER_SKILL_OPTIONS, ...customSkills.value].map((item) => item.id))
+    const existingIds = new Set(
+      [...WALLPAPER_SKILL_OPTIONS, ...customSkills.value].map((item) => item.id),
+    )
     while (existingIds.has(id)) id = `custom-${idBase}-${suffix++}`
     const skill = normalizeCustomWallpaperSkill({
       id,

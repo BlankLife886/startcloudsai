@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestUnexpectedEOFIsRetryableForImageRequests(t *testing.T) {
+	if !transientImageError(io.ErrUnexpectedEOF) {
+		t.Fatal("unexpected EOF should be retried")
+	}
+}
 
 func TestChatStreamUsesOpenAIContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +42,92 @@ func TestChatStreamUsesOpenAIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+}
+
+func TestChatStreamSupportsProviderAPIKeyHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("x-api-key") != "test-key" {
+			t.Fatalf("authorization=%q x-api-key=%q", r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.WithAPIKeyHeader("x-api-key").ChatStream(
+		context.Background(), []Message{{Role: "user", Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"}}]}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	var snapshots []string
+	text, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil,
+		func(fullText string) error {
+			snapshots = append(snapshots, fullText)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "你好，世界" {
+		t.Fatalf("text = %q", text)
+	}
+	want := []string{"你好", "你好，世界"}
+	if len(snapshots) != len(want) {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+	for index := range want {
+		if snapshots[index] != want[index] {
+			t.Fatalf("snapshot %d = %q, want %q", index, snapshots[index], want[index])
+		}
+	}
+}
+
+func TestChatStreamIsNotCutOffByHTTPClientTotalTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"持续\"}}]}\n\n")
+		flusher.Flush()
+		time.Sleep(40 * time.Millisecond)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"输出\"}}]}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	client.httpClient.Timeout = 15 * time.Millisecond
+	text, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "持续输出" {
+		t.Fatalf("text = %q", text)
+	}
 }
 
 func TestChatStreamWithImagesUsesMultimodalContent(t *testing.T) {

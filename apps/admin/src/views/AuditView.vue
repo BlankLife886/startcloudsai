@@ -19,7 +19,7 @@ interface AuditLog {
 
 const filters = reactive({ admin: '', path: '' })
 
-const { items, loading, error, hasPrev, hasNext, reset, next, prev, retry } =
+const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, retry } =
   usePagedList<AuditLog>(
     (cursor) =>
       request<Page<AuditLog>>('/api/admin/audit-logs', {
@@ -84,7 +84,17 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
-      <el-table v-loading="loading" :data="items" size="small" row-key="id">
+      <AdminListShell
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :page="page"
+        :count="items.length"
+        :total="total"
+        @prev="prev"
+        @next="next"
+      >
+      <el-table v-loading="loading" :data="items" height="100%" size="small" row-key="id">
         <template #empty>
           <el-empty description="暂无审计记录" :image-size="60">
             <div class="empty-sub">调整筛选条件后重新查询</div>
@@ -130,8 +140,7 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
           </template>
         </el-table-column>
       </el-table>
-
-      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      </AdminListShell>
     </PageCard>
   </div>
 </template>

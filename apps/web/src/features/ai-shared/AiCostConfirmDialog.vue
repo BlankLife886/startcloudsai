@@ -4,6 +4,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 const props = defineProps({
   show: { type: Boolean, default: false },
   cost: { type: Object, default: null },
+  light: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
@@ -19,15 +20,12 @@ watch(
 function formatAmount(value) {
   const amount = Number(value || 0)
   if (!Number.isFinite(amount)) return '0'
-  return Number.isInteger(amount) ? String(amount) : amount.toFixed(2)
+  return Math.round(amount).toLocaleString('zh-CN')
 }
 
-function formatYuan(cents) {
-  return `¥${(Number(cents || 0) / 100).toFixed(2)}`
-}
-
-function formatBalance(value) {
-  return `¥${Math.max(0, Number(value || 0)).toFixed(2)}`
+function formatPoints(value) {
+  const points = Math.max(0, Math.round(Number(value || 0)))
+  return `${points.toLocaleString('zh-CN')} 积分`
 }
 
 const isCredits = computed(() => props.cost?.billingMode === 'credits')
@@ -50,38 +48,43 @@ const creditAvailable = computed(() => {
   if (value === undefined || value === null || value === '') return null
   return Math.max(0, Number(value || 0))
 })
-const totalCostYuan = computed(() => {
-  if (hasServerPricing.value) return totalPriceCents.value / 100
+const totalCostPoints = computed(() => {
+  if (hasServerPricing.value) return totalPriceCents.value
   return unitCost.value
 })
 const creditRemaining = computed(() => {
   if (creditAvailable.value == null) return null
-  return Math.max(0, creditAvailable.value - totalCostYuan.value)
+  return Math.max(0, creditAvailable.value - totalCostPoints.value)
 })
 const creditInsufficient = computed(
   () =>
     creditAvailable.value != null &&
-    totalCostYuan.value > 0 &&
-    creditAvailable.value + 1e-9 < totalCostYuan.value,
+    totalCostPoints.value > 0 &&
+    creditAvailable.value < totalCostPoints.value,
 )
 const featureLabel = computed(() => String(props.cost?.featureLabel || '本次 AI 功能').trim())
 const confirmDisabled = computed(() => isCredits.value && creditInsufficient.value)
 const totalLabel = computed(() => {
-  if (hasServerPricing.value) return formatYuan(totalPriceCents.value)
+  if (hasServerPricing.value) return formatPoints(totalPriceCents.value)
   if (isCredits.value && unitCost.value > 0) return `${formatAmount(unitCost.value)} 积分`
   if (!isCredits.value) return `$${Number(unitCost.value || 0).toFixed(4)}`
   return '按实际用量结算'
 })
 const breakdownLabel = computed(() => {
   if (hasServerPricing.value) {
-    return `${formatYuan(unitPriceCents.value)} / 张 × ${imageCount.value} 张`
+    return `${formatPoints(unitPriceCents.value)} / 张 × ${imageCount.value} 张`
   }
   return imageCount.value > 1 ? `${imageCount.value} 张` : '1 张'
 })
 </script>
 
 <template>
-  <div v-if="show" class="ai-cost-confirm-layer" @click.self="emit('cancel')">
+  <div
+    v-if="show"
+    class="ai-cost-confirm-layer"
+    :class="{ 'is-light': light }"
+    @click.self="emit('cancel')"
+  >
     <section
       ref="panelRef"
       class="ai-cost-confirm-panel"
@@ -131,7 +134,7 @@ const breakdownLabel = computed(() => {
       <div v-if="isCredits" class="ai-cost-confirm-balance">
         <div>
           <span>当前可用</span>
-          <strong>{{ creditAvailable == null ? '读取中' : formatBalance(creditAvailable) }}</strong>
+          <strong>{{ creditAvailable == null ? '读取中' : formatPoints(creditAvailable) }}</strong>
         </div>
         <i class="bi bi-arrow-right" aria-hidden="true"></i>
         <div :class="{ danger: creditInsufficient }">
@@ -142,7 +145,7 @@ const breakdownLabel = computed(() => {
                 ? '待计算'
                 : creditInsufficient
                   ? '余额不足'
-                  : formatBalance(creditRemaining)
+                  : formatPoints(creditRemaining)
             }}
           </strong>
         </div>
@@ -493,5 +496,47 @@ const breakdownLabel = computed(() => {
 
 :global(.settings-no-animations) .ai-cost-confirm-panel {
   animation: none;
+}
+
+.ai-cost-confirm-layer.is-light {
+  background: rgba(48, 49, 62, 0.3);
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-panel {
+  border-color: rgba(34, 36, 50, 0.1);
+  background: #ffffff;
+  color: #242531;
+  box-shadow: 0 24px 70px rgba(48, 44, 78, 0.18);
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-summary,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-eyebrow,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total > span,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total > small,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance span,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-preference {
+  color: rgba(43, 45, 60, 0.56);
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance {
+  border-color: rgba(34, 36, 50, 0.09);
+  background: #f7f7fa;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance strong,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total strong {
+  color: #242531;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-close,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-btn.ghost {
+  border-color: rgba(34, 36, 50, 0.12);
+  color: rgba(43, 45, 60, 0.72);
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-btn.ghost:hover:not(:disabled) {
+  border-color: rgba(34, 36, 50, 0.2);
+  background: rgba(34, 36, 50, 0.05);
 }
 </style>

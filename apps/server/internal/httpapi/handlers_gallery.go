@@ -271,7 +271,17 @@ func (s *Server) mySubmissions(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListSubmissions(c.Request.Context(), s.St.Pool, store.SubmissionFilter{UserID: &user.ID}, limit, cursor)
+	ctx := c.Request.Context()
+	rows, err := store.ListSubmissions(ctx, s.St.Pool, store.SubmissionFilter{UserID: &user.ID}, limit, cursor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	taskIDs := make([]uuid.UUID, 0, len(rows))
+	for _, sub := range rows {
+		taskIDs = append(taskIDs, sub.TaskID)
+	}
+	tasks, err := store.GetTasksByIDs(ctx, s.St.Pool, taskIDs)
 	if err != nil {
 		fail(c, err)
 		return
@@ -279,6 +289,9 @@ func (s *Server) mySubmissions(c *gin.Context) {
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
 		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
 		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
+		if task := tasks[sub.TaskID]; task != nil {
+			d["taskType"] = task.Type
+		}
 		return d
 	}))
 }

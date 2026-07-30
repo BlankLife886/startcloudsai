@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onUnmounted, reactive, watch } from 'vue'
+import { useAppearanceStore } from '@/stores/appearance'
 import {
   COLORING_COMPRESS_KB_OPTIONS,
   COLORING_FORMAT_OPTIONS,
@@ -12,6 +13,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'save'])
+const appearanceStore = useAppearanceStore()
 
 const draft = reactive(normalizeColoringSettings())
 
@@ -65,7 +67,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="show" class="coloring-settings-layer" @click.self="close">
+  <div
+    v-if="show"
+    class="coloring-settings-layer"
+    :class="{ 'is-light': !appearanceStore.isDark }"
+    @click.self="close"
+  >
     <section
       class="coloring-settings-panel"
       role="dialog"
@@ -132,7 +139,6 @@ onUnmounted(() => {
           </label>
           <small>默认关闭。开启后，删除单次或批量染色记录前会显示确认窗口。</small>
         </section>
-
       </div>
 
       <footer>
@@ -368,5 +374,46 @@ onUnmounted(() => {
     opacity: 1;
     transform: none;
   }
+}
+
+.coloring-settings-layer.is-light {
+  background: rgba(48, 49, 62, 0.3);
+}
+
+.coloring-settings-layer.is-light .coloring-settings-panel {
+  border-color: rgba(36, 38, 52, 0.1);
+  background: #ffffff;
+  color: #242531;
+  box-shadow: 0 24px 70px rgba(55, 50, 86, 0.18);
+}
+
+.coloring-settings-layer.is-light .coloring-settings-panel header,
+.coloring-settings-layer.is-light .coloring-settings-panel footer {
+  border-color: rgba(36, 38, 52, 0.09);
+  background: rgba(248, 248, 252, 0.97);
+}
+
+.coloring-settings-layer.is-light .coloring-settings-panel header small,
+.coloring-settings-layer.is-light .coloring-settings-section > small,
+.coloring-settings-layer.is-light .coloring-settings-field > small,
+.coloring-settings-layer.is-light .coloring-settings-models button small {
+  color: rgba(43, 45, 60, 0.5);
+}
+
+.coloring-settings-layer.is-light .coloring-settings-close,
+.coloring-settings-layer.is-light .coloring-settings-section,
+.coloring-settings-layer.is-light .coloring-settings-chips button,
+.coloring-settings-layer.is-light .coloring-settings-models button,
+.coloring-settings-layer.is-light .coloring-settings-secondary {
+  border-color: rgba(36, 38, 52, 0.1);
+  background: rgba(39, 41, 56, 0.04);
+  color: rgba(35, 37, 50, 0.76);
+}
+
+.coloring-settings-layer.is-light .coloring-settings-chips button.active,
+.coloring-settings-layer.is-light .coloring-settings-models button.active {
+  border-color: rgba(236, 72, 153, 0.38);
+  background: rgba(236, 72, 153, 0.1);
+  color: #9d346d;
 }
 </style>

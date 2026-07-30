@@ -43,7 +43,7 @@ const statusFilters = [
   { label: '全部', value: '', type: 'info' },
 ] as const
 
-const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<AdminSubmission>(
     (cursor) =>
       request<AdminSubmission[] | Page<AdminSubmission>>('/api/admin/gallery/submissions', {
@@ -413,30 +413,40 @@ onUnmounted(() => {
 
     <ListError :error="error" :loading="loading" @retry="retry" />
 
-    <el-empty v-if="!loading && !items.length" description="当前没有待处理的投稿" />
+    <AdminListShell
+      :has-prev="hasPrev"
+      :has-next="hasNext"
+      :loading="loading"
+      :page="page"
+      :count="items.length"
+      :total="total"
+      viewport-height="clamp(420px, calc(100vh - 285px), 720px)"
+      @prev="prev"
+      @next="next"
+    >
+      <el-empty v-if="!loading && !items.length" description="当前没有待处理的投稿" />
 
-    <div v-else-if="loading && !items.length" class="share-board" aria-label="正在加载投稿">
-      <article v-for="index in 8" :key="index" class="share-card-skeleton">
-        <div />
-        <footer><span /><small /><em /></footer>
-      </article>
-    </div>
+      <div v-else-if="loading && !items.length" class="share-board" aria-label="正在加载投稿">
+        <article v-for="index in 8" :key="index" class="share-card-skeleton">
+          <div />
+          <footer><span /><small /><em /></footer>
+        </article>
+      </div>
 
-    <div v-else v-loading="loading" class="share-board">
-      <ShareReviewCard
-        v-for="item in items"
-        :key="item.id"
-        :item="item"
-        :operating="operatingId === item.id"
-        @preview="openPreview"
-        @approve="approve"
-        @reject="openReject"
-        @violation="openViolation"
-        @prompt="openPromptCreator"
-      />
-    </div>
-
-    <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      <div v-else v-loading="loading" class="share-board">
+        <ShareReviewCard
+          v-for="item in items"
+          :key="item.id"
+          :item="item"
+          :operating="operatingId === item.id"
+          @preview="openPreview"
+          @approve="approve"
+          @reject="openReject"
+          @violation="openViolation"
+          @prompt="openPromptCreator"
+        />
+      </div>
+    </AdminListShell>
 
     <Teleport to="body">
       <Transition name="share-lightbox" @after-leave="onPreviewAfterLeave">

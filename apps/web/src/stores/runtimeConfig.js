@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000
-const RUNTIME_CONFIG_STORAGE_KEY = 'walleven.runtime-config.v1'
+const RUNTIME_CONFIG_STORAGE_KEY = 'walleven.runtime-config.v2'
 const RUNTIME_CONFIG_STORAGE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const ROUTE_FALLBACK_MESSAGES = {
   hidden: '当前页面暂未开放',

@@ -2,10 +2,31 @@ import { getActiveAnnouncements } from './metaApi'
 
 export async function fetchRuntimeAnnouncements() {
   const items = await getActiveAnnouncements().catch(() => [])
-  return items.map((item) => ({
-    ...item,
-    content: item?.content ?? item?.body ?? '',
-  }))
+  return items.map((item) => {
+    const config = item?.config && typeof item.config === 'object' ? item.config : {}
+    return {
+      ...config,
+      ...item,
+      content: item?.content ?? item?.body ?? '',
+      placement: item?.placement ?? config.placement ?? 'modal',
+      layout: item?.layout ?? config.layout ?? 'text_only',
+      assets: Array.isArray(item?.assets)
+        ? item.assets
+        : Array.isArray(config.assets)
+          ? config.assets
+          : [],
+      decorImageUrl: item?.decorImageUrl ?? config.decorImageUrl ?? '',
+      ctaText: item?.ctaText ?? config.ctaText ?? '',
+      ctaUrl: item?.ctaUrl ?? config.ctaUrl ?? '',
+      closeText: item?.closeText ?? config.closeText ?? '我知道了',
+      allowClose: item?.allowClose ?? config.allowClose ?? true,
+      frequency: item?.frequency ?? config.frequency ?? 'session_once',
+      version: Number(item?.version ?? config.version ?? 1),
+      dismissHours: Number(item?.dismissHours ?? config.dismissHours ?? 24),
+      carouselEnabled: item?.carouselEnabled ?? config.carouselEnabled ?? false,
+      carouselIntervalMs: Number(item?.carouselIntervalMs ?? config.carouselIntervalMs ?? 4500),
+    }
+  })
 }
 
 /** 新后端不统计公告曝光/点击事件，保留空实现兼容旧调用。 */

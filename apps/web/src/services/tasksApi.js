@@ -4,7 +4,7 @@
  * 任务类型：t2i | coloring | ui_design | model_sheet | game_art | puzzle
  * 状态机：queued → running → succeeded | failed | canceled
  */
-import { apiDelete, apiGet, apiPost, apiRequest } from './apiClient'
+import { apiDelete, apiGet, apiPost, apiRequest, buildApiPath } from './apiClient'
 
 export const TASK_TYPES = ['t2i', 'coloring', 'ui_design', 'model_sheet', 'game_art', 'puzzle']
 
@@ -18,9 +18,15 @@ export const TASK_TYPE_LABELS = {
 }
 
 export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
+export const TASK_UPDATE_EVENT = 'starclouds:task-update'
 
 export function isTerminalTaskStatus(status = '') {
   return TERMINAL_TASK_STATUSES.has(String(status || '').trim().toLowerCase())
+}
+
+function dispatchTaskUpdate(task, payload) {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(TASK_UPDATE_EVENT, { detail: { task, payload } }))
 }
 
 /**
@@ -57,6 +63,51 @@ export async function getTask(id, { signal } = {}) {
     fallbackMessage: '任务读取失败',
   })
   return data?.task || data
+}
+
+/**
+ * Subscribe to persisted task snapshots. The returned function closes the SSE
+ * connection; callers should keep polling as a fallback when SSE is unavailable.
+ */
+export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
+  if (!id || typeof EventSource === 'undefined') return () => {}
+  const source = new EventSource(buildApiPath(`/tasks/${encodeURIComponent(id)}/stream`))
+  source.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      const task = payload?.task || payload
+      if (typeof onUpdate === 'function') onUpdate(task, payload)
+	  dispatchTaskUpdate(task, payload)
+      if (isTerminalTaskStatus(task?.status)) source.close()
+    } catch {
+      // Ignore malformed transient events; the polling path remains authoritative.
+    }
+  }
+  source.onerror = (event) => {
+    source.close()
+    if (typeof onError === 'function') onError(event)
+  }
+  return () => source.close()
+}
+
+/** Account-wide task events keep completion notifications live across pages. */
+export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
+  if (typeof EventSource === 'undefined') return () => {}
+  const source = new EventSource(buildApiPath('/me/tasks/stream'))
+  source.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      const task = payload?.task || payload
+	  dispatchTaskUpdate(task, payload)
+      if (typeof onUpdate === 'function') onUpdate(task, payload)
+    } catch {
+      // Keep the stream alive; a later persisted snapshot can still recover it.
+    }
+  }
+  source.onerror = (event) => {
+    if (typeof onError === 'function') onError(event)
+  }
+  return () => source.close()
 }
 
 /**
@@ -118,34 +169,63 @@ export async function waitForTask(
   id,
   { signal, onUpdate = null, intervalMs = 2000, maxWaitMs = 15 * 60 * 1000 } = {},
 ) {
-  const startedAt = Date.now()
-  for (;;) {
-    if (signal?.aborted) throw createAbortError()
-    const task = await getTask(id, { signal })
-    if (typeof onUpdate === 'function') onUpdate(task)
-    if (isTerminalTaskStatus(task?.status)) return task
-    if (Date.now() - startedAt > maxWaitMs) {
-      throw new Error('任务等待超时，请稍后在历史记录中查看结果')
-    }
-    await sleep(Math.max(500, Number(intervalMs) || 2000), signal)
-  }
-}
-
-function sleep(ms, signal) {
+  const pollEvery = Math.max(500, Number(intervalMs) || 2000)
+  const timeoutAfter = Math.max(pollEvery, Number(maxWaitMs) || 15 * 60 * 1000)
   return new Promise((resolve, reject) => {
+    let settled = false
+    let polling = false
+    let lastSignature = ''
+
+    const cleanup = () => {
+      unsubscribe()
+      window.clearInterval(pollTimer)
+      window.clearTimeout(timeoutTimer)
+      signal?.removeEventListener('abort', abort)
+    }
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      callback(value)
+    }
+    const apply = (task) => {
+      if (!task || settled) return
+      const signature = JSON.stringify([
+        task.status,
+        task.errorCode,
+        task.outputKeys,
+        task.thumbnailKeys,
+      ])
+      if (signature !== lastSignature) {
+        lastSignature = signature
+        if (typeof onUpdate === 'function') onUpdate(task)
+      }
+      if (isTerminalTaskStatus(task.status)) finish(resolve, task)
+    }
+    const poll = async () => {
+      if (polling || settled) return
+      polling = true
+      try {
+        apply(await getTask(id, { signal }))
+      } catch (error) {
+        if (error?.name === 'AbortError') finish(reject, error)
+        // A transient poll failure does not stop an active SSE connection.
+      } finally {
+        polling = false
+      }
+    }
+    const abort = () => finish(reject, createAbortError())
+    const unsubscribe = subscribeTask(id, { onUpdate: apply })
+    const pollTimer = window.setInterval(poll, pollEvery)
+    const timeoutTimer = window.setTimeout(() => {
+      finish(reject, new Error('任务等待超时，请稍后在历史记录中查看结果'))
+    }, timeoutAfter)
+    signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) {
-      reject(createAbortError())
+      abort()
       return
     }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    function onAbort() {
-      clearTimeout(timer)
-      reject(createAbortError())
-    }
-    signal?.addEventListener('abort', onAbort, { once: true })
+    void poll()
   })
 }
 

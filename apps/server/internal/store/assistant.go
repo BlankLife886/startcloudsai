@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -234,9 +235,20 @@ func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, e
 
 func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
-		error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL
+		error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
+		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
 		WHERE id = $1 AND status = 'failed'`, id)
 	return tag.RowsAffected() > 0, err
+}
+
+func SetAssistantRunCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string) error {
+	payload, err := json.Marshal(taskIDs)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE assistant_runs SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_crunTaskIds}', $2::jsonb, true)
+		WHERE id = $1`, id, string(payload))
+	return err
 }
 
 func AdminCancelAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {

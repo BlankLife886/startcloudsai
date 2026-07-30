@@ -19,6 +19,9 @@ import { useSettingsStore } from '@/stores/settings'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+const FILMSTRIP_HISTORY_TASK_LIMIT = 120
+const FILMSTRIP_HISTORY_MAX_PREFETCH_PAGES = 9
+
 /**
  * 壁纸工坊薄编排层：组装 canvas / inputs / models / tasks，保留对外 API。
  */
@@ -84,6 +87,9 @@ export function useAiWallpaperStudioState() {
     persistStudioDraft: (...args) => persistStudioDraft(...args),
     outputType,
     privacyMode,
+    maxReferenceImages: computed(
+      () => models.currentPublicModel.value?.maxReferenceImages ?? 4,
+    ),
   })
 
   previewBridge.sourcePreview = inputs.sourcePreview
@@ -146,6 +152,7 @@ export function useAiWallpaperStudioState() {
     imageQuality: inputs.imageQuality,
     resolutionScale: inputs.resolutionScale,
     upscaleOutputFormat: inputs.upscaleOutputFormat,
+    moderationLevel: inputs.moderationLevel,
     duration: inputs.duration,
     creativity: inputs.creativity,
     styleStrength: inputs.styleStrength,
@@ -221,10 +228,21 @@ export function useAiWallpaperStudioState() {
   )
   const generationCostLabel = computed(() => {
     const count = outputType.value === 'image' ? Math.max(1, Number(inputs.imageCount.value)) : 1
-    if (generationUnitPriceCents.value != null) {
-      const total = (Math.max(0, Number(generationUnitPriceCents.value)) * count) / 100
+    const selectedUnitPrice = Number(models.currentPublicModel.value?.creditCost)
+    if (
+      outputType.value === 'image' &&
+      models.currentPublicModel.value &&
+      Number.isFinite(selectedUnitPrice) &&
+      selectedUnitPrice >= 0
+    ) {
+      const total = selectedUnitPrice * count
       if (total === 0) return '免费'
-      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(total)} 积分`
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(total)} 积分`
+    }
+    if (generationUnitPriceCents.value != null) {
+      const total = Math.max(0, Number(generationUnitPriceCents.value)) * count
+      if (total === 0) return '免费'
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(total)} 积分`
     }
     const dispatchModel =
       outputType.value === 'video'
@@ -235,7 +253,7 @@ export function useAiWallpaperStudioState() {
     const total = Math.max(0, Number(snapshot?.unitCost || 0))
     if (!total) return ''
     if (snapshot?.billingMode === 'credits') {
-      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(total)} 积分`
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(total)} 积分`
     }
     return `$${total.toFixed(4)}`
   })
@@ -311,6 +329,7 @@ export function useAiWallpaperStudioState() {
         imageQuality: inputs.imageQuality.value,
         resolutionScale: inputs.resolutionScale.value,
         upscaleOutputFormat: inputs.upscaleOutputFormat.value,
+        moderationLevel: inputs.moderationLevel.value,
         duration: inputs.duration.value,
         creativity: inputs.creativity.value,
         styleStrength: inputs.styleStrength.value,
@@ -361,6 +380,7 @@ export function useAiWallpaperStudioState() {
       ) {
         inputs.upscaleOutputFormat.value = draft.upscaleOutputFormat
       }
+      if (draft.moderationLevel) inputs.moderationLevel.value = draft.moderationLevel
       if (Number(draft.duration) > 0) inputs.duration.value = Number(draft.duration)
       if (Number.isFinite(Number(draft.creativity)))
         inputs.creativity.value = Number(draft.creativity)
@@ -401,6 +421,19 @@ export function useAiWallpaperStudioState() {
     inputs.useOutputAsUpload(url)
   }
 
+  async function preloadFilmstripHistory() {
+    let loadedPages = 0
+    while (
+      tasks.serverJobsHasMore.value &&
+      tasks.tasks.value.length < FILMSTRIP_HISTORY_TASK_LIMIT &&
+      loadedPages < FILMSTRIP_HISTORY_MAX_PREFETCH_PAGES
+    ) {
+      const loaded = await tasks.loadMoreServerJobs()
+      if (!loaded) break
+      loadedPages += 1
+    }
+  }
+
   async function initPage() {
     isPageLoading.value = true
     // —— 本地数据同步恢复：草稿、任务、能力包在首帧前就位，
@@ -414,7 +447,7 @@ export function useAiWallpaperStudioState() {
     if (tasks.tasks.value.length) isPageLoading.value = false
     try {
       await Promise.all([
-        runtimeConfigStore.loadRuntimeConfig().catch(() => {}),
+        runtimeConfigStore.loadRuntimeConfig({ force: true }).catch(() => {}),
         authStore.initAuth().catch(() => null),
       ])
       // 历史同步不等设置/能力位:auth 一就绪立刻并行拉取,砍掉两跳串行 RTT
@@ -427,11 +460,10 @@ export function useAiWallpaperStudioState() {
       privacyMode.value = settingsStore.getSetting('ai_enable_privacy_mode', privacyMode.value)
       await models.syncCapabilityKitFromServer()
       models.ensureRuntimeProviderAndModels()
-      // 云端合并只写入本地存储：任务要重载一次，否则内存里的旧任务列表
-      // 会在稍后回写时覆盖掉云端合并结果。草稿不在云端负载里，无需重载
-      // （重载反而会把用户在网络等待期间刚改的参数冲回旧值）。
-      tasks.loadTasks()
+      // refreshServerAiJobs owns the in-memory merge. Reloading local storage here races with
+      // output hydration and can replace freshly restored images with an older empty snapshot.
       await earlyJobsSync
+      await preloadFilmstripHistory()
       tasks.restoreRunningTaskUi()
       tasks.resumeServerJobPolling()
       const active = tasks.tasks.value.find((task) => task.id === tasks.activeTaskId.value)
@@ -488,6 +520,7 @@ export function useAiWallpaperStudioState() {
       inputs.imageQuality,
       inputs.resolutionScale,
       inputs.upscaleOutputFormat,
+      inputs.moderationLevel,
       inputs.duration,
       inputs.creativity,
       inputs.styleStrength,
@@ -559,6 +592,8 @@ export function useAiWallpaperStudioState() {
     imageQuality: inputs.imageQuality,
     resolutionScale: inputs.resolutionScale,
     upscaleOutputFormat: inputs.upscaleOutputFormat,
+    moderationLevel: inputs.moderationLevel,
+    maxReferenceImages: inputs.maxReferenceImages,
     outputSizeLabel: inputs.outputSizeLabel,
     generationCostLabel,
     duration: inputs.duration,

@@ -39,7 +39,9 @@ export function getAiFeatureConfig(featureKey) {
 
 export function getAiProviderBudget(source, providerId) {
   if (!source) return { dailyBudget: 0, monthlyBudget: 0 }
-  const normalizedProvider = String(providerId || '').trim().toLowerCase()
+  const normalizedProvider = String(providerId || '')
+    .trim()
+    .toLowerCase()
   const dailyKey = normalizedProvider ? `ai_${normalizedProvider}_daily_budget_usd` : ''
   const monthlyKey = normalizedProvider ? `ai_${normalizedProvider}_monthly_budget_usd` : ''
   const getValue =
@@ -48,10 +50,14 @@ export function getAiProviderBudget(source, providerId) {
       : (key, fallback) => source[key] ?? fallback
   return {
     dailyBudget: Number(
-      (dailyKey ? getValue(dailyKey, getValue('ai_daily_budget_usd', 0)) : getValue('ai_daily_budget_usd', 0)) || 0,
+      (dailyKey
+        ? getValue(dailyKey, getValue('ai_daily_budget_usd', 0))
+        : getValue('ai_daily_budget_usd', 0)) || 0,
     ),
     monthlyBudget: Number(
-      (monthlyKey ? getValue(monthlyKey, getValue('ai_monthly_budget_usd', 0)) : getValue('ai_monthly_budget_usd', 0)) || 0,
+      (monthlyKey
+        ? getValue(monthlyKey, getValue('ai_monthly_budget_usd', 0))
+        : getValue('ai_monthly_budget_usd', 0)) || 0,
     ),
   }
 }
@@ -63,19 +69,17 @@ export function getAiFeatureEnabledModelIds() {
 export function resolveAiFeatureRuntimeConfig(settingsStore, featureKey, overrides = {}) {
   const feature = getAiFeatureConfig(featureKey)
   const runtimeFeature = readRuntimeFeatureConfig(featureKey, overrides.runtimeConfig || null)
-  const catalogPublicModels = normalizeRuntimePublicModels(overrides.runtimeModelCatalog?.publicModels)
+  const catalogPublicModels = normalizeRuntimePublicModels(
+    overrides.runtimeModelCatalog?.publicModels,
+  )
   const publicModels = normalizeRuntimePublicModels(runtimeFeature?.publicModels)
   const fallbackPublicModels = publicModels.length
     ? publicModels
     : filterPublicModelsForFeature(catalogPublicModels, featureKey)
-  const provider =
-    overrides.provider ||
-    ''
+  const provider = overrides.provider || ''
   const providerConfig = getRuntimeAiProviderConfig(provider, overrides.runtimeModelCatalog || null)
   const baseUrl = providerConfig.baseURL || ''
-  const model =
-    overrides.model ||
-    ''
+  const model = overrides.model || ''
 
   return {
     feature,
@@ -93,8 +97,10 @@ export function resolveAiFeatureRuntimeConfig(settingsStore, featureKey, overrid
 function readRuntimeFeatureConfig(featureKey, runtimeConfig) {
   const runtimeFeatureKey = RUNTIME_FEATURE_KEY_BY_CLIENT_FEATURE[featureKey] || featureKey
   if (!runtimeConfig || typeof runtimeConfig !== 'object') return null
-  if (runtimeConfig.features?.[runtimeFeatureKey]?.config) return runtimeConfig.features[runtimeFeatureKey].config
-  if (runtimeConfig.config?.features?.[runtimeFeatureKey]?.config) return runtimeConfig.config.features[runtimeFeatureKey].config
+  if (runtimeConfig.features?.[runtimeFeatureKey]?.config)
+    return runtimeConfig.features[runtimeFeatureKey].config
+  if (runtimeConfig.config?.features?.[runtimeFeatureKey]?.config)
+    return runtimeConfig.config.features[runtimeFeatureKey].config
   if (runtimeConfig[runtimeFeatureKey]) return runtimeConfig[runtimeFeatureKey]
   if (runtimeFeatureKey === 'ai.optimize' && runtimeConfig.publicModels) return runtimeConfig
   return null
@@ -112,6 +118,13 @@ function normalizeRuntimePublicModels(value) {
         capabilities: Array.isArray(item?.capabilities)
           ? item.capabilities.map((capability) => String(capability || '').trim()).filter(Boolean)
           : [],
+        resolutions: Array.isArray(item?.resolutions)
+          ? item.resolutions
+              .map((resolution) => String(resolution || '').toUpperCase())
+              .filter(Boolean)
+          : [],
+        default: item?.default === true,
+        fastMode: item?.fastMode === true,
         userPriceUsd: Number(item?.userPriceUsd || 0),
         creditCost: Number(item?.creditCost || 0),
       }
@@ -121,11 +134,14 @@ function normalizeRuntimePublicModels(value) {
 
 function filterPublicModelsForFeature(models, featureKey) {
   if (!models.length) return []
-  const wanted = featureKey === 'profile'
-    ? ['text.chat', 'text.analysis', 'image.understand']
-    : featureKey === 'preview' || featureKey === 'wallpaper'
-      ? ['image.edit', 'image.generate', 'image.understand']
-      : []
+  const wanted =
+    featureKey === 'profile'
+      ? ['text.chat', 'text.analysis', 'image.understand']
+      : featureKey === 'preview' || featureKey === 'wallpaper'
+        ? ['image.edit', 'image.generate', 'image.understand']
+        : []
   if (!wanted.length) return models
-  return models.filter((model) => model.capabilities.some((capability) => wanted.includes(capability)))
+  return models.filter((model) =>
+    model.capabilities.some((capability) => wanted.includes(capability)),
+  )
 }

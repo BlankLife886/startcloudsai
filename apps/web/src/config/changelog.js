@@ -661,7 +661,7 @@ export const CHANGELOG = [
     items: [
       '首页改为六个展厅：序厅精选、创作工坊、云端画廊、竖屏星轨、横屏星野与随机星尘',
       '序厅提供搜索与快捷入口，并展示社区作品与创作者的实时馆藏数据',
-      '创作工坊汇集 AI 壁纸、插画上色、拼图、图生 3D 与紫微斗数等入口',
+      '创作工坊汇集 AI 壁纸、插画上色、拼图与紫微斗数等入口',
       '云端画廊直接呈现社区精选与热门榜，一键进入 Share 展厅',
       '横屏展墙支持经典 4K / 最新入馆 / 收藏榜三种展签切换',
       '大图列表启用窗口化渲染与懒加载，滚动更流畅、首屏更快',
@@ -1025,16 +1025,6 @@ export const CHANGELOG = [
     title: 'AI 拼图 Studio',
     summary: 'Canva 式照片拼贴编辑器，模板填格、间距圆角、高清导出。',
     items: ['15+ 拼贴模板', '拖拽填格与壁纸导入', 'PNG 高清导出'],
-    highlight: false,
-  },
-  {
-    id: 'v2-2-0-image3d',
-    version: '2.2.0',
-    date: '2025-05-18',
-    tag: 'feature',
-    title: '图转 3D 工作台',
-    summary: '三栏 Studio 布局，对标 Meshy / Tripo 工作流。',
-    items: ['GLB 实时预览', '参数面板与任务队列', 'embedded Studio 模式'],
     highlight: false,
   },
   {

@@ -27,6 +27,7 @@ import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
 import AssistantMarkdown from '@/components/assistant/AssistantMarkdown.vue'
 import AssistantImageViewer from '@/features/assistant/components/AssistantImageViewer.vue'
+import ModelPointPrice from '@/features/ai-shared/ModelPointPrice.vue'
 import { useAssistantAttachments } from '@/features/assistant/composables/useAssistantAttachments'
 import { useAssistantTextStream } from '@/features/assistant/composables/useAssistantTextStream'
 import {
@@ -42,6 +43,10 @@ import {
   uid,
 } from '@/features/assistant/domain/assistantMessages'
 import { resolveVisualContext } from '@/features/assistant/domain/visualContext'
+import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from '@/features/ai-shared/modelImageCapabilities'
 import '@/features/assistant/styles/assistant-workspace.css'
 
 const router = useRouter()
@@ -92,8 +97,9 @@ const quotedMessage = ref(null)
 const generationRatio = ref('auto')
 const generationModel = ref('')
 const conversationModel = ref('')
-const imageGenerationModel = ref('gpt-image-2')
+const imageGenerationModel = ref('')
 const conversationModels = ref([])
+const imageGenerationModels = ref([])
 const modelSearch = ref('')
 const generationResolution = ref('1K')
 const generationCount = ref(2)
@@ -144,26 +150,22 @@ const creationTypes = [
   { id: 'agent', label: 'Agent 模式', icon: 'bi-magic' },
   { id: 'image', label: '图片生成', icon: 'bi-image' },
 ]
-const generationRatios = [
+const GENERATION_RATIOS = [
   { id: 'auto', label: '自动', shape: 'auto' },
   { id: '1:1', label: '1:1', shape: 'square' },
   { id: '2:3', label: '2:3', shape: 'portrait' },
   { id: '3:2', label: '3:2', shape: 'wide' },
   { id: '3:4', label: '3:4', shape: 'portrait' },
   { id: '4:3', label: '4:3', shape: 'wide' },
+  { id: '4:5', label: '4:5', shape: 'portrait' },
+  { id: '5:4', label: '5:4', shape: 'wide' },
   { id: '9:16', label: '9:16', shape: 'portrait' },
   { id: '16:9', label: '16:9', shape: 'wide' },
-]
-const imageGenerationModels = [
-  {
-    label: 'GPT Image 2',
-    model: 'gpt-image-2',
-    source: 'image',
-    description: 'OpenAI 图片生成与多参考图编辑模型',
-  },
+  { id: '9:21', label: '9:21', shape: 'portrait' },
+  { id: '21:9', label: '21:9', shape: 'wide' },
 ]
 const generationModels = computed(() =>
-  mode.value === 'image' ? imageGenerationModels : conversationModels.value,
+  mode.value === 'image' ? imageGenerationModels.value : conversationModels.value,
 )
 const filteredGenerationModels = computed(() => {
   const query = modelSearch.value.trim().toLowerCase()
@@ -191,11 +193,34 @@ const selectedGenerationModel = computed(
 const generationModelLabel = computed(
   () => selectedGenerationModel.value?.label || generationModel.value || '默认模型',
 )
-const imageResolutions = [
+const IMAGE_RESOLUTION_OPTIONS = [
   { id: '1K', label: '标清 1K', quality: 'low', longEdge: 1024 },
   { id: '2K', label: '高清 2K', quality: 'medium', longEdge: 2048 },
   { id: '4K', label: '超清 4K', quality: 'high', longEdge: 4096 },
 ]
+const selectedImageGenerationModel = computed(
+  () =>
+    imageGenerationModels.value.find((item) => item.model === imageGenerationModel.value) ||
+    imageGenerationModels.value[0] ||
+    null,
+)
+const generationRatios = computed(() => {
+  const supported = getModelAspectRatiosForResolution(
+    selectedImageGenerationModel.value,
+    generationResolution.value,
+  )
+  return GENERATION_RATIOS.filter((item) => supported.includes(item.id))
+})
+const imageResolutions = computed(() => {
+  const supported = Array.isArray(selectedImageGenerationModel.value?.resolutions)
+    ? selectedImageGenerationModel.value.resolutions.map((item) => String(item || '').toUpperCase())
+    : []
+  const qualitySet = new Set(selectedImageGenerationModel.value?.qualities || [])
+  return IMAGE_RESOLUTION_OPTIONS.filter(
+    (option) =>
+      (!supported.length || supported.includes(option.id)) && qualitySet.has(option.quality),
+  )
+})
 const imageCounts = IMAGE_COUNTS
 const skills = [
   { name: '剧情短片', description: '帮你自动生成故事大纲、分镜脚本并产出短片' },
@@ -300,7 +325,7 @@ const filteredSkills = computed(() => {
 })
 const imageSettingsLabel = computed(
   () =>
-    `${generationRatio.value === 'auto' ? '自动' : generationRatio.value} | ${generationResolution.value} | ${generationCount.value}`,
+    `${generationRatio.value === 'auto' ? 'Auto' : generationRatio.value} | ${generationResolution.value} | ${generationCount.value}`,
 )
 const assetLibraryImages = computed(() => {
   const sourceConversations =
@@ -383,7 +408,7 @@ function restoreWorkspaceState(state = {}) {
   if (['low', 'medium', 'high'].includes(state.imageQuality)) {
     imageQuality.value = state.imageQuality
   }
-  if (generationRatios.some((item) => item.id === state.generationRatio)) {
+  if (generationRatios.value.some((item) => item.id === state.generationRatio)) {
     generationRatio.value = state.generationRatio
   }
   if (typeof state.generationModel === 'string' && state.generationModel.trim()) {
@@ -391,7 +416,7 @@ function restoreWorkspaceState(state = {}) {
     if (mode.value === 'image') imageGenerationModel.value = generationModel.value
     else conversationModel.value = generationModel.value
   }
-  if (imageResolutions.some((item) => item.id === state.generationResolution)) {
+  if (imageResolutions.value.some((item) => item.id === state.generationResolution)) {
     generationResolution.value = state.generationResolution
   }
   if (imageCounts.includes(Number(state.generationCount))) {
@@ -578,15 +603,20 @@ function toggleComposerPanel(name) {
 }
 
 function selectCreationType(type) {
-  if (mode.value === 'image') imageGenerationModel.value = generationModel.value || 'gpt-image-2'
-  else conversationModel.value = generationModel.value
+  if (mode.value === 'image') {
+    imageGenerationModel.value =
+      generationModel.value || imageGenerationModels.value[0]?.model || ''
+  } else conversationModel.value = generationModel.value
   creationType.value = type.id
   mode.value = type.id === 'image' ? 'image' : 'chat'
   generationModel.value =
     mode.value === 'image'
-      ? imageGenerationModel.value || 'gpt-image-2'
+      ? imageGenerationModel.value || imageGenerationModels.value[0]?.model || ''
       : conversationModel.value || conversationModels.value[0]?.model || ''
-  if (type.id === 'image') selectedSkill.value = null
+  if (type.id === 'image') {
+    selectedSkill.value = null
+    ensureImageResolutionSupported()
+  }
   closeComposerPanels()
   nextTick(() => promptInput.value?.focus())
 }
@@ -595,15 +625,29 @@ function selectGenerationModel(model) {
   generationModel.value = model.model
   if (mode.value === 'image') imageGenerationModel.value = model.model
   else conversationModel.value = model.model
+  if (mode.value === 'image') ensureImageResolutionSupported()
   modelMenuOpen.value = false
   modelSearch.value = ''
+}
+
+function ensureImageResolutionSupported() {
+  if (!generationRatios.value.some((ratio) => ratio.id === generationRatio.value)) {
+    generationRatio.value = generationRatios.value[0]?.id || '1:1'
+  }
+  const options = imageResolutions.value
+  if (options.some((option) => option.id === generationResolution.value)) return
+  const fallback = options[0] || IMAGE_RESOLUTION_OPTIONS[0]
+  generationResolution.value = fallback.id
+  if (fallback.quality) imageQuality.value = fallback.quality
+  syncImageRequestSize()
 }
 
 function modelDisplayName(model) {
   const value = String(model || '').trim()
   return (
-    [...conversationModels.value, ...imageGenerationModels].find((item) => item.model === value)
-      ?.label ||
+    [...conversationModels.value, ...imageGenerationModels.value].find(
+      (item) => item.model === value,
+    )?.label ||
     value ||
     generationModelLabel.value
   )
@@ -628,7 +672,7 @@ function toggleImageModelMenu() {
 
 function selectImageResolution(option) {
   generationResolution.value = option.id
-  imageQuality.value = option.quality
+  if (option.quality) imageQuality.value = option.quality
   syncImageRequestSize()
 }
 
@@ -639,7 +683,8 @@ function selectImageRatio(ratio) {
 
 function syncImageRequestSize() {
   const longEdge =
-    imageResolutions.find((option) => option.id === generationResolution.value)?.longEdge || 1024
+    imageResolutions.value.find((option) => option.id === generationResolution.value)?.longEdge ||
+    1024
   if (generationRatio.value === 'auto') {
     customImageWidth.value = longEdge
     customImageHeight.value = longEdge
@@ -668,13 +713,17 @@ function normalizedImageDimension(value) {
 
 // 纯读取：根据当前偏好组装本次请求的尺寸/质量参数，不改动任何状态
 function currentImageRequestSize() {
-  const resolution = imageResolutions.find((option) => option.id === generationResolution.value)
+  const resolution = imageResolutions.value.find(
+    (option) => option.id === generationResolution.value,
+  )
   const width = normalizedImageDimension(customImageWidth.value)
   const height = normalizedImageDimension(customImageHeight.value)
   return {
     width,
     height,
     size: generationRatio.value === 'auto' ? 'auto' : `${width}x${height}`,
+    requestRatio: generationRatio.value,
+    ratioLabel: generationRatio.value === 'auto' ? 'Auto' : generationRatio.value,
     quality: resolution?.quality || imageQuality.value || 'high',
   }
 }
@@ -697,12 +746,10 @@ function stopImageProgress(message, completed = false) {
   if (completed) message.progress = 100
 }
 
-
 function shouldShowMessageDate(message, index) {
   if (index === 0) return true
   return messageDateKey(message) !== messageDateKey(messages.value[index - 1])
 }
-
 
 function messageTurnId(index) {
   for (let cursor = index; cursor >= 0; cursor -= 1) {
@@ -710,7 +757,6 @@ function messageTurnId(index) {
   }
   return ''
 }
-
 
 function toggleMessageStatus(messageId) {
   expandedStatusMessageId.value = expandedStatusMessageId.value === messageId ? '' : messageId
@@ -773,7 +819,6 @@ async function deleteMessage(messageId) {
   notificationService.success('内容已删除')
 }
 
-
 function conversationPreviewImage(conversation) {
   for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
     const message = conversation.messages[index]
@@ -784,7 +829,6 @@ function conversationPreviewImage(conversation) {
   }
   return ''
 }
-
 
 const conversationBottomThreshold = 40
 
@@ -909,8 +953,7 @@ async function scrollToMessage(messageId) {
 
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   const smooth =
-    !prefersReducedMotion &&
-    Math.abs(targetTop - scroller.scrollTop) <= scroller.clientHeight * 2.5
+    !prefersReducedMotion && Math.abs(targetTop - scroller.scrollTop) <= scroller.clientHeight * 2.5
   scroller.scrollTo({ top: targetTop, behavior: smooth ? 'smooth' : 'auto' })
 
   const finishNavigation = () => {
@@ -971,7 +1014,6 @@ function markMessagesNew(...ids) {
   }, 900)
 }
 
-
 function imageSkeletonRatio(message) {
   const width = Number(message?.width)
   const height = Number(message?.height)
@@ -979,8 +1021,8 @@ function imageSkeletonRatio(message) {
 }
 
 function assistantImageAt(message, index) {
-  return (message?.images || []).find((image, fallbackIndex) =>
-    Number(image?.index ?? fallbackIndex) === index,
+  return (message?.images || []).find(
+    (image, fallbackIndex) => Number(image?.index ?? fallbackIndex) === index,
   )
 }
 
@@ -1006,7 +1048,10 @@ function generatedImageState(messageId, index) {
 }
 
 function onGeneratedImageLoad(messageId, index) {
-  generatedImageStates.value = { ...generatedImageStates.value, [`${messageId}-${index}`]: 'loaded' }
+  generatedImageStates.value = {
+    ...generatedImageStates.value,
+    [`${messageId}-${index}`]: 'loaded',
+  }
   if (freshlyGeneratedIds.has(messageId)) triggerImageBurst(`${messageId}-${index}`)
   followConversationBottom()
 }
@@ -1043,7 +1088,10 @@ function burstParticleStyle(particle, imageIndex) {
 }
 
 function onGeneratedImageError(messageId, index) {
-  generatedImageStates.value = { ...generatedImageStates.value, [`${messageId}-${index}`]: 'failed' }
+  generatedImageStates.value = {
+    ...generatedImageStates.value,
+    [`${messageId}-${index}`]: 'failed',
+  }
 }
 
 function retryGeneratedImage(messageId, index) {
@@ -1056,8 +1104,7 @@ function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStr
   const run = data?.run || {}
   const persisted = data?.assistantMessage
   const resolvedMode = run.resolvedMode || persisted?.kind || assistantMessage.kind
-  const streamActive =
-    textStream && resolvedMode !== 'image' && !textStream.isSettled()
+  const streamActive = textStream && resolvedMode !== 'image' && !textStream.isSettled()
   const localContent = String(assistantMessage.content || '')
   const localStatusStage = assistantMessage.statusStage
   if (streamActive && typeof persisted?.content === 'string') {
@@ -1130,7 +1177,7 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
   setConversationRun(conversation.id, runId)
   let textStream = null
   const ensureTextStream = () => {
-    if (!textStream) {
+    if (!textStream || textStream.isSettled()) {
       textStream = createTextStreamRenderer(assistantMessage, {
         onProgress: followConversationBottom,
       })
@@ -1187,7 +1234,9 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
         followConversationBottom()
       }
       // 上游完成不等于界面已经展示完；队列排空后再进入“回答已完成”。
-      if (event?.done && textStream) textStream.finish(event.status || 'succeeded')
+      if (event?.done && textStream && ['succeeded', 'failed', 'canceled'].includes(event.status)) {
+        textStream.finish(event.status)
+      }
     },
   })
   try {
@@ -1256,7 +1305,11 @@ async function generateResponse(
 
   try {
     const uploadedReferences = (
-      await Promise.all(visualContext.slice(0, 4).map(ensureReferenceUploaded))
+      await Promise.all(
+        visualContext
+          .slice(0, selectedImageGenerationModel.value?.maxReferenceImages ?? 4)
+          .map(ensureReferenceUploaded),
+      )
     ).filter(Boolean)
     const currentUserMessage = conversation.messages.find(
       (message) => message.id === (sourceUserMessageId || assistantMessage.userMessageId),
@@ -1273,13 +1326,14 @@ async function generateResponse(
         quoted: currentUserMessage?.quoted || null,
         skill: currentUserMessage?.skill || '',
         model: assistantMessage.model || generationModel.value,
-        ratio: assistantMessage.ratio,
+        ratio: assistantMessage.requestRatio || assistantMessage.ratio,
         resolution: assistantMessage.resolution,
         count: assistantMessage.count || generationCount.value,
         requestSize: assistantMessage.requestSize || imageSize.value,
         width: assistantMessage.width,
         height: assistantMessage.height,
         quality: assistantMessage.quality || imageQuality.value,
+        serviceKey: 'assistant_image',
       },
       { signal: controller.signal },
     )
@@ -1351,7 +1405,8 @@ async function sendMessage() {
     userMessageId: userMessage.id,
     defaults: {
       model: generationModel.value,
-      ratio: generationRatio.value === 'auto' ? '自动' : generationRatio.value,
+      ratio: requestedImage.ratioLabel,
+      requestRatio: requestedImage.requestRatio,
       resolution: generationResolution.value,
       count: requestedImageCount || generationCount.value,
       requestSize: requestedImage.size,
@@ -1606,7 +1661,6 @@ function insertComposerTrigger(trigger) {
   })
 }
 
-
 function resizePromptInput() {
   nextTick(() => {
     const input = promptInput.value
@@ -1685,7 +1739,8 @@ async function submitUserMessageEdit(message) {
     previous: previousReply,
     defaults: {
       model: generationModel.value,
-      ratio: generationRatio.value === 'auto' ? '自动' : generationRatio.value,
+      ratio: requestedImage.ratioLabel,
+      requestRatio: requestedImage.requestRatio,
       resolution: generationResolution.value,
       count: requestedImageCount || previousReply?.count || generationCount.value,
       requestSize: requestedImage.size,
@@ -1769,7 +1824,6 @@ function stepImagePreview(direction) {
   }
 }
 
-
 function toggleSidebar() {
   // 与 CSS 的抽屉断点保持一致（≤900px 走遮罩抽屉，>900px 走折叠）
   if (window.matchMedia('(max-width: 900px)').matches) {
@@ -1802,7 +1856,14 @@ function toggleSidebar() {
       gsap.fromTo(
         mainEl,
         { x: delta },
-        { x: 0, duration: 0.55, ease: 'back.out(1.4)', clearProps: 'transform', overwrite: 'auto', lazy: false },
+        {
+          x: 0,
+          duration: 0.55,
+          ease: 'back.out(1.4)',
+          clearProps: 'transform',
+          overwrite: 'auto',
+          lazy: false,
+        },
       )
     }
     gsap.fromTo(
@@ -1832,12 +1893,18 @@ async function loadServiceConfig() {
             label: String(item?.label || item?.model || '').trim(),
             model: String(item?.model || '').trim(),
             source: String(item?.source || 'upstream'),
-            description:
-              item?.source === 'configured'
-                ? '后台配置的模型映射'
-                : item?.source === 'default'
-                  ? '后台默认对话模型'
-                  : '由当前 BaseURL 自动读取',
+            description: String(
+              item?.description ||
+                item?.provider ||
+                (item?.source === 'configured'
+                  ? '后台配置的对话模型'
+                  : item?.source === 'default'
+                    ? '后台默认对话模型'
+                    : '由当前 BaseURL 自动读取'),
+            ),
+            pricePoints: item?.pricePoints,
+            standardPricePoints: item?.standardPricePoints,
+            discountPricePoints: item?.discountPricePoints,
           }))
           .filter((item) => item.label && item.model)
       : []
@@ -1850,6 +1917,25 @@ async function loadServiceConfig() {
       })
     }
     conversationModels.value = options
+    imageGenerationModels.value = Array.isArray(config?.imageModels)
+      ? config.imageModels
+          .map((item) => ({
+            label: String(item?.label || item?.model || '').trim(),
+            model: String(item?.model || '').trim(),
+            source: String(item?.source || 'configured'),
+            description: String(item?.description || item?.provider || '后台配置的图片模型'),
+            resolutions: Array.isArray(item?.resolutions)
+              ? item.resolutions.map((value) => String(value || '').toUpperCase()).filter(Boolean)
+              : [],
+            default: item?.default === true,
+            fastMode: item?.fastMode === true,
+            pricePoints: item?.pricePoints,
+            standardPricePoints: item?.standardPricePoints,
+            discountPricePoints: item?.discountPricePoints,
+            ...normalizeImageModelCapabilities(item),
+          }))
+          .filter((item) => item.label && item.model)
+      : []
     const savedModel =
       conversationModel.value || (mode.value !== 'image' ? generationModel.value : '')
     conversationModel.value =
@@ -1858,9 +1944,14 @@ async function loadServiceConfig() {
       options[0]?.model ||
       String(config?.chatModel || '')
     if (mode.value !== 'image') generationModel.value = conversationModel.value
-    else if (!imageGenerationModels.some((item) => item.model === generationModel.value)) {
+    else if (!imageGenerationModels.value.some((item) => item.model === generationModel.value)) {
+      imageGenerationModel.value =
+        imageGenerationModels.value.find((item) => item.model === config?.imageModel)?.model ||
+        imageGenerationModels.value[0]?.model ||
+        ''
       generationModel.value = imageGenerationModel.value
     }
+    ensureImageResolutionSupported()
   } catch (error) {
     serviceError.value = error?.message || 'AI 服务尚未配置'
   } finally {
@@ -2291,337 +2382,350 @@ onBeforeUnmount(() => {
                 :data-message-id="message.id"
                 :data-turn-id="messageTurnId(originalIndex)"
               >
-              <div
-                v-if="message.role === 'assistant'"
-                class="assistant-message-label"
-                :class="`is-${messageStatus(message).tone}`"
-              >
-                <button
-                  class="message-status-toggle"
-                  type="button"
-                  :aria-expanded="expandedStatusMessageId === message.id"
-                  @click="toggleMessageStatus(message.id)"
-                >
-                  <span class="message-status-indicator" aria-hidden="true"><i></i></span>
-                  <strong aria-live="polite">
-                    <Transition name="status-swap" mode="out-in">
-                      <span :key="messageStatus(message).key">{{
-                        messageStatus(message).label
-                      }}</span>
-                    </Transition>
-                  </strong>
-                  <i
-                    class="bi bi-chevron-right message-status-chevron"
-                    :class="{ 'is-expanded': expandedStatusMessageId === message.id }"
-                  ></i>
-                </button>
-                <Transition name="status-detail">
-                  <div v-if="expandedStatusMessageId === message.id" class="message-status-detail">
-                    <p>{{ messageStatus(message).detail }}</p>
-                    <div
-                    v-if="
-                      message.pending &&
-                      message.kind !== 'image' &&
-                      messageStatus(message).progress > 0
-                    "
-                      class="message-status-progress"
-                      aria-hidden="true"
-                    >
-                      <i :style="{ width: `${messageStatus(message).progress}%` }"></i>
-                    </div>
-                  </div>
-                </Transition>
-              </div>
-              <div
-                v-if="message.role === 'user' && editingMessageId !== message.id"
-                class="user-message-actions"
-                aria-label="用户消息操作"
-              >
-                <button
-                  type="button"
-                  :title="copiedMessageId === message.id ? '已复制' : '复制问题'"
-                  :aria-label="copiedMessageId === message.id ? '已复制' : '复制问题'"
-                  :class="{ 'is-copied': copiedMessageId === message.id }"
-                  @click="copyMessage(message.content, message.id)"
-                >
-                  <i
-                    class="bi"
-                    :class="copiedMessageId === message.id ? 'bi-check2' : 'bi-copy'"
-                  ></i>
-                </button>
-                <button
-                  v-if="message.id === lastUserMessageId"
-                  type="button"
-                  title="编辑问题"
-                  aria-label="编辑问题"
-                  :disabled="isGenerating"
-                  @click="startEditingUserMessage(message)"
-                >
-                  <i class="bi bi-pencil"></i>
-                </button>
-              </div>
-              <div
-                v-if="message.role === 'user' && editingMessageId === message.id"
-                class="user-message-editor"
-              >
-                <textarea
-                  :ref="setEditMessageInput"
-                  v-model="editingMessageDraft"
-                  rows="3"
-                  maxlength="12000"
-                  aria-label="编辑问题"
-                  @keydown.enter.exact="handleUserMessageEditEnter($event, message)"
-                ></textarea>
-                <footer>
-                  <span>{{ editingMessageDraft.trim().length.toLocaleString() }} / 12,000</span>
-                  <button type="button" @click="cancelUserMessageEdit">取消</button>
-                  <button
-                    class="is-primary"
-                    type="button"
-                    :disabled="!editingMessageDraft.trim() || isGenerating"
-                    @click="submitUserMessageEdit(message)"
-                  >
-                    <i class="bi bi-arrow-up"></i><span>发送</span>
-                  </button>
-                </footer>
-              </div>
-              <div v-else class="message-content" :class="{ 'has-error': message.error }">
                 <div
-                  v-if="message.pending && message.kind === 'image'"
-                  class="image-generation-stage"
+                  v-if="message.role === 'assistant'"
+                  class="assistant-message-label"
+                  :class="`is-${messageStatus(message).tone}`"
                 >
-                  <div class="image-generation-summary">
-                    <strong>{{ message.prompt || '正在生成图片' }}</strong>
-                    <span>{{ modelDisplayName(message.model || generationModel) }}</span>
-                    <i></i>
-                    <span>{{ message.ratio || '智能' }}</span>
-                    <i></i>
-                    <span>{{ message.resolution || generationResolution }}</span>
-                    <button type="button" title="生成详情" aria-label="生成详情">
-                      <i class="bi bi-info-circle"></i>
-                    </button>
-                  </div>
-                  <div
-                    class="image-dream-grid"
-                    :class="{
-                      'is-single': Number(message.count || 2) === 1,
-                      'is-many': Number(message.count || 2) > 2,
-                      'is-preparing': message.statusStage === 'preparing-image',
-                    }"
-                    :style="{
-                      '--image-skeleton-ratio': imageSkeletonRatio(message),
-                      '--image-slot-count': Number(message.count || 2),
-                    }"
+                  <button
+                    class="message-status-toggle"
+                    type="button"
+                    :aria-expanded="expandedStatusMessageId === message.id"
+                    @click="toggleMessageStatus(message.id)"
                   >
+                    <span class="message-status-indicator" aria-hidden="true"><i></i></span>
+                    <strong aria-live="polite">
+                      <Transition name="status-swap" mode="out-in">
+                        <span :key="messageStatus(message).key">{{
+                          messageStatus(message).label
+                        }}</span>
+                      </Transition>
+                    </strong>
+                    <i
+                      class="bi bi-chevron-right message-status-chevron"
+                      :class="{ 'is-expanded': expandedStatusMessageId === message.id }"
+                    ></i>
+                  </button>
+                  <Transition name="status-detail">
                     <div
-                      v-for="slot in message.count || 2"
-                      :key="slot"
-                      class="image-dream-slot"
+                      v-if="expandedStatusMessageId === message.id"
+                      class="message-status-detail"
+                    >
+                      <p>{{ messageStatus(message).detail }}</p>
+                      <div
+                        v-if="
+                          message.pending &&
+                          message.kind !== 'image' &&
+                          messageStatus(message).progress > 0
+                        "
+                        class="message-status-progress"
+                        aria-hidden="true"
+                      >
+                        <i :style="{ width: `${messageStatus(message).progress}%` }"></i>
+                      </div>
+                    </div>
+                  </Transition>
+                </div>
+                <div
+                  v-if="message.role === 'user' && editingMessageId !== message.id"
+                  class="user-message-actions"
+                  aria-label="用户消息操作"
+                >
+                  <button
+                    type="button"
+                    :title="copiedMessageId === message.id ? '已复制' : '复制问题'"
+                    :aria-label="copiedMessageId === message.id ? '已复制' : '复制问题'"
+                    :class="{ 'is-copied': copiedMessageId === message.id }"
+                    @click="copyMessage(message.content, message.id)"
+                  >
+                    <i
+                      class="bi"
+                      :class="copiedMessageId === message.id ? 'bi-check2' : 'bi-copy'"
+                    ></i>
+                  </button>
+                  <button
+                    v-if="message.id === lastUserMessageId"
+                    type="button"
+                    title="编辑问题"
+                    aria-label="编辑问题"
+                    :disabled="isGenerating"
+                    @click="startEditingUserMessage(message)"
+                  >
+                    <i class="bi bi-pencil"></i>
+                  </button>
+                </div>
+                <div
+                  v-if="message.role === 'user' && editingMessageId === message.id"
+                  class="user-message-editor"
+                >
+                  <textarea
+                    :ref="setEditMessageInput"
+                    v-model="editingMessageDraft"
+                    rows="3"
+                    maxlength="12000"
+                    aria-label="编辑问题"
+                    @keydown.enter.exact="handleUserMessageEditEnter($event, message)"
+                  ></textarea>
+                  <footer>
+                    <span>{{ editingMessageDraft.trim().length.toLocaleString() }} / 12,000</span>
+                    <button type="button" @click="cancelUserMessageEdit">取消</button>
+                    <button
+                      class="is-primary"
+                      type="button"
+                      :disabled="!editingMessageDraft.trim() || isGenerating"
+                      @click="submitUserMessageEdit(message)"
+                    >
+                      <i class="bi bi-arrow-up"></i><span>发送</span>
+                    </button>
+                  </footer>
+                </div>
+                <div v-else class="message-content" :class="{ 'has-error': message.error }">
+                  <div
+                    v-if="message.pending && message.kind === 'image'"
+                    class="image-generation-stage"
+                  >
+                    <div class="image-generation-summary">
+                      <strong>{{ message.prompt || '正在生成图片' }}</strong>
+                      <span>{{ modelDisplayName(message.model || generationModel) }}</span>
+                      <i></i>
+                      <span>{{ message.ratio || '智能' }}</span>
+                      <i></i>
+                      <span>{{ message.resolution || generationResolution }}</span>
+                      <button type="button" title="生成详情" aria-label="生成详情">
+                        <i class="bi bi-info-circle"></i>
+                      </button>
+                    </div>
+                    <div
+                      class="image-dream-grid"
                       :class="{
-                        'is-ready': assistantImageAt(message, slot - 1),
-                        'is-loaded':
-                          generatedImageState(message.id, slot - 1) === 'loaded',
+                        'is-single': Number(message.count || 2) === 1,
+                        'is-many': Number(message.count || 2) > 2,
+                        'is-preparing': message.statusStage === 'preparing-image',
+                      }"
+                      :style="{
+                        '--image-skeleton-ratio': imageSkeletonRatio(message),
+                        '--image-slot-count': Number(message.count || 2),
                       }"
                     >
-                      <button
-                        v-if="assistantImageAt(message, slot - 1)"
-                        class="image-dream-preview"
-                        type="button"
-                        title="查看大图"
-                        @click="
-                          openImagePreview(assistantImageAt(message, slot - 1), 0, [
-                            assistantImageAt(message, slot - 1),
-                          ])
-                        "
+                      <div
+                        v-for="slot in message.count || 2"
+                        :key="slot"
+                        class="image-dream-slot"
+                        :class="{
+                          'is-ready': assistantImageAt(message, slot - 1),
+                          'is-loaded': generatedImageState(message.id, slot - 1) === 'loaded',
+                        }"
                       >
-                        <img
-                          :src="assistantImageAt(message, slot - 1).dataUrl"
-                          :alt="
-                            assistantImageAt(message, slot - 1).revisedPrompt || 'AI 生成图片'
+                        <button
+                          v-if="assistantImageAt(message, slot - 1)"
+                          class="image-dream-preview"
+                          type="button"
+                          title="查看大图"
+                          @click="
+                            openImagePreview(assistantImageAt(message, slot - 1), 0, [
+                              assistantImageAt(message, slot - 1),
+                            ])
                           "
-                          @load="onGeneratedImageLoad(message.id, slot - 1)"
-                          @error="onGeneratedImageError(message.id, slot - 1)"
-                        />
-                      </button>
-                      <i
-                        v-if="generatedImageState(message.id, slot - 1) !== 'loaded'"
-                        class="dream-slot-spinner"
-                        aria-hidden="true"
-                      ></i>
+                        >
+                          <img
+                            :src="assistantImageAt(message, slot - 1).dataUrl"
+                            :alt="
+                              assistantImageAt(message, slot - 1).revisedPrompt || 'AI 生成图片'
+                            "
+                            @load="onGeneratedImageLoad(message.id, slot - 1)"
+                            @error="onGeneratedImageError(message.id, slot - 1)"
+                          />
+                        </button>
+                        <i
+                          v-if="generatedImageState(message.id, slot - 1) !== 'loaded'"
+                          class="dream-slot-spinner"
+                          aria-hidden="true"
+                        ></i>
+                      </div>
+                    </div>
+                    <div class="image-generation-queue">
+                      <span>{{
+                        message.statusStage === 'preparing-image' ? '意图识别' : '普通队列'
+                      }}</span
+                      ><strong>{{
+                        message.statusStage === 'preparing-image'
+                          ? '正在准备图片任务'
+                          : '成功进入生成阶段'
+                      }}</strong>
                     </div>
                   </div>
-                  <div class="image-generation-queue">
-                    <span>{{
-                      message.statusStage === 'preparing-image' ? '意图识别' : '普通队列'
-                    }}</span
-                    ><strong>{{
-                      message.statusStage === 'preparing-image'
-                        ? '正在准备图片任务'
-                        : '成功进入生成阶段'
-                    }}</strong>
-                  </div>
-                </div>
-                <template v-else>
-                  <div v-if="message.role === 'user' && message.quoted" class="sent-quote">
-                    <i class="bi bi-quote"></i>
-                    <span>[{{ message.quoted.kind }}] {{ message.quoted.content }}</span>
-                  </div>
-                  <div
-                    v-if="message.role === 'user' && message.referenceImages?.length"
-                    class="sent-reference-images"
-                  >
-                    <button
-                      v-for="(image, imageIndex) in message.referenceImages"
-                      :key="`${message.id}-reference-${imageIndex}`"
-                      type="button"
-                      title="查看参考图"
-                      @click="openImagePreview(image, imageIndex, message.referenceImages)"
-                    >
-                      <img
-                        :src="image.dataUrl"
-                        :alt="image.name || '参考图'"
-                        @load="followConversationBottom"
-                      />
-                    </button>
-                  </div>
-                  <AssistantMarkdown
-                    v-if="message.role === 'assistant' && message.content"
-                    :content="message.content"
-                    :streaming="message.pending"
-                  />
-                  <p v-else-if="message.content">{{ message.content }}</p>
-                  <span
-                    v-else-if="message.pending && messageStatus(message).tone === 'working'"
-                    class="typing-indicator"
-                    ><i></i><i></i><i></i
-                  ></span>
-                  <div
-                    v-if="message.images?.length"
-                    class="generated-images"
-                    :class="{
-                      'is-single': message.images.length === 1,
-                      'is-many': message.images.length > 2,
-                      'is-settling': settledImageMessageId === message.id,
-                    }"
-                    :style="{
-                      '--generated-ratio': imageSkeletonRatio(message),
-                      '--image-slot-count': message.images.length,
-                    }"
-                  >
-                    <figure
-                      v-for="(image, imageIndex) in message.images"
-                      :key="`${message.id}-${imageIndex}`"
-                      :class="{
-                        'is-loading': !generatedImageState(message.id, imageIndex),
-                        'is-failed': generatedImageState(message.id, imageIndex) === 'failed',
-                      }"
+                  <template v-else>
+                    <div v-if="message.role === 'user' && message.quoted" class="sent-quote">
+                      <i class="bi bi-quote"></i>
+                      <span>[{{ message.quoted.kind }}] {{ message.quoted.content }}</span>
+                    </div>
+                    <div
+                      v-if="message.role === 'user' && message.referenceImages?.length"
+                      class="sent-reference-images"
                     >
                       <button
-                        v-if="generatedImageState(message.id, imageIndex) !== 'failed'"
-                        class="generated-image-preview"
+                        v-for="(image, imageIndex) in message.referenceImages"
+                        :key="`${message.id}-reference-${imageIndex}`"
                         type="button"
-                        title="查看大图"
-                        @click="openImagePreview(image, imageIndex, message.images)"
+                        title="查看参考图"
+                        @click="openImagePreview(image, imageIndex, message.referenceImages)"
                       >
                         <img
                           :src="image.dataUrl"
-                          :alt="image.revisedPrompt || 'AI 生成图片'"
-                          @load="onGeneratedImageLoad(message.id, imageIndex)"
-                          @error="onGeneratedImageError(message.id, imageIndex)"
+                          :alt="image.name || '参考图'"
+                          @load="followConversationBottom"
                         />
-                        <i class="tile-sheen" aria-hidden="true"></i>
                       </button>
-                      <div v-else class="generated-image-failed">
-                        <i class="bi bi-image-alt"></i>
-                        <span>图片加载失败</span>
-                        <button type="button" @click="retryGeneratedImage(message.id, imageIndex)">
-                          重新加载
-                        </button>
-                      </div>
-                      <span
-                        v-if="burstingImages.has(`${message.id}-${imageIndex}`)"
-                        class="tile-burst"
-                        aria-hidden="true"
-                      >
-                        <i
-                          v-for="particle in 12"
-                          :key="particle"
-                          :style="burstParticleStyle(particle, imageIndex)"
-                        ></i>
-                      </span>
-                      <div
-                        v-if="generatedImageState(message.id, imageIndex) === 'loaded'"
-                        class="generated-image-actions"
+                    </div>
+                    <AssistantMarkdown
+                      v-if="message.role === 'assistant' && message.content"
+                      :content="message.content"
+                      :streaming="message.pending"
+                    />
+                    <p v-else-if="message.content">{{ message.content }}</p>
+                    <span
+                      v-else-if="message.pending && messageStatus(message).tone === 'working'"
+                      class="typing-indicator"
+                      ><i></i><i></i><i></i
+                    ></span>
+                    <div
+                      v-if="message.images?.length"
+                      class="generated-images"
+                      :class="{
+                        'is-single': message.images.length === 1,
+                        'is-many': message.images.length > 2,
+                        'is-settling': settledImageMessageId === message.id,
+                      }"
+                      :style="{
+                        '--generated-ratio': imageSkeletonRatio(message),
+                        '--image-slot-count': message.images.length,
+                      }"
+                    >
+                      <figure
+                        v-for="(image, imageIndex) in message.images"
+                        :key="`${message.id}-${imageIndex}`"
+                        :class="{
+                          'is-loading': !generatedImageState(message.id, imageIndex),
+                          'is-failed': generatedImageState(message.id, imageIndex) === 'failed',
+                        }"
                       >
                         <button
+                          v-if="generatedImageState(message.id, imageIndex) !== 'failed'"
+                          class="generated-image-preview"
                           type="button"
-                          title="下载原图"
-                          aria-label="下载原图"
-                          @click="downloadImage(image, imageIndex)"
+                          title="查看大图"
+                          @click="openImagePreview(image, imageIndex, message.images)"
                         >
-                          <i class="bi bi-download"></i>
+                          <img
+                            :src="image.dataUrl"
+                            :alt="image.revisedPrompt || 'AI 生成图片'"
+                            @load="onGeneratedImageLoad(message.id, imageIndex)"
+                            @error="onGeneratedImageError(message.id, imageIndex)"
+                          />
+                          <i class="tile-sheen" aria-hidden="true"></i>
                         </button>
-                      </div>
-                    </figure>
-                  </div>
-                </template>
-              </div>
-              <p v-if="message.role === 'assistant' && !message.pending" class="message-meta">
-                以上内容由 AI 生成
-              </p>
-              <div v-if="message.role === 'assistant' && !message.pending" class="message-actions">
-                <button
-                  class="regenerate-button"
-                  type="button"
-                  title="重新生成"
-                  :disabled="isGenerating || message.id !== lastAssistantId"
-                  @click="retryAssistant(message)"
-                >
-                  <i class="bi bi-arrow-repeat"></i><span>重新生成</span>
-                </button>
-                <button
-                  class="copy-message-button"
-                  type="button"
-                  :title="copiedMessageId === message.id ? '已复制' : '复制回复'"
-                  :aria-label="copiedMessageId === message.id ? '已复制' : '复制回复'"
-                  :class="{ 'is-copied': copiedMessageId === message.id }"
-                  @click="copyMessage(message.content, message.id)"
-                >
-                  <i
-                    class="bi"
-                    :class="copiedMessageId === message.id ? 'bi-check2' : 'bi-copy'"
-                  ></i>
-                </button>
-                <button type="button" title="引用" aria-label="引用" @click="quoteMessage(message)">
-                  <i class="bi bi-quote"></i>
-                </button>
-                <button
-                  type="button"
-                  title="更多操作"
-                  aria-label="更多操作"
-                  @click.stop="
-                    activeMessageMenuId = activeMessageMenuId === message.id ? '' : message.id
-                  "
-                >
-                  <i class="bi bi-three-dots"></i>
-                </button>
+                        <div v-else class="generated-image-failed">
+                          <i class="bi bi-image-alt"></i>
+                          <span>图片加载失败</span>
+                          <button
+                            type="button"
+                            @click="retryGeneratedImage(message.id, imageIndex)"
+                          >
+                            重新加载
+                          </button>
+                        </div>
+                        <span
+                          v-if="burstingImages.has(`${message.id}-${imageIndex}`)"
+                          class="tile-burst"
+                          aria-hidden="true"
+                        >
+                          <i
+                            v-for="particle in 12"
+                            :key="particle"
+                            :style="burstParticleStyle(particle, imageIndex)"
+                          ></i>
+                        </span>
+                        <div
+                          v-if="generatedImageState(message.id, imageIndex) === 'loaded'"
+                          class="generated-image-actions"
+                        >
+                          <button
+                            type="button"
+                            title="下载原图"
+                            aria-label="下载原图"
+                            @click="downloadImage(image, imageIndex)"
+                          >
+                            <i class="bi bi-download"></i>
+                          </button>
+                        </div>
+                      </figure>
+                    </div>
+                  </template>
+                </div>
+                <p v-if="message.role === 'assistant' && !message.pending" class="message-meta">
+                  以上内容由 AI 生成
+                </p>
                 <div
-                  v-if="activeMessageMenuId === message.id"
-                  class="message-more-menu"
-                  @click.stop
+                  v-if="message.role === 'assistant' && !message.pending"
+                  class="message-actions"
                 >
                   <button
-                    v-if="message.kind !== 'image'"
+                    class="regenerate-button"
                     type="button"
-                    @click="downloadMarkdown(message)"
+                    title="重新生成"
+                    :disabled="isGenerating || message.id !== lastAssistantId"
+                    @click="retryAssistant(message)"
                   >
-                    <i class="bi bi-filetype-md"></i><span>下载 Markdown</span>
+                    <i class="bi bi-arrow-repeat"></i><span>重新生成</span>
                   </button>
-                  <button class="is-danger" type="button" @click="deleteMessage(message.id)">
-                    <i class="bi bi-trash3"></i><span>删除</span>
+                  <button
+                    class="copy-message-button"
+                    type="button"
+                    :title="copiedMessageId === message.id ? '已复制' : '复制回复'"
+                    :aria-label="copiedMessageId === message.id ? '已复制' : '复制回复'"
+                    :class="{ 'is-copied': copiedMessageId === message.id }"
+                    @click="copyMessage(message.content, message.id)"
+                  >
+                    <i
+                      class="bi"
+                      :class="copiedMessageId === message.id ? 'bi-check2' : 'bi-copy'"
+                    ></i>
                   </button>
+                  <button
+                    type="button"
+                    title="引用"
+                    aria-label="引用"
+                    @click="quoteMessage(message)"
+                  >
+                    <i class="bi bi-quote"></i>
+                  </button>
+                  <button
+                    type="button"
+                    title="更多操作"
+                    aria-label="更多操作"
+                    @click.stop="
+                      activeMessageMenuId = activeMessageMenuId === message.id ? '' : message.id
+                    "
+                  >
+                    <i class="bi bi-three-dots"></i>
+                  </button>
+                  <div
+                    v-if="activeMessageMenuId === message.id"
+                    class="message-more-menu"
+                    @click.stop
+                  >
+                    <button
+                      v-if="message.kind !== 'image'"
+                      type="button"
+                      @click="downloadMarkdown(message)"
+                    >
+                      <i class="bi bi-filetype-md"></i><span>下载 Markdown</span>
+                    </button>
+                    <button class="is-danger" type="button" @click="deleteMessage(message.id)">
+                      <i class="bi bi-trash3"></i><span>删除</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
               </article>
             </div>
           </div>
@@ -2744,6 +2848,7 @@ onBeforeUnmount(() => {
                   <span class="model-mark"><i class="bi bi-stars"></i></span>
                   <span class="model-copy">
                     <strong>{{ model.label }}</strong>
+                    <ModelPointPrice :model="model" :per-image="mode === 'image'" compact />
                   </span>
                   <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
                 </button>
@@ -2860,6 +2965,7 @@ onBeforeUnmount(() => {
                   <span class="model-mark"><i class="bi bi-stars"></i></span>
                   <span class="model-copy">
                     <strong>{{ model.label }}</strong>
+                    <ModelPointPrice :model="model" per-image compact />
                     <small>{{ model.description }}</small>
                   </span>
                   <i v-if="generationModel === model.model" class="bi bi-check-lg menu-check"></i>
@@ -3009,9 +3115,7 @@ onBeforeUnmount(() => {
               ></span>
             </TransitionGroup>
             <button
-              v-if="
-                referenceImages.length && referenceImages.length < 4 && !isUploadingReferences
-              "
+              v-if="referenceImages.length && referenceImages.length < 4 && !isUploadingReferences"
               class="reference-add-more"
               type="button"
               title="继续添加参考图"
@@ -3291,8 +3395,12 @@ onBeforeUnmount(() => {
         aria-hidden="true"
       >
         <strong>{{ conversationPeek.conversation.title }}</strong>
-        <p v-for="(line, index) in conversationPeekLines(conversationPeek.conversation)" :key="index">
-          <b>{{ line.role === 'user' ? '我' : 'AI' }}</b>{{ line.text }}
+        <p
+          v-for="(line, index) in conversationPeekLines(conversationPeek.conversation)"
+          :key="index"
+        >
+          <b>{{ line.role === 'user' ? '我' : 'AI' }}</b
+          >{{ line.text }}
         </p>
         <small>{{ formatTime(conversationPeek.conversation.updatedAt) }}</small>
       </div>

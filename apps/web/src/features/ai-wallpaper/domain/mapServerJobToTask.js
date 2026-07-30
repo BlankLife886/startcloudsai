@@ -195,6 +195,16 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
           : existingTask?.transparentPngEnabled === true,
     aspectRatio:
       input.aspectRatio || job?.params?.aspectRatio || existingTask?.aspectRatio || '16:9',
+    requestedAspectRatio:
+      input.requestedAspectRatio ||
+      job?.params?.requestedAspectRatio ||
+      existingTask?.requestedAspectRatio ||
+      '',
+    autoAspectRatioCandidates:
+      input.autoAspectRatioCandidates ||
+      job?.params?.autoAspectRatioCandidates ||
+      existingTask?.autoAspectRatioCandidates ||
+      [],
     ...outputSizeFields,
     resolutionScale:
       input.resolutionScale || job?.params?.resolutionScale || existingTask?.resolutionScale || '',

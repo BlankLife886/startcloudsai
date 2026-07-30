@@ -137,7 +137,6 @@ async function onSubmit() {
             size="large"
             native-type="submit"
             :loading="loading"
-            @click="onSubmit"
           >
             {{ loading ? '登录中…' : '进入控制台' }}
           </el-button>

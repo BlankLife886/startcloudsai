@@ -218,7 +218,7 @@
 
 /* 首页与外层布局的衔接：顶栏贴齐，去掉 +0.5rem 白缝 */
 html.starcloud-home-page .main-content {
-  padding-top: var(--app-header-offset, 82px);
+  padding-top: 0;
   padding-bottom: 0;
   background: #f1efff;
 }

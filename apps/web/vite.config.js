@@ -59,6 +59,7 @@ export default defineConfig(({ mode }) => {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined
             if (id.includes('/three/')) return 'vendor-three'
+            if (id.includes('/leafer-ui/') || id.includes('/@leafer-')) return 'vendor-leafer'
             if (id.includes('/@vue/') || id.includes('/vue/') || id.includes('/pinia/')) {
               return 'vendor-vue'
             }

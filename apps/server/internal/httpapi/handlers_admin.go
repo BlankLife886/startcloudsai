@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
+	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -31,6 +33,7 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	weekAgo := now.AddDate(0, 0, -7)
 	monthAgo := now.AddDate(0, 0, -30)
+	dayAgo := now.Add(-24 * time.Hour)
 
 	totalUsers, err := store.CountUsers(ctx, s.St.Pool)
 	if err != nil {
@@ -42,7 +45,12 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	runningTasks, err := store.CountTasksInStatuses(ctx, s.St.Pool, []string{"queued", "running"})
+	performance, err := store.GetTaskPerformanceSummary(ctx, s.St.Pool, dayAgo)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	providerPerformance, err := store.TaskProviderPerformanceSince(ctx, s.St.Pool, dayAgo)
 	if err != nil {
 		fail(c, err)
 		return
@@ -56,7 +64,9 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 	for offset := 6; offset >= 0; offset-- {
 		day := now.AddDate(0, 0, -offset).Format("2006-01-02")
 		row := byDay[day]
-		taskDaily = append(taskDaily, gin.H{"date": day, "total": row.Total, "succeeded": row.Succeeded})
+		taskDaily = append(taskDaily, gin.H{
+			"date": day, "total": row.Total, "succeeded": row.Succeeded, "failed": row.Failed,
+		})
 	}
 	revenue, err := store.RevenueSince(ctx, s.St.Pool, monthAgo)
 	if err != nil {
@@ -78,13 +88,15 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		typeDistribution[t] = byType[t]
 	}
 	ok(c, gin.H{
-		"totalUsers":         totalUsers,
-		"newUsersToday":      newUsersToday,
-		"runningTasks":       runningTasks,
-		"taskDaily":          taskDaily,
-		"revenueCents":       revenue,
-		"walletBalanceCents": balanceTotal,
-		"typeDistribution":   typeDistribution,
+		"totalUsers":          totalUsers,
+		"newUsersToday":       newUsersToday,
+		"runningTasks":        performance.QueuedNow + performance.RunningNow,
+		"taskPerformance":     performance,
+		"providerPerformance": providerPerformance,
+		"taskDaily":           taskDaily,
+		"revenueCents":        revenue,
+		"walletBalanceCents":  balanceTotal,
+		"typeDistribution":    typeDistribution,
 	})
 }
 
@@ -893,11 +905,125 @@ func parseDatetime(s string) (time.Time, error) {
 }
 
 type announcementIn struct {
-	Title    string  `json:"title"`
-	Body     *string `json:"body"`
-	Active   *bool   `json:"active"`
-	StartsAt *string `json:"startsAt"`
-	EndsAt   *string `json:"endsAt"`
+	Title    string                `json:"title"`
+	Body     *string               `json:"body"`
+	Active   *bool                 `json:"active"`
+	StartsAt *string               `json:"startsAt"`
+	EndsAt   *string               `json:"endsAt"`
+	Config   *announcementConfigIn `json:"config"`
+}
+
+type announcementAssetIn struct {
+	URL string `json:"url"`
+	Alt string `json:"alt,omitempty"`
+}
+
+type announcementConfigIn struct {
+	Placement          string                `json:"placement"`
+	Layout             string                `json:"layout"`
+	Assets             []announcementAssetIn `json:"assets,omitempty"`
+	DecorImageURL      string                `json:"decorImageUrl,omitempty"`
+	CTAText            string                `json:"ctaText,omitempty"`
+	CTAURL             string                `json:"ctaUrl,omitempty"`
+	CloseText          string                `json:"closeText,omitempty"`
+	AllowClose         bool                  `json:"allowClose"`
+	Frequency          string                `json:"frequency"`
+	Version            int                   `json:"version"`
+	DismissHours       int                   `json:"dismissHours"`
+	CarouselEnabled    bool                  `json:"carouselEnabled"`
+	CarouselIntervalMS int                   `json:"carouselIntervalMs"`
+}
+
+func normalizeAnnouncementConfig(input *announcementConfigIn) (json.RawMessage, error) {
+	config := announcementConfigIn{
+		Placement:          "modal",
+		Layout:             "text_only",
+		AllowClose:         true,
+		Frequency:          "session_once",
+		Version:            1,
+		DismissHours:       24,
+		CarouselIntervalMS: 4500,
+	}
+	if input != nil {
+		config = *input
+		config.Placement = strings.TrimSpace(config.Placement)
+		config.Layout = strings.TrimSpace(config.Layout)
+		config.DecorImageURL = strings.TrimSpace(config.DecorImageURL)
+		config.CTAText = strings.TrimSpace(config.CTAText)
+		config.CTAURL = strings.TrimSpace(config.CTAURL)
+		config.CloseText = strings.TrimSpace(config.CloseText)
+		config.Frequency = strings.TrimSpace(config.Frequency)
+	}
+	if config.Placement == "" {
+		config.Placement = "modal"
+	}
+	if config.Layout == "" {
+		config.Layout = "text_only"
+	}
+	if config.Frequency == "" {
+		config.Frequency = "session_once"
+	}
+	if config.Version <= 0 {
+		config.Version = 1
+	}
+	if config.DismissHours <= 0 {
+		config.DismissHours = 24
+	}
+	if config.CarouselIntervalMS <= 0 {
+		config.CarouselIntervalMS = 4500
+	}
+	if !containsString([]string{"modal", "banner"}, config.Placement) {
+		return nil, apperr.E("validation_error", "config.placement: 仅支持 modal 或 banner", 422)
+	}
+	if !containsString([]string{"text_only", "image_top", "image_left", "image_right", "grid", "carousel"}, config.Layout) {
+		return nil, apperr.E("validation_error", "config.layout: 不支持的公告布局", 422)
+	}
+	if !containsString([]string{"session_once", "every_open", "once_per_version", "daily", "dismiss_hours"}, config.Frequency) {
+		return nil, apperr.E("validation_error", "config.frequency: 不支持的展示频率", 422)
+	}
+	if len(config.Assets) > 4 {
+		return nil, apperr.E("validation_error", "config.assets: 最多配置 4 张图片", 422)
+	}
+	for index := range config.Assets {
+		config.Assets[index].URL = strings.TrimSpace(config.Assets[index].URL)
+		config.Assets[index].Alt = strings.TrimSpace(config.Assets[index].Alt)
+		if !validAnnouncementURL(config.Assets[index].URL) {
+			return nil, apperr.E("validation_error", fmt.Sprintf("config.assets[%d].url: 地址无效", index), 422)
+		}
+		if len([]rune(config.Assets[index].Alt)) > 200 {
+			return nil, apperr.E("validation_error", fmt.Sprintf("config.assets[%d].alt: 不能超过 200 字", index), 422)
+		}
+	}
+	if config.DecorImageURL != "" && !validAnnouncementURL(config.DecorImageURL) {
+		return nil, apperr.E("validation_error", "config.decorImageUrl: 地址无效", 422)
+	}
+	if (config.CTAText == "") != (config.CTAURL == "") {
+		return nil, apperr.E("validation_error", "config.ctaText 与 config.ctaUrl 必须同时填写", 422)
+	}
+	if config.CTAURL != "" && !validAnnouncementURL(config.CTAURL) {
+		return nil, apperr.E("validation_error", "config.ctaUrl: 地址无效", 422)
+	}
+	if len([]rune(config.CTAText)) > 40 || len([]rune(config.CloseText)) > 40 {
+		return nil, apperr.E("validation_error", "公告按钮文案不能超过 40 字", 422)
+	}
+	if config.Version > 1_000_000 || config.DismissHours > 720 {
+		return nil, apperr.E("validation_error", "公告版本或再次展示间隔超出范围", 422)
+	}
+	if config.CarouselIntervalMS < 1500 || config.CarouselIntervalMS > 20000 {
+		return nil, apperr.E("validation_error", "config.carouselIntervalMs: 须在 1500-20000 之间", 422)
+	}
+	return json.Marshal(config)
+}
+
+func validAnnouncementURL(value string) bool {
+	if value == "" || len(value) > 2048 || strings.ContainsAny(value, "\r\n") {
+		return false
+	}
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+		return true
+	}
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != ""
 }
 
 func parseOptDatetime(s *string, field string) (*time.Time, error) {
@@ -917,9 +1043,18 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	body.Title = strings.TrimSpace(body.Title)
 	if body.Title == "" || len([]rune(body.Title)) > 200 {
 		fail(c, apperr.E("validation_error", "title: 长度须在 1-200 之间", 422))
 		return
+	}
+	if body.Body != nil {
+		value := strings.TrimSpace(*body.Body)
+		if len([]rune(value)) > 5000 {
+			fail(c, apperr.E("validation_error", "body: 不能超过 5000 字", 422))
+			return
+		}
+		body.Body = &value
 	}
 	startsAt, err := parseOptDatetime(body.StartsAt, "startsAt")
 	if err != nil {
@@ -927,6 +1062,15 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 		return
 	}
 	endsAt, err := parseOptDatetime(body.EndsAt, "endsAt")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if startsAt != nil && endsAt != nil && !endsAt.After(*startsAt) {
+		fail(c, apperr.E("validation_error", "endsAt: 必须晚于 startsAt", 422))
+		return
+	}
+	config, err := normalizeAnnouncementConfig(body.Config)
 	if err != nil {
 		fail(c, err)
 		return
@@ -939,7 +1083,7 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 	var announcement *store.Announcement
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var ierr error
-		announcement, ierr = store.InsertAnnouncement(ctx, tx, body.Title, body.Body, active, startsAt, endsAt)
+		announcement, ierr = store.InsertAnnouncement(ctx, tx, body.Title, body.Body, active, startsAt, endsAt, config)
 		if ierr != nil {
 			return ierr
 		}
@@ -954,11 +1098,12 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 }
 
 type announcementPatchIn struct {
-	Title    Opt[string] `json:"title"`
-	Body     Opt[string] `json:"body"`
-	Active   Opt[bool]   `json:"active"`
-	StartsAt Opt[string] `json:"startsAt"`
-	EndsAt   Opt[string] `json:"endsAt"`
+	Title    Opt[string]           `json:"title"`
+	Body     Opt[string]           `json:"body"`
+	Active   Opt[bool]             `json:"active"`
+	StartsAt Opt[string]           `json:"startsAt"`
+	EndsAt   Opt[string]           `json:"endsAt"`
+	Config   *announcementConfigIn `json:"config"`
 }
 
 func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
@@ -974,6 +1119,17 @@ func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
 	}
 	if body.Title.Valid && (body.Title.Value == "" || len([]rune(body.Title.Value)) > 200) {
 		fail(c, apperr.E("validation_error", "title: 长度须在 1-200 之间", 422))
+		return
+	}
+	if body.Title.Valid {
+		body.Title.Value = strings.TrimSpace(body.Title.Value)
+		if body.Title.Value == "" {
+			fail(c, apperr.E("validation_error", "title: 不能为空", 422))
+			return
+		}
+	}
+	if body.Body.Valid && len([]rune(body.Body.Value)) > 5000 {
+		fail(c, apperr.E("validation_error", "body: 不能超过 5000 字", 422))
 		return
 	}
 	ctx := c.Request.Context()
@@ -1010,6 +1166,18 @@ func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
 			return
 		}
 		announcement.EndsAt = t
+	}
+	if announcement.StartsAt != nil && announcement.EndsAt != nil && !announcement.EndsAt.After(*announcement.StartsAt) {
+		fail(c, apperr.E("validation_error", "endsAt: 必须晚于 startsAt", 422))
+		return
+	}
+	if body.Config != nil {
+		config, cerr := normalizeAnnouncementConfig(body.Config)
+		if cerr != nil {
+			fail(c, cerr)
+			return
+		}
+		announcement.Config = config
 	}
 	if err := store.UpdateAnnouncement(ctx, s.St.Pool, announcement); err != nil {
 		fail(c, err)
@@ -1231,6 +1399,7 @@ var settingsCamel = map[string]string{
 	"signup_bonus_cents":     "signupBonusCents",
 	"registration_enabled":   "registrationEnabled",
 	"task_models":            "taskModels",
+	"image_service_routes":   "imageServiceRoutes",
 	"free_daily_cents":       "freeDailyCents",
 	"submission_enabled":     "submissionEnabled",
 	"auto_approve":           "autoApprove",
@@ -1244,6 +1413,9 @@ var settingsCamel = map[string]string{
 	"sub2api_chat_models":    "sub2apiChatModels",
 	"sub2api_image_model":    "sub2apiImageModel",
 	"sub2api_timeout_secs":   "sub2apiTimeoutSecs",
+	"crun_base_url":          "crunBaseUrl",
+	"crun_api_key":           "crunApiKey",
+	"crun_timeout_secs":      "crunTimeoutSecs",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1277,7 +1449,7 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		if camel == "" {
 			camel = k
 		}
-		if k == "c2a_api_key" || k == "sub2api_api_key" {
+		if k == "c2a_api_key" || k == "sub2api_api_key" || k == "crun_api_key" {
 			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
 			var stored string
 			_ = json.Unmarshal(v, &stored)
@@ -1362,13 +1534,26 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
 				return
 			}
-		case "task_models", "sub2api_chat_models":
+		case "task_models", "sub2api_chat_models", "image_service_routes":
 			var v map[string]string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
 				return
 			}
-			if snake == "sub2api_chat_models" {
+			if snake == "image_service_routes" {
+				cleaned := make(map[string]string, len(v))
+				for routeKey, provider := range v {
+					routeKey = strings.TrimSpace(routeKey)
+					provider = strings.ToLower(strings.TrimSpace(provider))
+					if !settings.ValidImageServiceRoute(routeKey) ||
+						(provider != "c2a" && provider != "sub2api" && provider != "crun") {
+						fail(c, apperr.E("validation_error", camel+": 页面或服务类型无效", 422))
+						return
+					}
+					cleaned[routeKey] = provider
+				}
+				raw, _ = json.Marshal(cleaned)
+			} else if snake == "sub2api_chat_models" {
 				if len(v) > 40 {
 					fail(c, apperr.E("validation_error", camel+": 最多配置 40 个模型", 422))
 					return
@@ -1385,7 +1570,7 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				}
 				raw, _ = json.Marshal(cleaned)
 			}
-		case "c2a_base_url", "sub2api_base_url":
+		case "c2a_base_url", "sub2api_base_url", "crun_base_url":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
@@ -1398,7 +1583,7 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			}
 			normalized, _ := json.Marshal(v)
 			raw = normalized
-		case "c2a_api_key", "sub2api_api_key":
+		case "c2a_api_key", "sub2api_api_key", "crun_api_key":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
@@ -1418,6 +1603,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 600 {
 				fail(c, apperr.E("validation_error", camel+": 须在 0-600 之间（0 = 使用默认）", 422))
+				return
+			}
+		case "crun_timeout_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1800 {
+				fail(c, apperr.E("validation_error", camel+": 须在 0-1800 之间（0 = 使用默认）", 422))
 				return
 			}
 		case "sub2api_chat_model", "sub2api_image_model":
@@ -1571,6 +1762,47 @@ func (s *Server) adminTestSub2API(c *gin.Context, _ *store.User) {
 		"ok": true, "modelCount": total, "models": visible,
 		"truncated": total > len(visible),
 	})
+}
+
+func (s *Server) adminTestCRUN(c *gin.Context, _ *store.User) {
+	var override struct {
+		BaseURL string `json:"baseUrl"`
+		APIKey  string `json:"apiKey"`
+	}
+	_ = c.ShouldBindJSON(&override)
+	ctx := c.Request.Context()
+	resolved, err := settings.ResolveCRUN(ctx, s.St.Pool, settings.CRUNConfig{
+		BaseURL: s.Cfg.CRUNBaseURL, APIKey: s.Cfg.CRUNAPIKey, TimeoutSecs: s.Cfg.CRUNTimeoutSecs,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if value := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); value != "" {
+		if netguard.ValidateURL(value, s.Cfg.AppEnv == "development", false) != nil {
+			fail(c, apperr.E("validation_error", "baseUrl: 地址无效或指向受限网络", 422))
+			return
+		}
+		resolved.BaseURL = value
+	}
+	if value := strings.TrimSpace(override.APIKey); value != "" && !strings.HasPrefix(value, "****") {
+		resolved.APIKey = value
+	}
+	client, err := crun.New(resolved.BaseURL, resolved.APIKey, crun.DefaultModel, resolved.TimeoutSecs)
+	if err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
+		return
+	}
+	balance, err := client.Balance(ctx)
+	if err != nil {
+		message := err.Error()
+		if runes := []rune(message); len(runes) > 500 {
+			message = string(runes[:500])
+		}
+		fail(c, apperr.E("crun_test_failed", message, 502))
+		return
+	}
+	ok(c, gin.H{"ok": true, "balance": balance, "model": crun.DefaultModel})
 }
 
 // adminModelList cleans, de-duplicates and sorts model IDs before exposing them

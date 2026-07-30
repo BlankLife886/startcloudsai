@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -121,6 +122,70 @@ func TestCreateTaskSnapshotsConfiguredModel(t *testing.T) {
 	}
 	if second.Model != "new-t2i" {
 		t.Fatalf("second model = %q, want new-t2i", second.Model)
+	}
+}
+
+func TestCreateTaskUsesUserSelectedPublicModel(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{ID: "provider", Name: "Provider", Adapter: "openai", BaseURL: "https://api.example.com", APIKey: "secret", Enabled: true}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "quality", Name: "Quality", ProviderID: "provider", UpstreamModel: "imagen-4-ultra", Kind: "image", PriceCents: 20, Public: true, Default: true, Enabled: true},
+		{ID: "fast", Name: "Fast", ProviderID: "provider", UpstreamModel: "flux-kontext-max", Kind: "image", PriceCents: 12, Public: true, Enabled: true, FastMode: true, MinSeconds: 10, MaxSeconds: 20},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	task, _, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "测试", Count: 1, Params: map[string]any{"publicModelKey": "fast"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Model != "flux-kontext-max" || task.CostCents != 12 {
+		t.Fatalf("fast task = model %q cost %d", task.Model, task.CostCents)
+	}
+}
+
+func TestCreateTaskSnapshotsConfiguredImageService(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "image_service_routes", json.RawMessage(`{"t2i":"sub2api"}`)); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Params["_serviceProvider"] != "sub2api" {
+		t.Fatalf("provider snapshot = %#v", task.Params["_serviceProvider"])
+	}
+	if task.Model != "" {
+		t.Fatalf("Sub2API model should resolve at execution, got %q", task.Model)
+	}
+}
+
+func TestStoreCRUNTaskIDsInTaskParams(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"crun-task-1", "crun-task-2"}
+	if err := store.SetTaskCRUNTaskIDs(context.Background(), st.Pool, task.ID, want); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetTask(context.Background(), st.Pool, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := stored.Params["_crunTaskIds"].([]any)
+	if !ok || len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("stored CRUN task IDs = %#v", stored.Params["_crunTaskIds"])
 	}
 }
 

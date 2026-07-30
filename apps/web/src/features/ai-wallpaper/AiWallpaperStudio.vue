@@ -1,6 +1,7 @@
 <script setup>
 import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
+import { getModelAspectRatiosForResolution } from '@/features/ai-shared/modelImageCapabilities'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
@@ -13,6 +14,7 @@ import { useAiWallpaperStudioState } from './composables/useAiWallpaperStudioSta
 import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
+  T2I_MODERATION_OPTIONS,
   T2I_OUTPUT_FORMAT_OPTIONS,
   T2I_PROMPT_LIBRARY,
   T2I_QUALITY_OPTIONS,
@@ -27,10 +29,19 @@ import {
   uniqueTaskOutputs,
   uniqueTaskThumbnailOutputs,
 } from '@/features/ai-wallpaper/domain/galleryDisplay'
+import {
+  galleryFocusForItem,
+  galleryGroupKey,
+  galleryGroupTasks,
+  resolveGalleryFocus,
+} from '@/features/ai-wallpaper/domain/galleryFocus'
 import { formatOutputSize } from '@/features/ai-wallpaper/domain/outputSizeMetadata'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
+import { useAppearanceStore } from '@/stores/appearance'
 const loadLocalMaskEditorDialog = () => import('./components/LocalMaskEditorDialog.vue')
 const LocalMaskEditorDialog = defineAsyncComponent(loadLocalMaskEditorDialog)
+
+const appearanceStore = useAppearanceStore()
 
 const {
   tasks,
@@ -46,6 +57,8 @@ const {
   imageQuality,
   resolutionScale,
   upscaleOutputFormat,
+  moderationLevel,
+  maxReferenceImages,
   generationCostLabel,
   inputMode,
   isRunning,
@@ -85,10 +98,109 @@ const {
   requiredCredits,
   availableCredits,
   closeCreditsDialog,
+  activePublicModelOptions,
+  selectedPublicModel,
+  currentPublicModel,
 } = useAiWallpaperStudioState()
 
+const modelSelectOptions = computed(() =>
+  activePublicModelOptions.value.map((model) => ({
+    value: model.id,
+    label: model.label,
+    pricePoints: model.pricePoints,
+    standardPricePoints: model.standardPricePoints,
+    discountPricePoints: model.discountPricePoints,
+  })),
+)
+const resolutionSelectOptions = computed(() => {
+  const supported = Array.isArray(currentPublicModel.value?.resolutions)
+    ? currentPublicModel.value.resolutions.map((item) => String(item || '').toUpperCase())
+    : []
+  if (!supported.length) return T2I_RESOLUTION_OPTIONS
+  return T2I_RESOLUTION_OPTIONS.filter((option) => supported.includes(option.value))
+})
+const aspectSelectOptions = computed(() => {
+  const supported = getModelAspectRatiosForResolution(
+    currentPublicModel.value,
+    resolutionScale.value,
+  )
+  return T2I_ASPECT_OPTIONS.filter((option) => supported.includes(option.value))
+})
+const qualitySelectOptions = computed(() => {
+  const supported = currentPublicModel.value?.qualities || []
+  return T2I_QUALITY_OPTIONS.filter((option) => supported.includes(option.value))
+})
+const outputFormatSelectOptions = computed(() => {
+  const supported = currentPublicModel.value?.outputFormats || []
+  return T2I_OUTPUT_FORMAT_OPTIONS.filter((option) => supported.includes(option.value))
+})
+const moderationSelectOptions = computed(() => {
+  const supported = currentPublicModel.value?.moderationLevels || []
+  return T2I_MODERATION_OPTIONS.filter((option) => supported.includes(option.value))
+})
+const frameParameterSummary = computed(() => {
+  const aspectLabel =
+    aspectSelectOptions.value.find((option) => option.value === aspectRatio.value)?.value ||
+    aspectRatio.value
+  const resolutionLabel =
+    resolutionSelectOptions.value.find((option) => option.value === resolutionScale.value)?.label ||
+    resolutionScale.value
+  const qualityLabel =
+    qualitySelectOptions.value.find((option) => option.value === imageQuality.value)?.label ||
+    imageQuality.value
+  const countLabel =
+    T2I_COUNT_OPTIONS.find((option) => option.value === imageCount.value)?.label ||
+    `${imageCount.value}张`
+  return [aspectLabel, resolutionLabel, qualityLabel, countLabel].filter(Boolean).join(' · ')
+})
+
+watch(
+  resolutionSelectOptions,
+  (options) => {
+    if (!options.some((option) => option.value === resolutionScale.value)) {
+      resolutionScale.value = options[0]?.value || '1K'
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  [currentPublicModel, aspectSelectOptions, qualitySelectOptions, outputFormatSelectOptions],
+  ([model, aspectOptions, qualityOptions, formatOptions]) => {
+    if (
+      aspectOptions.length &&
+      !aspectOptions.some((option) => option.value === aspectRatio.value)
+    ) {
+      aspectRatio.value = aspectOptions[0].value
+    }
+    if (
+      qualityOptions.length &&
+      !qualityOptions.some((option) => option.value === imageQuality.value)
+    ) {
+      imageQuality.value = qualityOptions[0].value
+    }
+    if (!model?.transparentBackground) transparentPngEnabled.value = false
+    if (!formatOptions.length) upscaleOutputFormat.value = 'auto'
+    else if (!formatOptions.some((option) => option.value === upscaleOutputFormat.value)) {
+      upscaleOutputFormat.value = formatOptions[0].value
+    }
+    const moderationOptions = moderationSelectOptions.value
+    if (!moderationOptions.length) moderationLevel.value = ''
+    else if (!moderationOptions.some((option) => option.value === moderationLevel.value)) {
+      moderationLevel.value = moderationOptions[0].value
+    }
+    const referenceLimit = Math.max(0, Number(model?.maxReferenceImages) || 0)
+    if (referenceImages.value.length > referenceLimit) {
+      referenceImages.value = referenceImages.value.slice(0, referenceLimit)
+    }
+  },
+  { immediate: true },
+)
+
 const referenceInputRef = ref(null)
+const openParameterLayer = ref('')
 const skillPanelOpen = ref(false)
+const customSkillDialogOpen = ref(false)
 const customSkillName = ref('')
 const customSkillPrompt = ref('')
 const customSkillDescription = ref('')
@@ -127,7 +239,7 @@ const localMaskEditorBusy = ref(false)
 const localMaskEditorTask = ref(null)
 const localMaskEditorUrl = ref('')
 const deleteConfirmOpen = ref(false)
-const deleteTarget = ref(null)
+const deleteRequest = ref(null)
 const clearFailedConfirmOpen = ref(false)
 const clearingFailedTasks = ref(false)
 const clearFailedTargetCount = ref(0)
@@ -172,10 +284,12 @@ const promptCategoryFilter = ref(
       : 'today',
 )
 const promptSort = ref('recommended')
+const promptViewportRef = ref(null)
 const promptSentinelRef = ref(null)
 const assetSentinelRef = ref(null)
 let promptLoadObserver = null
 let assetLoadObserver = null
+let promptLibraryRequestId = 0
 
 const PROMPT_CATEGORY_META = [
   { value: 'today', label: '今日最新' },
@@ -211,16 +325,47 @@ let stageFlipImageReady = false
 
 const PROMPT_MAX = 20_000
 const effectiveOutputFormat = computed({
-  get: () => (transparentPngEnabled.value ? 'png' : upscaleOutputFormat.value),
+  get: () =>
+    transparentPngEnabled.value &&
+    outputFormatSelectOptions.value.some((item) => item.value === 'png')
+      ? 'png'
+      : upscaleOutputFormat.value,
   set: (value) => {
     if (!transparentPngEnabled.value) upscaleOutputFormat.value = value
   },
 })
 const effectiveOutputFormatOptions = computed(() =>
   transparentPngEnabled.value
-    ? T2I_OUTPUT_FORMAT_OPTIONS.filter((option) => option.value === 'png')
-    : T2I_OUTPUT_FORMAT_OPTIONS,
+    ? outputFormatSelectOptions.value.filter((option) => option.value === 'png')
+    : outputFormatSelectOptions.value,
 )
+const hasOutputControls = computed(
+  () => effectiveOutputFormatOptions.value.length > 0 || moderationSelectOptions.value.length > 0,
+)
+const outputParameterSummary = computed(() => {
+  if (!hasOutputControls.value) return '当前模型不支持'
+  const formatLabel = effectiveOutputFormatOptions.value.find(
+    (option) => option.value === effectiveOutputFormat.value,
+  )?.label
+  const moderationLabel = moderationSelectOptions.value.find(
+    (option) => option.value === moderationLevel.value,
+  )?.label
+  return [formatLabel || '格式不可用', moderationLabel || '审核不可用'].join(' · ')
+})
+const enhanceParameterSummary = computed(() => {
+  const transparentLabel = currentPublicModel.value?.transparentBackground
+    ? `透明${transparentPngEnabled.value ? '开' : '关'}`
+    : '透明禁用'
+  return [
+    `润色${promptPolishEnabled.value ? '开' : '关'}`,
+    `翻译${autoTranslateEnabled.value ? '开' : '关'}`,
+    transparentLabel,
+  ].join(' · ')
+})
+
+watch(hasOutputControls, (available) => {
+  if (!available && openParameterLayer.value === 'output') openParameterLayer.value = ''
+})
 
 const sortedTasks = computed(() =>
   (tasks.value || [])
@@ -312,7 +457,30 @@ const publishDialogStyleLabel = computed(() => {
   const model = String(publishTarget.value?.task?.model || '').trim()
   return model && model !== '未知模型' ? model : 'AI 壁纸'
 })
+const deleteTarget = computed(() => deleteRequest.value?.tasks?.[0] || null)
 const deleteConfirmTitle = computed(() => taskPrompt(deleteTarget.value).slice(0, 72))
+const deleteConfirmIsGroup = computed(() => deleteRequest.value?.scope === 'group')
+const deleteConfirmIsBatchItem = computed(
+  () => !deleteConfirmIsGroup.value && Math.max(1, Number(deleteTarget.value?.batchSize || 1)) > 1,
+)
+const deleteConfirmHeading = computed(() =>
+  deleteConfirmIsGroup.value
+    ? '删除这一组图片？'
+    : deleteConfirmIsBatchItem.value
+      ? '删除这张图片？'
+      : '删除这条历史记录？',
+)
+const deleteConfirmDescription = computed(() => {
+  if (deleteConfirmIsGroup.value) {
+    const count = Math.max(1, Number(deleteRequest.value?.itemCount || 1))
+    return `将删除当前组的 ${count} 张图片，删除后无法恢复。`
+  }
+  return deleteConfirmIsBatchItem.value
+    ? '只会删除当前这一张，不影响同批次的其他图片。删除后无法恢复。'
+    : ''
+})
+const deleteConfirmLabel = computed(() => (deleteConfirmIsGroup.value ? '删除整组' : '确认删除'))
+const deleteBusyLabel = computed(() => (deleteConfirmIsGroup.value ? '整组删除中…' : '删除中…'))
 const runningProgress = computed(() => {
   const running = sortedTasks.value.filter((task) => isBusy(task) || isLocalUpscaling(task))
   if (!running.length) return ''
@@ -381,17 +549,15 @@ const completedImageCount = computed(
   () => imageGallery.value.filter((item) => item.kind === 'image').length,
 )
 const focusKey = ref('')
+const focusGroupKey = ref('')
 const featuredImageAspects = ref({})
 const featuredItem = computed(() => {
-  const items = imageGallery.value
-  if (!items.length) return null
-  return items.find((item) => item.key === focusKey.value) || items[0]
+  return resolveGalleryFocus(imageGallery.value, {
+    key: focusKey.value,
+    groupKey: focusGroupKey.value,
+  }).item
 })
 // 同批次（batchId）或同任务多图归为一组：底部胶片一组一格，主画布整组同屏展示。
-function galleryGroupKey(item) {
-  const task = item?.task
-  return `${item?.kind === 'image' ? 'g' : 'p'}:${String(task?.batchId || task?.id || item?.key || '')}`
-}
 const filmstripGroups = computed(() => {
   const groups = []
   const byKey = new Map()
@@ -405,7 +571,16 @@ const filmstripGroups = computed(() => {
     }
     group.items.push(item)
   }
-  return groups
+  return groups.map((group) => {
+    const imageCover = group.items.find((item) => item.kind === 'image')
+    const pendingCount = group.items.filter((item) => item.kind === 'pending').length
+    return {
+      ...group,
+      kind: imageCover ? (pendingCount ? 'mixed' : 'image') : 'pending',
+      cover: imageCover || group.cover,
+      pendingCount,
+    }
+  })
 })
 const featuredGroup = computed(() => {
   const item = featuredItem.value
@@ -415,7 +590,7 @@ const featuredGroup = computed(() => {
 })
 const stageGridItems = computed(() => {
   const group = featuredGroup.value
-  if (!group || group.kind !== 'image' || group.items.length < 2) return []
+  if (!group || group.items.length < 2) return []
   return group.items
 })
 // 按内容区宽高比挑选行列组合，尽量占满画布：只取无空槽的组合，3 张另备“左一右二”拼贴
@@ -877,6 +1052,7 @@ function promptCategoryLabel(value) {
 }
 
 function selectPromptCategory(value) {
+  if (promptViewportRef.value) promptViewportRef.value.scrollTop = 0
   promptCategoryFilter.value = value
 }
 
@@ -970,27 +1146,33 @@ function setupHistoryObserver() {
 }
 
 async function loadManagedPromptLibrary({ reset = false } = {}) {
-  if (promptLibraryLoading.value || promptLibraryLoadingMore.value) return
+  if (!reset && (promptLibraryLoading.value || promptLibraryLoadingMore.value)) return
   const nextPage = reset ? 1 : promptPage.value + 1
   if (!reset && !promptHasMore.value) return
-  if (reset) promptLibraryLoading.value = true
-  else promptLibraryLoadingMore.value = true
+  const requestId = reset ? ++promptLibraryRequestId : promptLibraryRequestId
+  const requestCategory = promptCategoryFilter.value
+  const requestSort = requestCategory === 'today' ? 'latest' : promptSort.value
+  if (reset) {
+    promptLibraryLoading.value = true
+    promptLibraryLoadingMore.value = false
+  } else {
+    promptLibraryLoadingMore.value = true
+  }
   try {
     const response = await listPromptLibrary('t2i', {
       pageNumber: nextPage,
       pageSize: 24,
-      category: ['today', 'my-favorites'].includes(promptCategoryFilter.value)
-        ? 'all'
-        : promptCategoryFilter.value,
+      category: ['today', 'my-favorites'].includes(requestCategory) ? 'all' : requestCategory,
       scope:
-        promptCategoryFilter.value === 'my-favorites'
+        requestCategory === 'my-favorites'
           ? 'favorites'
-          : promptCategoryFilter.value === 'today'
+          : requestCategory === 'today'
             ? 'today'
             : '',
-      sort: promptCategoryFilter.value === 'today' ? 'latest' : promptSort.value,
+      sort: requestSort,
       fallbackItems: T2I_PROMPT_LIBRARY,
     })
+    if (requestId !== promptLibraryRequestId) return
     const incoming = Array.isArray(response?.items) ? response.items : []
     managedPromptLibrary.value = reset
       ? incoming
@@ -1003,14 +1185,17 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
     promptTotal.value = Number(response?.total || managedPromptLibrary.value.length)
     promptHasMore.value = response?.hasMore === true
   } catch {
+    if (requestId !== promptLibraryRequestId) return
     if (reset) {
       managedPromptLibrary.value = []
       promptTotal.value = 0
       promptHasMore.value = false
     }
   } finally {
-    promptLibraryLoading.value = false
-    promptLibraryLoadingMore.value = false
+    if (requestId === promptLibraryRequestId) {
+      promptLibraryLoading.value = false
+      promptLibraryLoadingMore.value = false
+    }
   }
 }
 
@@ -1057,6 +1242,21 @@ async function handleReferenceFileInput(event) {
 
 async function handleReferenceDrop(event) {
   await addReferenceFiles(event?.dataTransfer?.files || [])
+}
+
+async function handlePromptPaste(event) {
+  const clipboard = event?.clipboardData
+  if (!clipboard) return
+  const itemFiles = Array.from(clipboard.items || [])
+    .filter((item) => item.kind === 'file' && item.type?.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+  const files = itemFiles.length
+    ? itemFiles
+    : Array.from(clipboard.files || []).filter((file) => file?.type?.startsWith('image/'))
+  if (!files.length) return
+  event.preventDefault()
+  await addReferenceFiles(files)
 }
 
 function useGeneratedAsReference(task, index = 0) {
@@ -1237,43 +1437,77 @@ watch(historyHasMore, async (hasMore) => {
 watch(
   imageGallery,
   (items, prevItems) => {
-    if (!items.length) {
-      focusKey.value = ''
-      return
-    }
     // 用户新提交的任务：立刻聚焦到「生成中」卡片，让进度看得见（首次加载不触发）
     if (Array.isArray(prevItems)) {
       const prevKeys = new Set(prevItems.map((item) => item.key))
       const freshPending = items.find((item) => item.kind === 'pending' && !prevKeys.has(item.key))
       if (freshPending) {
-        focusKey.value = freshPending.key
+        const nextFocus = galleryFocusForItem(freshPending)
+        focusKey.value = nextFocus.key
+        focusGroupKey.value = nextFocus.groupKey
         return
       }
     }
-    if (focusKey.value && items.some((item) => item.key === focusKey.value)) return
-    // pending-id-0 → id-0 完成后自动落到新图
-    const pendingMatch = String(focusKey.value || '').match(/^pending-(.+)-(\d+)$/)
-    if (pendingMatch) {
-      const nextKey = `${pendingMatch[1]}-${pendingMatch[2]}`
-      if (items.some((item) => item.key === nextKey)) {
-        focusKey.value = nextKey
-        return
-      }
-    }
-    const newestImage = items.find((item) => item.kind === 'image')
-    const newestPending = items.find((item) => item.kind === 'pending')
-    focusKey.value = (newestImage || newestPending)?.key || items[0].key
+    const nextFocus = resolveGalleryFocus(items, {
+      key: focusKey.value,
+      groupKey: focusGroupKey.value,
+    })
+    focusKey.value = nextFocus.key
+    focusGroupKey.value = nextFocus.groupKey
   },
   { immediate: true },
 )
 
 function applyFocusedGalleryItem(item) {
   if (!item?.key) return
-  focusKey.value = item.key
+  const nextFocus = galleryFocusForItem(item)
+  focusKey.value = nextFocus.key
+  focusGroupKey.value = nextFocus.groupKey
   if (item.task) viewTask(item.task)
 }
 
+function scrollFilmstripItemIntoComfortZone(event) {
+  const itemElement = event?.currentTarget
+  const filmstrip = itemElement?.closest?.('.t2i-filmstrip')
+  if (!(itemElement instanceof HTMLElement) || !(filmstrip instanceof HTMLElement)) return
+  const allItems = Array.from(filmstrip.querySelectorAll('.t2i-film-item'))
+  const itemRect = itemElement.getBoundingClientRect()
+  const stripRect = filmstrip.getBoundingClientRect()
+  const visibleItems = allItems.filter((element) => {
+    const rect = element.getBoundingClientRect()
+    return rect.right > stripRect.left && rect.left < stripRect.right
+  })
+  const visibleIndex = visibleItems.indexOf(itemElement)
+  const itemCenter = itemRect.left + itemRect.width / 2
+  const nearLeftEdge = visibleIndex >= 0 && visibleIndex < 3
+  const nearRightEdge = visibleIndex >= Math.max(0, visibleItems.length - 3)
+  const maxScrollLeft = Math.max(0, filmstrip.scrollWidth - filmstrip.clientWidth)
+  const canScrollLeft = filmstrip.scrollLeft > 1
+  const canScrollRight = filmstrip.scrollLeft < maxScrollLeft - 1
+  const shouldScrollLeft = nearLeftEdge && canScrollLeft
+  const shouldScrollRight = nearRightEdge && canScrollRight
+  if (!shouldScrollLeft && !shouldScrollRight) return
+
+  const targetScrollLeft = Math.max(
+    0,
+    Math.min(
+      maxScrollLeft,
+      filmstrip.scrollLeft + itemCenter - (stripRect.left + stripRect.width / 2),
+    ),
+  )
+
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  window.requestAnimationFrame(() => {
+    if (!filmstrip.isConnected) return
+    filmstrip.scrollTo({
+      left: targetScrollLeft,
+      behavior: reducedMotion ? 'auto' : 'smooth',
+    })
+  })
+}
+
 function focusGalleryItem(item, event) {
+  scrollFilmstripItemIntoComfortZone(event)
   if (!item?.key || item.key === featuredItem.value?.key) return
   if (galleryGroupKey(item) === (featuredGroup.value?.key ?? '')) {
     applyFocusedGalleryItem(item)
@@ -1578,6 +1812,23 @@ function stepLightbox(delta) {
 }
 
 function handleLightboxKeydown(event) {
+  if (customSkillDialogOpen.value) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeCustomSkillDialog()
+    }
+    return
+  }
+  if (skillPanelOpen.value && event.key === 'Escape') {
+    event.preventDefault()
+    skillPanelOpen.value = false
+    return
+  }
+  if (openParameterLayer.value && event.key === 'Escape') {
+    event.preventDefault()
+    openParameterLayer.value = ''
+    return
+  }
   if (deleteConfirmOpen.value) return
   if (!lightboxOpen.value) return
   if (localMaskEditorOpen.value) {
@@ -2176,27 +2427,78 @@ async function handleCancelTask(task) {
   }
 }
 
-function handleRemoveTask(task) {
-  if (!task?.id || actionBusyId.value) return
-  deleteTarget.value = task
+function openDeleteRequest(tasksToDelete, { scope = 'item', groupKey = '', itemCount = 1 } = {}) {
+  if (actionBusyId.value) return
+  const uniqueTasks = [
+    ...new Map(tasksToDelete.map((task) => [String(task?.id || ''), task])).values(),
+  ].filter((task) => task?.id)
+  if (!uniqueTasks.length) return
+  deleteRequest.value = {
+    scope,
+    tasks: uniqueTasks,
+    groupKey,
+    itemCount: Math.max(1, Number(itemCount || uniqueTasks.length)),
+  }
   deleteConfirmOpen.value = true
+}
+
+function handleRemoveTask(task) {
+  openDeleteRequest([task])
+}
+
+function handleRemoveGroup(group) {
+  const groupTasks = galleryGroupTasks(group)
+  openDeleteRequest(groupTasks, {
+    scope: 'group',
+    groupKey: group?.key || '',
+    itemCount: group?.items?.length || groupTasks.length,
+  })
 }
 
 function closeDeleteConfirm() {
   if (actionBusyId.value) return
   deleteConfirmOpen.value = false
-  deleteTarget.value = null
+  deleteRequest.value = null
 }
 
 async function confirmRemoveTask() {
-  const task = deleteTarget.value
-  if (!task?.id || actionBusyId.value) return
-  actionBusyId.value = String(task.id)
+  const request = deleteRequest.value
+  const tasksToDelete = request?.tasks || []
+  if (!tasksToDelete.length || actionBusyId.value) return
+  actionBusyId.value =
+    request.scope === 'group'
+      ? `group:${request.groupKey || tasksToDelete[0].id}`
+      : String(tasksToDelete[0].id)
   try {
-    await removeTask(task.id)
-    if (lightboxTask.value?.id === task.id) closeLightbox()
+    if (request.scope === 'group') {
+      const results = await Promise.all(
+        tasksToDelete.map(async (task) => {
+          try {
+            return await removeTask(task.id, { silent: true })
+          } catch {
+            return false
+          }
+        }),
+      )
+      const removedCount = results.filter(Boolean).length
+      if (!removedCount) {
+        notificationService.error('整组图片删除失败，请稍后重试')
+        return
+      }
+      if (removedCount === tasksToDelete.length) {
+        notificationService.success(`已删除本组 ${request.itemCount} 张图片`)
+      } else {
+        notificationService.warning(
+          `本组已删除 ${removedCount}/${tasksToDelete.length} 个任务，剩余任务请重试`,
+        )
+      }
+    } else {
+      const removed = await removeTask(tasksToDelete[0].id)
+      if (!removed) return
+    }
+    if (tasksToDelete.some((task) => lightboxTask.value?.id === task.id)) closeLightbox()
     deleteConfirmOpen.value = false
-    deleteTarget.value = null
+    deleteRequest.value = null
   } catch (error) {
     notificationService.error(error?.message || '删除失败')
   } finally {
@@ -2232,6 +2534,45 @@ async function confirmClearFailedTasks() {
 
 function closeMenus() {
   skillPanelOpen.value = false
+  openParameterLayer.value = ''
+}
+
+function toggleParameterLayer(layer) {
+  skillPanelOpen.value = false
+  openParameterLayer.value = openParameterLayer.value === layer ? '' : layer
+}
+
+function compactRatioPreviewClass(value) {
+  if (value === 'auto') return 'is-auto'
+  const [width, height] = String(value || '')
+    .split(':')
+    .map(Number)
+  if (width === height) return 'is-square'
+  return width > height ? 'is-landscape' : 'is-portrait'
+}
+
+function compactRatioPreviewStyle(value) {
+  const [width, height] = String(value || '')
+    .split(':')
+    .map(Number)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return {}
+  return { aspectRatio: `${width} / ${height}` }
+}
+
+function resetCustomSkillDraft() {
+  customSkillName.value = ''
+  customSkillPrompt.value = ''
+  customSkillDescription.value = ''
+}
+
+function openCustomSkillDialog() {
+  resetCustomSkillDraft()
+  customSkillDialogOpen.value = true
+}
+
+function closeCustomSkillDialog() {
+  customSkillDialogOpen.value = false
+  resetCustomSkillDraft()
 }
 
 function submitCustomSkill() {
@@ -2241,9 +2582,8 @@ function submitCustomSkill() {
     description: customSkillDescription.value,
   })
   if (!skill) return
-  customSkillName.value = ''
-  customSkillPrompt.value = ''
-  customSkillDescription.value = ''
+  customSkillDialogOpen.value = false
+  resetCustomSkillDraft()
   notificationService.success(`已添加 Skill：${skill.name}`)
 }
 
@@ -2254,7 +2594,7 @@ function setMainTab(tab) {
 </script>
 
 <template>
-  <div class="t2i-page" @click="closeMenus">
+  <div class="t2i-page" :class="{ 'is-light': !appearanceStore.isDark }" @click="closeMenus">
     <aside class="t2i-sidebar" aria-label="生成设置" @click.stop>
       <div class="t2i-model">
         <div class="t2i-model-badge" :class="{ 'is-loading': isPageLoading }" aria-label="生成模型">
@@ -2262,10 +2602,19 @@ function setMainTab(tab) {
           <span v-if="isPageLoading" class="t2i-model-copy t2i-model-skeleton" aria-hidden="true">
             <span></span>
           </span>
-          <span v-else class="t2i-model-copy">
-            <strong>GPT Image 2</strong>
-          </span>
-          <span class="t2i-model-fixed-tag" aria-hidden="true">Model</span>
+          <AspectRatioSelect
+            v-else
+            v-model="selectedPublicModel"
+            class="t2i-model-select"
+            :options="modelSelectOptions"
+            :show-ratio-icons="false"
+            use-option-label
+            compact-menu
+            glass-menu
+            menu-placement="bottom"
+            aria-label="生成模型"
+            :placeholder="currentPublicModel?.label || '选择生成模型'"
+          />
         </div>
       </div>
 
@@ -2275,6 +2624,7 @@ function setMainTab(tab) {
             v-model="prompt"
             :maxlength="PROMPT_MAX"
             placeholder="描述主体、场景、光线与风格…"
+            @paste="handlePromptPaste"
             @keydown.meta.enter.prevent="handleGenerate"
             @keydown.ctrl.enter.prevent="handleGenerate"
           ></textarea>
@@ -2292,11 +2642,11 @@ function setMainTab(tab) {
                 </button>
               </figure>
               <button
-                v-if="referenceImages.length < 4"
+                v-if="maxReferenceImages > 0 && referenceImages.length < maxReferenceImages"
                 type="button"
                 class="t2i-prompt-ref-add"
                 aria-label="添加参考图"
-                title="参考图：点击选择或拖入图片，最多 4 张"
+                :title="`参考图：点击选择或拖入图片，最多 ${maxReferenceImages} 张`"
                 @click="referenceInputRef?.click()"
               >
                 <i class="bi bi-plus-lg" aria-hidden="true"></i>
@@ -2315,173 +2665,295 @@ function setMainTab(tab) {
                 <i class="bi bi-trash"></i>
               </button>
             </div>
-          </div>
-        </div>
-
-        <div class="t2i-params">
-          <AspectRatioSelect v-model="aspectRatio" :options="T2I_ASPECT_OPTIONS" />
-          <AspectRatioSelect
-            v-model="resolutionScale"
-            :options="T2I_RESOLUTION_OPTIONS"
-            aria-label="分辨率"
-            :show-ratio-icons="false"
-            use-option-label
-          />
-          <AspectRatioSelect
-            v-model="imageQuality"
-            :options="T2I_QUALITY_OPTIONS"
-            aria-label="精细度"
-            :show-ratio-icons="false"
-            use-option-label
-          />
-          <AspectRatioSelect
-            v-model="imageCount"
-            :options="T2I_COUNT_OPTIONS"
-            aria-label="张数"
-            :show-ratio-icons="false"
-            use-option-label
-            compact-menu
-          />
-        </div>
-
-        <div class="t2i-output-options">
-          <div class="t2i-format-tools-row">
-            <div
-              class="t2i-format-select"
-              :title="
-                transparentPngEnabled
-                  ? '透明 PNG 已开启，处理格式固定为 PNG'
-                  : '选择本地高清处理后的保存格式'
-              "
-            >
-              <AspectRatioSelect
-                v-model="effectiveOutputFormat"
-                :options="effectiveOutputFormatOptions"
-                aria-label="处理格式"
-                :show-ratio-icons="false"
-                use-option-label
-                compact-text
-                glass-menu
-              />
-            </div>
-            <div class="t2i-prompt-enhancers" aria-label="提示词智能处理">
+            <div class="t2i-skill-tools">
               <button
                 type="button"
-                class="t2i-prompt-toggle"
-                :class="{ 'is-on': promptPolishEnabled }"
-                role="switch"
-                :aria-checked="promptPolishEnabled"
-                title="AI 润色：生成前扩写画面细节，不修改输入框原文"
-                @click="promptPolishEnabled = !promptPolishEnabled"
+                class="t2i-skill-trigger"
+                :class="{ 'is-open': skillPanelOpen, 'has-items': selectedSkills.length }"
+                :aria-expanded="skillPanelOpen"
+                @click.stop="skillPanelOpen = !skillPanelOpen"
               >
-                <span class="t2i-prompt-toggle-copy">
-                  <i class="bi bi-stars" aria-hidden="true"></i>
-                  润色
-                </span>
-                <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
+                <i class="bi bi-lightning-charge" aria-hidden="true"></i>
+                <span>Skills</span>
+                <em>{{ selectedSkills.length }}</em>
+                <i class="bi bi-chevron-down" aria-hidden="true"></i>
               </button>
-              <button
-                type="button"
-                class="t2i-prompt-toggle"
-                :class="{ 'is-on': autoTranslateEnabled }"
-                role="switch"
-                :aria-checked="autoTranslateEnabled"
-                title="自动翻译：生成前转换为自然英文，不修改输入框原文"
-                @click="autoTranslateEnabled = !autoTranslateEnabled"
-              >
-                <span class="t2i-prompt-toggle-copy">
-                  <i class="bi bi-translate" aria-hidden="true"></i>
-                  翻译
-                </span>
-                <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
-              </button>
-              <button
-                v-if="outputType === 'image'"
-                type="button"
-                class="t2i-prompt-toggle"
-                :class="{ 'is-on': transparentPngEnabled }"
-                role="switch"
-                :aria-checked="transparentPngEnabled"
-                title="透明 PNG：要求真实 Alpha 并执行质量门"
-                @click="transparentPngEnabled = !transparentPngEnabled"
-              >
-                <span class="t2i-prompt-toggle-copy">
-                  <i class="bi bi-transparency" aria-hidden="true"></i>
-                  透明
-                </span>
-                <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="t2i-skill-tools">
-          <button
-            type="button"
-            class="t2i-skill-trigger"
-            :class="{ 'is-open': skillPanelOpen, 'has-items': selectedSkills.length }"
-            :aria-expanded="skillPanelOpen"
-            @click.stop="skillPanelOpen = !skillPanelOpen"
-          >
-            <i class="bi bi-lightning-charge" aria-hidden="true"></i>
-            <span>Skills</span>
-            <em>{{ selectedSkills.length }}</em>
-            <i class="bi bi-chevron-down" aria-hidden="true"></i>
-          </button>
-          <Transition name="t2i-skill-popover">
-            <section v-if="skillPanelOpen" class="t2i-skill-panel" @click.stop>
-              <header>
-                <div>
-                  <strong>生成 Skills</strong>
-                  <small>仅将已选择的 Skill 注入当前任务</small>
-                </div>
-                <button type="button" title="关闭 Skills" @click="skillPanelOpen = false">
-                  <i class="bi bi-x-lg" aria-hidden="true"></i>
-                </button>
-              </header>
-              <div class="t2i-skill-list">
-                <label v-for="skill in skillOptions" :key="skill.id" class="t2i-skill-item">
-                  <input
-                    type="checkbox"
-                    :checked="selectedSkillIds.includes(skill.id)"
-                    @change="toggleSkill(skill.id)"
-                  />
-                  <span class="t2i-skill-item-copy">
-                    <strong>{{ skill.name }}</strong>
-                    <small>{{ skill.description }}</small>
-                  </span>
-                  <button
-                    v-if="skill.custom"
-                    type="button"
-                    class="t2i-skill-remove"
-                    title="删除自定义 Skill"
-                    @click.prevent="removeCustomSkill(skill.id)"
-                  >
-                    <i class="bi bi-trash3" aria-hidden="true"></i>
+              <Transition name="t2i-skill-popover">
+                <section v-if="skillPanelOpen" class="t2i-skill-panel" @click.stop>
+                  <header>
+                    <div>
+                      <strong>生成 Skills</strong>
+                      <small>仅将已选择的 Skill 注入当前任务</small>
+                    </div>
+                    <button type="button" title="关闭 Skills" @click="skillPanelOpen = false">
+                      <i class="bi bi-x-lg" aria-hidden="true"></i>
+                    </button>
+                  </header>
+                  <div class="t2i-skill-list">
+                    <label v-for="skill in skillOptions" :key="skill.id" class="t2i-skill-item">
+                      <input
+                        type="checkbox"
+                        :checked="selectedSkillIds.includes(skill.id)"
+                        @change="toggleSkill(skill.id)"
+                      />
+                      <span class="t2i-skill-item-copy">
+                        <strong>{{ skill.name }}</strong>
+                        <small>{{ skill.description }}</small>
+                      </span>
+                      <button
+                        v-if="skill.custom"
+                        type="button"
+                        class="t2i-skill-remove"
+                        title="删除自定义 Skill"
+                        @click.prevent="removeCustomSkill(skill.id)"
+                      >
+                        <i class="bi bi-trash3" aria-hidden="true"></i>
+                      </button>
+                    </label>
+                  </div>
+                  <button type="button" class="t2i-skill-create" @click="openCustomSkillDialog">
+                    <span>
+                      <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                      <strong>添加 Skill</strong>
+                    </span>
+                    <i class="bi bi-chevron-right" aria-hidden="true"></i>
                   </button>
-                </label>
+                </section>
+              </Transition>
+            </div>
+          </div>
+        </div>
+
+        <div class="t2i-control-layers">
+          <div class="t2i-control-layer-bar" aria-label="生成参数分类">
+            <button
+              type="button"
+              :class="{ 'is-open': openParameterLayer === 'frame' }"
+              :aria-expanded="openParameterLayer === 'frame'"
+              @click.stop="toggleParameterLayer('frame')"
+            >
+              <i class="bi bi-aspect-ratio" aria-hidden="true"></i>
+              <span class="t2i-layer-trigger-copy">
+                <strong>画面</strong>
+                <small>{{ frameParameterSummary }}</small>
+              </span>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-open': openParameterLayer === 'output' }"
+              :aria-expanded="openParameterLayer === 'output'"
+              :disabled="!hasOutputControls"
+              :title="hasOutputControls ? '输出设置' : '当前模型不支持输出设置'"
+              @click.stop="toggleParameterLayer('output')"
+            >
+              <i class="bi bi-file-earmark-image" aria-hidden="true"></i>
+              <span class="t2i-layer-trigger-copy">
+                <strong>输出</strong>
+                <small>{{ outputParameterSummary }}</small>
+              </span>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-open': openParameterLayer === 'enhance' }"
+              :aria-expanded="openParameterLayer === 'enhance'"
+              @click.stop="toggleParameterLayer('enhance')"
+            >
+              <i class="bi bi-stars" aria-hidden="true"></i>
+              <span class="t2i-layer-trigger-copy">
+                <strong>增强</strong>
+                <small>{{ enhanceParameterSummary }}</small>
+              </span>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <Transition name="t2i-control-popover" mode="out-in">
+            <section
+              v-if="openParameterLayer === 'frame'"
+              key="frame"
+              class="t2i-control-layer-panel is-frame"
+              aria-label="画面参数"
+              @click.stop
+            >
+              <div v-if="aspectSelectOptions.length" class="t2i-compact-field is-ratio-field">
+                <span>比例</span>
+                <div class="t2i-compact-ratio-grid">
+                  <button
+                    v-for="option in aspectSelectOptions"
+                    :key="option.value"
+                    type="button"
+                    :class="{ 'is-selected': aspectRatio === option.value }"
+                    :aria-pressed="aspectRatio === option.value"
+                    :title="option.label"
+                    @click="aspectRatio = option.value"
+                  >
+                    <i
+                      :class="compactRatioPreviewClass(option.value)"
+                      :style="compactRatioPreviewStyle(option.value)"
+                      aria-hidden="true"
+                    ></i>
+                    <small>{{ option.value === 'auto' ? '自动' : option.value }}</small>
+                  </button>
+                </div>
               </div>
-              <div class="t2i-skill-form">
-                <input
-                  v-model="customSkillName"
-                  type="text"
-                  maxlength="80"
-                  placeholder="Skill 名称"
-                />
-                <input
-                  v-model="customSkillDescription"
-                  type="text"
-                  maxlength="180"
-                  placeholder="一句话说明（可选）"
-                />
-                <textarea
-                  v-model="customSkillPrompt"
-                  maxlength="12000"
-                  placeholder="写入 Skill 指令，例如：保持商品 Logo、颜色和构图不变…"
-                ></textarea>
-                <button type="button" class="t2i-skill-add" @click="submitCustomSkill">
-                  <i class="bi bi-plus-lg" aria-hidden="true"></i>
-                  添加自定义 Skill
+
+              <div class="t2i-compact-field-row">
+                <div v-if="resolutionSelectOptions.length" class="t2i-compact-field">
+                  <span>分辨率</span>
+                  <div class="t2i-compact-segments">
+                    <button
+                      v-for="option in resolutionSelectOptions"
+                      :key="option.value"
+                      type="button"
+                      :class="{ 'is-selected': resolutionScale === option.value }"
+                      :aria-pressed="resolutionScale === option.value"
+                      @click="resolutionScale = option.value"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="qualitySelectOptions.length" class="t2i-compact-field">
+                  <span>质量</span>
+                  <div class="t2i-compact-segments">
+                    <button
+                      v-for="option in qualitySelectOptions"
+                      :key="option.value"
+                      type="button"
+                      :class="{ 'is-selected': imageQuality === option.value }"
+                      :aria-pressed="imageQuality === option.value"
+                      @click="imageQuality = option.value"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="t2i-compact-field">
+                <span>张数</span>
+                <div class="t2i-compact-segments">
+                  <button
+                    v-for="option in T2I_COUNT_OPTIONS"
+                    :key="option.value"
+                    type="button"
+                    :class="{ 'is-selected': imageCount === option.value }"
+                    :aria-pressed="imageCount === option.value"
+                    @click="imageCount = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section
+              v-else-if="openParameterLayer === 'output' && hasOutputControls"
+              key="output"
+              class="t2i-control-layer-panel is-output"
+              aria-label="输出参数"
+              @click.stop
+            >
+              <div class="t2i-compact-field">
+                <span>格式</span>
+                <div v-if="effectiveOutputFormatOptions.length" class="t2i-compact-segments">
+                  <button
+                    v-for="option in effectiveOutputFormatOptions"
+                    :key="option.value"
+                    type="button"
+                    :class="{ 'is-selected': effectiveOutputFormat === option.value }"
+                    :aria-pressed="effectiveOutputFormat === option.value"
+                    :disabled="transparentPngEnabled"
+                    @click="effectiveOutputFormat = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+                <div v-else class="t2i-compact-segments is-disabled">
+                  <button type="button" disabled>当前模型不支持</button>
+                </div>
+              </div>
+
+              <div class="t2i-compact-field">
+                <span>内容审核</span>
+                <div v-if="moderationSelectOptions.length" class="t2i-compact-segments">
+                  <button
+                    v-for="option in moderationSelectOptions"
+                    :key="option.value"
+                    type="button"
+                    :class="{ 'is-selected': moderationLevel === option.value }"
+                    :aria-pressed="moderationLevel === option.value"
+                    @click="moderationLevel = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+                <div v-else class="t2i-compact-segments is-disabled">
+                  <button type="button" disabled>当前模型不支持</button>
+                </div>
+              </div>
+            </section>
+
+            <section
+              v-else-if="openParameterLayer === 'enhance'"
+              key="enhance"
+              class="t2i-control-layer-panel is-enhance"
+              aria-label="增强参数"
+              @click.stop
+            >
+              <div class="t2i-prompt-enhancers" aria-label="提示词智能处理">
+                <button
+                  type="button"
+                  class="t2i-prompt-toggle"
+                  :class="{ 'is-on': promptPolishEnabled }"
+                  role="switch"
+                  :aria-checked="promptPolishEnabled"
+                  title="AI 润色：生成前扩写画面细节，不修改输入框原文"
+                  @click="promptPolishEnabled = !promptPolishEnabled"
+                >
+                  <span class="t2i-prompt-toggle-copy">
+                    <i class="bi bi-stars" aria-hidden="true"></i>
+                    润色
+                  </span>
+                  <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
+                </button>
+                <button
+                  type="button"
+                  class="t2i-prompt-toggle"
+                  :class="{ 'is-on': autoTranslateEnabled }"
+                  role="switch"
+                  :aria-checked="autoTranslateEnabled"
+                  title="自动翻译：生成前转换为自然英文，不修改输入框原文"
+                  @click="autoTranslateEnabled = !autoTranslateEnabled"
+                >
+                  <span class="t2i-prompt-toggle-copy">
+                    <i class="bi bi-translate" aria-hidden="true"></i>
+                    翻译
+                  </span>
+                  <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
+                </button>
+                <button
+                  type="button"
+                  class="t2i-prompt-toggle"
+                  :class="{ 'is-on': transparentPngEnabled }"
+                  role="switch"
+                  :aria-checked="transparentPngEnabled"
+                  :disabled="outputType !== 'image' || !currentPublicModel?.transparentBackground"
+                  :title="
+                    currentPublicModel?.transparentBackground
+                      ? '透明 PNG：要求真实 Alpha 并执行质量门'
+                      : '当前模型不支持透明背景'
+                  "
+                  @click="transparentPngEnabled = !transparentPngEnabled"
+                >
+                  <span class="t2i-prompt-toggle-copy">
+                    <i class="bi bi-transparency" aria-hidden="true"></i>
+                    透明
+                  </span>
+                  <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
                 </button>
               </div>
             </section>
@@ -2607,7 +3079,97 @@ function setMainTab(tab) {
             <div ref="stageCanvasRef" class="t2i-stage-canvas">
               <div ref="stageFrameRef" class="t2i-stage-frame" :style="featuredAspectStyle">
                 <div
-                  v-if="featuredItem.kind === 'pending'"
+                  v-if="stageGridItems.length"
+                  class="t2i-stage-grid"
+                  :class="{ 'is-collage': stageGridLayout.collage }"
+                  :style="{ '--t2i-grid-cols': stageGridLayout.cols }"
+                  aria-label="同批次生成结果"
+                >
+                  <div
+                    v-for="cell in stageGridItems"
+                    :key="cell.key"
+                    class="t2i-stage-cell"
+                    :class="{ 'is-pending': cell.kind === 'pending' }"
+                  >
+                    <div
+                      v-if="cell.kind === 'pending'"
+                      class="t2i-stage-cell-pending"
+                      role="status"
+                      :aria-label="`第 ${cell.batchIndex + 1} 张，${pendingStageText(cell.task)}`"
+                    >
+                      <span class="t2i-pending-orb" aria-hidden="true">
+                        <i class="bi bi-stars"></i>
+                      </span>
+                      <strong>第 {{ cell.batchIndex + 1 }} 张</strong>
+                      <em class="t2i-pending-stage">{{ pendingStageText(cell.task) }}</em>
+                      <span class="t2i-pending-bar" aria-hidden="true"><i></i></span>
+                      <em class="t2i-pending-elapsed">{{ pendingElapsedText(cell.task) }}</em>
+                    </div>
+                    <template v-else>
+                      <button
+                        type="button"
+                        class="t2i-stage-cell-media"
+                        @click="openLightbox(cell.task, cell.index, $event)"
+                      >
+                        <ProgressiveAuthenticatedImage
+                          :src="cell.url"
+                          :preview-src="cell.thumbnailUrl"
+                          load-original
+                          hide-status
+                          alt=""
+                          loading="eager"
+                          @error="markImageUnavailable(cell.task, cell.index, cell.url)"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        class="t2i-stage-cell-delete"
+                        :disabled="actionBusyId === String(cell.task.id)"
+                        aria-label="删除这张图片"
+                        title="删除这张图片"
+                        @click.stop="handleRemoveTask(cell.task)"
+                      >
+                        <i
+                          class="bi"
+                          :class="
+                            actionBusyId === String(cell.task.id)
+                              ? 'bi-arrow-repeat spin'
+                              : 'bi-trash3'
+                          "
+                          aria-hidden="true"
+                        ></i>
+                      </button>
+                      <div class="t2i-stage-quick-actions is-cell" aria-label="图片快捷操作">
+                        <button
+                          type="button"
+                          aria-label="编辑图片"
+                          title="编辑"
+                          @click.stop="editTask(cell.task)"
+                        >
+                          <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="下载图片"
+                          title="下载"
+                          @click.stop="downloadTaskOutput(cell.task, cell.index)"
+                        >
+                          <i class="bi bi-download" aria-hidden="true"></i>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="设为参考图"
+                          title="设为参考图"
+                          @click.stop="useGeneratedAsReference(cell.task, cell.index)"
+                        >
+                          <i class="bi bi-images" aria-hidden="true"></i>
+                        </button>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+                <div
+                  v-else-if="featuredItem.kind === 'pending'"
                   class="t2i-stage-media is-skeleton"
                   role="status"
                   aria-live="polite"
@@ -2622,57 +3184,6 @@ function setMainTab(tab) {
                     <span class="t2i-pending-bar" aria-hidden="true"><i></i></span>
                     <em class="t2i-pending-elapsed">{{ pendingElapsedText(featuredItem.task) }}</em>
                     <span class="t2i-pending-prompt">{{ featuredItem.title }}</span>
-                  </div>
-                </div>
-                <div
-                  v-else-if="stageGridItems.length"
-                  class="t2i-stage-grid"
-                  :class="{ 'is-collage': stageGridLayout.collage }"
-                  :style="{ '--t2i-grid-cols': stageGridLayout.cols }"
-                  aria-label="同组图片"
-                >
-                  <div v-for="cell in stageGridItems" :key="cell.key" class="t2i-stage-cell">
-                    <button
-                      type="button"
-                      class="t2i-stage-cell-media"
-                      @click="openLightbox(cell.task, cell.index, $event)"
-                    >
-                      <ProgressiveAuthenticatedImage
-                        :src="cell.url"
-                        :preview-src="cell.thumbnailUrl"
-                        load-original
-                        hide-status
-                        alt=""
-                        loading="eager"
-                        @error="markImageUnavailable(cell.task, cell.index, cell.url)"
-                      />
-                    </button>
-                    <div class="t2i-stage-quick-actions is-cell" aria-label="图片快捷操作">
-                      <button
-                        type="button"
-                        aria-label="编辑图片"
-                        title="编辑"
-                        @click.stop="editTask(cell.task)"
-                      >
-                        <i class="bi bi-pencil-square" aria-hidden="true"></i>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="下载图片"
-                        title="下载"
-                        @click.stop="downloadTaskOutput(cell.task, cell.index)"
-                      >
-                        <i class="bi bi-download" aria-hidden="true"></i>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="设为参考图"
-                        title="设为参考图"
-                        @click.stop="useGeneratedAsReference(cell.task, cell.index)"
-                      >
-                        <i class="bi bi-images" aria-hidden="true"></i>
-                      </button>
-                    </div>
                   </div>
                 </div>
                 <button
@@ -2803,7 +3314,7 @@ function setMainTab(tab) {
                   <button
                     type="button"
                     class="is-danger"
-                    @click.stop="handleRemoveTask(featuredItem.task)"
+                    @click.stop="handleRemoveGroup(featuredGroup)"
                   >
                     删除
                   </button>
@@ -2852,15 +3363,17 @@ function setMainTab(tab) {
                 class="t2i-film-item"
                 :class="{
                   'is-on': group.key === featuredGroup?.key,
-                  'is-pending': group.kind === 'pending',
+                  'is-pending': group.kind !== 'image',
                   'is-upscaling': isLocalUpscaling(group.cover.task),
                 }"
                 :title="
-                  group.kind !== 'image'
+                  group.kind === 'pending'
                     ? '任务处理中'
-                    : group.items.length > 1
-                      ? '单击查看这组图片'
-                      : '单击查看，双击设为参考图'
+                    : group.kind === 'mixed'
+                      ? `已完成 ${group.items.length - group.pendingCount}/${group.items.length} 张`
+                      : group.items.length > 1
+                        ? '单击查看这组图片'
+                        : '单击查看，双击设为参考图'
                 "
                 @click="focusGalleryItem(group.cover, $event)"
                 @dblclick.stop="
@@ -2885,7 +3398,9 @@ function setMainTab(tab) {
                   :loading="groupIndex < 12 ? 'eager' : 'lazy'"
                   root-margin="180px 240px"
                   :max-dimension="FILMSTRIP_THUMBNAIL_DIMENSION"
-                  @error="markImageUnavailable(group.cover.task, group.cover.index, group.cover.url)"
+                  @error="
+                    markImageUnavailable(group.cover.task, group.cover.index, group.cover.url)
+                  "
                 />
                 <span v-if="isLocalUpscaling(group.cover.task)" class="t2i-film-upscale-progress">
                   {{ Math.round(Number(group.cover.task.localUpscaleProgress || 0)) }}%
@@ -3105,7 +3620,11 @@ function setMainTab(tab) {
         </div>
       </section>
 
-      <section v-else-if="mainTab === 'prompts'" class="t2i-panel t2i-library-view">
+      <section
+        v-else-if="mainTab === 'prompts'"
+        ref="promptViewportRef"
+        class="t2i-panel t2i-library-view"
+      >
         <div class="t2i-masonry-wrap">
           <div class="t2i-library-toolbar">
             <nav class="t2i-library-categories" aria-label="提示词分类">
@@ -3130,7 +3649,11 @@ function setMainTab(tab) {
             </label>
           </div>
 
-          <div v-if="promptLibraryLoading" class="t2i-history-skeleton" aria-label="提示词库加载中">
+          <div
+            v-if="promptLibraryLoading && !promptLibraryFeedItems.length"
+            class="t2i-history-skeleton"
+            aria-label="提示词库加载中"
+          >
             <div v-for="column in 3" :key="column" class="t2i-history-skeleton-col">
               <article v-for="row in 3" :key="row" class="t2i-history-skeleton-card">
                 <div class="t2i-skeleton-shine"></div>
@@ -3337,6 +3860,96 @@ function setMainTab(tab) {
         </div>
       </section>
     </main>
+
+    <Teleport to="body">
+      <Transition name="t2i-skill-dialog">
+        <div
+          v-if="customSkillDialogOpen"
+          class="t2i-skill-dialog-backdrop"
+          :class="{ 'is-light': !appearanceStore.isDark }"
+          @click.self="closeCustomSkillDialog"
+        >
+          <section
+            class="t2i-skill-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="t2i-skill-dialog-title"
+            @click.stop
+          >
+            <header>
+              <div class="t2i-skill-dialog-heading">
+                <span aria-hidden="true"><i class="bi bi-lightning-charge"></i></span>
+                <div>
+                  <small>CUSTOM SKILL</small>
+                  <h2 id="t2i-skill-dialog-title">添加 Skill</h2>
+                </div>
+              </div>
+              <button type="button" aria-label="关闭添加 Skill" @click="closeCustomSkillDialog">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </header>
+
+            <form class="t2i-skill-dialog-form" @submit.prevent="submitCustomSkill">
+              <label>
+                <span>
+                  <strong>名称</strong>
+                  <small>{{ customSkillName.length }} / 80</small>
+                </span>
+                <input
+                  v-model="customSkillName"
+                  type="text"
+                  maxlength="80"
+                  autocomplete="off"
+                  autofocus
+                  placeholder="例如：品牌视觉守卫"
+                />
+              </label>
+
+              <label>
+                <span>
+                  <strong>简介</strong>
+                  <small>可选 · {{ customSkillDescription.length }} / 180</small>
+                </span>
+                <input
+                  v-model="customSkillDescription"
+                  type="text"
+                  maxlength="180"
+                  autocomplete="off"
+                  placeholder="一句话说明这个 Skill 的用途"
+                />
+              </label>
+
+              <label>
+                <span>
+                  <strong>Skill 指令</strong>
+                  <small>{{ customSkillPrompt.length }} / 12000</small>
+                </span>
+                <textarea
+                  v-model="customSkillPrompt"
+                  maxlength="12000"
+                  rows="6"
+                  placeholder="例如：保持商品 Logo、品牌色和主体构图不变，仅优化材质与光线…"
+                ></textarea>
+              </label>
+
+              <footer>
+                <button type="button" class="is-secondary" @click="closeCustomSkillDialog">
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  class="is-primary"
+                  :disabled="!customSkillName.trim() || !customSkillPrompt.trim()"
+                >
+                  <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                  添加 Skill
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
 
     <Teleport to="body">
       <div
@@ -3572,8 +4185,6 @@ function setMainTab(tab) {
       :open="publishOpen"
       :title="publishDialogTitle"
       :style-label="publishDialogStyleLabel"
-      default-category="other"
-      :suggested-tags="['AI 壁纸']"
       :submitting="Boolean(publishTarget && submittingShareId)"
       @close="closePublishDialog"
       @submit="submitHistoryToShare"
@@ -3582,7 +4193,11 @@ function setMainTab(tab) {
     <DeleteHistoryConfirmDialog
       :open="deleteConfirmOpen"
       :title="deleteConfirmTitle"
-      :busy="Boolean(deleteTarget && actionBusyId === String(deleteTarget.id))"
+      :heading="deleteConfirmHeading"
+      :description="deleteConfirmDescription"
+      :confirm-label="deleteConfirmLabel"
+      :busy-label="deleteBusyLabel"
+      :busy="Boolean(deleteRequest && actionBusyId)"
       @close="closeDeleteConfirm"
       @confirm="confirmRemoveTask"
     />

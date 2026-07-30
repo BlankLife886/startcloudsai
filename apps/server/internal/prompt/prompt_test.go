@@ -25,6 +25,35 @@ func TestSizeExtractedFromParams(t *testing.T) {
 	}
 }
 
+func TestAutoAspectRatioCandidatesConstrainPrompt(t *testing.T) {
+	p, _ := prompt.Compile("t2i", "山谷中的建筑", map[string]any{
+		"aspectRatio":               "auto",
+		"autoAspectRatioCandidates": []any{"1:1", "16:9", "9:16"},
+	})
+	if !strings.Contains(p, "最终图片比例只能从 1:1、16:9、9:16 中选择") {
+		t.Fatalf("auto ratio boundary missing: %q", p)
+	}
+}
+
+func TestUIDesignIterationLocksUnchangedContent(t *testing.T) {
+	p, _ := prompt.Compile("ui_design", "只把主按钮改为蓝色", map[string]any{
+		"platform":      "Web",
+		"iterationMode": true,
+	})
+	for _, expected := range []string{
+		"受控的 Web UI 迭代",
+		"不要重新设计整张页面",
+		"未提及的布局",
+		"Noto Sans SC",
+		"不要生成乱码",
+		"只把主按钮改为蓝色",
+	} {
+		if !strings.Contains(p, expected) {
+			t.Fatalf("compiled prompt missing %q: %s", expected, p)
+		}
+	}
+}
+
 func TestFemalePortraitDirectorSkillAppliedToT2I(t *testing.T) {
 	p, size := prompt.Compile("t2i", "窗边的新中式女性人像", map[string]any{
 		"size":     "1024x1536",

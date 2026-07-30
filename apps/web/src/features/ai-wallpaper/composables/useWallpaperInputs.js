@@ -43,9 +43,11 @@ export function useWallpaperInputs(deps = {}) {
     deps.negativePrompt || ref('文字、水印、logo、低清、噪点、畸形结构、过度锐化')
   const aspectRatio = deps.aspectRatio || ref('1:1')
   const imageCount = deps.imageCount || ref(1)
-  const imageQuality = deps.imageQuality || ref('standard')
+  const imageQuality = deps.imageQuality || ref('medium')
   const resolutionScale = deps.resolutionScale || ref('1K')
   const upscaleOutputFormat = deps.upscaleOutputFormat || ref('auto')
+  const moderationLevel = deps.moderationLevel || ref('')
+  const maxReferenceImages = deps.maxReferenceImages || ref(4)
   const duration = deps.duration || ref(5)
   const creativity = deps.creativity || ref(46)
   const styleStrength = deps.styleStrength || ref(58)
@@ -171,9 +173,10 @@ export function useWallpaperInputs(deps = {}) {
   async function addReferenceFiles(files) {
     const incoming = Array.from(files || []).filter((file) => file?.type?.startsWith('image/'))
     if (!incoming.length) return
-    const remaining = Math.max(0, 4 - referenceImages.value.length)
+    const limit = Math.max(0, Number(maxReferenceImages.value) || 0)
+    const remaining = Math.max(0, limit - referenceImages.value.length)
     if (!remaining) {
-      notify.warning('最多添加 4 张参考图')
+      notify.warning(limit > 0 ? `当前模型最多添加 ${limit} 张参考图` : '当前模型不支持参考图')
       return
     }
     const accepted = incoming.slice(0, remaining)
@@ -187,7 +190,7 @@ export function useWallpaperInputs(deps = {}) {
       })),
     )
     referenceImages.value = [...referenceImages.value, ...additions]
-    if (incoming.length > accepted.length) notify.info('已达到 4 张参考图上限')
+    if (incoming.length > accepted.length) notify.info(`已达到 ${limit} 张参考图上限`)
   }
 
   function addReferenceImageFromUrl(url, label = '生成作品') {
@@ -197,8 +200,9 @@ export function useWallpaperInputs(deps = {}) {
       notify.info('这张图片已经在参考图中')
       return false
     }
-    if (referenceImages.value.length >= 4) {
-      notify.warning('最多添加 4 张参考图')
+    const limit = Math.max(0, Number(maxReferenceImages.value) || 0)
+    if (referenceImages.value.length >= limit) {
+      notify.warning(limit > 0 ? `当前模型最多添加 ${limit} 张参考图` : '当前模型不支持参考图')
       return false
     }
     referenceImages.value = [
@@ -680,6 +684,8 @@ export function useWallpaperInputs(deps = {}) {
     imageQuality,
     resolutionScale,
     upscaleOutputFormat,
+    moderationLevel,
+    maxReferenceImages,
     outputSizeLabel,
     duration,
     creativity,

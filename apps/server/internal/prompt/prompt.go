@@ -44,6 +44,41 @@ func sizeOf(params map[string]any) string {
 	return paramString(params, "size")
 }
 
+func paramStrings(params map[string]any, key string) []string {
+	if params == nil {
+		return nil
+	}
+	switch values := params[key].(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				result = append(result, strings.TrimSpace(text))
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func ConstrainAutoAspectRatio(text string, params map[string]any) string {
+	requested := strings.ToLower(strings.TrimSpace(paramString(params, "requestedAspectRatio")))
+	if requested == "" {
+		requested = strings.ToLower(strings.TrimSpace(paramString(params, "aspectRatio")))
+	}
+	if requested != "auto" {
+		return text
+	}
+	candidates := paramStrings(params, "autoAspectRatioCandidates")
+	if len(candidates) == 0 {
+		return text
+	}
+	return strings.TrimSpace(text) + "\nAuto 画幅约束：最终图片比例只能从 " + strings.Join(candidates, "、") + " 中选择最适合当前内容的一种。"
+}
+
 func compileT2I(prompt string, params map[string]any) string {
 	suffix := styleSuffix(params)
 	compiled := prompt
@@ -70,11 +105,24 @@ func compileUIDesign(prompt string, params map[string]any) string {
 	if platform == "" {
 		platform = "Web"
 	}
-	parts := []string{
-		fmt.Sprintf("请设计一张高保真的 %s UI 设计稿，布局规范、层级清晰、", platform),
-		"视觉现代，包含真实可信的界面文案与组件细节。",
-		fmt.Sprintf("设计需求：%s", prompt),
+	iterationMode := strings.EqualFold(paramString(params, "iterationMode"), "true")
+	parts := make([]string, 0, 6)
+	if iterationMode {
+		parts = append(parts,
+			fmt.Sprintf("请基于参考图进行一次受控的 %s UI 迭代，不要重新设计整张页面。", platform),
+			"只执行设计需求中明确要求的修改；未提及的布局、尺寸、间距、组件位置、颜色、图标和文案必须与参考图保持一致。",
+		)
+	} else {
+		parts = append(parts,
+			fmt.Sprintf("请设计一张高保真的 %s UI 设计稿，布局规范、层级清晰、", platform),
+			"视觉现代，包含真实可信的界面文案与组件细节。",
+		)
 	}
+	parts = append(parts,
+		"文字必须清晰锐利、基线稳定，使用现代无衬线字体；中文接近 Noto Sans SC，英文和数字接近 Inter。",
+		"保留或逐字渲染明确指定的文案，不要生成乱码、伪文字、额外单词、随机标签、Logo 或水印。",
+		fmt.Sprintf("设计需求：%s", prompt),
+	)
 	if suffix := styleSuffix(params); suffix != "" {
 		parts = append(parts, suffix)
 	}
@@ -148,5 +196,5 @@ func Compile(taskType, prompt string, params map[string]any) (string, string) {
 	if !ok {
 		compiler = compileT2I
 	}
-	return compiler(prompt, params), sizeOf(params)
+	return ConstrainAutoAspectRatio(compiler(prompt, params), params), sizeOf(params)
 }

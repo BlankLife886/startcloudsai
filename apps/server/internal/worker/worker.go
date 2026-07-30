@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,13 +22,17 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 const (
@@ -142,14 +148,34 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 	return store.GetTask(ctx, w.St.Pool, taskID)
 }
 
-func (w *Worker) loadInputImagesB64(ctx context.Context, inputKeys []string) ([]string, error) {
-	images := make([]string, 0, len(inputKeys))
-	for _, key := range inputKeys {
-		data, err := w.Storage.GetBytes(ctx, key)
+func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([][]byte, error) {
+	images := make([][]byte, len(inputKeys))
+	errs := make([]error, len(inputKeys))
+	var wg sync.WaitGroup
+	for index, key := range inputKeys {
+		wg.Add(1)
+		go func(index int, key string) {
+			defer wg.Done()
+			images[index], errs[index] = w.Storage.GetBytes(ctx, key)
+		}(index, key)
+	}
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		images = append(images, base64.StdEncoding.EncodeToString(data))
+	}
+	return images, nil
+}
+
+func (w *Worker) loadInputImagesB64(ctx context.Context, inputKeys []string) ([]string, error) {
+	data, err := w.loadInputImageBytes(ctx, inputKeys)
+	if err != nil {
+		return nil, err
+	}
+	images := make([]string, len(data))
+	for index := range data {
+		images[index] = base64.StdEncoding.EncodeToString(data[index])
 	}
 	return images, nil
 }
@@ -167,17 +193,372 @@ func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
 	return c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, w.Cfg.AppEnv == "development")
 }
 
-func (w *Worker) callUpstream(ctx context.Context, task *store.Task, model string) ([]string, error) {
+type imageReadyFunc func(index int, encoded string) error
+
+func compactEncodedImages(images []string) []string {
+	completed := make([]string, 0, len(images))
+	for _, image := range images {
+		if image != "" {
+			completed = append(completed, image)
+		}
+	}
+	return completed
+}
+
+func deliverEncodedImages(images []string, onImage imageReadyFunc) error {
+	if onImage == nil || len(images) == 0 {
+		return nil
+	}
+	errs := make(chan error, len(images))
+	for index, encoded := range images {
+		go func(index int, encoded string) {
+			errs <- onImage(index, encoded)
+		}(index, encoded)
+	}
+	var firstErr error
+	for range images {
+		if err := <-errs; err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client *sub2api.Client, model string, onImage imageReadyFunc) ([]string, error) {
+	if model != "" {
+		client = client.WithImageModel(model)
+	}
+	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	quality := taskParamString(task.Params, "quality")
+	inputData, err := w.loadInputImageBytes(ctx, task.InputKeys)
+	if err != nil {
+		return nil, err
+	}
+	references := make([]string, 0, len(inputData))
+	for _, data := range inputData {
+		_, contentType := media.Detect(data)
+		if contentType == "" {
+			contentType = "image/png"
+		}
+		references = append(references, "data:"+contentType+";base64,"+base64.StdEncoding.EncodeToString(data))
+	}
+	encodedByIndex := make([]string, task.Count)
+	images, err := client.GenerateImageProgressive(ctx, finalPrompt, size, quality, task.Count, references, func(index int, image sub2api.Image) error {
+		data, _, _, downloadErr := downloadAssistantImage(ctx, image.DataURL)
+		if downloadErr != nil {
+			return downloadErr
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		encodedByIndex[index] = encoded
+		if onImage != nil {
+			return onImage(index, encoded)
+		}
+		return nil
+	})
+	if err != nil {
+		return compactEncodedImages(encodedByIndex), err
+	}
+	if len(compactEncodedImages(encodedByIndex)) == 0 && len(images) > 0 {
+		return nil, errors.New("Sub2API completed without a persisted image")
+	}
+	return compactEncodedImages(encodedByIndex), nil
+}
+
+func (w *Worker) callSub2API(ctx context.Context, task *store.Task, model string, onImage imageReadyFunc) ([]string, error) {
+	client, err := w.assistantClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return w.callSub2APIClient(ctx, task, client, model, onImage)
+}
+
+func (w *Worker) crunClient(ctx context.Context) (*crun.Client, error) {
+	resolved, err := settings.ResolveCRUN(ctx, w.St.Pool, settings.CRUNConfig{
+		BaseURL: w.Cfg.CRUNBaseURL, APIKey: w.Cfg.CRUNAPIKey, TimeoutSecs: w.Cfg.CRUNTimeoutSecs,
+	}, w.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
+	}
+	client, err := crun.New(resolved.BaseURL, resolved.APIKey, crun.DefaultModel, resolved.TimeoutSecs)
+	if err != nil {
+		return nil, err
+	}
+	if !client.Configured() {
+		return nil, errors.New("CRUN API key is not configured")
+	}
+	return client, nil
+}
+
+func taskParamStrings(params map[string]any, key string) []string {
+	if params == nil {
+		return nil
+	}
+	switch values := params[key].(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, strings.TrimSpace(text))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func normalizeCRUNResolution(params map[string]any) string {
+	for _, key := range []string{"resolutionScale", "resolution"} {
+		value := strings.ToUpper(taskParamString(params, key))
+		switch value {
+		case "4K", "8K":
+			return "4K"
+		case "2K":
+			return "2K"
+		case "1K":
+			return "1K"
+		}
+	}
+	return "1K"
+}
+
+func normalizeCRUNResolutionForAspect(resolution, aspectRatio string) string {
+	if resolution == "4K" && aspectRatio == "1:1" {
+		return "2K"
+	}
+	return resolution
+}
+
+func parseRatio(value string) float64 {
+	value = strings.ReplaceAll(strings.TrimSpace(value), " ", "")
+	separator := ":"
+	if strings.Contains(value, "/") {
+		separator = "/"
+	}
+	parts := strings.Split(value, separator)
+	if len(parts) != 2 {
+		return 0
+	}
+	width, _ := strconv.ParseFloat(parts[0], 64)
+	height, _ := strconv.ParseFloat(parts[1], 64)
+	if width <= 0 || height <= 0 {
+		return 0
+	}
+	return width / height
+}
+
+func normalizeCRUNAspectRatio(params map[string]any, size string) string {
+	allowed := []string{"1:1", "2:3", "3:2", "9:16", "16:9", "4:3", "3:4", "21:9"}
+	value := taskParamString(params, "aspectRatio")
+	if value == "" {
+		value = taskParamString(params, "ratio")
+	}
+	value = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(value), " ", ""), "/", ":")
+	if strings.EqualFold(value, "auto") {
+		return ""
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return candidate
+		}
+	}
+	ratio := parseRatio(value)
+	if ratio == 0 && strings.Contains(strings.ToLower(size), "x") {
+		ratio = parseRatio(strings.ReplaceAll(strings.ToLower(size), "x", ":"))
+	}
+	if ratio == 0 {
+		return "1:1"
+	}
+	closest := allowed[0]
+	closestDistance := 1000.0
+	for _, candidate := range allowed {
+		distance := ratio - parseRatio(candidate)
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < closestDistance {
+			closest, closestDistance = candidate, distance
+		}
+	}
+	return closest
+}
+
+func crunPrompt(prompt string) string {
+	runes := []rune(strings.TrimSpace(prompt))
+	if len(runes) > 5000 {
+		runes = runes[:5000]
+	}
+	return string(runes)
+}
+
+func (w *Worker) callCRUNClient(ctx context.Context, task *store.Task, client *crun.Client, onImage imageReadyFunc) ([]string, error) {
+	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	aspectRatio := normalizeCRUNAspectRatio(task.Params, size)
+	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(task.Params), aspectRatio)
+	references := make([]string, 0, len(task.InputKeys))
+	for _, key := range task.InputKeys {
+		presigned, presignErr := w.Storage.PresignGet(ctx, key)
+		if presignErr != nil {
+			return nil, presignErr
+		}
+		references = append(references, presigned)
+	}
+	taskIDs, err := client.CreateImageTasks(ctx, crun.OpenAIImageRequest{
+		Prompt: crunPrompt(finalPrompt), N: task.Count, Size: size,
+		Quality: taskParamString(task.Params, "quality"), ImageURLs: references,
+		AspectRatio: aspectRatio, Resolution: resolution,
+		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
+		OutputFormat:          taskParamString(task.Params, "outputFormat"),
+		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
+	}, taskParamStrings(task.Params, "_crunTaskIds"), func(created []string) error {
+		if err := store.SetTaskCRUNTaskIDs(ctx, w.St.Pool, task.ID, created); err != nil {
+			return err
+		}
+		if task.Params == nil {
+			task.Params = map[string]any{}
+		}
+		task.Params["_crunTaskIds"] = append([]string(nil), created...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	encodedByIndex := make([]string, len(taskIDs))
+	imageURLs, err := client.WaitTasks(ctx, taskIDs, func(index int, imageURL string) error {
+		data, _, _, downloadErr := downloadAssistantImage(ctx, imageURL)
+		if downloadErr != nil {
+			return downloadErr
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		encodedByIndex[index] = encoded
+		if onImage != nil {
+			return onImage(index, encoded)
+		}
+		return nil
+	})
+	if err != nil {
+		return compactEncodedImages(encodedByIndex), err
+	}
+	if len(compactEncodedImages(encodedByIndex)) == 0 && len(imageURLs) > 0 {
+		return nil, errors.New("CRUN completed without a persisted image")
+	}
+	return compactEncodedImages(encodedByIndex), nil
+}
+
+func (w *Worker) callCRUN(ctx context.Context, task *store.Task, onImage imageReadyFunc) ([]string, error) {
+	client, err := w.crunClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return w.callCRUNClient(ctx, task, client, onImage)
+}
+
+func (w *Worker) configuredModelSelection(ctx context.Context, task *store.Task) (*modelconfig.Selection, bool, error) {
+	providerID := taskParamString(task.Params, "_providerConfigId")
+	modelID := taskParamString(task.Params, "_modelConfigId")
+	if providerID == "" || modelID == "" {
+		return nil, false, nil
+	}
+	cfg, err := modelconfig.Runtime(ctx, w.St.Pool, w.Cfg.AppSecret)
+	if err != nil {
+		return nil, false, err
+	}
+	selection, found := modelconfig.FindExecution(cfg, providerID, modelID)
+	if !found {
+		return nil, false, errors.New("任务绑定的模型或服务商配置已失效")
+	}
+	return selection, true, nil
+}
+
+func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, selection *modelconfig.Selection, onImage imageReadyFunc) ([]string, error) {
+	provider := selection.Provider
+	model := selection.Model.UpstreamModel
+	if strings.TrimSpace(provider.APIKey) == "" {
+		return nil, errors.New("模型服务商没有可用的 API Key")
+	}
+	timeout := provider.TimeoutSecs
+	switch provider.Adapter {
+	case modelconfig.AdapterOpenAI:
+		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.AppEnv == "development")
+		finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+		imageOptions := c2a.ImageOptions{
+			Quality:               taskParamString(task.Params, "quality"),
+			TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
+			OutputFormat:          taskParamString(task.Params, "outputFormat"),
+			ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
+		}
+		var images []string
+		var err error
+		if len(task.InputKeys) > 0 {
+			inputs, err := w.loadInputImagesB64(ctx, task.InputKeys)
+			if err != nil {
+				return nil, err
+			}
+			images, err = client.EditImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
+		} else {
+			images, err = client.GenerateImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
+		}
+		if err != nil {
+			return images, err
+		}
+		return images, deliverEncodedImages(images, onImage)
+	case modelconfig.AdapterCRUN:
+		client, err := crun.New(provider.BaseURL, provider.APIKey, model, timeout)
+		if err != nil {
+			return nil, err
+		}
+		return w.callCRUNClient(ctx, task, client, onImage)
+	default:
+		return nil, errors.New("不支持的模型服务商类型")
+	}
+}
+
+func (w *Worker) callUpstreamLegacy(ctx context.Context, task *store.Task, provider, model string, onImage imageReadyFunc) ([]string, error) {
+	if provider == "sub2api" {
+		return w.callSub2API(ctx, task, model, onImage)
+	}
+	if provider == "crun" {
+		return w.callCRUN(ctx, task, onImage)
+	}
 	client := w.upstreamClient(ctx)
 	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	imageOptions := c2a.ImageOptions{
+		Quality:               taskParamString(task.Params, "quality"),
+		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
+		OutputFormat:          taskParamString(task.Params, "outputFormat"),
+		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
+	}
+	var images []string
 	if len(task.InputKeys) > 0 {
 		inputs, err := w.loadInputImagesB64(ctx, task.InputKeys)
 		if err != nil {
 			return nil, err
 		}
-		return client.EditImagesWithID(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size)
+		images, err = client.EditImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
+		if err != nil {
+			return images, err
+		}
+	} else {
+		var err error
+		images, err = client.GenerateImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
+		if err != nil {
+			return images, err
+		}
 	}
-	return client.GenerateImagesWithID(ctx, task.ID.String(), finalPrompt, model, task.Count, size)
+	return images, deliverEncodedImages(images, onImage)
+}
+
+func (w *Worker) callUpstream(ctx context.Context, task *store.Task, provider, model string, onImage imageReadyFunc) ([]string, error) {
+	selection, configured, err := w.configuredModelSelection(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+	if configured {
+		return w.callConfiguredUpstream(ctx, task, selection, onImage)
+	}
+	return w.callUpstreamLegacy(ctx, task, provider, model, onImage)
 }
 
 func taskParamString(params map[string]any, key string) string {
@@ -188,6 +569,15 @@ func taskParamString(params map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+func taskParamBool(params map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := params[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
 }
 
 // applyMaskEditComposite 局部编辑 crop-and-stitch 的贴回阶段：
@@ -249,8 +639,20 @@ func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, er
 	if err == nil && won {
 		// M4：通知在主事务提交后尽力而为
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, task)
+		w.publishTaskEvent(ctx, task, taskstream.Event{
+			Stage: "failed", Status: "failed", Done: true,
+		})
 	}
 	return err
+}
+
+func (w *Worker) publishTaskEvent(ctx context.Context, task *store.Task, event taskstream.Event) {
+	if task == nil {
+		return
+	}
+	event.TaskID = task.ID.String()
+	taskstream.Publish(ctx, w.Stream, event.TaskID, event)
+	taskstream.PublishUser(ctx, w.Stream, task.UserID.String(), event)
 }
 
 // urlPattern H1 脱敏：过滤上游错误文案中的 URL，避免泄漏内部地址。
@@ -260,6 +662,12 @@ var urlPattern = regexp.MustCompile(`https?://\S+`)
 func sanitizeUpstreamMessage(msg string) string {
 	cleaned := strings.TrimSpace(urlPattern.ReplaceAllString(msg, ""))
 	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	lower := strings.ToLower(cleaned)
+	if strings.Contains(lower, "context deadline exceeded") ||
+		strings.Contains(lower, "client.timeout") ||
+		strings.Contains(lower, "timeout while reading body") {
+		return "AI 服务响应超时，请重试；已返回的进度会尽量保留"
+	}
 	if cleaned == "" {
 		return "生成服务返回错误，请稍后重试"
 	}
@@ -284,6 +692,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s not claimable, skip", taskID)
 		return nil
 	}
+	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "running", Status: "running"})
 	queueWait := time.Since(task.CreatedAt)
 	if queueWait < 0 {
 		queueWait = 0
@@ -292,11 +701,27 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		"task %s claimed type=%s queue_wait_ms=%d",
 		taskID, task.Type, queueWait.Milliseconds(),
 	)
-
-	// 模型在任务创建时已经快照，避免排队期间后台配置变化导致展示值与实际执行值不一致。
+	provider := strings.ToLower(taskParamString(task.Params, "_serviceProvider"))
+	if provider != "c2a" && provider != "sub2api" && provider != "crun" {
+		provider, err = settings.ImageServiceProvider(ctx, w.St.Pool, task.Type)
+		if err != nil {
+			return err
+		}
+	}
+	// 服务在创建任务时快照；C2A 模型也在创建时固定，旧任务和 Sub2API 模型在首次执行时补齐。
 	model := strings.TrimSpace(task.Model)
 	if model == "" {
-		model, err = settings.TaskModel(ctx, w.St.Pool, task.Type)
+		if provider == "sub2api" {
+			client, clientErr := w.assistantClient(ctx)
+			if clientErr != nil {
+				return clientErr
+			}
+			model = client.ImageModel()
+		} else if provider == "crun" {
+			model = crun.DefaultModel
+		} else {
+			model, err = settings.TaskModel(ctx, w.St.Pool, task.Type)
+		}
 		if err != nil {
 			return err
 		}
@@ -307,8 +732,9 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	}
 
 	errorCode, errorMessage := "internal_error", "未知错误"
-	var imagesB64 []string
-	imagesB64, callErr := w.callUpstream(ctx, task, model)
+	collector := newTaskOutputCollector(w, ctx, task)
+	upstreamStartedAt := time.Now()
+	imagesB64, callErr := w.callUpstream(ctx, task, provider, model, collector.persist)
 	var netErr *c2a.NetworkError
 	if callErr != nil && errors.As(callErr, &netErr) {
 		// 连接/超时类错误重试一次（attempt+1 落库）
@@ -316,61 +742,40 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		if berr := store.BumpTaskAttempt(ctx, w.St.Pool, taskID); berr != nil {
 			log.Printf("task %s bump attempt failed: %v", taskID, berr)
 		}
-		imagesB64, callErr = w.callUpstream(ctx, task, model)
+		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
+	}
+	outputKeys, thumbnailKeys := collector.completed()
+	logTaskStage(taskID.String(), "upstream", upstreamStartedAt,
+		"provider=%s model=%s returned=%d persisted=%d", provider, model, len(imagesB64), len(outputKeys))
+	if callErr != nil {
+		if len(outputKeys) > 0 {
+			log.Printf("task %s upstream ended after partial success (%d/%d): %v", taskID, len(outputKeys), task.Count, callErr)
+			callErr = nil
+		}
 	}
 	if callErr != nil {
 		// H1：error_message 只落用户可读文案，原始错误进日志（带 task_id）
 		var upErr *c2a.UpstreamError
+		var subErr *sub2api.UpstreamError
+		var crunErr *crun.UpstreamError
 		switch {
 		case errors.As(callErr, &netErr):
 			errorCode, errorMessage = "upstream_unreachable", "生成服务暂时不可用，请稍后重试"
 		case errors.As(callErr, &upErr):
 			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(upErr.Message)
+		case errors.As(callErr, &subErr):
+			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(subErr.Message)
+		case errors.As(callErr, &crunErr):
+			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(crunErr.Message)
 		default:
 			errorCode, errorMessage = "internal_error", "任务执行失败，请稍后重试"
 		}
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
-		imagesB64 = nil
 	}
 
-	if imagesB64 != nil {
-		imagesB64 = w.applyMaskEditComposite(ctx, task, imagesB64)
+	if callErr == nil && len(outputKeys) > 0 {
 		var succeeded *store.Task
-		outputCount := 0
-		var uploadedKeys []string
 		storeErr := func() error {
-			outputKeys := make([]string, 0, len(imagesB64))
-			thumbnailKeys := make([]string, 0, len(imagesB64))
-			for i, b64 := range imagesB64 {
-				data, derr := base64.StdEncoding.DecodeString(b64)
-				if derr != nil {
-					return derr
-				}
-				if len(data) == 0 || len(data) > 20<<20 {
-					return fmt.Errorf("output image exceeds 20 MiB limit")
-				}
-				ext, contentType := media.Detect(data)
-				if ext == "" {
-					return fmt.Errorf("upstream returned unsupported image data")
-				}
-				thumb, terr := media.ThumbnailJPEG(data, 512)
-				if terr != nil {
-					return terr
-				}
-				key := fmt.Sprintf("tasks/%s/%s/original/%d.%s", task.UserID, task.ID, i, ext)
-				thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%d.jpg", task.UserID, task.ID, i)
-				if uerr := w.Storage.UploadBytes(ctx, key, data, contentType); uerr != nil {
-					return uerr
-				}
-				uploadedKeys = append(uploadedKeys, key)
-				if uerr := w.Storage.UploadBytes(ctx, thumbKey, thumb, "image/jpeg"); uerr != nil {
-					return uerr
-				}
-				uploadedKeys = append(uploadedKeys, thumbKey)
-				outputKeys = append(outputKeys, key)
-				thumbnailKeys = append(thumbnailKeys, thumbKey)
-			}
-			outputCount = len(outputKeys)
 			return w.St.Tx(ctx, func(tx pgx.Tx) error {
 				dbTask, gerr := store.GetTask(ctx, tx, taskID)
 				if gerr != nil || dbTask == nil {
@@ -386,13 +791,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		if storeErr == nil {
 			if succeeded != nil {
 				// M4：通知在主事务提交后尽力而为
-				taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, outputCount)
+				taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
 			}
+			w.publishTaskEvent(ctx, task, taskstream.Event{
+				Stage: "complete", Status: "succeeded", ImageCount: len(outputKeys), Done: true,
+			})
 			return nil
 		}
-		if len(uploadedKeys) > 0 {
-			_ = w.Storage.DeleteKeys(ctx, uploadedKeys)
-		}
+		collector.cleanup()
 		log.Printf("task %s failed to store outputs: %v", taskID, storeErr)
 		errorCode, errorMessage = "storage_error", "图片保存失败，请重试"
 	}

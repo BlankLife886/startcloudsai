@@ -61,6 +61,8 @@ const {
   items: works,
   loading,
   error: worksError,
+  total: worksTotal,
+  page: worksPage,
   hasPrev,
   hasNext,
   reset: reloadWorks,
@@ -656,6 +658,17 @@ onMounted(() => {
 
       <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
 
+      <AdminListShell
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :page="worksPage"
+        :count="visibleWorks.length"
+        :total="worksTotal"
+        viewport-height="clamp(420px, calc(100vh - 350px), 720px)"
+        @prev="prev"
+        @next="next"
+      >
       <div v-loading="loading && works.length > 0" class="community-pane__scroll">
         <div v-if="loading && !works.length" class="community-board" aria-label="正在加载作品">
           <article v-for="index in 8" :key="`sk-${index}`" class="community-card-skeleton">
@@ -693,10 +706,7 @@ onMounted(() => {
           </template>
         </draggable>
       </div>
-
-      <div class="community-pane__pager">
-        <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
-      </div>
+      </AdminListShell>
     </div>
 
     <el-image-viewer
@@ -1322,16 +1332,6 @@ onMounted(() => {
 .community-pane__scroll {
   flex: 0 1 auto;
   min-height: 200px;
-}
-
-.community-pane__pager {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--community-line);
 }
 
 .community-board {

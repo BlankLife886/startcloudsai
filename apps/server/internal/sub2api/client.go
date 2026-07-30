@@ -19,11 +19,12 @@ import (
 const maxImageResponseBytes = 32 << 20
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	chatModel  string
-	imageModel string
-	httpClient *http.Client
+	baseURL      string
+	apiKey       string
+	apiKeyHeader string
+	chatModel    string
+	imageModel   string
+	httpClient   *http.Client
 }
 
 type Message struct {
@@ -91,6 +92,34 @@ func (c *Client) WithChatModel(model string) *Client {
 	return &clone
 }
 
+// WithImageModel returns a request-scoped client while preserving the shared transport.
+func (c *Client) WithImageModel(model string) *Client {
+	if c == nil || strings.TrimSpace(model) == "" {
+		return c
+	}
+	clone := *c
+	clone.imageModel = strings.TrimSpace(model)
+	return &clone
+}
+
+// WithAPIKeyHeader adds provider-specific key authentication while retaining
+// Bearer auth for OpenAI-compatible endpoints.
+func (c *Client) WithAPIKeyHeader(header string) *Client {
+	if c == nil || strings.TrimSpace(header) == "" {
+		return c
+	}
+	clone := *c
+	clone.apiKeyHeader = strings.TrimSpace(header)
+	return &clone
+}
+
+func (c *Client) applyAuth(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKeyHeader != "" {
+		req.Header.Set(c.apiKeyHeader, c.apiKey)
+	}
+}
+
 // ListModels validates gateway connectivity and returns the visible model IDs.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if !c.Configured() {
@@ -100,7 +129,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.applyAuth(req)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "StarCloudsAI/1.0")
 	resp, err := c.httpClient.Do(req)
@@ -141,7 +170,7 @@ func (c *Client) newJSONRequest(ctx context.Context, path string, body any) (*ht
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.applyAuth(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream, application/json")
 	req.Header.Set("User-Agent", "StarCloudsAI/1.0")
@@ -284,7 +313,12 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	// http.Client.Timeout covers the entire response body and therefore aborts healthy SSE
+	// streams once the configured duration elapses. The request context already carries the
+	// worker/task deadline and cancellation, so keep the stream alive while data is arriving.
+	streamClient := *c.httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +442,9 @@ func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size,
 func transientImageError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
 	}
 	var upstream *UpstreamError
 	if errors.As(err, &upstream) {

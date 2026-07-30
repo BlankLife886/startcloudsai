@@ -13,6 +13,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 // 用户输入框限制为 2 万字；任务提示词还会附加站内处理指令和 Skills，
@@ -260,6 +261,13 @@ func (s *Server) cancelTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	event := taskstream.Event{
+		TaskID: taskID.String(),
+		Stage:  "canceled", Status: "canceled", Done: true,
+	}
+	streamClient := s.assistantStreamRedis()
+	taskstream.Publish(c.Request.Context(), streamClient, taskID.String(), event)
+	taskstream.PublishUser(c.Request.Context(), streamClient, user.ID.String(), event)
 	ok(c, taskDict(task, nil, nil))
 }
 

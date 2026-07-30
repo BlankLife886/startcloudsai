@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
 import {
   Bell,
   ChatDotRound,
@@ -21,181 +21,201 @@ import {
   SwitchButton,
   Ticket,
   User,
-} from '@element-plus/icons-vue'
-import { useAuthStore } from '@/stores/auth'
-import { request } from '@/request'
-import { isDark, toggleTheme } from '@/theme'
+} from "@element-plus/icons-vue";
+import { useAuthStore } from "@/stores/auth";
+import { request } from "@/request";
+import { isDark, toggleTheme } from "@/theme";
 
-const route = useRoute()
-const router = useRouter()
-const auth = useAuthStore()
-const sidebarCollapsed = ref(false)
+const route = useRoute();
+const router = useRouter();
+const auth = useAuthStore();
+const sidebarCollapsed = ref(false);
 
 function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  window.localStorage.setItem('startclouds-admin:sidebar-collapsed', String(sidebarCollapsed.value))
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+  window.localStorage.setItem(
+    "startclouds-admin:sidebar-collapsed",
+    String(sidebarCollapsed.value),
+  );
 }
 
 const NAV_GROUPS = [
   {
-    title: '总览',
-    items: [{ path: '/', label: '仪表盘', icon: Odometer }],
+    title: "总览",
+    items: [{ path: "/", label: "仪表盘", icon: Odometer }],
   },
   {
-    title: '业务',
+    title: "业务",
     items: [
-      { path: '/users', label: '用户管理', icon: User },
-      { path: '/tasks', label: '任务监控', icon: Monitor },
+      { path: "/users", label: "用户管理", icon: User },
+      { path: "/tasks", label: "任务监控", icon: Monitor },
+      { path: "/model-config", label: "模型配置", icon: MagicStick },
     ],
   },
   {
-    title: '社区运营',
+    title: "社区运营",
     items: [
-      { path: '/prompt-library', label: '提示词库', icon: CollectionTag },
-      { path: '/community', label: '社区管理', icon: ChatDotRound },
-      { path: '/gallery', label: '投稿审核', icon: Picture },
+      { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
+      { path: "/community", label: "社区管理", icon: ChatDotRound },
+      { path: "/gallery", label: "投稿审核", icon: Picture },
     ],
   },
   {
-    title: '资金',
+    title: "资金",
     items: [
-      { path: '/codes', label: '兑换码', icon: Ticket },
-      { path: '/audit', label: '审计日志', icon: List },
+      { path: "/codes", label: "兑换码", icon: Ticket },
+      { path: "/audit", label: "审计日志", icon: List },
     ],
   },
   {
-    title: '系统',
+    title: "系统",
     items: [
-      { path: '/content', label: '内容管理', icon: Document },
-      { path: '/settings', label: '系统设置', icon: Setting },
+      { path: "/content", label: "内容管理", icon: Document },
+      { path: "/settings", label: "系统设置", icon: Setting },
     ],
   },
-]
+];
 
-const displayName = computed(() => auth.user?.username || auth.user?.email || '管理员')
-const avatarInitial = computed(() => displayName.value.slice(0, 1).toUpperCase())
+const displayName = computed(
+  () => auth.user?.username || auth.user?.email || "管理员",
+);
+const avatarInitial = computed(() =>
+  displayName.value.slice(0, 1).toUpperCase(),
+);
 
 /* ---------- 待办数（侧边栏徽标 + 通知铃），失败静默 ---------- */
 
-const pendingSubmissions = ref(0)
+const pendingSubmissions = ref(0);
 /** 待审数超出单页时展示 N+ */
-const pendingHasMore = ref(false)
-const runningTasks = ref(0)
+const pendingHasMore = ref(false);
+const runningTasks = ref(0);
 
 async function loadTodoCounts() {
   try {
-    const data = await request<{ items: unknown[]; nextCursor: string | null; total?: number }>(
-      '/api/admin/gallery/submissions',
-      { query: { status: 'pending', limit: 50 }, silent: true },
-    )
-    if (typeof data.total === 'number') {
-      pendingSubmissions.value = data.total
-      pendingHasMore.value = false
+    const data = await request<{
+      items: unknown[];
+      nextCursor: string | null;
+      total?: number;
+    }>("/api/admin/gallery/submissions", {
+      query: { status: "pending", limit: 50 },
+      silent: true,
+    });
+    if (typeof data.total === "number") {
+      pendingSubmissions.value = data.total;
+      pendingHasMore.value = false;
     } else {
-      pendingSubmissions.value = data.items?.length ?? 0
-      pendingHasMore.value = Boolean(data.nextCursor)
+      pendingSubmissions.value = data.items?.length ?? 0;
+      pendingHasMore.value = Boolean(data.nextCursor);
     }
   } catch {
     // 静默：徽标缺失不影响使用
   }
   try {
-    const stats = await request<{ runningTasks?: number }>('/api/admin/stats', { silent: true })
-    runningTasks.value = stats.runningTasks ?? 0
+    const stats = await request<{ runningTasks?: number }>("/api/admin/stats", {
+      silent: true,
+    });
+    runningTasks.value = stats.runningTasks ?? 0;
   } catch {
     // 静默
   }
 }
 
 const pendingBadgeText = computed(() => {
-  if (pendingSubmissions.value <= 0) return ''
-  return pendingHasMore.value ? `${pendingSubmissions.value}+` : String(pendingSubmissions.value)
-})
+  if (pendingSubmissions.value <= 0) return "";
+  return pendingHasMore.value
+    ? `${pendingSubmissions.value}+`
+    : String(pendingSubmissions.value);
+});
 
 const notifyItems = computed(() =>
   [
     {
-      key: 'pending',
-      label: '投稿待审核',
+      key: "pending",
+      label: "投稿待审核",
       count: pendingSubmissions.value,
       countText: pendingBadgeText.value,
-      tone: 'warning',
+      tone: "warning",
       icon: Picture,
-      to: '/gallery',
+      to: "/gallery",
     },
     {
-      key: 'running',
-      label: '任务运行中',
+      key: "running",
+      label: "任务运行中",
       count: runningTasks.value,
       countText: String(runningTasks.value),
-      tone: 'info',
+      tone: "info",
       icon: MagicStick,
-      to: '/tasks',
+      to: "/tasks",
     },
   ].filter((item) => item.count > 0),
-)
+);
 
-const notifyTotal = computed(() => notifyItems.value.reduce((sum, item) => sum + item.count, 0))
+const notifyTotal = computed(() =>
+  notifyItems.value.reduce((sum, item) => sum + item.count, 0),
+);
 
 onMounted(() => {
-  sidebarCollapsed.value = window.localStorage.getItem('startclouds-admin:sidebar-collapsed') === 'true'
-  void loadTodoCounts()
-})
-watch(() => route.path, loadTodoCounts)
+  sidebarCollapsed.value =
+    window.localStorage.getItem("startclouds-admin:sidebar-collapsed") ===
+    "true";
+  void loadTodoCounts();
+});
+watch(() => route.path, loadTodoCounts);
 
 function goTodo(to: string) {
-  router.push(to)
+  router.push(to);
 }
 
 /* ---------- 主题 / 用户菜单 ---------- */
 
 async function onLogout() {
-  await auth.logout()
-  router.push('/login')
+  await auth.logout();
+  router.push("/login");
 }
 
 function onUserCommand(command: string) {
-  if (command === 'logout') void onLogout()
-  else if (command === 'password') openPassword()
+  if (command === "logout") void onLogout();
+  else if (command === "password") openPassword();
 }
 
 /* ---------- 修改密码 ---------- */
 
-const passwordOpen = ref(false)
-const passwordSubmitting = ref(false)
-const passwordForm = reactive({ old: '', next: '', confirm: '' })
+const passwordOpen = ref(false);
+const passwordSubmitting = ref(false);
+const passwordForm = reactive({ old: "", next: "", confirm: "" });
 
 function openPassword() {
-  passwordForm.old = ''
-  passwordForm.next = ''
-  passwordForm.confirm = ''
-  passwordOpen.value = true
+  passwordForm.old = "";
+  passwordForm.next = "";
+  passwordForm.confirm = "";
+  passwordOpen.value = true;
 }
 
 async function submitPassword() {
   if (!passwordForm.old) {
-    ElMessage.warning('请输入旧密码')
-    return
+    ElMessage.warning("请输入旧密码");
+    return;
   }
   if (passwordForm.next.length < 12) {
-    ElMessage.warning('管理员密码至少 12 位')
-    return
+    ElMessage.warning("管理员密码至少 12 位");
+    return;
   }
   if (passwordForm.next !== passwordForm.confirm) {
-    ElMessage.warning('两次输入的新密码不一致')
-    return
+    ElMessage.warning("两次输入的新密码不一致");
+    return;
   }
-  passwordSubmitting.value = true
+  passwordSubmitting.value = true;
   try {
-    await request('/api/admin/auth/password', {
-	  method: 'PATCH',
-	  body: { old: passwordForm.old, new: passwordForm.next },
-    })
-    passwordOpen.value = false
-    ElMessage.success('密码已修改，请重新登录')
-    await auth.logout()
-    router.push('/login')
+    await request("/api/admin/auth/password", {
+      method: "PATCH",
+      body: { old: passwordForm.old, new: passwordForm.next },
+    });
+    passwordOpen.value = false;
+    ElMessage.success("密码已修改，请重新登录");
+    await auth.logout();
+    router.push("/login");
   } finally {
-    passwordSubmitting.value = false
+    passwordSubmitting.value = false;
   }
 }
 </script>
@@ -226,7 +246,10 @@ async function submitPassword() {
           >
             <el-icon :size="17"><component :is="item.icon" /></el-icon>
             <span>{{ item.label }}</span>
-            <em v-if="item.path === '/gallery' && pendingBadgeText" class="nav-badge tnum">
+            <em
+              v-if="item.path === '/gallery' && pendingBadgeText"
+              class="nav-badge tnum"
+            >
               {{ pendingBadgeText }}
             </em>
           </router-link>
@@ -246,7 +269,9 @@ async function submitPassword() {
           :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
           @click="toggleSidebar"
         >
-          <el-icon :size="15"><component :is="sidebarCollapsed ? Expand : Fold" /></el-icon>
+          <el-icon :size="15"
+            ><component :is="sidebarCollapsed ? Expand : Fold"
+          /></el-icon>
         </button>
       </div>
     </aside>
@@ -262,18 +287,27 @@ async function submitPassword() {
 
         <div class="topbar-actions">
           <!-- 通知铃 -->
-          <el-popover placement="bottom-end" :width="300" trigger="click" popper-class="notify-popper">
+          <el-popover
+            placement="bottom-end"
+            :width="300"
+            trigger="click"
+            popper-class="notify-popper"
+          >
             <template #reference>
               <button type="button" class="icon-btn" title="通知中心">
                 <el-icon :size="16"><Bell /></el-icon>
                 <em v-if="notifyTotal > 0" class="icon-btn__dot tnum">
-                  {{ notifyTotal > 99 ? '99+' : notifyTotal }}
+                  {{ notifyTotal > 99 ? "99+" : notifyTotal }}
                 </em>
               </button>
             </template>
             <div class="notify-panel">
-              <div class="notify-panel__title">待办通知 · {{ notifyTotal }} 项</div>
-              <div v-if="!notifyItems.length" class="notify-panel__empty">全部处理完毕</div>
+              <div class="notify-panel__title">
+                待办通知 · {{ notifyTotal }} 项
+              </div>
+              <div v-if="!notifyItems.length" class="notify-panel__empty">
+                全部处理完毕
+              </div>
               <button
                 v-for="item in notifyItems"
                 :key="item.key"
@@ -291,8 +325,15 @@ async function submitPassword() {
           </el-popover>
 
           <!-- 主题切换 -->
-          <button type="button" class="icon-btn" :title="isDark ? '切换为浅色' : '切换为深色'" @click="toggleTheme">
-            <el-icon :size="16"><component :is="isDark ? Sunny : Moon" /></el-icon>
+          <button
+            type="button"
+            class="icon-btn"
+            :title="isDark ? '切换为浅色' : '切换为深色'"
+            @click="toggleTheme"
+          >
+            <el-icon :size="16"
+              ><component :is="isDark ? Sunny : Moon"
+            /></el-icon>
           </button>
 
           <!-- 用户菜单 -->
@@ -317,7 +358,11 @@ async function submitPassword() {
 
       <main
         class="content"
-        :class="{ 'content--workspace': ['/prompt-library', '/tasks'].includes(route.path) }"
+        :class="{
+          'content--workspace': ['/prompt-library', '/tasks'].includes(
+            route.path,
+          ),
+        }"
       >
         <div :key="route.path" class="anim-fade-up content-inner">
           <router-view />
@@ -329,7 +374,12 @@ async function submitPassword() {
     <el-dialog v-model="passwordOpen" title="修改密码" width="420px">
       <el-form label-width="90px" @submit.prevent="submitPassword">
         <el-form-item label="旧密码" required>
-          <el-input v-model="passwordForm.old" type="password" show-password autocomplete="current-password" />
+          <el-input
+            v-model="passwordForm.old"
+            type="password"
+            show-password
+            autocomplete="current-password"
+          />
         </el-form-item>
         <el-form-item label="新密码" required>
           <el-input
@@ -341,13 +391,23 @@ async function submitPassword() {
           />
         </el-form-item>
         <el-form-item label="确认新密码" required>
-          <el-input v-model="passwordForm.confirm" type="password" show-password autocomplete="new-password" />
+          <el-input
+            v-model="passwordForm.confirm"
+            type="password"
+            show-password
+            autocomplete="new-password"
+          />
         </el-form-item>
       </el-form>
       <p class="text-muted" style="margin: 0">修改成功后需要重新登录。</p>
       <template #footer>
         <el-button @click="passwordOpen = false">取消</el-button>
-        <el-button type="primary" :loading="passwordSubmitting" @click="submitPassword">确认修改</el-button>
+        <el-button
+          type="primary"
+          :loading="passwordSubmitting"
+          @click="submitPassword"
+          >确认修改</el-button
+        >
       </template>
     </el-dialog>
   </div>
@@ -471,7 +531,10 @@ async function submitPassword() {
   font-size: 13.5px;
   font-weight: 500;
   text-decoration: none;
-  transition: background-color 0.15s ease, color 0.15s ease, padding 0.18s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    padding 0.18s ease;
 }
 
 .aside.is-collapsed .nav {
@@ -588,7 +651,9 @@ async function submitPassword() {
   background: transparent;
   color: var(--ink-3);
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .sidebar-toggle:hover {
@@ -601,6 +666,76 @@ async function submitPassword() {
   gap: 8px;
   padding-right: 10px;
   padding-left: 10px;
+}
+
+@media (max-width: 720px) {
+  .aside {
+    width: 64px;
+  }
+
+  .logo {
+    justify-content: center;
+    padding: 14px 8px 10px;
+  }
+
+  .logo-copy,
+  .nav-group__title,
+  .nav-item span,
+  .user-meta,
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .nav {
+    gap: 12px;
+    padding: 8px;
+    scrollbar-gutter: auto;
+  }
+
+  .nav-item {
+    position: relative;
+    justify-content: center;
+    padding: 9px 8px;
+  }
+
+  .nav-badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    font-size: 9px;
+  }
+
+  .user-card {
+    justify-content: center;
+    padding: 9px 8px;
+  }
+
+  .topbar {
+    height: 48px;
+    padding: 0 10px;
+  }
+
+  .crumb {
+    gap: 5px;
+    font-size: 11px;
+  }
+
+  .crumb > span:first-child,
+  .crumb-sep {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 2px;
+  }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -670,7 +805,9 @@ async function submitPassword() {
   background: transparent;
   color: var(--ink-3);
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .icon-btn:hover {

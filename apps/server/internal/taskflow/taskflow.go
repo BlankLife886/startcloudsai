@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -19,6 +21,70 @@ import (
 func now() time.Time { return time.Now().UTC() }
 
 func strPtr(s string) *string { return &s }
+
+func stringParam(params map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := params[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.ToLower(strings.TrimSpace(value))
+		}
+	}
+	return ""
+}
+
+func boolParam(params map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := params[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
+}
+
+func supports(values []string, requested string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, requested) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
+	requestedResolution := stringParam(params, "resolutionScale", "resolution")
+	allowedRatios := modelconfig.AspectRatiosForResolution(model, requestedResolution)
+	aspectRatio := stringParam(params, "aspectRatio", "ratio")
+	if aspectRatio != "" && !supports(allowedRatios, aspectRatio) {
+		return apperr.E("validation_error", "所选模型不支持该宽高比，请重新选择", 422)
+	}
+	quality := stringParam(params, "quality")
+	switch quality {
+	case "standard":
+		quality = "medium"
+	case "hd":
+		quality = "high"
+	}
+	if quality != "" && !supports(model.Qualities, quality) {
+		return apperr.E("validation_error", "所选模型不支持该输出质量，请重新选择", 422)
+	}
+	if boolParam(params, "transparentPngEnabled", "transparentPng", "transparentBackground") && !model.TransparentBackground {
+		return apperr.E("validation_error", "所选模型不支持透明背景", 422)
+	}
+	outputFormat := stringParam(params, "outputFormat")
+	if outputFormat == "jpg" {
+		outputFormat = "jpeg"
+	}
+	if outputFormat != "" && !supports(model.OutputFormats, outputFormat) {
+		return apperr.E("validation_error", "所选模型不支持指定输出格式，请使用模型内置格式", 422)
+	}
+	moderation := stringParam(params, "moderationLevel", "moderation")
+	if moderation != "" && !supports(model.ModerationLevels, moderation) {
+		return apperr.E("validation_error", "所选模型不支持该内容审核级别", 422)
+	}
+	if referenceCount > model.MaxReferenceImages {
+		return apperr.E("validation_error", fmt.Sprintf("所选模型最多支持 %d 张参考图", model.MaxReferenceImages), 422)
+	}
+	return nil
+}
 
 type CreateInput struct {
 	Type           string
@@ -70,24 +136,128 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			return apperr.E("user_task_limit", fmt.Sprintf("同时进行中的任务不能超过 %d 个", maxRunning), 429)
 		}
 
+		taskID := uuid.New()
 		unitPrice, err := settings.TaskPriceCents(ctx, tx, in.Type)
 		if err != nil {
 			return err
 		}
-		model, err := settings.TaskModel(ctx, tx, in.Type)
+		provider, err := settings.ImageServiceProvider(ctx, tx, in.Type)
 		if err != nil {
 			return err
 		}
+		model := ""
+		if provider == "c2a" {
+			model, err = settings.TaskModel(ctx, tx, in.Type)
+			if err != nil {
+				return err
+			}
+		}
+		params := make(map[string]any, len(in.Params)+1)
+		for key, value := range in.Params {
+			params[key] = value
+		}
+		params["_serviceProvider"] = provider
+		modelCfg, err := modelconfig.Load(ctx, tx)
+		if err != nil {
+			return err
+		}
+		requestedModelID := ""
+		for _, key := range []string{"publicModelKey", "modelId"} {
+			if value, ok := in.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+				requestedModelID = strings.TrimSpace(value)
+				break
+			}
+		}
+		if requestedModelID == "standard" {
+			requestedModelID = ""
+		}
+		workspace, workspaceMapped := modelconfig.WorkspaceForTaskType(in.Type)
+		var selection *modelconfig.Selection
+		var configured bool
+		if workspaceMapped {
+			selection, configured = modelconfig.SelectPublicForWorkspace(
+				modelCfg, workspace, modelconfig.ModelKindImage, requestedModelID,
+			)
+		} else {
+			selection, configured = modelconfig.SelectPublic(modelCfg, modelconfig.ModelKindImage, requestedModelID)
+		}
+		if configured {
+			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
+				return err
+			}
+			if quality := stringParam(params, "quality"); quality != "" {
+				switch quality {
+				case "standard":
+					quality = "medium"
+				case "hd":
+					quality = "high"
+				}
+				params["quality"] = quality
+			}
+			if format := stringParam(params, "outputFormat"); format != "" {
+				if format == "jpg" {
+					format = "jpeg"
+				}
+				params["outputFormat"] = format
+			}
+			requestedResolution := ""
+			for _, key := range []string{"resolutionScale", "resolution"} {
+				if value, ok := in.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+					requestedResolution = strings.ToUpper(strings.TrimSpace(value))
+					break
+				}
+			}
+			if requestedResolution != "" && len(selection.Model.Resolutions) > 0 {
+				supported := false
+				for _, resolution := range selection.Model.Resolutions {
+					if strings.EqualFold(resolution, requestedResolution) {
+						supported = true
+						break
+					}
+				}
+				if !supported {
+					return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
+				}
+			}
+			requestedAspectRatio := stringParam(in.Params, "aspectRatio")
+			if requestedAspectRatio == "auto" {
+				params["requestedAspectRatio"] = "auto"
+				params["aspectRatio"] = "auto"
+				params["autoAspectRatioCandidates"] = modelconfig.AutoAspectRatioCandidates(
+					selection.Model, requestedResolution,
+				)
+			}
+			provider = selection.Provider.Adapter
+			model = selection.Model.UpstreamModel
+			unitPrice = modelconfig.EffectivePrice(selection.Model)
+			params["_serviceProvider"] = provider
+			params["_modelConfigId"] = selection.Model.ID
+			params["_providerConfigId"] = selection.Provider.ID
+			params["_providerDisplayName"] = selection.Provider.Name
+			params["_modelDisplayName"] = selection.Model.Name
+			params["_modelFastMode"] = selection.Model.FastMode
+			params["_modelResolutions"] = selection.Model.Resolutions
+			params["_modelAspectRatios"] = selection.Model.AspectRatios
+			params["_modelAspectRatiosByResolution"] = selection.Model.AspectRatiosByResolution
+			params["_modelQualities"] = selection.Model.Qualities
+			params["_modelTransparentBackground"] = selection.Model.TransparentBackground
+			params["_modelOutputFormats"] = selection.Model.OutputFormats
+			params["_modelModerationLevels"] = selection.Model.ModerationLevels
+			params["_modelMaxReferenceImages"] = selection.Model.MaxReferenceImages
+			params["_unitPriceCents"] = unitPrice
+		} else if (workspaceMapped && modelconfig.HasWorkspaceBinding(modelCfg, workspace)) ||
+			modelconfig.HasPublicKind(modelCfg, modelconfig.ModelKindImage) || requestedModelID != "" {
+			return apperr.E("validation_error", "所选图片模型未分配给当前页面，请刷新模型列表后重试", 422)
+		}
 		costCents := unitPrice * int64(in.Count)
 
-		taskID := uuid.New()
 		task, err = store.InsertTask(ctx, tx, store.NewTask{
 			ID:             taskID,
 			UserID:         userID,
 			Type:           in.Type,
 			Model:          model,
 			Prompt:         in.Prompt,
-			Params:         in.Params,
+			Params:         params,
 			Count:          in.Count,
 			InputKeys:      in.InputKeys,
 			CostCents:      costCents,

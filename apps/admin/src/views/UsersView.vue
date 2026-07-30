@@ -4,14 +4,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
-  fenToYuan,
+  formatPoints,
   formatTime,
   ledgerKindLabel,
   shortId,
   TASK_STATUS_LABELS,
   TASK_STATUS_TAG,
   taskTypeLabel,
-  yuanToFen,
 } from '@/utils'
 
 interface AdminUser {
@@ -64,7 +63,7 @@ function websiteHref(value: string | null | undefined) {
 
 const filters = reactive({ search: '', status: '' })
 
-const { items, loading, error, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<AdminUser>(
     (cursor) =>
       request<Page<AdminUser>>('/api/admin/users', {
@@ -94,14 +93,14 @@ async function toggleBan(user: AdminUser) {
 // ---------- 调整余额对话框 ----------
 const adjustVisible = ref(false)
 const adjustTarget = ref<AdminUser | null>(null)
-const adjustForm = reactive({ deltaYuan: 0, reason: '' })
+const adjustForm = reactive({ deltaPoints: 0, reason: '' })
 const adjustSubmitting = ref(false)
 
-const adjustCents = computed(() => yuanToFen(adjustForm.deltaYuan))
+const adjustCents = computed(() => Math.round(Number(adjustForm.deltaPoints || 0)))
 
 function openAdjust(user: AdminUser) {
   adjustTarget.value = user
-  adjustForm.deltaYuan = 0
+  adjustForm.deltaPoints = 0
   adjustForm.reason = ''
   adjustVisible.value = true
 }
@@ -109,7 +108,7 @@ function openAdjust(user: AdminUser) {
 async function submitAdjust() {
   if (!adjustTarget.value) return
   if (adjustCents.value === 0) {
-    ElMessage.warning('调整金额不能为 0')
+    ElMessage.warning('调整积分不能为 0')
     return
   }
   if (!adjustForm.reason.trim()) {
@@ -122,7 +121,7 @@ async function submitAdjust() {
       method: 'POST',
       body: { deltaCents: adjustCents.value, reason: adjustForm.reason.trim() },
     })
-    ElMessage.success('余额调整成功')
+    ElMessage.success('积分调整成功')
     adjustVisible.value = false
     refresh()
     if (drawerVisible.value && drawerUser.value?.id === adjustTarget.value.id) {
@@ -264,9 +263,20 @@ const taskSuccessRate = computed(() => {
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
+      <AdminListShell
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :page="page"
+        :count="items.length"
+        :total="total"
+        @prev="prev"
+        @next="next"
+      >
       <el-table
         v-loading="loading"
         :data="items"
+        height="100%"
         size="small"
         row-class-name="row-clickable"
         @row-click="(row: AdminUser) => openDrawer(row)"
@@ -311,11 +321,11 @@ const taskSuccessRate = computed(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="资金（元）" width="135" align="right" class-name="col-num">
+        <el-table-column label="积分余额" width="135" align="right" class-name="col-num">
           <template #default="{ row }">
             <div class="money-cell">
-              <strong>{{ fenToYuan(walletOf(row as AdminUser).balanceCents) }}</strong>
-              <small>冻结 {{ fenToYuan(walletOf(row as AdminUser).frozenCents) }}</small>
+              <strong>{{ formatPoints(walletOf(row as AdminUser).balanceCents) }}</strong>
+              <small>冻结 {{ formatPoints(walletOf(row as AdminUser).frozenCents) }}</small>
             </div>
           </template>
         </el-table-column>
@@ -341,27 +351,26 @@ const taskSuccessRate = computed(() => {
           </template>
         </el-table-column>
       </el-table>
-
-      <CursorPager :has-prev="hasPrev" :has-next="hasNext" :loading="loading" @prev="prev" @next="next" />
+      </AdminListShell>
     </PageCard>
 
     <!-- 调整余额 -->
-    <el-dialog v-model="adjustVisible" title="调整余额" width="440px">
+    <el-dialog v-model="adjustVisible" title="调整积分" width="440px">
       <p v-if="adjustTarget" class="text-muted" style="margin-top: 0">
-        用户：{{ adjustTarget.email }}（当前余额 {{ fenToYuan(walletOf(adjustTarget).balanceCents) }} 元）
+        用户：{{ adjustTarget.email }}（当前余额 {{ formatPoints(walletOf(adjustTarget).balanceCents) }} 积分）
       </p>
       <el-form label-width="90px">
-        <el-form-item label="金额（元）" required>
+        <el-form-item label="积分" required>
           <el-input-number
-            v-model="adjustForm.deltaYuan"
+            v-model="adjustForm.deltaPoints"
             :min="-100000"
             :max="100000"
-            :precision="2"
+            :precision="0"
             :step="1"
             style="width: 200px"
           />
           <div class="text-muted">
-            正数入账、负数扣减，单次范围 ±100000 元；实际写入 {{ adjustCents }} 分，记入钱包账本
+            正数入账、负数扣减，单次范围 ±100000 积分，记入钱包账本
           </div>
         </el-form-item>
         <el-form-item label="原因" required>
@@ -464,18 +473,18 @@ const taskSuccessRate = computed(() => {
                   <div class="wallet-overview">
                     <div>
                       <small>可用余额</small>
-                      <strong>{{ fenToYuan(drawerWallet.balanceCents) }}</strong>
-                      <span>元</span>
+                      <strong>{{ formatPoints(drawerWallet.balanceCents) }}</strong>
+                      <span>积分</span>
                     </div>
                     <div>
-                      <small>冻结金额</small>
-                      <strong>{{ fenToYuan(drawerWallet.frozenCents) }}</strong>
-                      <span>元</span>
+                      <small>冻结积分</small>
+                      <strong>{{ formatPoints(drawerWallet.frozenCents) }}</strong>
+                      <span>积分</span>
                     </div>
                     <div>
                       <small>资金合计</small>
-                      <strong>{{ fenToYuan(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
-                      <span>元</span>
+                      <strong>{{ formatPoints(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
+                      <span>积分</span>
                     </div>
                   </div>
                 </section>
@@ -543,7 +552,18 @@ const taskSuccessRate = computed(() => {
           </el-tab-pane>
 
           <el-tab-pane label="账本" name="ledger">
-            <el-table v-loading="ledgerList.loading.value" :data="ledgerList.items.value" size="small">
+            <AdminListShell
+              :has-prev="ledgerList.hasPrev.value"
+              :has-next="ledgerList.hasNext.value"
+              :loading="ledgerList.loading.value"
+              :page="ledgerList.page.value"
+              :count="ledgerList.items.value.length"
+              :total="ledgerList.total.value"
+              viewport-height="360px"
+              @prev="ledgerList.prev"
+              @next="ledgerList.next"
+            >
+            <el-table v-loading="ledgerList.loading.value" :data="ledgerList.items.value" height="100%" size="small">
               <template #empty>
                 <el-empty description="暂无流水" :image-size="60" />
               </template>
@@ -557,15 +577,15 @@ const taskSuccessRate = computed(() => {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="变动（元）" width="100" align="right">
+              <el-table-column label="积分变动" width="100" align="right">
                 <template #default="{ row }">
                   <span :class="row.deltaCents >= 0 ? 'delta-pos' : 'delta-neg'">
-                    {{ row.deltaCents >= 0 ? '+' : '' }}{{ fenToYuan(row.deltaCents) }}
+                    {{ row.deltaCents >= 0 ? '+' : '' }}{{ formatPoints(row.deltaCents) }}
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="余额（元）" width="100" align="right">
-                <template #default="{ row }">{{ fenToYuan(row.balanceAfterCents) }}</template>
+              <el-table-column label="积分余额" width="100" align="right">
+                <template #default="{ row }">{{ formatPoints(row.balanceAfterCents) }}</template>
               </el-table-column>
               <el-table-column label="原因" min-width="140">
                 <template #default="{ row }">
@@ -578,17 +598,22 @@ const taskSuccessRate = computed(() => {
                 </template>
               </el-table-column>
             </el-table>
-            <CursorPager
-              :has-prev="ledgerList.hasPrev.value"
-              :has-next="ledgerList.hasNext.value"
-              :loading="ledgerList.loading.value"
-              @prev="ledgerList.prev"
-              @next="ledgerList.next"
-            />
+            </AdminListShell>
           </el-tab-pane>
 
           <el-tab-pane label="任务" name="tasks">
-            <el-table v-loading="taskList.loading.value" :data="taskList.items.value" size="small">
+            <AdminListShell
+              :has-prev="taskList.hasPrev.value"
+              :has-next="taskList.hasNext.value"
+              :loading="taskList.loading.value"
+              :page="taskList.page.value"
+              :count="taskList.items.value.length"
+              :total="taskList.total.value"
+              viewport-height="360px"
+              @prev="taskList.prev"
+              @next="taskList.next"
+            >
+            <el-table v-loading="taskList.loading.value" :data="taskList.items.value" height="100%" size="small">
               <template #empty>
                 <el-empty description="暂无任务" :image-size="60" />
               </template>
@@ -615,8 +640,8 @@ const taskSuccessRate = computed(() => {
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="费用（元）" width="100" align="right">
-                <template #default="{ row }">{{ fenToYuan(row.costCents) }}</template>
+              <el-table-column label="积分消耗" width="100" align="right">
+                <template #default="{ row }">{{ formatPoints(row.costCents) }}</template>
               </el-table-column>
               <el-table-column label="时间" width="150">
                 <template #default="{ row }">
@@ -624,13 +649,7 @@ const taskSuccessRate = computed(() => {
                 </template>
               </el-table-column>
             </el-table>
-            <CursorPager
-              :has-prev="taskList.hasPrev.value"
-              :has-next="taskList.hasNext.value"
-              :loading="taskList.loading.value"
-              @prev="taskList.prev"
-              @next="taskList.next"
-            />
+            </AdminListShell>
           </el-tab-pane>
         </el-tabs>
       </template>

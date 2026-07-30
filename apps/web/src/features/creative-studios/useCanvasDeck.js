@@ -238,17 +238,16 @@ export function useCanvasDeck({ items, enabled, reducedMotion, getContainer }) {
   }
 
   // 激活即定格：刷新进入时若画布已有成图，直接呈现堆叠终态，不跑进场动画
-  function settle() {
+  async function settle() {
     if (!active.value) return
     stopTicker()
     window.clearTimeout(snapTimer)
-    void nextTick(() => {
-      refreshCards()
-      state.progress = 0
-      target = 0
-      applyStyles()
-      entered.value = true
-    })
+    await nextTick()
+    refreshCards()
+    state.progress = 0
+    target = 0
+    applyStyles()
+    entered.value = true
   }
 
   watch(
@@ -264,7 +263,7 @@ export function useCanvasDeck({ items, enabled, reducedMotion, getContainer }) {
       const wasActive = prev?.[0]
       const prevCount = prev?.[1] ?? 0
       if (!wasActive || (n > 0 && prevCount === 0)) {
-        settle()
+        void settle()
       } else if (n !== prevCount) {
         target = Math.round(((target % n) + n) % n)
         state.progress = target
