@@ -16,7 +16,7 @@ const saving = ref(false);
 const savedSignature = ref("");
 
 const form = reactive({
-  userMaxRunningTasks: 3,
+  userMaxRunningTasks: 100,
   registrationEnabled: true,
   signupBonusPoints: 0,
 });
@@ -36,7 +36,7 @@ const isDirty = computed(
 );
 
 function hydrate(settings: AdminSettings) {
-  form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 3;
+  form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
   form.registrationEnabled = settings.registrationEnabled ?? true;
   form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
   savedSignature.value = settingsSignature();
@@ -129,8 +129,8 @@ onMounted(load);
 
           <label class="setting-row">
             <span
-              ><strong>单用户并发任务</strong
-              ><small>同时运行中的任务上限</small></span
+              ><strong>单用户待处理任务</strong
+              ><small>运行中与排队中的任务总量上限；上游并发由 Worker 单独控制</small></span
             >
             <el-input-number
               v-model="form.userMaxRunningTasks"

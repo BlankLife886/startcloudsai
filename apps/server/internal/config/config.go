@@ -128,7 +128,7 @@ func Load() *Config {
 		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
 
 		WorkerConcurrency:   getenvInt("WORKER_CONCURRENCY", 8),
-		UserMaxRunningTasks: getenvInt("USER_MAX_RUNNING_TASKS", 3),
+		UserMaxRunningTasks: getenvInt("USER_MAX_RUNNING_TASKS", 100),
 
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,

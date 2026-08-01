@@ -1,6 +1,6 @@
 .assistant-workspace {
-  --assistant-bg: #fdfdfc;
-  --assistant-panel: #f5f5f2;
+  --assistant-bg: #ffffff;
+  --assistant-panel: #f7f7f5;
   --assistant-panel-hover: #eaeae6;
   --assistant-panel-active: #e8e6f5;
   --assistant-card: #ffffff;
@@ -91,7 +91,8 @@
   flex-direction: column;
   padding: 10px;
   background: var(--assistant-panel);
-  border-right: 1px solid var(--assistant-border);
+  border: 0;
+  border-right: 0;
 }
 
 .assistant-workspace .assistant-brand-row,
@@ -825,7 +826,7 @@
     0 0 0 3px color-mix(in srgb, var(--assistant-accent) 11%, transparent);
 }
 .assistant-workspace .assistant-composer.is-image-mode {
-  border-color: color-mix(in srgb, #b6523f 52%, var(--assistant-border));
+  border-color: color-mix(in srgb, var(--assistant-accent) 42%, var(--assistant-border));
 }
 .assistant-workspace .assistant-composer textarea {
   display: block;
@@ -1409,8 +1410,8 @@
     display: none;
   }
   .assistant-workspace .assistant-empty-state {
-    min-height: calc(100vh - 210px);
-    padding-bottom: 160px;
+    min-height: 100%;
+    padding: 20px 16px max(220px, calc(8px + 170px + env(safe-area-inset-bottom, 0px)));
   }
   .assistant-workspace .suggestion-grid {
     width: min(420px, 100%);
@@ -1752,8 +1753,11 @@
 }
 
 .assistant-workspace .assistant-empty-state {
+  box-sizing: border-box;
   min-height: 100%;
-  padding: 0;
+  align-content: center;
+  /* 为底部悬浮输入框留空，避免建议卡片被挡住 */
+  padding: 28px 20px max(260px, calc(12px + 210px + env(safe-area-inset-bottom, 0px)));
 }
 
 /* 连接状态：在消息区内居中，不再用魔法偏移钉在任意点 */
@@ -4087,13 +4091,14 @@
 }
 
 .assistant-workspace .asset-library-panel {
-  position: absolute;
-  z-index: 40;
+  position: fixed;
+  z-index: 3100; /* 高于顶栏 3000，全屏高度不被遮挡 */
   top: 0;
   right: 0;
   bottom: 0;
   display: flex;
   width: min(348px, 92vw);
+  height: 100dvh;
   min-height: 0;
   flex-direction: column;
   padding: 18px 16px 14px;

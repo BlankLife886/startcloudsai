@@ -18,9 +18,11 @@ const props = defineProps({
   retryCount: { type: Number, default: 1 },
   unloadDelay: { type: Number, default: 900 },
   maxDimension: { type: Number, default: 0 },
+  width: { type: [Number, String], default: 0 },
+  height: { type: [Number, String], default: 0 },
 })
 
-const emit = defineEmits(['load', 'error'])
+const emit = defineEmits(['load', 'error', 'dimensions'])
 const imageEl = ref(null)
 const resolvedSrc = ref('')
 const loaded = ref(false)
@@ -135,6 +137,10 @@ function handleLoad(event) {
   retryAttempt = 0
   loaded.value = true
   failed.value = false
+  const image = event?.target
+  const width = Number(image?.naturalWidth || 0)
+  const height = Number(image?.naturalHeight || 0)
+  if (width > 0 && height > 0) emit('dimensions', { width, height })
   emit('load', event)
 }
 
@@ -212,6 +218,8 @@ onBeforeUnmount(() => {
       :loading="nativeLoading"
       :decoding="decoding"
       :fetchpriority="fetchpriority"
+      :width="Math.max(0, Number(width) || 0) || undefined"
+      :height="Math.max(0, Number(height) || 0) || undefined"
       draggable="false"
       @load="handleLoad"
       @error="handleError"

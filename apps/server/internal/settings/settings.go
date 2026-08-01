@@ -13,7 +13,7 @@ import (
 // Defaults 与 Python 版 settings_service.DEFAULTS 一致。
 var Defaults = map[string]json.RawMessage{
 	"task_prices":            json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
-	"user_max_running_tasks": json.RawMessage(`3`),
+	"user_max_running_tasks": json.RawMessage(`100`),
 	"signup_bonus_cents":     json.RawMessage(`100`),
 	"registration_enabled":   json.RawMessage(`true`),
 	"task_models":            json.RawMessage(`{"default": "gpt-image-2"}`),

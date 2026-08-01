@@ -30,6 +30,8 @@ function toLegacyItem(item) {
     tags: item.tags || [],
     coverUrl: item.coverUrl || '',
     imageUrl: item.coverUrl || '',
+    coverWidth: Math.max(0, Number(item.coverWidth) || 0),
+    coverHeight: Math.max(0, Number(item.coverHeight) || 0),
     likeCount: item.likeCount || 0,
     favoriteCount: item.favoriteCount || 0,
     useCount: item.useCount || 0,
@@ -50,6 +52,8 @@ function normalizeFallbackItem(item) {
     tags: Array.isArray(item?.tags) ? item.tags : [],
     coverUrl: String(item?.coverUrl || item?.imageUrl || ''),
     imageUrl: String(item?.imageUrl || item?.coverUrl || ''),
+    coverWidth: Math.max(0, Number(item?.coverWidth) || 0),
+    coverHeight: Math.max(0, Number(item?.coverHeight) || 0),
     likeCount: Math.max(0, Number(item?.likeCount) || 0),
     favoriteCount: Math.max(0, Number(item?.favoriteCount) || 0),
     useCount: Math.max(0, Number(item?.useCount) || 0),
@@ -139,8 +143,8 @@ export async function listPromptLibrary(type, options = {}) {
       page,
       total: Number(
         (normalizedCategory
-          ? categoryCounts?.[normalizedCategory] ?? countsByType.get(type)?.[normalizedCategory]
-          : categoryCounts?.all ?? countsByType.get(type)?.all) ?? legacyItems.length,
+          ? (categoryCounts?.[normalizedCategory] ?? countsByType.get(type)?.[normalizedCategory])
+          : (categoryCounts?.all ?? countsByType.get(type)?.all)) ?? legacyItems.length,
       ),
       hasMore: Boolean(nextCursor),
       categoryCounts: countsByType.get(type) || countCategories(legacyItems),

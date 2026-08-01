@@ -21,6 +21,7 @@ import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalSt
 import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
 import notificationService from '@/services/notification'
+import { takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { useAppearanceStore } from '@/stores/appearance'
 import { gsap } from 'gsap'
 import { prefersReducedMotion } from '@/lib/anime'
@@ -41,6 +42,7 @@ const {
   outputs,
   activeOutput,
   outputJobIds,
+  outputPreviewUrls,
   outputGroups,
   outputGroupIndexes,
   batchProgress,
@@ -833,6 +835,8 @@ onMounted(() => {
   setupPageMotion()
   window.addEventListener('keydown', handleKeydown)
   setupGalleryObserver()
+  const pending = takePendingPrompt('model_sheet')
+  if (pending?.prompt) prompt.value = pending.prompt.slice(0, 1500)
 })
 
 onBeforeUnmount(() => {
@@ -1271,7 +1275,7 @@ function refreshHistory() {
                 alt="参考主体"
                 :max-dimension="240"
               />
-              <img v-else :src="item.preview" alt="参考主体" />
+              <img v-else :src="item.preview" alt="参考主体" loading="eager" decoding="async" />
               <span v-if="index === 0" class="ms3-ref-primary">主</span>
               <button
                 type="button"
@@ -1854,7 +1858,12 @@ function refreshHistory() {
             :title="outputLabels[url] || `视图 ${index + 1}`"
             @click="selectOutput(url)"
           >
-            <AuthenticatedImage :src="url" alt="" :max-dimension="160" loading="lazy" />
+            <AuthenticatedImage
+              :src="outputPreviewUrls[url] || url"
+              alt=""
+              :max-dimension="160"
+              loading="lazy"
+            />
             <em>{{ outputLabels[url] || index + 1 }}</em>
           </button>
           <button
@@ -1987,7 +1996,7 @@ function refreshHistory() {
             <div v-for="asset in myAssets" :key="asset.id" class="ms3-card is-asset">
               <div class="ms3-card-pick is-static">
                 <AuthenticatedImage
-                  :src="asset.resultUrl"
+                  :src="asset.coverUrl || asset.resultUrl"
                   :alt="asset.title"
                   :max-dimension="360"
                   loading="lazy"
@@ -2054,7 +2063,13 @@ function refreshHistory() {
                 "
                 @click="openHistoryGroup(group)"
               >
-                <AuthenticatedImage :src="group.cover" alt="" :max-dimension="360" loading="lazy" />
+                <AuthenticatedImage
+                  :src="outputPreviewUrls[group.cover] || group.cover"
+                  alt=""
+                  :max-dimension="360"
+                  loading="lazy"
+                  root-margin="480px 0px"
+                />
               </button>
               <span v-if="group.urls.length > 1" class="ms3-card-count">
                 <i class="bi bi-stack" aria-hidden="true"></i>{{ group.urls.length }}
@@ -3621,6 +3636,8 @@ function refreshHistory() {
 }
 
 .ms3-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 260px;
   position: relative;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-sm);

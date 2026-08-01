@@ -223,8 +223,8 @@ func TestCreateTaskIdempotencyKey(t *testing.T) {
 
 func TestUserTaskLimit(t *testing.T) {
 	st := testdb.Setup(t)
-	user := newUserWithBalance(t, st, 1000)
-	for range 3 { // 默认 user_max_running_tasks = 3
+	user := newUserWithBalance(t, st, 10000)
+	for range 100 { // 默认允许大量任务排队，Worker 并发仍独立受控
 		if _, _, err := createT2I(t, st, user.ID, 1, nil); err != nil {
 			t.Fatalf("create: %v", err)
 		}
@@ -235,8 +235,8 @@ func TestUserTaskLimit(t *testing.T) {
 
 func TestUserTaskLimitUnderConcurrentCreation(t *testing.T) {
 	st := testdb.Setup(t)
-	user := newUserWithBalance(t, st, 1000)
-	const attempts = 10
+	user := newUserWithBalance(t, st, 10000)
+	const attempts = 110
 	start := make(chan struct{})
 	results := make(chan error, attempts)
 	var wg sync.WaitGroup
@@ -266,12 +266,12 @@ func TestUserTaskLimitUnderConcurrentCreation(t *testing.T) {
 		}
 		limited++
 	}
-	if succeeded != 3 || limited != attempts-3 {
-		t.Fatalf("concurrent results = %d succeeded, %d limited; want 3 and %d", succeeded, limited, attempts-3)
+	if succeeded != 100 || limited != attempts-100 {
+		t.Fatalf("concurrent results = %d succeeded, %d limited; want 100 and %d", succeeded, limited, attempts-100)
 	}
 	active, err := store.CountActiveTasks(context.Background(), st.Pool, user.ID)
-	if err != nil || active != 3 {
-		t.Fatalf("active tasks = %d, err=%v; want 3", active, err)
+	if err != nil || active != 100 {
+		t.Fatalf("active tasks = %d, err=%v; want 100", active, err)
 	}
 }
 

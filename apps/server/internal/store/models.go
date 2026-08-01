@@ -268,6 +268,8 @@ type PromptEntry struct {
 	Category            *string
 	Tags                []string
 	CoverKey            *string
+	CoverWidth          *int
+	CoverHeight         *int
 	GallerySubmissionID *uuid.UUID
 	Sort                int
 	LikeCount           int

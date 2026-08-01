@@ -216,6 +216,53 @@ func (s *Server) listTasks(c *gin.Context) {
 	}))
 }
 
+// getTasksBatch returns current snapshots for many active tasks in one request.
+// Results follow input order and silently omit missing or foreign task IDs.
+func (s *Server) getTasksBatch(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	rawIDs := strings.Split(c.Query("ids"), ",")
+	if len(rawIDs) == 0 || (len(rawIDs) == 1 && strings.TrimSpace(rawIDs[0]) == "") {
+		fail(c, apperr.E("validation_error", "ids: 不能为空", 422))
+		return
+	}
+	if len(rawIDs) > 100 {
+		fail(c, apperr.E("validation_error", "ids: 一次最多查询 100 个任务", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(rawIDs))
+	seen := make(map[uuid.UUID]struct{}, len(rawIDs))
+	for _, rawID := range rawIDs {
+		id, parseErr := uuid.Parse(strings.TrimSpace(rawID))
+		if parseErr != nil {
+			fail(c, apperr.E("validation_error", "ids: 包含无效任务 ID", 422))
+			return
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	tasksByID, err := store.GetTasksByIDs(c.Request.Context(), s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(ids))
+	for _, id := range ids {
+		task := tasksByID[id]
+		if task == nil || task.UserID != user.ID {
+			continue
+		}
+		items = append(items, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
+	}
+	ok(c, gin.H{"items": items})
+}
+
 func (s *Server) getOwnTask(c *gin.Context, user *store.User) (*store.Task, error) {
 	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {

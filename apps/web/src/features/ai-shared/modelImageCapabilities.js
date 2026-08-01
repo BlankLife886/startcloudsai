@@ -45,25 +45,27 @@ export function normalizeImageQuality(value) {
 }
 
 export function normalizeImageModelCapabilities(model = {}) {
+  // 默认参数对 null 不生效；模型未就绪时必须兜底，否则文生图页会白屏崩溃
+  const safeModel = model && typeof model === 'object' ? model : {}
   const globalAspectRatios = normalizeEnumList(
-    model.aspectRatios,
+    safeModel.aspectRatios,
     IMAGE_ASPECT_RATIOS,
     IMAGE_ASPECT_RATIOS,
   )
-  const qualities = normalizeEnumList(model.qualities, IMAGE_QUALITIES, IMAGE_QUALITIES)
+  const qualities = normalizeEnumList(safeModel.qualities, IMAGE_QUALITIES, IMAGE_QUALITIES)
   const outputFormats = normalizeEnumList(
-    model.outputFormats,
+    safeModel.outputFormats,
     IMAGE_OUTPUT_FORMATS,
     IMAGE_OUTPUT_FORMATS,
   )
   const moderationLevels = normalizeEnumList(
-    model.moderationLevels,
+    safeModel.moderationLevels,
     IMAGE_MODERATION_LEVELS,
     IMAGE_MODERATION_LEVELS,
   )
-  const parsedReferenceLimit = Number(model.maxReferenceImages)
-  const supportedResolutions = Array.isArray(model.resolutions)
-    ? model.resolutions
+  const parsedReferenceLimit = Number(safeModel.maxReferenceImages)
+  const supportedResolutions = Array.isArray(safeModel.resolutions)
+    ? safeModel.resolutions
         .map((resolution) =>
           String(resolution || '')
             .trim()
@@ -72,12 +74,12 @@ export function normalizeImageModelCapabilities(model = {}) {
         .filter((resolution) => IMAGE_RESOLUTIONS.includes(resolution))
     : IMAGE_RESOLUTIONS
   const sourceRatiosByResolution =
-    model.aspectRatiosByResolution && typeof model.aspectRatiosByResolution === 'object'
-      ? model.aspectRatiosByResolution
+    safeModel.aspectRatiosByResolution && typeof safeModel.aspectRatiosByResolution === 'object'
+      ? safeModel.aspectRatiosByResolution
       : {}
   const sourceAutoRatios =
-    model.autoAspectRatios && typeof model.autoAspectRatios === 'object'
-      ? model.autoAspectRatios
+    safeModel.autoAspectRatios && typeof safeModel.autoAspectRatios === 'object'
+      ? safeModel.autoAspectRatios
       : {}
   const hasResolutionRules = Object.keys(sourceRatiosByResolution).length > 0
   const aspectRatiosByResolution = Object.fromEntries(
@@ -109,7 +111,7 @@ export function normalizeImageModelCapabilities(model = {}) {
     aspectRatios: aspectRatios.length ? aspectRatios : ['1:1'],
     aspectRatiosByResolution,
     qualities: qualities.length ? qualities : ['medium'],
-    transparentBackground: model.transparentBackground !== false,
+    transparentBackground: safeModel.transparentBackground !== false,
     outputFormats,
     moderationLevels,
     maxReferenceImages: Number.isFinite(parsedReferenceLimit)

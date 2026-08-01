@@ -30,9 +30,9 @@
   --glow: var(--default-glow);
 }
 
-/* 基础样式 */
+/* 基础样式：页面背景由各页面自己负责，不在 body 铺全局底色 */
 .default-theme body {
-  background-color: var(--default-background);
+  background-color: transparent;
   color: var(--default-on-background);
 }
 

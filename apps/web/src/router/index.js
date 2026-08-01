@@ -27,14 +27,50 @@ const routes = [
     },
   },
   {
+    path: '/studio',
+    name: 'studio',
+    component: () => import('../views/StudioHubView.vue'),
+    meta: {
+      title: `创作台 - ${siteName}`,
+      titleLabel: '创作台',
+      icon: 'bi-grid-1x2-fill',
+      description: '选择文生图、染色、设计稿等 AI 创作工作台，一站式开始生产。',
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/prompts',
+    name: 'prompts',
+    component: () => import('../views/PromptLibraryView.vue'),
+    meta: {
+      title: `提示词 - ${siteName}`,
+      titleLabel: '提示词',
+      icon: 'bi-journal-richtext',
+      description: '浏览官方与社区提示词灵感，一键带到对应创作工作台。',
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/history',
+    name: 'history',
+    component: () => import('../views/CreationHistoryView.vue'),
+    meta: {
+      title: `历史记录 - ${siteName}`,
+      titleLabel: '历史记录',
+      icon: 'bi-clock-history',
+      description: '查看各工作台的生成历史，支持筛选、复用提示词与管理产物。',
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/share',
     name: 'share',
     component: () => import('../views/ShareView.vue'),
     meta: {
-      title: `画廊 - ${siteName}`,
-      titleLabel: '画廊',
+      title: `社区 - ${siteName}`,
+      titleLabel: '社区',
       icon: 'bi-share-fill',
-      description: '查看用户提交并通过审核的 AI 生成图共享画廊。',
+      description: '查看用户提交并通过审核的 AI 生成图社区作品。',
     },
   },
   {
@@ -209,11 +245,11 @@ const router = createRouter({
   routes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) {
-      return savedPosition
+      return { ...savedPosition, behavior: 'instant' }
     }
-    if (to.path === from.path && to.hash === from.hash) return false
+    if (to.fullPath === from.fullPath) return false
     if (to.hash) return { el: to.hash, top: 16, behavior: 'smooth' }
-    return { top: 0 }
+    return { top: 0, left: 0, behavior: 'instant' }
   },
 })
 

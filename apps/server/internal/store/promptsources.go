@@ -206,7 +206,19 @@ func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prom
 			title = excluded.title,
 			prompt = excluded.prompt,
 			tags = excluded.tags,
-			cover_key = excluded.cover_key
+			cover_key = excluded.cover_key,
+			cover_width = CASE
+				WHEN prompt_library.cover_key IS DISTINCT FROM excluded.cover_key THEN NULL
+				ELSE prompt_library.cover_width
+			END,
+			cover_height = CASE
+				WHEN prompt_library.cover_key IS DISTINCT FROM excluded.cover_key THEN NULL
+				ELSE prompt_library.cover_height
+			END,
+			cover_metadata_checked_at = CASE
+				WHEN prompt_library.cover_key IS DISTINCT FROM excluded.cover_key THEN NULL
+				ELSE prompt_library.cover_metadata_checked_at
+			END
 		 WHERE (prompt_library.title, prompt_library.prompt, prompt_library.tags, prompt_library.cover_key)
 			IS DISTINCT FROM (excluded.title, excluded.prompt, excluded.tags, excluded.cover_key)
 		 RETURNING (xmax = 0)`,

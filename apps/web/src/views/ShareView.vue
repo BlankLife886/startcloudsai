@@ -711,7 +711,7 @@ onBeforeUnmount(() => {
                 :aria-label="`查看第 ${index + 1} 张`"
                 @click="detailMediaIndex = index"
               >
-                <img :src="url" alt="" loading="lazy" />
+                <img :src="url" alt="" loading="lazy" decoding="async" />
               </button>
             </div>
           </div>

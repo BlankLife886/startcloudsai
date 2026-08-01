@@ -126,7 +126,7 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			return err
 		}
 		if maxRunning <= 0 {
-			maxRunning = 3
+			maxRunning = 100
 		}
 		activeCount, err := store.CountActiveTasks(ctx, tx, userID)
 		if err != nil {

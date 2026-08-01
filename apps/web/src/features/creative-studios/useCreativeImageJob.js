@@ -53,6 +53,8 @@ export function useCreativeImageJob(options = {}) {
   let historyBatchAttemptTimes = new Map()
   let lastHistoryJobs = []
   const outputJobIds = ref({})
+  // outputs 始终保存可下载/编辑的原图；列表与胶片条通过此映射读取缩略图。
+  const outputPreviewUrls = ref({})
   const outputGroups = ref({})
   const outputGroupIndexes = ref({})
   const outputGroupSizes = ref({})
@@ -315,6 +317,34 @@ export function useCreativeImageJob(options = {}) {
     ).slice(0, expectedCount)
   }
 
+  function rememberJobOutputPreviews(outputUrls, job = {}) {
+    if (!Array.isArray(outputUrls) || !outputUrls.length) return
+    const hasDedicatedThumbnails = Array.isArray(job?.thumbnailKeys)
+      ? job.thumbnailKeys.length > 0
+      : false
+    const thumbnails = hasDedicatedThumbnails
+      ? [...(Array.isArray(job?.resultMediaUrls) ? job.resultMediaUrls : []), job?.resultMediaUrl]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      : []
+    const originals = [
+      ...(Array.isArray(job?.originalMediaUrls) ? job.originalMediaUrls : []),
+      ...(Array.isArray(job?.originalResultMediaUrls) ? job.originalResultMediaUrls : []),
+      job?.originalMediaUrl,
+      job?.originalResultMediaUrl,
+    ]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    const next = { ...outputPreviewUrls.value }
+    outputUrls.forEach((url, outputIndex) => {
+      if (!url) return
+      const originalIndex = originals.indexOf(url)
+      const index = originalIndex >= 0 ? originalIndex : outputIndex
+      next[url] = thumbnails[index] || thumbnails[outputIndex] || url
+    })
+    outputPreviewUrls.value = next
+  }
+
   // 有子类型的工作台只查询带类型的任务，早期未分类任务不混入任一类型。
   function historyKinds() {
     if (!kindVariants.length) return [`${jobKindPrefix}-generation`, `${jobKindPrefix}-edit`]
@@ -482,12 +512,11 @@ export function useCreativeImageJob(options = {}) {
       count,
       transparentPngEnabled: modelSettings.transparentBackground,
       transparentBackground: modelSettings.transparentBackground,
-      upscaleOutputFormat:
-        modelSettings.transparentBackground ? 'png' : String(input.upscaleOutputFormat || 'auto'),
+      upscaleOutputFormat: modelSettings.transparentBackground
+        ? 'png'
+        : String(input.upscaleOutputFormat || 'auto'),
       ...(modelSettings.outputFormat ? { outputFormat: modelSettings.outputFormat } : {}),
-      ...(modelSettings.moderationLevel
-        ? { moderationLevel: modelSettings.moderationLevel }
-        : {}),
+      ...(modelSettings.moderationLevel ? { moderationLevel: modelSettings.moderationLevel } : {}),
       quality: modelSettings.quality,
       ...(input.platform ? { platform: String(input.platform) } : {}),
       iterationMode: input.iterationMode === true,
@@ -523,7 +552,7 @@ export function useCreativeImageJob(options = {}) {
     const jobId = response.job?.id
     if (!jobId) throw new Error('任务创建后未返回任务 ID')
     lastJobId.value = jobId
-	const jobIds = runContext?.jobIds || activeJobIds
+    const jobIds = runContext?.jobIds || activeJobIds
     const signal = runContext?.controller?.signal || controller.signal
     jobIds.add(jobId)
     if (runContext?.cancelRequested) {
@@ -531,31 +560,32 @@ export function useCreativeImageJob(options = {}) {
       jobIds.delete(jobId)
       throw new DOMException('任务已取消', 'AbortError')
     }
-	let completed
-	const streamedOutputs = new Set()
-	try {
-	  completed = await waitForServerAiJob(jobId, {
+    let completed
+    const streamedOutputs = new Set()
+    try {
+      completed = await waitForServerAiJob(jobId, {
         intervalMs: 2500,
         maxPolls: 260,
-		signal,
-		onStatus,
-		onImage: (partialOutputs, partialJob, partialResult) => {
-		  const resolved = resolveJobOutputUrls(partialJob, partialResult)
-		  const fresh = resolved.filter((url) => !streamedOutputs.has(url))
-		  if (!fresh.length) return
-		  fresh.forEach((url) => streamedOutputs.add(url))
-		  rememberOutputKind(fresh, jobKind)
-		  prependOutputs(fresh, jobId, String(input.batchId || input.groupId || jobId), {
-			index: input.batchIndex,
-			size: input.batchSize,
-			aspectRatio: modelSettings.aspectRatio,
-			parentOutputUrl: input.parentOutputUrl,
-			activate: true,
-			createdAt: response.job?.createdAt || input.batchCreatedAt,
-			startedAt: partialJob?.startedAt,
-		  })
-		},
-	  })
+        signal,
+        onStatus,
+        onImage: (partialOutputs, partialJob, partialResult) => {
+          const resolved = resolveJobOutputUrls(partialJob, partialResult)
+          rememberJobOutputPreviews(resolved, partialJob)
+          const fresh = resolved.filter((url) => !streamedOutputs.has(url))
+          if (!fresh.length) return
+          fresh.forEach((url) => streamedOutputs.add(url))
+          rememberOutputKind(fresh, jobKind)
+          prependOutputs(fresh, jobId, String(input.batchId || input.groupId || jobId), {
+            index: input.batchIndex,
+            size: input.batchSize,
+            aspectRatio: modelSettings.aspectRatio,
+            parentOutputUrl: input.parentOutputUrl,
+            activate: true,
+            createdAt: response.job?.createdAt || input.batchCreatedAt,
+            startedAt: partialJob?.startedAt,
+          })
+        },
+      })
     } catch (caught) {
       if (caught && typeof caught === 'object' && !caught.jobId) caught.jobId = jobId
       throw caught
@@ -563,6 +593,7 @@ export function useCreativeImageJob(options = {}) {
       jobIds.delete(jobId)
     }
     const nextOutputs = resolveJobOutputUrls(completed.job, completed.result)
+    rememberJobOutputPreviews(nextOutputs, completed.job)
     if (!nextOutputs.length) {
       const missingOutputError = new Error('任务已完成，但没有返回可用图片')
       missingOutputError.jobId = jobId
@@ -599,17 +630,19 @@ export function useCreativeImageJob(options = {}) {
       : input.file
         ? [input.file]
         : []
-	if (files.length) {
-	  status.value = '正在上传参考图...'
-	  list.push(...(await Promise.all(files.map((file) => uploadAiInputFile(file, { featureKey })))))
-	}
+    if (files.length) {
+      status.value = '正在上传参考图...'
+      list.push(
+        ...(await Promise.all(files.map((file) => uploadAiInputFile(file, { featureKey })))),
+      )
+    }
     const urls = Array.isArray(input.sourceUrls)
       ? input.sourceUrls
       : input.sourceUrl
         ? [input.sourceUrl]
         : []
-	const resolvedUrls = await Promise.all(urls.map((url) => rehostInternalUrl(url)))
-	list.push(...resolvedUrls.filter(Boolean))
+    const resolvedUrls = await Promise.all(urls.map((url) => rehostInternalUrl(url)))
+    list.push(...resolvedUrls.filter(Boolean))
     const limit = normalizeImageModelCapabilities(model || {}).maxReferenceImages
     return Array.from(new Set(list)).slice(0, limit)
   }
@@ -671,6 +704,7 @@ export function useCreativeImageJob(options = {}) {
     const nextTimings = { ...outputTimings.value }
     const nextParents = { ...outputParents.value }
     const nextKinds = { ...outputKinds.value }
+    const nextPreviewUrls = { ...outputPreviewUrls.value }
     for (const item of removed) {
       delete next[item]
       delete nextGroups[item]
@@ -679,6 +713,7 @@ export function useCreativeImageJob(options = {}) {
       delete nextTimings[item]
       delete nextParents[item]
       delete nextKinds[item]
+      delete nextPreviewUrls[item]
     }
     outputJobIds.value = next
     outputGroups.value = nextGroups
@@ -687,6 +722,7 @@ export function useCreativeImageJob(options = {}) {
     outputTimings.value = nextTimings
     outputParents.value = nextParents
     outputKinds.value = nextKinds
+    outputPreviewUrls.value = nextPreviewUrls
     persistGroups()
     if (removed.includes(activeOutput.value)) activeOutput.value = outputs.value[0] || ''
     return true
@@ -795,12 +831,15 @@ export function useCreativeImageJob(options = {}) {
     }
     try {
       updateTaskStatus('正在准备参考图')
-      const sourceList = await resolveSourceList({
-        files: batchOptions.files,
-        file: batchOptions.file,
-        sourceUrls: batchOptions.sourceUrls,
-        sourceUrl: batchOptions.sourceUrl,
-      }, model)
+      const sourceList = await resolveSourceList(
+        {
+          files: batchOptions.files,
+          file: batchOptions.file,
+          sourceUrls: batchOptions.sourceUrls,
+          sourceUrl: batchOptions.sourceUrl,
+        },
+        model,
+      )
       if (!preserveBatchMeta) {
         batchRetryContexts.set(groupId, {
           groupId,
@@ -850,9 +889,12 @@ export function useCreativeImageJob(options = {}) {
               outputs: result.outputs,
             })
             if (chainFirstOutput && !effectiveSourceList.length && result.outputs[0]) {
-              effectiveSourceList = await resolveSourceList({
-                sourceUrl: result.outputs[0],
-              }, model).catch(() => [])
+              effectiveSourceList = await resolveSourceList(
+                {
+                  sourceUrl: result.outputs[0],
+                },
+                model,
+              ).catch(() => [])
             }
           } catch (caught) {
             const message = sanitizeCreativeError(caught?.message || '生成失败')
@@ -1074,6 +1116,7 @@ export function useCreativeImageJob(options = {}) {
           const entry = group.entries.get(index)
           const itemStatus = statusOf(entry?.job)
           const urls = itemStatus === 'done' ? resolveJobOutputUrls(entry.job) : []
+          if (urls.length) rememberJobOutputPreviews(urls, entry.job)
           return {
             groupId: group.id,
             index,
@@ -1167,6 +1210,7 @@ export function useCreativeImageJob(options = {}) {
                   },
                 })
                 const urls = resolveJobOutputUrls(completed.job, completed.result)
+                rememberJobOutputPreviews(urls, completed.job)
                 if (urls.length) {
                   const batch = readJobBatchMeta(completed.job || entry.job)
                   const groupId = batch.id || task.groupId
@@ -1468,6 +1512,7 @@ export function useCreativeImageJob(options = {}) {
       if (!['completed', 'done'].includes(jobStatus)) continue
       if (batch.id) clearBatchFailure(batch.id, batch.index, { releaseContext: false })
       const urls = resolveJobOutputUrls(job)
+      rememberJobOutputPreviews(urls, job)
       rememberOutputJob(urls, String(job?.id || ''))
       rememberOutputTiming(urls, {
         createdAt: job?.createdAt || job?.created_at,
@@ -1746,6 +1791,7 @@ export function useCreativeImageJob(options = {}) {
     outputs,
     activeOutput,
     outputJobIds,
+    outputPreviewUrls,
     outputGroups,
     outputGroupIndexes,
     outputGroupSizes,

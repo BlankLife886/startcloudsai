@@ -7,9 +7,10 @@ import {
   getServerAiJobResult,
   listServerAiJobs,
   replaceServerAiJobResultWithLocalUpscale,
+  taskToLegacyJob,
   uploadAiInputFile,
 } from '@/services/aiWallpaper'
-import { subscribeTask } from '@/services/tasksApi'
+import { waitForTask } from '@/services/tasksApi'
 import {
   extractServerJobOutputs,
   hydrateServerJobTaskOutputs,
@@ -32,7 +33,11 @@ import {
 } from '@/services/aiWallpaperState'
 import { recordAiUsage } from '@/services/aiUsageLedger'
 import notificationService from '@/services/notification'
-import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
+import {
+  getScopedLocalItem,
+  removeScopedLocalItem,
+  setScopedLocalItem,
+} from '@/services/scopedLocalStorage'
 import { computed, ref } from 'vue'
 import { resolveT2iOutputSize } from '@/features/ai-wallpaper/composables/wallpaperStudioConstants'
 import { createLocalUpscaledImage } from '@/features/ai-wallpaper/services/localImageUpscale'
@@ -146,9 +151,10 @@ export function useWallpaperTasks(deps = {}) {
   let localTaskSequence = 0
   const taskAbortControllers = new Map()
   const serverJobPollers = new Map()
-	const serverJobStreams = new Map()
   const serverJobPollsInFlight = new Map()
   const serverJobPollControllers = new Map()
+  const pendingServerJobSnapshots = new Map()
+  const completedResultRetryTimers = new Map()
   const pendingCancelTaskIds = new Set()
   const pendingRemoveTaskIds = new Set()
   const completedResultMisses = new Map()
@@ -250,10 +256,44 @@ export function useWallpaperTasks(deps = {}) {
     )
   }
 
+  function clearPersistedTaskHistory() {
+    removeScopedLocalItem(tasksKey)
+    // 兼容旧未加 scope 的 guest key
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(tasksKey)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function clearLocalTaskHistory() {
+    if (persistTasksTimer && typeof window !== 'undefined') {
+      window.clearTimeout(persistTasksTimer)
+      persistTasksTimer = null
+    }
+    stopAllServerJobPolling()
+    runningTaskIds.value = []
+    runningTaskId.value = ''
+    stopTimer()
+    tasks.value = []
+    activeTaskId.value = ''
+    serverJobsHasMore.value = false
+    serverJobsLoadingMore.value = false
+    serverJobsNextCursor.value = ''
+    serverJobsPageDepth = 0
+    taskMutationVersion += 1
+    clearPersistedTaskHistory()
+  }
+
   function persistTasks({ immediate = false } = {}) {
     if (persistTasksTimer && typeof window !== 'undefined') {
       window.clearTimeout(persistTasksTimer)
       persistTasksTimer = null
+    }
+    // 游客不允许保留历史：不落盘，并清掉本地残留
+    if (!authStore.isAuthenticated) {
+      clearPersistedTaskHistory()
+      return
     }
     const write = () => {
       const serializableTasks = tasks.value
@@ -335,6 +375,11 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   function loadTasks() {
+    // 游客不允许拥有历史记录
+    if (!authStore.isAuthenticated) {
+      clearLocalTaskHistory()
+      return
+    }
     try {
       const raw = JSON.parse(getScopedLocalItem(tasksKey) || '[]')
       const filtered = (Array.isArray(raw) ? raw : []).filter(
@@ -392,7 +437,8 @@ export function useWallpaperTasks(deps = {}) {
       // A delayed polling/list response must never move a locally observed
       // terminal task back to queued/running. Keep the whole terminal snapshot
       // so stale logs/errors do not flicker either.
-      if (shouldKeepExistingTaskSnapshot(task.status, incomingStatus)) {
+      // force：原地重新生成需要主动把 completed 任务切回 queued/running。
+      if (!options.force && shouldKeepExistingTaskSnapshot(task.status, incomingStatus)) {
         return task
       }
       applied = true
@@ -427,23 +473,19 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   function stopServerJobPolling(taskId) {
-    const poller = serverJobPollers.get(taskId)
-    if (poller && typeof window !== 'undefined') window.clearInterval(poller)
     serverJobPollers.delete(taskId)
-	serverJobStreams.get(taskId)?.()
-	serverJobStreams.delete(taskId)
     serverJobPollControllers.get(taskId)?.abort()
     serverJobPollControllers.delete(taskId)
     serverJobPollsInFlight.delete(taskId)
+    pendingServerJobSnapshots.delete(taskId)
+    const resultRetryTimer = completedResultRetryTimers.get(taskId)
+    if (resultRetryTimer) globalThis.clearTimeout(resultRetryTimer)
+    completedResultRetryTimers.delete(taskId)
     completedResultMisses.delete(taskId)
   }
 
   function stopAllServerJobPolling() {
-	const taskIds = new Set([
-	  ...serverJobPollers.keys(),
-	  ...serverJobPollControllers.keys(),
-	  ...serverJobStreams.keys(),
-	])
+    const taskIds = new Set([...serverJobPollers.keys(), ...serverJobPollControllers.keys()])
     taskIds.forEach(stopServerJobPolling)
   }
 
@@ -452,7 +494,7 @@ export function useWallpaperTasks(deps = {}) {
     if (!authStore.isAuthenticated) return
     tasks.value
       .filter((task) => task.serverJobId && !isTerminalServerJobStatus(task.status))
-      .slice(0, 8)
+      .slice(0, 100)
       .forEach((task) => startServerJobPolling(task.id))
   }
 
@@ -571,11 +613,13 @@ export function useWallpaperTasks(deps = {}) {
     }
   }
 
-  async function createTask({ skipClientBudgetCheck = false } = {}) {
+  async function createTask({ skipClientBudgetCheck = false, count: countOverride } = {}) {
     if (!canCreateTask.value) return
     if (autoSaveConfig.value) saveStudioConfig()
+    const requestedCount =
+      countOverride != null ? Number(countOverride) : Number(imageCount.value) || 1
     const batchSize =
-      outputType.value === 'image' ? Math.min(4, Math.max(1, Number(imageCount.value) || 1)) : 1
+      outputType.value === 'image' ? Math.min(4, Math.max(1, requestedCount || 1)) : 1
     const batchCreatedAt = new Date().toISOString()
     const batchId = batchSize > 1 ? `batch-${Date.now()}-${localTaskSequence + 1}` : ''
     const batchTasks = Array.from({ length: batchSize }, (_, batchIndex) =>
@@ -622,6 +666,152 @@ export function useWallpaperTasks(deps = {}) {
         notify.error(`${batchSize} 张图片均未能提交，请检查模型后重试`)
       }
     }
+  }
+
+  function restoreRegenerateSnapshot(taskId, errorMessage = '') {
+    const task = tasks.value.find((item) => item.id === taskId)
+    const snapshot = task?.regenerateSnapshot
+    if (!task || !snapshot) {
+      if (task) {
+        updateTask(
+          taskId,
+          { regenerateStatus: '', regenerateSnapshot: null },
+          { persistImmediately: true },
+        )
+      }
+      return false
+    }
+
+    stopServerJobPolling(taskId)
+    const failedJobId = String(task.serverJobId || '').trim()
+    const previousJobId = String(snapshot.serverJobId || '').trim()
+    if (failedJobId && failedJobId !== previousJobId) {
+      void cancelServerAiJob(failedJobId).catch(() => null)
+      void deleteServerAiJob(failedJobId).catch(() => null)
+    }
+
+    const cancelled = /取消/.test(String(errorMessage || ''))
+    const restoreNote = cancelled
+      ? '已取消重新生成，已恢复原图'
+      : errorMessage
+        ? `重新生成失败，已恢复原图：${errorMessage}`
+        : '重新生成失败，已恢复原图'
+    updateTask(
+      taskId,
+      {
+        status: snapshot.status || 'completed',
+        serverJobId: previousJobId,
+        outputs: Array.isArray(snapshot.outputs) ? snapshot.outputs : [],
+        originalOutputs: Array.isArray(snapshot.originalOutputs)
+          ? snapshot.originalOutputs
+          : snapshot.outputs || [],
+        thumbnailOutputs: Array.isArray(snapshot.thumbnailOutputs)
+          ? snapshot.thumbnailOutputs
+          : snapshot.outputs || [],
+        error: '',
+        finishedAt: snapshot.finishedAt || 0,
+        logs: [...(snapshot.logs || []), restoreNote].slice(-12),
+        clientRequestId: snapshot.clientRequestId || task.clientRequestId,
+        usageRecorded: snapshot.usageRecorded === true,
+        estimatedCostUsd: snapshot.estimatedCostUsd,
+        regenerateStatus: '',
+        regenerateSnapshot: null,
+      },
+      { persistImmediately: true },
+    )
+    runningTaskIds.value = runningTaskIds.value.filter((id) => id !== taskId)
+    if (runningTaskId.value === taskId) runningTaskId.value = ''
+    if (!runningTaskIds.value.length) stopTimer()
+    if (!disposed) {
+      if (cancelled) notify.info('已取消重新生成，已恢复原图')
+      else notify.error(errorMessage ? `${errorMessage}，已恢复原图` : '重新生成失败，已恢复原图')
+    }
+    return true
+  }
+
+  async function regenerateTaskInPlace(taskId, { skipClientBudgetCheck = false } = {}) {
+    const existing = tasks.value.find((item) => item.id === taskId)
+    if (!existing) throw new Error('没有可重新生成的图片')
+    if (String(existing.regenerateStatus || '') === 'running') return
+    const existingStatus = String(existing.status || '')
+      .trim()
+      .toLowerCase()
+    if (['queued', 'running', 'waiting_provider'].includes(existingStatus)) {
+      throw new Error('任务进行中，请稍后再试')
+    }
+    const previousOutputs = [...(Array.isArray(existing.outputs) ? existing.outputs : [])]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    if (!previousOutputs.length) throw new Error('当前图片尚无结果，无法原地重新生成')
+
+    if (autoSaveConfig.value) saveStudioConfig()
+
+    const snapshot = {
+      status: existing.status,
+      serverJobId: existing.serverJobId || '',
+      outputs: previousOutputs,
+      originalOutputs: [
+        ...(Array.isArray(existing.originalOutputs) ? existing.originalOutputs : previousOutputs),
+      ]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+      thumbnailOutputs: [
+        ...(Array.isArray(existing.thumbnailOutputs) ? existing.thumbnailOutputs : previousOutputs),
+      ]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+      error: existing.error || '',
+      finishedAt: existing.finishedAt || 0,
+      logs: [...(existing.logs || [])],
+      clientRequestId: existing.clientRequestId || '',
+      usageRecorded: existing.usageRecorded === true,
+      estimatedCostUsd: existing.estimatedCostUsd,
+    }
+
+    const fresh = createTaskRecord({
+      id: taskId,
+      batchId: existing.batchId,
+      batchIndex: existing.batchIndex,
+      batchSize: existing.batchSize,
+      batchCreatedAt: existing.batchCreatedAt,
+      count: 1,
+    })
+
+    updateTask(
+      taskId,
+      {
+        ...fresh,
+        id: taskId,
+        createdAt: existing.createdAt,
+        outputs: snapshot.outputs,
+        originalOutputs: snapshot.originalOutputs,
+        thumbnailOutputs: snapshot.thumbnailOutputs,
+        regenerateStatus: 'running',
+        regenerateSnapshot: snapshot,
+        serverJobId: '',
+        status: 'queued',
+        error: '',
+        finishedAt: 0,
+        logs: ['正在重新生成'],
+        usageRecorded: false,
+      },
+      { persistImmediately: true, force: true },
+    )
+    activeTaskId.value = taskId
+    await runServerTask(taskId, {
+      skipClientBudgetCheck,
+      silentNotifications: true,
+      forceStatusUpdate: true,
+    })
+    if (disposed) return
+
+    const latest = tasks.value.find((item) => item.id === taskId)
+    if (!latest) return
+    if (!latest.serverJobId || String(latest.status || '').toLowerCase() === 'failed') {
+      restoreRegenerateSnapshot(taskId, latest?.error || '重新生成提交失败')
+      return
+    }
+    if (!disposed) notify.success('已在当前图片提交重新生成')
   }
 
   async function createMaskedEditTask({
@@ -937,16 +1127,33 @@ export function useWallpaperTasks(deps = {}) {
 
   async function runServerTask(
     taskId,
-    { preparedSourceUrls = null, silentNotifications = false, skipClientBudgetCheck = false } = {},
+    {
+      preparedSourceUrls = null,
+      silentNotifications = false,
+      skipClientBudgetCheck = false,
+      forceStatusUpdate = false,
+    } = {},
   ) {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return
+    const allowStatusRegression =
+      forceStatusUpdate ||
+      String(task.regenerateStatus || '') === 'running' ||
+      Boolean(task.regenerateSnapshot)
     runningTaskId.value = taskId
     runningTaskIds.value = [...new Set([...runningTaskIds.value, taskId])]
     const startedAt = Date.now()
     elapsedSeconds.value = 0
     startTimer(startedAt)
-    updateTask(taskId, { status: 'running', startedAt, logs: ['正在提交到云端处理'] })
+    updateTask(
+      taskId,
+      {
+        status: 'running',
+        startedAt,
+        logs: [allowStatusRegression ? '正在重新生成' : '正在提交到云端处理'],
+      },
+      allowStatusRegression ? { force: true } : {},
+    )
     try {
       const dispatchModel = String(
         task.publicModelKey ||
@@ -1139,9 +1346,11 @@ export function useWallpaperTasks(deps = {}) {
           serverJobId: response.job?.id || '',
           estimatedCostUsd: response.job?.estimatedCostUsd ?? estimatedCostUsd,
           sourceRemoteUrl: sourceUrl || task.sourceRemoteUrl || '',
-          logs: ['已提交云端处理', '正在等待结果'],
+          logs: allowStatusRegression
+            ? ['正在重新生成', '已提交云端处理', '正在等待结果']
+            : ['已提交云端处理', '正在等待结果'],
         },
-        { persistImmediately: true },
+        { persistImmediately: true, force: allowStatusRegression },
       )
       if (!silentNotifications) {
         notify.success(
@@ -1199,25 +1408,38 @@ export function useWallpaperTasks(deps = {}) {
     runningTaskId.value = taskId
     runningTaskIds.value = [...new Set([...runningTaskIds.value, taskId])]
     if (!timer) startTimer(task.startedAt || Date.now())
-    pollServerTask(taskId)
-    const poller = window.setInterval(() => {
-      pollServerTask(taskId)
-    }, pollIntervalMs)
-    serverJobPollers.set(taskId, poller)
-	serverJobStreams.set(
-	  taskId,
-	  subscribeTask(task.serverJobId, {
-		onUpdate: () => {
-		  void pollServerTask(taskId)
-		},
-	  }),
-	)
+    const controller = new AbortController()
+    serverJobPollControllers.set(taskId, controller)
+    const waiter = waitForTask(task.serverJobId, {
+      signal: controller.signal,
+      intervalMs: pollIntervalMs,
+      maxWaitMs: 60 * 60 * 1000,
+      onUpdate: (snapshot) => {
+        void pollServerTask(taskId, snapshot)
+      },
+    })
+      .catch((error) => {
+        if (error?.name !== 'AbortError' && !disposed) {
+          appendLog(taskId, error?.message || '云端状态同步暂时中断')
+        }
+      })
+      .finally(() => {
+        if (serverJobPollers.get(taskId) === waiter) serverJobPollers.delete(taskId)
+      })
+    serverJobPollers.set(taskId, waiter)
   }
 
-  function pollServerTask(taskId) {
+  function pollServerTask(taskId, snapshot = null) {
+    if (snapshot) pendingServerJobSnapshots.set(taskId, snapshot)
     const inFlight = serverJobPollsInFlight.get(taskId)
     if (inFlight) return inFlight
-    const request = pollServerTaskOnce(taskId).finally(() => {
+    const request = (async () => {
+      do {
+        const nextSnapshot = pendingServerJobSnapshots.get(taskId) || null
+        pendingServerJobSnapshots.delete(taskId)
+        await pollServerTaskOnce(taskId, nextSnapshot)
+      } while (pendingServerJobSnapshots.has(taskId) && !disposed)
+    })().finally(() => {
       if (serverJobPollsInFlight.get(taskId) === request) {
         serverJobPollsInFlight.delete(taskId)
       }
@@ -1226,26 +1448,44 @@ export function useWallpaperTasks(deps = {}) {
     return request
   }
 
-  async function pollServerTaskOnce(taskId) {
+  async function pollServerTaskOnce(taskId, taskSnapshot = null) {
     if (disposed) return
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task?.serverJobId || !authStore.isAuthenticated) {
       stopServerJobPolling(taskId)
       return
     }
-    const controller = new AbortController()
-    serverJobPollControllers.get(taskId)?.abort()
-    serverJobPollControllers.set(taskId, controller)
+    const controller = serverJobPollControllers.get(taskId)
+    if (!controller) return
     try {
-      const response = await getServerAiJob(task.serverJobId, { signal: controller.signal })
+      const response = taskSnapshot
+        ? { job: taskToLegacyJob(taskSnapshot) }
+        : await getServerAiJob(task.serverJobId, { signal: controller.signal })
       if (disposed || controller.signal.aborted) return
       const job = response.job || {}
       const status = job.status || task.status
+      const normalizedStatus = String(status || '')
+        .trim()
+        .toLowerCase()
+      if (
+        task.regenerateSnapshot &&
+        String(task.regenerateStatus || '') === 'running' &&
+        (normalizedStatus === 'failed' ||
+          normalizedStatus === 'cancelled' ||
+          normalizedStatus === 'canceled')
+      ) {
+        restoreRegenerateSnapshot(taskId, job.error || '重新生成失败')
+        return
+      }
       const nextLog =
         status === 'running'
-          ? '云端正在执行'
+          ? task.regenerateSnapshot
+            ? '正在重新生成'
+            : '云端正在执行'
           : status === 'queued'
-            ? '云端等待中'
+            ? task.regenerateSnapshot
+              ? '重新生成排队中'
+              : '云端等待中'
             : status === 'completed'
               ? '云端任务完成，正在读取结果'
               : status === 'failed'
@@ -1328,13 +1568,26 @@ export function useWallpaperTasks(deps = {}) {
         if (status === 'completed') {
           patch.logs = [
             ...(task.logs || []),
-            outputs.length ? '云端结果已同步' : '任务已完成，结果文件正在同步',
+            outputs.length
+              ? task.regenerateSnapshot
+                ? '重新生成完成，已覆盖原图'
+                : '云端结果已同步'
+              : '任务已完成，结果文件正在同步',
           ].slice(-12)
           if (outputs.length) completedResultMisses.delete(taskId)
           else completedResultMisses.set(taskId, (completedResultMisses.get(taskId) || 0) + 1)
           if (outputs.length && activeTaskId.value === taskId) {
             selectedOutputIndex.value = 0
             canvasMode.value = 'result'
+          }
+          if (outputs.length && task.regenerateSnapshot) {
+            patch.regenerateStatus = ''
+            patch.regenerateSnapshot = null
+            const previousJobId = String(task.regenerateSnapshot.serverJobId || '').trim()
+            const nextJobId = String(task.serverJobId || '').trim()
+            if (previousJobId && previousJobId !== nextJobId) {
+              void deleteServerAiJob(previousJobId).catch(() => null)
+            }
           }
           if (!task.usageRecorded) {
             patch.usageRecorded = true
@@ -1379,6 +1632,13 @@ export function useWallpaperTasks(deps = {}) {
         status === 'completed' &&
         !(patch.outputs || []).length &&
         (completedResultMisses.get(taskId) || 0) < 10
+      if (waitingForCompletedResult && !completedResultRetryTimers.has(taskId)) {
+        const retryTimer = globalThis.setTimeout(() => {
+          completedResultRetryTimers.delete(taskId)
+          if (!disposed) void pollServerTask(taskId)
+        }, 1500)
+        completedResultRetryTimers.set(taskId, retryTimer)
+      }
       if (isTerminalServerJobStatus(status) && !waitingForCompletedResult) {
         stopServerJobPolling(taskId)
         runningTaskIds.value = runningTaskIds.value.filter((id) => id !== taskId)
@@ -1401,9 +1661,7 @@ export function useWallpaperTasks(deps = {}) {
         appendLog(taskId, error?.message || '云端状态同步失败')
       }
     } finally {
-      if (serverJobPollControllers.get(taskId) === controller) {
-        serverJobPollControllers.delete(taskId)
-      }
+      // The shared waiter owns the controller for the full task lifetime.
     }
   }
 
@@ -1417,6 +1675,8 @@ export function useWallpaperTasks(deps = {}) {
     const taskStatus = String(task?.status || '')
       .trim()
       .toLowerCase()
+    const isRegenerating =
+      String(task?.regenerateStatus || '') === 'running' && Boolean(task?.regenerateSnapshot)
     if (
       task?.serverJobId &&
       ['queued', 'running', 'waiting_provider', 'paused'].includes(taskStatus)
@@ -1454,6 +1714,11 @@ export function useWallpaperTasks(deps = {}) {
         runningTaskIds.value = runningTaskIds.value.filter((id) => id !== taskId)
         if (runningTaskId.value === taskId) runningTaskId.value = ''
         if (!runningTaskIds.value.length) stopTimer()
+        if (isRegenerating) {
+          restoreRegenerateSnapshot(taskId, '已取消重新生成')
+          void refreshServerAiJobs()
+          return true
+        }
         updateTask(
           taskId,
           {
@@ -1477,6 +1742,10 @@ export function useWallpaperTasks(deps = {}) {
       runningTaskIds.value = runningTaskIds.value.filter((id) => id !== taskId)
       if (runningTaskId.value === taskId) runningTaskId.value = ''
       if (!runningTaskIds.value.length) stopTimer()
+      if (isRegenerating) {
+        restoreRegenerateSnapshot(taskId, '已取消重新生成')
+        return true
+      }
       updateTask(taskId, {
         status: 'cancelled',
         finishedAt: Date.now(),
@@ -1554,11 +1823,22 @@ export function useWallpaperTasks(deps = {}) {
       const remoteJobs = (Array.isArray(response.jobs) ? response.jobs : []).filter((job) =>
         isWallpaperJobKind(job?.kind),
       )
+      // 原地重生成期间，旧 job 仍可能短暂留在列表里，绝不能再导成新卡片
+      const regeneratingPreviousJobIds = new Set(
+        tasks.value
+          .filter(
+            (task) =>
+              String(task?.regenerateStatus || '') === 'running' &&
+              task?.regenerateSnapshot?.serverJobId,
+          )
+          .map((task) => String(task.regenerateSnapshot.serverJobId)),
+      )
       const localByServerId = new Map(
         tasks.value.filter((task) => task.serverJobId).map((task) => [task.serverJobId, task]),
       )
       const mergedByServerId = new Map()
       remoteJobs.forEach((job) => {
+        if (regeneratingPreviousJobIds.has(String(job.id || ''))) return
         const existing = localByServerId.get(job.id)
         const mapped = mapServerJobToTask(job, {
           resolveModelLabel: resolveJobDisplayModel,
@@ -1576,6 +1856,8 @@ export function useWallpaperTasks(deps = {}) {
         if (task.kind && !isWallpaperJobKind(task.kind)) return false
         // 已按 serverJobId 合并进远程列表的本地任务不能再当孤儿追加，否则会出现同任务双卡片
         if (task.serverJobId && mergedByServerId.has(task.serverJobId)) return false
+        // 正在原地重生成的任务即使暂时没有 serverJobId，也必须保留本地卡片
+        if (String(task.regenerateStatus || '') === 'running') return true
         if (!task.serverJobId) return true
         const remote = (Array.isArray(response.jobs) ? response.jobs : []).find(
           (job) => job.id === task.serverJobId,
@@ -1896,6 +2178,9 @@ export function useWallpaperTasks(deps = {}) {
     localUpscaleControllers.clear()
     localUpscalePromises.clear()
     serverJobPollsInFlight.clear()
+    pendingServerJobSnapshots.clear()
+    completedResultRetryTimers.forEach((retryTimer) => globalThis.clearTimeout(retryTimer))
+    completedResultRetryTimers.clear()
     completedResultMisses.clear()
     loadMoreJobsPromise = null
     serverJobsLoadingMore.value = false
@@ -1921,6 +2206,7 @@ export function useWallpaperTasks(deps = {}) {
     sourceModeLabel,
     taskStatusLabel,
     persistTasks,
+    clearLocalTaskHistory,
     loadTasks,
     restoreRunningTaskUi,
     updateTask,
@@ -1933,6 +2219,7 @@ export function useWallpaperTasks(deps = {}) {
     stopTimer,
     createTaskRecord,
     createTask,
+    regenerateTaskInPlace,
     createMaskedEditTask,
     createUpscaleTask,
     runServerTask,

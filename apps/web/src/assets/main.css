@@ -4,7 +4,7 @@
 :root {
   --primary-color: #4caf50;
   --secondary-color: #2196f3;
-  --background-color: #060707;
+  --background-color: transparent;
   --text-color: #f0f0f0;
   --card-bg-color: #1e1e1e;
   --navbar-bg-color: rgba(18, 18, 18, 0.9);
@@ -34,7 +34,7 @@ body {
 #app {
   width: 100%;
   min-height: 100vh;
-  background-color: var(--background-color);
+  background-color: transparent;
 }
 
 /* 链接样式 */

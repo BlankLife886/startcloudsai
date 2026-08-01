@@ -161,6 +161,7 @@ func (s *Server) Router() *gin.Engine {
 	// tasks
 	api.POST("/tasks", s.createTask)
 	api.GET("/tasks", s.listTasks)
+	api.GET("/tasks/batch", s.getTasksBatch)
 	api.GET("/tasks/:id", s.getTask)
 	api.GET("/tasks/:id/stream", s.taskStream)
 	api.POST("/tasks/:id/cancel", s.cancelTask)

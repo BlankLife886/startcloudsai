@@ -79,6 +79,55 @@ func (q *Queue) EnqueueRunTaskRecovery(ctx context.Context, taskID string) error
 	return q.enqueueRunTask(ctx, taskID, taskID+":recover:"+uuid.NewString())
 }
 
+func (q *Queue) EnqueueRunTaskRecoveryIn(ctx context.Context, taskID string, delay time.Duration) error {
+	payload, err := json.Marshal(RunTaskPayload{TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunTask, payload),
+		asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.ProcessIn(delay),
+		asynq.TaskID(taskID+":recover:"+uuid.NewString()))
+	return err
+}
+
+// QueuedRunTaskIDs scans executable queue records once and returns their
+// business task IDs. Recovery queue records use unique Asynq IDs, so checking
+// only the original queue ID would miss them and create duplicate recoveries.
+func (q *Queue) QueuedRunTaskIDs() (map[string]struct{}, error) {
+	queued := make(map[string]struct{})
+	listers := []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
+		q.inspector.ListActiveTasks,
+		q.inspector.ListPendingTasks,
+		q.inspector.ListScheduledTasks,
+		q.inspector.ListRetryTasks,
+	}
+	const pageSize = 1000
+	for _, list := range listers {
+		for page := 1; ; page++ {
+			infos, err := list("default", asynq.Page(page), asynq.PageSize(pageSize))
+			if errors.Is(err, asynq.ErrQueueNotFound) {
+				return queued, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			for _, info := range infos {
+				if info == nil || info.Type != TypeRunTask {
+					continue
+				}
+				var payload RunTaskPayload
+				if json.Unmarshal(info.Payload, &payload) == nil && payload.TaskID != "" {
+					queued[payload.TaskID] = struct{}{}
+				}
+			}
+			if len(infos) < pageSize {
+				break
+			}
+		}
+	}
+	return queued, nil
+}
+
 func (q *Queue) enqueueRunTask(ctx context.Context, taskID, queueTaskID string) error {
 	payload, err := json.Marshal(RunTaskPayload{TaskID: taskID})
 	if err != nil {

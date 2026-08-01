@@ -21,6 +21,7 @@ import {
   setScopedLocalItem,
 } from '@/services/scopedLocalStorage'
 import { readImageFile } from '@/features/design-workshop/imageWorkshop'
+import { takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { useAppearanceStore } from '@/stores/appearance'
 
 const appearanceStore = useAppearanceStore()
@@ -574,6 +575,8 @@ function restoreActiveAnalysisSession() {
 onMounted(async () => {
   await initialize()
   restoreActiveAnalysisSession()
+  const pending = takePendingPrompt('ui_design')
+  if (pending?.prompt) brief.value = pending.prompt
 })
 
 watch(activeOutput, (value) => {
@@ -968,7 +971,12 @@ function formatEditableHistoryDate(value) {
             </button>
           </div>
           <div v-else-if="sourcePreview" class="dws-reference">
-            <img :src="sourcePreview" alt="参考界面预览" />
+            <img
+              :src="sourcePreview"
+              alt="参考界面预览"
+              loading="eager"
+              decoding="async"
+            />
             <div>
               <strong data-no-translate>{{ inputFile?.name }}</strong>
               <span>将基于此界面重新设计</span>

@@ -36,12 +36,14 @@ import (
 )
 
 const (
-	typeCleanupSessions   = "cron:cleanup_sessions"
-	typeReapZombies       = "cron:reap_zombies"
-	typeSyncPromptSources = "cron:sync_prompt_sources"
+	typeCleanupSessions      = "cron:cleanup_sessions"
+	typeReapZombies          = "cron:reap_zombies"
+	typeSyncPromptSources    = "cron:sync_prompt_sources"
+	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
 
 	zombieRunningMinutes = 30
 	staleQueuedMinutes   = 10
+	maxNetworkRecoveries = 3
 )
 
 type Worker struct {
@@ -90,6 +92,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
+	mux.HandleFunc(typeBackfillPromptCovers, w.handleBackfillPromptCovers)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -133,6 +136,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 10m", Task: asynq.NewTask(typeBackfillPromptCovers, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 
@@ -741,6 +745,8 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s network error, retrying once: %v", taskID, callErr)
 		if berr := store.BumpTaskAttempt(ctx, w.St.Pool, taskID); berr != nil {
 			log.Printf("task %s bump attempt failed: %v", taskID, berr)
+		} else {
+			task.Attempt++
 		}
 		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
 	}
@@ -771,6 +777,26 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			errorCode, errorMessage = "internal_error", "任务执行失败，请稍后重试"
 		}
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
+	}
+	if callErr != nil && errors.As(callErr, &netErr) && len(outputKeys) == 0 &&
+		(provider == "c2a" || provider == "crun") && task.Attempt < maxNetworkRecoveries {
+		recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelRecovery()
+		requeued, requeueErr := store.RequeueRunningTask(recoveryCtx, w.St.Pool, taskID)
+		if requeueErr == nil && requeued {
+			delay := time.Duration(task.Attempt*15) * time.Second
+			enqueueErr := w.Queue.EnqueueRunTaskRecoveryIn(recoveryCtx, taskID.String(), delay)
+			if enqueueErr != nil {
+				log.Printf("task %s network recovery enqueue failed; stale queue reaper will retry: %v", taskID, enqueueErr)
+			} else {
+				log.Printf("task %s network recovery scheduled attempt=%d delay=%s", taskID, task.Attempt, delay)
+			}
+			w.publishTaskEvent(recoveryCtx, task, taskstream.Event{Stage: "queued", Status: "queued"})
+			return nil
+		}
+		if requeueErr != nil {
+			log.Printf("task %s network recovery state update failed: %v", taskID, requeueErr)
+		}
 	}
 
 	if callErr == nil && len(outputKeys) > 0 {
@@ -832,6 +858,11 @@ func (w *Worker) handleSyncPromptSources(ctx context.Context, _ *asynq.Task) err
 	return w.PromptSync.SyncDue(ctx)
 }
 
+// handleBackfillPromptCovers 分批补齐历史远程封面的宽高元数据。
+func (w *Worker) handleBackfillPromptCovers(ctx context.Context, _ *asynq.Task) error {
+	return w.PromptSync.BackfillCoverDimensions(ctx, 24)
+}
+
 // handleReapZombies cron：每 10 分钟做两种回收——
 //  1. running 超过 30 分钟的孤儿任务恢复为 queued 并接管；
 //  2. queued 超过 10 分钟的任务（入队丢失/Redis 异常）重新入队一次，
@@ -861,15 +892,22 @@ func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 	return w.reapStaleQueued(ctx)
 }
 
-// reapStaleQueued C1 第二种扫描：queued 超时的任务补一次入队（Asynq 同 task_id
-// 重复入队无害），入队仍失败则 failed + release。
+// reapStaleQueued C1 第二种扫描：queued 超时的任务先按业务 task ID 检查
+// 所有可执行队列记录，确实丢失时才补一次入队。
 func (w *Worker) reapStaleQueued(ctx context.Context) error {
 	threshold := time.Now().UTC().Add(-staleQueuedMinutes * time.Minute)
 	staleIDs, err := store.ListStaleQueuedTaskIDs(ctx, w.St.Pool, threshold)
 	if err != nil {
 		return err
 	}
+	queuedTaskIDs, err := w.Queue.QueuedRunTaskIDs()
+	if err != nil {
+		return fmt.Errorf("inspect executable queue tasks: %w", err)
+	}
 	for _, taskID := range staleIDs {
+		if _, queued := queuedTaskIDs[taskID.String()]; queued {
+			continue
+		}
 		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
 			log.Printf("stale queued task %s re-enqueue failed, marking failed: %v", taskID, err)
 			if _, ferr := taskflow.FailQueuedEnqueue(ctx, w.St, taskID); ferr != nil {

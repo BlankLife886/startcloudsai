@@ -33,6 +33,7 @@ import {
   isTerminalColoringJobStatus,
   mapColoringJobToHistory,
 } from '@/features/ai-illustration-coloring/domain/mapColoringJobToHistory'
+import { takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { prepareColoringUploadBlob } from '@/features/ai-illustration-coloring/domain/prepareColoringUpload'
 import {
   coloringRetryMayCreatePaidRequest,
@@ -2832,6 +2833,8 @@ export function useIllustrationColoringState() {
     }, 1000)
     loadHistory()
     restoreColoringDraft()
+    const pending = takePendingPrompt('coloring')
+    if (pending?.prompt) customPrompt.value = pending.prompt
     const active = historyItems.value.find((item) => item.id === activeHistoryId.value)
     if (active && !sourceBlobUrl.value) {
       applyHistoryItemToUi(active, { preserveLocalBlob: true })

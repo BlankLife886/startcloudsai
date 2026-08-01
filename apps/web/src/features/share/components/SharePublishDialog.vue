@@ -87,10 +87,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
           <header>
             <div class="share-publish-heading">
               <span class="share-publish-heading-icon" aria-hidden="true">
-                <i class="bi bi-broadcast-pin"></i>
+                <i class="bi bi-stars"></i>
               </span>
               <div>
-                <small>COMMUNITY</small>
+                <small>社区画廊</small>
                 <h2 id="share-publish-title">发布作品</h2>
               </div>
             </div>
@@ -111,11 +111,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
                 <strong>作品标题</strong>
                 <small>{{ form.title.length }} / 120</small>
               </span>
-              <input
+              <textarea
                 v-model="form.title"
                 maxlength="120"
+                rows="3"
                 autocomplete="off"
-                placeholder="输入作品标题"
+                placeholder="给作品起个好记的名字，方便社区检索"
               />
             </label>
 
@@ -145,11 +146,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
               </div>
             </fieldset>
 
-            <div class="share-publish-review">
+            <div class="share-publish-tip">
               <i class="bi bi-shield-check" aria-hidden="true"></i>
               <span>
-                <strong>提交审核</strong>
-                <small>审核通过后将展示在社区画廊</small>
+                <strong>提交后进入审核</strong>
+                <small>通过后将展示在社区画廊，其他创作者也能看到</small>
               </span>
             </div>
           </form>
@@ -164,8 +165,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
               :disabled="submitting || !form.title.trim()"
               @click="submit"
             >
-              <i class="bi" :class="submitting ? 'bi-arrow-repeat spin' : 'bi-send-check'"></i>
-              {{ submitting ? '提交中…' : '提交审核' }}
+              <i class="bi" :class="submitting ? 'bi-arrow-repeat spin' : 'bi-send-fill'"></i>
+              <span>{{ submitting ? '提交中…' : '提交审核' }}</span>
             </button>
           </footer>
         </section>
@@ -176,36 +177,50 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 <style scoped>
 .share-publish-backdrop {
-  --share-accent: var(--primary-color, #4caf50);
-  --share-accent-rgb: var(--primary-color-rgb, 76, 175, 80);
-  --share-page: var(--background-color, var(--bg-color, #07080a));
-  --share-surface: var(--card-bg-color, #181a1d);
-  --share-border: var(--border-color, #35383d);
-  --share-text: var(--text-color, #f2f4f5);
-  --share-muted: var(--text-muted-color, #959ba0);
+  --share-accent: #6d5cff;
+  --share-accent-2: #8b7bff;
+  --share-accent-rgb: 109, 92, 255;
+  --share-page: #09090c;
+  --share-surface: #16151f;
+  --share-surface-2: #1c1b28;
+  --share-border: rgba(255, 255, 255, 0.1);
+  --share-text: rgba(255, 255, 255, 0.96);
+  --share-muted: rgba(255, 255, 255, 0.52);
+  --share-faint: rgba(255, 255, 255, 0.36);
   position: fixed;
   inset: 0;
   z-index: 12100;
   display: grid;
   place-items: center;
   padding: 18px;
-  background: color-mix(in srgb, var(--share-page) 74%, transparent);
-  backdrop-filter: blur(10px) saturate(0.9);
+  background: rgba(5, 5, 10, 0.72);
+  backdrop-filter: blur(12px) saturate(0.88);
+  -webkit-backdrop-filter: blur(12px) saturate(0.88);
+  color-scheme: dark;
+}
+
+.share-publish-backdrop,
+.share-publish-backdrop * {
+  box-sizing: border-box;
 }
 
 .share-publish-dialog {
-  width: min(520px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  position: relative;
+  width: min(500px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
   display: flex;
   overflow: hidden;
   flex-direction: column;
-  border: 1px solid color-mix(in srgb, var(--share-border) 78%, var(--share-text) 9%);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--share-surface) 94%, var(--share-page));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(var(--share-accent-rgb), 0.18), transparent 42%),
+    radial-gradient(ellipse at 88% 100%, rgba(139, 123, 255, 0.1), transparent 46%),
+    linear-gradient(180deg, #1a1926 0%, var(--share-surface) 48%, #13121b 100%);
   color: var(--share-text);
   box-shadow:
-    0 28px 80px color-mix(in srgb, var(--share-page) 78%, transparent),
-    0 0 0 1px #ffffff05;
+    0 28px 80px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .share-publish-dialog > header {
@@ -214,30 +229,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 68px;
-  padding: 13px 16px;
-  border-bottom: 1px solid color-mix(in srgb, var(--share-border) 72%, transparent);
-  background: color-mix(in srgb, var(--share-surface) 88%, var(--share-page));
+  min-height: 72px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .share-publish-heading {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 11px;
+  gap: 12px;
 }
 
 .share-publish-heading-icon {
   display: grid;
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
   place-items: center;
-  border: 1px solid rgba(var(--share-accent-rgb), 0.22);
-  border-radius: 8px;
-  background: rgba(var(--share-accent-rgb), 0.09);
-  color: var(--share-accent);
-  font-size: 16px;
+  border: 1px solid rgba(var(--share-accent-rgb), 0.32);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.16), transparent 55%),
+    rgba(var(--share-accent-rgb), 0.16);
+  color: var(--share-accent-2);
+  font-size: 1.1rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .share-publish-heading > div {
@@ -246,27 +263,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 .share-publish-heading small {
   display: block;
-  margin-bottom: 2px;
-  color: color-mix(in srgb, var(--share-accent) 72%, var(--share-muted));
-  font: 700 9px/1.2 monospace;
-  letter-spacing: 0;
+  margin-bottom: 3px;
+  color: rgba(var(--share-accent-rgb), 0.92);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
 }
 
 .share-publish-heading h2 {
   margin: 0;
   color: var(--share-text);
-  font-size: 17px;
-  line-height: 1.25;
-  letter-spacing: 0;
+  font-size: 1.2rem;
+  font-weight: 720;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
 }
 
 .share-publish-close {
-  flex: 0 0 34px;
-  width: 34px;
-  height: 34px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 10px;
   background: transparent;
   color: var(--share-muted);
   cursor: pointer;
@@ -277,8 +298,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 }
 
 .share-publish-close:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--share-border) 76%, var(--share-text) 8%);
-  background: color-mix(in srgb, var(--share-surface) 80%, var(--share-text) 6%);
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--share-text);
 }
 
@@ -291,10 +312,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
   display: grid;
   min-height: 0;
   gap: 18px;
-  padding: 20px;
+  padding: 20px 18px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: rgba(var(--share-accent-rgb), 0.28) transparent;
 }
 
 .share-publish-field {
@@ -312,48 +332,52 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 .share-publish-field strong,
 .share-publish-category strong {
-  color: color-mix(in srgb, var(--share-text) 88%, var(--share-muted));
-  font-size: 11px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.78rem;
   font-weight: 650;
 }
 
 .share-publish-field small,
 .share-publish-category small {
-  color: var(--share-muted);
-  font-size: 9px;
+  color: var(--share-faint);
+  font-size: 0.7rem;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
-.share-publish-field input {
+.share-publish-field textarea {
   width: 100%;
-  height: 44px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--share-border) 84%, var(--share-text) 7%);
-  border-radius: 8px;
+  min-height: 88px;
+  resize: vertical;
+  padding: 12px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
   outline: none;
-  background: color-mix(in srgb, var(--share-surface) 82%, var(--share-page));
+  background: rgba(8, 8, 14, 0.45);
   color: var(--share-text);
-  font-size: 13px;
+  font: inherit;
+  font-size: 0.92rem;
+  line-height: 1.45;
   transition:
     border-color 0.16s ease,
     background-color 0.16s ease,
     box-shadow 0.16s ease;
 }
 
-.share-publish-field input::placeholder {
-  color: color-mix(in srgb, var(--share-muted) 66%, transparent);
+.share-publish-field textarea::placeholder {
+  color: rgba(255, 255, 255, 0.32);
 }
 
-.share-publish-field input:focus {
-  border-color: rgba(var(--share-accent-rgb), 0.58);
-  background: color-mix(in srgb, var(--share-surface) 90%, var(--share-accent) 3%);
-  box-shadow: 0 0 0 3px rgba(var(--share-accent-rgb), 0.11);
+.share-publish-field textarea:focus {
+  border-color: rgba(var(--share-accent-rgb), 0.55);
+  background: rgba(var(--share-accent-rgb), 0.08);
+  box-shadow: 0 0 0 3px rgba(var(--share-accent-rgb), 0.14);
 }
 
 .share-publish-category {
   display: grid;
   min-width: 0;
-  gap: 9px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -361,24 +385,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 .share-publish-category legend {
   width: 100%;
-  margin-bottom: 9px;
+  margin-bottom: 0;
   padding: 0;
 }
 
 .share-publish-category-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 8px;
 }
 
 .share-publish-category-options button {
-  min-height: 32px;
-  padding: 6px 11px;
-  border: 1px solid color-mix(in srgb, var(--share-border) 84%, var(--share-text) 6%);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--share-surface) 84%, var(--share-page));
-  color: color-mix(in srgb, var(--share-text) 68%, var(--share-muted));
-  font-size: 10px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.72);
+  font: inherit;
+  font-size: 0.78rem;
   cursor: pointer;
   transition:
     border-color 0.16s ease,
@@ -388,115 +413,144 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 }
 
 .share-publish-category-options button:hover {
-  border-color: rgba(var(--share-accent-rgb), 0.38);
+  border-color: rgba(var(--share-accent-rgb), 0.4);
   color: var(--share-text);
   transform: translateY(-1px);
 }
 
 .share-publish-category-options button.is-selected {
-  border-color: rgba(var(--share-accent-rgb), 0.5);
-  background: rgba(var(--share-accent-rgb), 0.12);
-  color: color-mix(in srgb, var(--share-accent) 56%, var(--share-text));
-  box-shadow: inset 0 0 0 1px rgba(var(--share-accent-rgb), 0.06);
+  border-color: rgba(var(--share-accent-rgb), 0.55);
+  background: rgba(var(--share-accent-rgb), 0.16);
+  color: #efeaff;
+  box-shadow: inset 0 0 0 1px rgba(var(--share-accent-rgb), 0.1);
 }
 
 .share-publish-category-loading {
   display: flex;
-  gap: 7px;
+  gap: 8px;
 }
 
 .share-publish-category-loading span {
-  width: 62px;
-  height: 32px;
-  border-radius: 7px;
-  background: linear-gradient(110deg, #ffffff08 30%, #ffffff12 50%, #ffffff08 70%);
+  width: 64px;
+  height: 34px;
+  border-radius: 999px;
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0.04) 30%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 70%
+  );
   background-size: 220% 100%;
   animation: share-publish-shimmer 1.4s ease-in-out infinite;
 }
 
-.share-publish-review {
+.share-publish-tip {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 15px;
-  border-top: 1px solid color-mix(in srgb, var(--share-border) 66%, transparent);
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid rgba(var(--share-accent-rgb), 0.22);
+  border-radius: 12px;
+  background: rgba(var(--share-accent-rgb), 0.1);
 }
 
-.share-publish-review > i {
-  color: color-mix(in srgb, var(--share-accent) 74%, var(--share-muted));
-  font-size: 17px;
+.share-publish-tip > i {
+  margin-top: 1px;
+  color: var(--share-accent-2);
+  font-size: 1.05rem;
 }
 
-.share-publish-review > span {
+.share-publish-tip > span {
   display: grid;
-  gap: 2px;
+  gap: 3px;
+  min-width: 0;
 }
 
-.share-publish-review strong {
-  color: color-mix(in srgb, var(--share-text) 84%, var(--share-muted));
-  font-size: 11px;
+.share-publish-tip strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.82rem;
+  font-weight: 650;
 }
 
-.share-publish-review small {
+.share-publish-tip small {
   color: var(--share-muted);
-  font-size: 9px;
+  font-size: 0.74rem;
+  line-height: 1.4;
 }
 
 .share-publish-dialog > footer {
   display: flex;
   flex: 0 0 auto;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 13px 16px;
-  border-top: 1px solid color-mix(in srgb, var(--share-border) 72%, transparent);
-  background: color-mix(in srgb, var(--share-surface) 88%, var(--share-page));
+  gap: 10px;
+  padding: 14px 18px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 10, 16, 0.35);
 }
 
 .share-publish-dialog > footer button {
-  min-width: 88px;
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 8px;
-  font-size: 11px;
+  min-width: 96px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 650;
   cursor: pointer;
   transition:
     border-color 0.16s ease,
     background-color 0.16s ease,
     color 0.16s ease,
     box-shadow 0.16s ease,
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.16s ease;
 }
 
 .share-publish-dialog > footer .is-secondary {
-  border: 1px solid color-mix(in srgb, var(--share-border) 80%, var(--share-text) 8%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   background: transparent;
-  color: color-mix(in srgb, var(--share-text) 72%, var(--share-muted));
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .share-publish-dialog > footer .is-secondary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--share-surface) 80%, var(--share-text) 5%);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--share-text);
 }
 
 .share-publish-dialog > footer .is-primary {
-  border: 1px solid color-mix(in srgb, var(--share-accent) 82%, var(--share-text) 12%);
-  background: var(--share-accent);
-  color: color-mix(in srgb, var(--share-page) 88%, #000);
-  box-shadow: 0 7px 18px rgba(var(--share-accent-rgb), 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(108deg, #4f3dff 0%, #6d5cff 52%, #8b5cf6 100%);
+  color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 10px 24px rgba(79, 61, 255, 0.34);
 }
 
 .share-publish-dialog > footer .is-primary:hover:not(:disabled) {
-  box-shadow: 0 9px 22px rgba(var(--share-accent-rgb), 0.25);
+  filter: brightness(1.06);
   transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 14px 28px rgba(79, 61, 255, 0.42);
+}
+
+.share-publish-dialog > footer .is-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
 }
 
 .share-publish-dialog > footer button:disabled {
   opacity: 0.42;
   cursor: not-allowed;
+  filter: none;
+  transform: none;
 }
 
-.share-publish-dialog > footer i {
-  margin-right: 6px;
+.share-publish-dialog > footer .spin {
+  animation: share-publish-spin 0.9s linear infinite;
 }
 
 .share-publish-enter-active,
@@ -529,26 +583,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
   }
 }
 
+@keyframes share-publish-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 560px) {
   .share-publish-backdrop {
     padding: 10px;
   }
 
   .share-publish-dialog {
-    width: min(100%, 520px);
-    max-height: calc(100vh - 20px);
+    width: min(100%, 500px);
+    max-height: calc(100dvh - 20px);
+    border-radius: 16px;
   }
 
   .share-publish-dialog > header {
-    padding: 12px 14px;
+    padding: 14px 14px 12px;
   }
 
   .share-publish-body {
-    padding: 18px 16px;
+    padding: 16px 14px;
   }
 
   .share-publish-dialog > footer {
-    padding: 12px 14px;
+    padding: 12px 14px 14px;
   }
 
   .share-publish-dialog > footer button {
@@ -563,24 +624,83 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
   .share-publish-leave-active .share-publish-dialog,
   .share-publish-category-options button,
   .share-publish-category-loading span,
-  .share-publish-dialog > footer button {
+  .share-publish-dialog > footer button,
+  .share-publish-dialog > footer .spin {
     transition: none;
     animation: none;
   }
 }
 
 .share-publish-backdrop.is-light {
-  --share-page: #f3f4f8;
+  --share-page: #f5f4fb;
   --share-surface: #ffffff;
-  --share-border: #dfe1e8;
-  --share-text: #242531;
-  --share-muted: #777a87;
-  background: rgba(48, 49, 62, 0.3);
+  --share-surface-2: #f7f6ff;
+  --share-border: rgba(28, 30, 43, 0.1);
+  --share-text: rgba(20, 20, 32, 0.94);
+  --share-muted: rgba(20, 20, 32, 0.55);
+  --share-faint: rgba(20, 20, 32, 0.4);
+  background: rgba(40, 38, 68, 0.34);
   color-scheme: light;
 }
 
 .share-publish-backdrop.is-light .share-publish-dialog {
+  border-color: rgba(28, 30, 43, 0.1);
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(var(--share-accent-rgb), 0.1), transparent 42%),
+    linear-gradient(180deg, #ffffff 0%, #f8f7ff 100%);
   box-shadow: 0 26px 76px rgba(48, 44, 78, 0.2);
+}
+
+.share-publish-backdrop.is-light .share-publish-heading small {
+  color: #6d5cff;
+}
+
+.share-publish-backdrop.is-light .share-publish-heading h2,
+.share-publish-backdrop.is-light .share-publish-field strong,
+.share-publish-backdrop.is-light .share-publish-category strong,
+.share-publish-backdrop.is-light .share-publish-tip strong {
+  color: var(--share-text);
+}
+
+.share-publish-backdrop.is-light .share-publish-close:hover:not(:disabled) {
+  border-color: rgba(28, 30, 43, 0.1);
+  background: rgba(28, 30, 43, 0.05);
+}
+
+.share-publish-backdrop.is-light .share-publish-field textarea {
+  border-color: rgba(28, 30, 43, 0.1);
+  background: rgba(109, 92, 255, 0.04);
+  color: var(--share-text);
+}
+
+.share-publish-backdrop.is-light .share-publish-field textarea::placeholder {
+  color: rgba(20, 20, 32, 0.35);
+}
+
+.share-publish-backdrop.is-light .share-publish-category-options button {
+  border-color: rgba(28, 30, 43, 0.1);
+  background: rgba(28, 30, 43, 0.03);
+  color: rgba(20, 20, 32, 0.7);
+}
+
+.share-publish-backdrop.is-light .share-publish-category-options button.is-selected {
+  color: #4f3dff;
+  background: rgba(109, 92, 255, 0.1);
+}
+
+.share-publish-backdrop.is-light .share-publish-tip {
+  border-color: rgba(109, 92, 255, 0.18);
+  background: rgba(109, 92, 255, 0.07);
+}
+
+.share-publish-backdrop.is-light .share-publish-dialog > footer {
+  background: rgba(109, 92, 255, 0.04);
+  border-top-color: rgba(28, 30, 43, 0.08);
+}
+
+.share-publish-backdrop.is-light .share-publish-dialog > footer .is-secondary {
+  border-color: rgba(28, 30, 43, 0.12);
+  color: rgba(20, 20, 32, 0.72);
 }
 
 .share-publish-backdrop.is-light .share-publish-category-loading span {

@@ -234,7 +234,7 @@ const STATUS_TO_LEGACY = {
   canceled: 'cancelled',
 }
 
-function taskToLegacyJob(task = {}) {
+export function taskToLegacyJob(task = {}) {
   const outputUrls = Array.isArray(task.outputUrls) ? task.outputUrls.filter(Boolean) : []
   const thumbnailUrls = Array.isArray(task.thumbnailUrls)
     ? task.thumbnailUrls.filter(Boolean)
@@ -341,16 +341,16 @@ export async function createServerAiJob(payload = {}) {
         .filter(Boolean),
     ),
   )
-	const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url)))
-	for (const key of resolvedSourceKeys) {
-	  if (key && !inputKeys.includes(key)) inputKeys.push(key)
-	}
+  const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url)))
+  for (const key of resolvedSourceKeys) {
+    if (key && !inputKeys.includes(key)) inputKeys.push(key)
+  }
   // 蒙版与合成底图只进 params 供 Worker 贴回原图使用，
   // 不进 inputKeys——上游把它们当输入图会污染生成结果。
-	const [maskKey, maskBaseKey] = await Promise.all([
-	  maskUrl ? resolveInputKeyForUrl(maskUrl) : '',
-	  maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
-	])
+  const [maskKey, maskBaseKey] = await Promise.all([
+    maskUrl ? resolveInputKeyForUrl(maskUrl) : '',
+    maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
+  ])
 
   const task = await createTask({
     type,
@@ -436,12 +436,12 @@ export async function waitForServerAiJob(
     intervalMs: interval,
     maxWaitMs: interval * Math.max(1, Number(maxPolls) || 450),
     onUpdate: (current) => {
-	  const currentJob = taskToLegacyJob(current)
-	  const currentResult = legacyResultFromTask(current)
-	  if (typeof onUpdate === 'function') onUpdate(currentJob, currentResult)
-	  if (typeof onImage === 'function' && currentResult.outputs.length) {
-		onImage(currentResult.outputs, currentJob, currentResult)
-	  }
+      const currentJob = taskToLegacyJob(current)
+      const currentResult = legacyResultFromTask(current)
+      if (typeof onUpdate === 'function') onUpdate(currentJob, currentResult)
+      if (typeof onImage === 'function' && currentResult.outputs.length) {
+        onImage(currentResult.outputs, currentJob, currentResult)
+      }
       if (typeof onStatus === 'function') {
         onStatus(formatServerAiJobStatus(String(current?.status || '').toLowerCase()))
       }

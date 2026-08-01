@@ -11,6 +11,7 @@ import UpscaleProcessingOverlay from './components/UpscaleProcessingOverlay.vue'
 import '@/features/ai-wallpaper/styles/t2i-page.css'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAiWallpaperStudioState } from './composables/useAiWallpaperStudioState'
+import { useWallpaperStudioMotion } from './composables/useWallpaperStudioMotion'
 import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
@@ -42,6 +43,7 @@ const loadLocalMaskEditorDialog = () => import('./components/LocalMaskEditorDial
 const LocalMaskEditorDialog = defineAsyncComponent(loadLocalMaskEditorDialog)
 
 const appearanceStore = useAppearanceStore()
+const studioShellRef = ref(null)
 
 const {
   tasks,
@@ -63,6 +65,8 @@ const {
   inputMode,
   isRunning,
   isPageLoading,
+  resultRevealing,
+  clearResultReveal,
   requestCreateTask,
   canCreateTask,
   skillOptions,
@@ -101,6 +105,7 @@ const {
   activePublicModelOptions,
   selectedPublicModel,
   currentPublicModel,
+  isAuthenticated,
 } = useAiWallpaperStudioState()
 
 const modelSelectOptions = computed(() =>
@@ -121,9 +126,10 @@ const resolutionSelectOptions = computed(() => {
 })
 const aspectSelectOptions = computed(() => {
   const supported = getModelAspectRatiosForResolution(
-    currentPublicModel.value,
+    currentPublicModel.value || {},
     resolutionScale.value,
   )
+  if (!Array.isArray(supported) || !supported.length) return T2I_ASPECT_OPTIONS
   return T2I_ASPECT_OPTIONS.filter((option) => supported.includes(option.value))
 })
 const qualitySelectOptions = computed(() => {
@@ -200,6 +206,8 @@ watch(
 const referenceInputRef = ref(null)
 const openParameterLayer = ref('')
 const skillPanelOpen = ref(false)
+const skillTriggerRef = ref(null)
+const skillPanelStyle = ref({})
 const customSkillDialogOpen = ref(false)
 const customSkillName = ref('')
 const customSkillPrompt = ref('')
@@ -231,6 +239,14 @@ const promptBoxRef = ref(null)
 const stageFrameRef = ref(null)
 const stageCanvasRef = ref(null)
 const stageCanvasAspect = ref(16 / 9)
+
+useWallpaperStudioMotion({
+  shellRef: studioShellRef,
+  stageRef: stageFrameRef,
+  isRunning,
+  resultRevealing,
+  onRevealComplete: clearResultReveal,
+})
 let stageCanvasResizeObserver = null
 const actionBusyId = ref('')
 const localMaskEditorOpen = ref(false)
@@ -240,6 +256,9 @@ const localMaskEditorTask = ref(null)
 const localMaskEditorUrl = ref('')
 const deleteConfirmOpen = ref(false)
 const deleteRequest = ref(null)
+const regenerateConfirmOpen = ref(false)
+const regenerateTargetTask = ref(null)
+const regeneratingTaskId = ref('')
 const clearFailedConfirmOpen = ref(false)
 const clearingFailedTasks = ref(false)
 const clearFailedTargetCount = ref(0)
@@ -291,9 +310,12 @@ let promptLoadObserver = null
 let assetLoadObserver = null
 let promptLibraryRequestId = 0
 
-const PROMPT_CATEGORY_META = [
+const PROMPT_CATEGORY_PRIMARY = [
   { value: 'today', label: '今日最新' },
   { value: 'my-favorites', label: '我的收藏' },
+  { value: 'all', label: '全部' },
+]
+const PROMPT_CATEGORY_MORE = [
   { value: 'portrait', label: '人像人物' },
   { value: 'photography', label: '摄影写实' },
   { value: 'product', label: '产品商业' },
@@ -303,8 +325,8 @@ const PROMPT_CATEGORY_META = [
   { value: 'game', label: '游戏美术' },
   { value: 'typography', label: '文字排版' },
   { value: 'other', label: '其他' },
-  { value: 'all', label: '全部' },
 ]
+const PROMPT_CATEGORY_META = [...PROMPT_CATEGORY_PRIMARY, ...PROMPT_CATEGORY_MORE]
 
 const LIGHTBOX_MIN_ZOOM = 0.5
 const LIGHTBOX_MAX_ZOOM = 5
@@ -387,16 +409,48 @@ const sortedTasks = computed(() =>
 const publishedJobIds = computed(
   () => new Set(myAssets.value.map((item) => String(item.jobId || '')).filter(Boolean)),
 )
+function startOfLocalDayMs(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+}
+
+function isTaskFromToday(task) {
+  const created = taskCreatedTime(task)
+  if (!created) return false
+  const start = startOfLocalDayMs()
+  return created >= start && created < start + 24 * 60 * 60 * 1000
+}
+
 const historyTasks = computed(() =>
   sortedTasks.value.filter(
     (task) =>
+      isTaskFromToday(task) &&
       task.shareSubmitted !== true &&
       !publishedJobIds.value.has(String(task.serverJobId || task.id || '').replace(/^server-/, '')),
   ),
 )
 const historyCount = computed(() => historyTasks.value.length)
+/** 列表按创建时间倒序；已出现早于今天的任务时，更旧分页无需再拉 */
+const historyReachedPastToday = computed(() => {
+  const start = startOfLocalDayMs()
+  return sortedTasks.value.some((task) => {
+    const created = taskCreatedTime(task)
+    return created > 0 && created < start
+  })
+})
 const assetCount = computed(() => Math.max(assetsTotal.value, myAssets.value.length))
-const promptCategoryOptions = PROMPT_CATEGORY_META
+const promptCategoryPrimaryOptions = PROMPT_CATEGORY_PRIMARY
+const promptCategoryMoreOptions = PROMPT_CATEGORY_MORE
+const promptCategoryMoreOpen = ref(false)
+const promptCategoryMoreActive = computed(() =>
+  promptCategoryMoreOptions.some((item) => item.value === promptCategoryFilter.value),
+)
+const promptCategoryMoreLabel = computed(() => {
+  if (!promptCategoryMoreActive.value) return '更多'
+  return (
+    promptCategoryMoreOptions.find((item) => item.value === promptCategoryFilter.value)?.label ||
+    '更多'
+  )
+})
 const filteredPromptLibrary = computed(() => managedPromptLibrary.value)
 const promptLibraryEmptyTitle = computed(() => {
   if (promptCategoryFilter.value === 'today') return '今日暂无新增提示词'
@@ -450,9 +504,14 @@ const lightboxOriginalClipStyle = computed(() => ({
 const lightboxCompareDividerStyle = computed(() => ({
   left: `${lightboxComparePosition.value}%`,
 }))
-const publishDialogTitle = computed(() =>
-  publishTarget.value ? taskPrompt(publishTarget.value.task).slice(0, 120) : '',
-)
+const publishDialogTitle = computed(() => {
+  if (!publishTarget.value) return ''
+  const prompt = String(taskPrompt(publishTarget.value.task) || '').trim()
+  if (!prompt) return 'AI 壁纸创作'
+  // 标题默认取前半句，避免整段提示词塞进输入框
+  const firstClause = prompt.split(/[，,。.!！？?\n]/)[0]?.trim() || prompt
+  return firstClause.slice(0, 36)
+})
 const publishDialogStyleLabel = computed(() => {
   const model = String(publishTarget.value?.task?.model || '').trim()
   return model && model !== '未知模型' ? model : 'AI 壁纸'
@@ -503,9 +562,30 @@ function markImageUnavailable(task, index, url) {
 
 const imageGallery = computed(() => {
   const items = []
-  // The stage filmstrip stays bounded even when the paginated history has
-  // loaded hundreds of records. The history tab itself remains uncapped.
+  // 舞台大图与底部胶片仅展示当天作品（与历史记录 Tab 一致）
   for (const task of sortedTasks.value.slice(0, 120)) {
+    if (!isTaskFromToday(task)) continue
+    const outputs = taskOutputs(task)
+    const thumbnailOutputs = taskThumbnailOutputs(task)
+    // 原地重新生成：继续展示当前图，不新开 pending 卡片
+    if (isRegenerating(task) && outputs.length) {
+      outputs.forEach((url, index) => {
+        if (isImageUnavailable(task, index, url)) return
+        items.push({
+          key: `${task.id}-${index}`,
+          kind: 'image',
+          task,
+          url,
+          thumbnailUrl: thumbnailOutputs[index] || '',
+          index,
+          batchIndex: Number(task.batchSize || 1) > 1 ? Number(task.batchIndex || 0) : index,
+          total: Number(task.batchSize || 1) > 1 ? Number(task.batchSize) : outputs.length,
+          title: taskPrompt(task),
+          regenerating: true,
+        })
+      })
+      continue
+    }
     if (isBusy(task)) {
       const batchSize = Math.max(1, Number(task.batchSize || 1))
       const slots =
@@ -526,8 +606,6 @@ const imageGallery = computed(() => {
       continue
     }
     if (!isDone(task)) continue
-    const outputs = taskOutputs(task)
-    const thumbnailOutputs = taskThumbnailOutputs(task)
     outputs.forEach((url, index) => {
       if (isImageUnavailable(task, index, url)) return
       items.push({
@@ -1017,7 +1095,8 @@ const visibleHistoryItems = computed(() =>
 )
 const historyHasMore = computed(
   () =>
-    historyVisibleCount.value < historyFeedItems.value.length || serverJobsHasMore.value === true,
+    historyVisibleCount.value < historyFeedItems.value.length ||
+    (serverJobsHasMore.value === true && !historyReachedPastToday.value),
 )
 function responsiveGalleryColumnCount(width) {
   if (width <= 480) return 1
@@ -1054,6 +1133,11 @@ function promptCategoryLabel(value) {
 function selectPromptCategory(value) {
   if (promptViewportRef.value) promptViewportRef.value.scrollTop = 0
   promptCategoryFilter.value = value
+  promptCategoryMoreOpen.value = false
+}
+
+function togglePromptCategoryMore() {
+  promptCategoryMoreOpen.value = !promptCategoryMoreOpen.value
 }
 
 async function loadMoreHistory() {
@@ -1358,6 +1442,8 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleLightboxKeydown)
   clearLightboxChromeHideTimer()
   window.removeEventListener('resize', onHistoryViewportResize)
+  window.removeEventListener('resize', syncSkillPanelPosition)
+  window.removeEventListener('scroll', syncSkillPanelPosition, true)
   historyResizeObserver?.disconnect()
   historyResizeObserver = null
   disconnectHistoryObserver()
@@ -1824,12 +1910,17 @@ function handleLightboxKeydown(event) {
     skillPanelOpen.value = false
     return
   }
+  if (promptCategoryMoreOpen.value && event.key === 'Escape') {
+    event.preventDefault()
+    promptCategoryMoreOpen.value = false
+    return
+  }
   if (openParameterLayer.value && event.key === 'Escape') {
     event.preventDefault()
     openParameterLayer.value = ''
     return
   }
-  if (deleteConfirmOpen.value) return
+  if (deleteConfirmOpen.value || regenerateConfirmOpen.value) return
   if (!lightboxOpen.value) return
   if (localMaskEditorOpen.value) {
     if (event.key === 'Escape') {
@@ -1940,6 +2031,10 @@ function isBusy(task) {
   return ['running', 'queued', 'waiting_provider'].includes(String(task?.status || ''))
 }
 
+function isRegenerating(task) {
+  return String(task?.regenerateStatus || '') === 'running'
+}
+
 function isLocalUpscaling(task) {
   return String(task?.localUpscaleStatus || '') === 'running'
 }
@@ -1949,7 +2044,7 @@ function isPaused(task) {
 }
 
 function canCancel(task) {
-  return isBusy(task) || isPaused(task) || isLocalUpscaling(task)
+  return isBusy(task) || isPaused(task) || isLocalUpscaling(task) || isRegenerating(task)
 }
 
 function isFailed(task) {
@@ -2369,8 +2464,22 @@ async function editTask(task) {
   }
 }
 
-async function regenerateTask(task) {
-  if (!task || actionBusyId.value) return
+function openRegenerateConfirm(task) {
+  if (!task || actionBusyId.value || regeneratingTaskId.value || isRegenerating(task)) return
+  regenerateTargetTask.value = task
+  regenerateConfirmOpen.value = true
+}
+
+function closeRegenerateConfirm() {
+  if (regeneratingTaskId.value) return
+  regenerateConfirmOpen.value = false
+  regenerateTargetTask.value = null
+}
+
+async function confirmRegenerateTask() {
+  const task = regenerateTargetTask.value
+  if (!task || regeneratingTaskId.value || isRegenerating(task)) return
+  regeneratingTaskId.value = String(task.id)
   actionBusyId.value = String(task.id)
   try {
     reuseTask(task, { silent: true })
@@ -2379,12 +2488,19 @@ async function regenerateTask(task) {
       notificationService.warning(createHint.value || '当前无法重新生成')
       return
     }
-    await requestCreateTask()
+    regenerateConfirmOpen.value = false
+    await requestCreateTask({ count: 1, regenerateTaskId: task.id })
   } catch (error) {
     notificationService.error(error?.message || '重新生成失败')
   } finally {
+    regeneratingTaskId.value = ''
     actionBusyId.value = ''
+    regenerateTargetTask.value = null
   }
+}
+
+async function regenerateTask(task) {
+  openRegenerateConfirm(task)
 }
 
 async function handleGenerate() {
@@ -2532,15 +2648,70 @@ async function confirmClearFailedTasks() {
   }
 }
 
+function syncSkillPanelPosition() {
+  const trigger = skillTriggerRef.value
+  if (!trigger || typeof window === 'undefined') return
+  const rect = trigger.getBoundingClientRect()
+  const width = Math.min(Math.max(rect.width, 280), Math.min(360, window.innerWidth - 16))
+  const gap = 8
+  const maxHeight = Math.min(420, Math.max(240, window.innerHeight - 24))
+  let left = rect.left
+  if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8)
+  if (left < 8) left = 8
+  const spaceAbove = rect.top - gap - 8
+  const spaceBelow = window.innerHeight - rect.bottom - gap - 8
+  const openUp = spaceAbove >= 220 || spaceAbove >= spaceBelow
+  const height = Math.min(maxHeight, openUp ? spaceAbove : spaceBelow)
+  skillPanelStyle.value = openUp
+    ? {
+        position: 'fixed',
+        left: `${left}px`,
+        width: `${width}px`,
+        bottom: `${window.innerHeight - rect.top + gap}px`,
+        top: 'auto',
+        maxHeight: `${Math.max(200, height)}px`,
+      }
+    : {
+        position: 'fixed',
+        left: `${left}px`,
+        width: `${width}px`,
+        top: `${rect.bottom + gap}px`,
+        bottom: 'auto',
+        maxHeight: `${Math.max(200, height)}px`,
+      }
+}
+
+function toggleSkillPanel() {
+  skillPanelOpen.value = !skillPanelOpen.value
+  if (skillPanelOpen.value) {
+    nextTick(() => {
+      syncSkillPanelPosition()
+    })
+  }
+}
+
 function closeMenus() {
   skillPanelOpen.value = false
   openParameterLayer.value = ''
+  promptCategoryMoreOpen.value = false
 }
 
 function toggleParameterLayer(layer) {
   skillPanelOpen.value = false
   openParameterLayer.value = openParameterLayer.value === layer ? '' : layer
 }
+
+watch(skillPanelOpen, (open) => {
+  if (typeof window === 'undefined') return
+  if (open) {
+    nextTick(syncSkillPanelPosition)
+    window.addEventListener('resize', syncSkillPanelPosition)
+    window.addEventListener('scroll', syncSkillPanelPosition, true)
+  } else {
+    window.removeEventListener('resize', syncSkillPanelPosition)
+    window.removeEventListener('scroll', syncSkillPanelPosition, true)
+  }
+})
 
 function compactRatioPreviewClass(value) {
   if (value === 'auto') return 'is-auto'
@@ -2594,9 +2765,14 @@ function setMainTab(tab) {
 </script>
 
 <template>
-  <div class="t2i-page" :class="{ 'is-light': !appearanceStore.isDark }" @click="closeMenus">
+  <div
+    ref="studioShellRef"
+    class="t2i-page"
+    :class="{ 'is-light': !appearanceStore.isDark }"
+    @click="closeMenus"
+  >
     <aside class="t2i-sidebar" aria-label="生成设置" @click.stop>
-      <div class="t2i-model">
+      <div class="t2i-model" data-motion>
         <div class="t2i-model-badge" :class="{ 'is-loading': isPageLoading }" aria-label="生成模型">
           <span class="t2i-model-icon"><i class="bi bi-stars"></i></span>
           <span v-if="isPageLoading" class="t2i-model-copy t2i-model-skeleton" aria-hidden="true">
@@ -2619,7 +2795,7 @@ function setMainTab(tab) {
       </div>
 
       <div class="t2i-side-scroll">
-        <div ref="promptBoxRef" class="t2i-prompt-box">
+        <div ref="promptBoxRef" class="t2i-prompt-box" data-motion>
           <textarea
             v-model="prompt"
             :maxlength="PROMPT_MAX"
@@ -2667,64 +2843,23 @@ function setMainTab(tab) {
             </div>
             <div class="t2i-skill-tools">
               <button
+                ref="skillTriggerRef"
                 type="button"
                 class="t2i-skill-trigger"
                 :class="{ 'is-open': skillPanelOpen, 'has-items': selectedSkills.length }"
                 :aria-expanded="skillPanelOpen"
-                @click.stop="skillPanelOpen = !skillPanelOpen"
+                @click.stop="toggleSkillPanel"
               >
                 <i class="bi bi-lightning-charge" aria-hidden="true"></i>
                 <span>Skills</span>
                 <em>{{ selectedSkills.length }}</em>
                 <i class="bi bi-chevron-down" aria-hidden="true"></i>
               </button>
-              <Transition name="t2i-skill-popover">
-                <section v-if="skillPanelOpen" class="t2i-skill-panel" @click.stop>
-                  <header>
-                    <div>
-                      <strong>生成 Skills</strong>
-                      <small>仅将已选择的 Skill 注入当前任务</small>
-                    </div>
-                    <button type="button" title="关闭 Skills" @click="skillPanelOpen = false">
-                      <i class="bi bi-x-lg" aria-hidden="true"></i>
-                    </button>
-                  </header>
-                  <div class="t2i-skill-list">
-                    <label v-for="skill in skillOptions" :key="skill.id" class="t2i-skill-item">
-                      <input
-                        type="checkbox"
-                        :checked="selectedSkillIds.includes(skill.id)"
-                        @change="toggleSkill(skill.id)"
-                      />
-                      <span class="t2i-skill-item-copy">
-                        <strong>{{ skill.name }}</strong>
-                        <small>{{ skill.description }}</small>
-                      </span>
-                      <button
-                        v-if="skill.custom"
-                        type="button"
-                        class="t2i-skill-remove"
-                        title="删除自定义 Skill"
-                        @click.prevent="removeCustomSkill(skill.id)"
-                      >
-                        <i class="bi bi-trash3" aria-hidden="true"></i>
-                      </button>
-                    </label>
-                  </div>
-                  <button type="button" class="t2i-skill-create" @click="openCustomSkillDialog">
-                    <span>
-                      <i class="bi bi-plus-lg" aria-hidden="true"></i>
-                      <strong>添加 Skill</strong>
-                    </span>
-                    <i class="bi bi-chevron-right" aria-hidden="true"></i>
-                  </button>
-                </section>
-              </Transition>
             </div>
           </div>
         </div>
 
-        <div class="t2i-control-layers">
+        <div class="t2i-control-layers" data-motion>
           <div class="t2i-control-layer-bar" aria-label="生成参数分类">
             <button
               type="button"
@@ -2961,7 +3096,13 @@ function setMainTab(tab) {
         </div>
       </div>
 
-      <button type="button" class="t2i-generate" :disabled="!canCreateTask" @click="handleGenerate">
+      <button
+        type="button"
+        class="t2i-generate"
+        data-motion
+        :disabled="!canCreateTask"
+        @click="handleGenerate"
+      >
         <span>{{ isRunning ? '再生成一张' : '立即生成' }}</span>
         <small v-if="generationCostLabel">{{ generationCostLabel }}</small>
         <i class="bi" :class="isRunning ? 'bi-plus-lg' : 'bi-stars'"></i>
@@ -2969,7 +3110,7 @@ function setMainTab(tab) {
     </aside>
 
     <main ref="historyViewportRef" class="t2i-main" aria-label="创作结果">
-      <header class="t2i-main-head">
+      <header class="t2i-main-head" data-motion>
         <div class="t2i-center-tabs" role="tablist" aria-label="主视图切换">
           <button
             type="button"
@@ -3027,10 +3168,14 @@ function setMainTab(tab) {
           <span v-if="isPageLoading" class="t2i-status-skeleton" aria-label="数据加载中"></span>
           <span v-else-if="runningProgress">{{ runningProgress }}</span>
           <span v-else-if="mainTab === 'images'">{{
-            completedImageCount ? `${completedImageCount} 张作品` : '暂无作品'
+            completedImageCount ? `今日 ${completedImageCount} 张` : '今日暂无作品'
           }}</span>
           <span v-else-if="mainTab === 'history'">{{
-            historyCount ? `${historyCount} 条记录` : '暂无记录'
+            !isAuthenticated
+              ? '登录后查看'
+              : historyCount
+                ? `今日 ${historyCount} 条`
+                : '今日暂无记录'
           }}</span>
           <span v-else-if="mainTab === 'assets'">{{
             assetCount ? `${assetCount} 项资产` : '暂无资产'
@@ -3040,7 +3185,7 @@ function setMainTab(tab) {
       </header>
 
       <section v-if="mainTab === 'images'" class="t2i-panel t2i-panel--stage">
-        <div class="t2i-stage-workspace">
+        <div class="t2i-stage-workspace" data-motion>
           <div
             v-if="isPageLoading"
             class="t2i-page-skeleton t2i-stage-page-skeleton"
@@ -3068,8 +3213,8 @@ function setMainTab(tab) {
             <div class="t2i-empty-icon" aria-hidden="true">
               <i class="bi bi-image"></i>
             </div>
-            <strong>创建您的第一个创作~</strong>
-            <span>点左侧「立即生成」，大图会在这里展示；历史任务可在「历史记录」查看。</span>
+            <strong>今日还没有作品</strong>
+            <span>点左侧「立即生成」，当天作品会显示在这里和底部栏。</span>
           </div>
           <div
             v-else-if="featuredItem"
@@ -3089,7 +3234,10 @@ function setMainTab(tab) {
                     v-for="cell in stageGridItems"
                     :key="cell.key"
                     class="t2i-stage-cell"
-                    :class="{ 'is-pending': cell.kind === 'pending' }"
+                    :class="{
+                      'is-pending': cell.kind === 'pending',
+                      'is-regenerating': cell.kind !== 'pending' && isRegenerating(cell.task),
+                    }"
                   >
                     <div
                       v-if="cell.kind === 'pending'"
@@ -3121,23 +3269,42 @@ function setMainTab(tab) {
                           @error="markImageUnavailable(cell.task, cell.index, cell.url)"
                         />
                       </button>
+                      <div
+                        v-if="isRegenerating(cell.task)"
+                        class="t2i-regenerate-overlay is-cell"
+                        role="status"
+                        aria-live="polite"
+                        :aria-label="`重新生成中，${pendingStageText(cell.task)}`"
+                      >
+                        <span class="t2i-pending-orb" aria-hidden="true">
+                          <i class="bi bi-arrow-repeat"></i>
+                        </span>
+                        <strong>重新生成中</strong>
+                        <em class="t2i-pending-stage">{{ pendingStageText(cell.task) }}</em>
+                        <span class="t2i-pending-bar" aria-hidden="true"><i></i></span>
+                        <em class="t2i-pending-elapsed">{{ pendingElapsedText(cell.task) }}</em>
+                        <button
+                          type="button"
+                          :disabled="actionBusyId === String(cell.task.id)"
+                          @click.stop="handleCancelTask(cell.task)"
+                        >
+                          取消
+                        </button>
+                      </div>
                       <button
                         type="button"
                         class="t2i-stage-cell-delete"
-                        :disabled="actionBusyId === String(cell.task.id)"
+                        :disabled="actionBusyId === String(cell.task.id) || isRegenerating(cell.task)"
                         aria-label="删除这张图片"
                         title="删除这张图片"
                         @click.stop="handleRemoveTask(cell.task)"
                       >
                         <i
-                          class="bi"
-                          :class="
-                            actionBusyId === String(cell.task.id)
-                              ? 'bi-arrow-repeat spin'
-                              : 'bi-trash3'
-                          "
+                          v-if="actionBusyId === String(cell.task.id)"
+                          class="bi bi-arrow-repeat spin"
                           aria-hidden="true"
                         ></i>
+                        <span v-else class="t2i-icon-delete" aria-hidden="true"></span>
                       </button>
                       <div class="t2i-stage-quick-actions is-cell" aria-label="图片快捷操作">
                         <button
@@ -3146,7 +3313,19 @@ function setMainTab(tab) {
                           title="编辑"
                           @click.stop="editTask(cell.task)"
                         >
-                          <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                          <span class="t2i-icon-edit-image" aria-hidden="true"></span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="重新生成"
+                          title="重新生成"
+                          :disabled="
+                            actionBusyId === String(cell.task.id) ||
+                            regeneratingTaskId === String(cell.task.id)
+                          "
+                          @click.stop="openRegenerateConfirm(cell.task)"
+                        >
+                          <span class="t2i-icon-regenerate" aria-hidden="true"></span>
                         </button>
                         <button
                           type="button"
@@ -3154,7 +3333,7 @@ function setMainTab(tab) {
                           title="下载"
                           @click.stop="downloadTaskOutput(cell.task, cell.index)"
                         >
-                          <i class="bi bi-download" aria-hidden="true"></i>
+                          <span class="t2i-icon-download" aria-hidden="true"></span>
                         </button>
                         <button
                           type="button"
@@ -3162,7 +3341,30 @@ function setMainTab(tab) {
                           title="设为参考图"
                           @click.stop="useGeneratedAsReference(cell.task, cell.index)"
                         >
-                          <i class="bi bi-images" aria-hidden="true"></i>
+                          <span class="t2i-icon-reference" aria-hidden="true"></span>
+                        </button>
+                        <button
+                          type="button"
+                          :aria-label="shareStatusLabel(cell.task)"
+                          :title="shareStatusLabel(cell.task)"
+                          :disabled="
+                            submittingShareId === String(cell.task.id) ||
+                            cell.task.shareSubmitted ||
+                            isLocalUpscaling(cell.task)
+                          "
+                          @click.stop="openPublish(cell)"
+                        >
+                          <i
+                            v-if="submittingShareId === String(cell.task.id)"
+                            class="bi bi-arrow-repeat spin"
+                            aria-hidden="true"
+                          ></i>
+                          <i
+                            v-else-if="cell.task.shareSubmitted"
+                            class="bi bi-patch-check"
+                            aria-hidden="true"
+                          ></i>
+                          <span v-else class="t2i-icon-publish" aria-hidden="true"></span>
                         </button>
                       </div>
                     </template>
@@ -3217,7 +3419,19 @@ function setMainTab(tab) {
                     title="编辑"
                     @click.stop="editTask(featuredItem.task)"
                   >
-                    <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                    <span class="t2i-icon-edit-image" aria-hidden="true"></span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="重新生成"
+                    title="重新生成"
+                    :disabled="
+                      actionBusyId === String(featuredItem.task.id) ||
+                      regeneratingTaskId === String(featuredItem.task.id)
+                    "
+                    @click.stop="openRegenerateConfirm(featuredItem.task)"
+                  >
+                    <span class="t2i-icon-regenerate" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
@@ -3225,7 +3439,7 @@ function setMainTab(tab) {
                     title="下载"
                     @click.stop="downloadTaskOutput(featuredItem.task, featuredItem.index)"
                   >
-                    <i class="bi bi-download" aria-hidden="true"></i>
+                    <span class="t2i-icon-download" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
@@ -3233,7 +3447,7 @@ function setMainTab(tab) {
                     title="设为参考图"
                     @click.stop="useGeneratedAsReference(featuredItem.task, featuredItem.index)"
                   >
-                    <i class="bi bi-images" aria-hidden="true"></i>
+                    <span class="t2i-icon-reference" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
@@ -3247,16 +3461,42 @@ function setMainTab(tab) {
                     @click.stop="openPublish(featuredItem)"
                   >
                     <i
-                      class="bi"
-                      :class="
-                        submittingShareId === String(featuredItem.task.id)
-                          ? 'bi-arrow-repeat spin'
-                          : featuredItem.task.shareSubmitted
-                            ? 'bi-patch-check'
-                            : 'bi-send-check'
-                      "
+                      v-if="submittingShareId === String(featuredItem.task.id)"
+                      class="bi bi-arrow-repeat spin"
                       aria-hidden="true"
                     ></i>
+                    <i
+                      v-else-if="featuredItem.task.shareSubmitted"
+                      class="bi bi-patch-check"
+                      aria-hidden="true"
+                    ></i>
+                    <span v-else class="t2i-icon-publish" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <div
+                  v-if="
+                    featuredItem.task &&
+                    !stageGridItems.length &&
+                    isRegenerating(featuredItem.task)
+                  "
+                  class="t2i-regenerate-overlay"
+                  role="status"
+                  aria-live="polite"
+                  :aria-label="`正在重新生成，${pendingStageText(featuredItem.task)}`"
+                >
+                  <span class="t2i-pending-orb" aria-hidden="true">
+                    <i class="bi bi-arrow-repeat"></i>
+                  </span>
+                  <strong>正在重新生成</strong>
+                  <em class="t2i-pending-stage">{{ pendingStageText(featuredItem.task) }}</em>
+                  <span class="t2i-pending-bar" aria-hidden="true"><i></i></span>
+                  <em class="t2i-pending-elapsed">{{ pendingElapsedText(featuredItem.task) }}</em>
+                  <button
+                    type="button"
+                    :disabled="actionBusyId === String(featuredItem.task.id)"
+                    @click.stop="handleCancelTask(featuredItem.task)"
+                  >
+                    取消并恢复原图
                   </button>
                 </div>
                 <UpscaleProcessingOverlay
@@ -3274,49 +3514,33 @@ function setMainTab(tab) {
                 <small>{{
                   featuredItem.kind === 'pending'
                     ? `${pendingStageText(featuredItem.task)} · ${pendingElapsedText(featuredItem.task)}`
-                    : isLocalUpscaling(featuredItem.task)
-                      ? featuredItem.task.localUpscaleMessage || statusTitle(featuredItem.task)
-                      : taskMeta(featuredItem.task)
+                    : isRegenerating(featuredItem.task)
+                      ? `重新生成中 · ${pendingElapsedText(featuredItem.task)}`
+                      : isLocalUpscaling(featuredItem.task)
+                        ? featuredItem.task.localUpscaleMessage || statusTitle(featuredItem.task)
+                        : taskMeta(featuredItem.task)
                 }}</small>
               </div>
               <div class="t2i-image-actions">
                 <template v-if="featuredItem.kind === 'image'">
                   <button
                     type="button"
-                    class="is-share"
-                    :disabled="
-                      submittingShareId === String(featuredItem.task.id) ||
-                      featuredItem.task.shareSubmitted ||
-                      isLocalUpscaling(featuredItem.task)
-                    "
-                    @click.stop="openPublish(featuredItem)"
+                    class="is-icon"
+                    aria-label="重新生成"
+                    title="重新生成"
+                    :disabled="isRegenerating(featuredItem.task)"
+                    @click.stop="regenerateTask(featuredItem.task)"
                   >
-                    <i
-                      class="bi"
-                      :class="
-                        submittingShareId === String(featuredItem.task.id)
-                          ? 'bi-arrow-repeat spin'
-                          : featuredItem.task.shareSubmitted
-                            ? 'bi-patch-check'
-                            : 'bi-send-check'
-                      "
-                      aria-hidden="true"
-                    ></i>
-                    {{
-                      submittingShareId === String(featuredItem.task.id)
-                        ? '提交中…'
-                        : shareStatusLabel(featuredItem.task)
-                    }}
-                  </button>
-                  <button type="button" @click.stop="regenerateTask(featuredItem.task)">
-                    重新生成
+                    <span class="t2i-icon-regenerate" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
-                    class="is-danger"
+                    class="is-danger is-icon"
+                    aria-label="删除"
+                    title="删除"
                     @click.stop="handleRemoveGroup(featuredGroup)"
                   >
-                    删除
+                    <span class="t2i-icon-delete" aria-hidden="true"></span>
                   </button>
                 </template>
                 <template v-else>
@@ -3422,12 +3646,22 @@ function setMainTab(tab) {
             </article>
           </div>
         </div>
+        <div v-else-if="!isAuthenticated" class="t2i-empty">
+          <div class="t2i-empty-icon" aria-hidden="true">
+            <i class="bi bi-person-lock"></i>
+          </div>
+          <strong>登录后查看历史记录</strong>
+          <span>未登录不会保存生成历史，登录后可同步并浏览云端作品。</span>
+          <RouterLink class="t2i-empty-link" :to="{ name: 'auth', query: { mode: 'login' } }"
+            >去登录</RouterLink
+          >
+        </div>
         <div v-else-if="!historyFeedItems.length" class="t2i-empty">
           <div class="t2i-empty-icon" aria-hidden="true">
             <i class="bi bi-clock-history"></i>
           </div>
-          <strong>还没有历史记录</strong>
-          <span>提交生成后，这里会以瀑布流展示你的作品。</span>
+          <strong>今日还没有历史记录</strong>
+          <span>历史记录仅展示当天作品，提交生成后会显示在这里。</span>
         </div>
         <div v-else class="t2i-masonry-wrap">
           <div class="t2i-masonry" :style="{ '--t2i-masonry-cols': historyColumnCount }">
@@ -3529,7 +3763,7 @@ function setMainTab(tab) {
                     title="设为参考图"
                     @click.stop="useGeneratedAsReference(item.task, item.index)"
                   >
-                    <i class="bi bi-images" aria-hidden="true"></i>
+                    <span class="t2i-icon-reference" aria-hidden="true"></span>
                   </button>
                   <button
                     v-if="item.kind === 'image'"
@@ -3545,15 +3779,16 @@ function setMainTab(tab) {
                     @click.stop="openPublish(item)"
                   >
                     <i
-                      class="bi"
-                      :class="
-                        submittingShareId === String(item.task.id)
-                          ? 'bi-arrow-repeat spin'
-                          : item.task.shareSubmitted
-                            ? 'bi-patch-check'
-                            : 'bi-send-check'
-                      "
+                      v-if="submittingShareId === String(item.task.id)"
+                      class="bi bi-arrow-repeat spin"
+                      aria-hidden="true"
                     ></i>
+                    <i
+                      v-else-if="item.task.shareSubmitted"
+                      class="bi bi-patch-check"
+                      aria-hidden="true"
+                    ></i>
+                    <span v-else class="t2i-icon-publish" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
@@ -3562,7 +3797,7 @@ function setMainTab(tab) {
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="editTask(item.task)"
                   >
-                    <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                    <span class="t2i-icon-edit-image" aria-hidden="true"></span>
                   </button>
                   <button
                     type="button"
@@ -3571,7 +3806,7 @@ function setMainTab(tab) {
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="regenerateTask(item.task)"
                   >
-                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                    <span class="t2i-icon-regenerate" aria-hidden="true"></span>
                   </button>
                   <button
                     v-if="canCancel(item.task)"
@@ -3591,7 +3826,7 @@ function setMainTab(tab) {
                     :disabled="actionBusyId === String(item.task.id)"
                     @click.stop="handleRemoveTask(item.task)"
                   >
-                    <i class="bi bi-trash3" aria-hidden="true"></i>
+                    <span class="t2i-icon-delete" aria-hidden="true"></span>
                   </button>
                 </footer>
               </article>
@@ -3616,7 +3851,7 @@ function setMainTab(tab) {
           >
             加载更多
           </button>
-          <p v-else-if="!historyHasMore" class="t2i-feed-end">没有更多数据了</p>
+          <p v-else-if="!historyHasMore" class="t2i-feed-end">今日记录已全部加载</p>
         </div>
       </section>
 
@@ -3627,9 +3862,9 @@ function setMainTab(tab) {
       >
         <div class="t2i-masonry-wrap">
           <div class="t2i-library-toolbar">
-            <nav class="t2i-library-categories" aria-label="提示词分类">
+            <nav class="t2i-library-categories" aria-label="提示词分类" @click.stop>
               <button
-                v-for="category in promptCategoryOptions"
+                v-for="category in promptCategoryPrimaryOptions"
                 :key="category.value"
                 type="button"
                 :class="{ 'is-active': promptCategoryFilter === category.value }"
@@ -3637,6 +3872,43 @@ function setMainTab(tab) {
               >
                 {{ category.label }}
               </button>
+              <div class="t2i-library-more">
+                <button
+                  type="button"
+                  class="t2i-library-more-trigger"
+                  :class="{
+                    'is-active': promptCategoryMoreActive,
+                    'is-open': promptCategoryMoreOpen,
+                  }"
+                  :aria-expanded="promptCategoryMoreOpen"
+                  aria-haspopup="listbox"
+                  @click.stop="togglePromptCategoryMore"
+                >
+                  <span>{{ promptCategoryMoreLabel }}</span>
+                  <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                </button>
+                <Transition name="t2i-library-more">
+                  <div
+                    v-if="promptCategoryMoreOpen"
+                    class="t2i-library-more-menu"
+                    role="listbox"
+                    aria-label="更多分类"
+                    @click.stop
+                  >
+                    <button
+                      v-for="category in promptCategoryMoreOptions"
+                      :key="category.value"
+                      type="button"
+                      role="option"
+                      :aria-selected="promptCategoryFilter === category.value"
+                      :class="{ 'is-active': promptCategoryFilter === category.value }"
+                      @click="selectPromptCategory(category.value)"
+                    >
+                      {{ category.label }}
+                    </button>
+                  </div>
+                </Transition>
+              </div>
             </nav>
             <label v-if="promptCategoryFilter !== 'today'" class="t2i-library-sort">
               <i class="bi bi-sort-down" aria-hidden="true"></i>
@@ -3860,6 +4132,58 @@ function setMainTab(tab) {
         </div>
       </section>
     </main>
+
+    <Teleport to="body">
+      <Transition name="t2i-skill-popover">
+        <section
+          v-if="skillPanelOpen"
+          class="t2i-skill-panel is-floating"
+          :class="{ 'is-light': !appearanceStore.isDark }"
+          :style="skillPanelStyle"
+          aria-label="生成 Skills"
+          @click.stop
+        >
+          <header>
+            <div>
+              <strong>生成 Skills</strong>
+              <small>仅将已选择的 Skill 注入当前任务</small>
+            </div>
+            <button type="button" title="关闭 Skills" @click="skillPanelOpen = false">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="t2i-skill-list">
+            <label v-for="skill in skillOptions" :key="skill.id" class="t2i-skill-item">
+              <input
+                type="checkbox"
+                :checked="selectedSkillIds.includes(skill.id)"
+                @change="toggleSkill(skill.id)"
+              />
+              <span class="t2i-skill-item-copy">
+                <strong>{{ skill.name }}</strong>
+                <small>{{ skill.description }}</small>
+              </span>
+              <button
+                v-if="skill.custom"
+                type="button"
+                class="t2i-skill-remove"
+                title="删除自定义 Skill"
+                @click.prevent="removeCustomSkill(skill.id)"
+              >
+                <i class="bi bi-trash3" aria-hidden="true"></i>
+              </button>
+            </label>
+          </div>
+          <button type="button" class="t2i-skill-create" @click="openCustomSkillDialog">
+            <span>
+              <i class="bi bi-plus-lg" aria-hidden="true"></i>
+              <strong>添加 Skill</strong>
+            </span>
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          </button>
+        </section>
+      </Transition>
+    </Teleport>
 
     <Teleport to="body">
       <Transition name="t2i-skill-dialog">
@@ -4151,7 +4475,7 @@ function setMainTab(tab) {
               <i class="bi bi-brush" aria-hidden="true"></i>
             </button>
             <button type="button" aria-label="下载图片" title="下载" @click="downloadLightbox">
-              <i class="bi bi-download" aria-hidden="true"></i>
+              <span class="t2i-icon-download" aria-hidden="true"></span>
             </button>
             <button
               type="button"
@@ -4160,7 +4484,7 @@ function setMainTab(tab) {
               title="删除"
               @click="handleRemoveTask(lightboxTask)"
             >
-              <i class="bi bi-trash" aria-hidden="true"></i>
+              <span class="t2i-icon-delete" aria-hidden="true"></span>
             </button>
             <span class="t2i-lightbox-controls-divider" aria-hidden="true"></span>
             <button type="button" aria-label="关闭预览" title="关闭" @click="closeLightbox">
@@ -4186,6 +4510,7 @@ function setMainTab(tab) {
       :title="publishDialogTitle"
       :style-label="publishDialogStyleLabel"
       :submitting="Boolean(publishTarget && submittingShareId)"
+      :light="!appearanceStore.isDark"
       @close="closePublishDialog"
       @submit="submitHistoryToShare"
     />
@@ -4200,6 +4525,19 @@ function setMainTab(tab) {
       :busy="Boolean(deleteRequest && actionBusyId)"
       @close="closeDeleteConfirm"
       @confirm="confirmRemoveTask"
+    />
+
+    <DeleteHistoryConfirmDialog
+      :open="regenerateConfirmOpen"
+      heading="重新生成这张图片？"
+      description="确认后将在当前图片上加载并重新生成；成功后覆盖原图，失败则自动恢复原图。"
+      confirm-label="重新生成"
+      busy-label="提交中…"
+      icon="bi-arrow-clockwise"
+      tone="accent"
+      :busy="Boolean(regeneratingTaskId)"
+      @close="closeRegenerateConfirm"
+      @confirm="confirmRegenerateTask"
     />
 
     <DeleteHistoryConfirmDialog

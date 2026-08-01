@@ -1,6 +1,6 @@
 # 数据库设计
 
-数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00014`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
+数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00027`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
 
 ## 全局约定
 
@@ -15,14 +15,14 @@
 
 ### `users`
 
-| 列 | 说明 |
-| --- | --- |
-| `id`, `email`, `username`, `password_hash`, `avatar_url` | 账号、头像与 bcrypt 密码哈希；email 使用 citext 唯一约束 |
-| `bio`, `location`, `website_url` | 用户自填简介、所在地和个人网站；默认空字符串 |
-| `role` | 当前普通账号固定为 `user`；`admin` 仅保留给 `00007` 迁移前的兼容记录，不能用于用户端登录 |
-| `status` | `active` / `banned` |
-| `submission_banned_until` | 画廊禁投截止时间，NULL 表示未禁投 |
-| `last_login_at`, `created_at` | 登录与创建时间 |
+| 列                                                       | 说明                                                                                     |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `id`, `email`, `username`, `password_hash`, `avatar_url` | 账号、头像与 bcrypt 密码哈希；email 使用 citext 唯一约束                                 |
+| `bio`, `location`, `website_url`                         | 用户自填简介、所在地和个人网站；默认空字符串                                             |
+| `role`                                                   | 当前普通账号固定为 `user`；`admin` 仅保留给 `00007` 迁移前的兼容记录，不能用于用户端登录 |
+| `status`                                                 | `active` / `banned`                                                                      |
+| `submission_banned_until`                                | 画廊禁投截止时间，NULL 表示未禁投                                                        |
+| `last_login_at`, `created_at`                            | 登录与创建时间                                                                           |
 
 ### `sessions`
 
@@ -62,13 +62,13 @@
 
 ### `wallet_ledger`
 
-| 列 | 说明 |
-| --- | --- |
-| `kind` | `grant`、`spend`、`freeze`、`release`、`refund`、`admin_adjust` |
-| `delta_cents` | 本次对可用余额的变化 |
-| `balance_after_cents` | 变化后的可用余额快照 |
-| `source_type`, `source_id` | 订单、任务、订阅、兑换码或人工操作来源 |
-| `reason`, `created_at` | 原因与发生时间 |
+| 列                         | 说明                                                            |
+| -------------------------- | --------------------------------------------------------------- |
+| `kind`                     | `grant`、`spend`、`freeze`、`release`、`refund`、`admin_adjust` |
+| `delta_cents`              | 本次对可用余额的变化                                            |
+| `balance_after_cents`      | 变化后的可用余额快照                                            |
+| `source_type`, `source_id` | 订单、任务、订阅、兑换码或人工操作来源                          |
+| `reason`, `created_at`     | 原因与发生时间                                                  |
 
 `(kind, source_type, source_id)` 在 `source_id IS NOT NULL` 时唯一，是账务幂等边界。余额更新和账本写入必须处于同一事务。
 
@@ -95,18 +95,18 @@
 
 ### `tasks`
 
-| 列 | 说明 |
-| --- | --- |
-| `type` | `t2i`、`coloring`、`ui_design`、`model_sheet`、`game_art`、`puzzle` |
-| `model` | 新任务提交时锁定的上游模型；Worker 执行和 API 展示共用该值。迁移前历史任务按迁移时生效配置补齐 |
-| `status` | `queued`、`running`、`succeeded`、`failed`、`canceled` |
-| `prompt`, `params`, `count` | 生成输入；count 限制为 1 至 4 |
-| `input_keys`, `output_keys` | 输入和原图 R2 object key 数组 |
-| `thumbnail_keys` | 与原图按索引对应的最长边 512px JPEG 缩略图 key 数组 |
-| `cost_cents` | 提交时锁定的费用 |
-| `idempotency_key` | 同一用户内唯一的可选提交键 |
-| `error_code`, `error_message`, `attempt` | 失败与业务重试信息 |
-| `started_at`, `finished_at`, `created_at` | 生命周期时间 |
+| 列                                        | 说明                                                                                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `type`                                    | `t2i`、`coloring`、`ui_design`、`model_sheet`、`game_art`、`puzzle`                            |
+| `model`                                   | 新任务提交时锁定的上游模型；Worker 执行和 API 展示共用该值。迁移前历史任务按迁移时生效配置补齐 |
+| `status`                                  | `queued`、`running`、`succeeded`、`failed`、`canceled`                                         |
+| `prompt`, `params`, `count`               | 生成输入；count 限制为 1 至 4                                                                  |
+| `input_keys`, `output_keys`               | 输入和原图 R2 object key 数组                                                                  |
+| `thumbnail_keys`                          | 与原图按索引对应的最长边 512px JPEG 缩略图 key 数组                                            |
+| `cost_cents`                              | 提交时锁定的费用                                                                               |
+| `idempotency_key`                         | 同一用户内唯一的可选提交键                                                                     |
+| `error_code`, `error_message`, `attempt`  | 失败与业务重试信息                                                                             |
+| `started_at`, `finished_at`, `created_at` | 生命周期时间                                                                                   |
 
 索引支持用户时间线和状态扫描。任务提交、状态迁移和钱包冻结/结算/释放都使用事务与条件更新。
 
@@ -142,15 +142,17 @@
 
 提示词条保存标题、prompt、任务类型、业务分类、标签、封面 key/远程 URL、排序和 active。同步条目还包含 `source_id`、`source_item_key`；两者非空时组合唯一，手工条目保持空串。
 
+封面元数据字段为 `cover_width`、`cover_height` 和 `cover_metadata_checked_at`。宽高必须同时为空或同时为正整数。后台上传与画廊图片复制会立即写入尺寸；历史远程 URL 由 Worker 渐进回填，失败后 24 小时才重试。图片 URL 变化时旧尺寸与检查时间会清空。完整数据流见 [提示词瀑布流图片与滚动性能方案](PROMPT_MASONRY_PERFORMANCE.md)。
+
 ### `prompt_sources`
 
-| 字段组 | 说明 |
-| --- | --- |
-| 身份 | text `id`、名称、`source_url`、`json|markdown|html` 格式 |
-| 导入默认值 | `task_type`、`default_tags` |
-| 调度 | `enabled`、`auto_sync_enabled`、间隔分钟、`next_sync_at` |
-| 锁 | `sync_lock_token`、`sync_lock_expires_at`，避免并发同步 |
-| 状态 | item 数、最近同步时间/耗时/错误和创建时间 |
+| 字段组     | 说明                                                     |
+| ---------- | -------------------------------------------------------- | -------- | ---------- |
+| 身份       | text `id`、名称、`source_url`、`json                     | markdown | html` 格式 |
+| 导入默认值 | `task_type`、`default_tags`                              |
+| 调度       | `enabled`、`auto_sync_enabled`、间隔分钟、`next_sync_at` |
+| 锁         | `sync_lock_token`、`sync_lock_expires_at`，避免并发同步  |
+| 状态       | item 数、最近同步时间/耗时/错误和创建时间                |
 
 迁移内置六个来源。代码把这些固定 slug 视为 built-in，可编辑和停用，但不可删除。
 
@@ -162,7 +164,7 @@
 
 ```text
 task_prices               {"t2i":20,"coloring":30,"ui_design":30,"model_sheet":40,"game_art":30,"puzzle":10}
-user_max_running_tasks    3
+user_max_running_tasks    100
 signup_bonus_cents        100
 registration_enabled      true
 task_models               {"default":"gpt-image-2"}

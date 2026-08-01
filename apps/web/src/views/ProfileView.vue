@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppearanceStore } from '@/stores/appearance'
@@ -17,38 +17,33 @@ import {
   redeemWalletCode,
   updateProfile,
 } from '@/services/meApi'
-import {
-  deleteTask,
-  listTasks,
-  TASK_TYPE_LABELS,
-  TASK_UPDATE_EVENT,
-  subscribeTask,
-  uploadFile,
-} from '@/services/tasksApi'
-import { listGalleryCategories, submitShareItem } from '@/services/shareGallery'
+import { TASK_UPDATE_EVENT, uploadFile } from '@/services/tasksApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
-import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import OptimizedImage from '@/components/common/OptimizedImage.vue'
+import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
+import { useProfileDashboardMotion } from './useProfileDashboardMotion'
 
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const appearanceStore = useAppearanceStore()
+const pageRootRef = ref(null)
 
-const TAB_IDS = ['works', 'materials', 'submissions', 'wallet', 'notifications', 'account']
+const TAB_IDS = ['dashboard', 'materials', 'submissions', 'wallet', 'notifications', 'account']
 const TABS = [
+  {
+    id: 'dashboard',
+    label: '总览',
+    description: '个人中心仪表盘。',
+    icon: 'bi-grid-1x2',
+  },
   {
     id: 'materials',
     label: '素材库',
     description: '上传并整理可重复使用的个人视觉素材。',
     icon: 'bi-collection',
-  },
-  {
-    id: 'works',
-    label: '我的作品',
-    description: '查找、预览和管理你的创作记录。',
-    icon: 'bi-images',
   },
   {
     id: 'submissions',
@@ -66,86 +61,28 @@ const TABS = [
   },
 ]
 
+const STUDIO_SHORTCUTS = [
+  { to: '/ai-wallpaper', label: '文生图', tone: 'violet' },
+  { to: '/assistant', label: 'AI 助手', tone: 'cyan' },
+  { to: '/ai-illustration-coloring', label: '插画染色', tone: 'amber' },
+]
+
 function resolveTab(value) {
   const tab = String(value || '').trim()
-  return TAB_IDS.includes(tab) ? tab : 'works'
+  // 旧「我的作品」已迁到独立历史页，避免与 /history 重复
+  if (tab === 'works') return 'materials'
+  return TAB_IDS.includes(tab) ? tab : 'dashboard'
 }
 
 const activeTab = ref(resolveTab(route.query.tab))
-const activeTabInfo = computed(() => TABS.find((tab) => tab.id === activeTab.value) || TABS[0])
+const { playDashboardMotion } = useProfileDashboardMotion({
+  rootRef: pageRootRef,
+  activeTab,
+})
 
 // ---- 总览 ----
 const overview = ref(null)
 const unreadCount = computed(() => Number(overview.value?.unreadNotifications || 0))
-
-// ---- 我的作品（任务列表） ----
-const tasks = ref([])
-const tasksLoading = ref(false)
-const tasksCursor = ref(null)
-const taskTypeFilter = ref('')
-const previewTask = ref(null)
-const deletingTaskId = ref('')
-const loggingOut = ref(false)
-const submittingTaskId = ref('')
-const taskSearch = ref('')
-const taskStatusFilter = ref('')
-const taskSubscriptions = new Map()
-
-const hasTaskFilters = computed(() =>
-  Boolean(taskSearch.value.trim() || taskStatusFilter.value || taskTypeFilter.value),
-)
-
-function cleanText(value, max = 220) {
-  const text = String(value || '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
-
-function taskOriginalUrl(task) {
-  return task?.originalUrls?.[0] || task?.outputUrls?.[0] || ''
-}
-
-function taskThumbnailUrl(task) {
-  if (Array.isArray(task?.thumbnailKeys) && task.thumbnailKeys.length === 0) return ''
-  return task?.thumbnailUrls?.[0] || task?.outputUrls?.[0] || ''
-}
-
-function taskDisplayPrompt(task) {
-  return String(
-    task?.params?.userPrompt || task?.userPrompt || task?.params?.prompt || task?.prompt || '',
-  )
-    .replace(/\{argument\b[^{}]*\bdefault="([^"]*)"[^{}]*\}/gi, '$1')
-    .replace(/\{argument\b[^{}]*\bdefault='([^']*)'[^{}]*\}/gi, '$1')
-    .replace(/\{argument\b[^{}]*\}/gi, '')
-    .trim()
-}
-
-const visibleTasks = computed(() => {
-  const seen = new Set()
-  const query = taskSearch.value.trim().toLowerCase()
-  return tasks.value
-    .filter((task) => {
-      const id = String(task?.id || '')
-      if (!id || seen.has(id)) return false
-      seen.add(id)
-      if (taskStatusFilter.value && task.status !== taskStatusFilter.value) return false
-      if (!query) return true
-      return `${taskDisplayPrompt(task)} ${TASK_TYPE_LABELS[task.type] || ''}`
-        .toLowerCase()
-        .includes(query)
-    })
-    .map((task) => ({
-      ...task,
-      cleanPrompt: cleanText(taskDisplayPrompt(task), 180) || '未填写提示词',
-    }))
-})
-
-// ---- 投稿到画廊对话框 ----
-const submitDialog = reactive({ open: false, task: null, title: '', categoryId: '' })
-const galleryCategories = ref([])
-let galleryCategoriesRequested = false
 
 // ---- 我的投稿 ----
 const submissions = ref([])
@@ -183,9 +120,93 @@ const REDEEM_ERROR_MESSAGES = {
   rate_limited: '尝试过于频繁，请稍后再试',
 }
 
-const availableCents = computed(() =>
-  Math.max(0, Number(wallet.value?.balanceCents || 0) - Number(wallet.value?.frozenCents || 0)),
+const overviewWallet = computed(() => overview.value?.wallet || null)
+const balanceCents = computed(() =>
+  Number(wallet.value?.balanceCents ?? overviewWallet.value?.balanceCents ?? 0),
 )
+const frozenCents = computed(() =>
+  Number(wallet.value?.frozenCents ?? overviewWallet.value?.frozenCents ?? 0),
+)
+const availableCents = computed(() => Math.max(0, balanceCents.value - frozenCents.value))
+const pointsDisplay = computed(() => formatPoints(availableCents.value, { withUnit: false }))
+
+const taskStats = computed(() => ({
+  total: Number(overview.value?.taskStats?.total || 0),
+  succeeded: Number(overview.value?.taskStats?.succeeded || 0),
+  failed: Number(overview.value?.taskStats?.failed || 0),
+  running: Number(overview.value?.taskStats?.running || 0),
+}))
+
+const successRate = computed(() => {
+  const done = taskStats.value.succeeded + taskStats.value.failed
+  if (!done) return 0
+  return Math.round((taskStats.value.succeeded / done) * 100)
+})
+
+const submissionStats = computed(() => {
+  const list = submissions.value || []
+  const counts = { pending: 0, approved: 0, rejected: 0, removed: 0 }
+  for (const item of list) {
+    const key = String(item?.status || '')
+    if (key in counts) counts[key] += 1
+  }
+  return { ...counts, total: list.length }
+})
+
+const taskTypeBars = computed(() => {
+  const byType = overview.value?.taskStatsByType || {}
+  const entries = Object.entries(byType)
+    .map(([key, value]) => ({ key, value: Number(value || 0) }))
+    .filter((item) => item.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 6)
+  const max = Math.max(1, ...entries.map((item) => item.value))
+  const labels = {
+    t2i: '文生图',
+    wallpaper: '壁纸',
+    coloring: '染色',
+    assistant: '助手',
+    game: '游戏',
+    design: '设计',
+    puzzle: '拼图',
+    modelsheet: '模型图',
+  }
+  return entries.map((item) => ({
+    ...item,
+    label: labels[item.key] || item.key,
+    height: Math.max(12, Math.round((item.value / max) * 100)),
+  }))
+})
+
+const recentTasks = computed(() =>
+  Array.isArray(overview.value?.recentTasks) ? overview.value.recentTasks.slice(0, 5) : [],
+)
+
+const heroVisualUrl = '/sucai/profile-hero-character.png?v=4'
+
+const ringAccent = computed(() => (appearanceStore.isDark ? '#7c6cff' : '#3b82f6'))
+const ringCyan = computed(() => (appearanceStore.isDark ? '#5ec8ff' : '#0ea5e9'))
+const ringTrack = computed(() =>
+  appearanceStore.isDark ? 'rgba(255,255,255,0.12)' : 'rgba(22,28,48,0.1)',
+)
+
+const ringStyle = computed(() => {
+  const rate = successRate.value
+  return {
+    background: `conic-gradient(${ringAccent.value} 0 ${rate}%, ${ringTrack.value} ${rate}% 100%)`,
+  }
+})
+
+const approvalRingStyle = computed(() => {
+  const total = Math.max(1, submissionStats.value.total)
+  const approved = submissionStats.value.approved
+  const pending = submissionStats.value.pending
+  const approvedPct = (approved / total) * 100
+  const pendingPct = approvedPct + (pending / total) * 100
+  return {
+    background: `conic-gradient(${ringAccent.value} 0 ${approvedPct}%, ${ringCyan.value} ${approvedPct}% ${pendingPct}%, ${ringTrack.value} ${pendingPct}% 100%)`,
+  }
+})
 
 // ---- 通知 ----
 const notifications = ref([])
@@ -204,6 +225,7 @@ const profileForm = reactive({
   avatarUploading: false,
 })
 const avatarInput = ref(null)
+const loggingOut = ref(false)
 const preferenceSaving = ref(false)
 const requireCostConfirm = computed(() => authStore.user?.requireCostConfirm !== false)
 
@@ -274,17 +296,6 @@ function closeConfirmation(confirmed = false) {
   resolve?.(confirmed)
 }
 
-const TASK_STATUS_LABELS = {
-  queued: '排队中',
-  running: '生成中',
-  succeeded: '已完成',
-  completed: '已完成',
-  done: '已完成',
-  failed: '失败',
-  canceled: '已取消',
-  cancelled: '已取消',
-  paused: '已暂停',
-}
 
 const SUBMISSION_STATUS_LABELS = {
   pending: '审核中',
@@ -334,73 +345,7 @@ function handleRealtimeTaskUpdate(event) {
     realtimeRefreshTimer = null
     void loadOverview()
     if (notificationsLoaded.value) void loadNotifications()
-    if (activeTab.value === 'works') void loadTasks()
   }, 120)
-}
-
-async function loadTasks({ append = false } = {}) {
-  if (tasksLoading.value) return
-  tasksLoading.value = true
-  try {
-    const { items, nextCursor } = await listTasks({
-      type: taskTypeFilter.value,
-      limit: 12,
-      cursor: append ? tasksCursor.value || '' : '',
-    })
-    tasks.value = append ? [...tasks.value, ...items] : items
-    tasksCursor.value = nextCursor
-	  syncTaskSubscriptions()
-  } catch (error) {
-    notificationService.error(error?.message || '任务列表读取失败')
-  } finally {
-    tasksLoading.value = false
-  }
-}
-
-function syncTaskSubscriptions() {
-  const active = new Map(
-    tasks.value
-      .filter((task) => ['queued', 'running'].includes(String(task.status || '').toLowerCase()))
-      .map((task) => [task.id, task]),
-  )
-  for (const [taskId, unsubscribe] of taskSubscriptions) {
-    if (active.has(taskId)) continue
-    unsubscribe()
-    taskSubscriptions.delete(taskId)
-  }
-  for (const taskId of active.keys()) {
-    if (taskSubscriptions.has(taskId)) continue
-    taskSubscriptions.set(
-      taskId,
-      subscribeTask(taskId, {
-        onUpdate: (current) => {
-          tasks.value = tasks.value.map((task) => (task.id === current.id ? current : task))
-          if (!['queued', 'running'].includes(String(current.status || '').toLowerCase())) {
-            taskSubscriptions.get(taskId)?.()
-            taskSubscriptions.delete(taskId)
-          }
-        },
-      }),
-    )
-  }
-}
-
-function setTaskFilter(type) {
-  if (taskTypeFilter.value === type) return
-  taskTypeFilter.value = type
-  tasksCursor.value = null
-  void loadTasks()
-}
-
-function clearTaskFilters() {
-  const reload = Boolean(taskTypeFilter.value)
-  taskSearch.value = ''
-  taskStatusFilter.value = ''
-  taskTypeFilter.value = ''
-  if (reload) {
-    tasksCursor.value = null
-    void loadTasks()
-  }
 }
 
 async function loadSubmissions({ append = false } = {}) {
@@ -592,6 +537,13 @@ async function loadNotifications({ append = false } = {}) {
 }
 
 function ensureTabData(tabId) {
+  if (tabId === 'dashboard') {
+    if (!materialsLoaded.value) void loadMaterials()
+    if (!submissionsLoaded.value) void loadSubmissions()
+    if (!walletLoaded.value) void loadWallet()
+    if (!notificationsLoaded.value) void loadNotifications()
+    return
+  }
   if (tabId === 'materials' && !materialsLoaded.value) void loadMaterials()
   if (tabId === 'submissions' && !submissionsLoaded.value) void loadSubmissions()
   if (tabId === 'wallet' && !walletLoaded.value) {
@@ -602,11 +554,15 @@ function ensureTabData(tabId) {
 }
 
 function switchTab(tabId) {
+  if (String(tabId || '') === 'works') {
+    router.push('/history')
+    return
+  }
   const next = resolveTab(tabId)
   activeTab.value = next
   ensureTabData(next)
   const query = { ...route.query }
-  if (next === 'works') delete query.tab
+  if (next === 'dashboard') delete query.tab
   else query.tab = next
   router.replace({ query }).catch(() => null)
 }
@@ -614,6 +570,10 @@ function switchTab(tabId) {
 watch(
   () => route.query.tab,
   (tab) => {
+    if (String(tab || '') === 'works') {
+      router.replace('/history').catch(() => null)
+      return
+    }
     const next = resolveTab(tab)
     if (next !== activeTab.value) {
       activeTab.value = next
@@ -623,7 +583,7 @@ watch(
 )
 
 const overlayOpen = computed(() =>
-  Boolean(previewTask.value || previewMaterial.value || submitDialog.open || confirmDialog.open),
+  Boolean(previewMaterial.value || confirmDialog.open),
 )
 
 watch(
@@ -647,71 +607,6 @@ async function markAllRead() {
     notificationService.success('已全部标记为已读')
   } catch (error) {
     notificationService.error(error?.message || '操作失败')
-  }
-}
-
-async function removeTask(task) {
-  if (deletingTaskId.value) return
-  const confirmed = await askConfirmation({
-    title: '删除这项作品？',
-    message: '任务记录与生成产物会一并移除，删除后无法恢复。',
-  })
-  if (!confirmed) return
-  deletingTaskId.value = task.id
-  try {
-    await deleteTask(task.id)
-    tasks.value = tasks.value.filter((item) => item.id !== task.id)
-    if (previewTask.value?.id === task.id) previewTask.value = null
-    notificationService.success('任务已删除')
-  } catch (error) {
-    notificationService.error(error?.message || '删除失败')
-  } finally {
-    deletingTaskId.value = ''
-  }
-}
-
-function openSubmitDialog(task) {
-  if (submittingTaskId.value) return
-  submitDialog.task = task
-  submitDialog.title = taskDisplayPrompt(task).slice(0, 40) || 'AI 作品'
-  submitDialog.categoryId = ''
-  submitDialog.open = true
-  if (!galleryCategoriesRequested) {
-    galleryCategoriesRequested = true
-    listGalleryCategories()
-      .then((items) => {
-        galleryCategories.value = items
-      })
-      .catch(() => {
-        galleryCategories.value = []
-      })
-  }
-}
-
-function closeSubmitDialog() {
-  if (submittingTaskId.value) return
-  submitDialog.open = false
-  submitDialog.task = null
-}
-
-async function submitToGallery() {
-  const task = submitDialog.task
-  if (!task || submittingTaskId.value) return
-  submittingTaskId.value = task.id
-  try {
-    await submitShareItem({
-      taskId: task.id,
-      title: submitDialog.title.trim() || 'AI 作品',
-      categoryId: submitDialog.categoryId,
-    })
-    notificationService.success('已提交审核，可在「我的投稿」查看进度')
-    submissionsLoaded.value = false
-    submitDialog.open = false
-    submitDialog.task = null
-  } catch (error) {
-    notificationService.error(error?.message || '投稿失败')
-  } finally {
-    submittingTaskId.value = ''
   }
 }
 
@@ -849,20 +744,6 @@ async function onAvatarSelected(event) {
   }
 }
 
-async function removeAvatar() {
-  if (profileForm.avatarUploading || !authStore.user?.avatarUrl) return
-  profileForm.avatarUploading = true
-  try {
-    const result = await updateProfile({ avatarUrl: '' })
-    authStore.patchUser(result?.user || { avatarUrl: null })
-    notificationService.success('头像已移除')
-  } catch (error) {
-    notificationService.error(error?.message || '头像移除失败')
-  } finally {
-    profileForm.avatarUploading = false
-  }
-}
-
 async function handleLogout() {
   if (loggingOut.value) return
   const confirmed = await askConfirmation({
@@ -891,275 +772,253 @@ async function handleLogout() {
 }
 
 onMounted(async () => {
-	window.addEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
+  window.addEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
   await authStore.initAuth().catch(() => null)
   syncProfileForm()
   void loadOverview()
-  void loadTasks()
+  if (String(route.query.tab || '') === 'works') {
+    router.replace('/history').catch(() => null)
+    return
+  }
   ensureTabData(activeTab.value)
+  if (activeTab.value === 'dashboard') {
+    await nextTick()
+    void playDashboardMotion()
+  }
 })
 
 onBeforeUnmount(() => {
-	window.removeEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
-	if (realtimeRefreshTimer) window.clearTimeout(realtimeRefreshTimer)
-	for (const unsubscribe of taskSubscriptions.values()) unsubscribe()
-	taskSubscriptions.clear()
+  window.removeEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
+  if (realtimeRefreshTimer) window.clearTimeout(realtimeRefreshTimer)
   if (typeof document !== 'undefined') document.body.classList.remove('profile-overlay-open')
 })
 </script>
 
 <template>
-  <div class="pp-page" :class="{ 'is-light': !appearanceStore.isDark }">
-    <div class="pp-atmosphere" aria-hidden="true"></div>
+  <div
+    ref="pageRootRef"
+    class="pp-page is-glass"
+    :class="{
+      'is-light': !appearanceStore.isDark,
+      'is-dark': appearanceStore.isDark,
+      'is-dashboard': activeTab === 'dashboard',
+    }"
+  >
+    <div class="pp-atmosphere" aria-hidden="true">
+      <div
+        class="pp-atmosphere__photo"
+        :class="appearanceStore.isDark ? 'is-dark-photo' : 'is-light-photo'"
+      ></div>
+      <div class="pp-atmosphere__veil"></div>
+    </div>
 
     <div class="pp-shell">
-      <aside class="pp-sidebar">
-        <!-- 个人资料摘要 -->
-        <header class="pp-masthead">
-          <div class="pp-profile-summary">
-            <button
-              type="button"
-              class="pp-avatar"
-              :disabled="profileForm.avatarUploading"
-              aria-label="更换头像"
-              @click="avatarInput?.click()"
-            >
-              <img v-if="authStore.user?.avatarUrl" :src="authStore.user.avatarUrl" alt="头像" />
-              <i v-else class="bi bi-person-fill" aria-hidden="true"></i>
-              <em>
-                <i
-                  class="bi"
-                  :class="profileForm.avatarUploading ? 'bi-arrow-repeat spin' : 'bi-camera-fill'"
-                ></i>
-              </em>
-            </button>
-            <div class="pp-profile-copy">
-              <span>个人空间</span>
-              <h1>{{ authStore.displayName }}</h1>
-              <p data-no-translate>{{ authStore.user?.email }}</p>
-            </div>
-          </div>
-          <input
-            ref="avatarInput"
-            class="pp-avatar-input"
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            @change="onAvatarSelected"
-          />
-          <p v-if="authStore.user?.bio" class="pp-profile-bio" data-no-translate>
-            {{ authStore.user.bio }}
-          </p>
-          <div class="pp-idline">
-            <span v-if="authStore.user?.location" data-no-translate>
-              <i class="bi bi-geo-alt" aria-hidden="true"></i>
-              {{ authStore.user.location }}
-            </span>
-            <span>
-              <i class="bi bi-calendar3" aria-hidden="true"></i>
-              {{ formatTime(authStore.user?.createdAt) }}
-            </span>
-          </div>
-          <button type="button" class="pp-edit-shortcut" @click="switchTab('account')">
-            <i class="bi bi-pencil-square" aria-hidden="true"></i>
-            编辑个人资料
-          </button>
-        </header>
-
-        <nav class="pp-tabs" aria-label="个人中心分区" role="tablist">
-          <button
-            v-for="tab in TABS"
-            :key="tab.id"
-            type="button"
-            role="tab"
-            :aria-selected="activeTab === tab.id"
-            :aria-controls="`profile-panel-${tab.id}`"
-            :class="{ 'is-active': activeTab === tab.id }"
-            @click="switchTab(tab.id)"
-          >
-            <i class="bi" :class="tab.icon" aria-hidden="true"></i>
-            <span>{{ tab.label }}</span>
-            <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
-            <em v-else-if="tab.id === 'materials' && materials.length">{{ materials.length }}</em>
-            <i class="bi bi-chevron-right pp-tab-arrow" aria-hidden="true"></i>
-          </button>
-        </nav>
-
-        <footer class="pp-sidebar-footer">
-          <button type="button" :disabled="loggingOut" @click="handleLogout">
-            <i class="bi bi-box-arrow-right" aria-hidden="true"></i>
-            <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
-          </button>
-        </footer>
-      </aside>
+      <nav class="pp-dock" aria-label="个人中心分区" role="tablist">
+        <button
+          v-for="tab in TABS"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === tab.id"
+          :aria-controls="`profile-panel-${tab.id}`"
+          :class="{ 'is-active': activeTab === tab.id }"
+          @click="switchTab(tab.id)"
+        >
+          <i class="bi" :class="tab.icon" aria-hidden="true"></i>
+          <span>{{ tab.label }}</span>
+          <em v-if="tab.id === 'notifications' && unreadCount > 0">{{ unreadCount }}</em>
+          <em v-else-if="tab.id === 'materials' && materials.length">{{ materials.length }}</em>
+        </button>
+        <router-link class="pp-dock__link" to="/history">
+          <i class="bi bi-clock-history" aria-hidden="true"></i>
+          <span>历史</span>
+        </router-link>
+        <button type="button" class="pp-dock__logout" :disabled="loggingOut" @click="handleLogout">
+          <i class="bi bi-box-arrow-right" aria-hidden="true"></i>
+          <span>{{ loggingOut ? '退出中' : '退出' }}</span>
+        </button>
+      </nav>
 
       <main class="pp-main">
-        <header class="pp-content-head">
-          <div>
-            <span class="pp-content-index">
-              SPACE
-              {{ String(TABS.findIndex((tab) => tab.id === activeTab) + 1).padStart(2, '0') }} /
-              {{ String(TABS.length).padStart(2, '0') }}
-            </span>
-            <h2>{{ activeTabInfo.label }}</h2>
-            <p>{{ activeTabInfo.description }}</p>
-          </div>
-          <RouterLink to="/text-to-image" class="pp-create-link">
-            <i class="bi bi-stars" aria-hidden="true"></i>
-            开始创作
-          </RouterLink>
-        </header>
-
-        <!-- 我的作品 -->
+        <!-- 玻璃 Bento 总览：三列命名网格 -->
         <section
-          id="profile-panel-works"
-          v-show="activeTab === 'works'"
-          class="pp-panel"
+          id="profile-panel-dashboard"
+          v-show="activeTab === 'dashboard'"
+          class="pp-panel pp-bento"
           role="tabpanel"
         >
-          <div class="pp-works-filter">
-            <button
-              type="button"
-              :class="{ 'is-active': taskTypeFilter === '' }"
-              @click="setTaskFilter('')"
-            >
-              全部
-            </button>
-            <button
-              v-for="(label, type) in TASK_TYPE_LABELS"
-              :key="type"
-              type="button"
-              :class="{ 'is-active': taskTypeFilter === type }"
-              @click="setTaskFilter(type)"
-            >
-              {{ label }}
-            </button>
-          </div>
-
-          <div class="pp-works-toolbar">
-            <label class="pp-search"
-              ><i class="bi bi-search"></i
-              ><input v-model="taskSearch" type="search" placeholder="搜索提示词"
-            /></label>
-            <div class="pp-works-toolbar__meta">
-              <span>{{ visibleTasks.length }} 项结果</span>
-              <button v-if="hasTaskFilters" type="button" @click="clearTaskFilters">
-                清除筛选
-              </button>
-              <select v-model="taskStatusFilter" aria-label="状态筛选">
-                <option value="">全部状态</option>
-                <option value="succeeded">已完成</option>
-                <option value="running">生成中</option>
-                <option value="queued">排队中</option>
-                <option value="failed">失败</option>
-              </select>
-            </div>
-          </div>
-
-          <div v-if="tasksLoading && !tasks.length" class="pp-works-grid" aria-label="正在加载作品">
-            <div v-for="n in 8" :key="n" class="pp-work-skeleton" aria-hidden="true">
-              <div></div>
-              <span></span><span></span>
-            </div>
-          </div>
-          <div v-else-if="visibleTasks.length" class="pp-works-grid">
-            <article v-for="task in visibleTasks" :key="task.id" class="pp-work">
-              <button
-                type="button"
-                class="pp-work__cover"
-                :disabled="!taskOriginalUrl(task)"
-                @click="previewTask = task"
+          <article class="pp-glass pp-bento-card is-studio">
+            <div class="pp-bento-wave" aria-hidden="true"></div>
+            <header>
+              <strong>创作入口</strong>
+              <small>常用工作室</small>
+            </header>
+            <div class="pp-bento-pills">
+              <router-link
+                v-for="item in STUDIO_SHORTCUTS"
+                :key="item.to"
+                :to="item.to"
+                :class="`is-${item.tone}`"
               >
-                <ProgressiveAuthenticatedImage
-                  v-if="taskThumbnailUrl(task)"
-                  :src="taskOriginalUrl(task)"
-                  :preview-src="taskThumbnailUrl(task)"
-                  :alt="task.cleanPrompt || 'AI 作品'"
-                  loading="lazy"
-                  :retry-count="2"
-                />
-                <span v-else class="pp-work__placeholder" :data-status="task.status">
-                  <i
-                    class="bi"
-                    :class="
-                      task.status === 'failed'
-                        ? 'bi-x-circle'
-                        : task.status === 'succeeded'
-                          ? 'bi-image'
-                          : 'bi-hourglass-split'
-                    "
-                  ></i>
-                  {{
-                    task.status === 'succeeded'
-                      ? '缩略图暂不可用，点击查看原图'
-                      : TASK_STATUS_LABELS[task.status] || task.status
-                  }}
-                </span>
-              </button>
-              <div class="pp-work__meta">
-                <span class="pp-work__type">{{ TASK_TYPE_LABELS[task.type] || '其他创作' }}</span>
-                <span class="pp-work__status" :data-status="task.status">
-                  {{ TASK_STATUS_LABELS[task.status] || '未知状态' }}
-                </span>
-              </div>
-              <p class="pp-work__prompt" :title="task.cleanPrompt" data-no-translate>
-                {{ task.cleanPrompt }}
-              </p>
-              <small class="pp-work__caption">
-                {{ formatTime(task.createdAt) }} · {{ formatPoints(task.costCents) }}
-              </small>
-              <div class="pp-work__actions">
-                <button
-                  v-if="task.status === 'succeeded' && taskOriginalUrl(task)"
-                  type="button"
-                  :disabled="submittingTaskId === task.id"
-                  @click="openSubmitDialog(task)"
-                >
-                  <i class="bi bi-send"></i> 投稿
-                </button>
-                <button
-                  type="button"
-                  class="is-danger"
-                  :disabled="deletingTaskId === task.id"
-                  @click="removeTask(task)"
-                >
-                  <i class="bi bi-trash3"></i> 删除
-                </button>
-              </div>
-            </article>
-          </div>
-          <div v-else-if="!tasksLoading" class="pp-empty">
-            <i class="bi" :class="hasTaskFilters ? 'bi-search' : 'bi-images'"></i>
-            <strong>{{ hasTaskFilters ? '没有符合条件的作品' : '还没有创作记录' }}</strong>
-            <p>
-              {{ hasTaskFilters ? '换个关键词或清除筛选后再试。' : '去工作台生成第一张图吧。' }}
-            </p>
-            <button
-              v-if="hasTaskFilters"
-              type="button"
-              class="pp-btn is-ghost"
-              @click="clearTaskFilters"
-            >
-              清除筛选
-            </button>
-            <RouterLink v-else class="pp-btn is-primary" to="/text-to-image">开始创作</RouterLink>
-          </div>
+                {{ item.label }}
+              </router-link>
+            </div>
+          </article>
 
-          <button
-            v-if="tasksCursor"
-            type="button"
-            class="pp-btn is-ghost pp-load-more"
-            :disabled="tasksLoading"
-            @click="loadTasks({ append: true })"
-          >
-            {{ tasksLoading ? '加载中…' : '加载更多' }}
-          </button>
+          <article class="pp-glass pp-bento-card is-hero" aria-hidden="true">
+            <div class="pp-bento-hero-visual">
+              <!-- orbit 锁定 100% 居中尺寸；GSAP 只动 figure，不改宽高 -->
+              <div class="pp-bento-hero-orbit">
+                <img
+                  class="pp-bento-hero-figure"
+                  :src="heroVisualUrl"
+                  alt=""
+                  loading="eager"
+                  decoding="async"
+                  fetchpriority="high"
+                />
+              </div>
+            </div>
+          </article>
+
+          <article class="pp-glass pp-bento-card is-wallet">
+            <header>
+              <strong>可用积分</strong>
+              <button type="button" class="pp-bento-link" @click="switchTab('wallet')">管理</button>
+            </header>
+            <div class="pp-bento-wallet-body">
+              <div class="pp-bento-points">
+                <strong>{{ pointsDisplay }}</strong>
+                <span>积分</span>
+              </div>
+              <div class="pp-bento-wallet-meta">
+                <span>总余额 {{ formatPoints(balanceCents, { withUnit: false }) }}</span>
+                <span v-if="frozenCents"
+                  >冻结 {{ formatPoints(frozenCents, { withUnit: false }) }}</span
+                >
+              </div>
+            </div>
+            <div class="pp-bento-foot is-wallet">
+              <router-link to="/pricing">去充值</router-link>
+              <button type="button" @click="switchTab('wallet')">兑换码</button>
+            </div>
+          </article>
+
+          <article class="pp-glass pp-bento-card is-bars">
+            <header>
+              <strong>任务分布</strong>
+              <small>{{ taskStats.total }} 次</small>
+            </header>
+            <div v-if="taskTypeBars.length" class="pp-bento-bars" aria-hidden="true">
+              <div v-for="bar in taskTypeBars" :key="bar.key" class="pp-bento-bar">
+                <i :style="{ '--bar-h': `${bar.height}%` }"></i>
+                <span>{{ bar.label }}</span>
+              </div>
+            </div>
+            <p v-else class="pp-bento-empty">生成几次后会显示类型分布</p>
+          </article>
+
+          <article class="pp-glass pp-bento-card is-pref">
+            <header>
+              <strong>创作偏好</strong>
+              <small>费用确认</small>
+            </header>
+            <label class="pp-bento-switch" :class="{ 'is-saving': preferenceSaving }">
+              <span>
+                <em>生成前确认</em>
+                <small>{{ requireCostConfirm ? '开启中' : '已关闭' }}</small>
+              </span>
+              <input
+                type="checkbox"
+                :checked="requireCostConfirm"
+                :disabled="preferenceSaving"
+                @change="setCostConfirmPreference($event.target.checked)"
+              />
+              <i aria-hidden="true"></i>
+            </label>
+            <div class="pp-bento-sliders" aria-hidden="true">
+              <div>
+                <span>成功率 {{ successRate }}%</span>
+                <b :style="{ '--value': `${successRate}%` }"></b>
+              </div>
+              <div>
+                <span>素材 {{ materials.length }} / 200</span>
+                <b :style="{ '--value': `${Math.min(100, (materials.length / 200) * 100)}%` }"></b>
+              </div>
+            </div>
+          </article>
+
+          <article class="pp-glass pp-bento-card is-activity">
+            <header>
+              <strong>创作与投稿</strong>
+              <button type="button" class="pp-bento-link" @click="switchTab('submissions')">
+                查看投稿
+              </button>
+            </header>
+            <div class="pp-bento-dual">
+              <div class="pp-bento-activity">
+                <div class="pp-bento-ring is-activity" :style="ringStyle" aria-hidden="true">
+                  <span>
+                    <strong>{{ taskStats.total || 0 }}</strong>
+                    <small>任务</small>
+                  </span>
+                </div>
+                <ul>
+                  <li><em></em><span>成功</span><b>{{ taskStats.succeeded }}</b></li>
+                  <li>
+                    <em class="is-run"></em><span>进行中</span><b>{{ taskStats.running }}</b>
+                  </li>
+                  <li><em class="is-fail"></em><span>失败</span><b>{{ taskStats.failed }}</b></li>
+                </ul>
+              </div>
+              <div class="pp-bento-submit-body">
+                <div class="pp-bento-donut" :style="approvalRingStyle" aria-hidden="true">
+                  <i>{{ submissionStats.total }}</i>
+                </div>
+                <div class="pp-bento-swatches">
+                  <span><i class="is-ok"></i>通过 {{ submissionStats.approved }}</span>
+                  <span><i class="is-wait"></i>审核 {{ submissionStats.pending }}</span>
+                  <span><i class="is-no"></i>拒绝 {{ submissionStats.rejected }}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="pp-glass pp-bento-card is-metrics">
+            <header>
+              <strong>快捷入口</strong>
+              <small>一键跳转</small>
+            </header>
+            <div class="pp-bento-metrics">
+              <button type="button" @click="switchTab('materials')">
+                <strong>{{ materials.length }}</strong>
+                <span>素材</span>
+              </button>
+              <button type="button" @click="switchTab('notifications')">
+                <strong>{{ unreadCount }}</strong>
+                <span>未读</span>
+              </button>
+              <button type="button" @click="switchTab('submissions')">
+                <strong>{{ submissionStats.approved }}</strong>
+                <span>过审</span>
+              </button>
+              <router-link to="/history">
+                <strong>{{ recentTasks.length }}</strong>
+                <span>最近</span>
+              </router-link>
+            </div>
+            <div class="pp-bento-foot">
+              <router-link to="/history">创作历史</router-link>
+              <button type="button" @click="switchTab('account')">账号设置</button>
+            </div>
+          </article>
         </section>
 
         <!-- 个人素材库 -->
         <section
           id="profile-panel-materials"
           v-show="activeTab === 'materials'"
-          class="pp-panel pp-materials-panel"
+          class="pp-panel pp-materials-panel pp-glass-panel"
           role="tabpanel"
         >
           <header class="pp-panel-head pp-materials-head">
@@ -1249,16 +1108,17 @@ onBeforeUnmount(() => {
         <section
           id="profile-panel-submissions"
           v-show="activeTab === 'submissions'"
-          class="pp-panel"
+          class="pp-panel pp-glass-panel"
           role="tabpanel"
         >
           <ul v-if="submissions.length" class="pp-submission-list">
             <li v-for="submission in submissions" :key="submission.id">
-              <img
+              <OptimizedImage
                 v-if="submission.coverUrl || submission.mediaUrls?.length"
                 :src="submission.coverUrl || submission.mediaUrls[0]"
                 alt=""
                 loading="lazy"
+                root-margin="480px 0px"
               />
               <div class="pp-submission__body">
                 <strong>{{ submission.title || 'AI 作品' }}</strong>
@@ -1280,9 +1140,12 @@ onBeforeUnmount(() => {
               </button>
             </li>
           </ul>
-          <p v-else-if="submissionsLoaded && !submissionsLoading" class="pp-empty">
-            还没有投稿，在「我的作品」里把成功任务投稿到画廊吧。
-          </p>
+          <div v-else-if="submissionsLoaded && !submissionsLoading" class="pp-empty">
+            <i class="bi bi-send"></i>
+            <strong>还没有投稿</strong>
+            <p>可在创作历史里把成功任务投稿到画廊。</p>
+            <RouterLink class="pp-btn is-ghost" to="/history">打开创作历史</RouterLink>
+          </div>
           <button
             v-if="submissionsCursor"
             type="button"
@@ -1298,7 +1161,7 @@ onBeforeUnmount(() => {
         <section
           id="profile-panel-wallet"
           v-show="activeTab === 'wallet'"
-          class="pp-panel"
+          class="pp-panel pp-glass-panel"
           role="tabpanel"
         >
           <header class="pp-panel-head">
@@ -1339,9 +1202,9 @@ onBeforeUnmount(() => {
                 <span class="pp-wallet-hero__label">可用余额</span>
                 <strong class="pp-wallet-hero__amount">{{ formatPoints(availableCents) }}</strong>
                 <div class="pp-wallet-hero__meta">
-                  <span>总余额 {{ formatPoints(wallet?.balanceCents || 0) }}</span>
-                  <span v-if="Number(wallet?.frozenCents || 0) > 0" class="is-frozen">
-                    冻结 {{ formatPoints(wallet?.frozenCents || 0) }}
+                  <span>总余额 {{ formatPoints(balanceCents) }}</span>
+                  <span v-if="frozenCents > 0" class="is-frozen">
+                    冻结 {{ formatPoints(frozenCents) }}
                   </span>
                 </div>
               </div>
@@ -1417,7 +1280,7 @@ onBeforeUnmount(() => {
         <section
           id="profile-panel-notifications"
           v-show="activeTab === 'notifications'"
-          class="pp-panel"
+          class="pp-panel pp-glass-panel"
           role="tabpanel"
         >
           <div class="pp-notify-toolbar">
@@ -1453,7 +1316,7 @@ onBeforeUnmount(() => {
         <section
           id="profile-panel-account"
           v-show="activeTab === 'account'"
-          class="pp-panel"
+          class="pp-panel pp-glass-panel"
           role="tabpanel"
         >
           <div class="pp-account-forms">
@@ -1463,18 +1326,28 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="pp-avatar-editor__preview"
+                  :disabled="profileForm.avatarUploading"
+                  aria-label="更换头像"
                   @click="avatarInput?.click()"
                 >
                   <img
                     v-if="authStore.user?.avatarUrl"
                     :src="authStore.user.avatarUrl"
-                    alt="当前头像"
+                    alt="头像"
+                    loading="eager"
+                    decoding="async"
                   />
-                  <i v-else class="bi bi-person-fill"></i>
+                  <img
+                    v-else
+                    src="/brand/avatar-placeholder.svg"
+                    alt="头像"
+                    loading="eager"
+                    decoding="async"
+                  />
                 </button>
                 <div>
-                  <strong>个人头像</strong>
-                  <p>自动裁切为 512 × 512，支持 PNG、JPEG、WebP。</p>
+                  <strong>{{ authStore.displayName }}</strong>
+                  <p data-no-translate>{{ authStore.user?.email }}</p>
                   <div class="pp-avatar-editor__actions">
                     <button
                       type="button"
@@ -1482,19 +1355,21 @@ onBeforeUnmount(() => {
                       :disabled="profileForm.avatarUploading"
                       @click="avatarInput?.click()"
                     >
-                      上传新头像
-                    </button>
-                    <button
-                      v-if="authStore.user?.avatarUrl"
-                      type="button"
-                      class="pp-btn is-text"
-                      :disabled="profileForm.avatarUploading"
-                      @click="removeAvatar"
-                    >
-                      移除
+                      <i
+                        class="bi"
+                        :class="profileForm.avatarUploading ? 'bi-arrow-repeat spin' : 'bi-camera'"
+                      ></i>
+                      {{ profileForm.avatarUploading ? '上传中…' : '更换头像' }}
                     </button>
                   </div>
                 </div>
+                <input
+                  ref="avatarInput"
+                  class="pp-avatar-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  @change="onAvatarSelected"
+                />
               </div>
               <div class="pp-profile-form-grid">
                 <label
@@ -1600,61 +1475,6 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <!-- 投稿到画廊 -->
-    <Teleport to="body">
-      <div
-        v-if="submitDialog.open"
-        class="pp-backdrop"
-        :class="{ 'is-light': !appearanceStore.isDark }"
-        @click.self="closeSubmitDialog"
-      >
-        <div class="pp-dialog" role="dialog" aria-modal="true" aria-label="投稿到画廊">
-          <header>
-            <strong>投稿到画廊</strong>
-            <button type="button" aria-label="关闭" @click="closeSubmitDialog">
-              <i class="bi bi-x-lg"></i>
-            </button>
-          </header>
-          <img
-            v-if="submitDialog.task?.outputUrls?.length"
-            class="pp-dialog__cover"
-            :src="submitDialog.task.outputUrls[0]"
-            alt=""
-          />
-          <label>
-            <span>作品标题</span>
-            <input
-              v-model="submitDialog.title"
-              maxlength="120"
-              placeholder="给作品起一个容易被发现的名字"
-              @keydown.enter.prevent="submitToGallery"
-            />
-          </label>
-          <label>
-            <span>作品分类（可选）</span>
-            <select v-model="submitDialog.categoryId">
-              <option value="">暂不分类</option>
-              <option v-for="category in galleryCategories" :key="category.id" :value="category.id">
-                {{ category.name }}
-              </option>
-            </select>
-          </label>
-          <footer>
-            <button type="button" class="pp-btn is-ghost" @click="closeSubmitDialog">取消</button>
-            <button
-              type="button"
-              class="pp-btn is-primary"
-              :disabled="Boolean(submittingTaskId) || !submitDialog.title.trim()"
-              @click="submitToGallery"
-            >
-              <i class="bi" :class="submittingTaskId ? 'bi-arrow-repeat spin' : 'bi-send'"></i>
-              {{ submittingTaskId ? '提交中…' : '提交审核' }}
-            </button>
-          </footer>
-        </div>
-      </div>
-    </Teleport>
-
     <!-- 素材原图按需预览 -->
     <Teleport to="body">
       <div
@@ -1676,52 +1496,15 @@ onBeforeUnmount(() => {
             </button>
           </header>
           <div class="pp-preview__media">
-            <img :src="previewMaterial.url" :alt="previewMaterial.title" />
+            <ProgressiveAuthenticatedImage
+              :src="previewMaterial.url"
+              :preview-src="previewMaterial.thumbnailUrl"
+              :alt="previewMaterial.title"
+              loading="eager"
+              fetchpriority="high"
+              load-original
+            />
           </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- 产物大图预览 -->
-    <Teleport to="body">
-      <div
-        v-if="previewTask"
-        class="pp-backdrop pp-viewport-backdrop pp-task-preview-backdrop"
-        :class="{ 'is-light': !appearanceStore.isDark }"
-        tabindex="-1"
-        @click.self="previewTask = null"
-        @keydown.esc="previewTask = null"
-      >
-        <div class="pp-preview" role="dialog" aria-modal="true" aria-label="作品预览">
-          <header>
-            <strong>{{ TASK_TYPE_LABELS[previewTask.type] || previewTask.type }}</strong>
-            <button type="button" aria-label="关闭" @click="previewTask = null">
-              <i class="bi bi-x-lg"></i>
-            </button>
-          </header>
-          <div class="pp-preview__media">
-            <a
-              v-for="(url, index) in previewTask.originalUrls?.length
-                ? previewTask.originalUrls
-                : previewTask.outputUrls"
-              :key="index"
-              :href="url"
-              target="_blank"
-              rel="noopener"
-            >
-              <ProgressiveAuthenticatedImage
-                class="pp-preview__image"
-                :src="url"
-                :alt="`产物 ${index + 1}`"
-                loading="eager"
-                :load-original="true"
-                :retry-count="2"
-              />
-            </a>
-          </div>
-          <p class="pp-preview__prompt" data-no-translate>
-            {{ cleanText(taskDisplayPrompt(previewTask), 800) }}
-          </p>
         </div>
       </div>
     </Teleport>
@@ -1790,1328 +1573,4 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-/* —— 个人中心 · 深色美术馆语言（与价格页同一套 token） —— */
-.pp-page {
-  --pp-ink: #eceaf2;
-  --pp-muted: rgba(214, 218, 235, 0.58);
-  --pp-faint: rgba(214, 218, 235, 0.34);
-  --pp-line: rgba(226, 201, 143, 0.14);
-  --pp-hairline: rgba(255, 255, 255, 0.08);
-  --pp-gold: #e2c98f;
-  --pp-cyan: #8fd8d2;
-  --pp-danger: #e08585;
-  --pp-serif: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
-  --pp-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
-  position: relative;
-  isolation: isolate;
-  min-height: 100vh;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: clamp(28px, 5vh, 52px) clamp(18px, 3.4vw, 40px) 72px;
-  color: var(--pp-ink);
-}
-
-.pp-atmosphere {
-  pointer-events: none;
-  position: absolute;
-  z-index: 0;
-  inset: 0 0 auto;
-  height: min(56vh, 540px);
-  background:
-    radial-gradient(ellipse 46% 52% at 20% 8%, rgba(226, 201, 143, 0.06), transparent 70%),
-    radial-gradient(ellipse 30% 38% at 82% 24%, rgba(143, 216, 210, 0.05), transparent 72%);
-  mask-image: linear-gradient(180deg, #000 42%, transparent);
-}
-
-.pp-page > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* —— 馆主档案页头 —— */
-.pp-masthead {
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 18px;
-  padding-bottom: clamp(22px, 4vh, 32px);
-  border-bottom: 1px solid var(--pp-line);
-}
-
-.pp-masthead__spine {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 0 2px;
-  color: var(--pp-faint);
-  font-family: var(--pp-mono);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-
-.pp-masthead__spine i {
-  flex: 1;
-  width: 1px;
-  margin: 12px 0;
-  background: linear-gradient(180deg, transparent, rgba(226, 201, 143, 0.5), transparent);
-}
-
-.pp-masthead__spine em {
-  font-style: normal;
-  color: var(--pp-gold);
-}
-
-.pp-eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 12px;
-  color: var(--pp-gold);
-  font-family: var(--pp-mono);
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-}
-
-.pp-eyebrow i {
-  width: 42px;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(226, 201, 143, 0.6), transparent);
-}
-
-.pp-name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-  margin: 0;
-}
-
-.pp-name__text {
-  font-family: var(--pp-serif);
-  font-size: clamp(1.8rem, 4.4vw, 2.8rem);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  line-height: 1.15;
-}
-
-.pp-avatar {
-  display: grid;
-  place-items: center;
-  width: clamp(52px, 6vw, 64px);
-  aspect-ratio: 1;
-  overflow: hidden;
-  border: 1px solid rgba(226, 201, 143, 0.4);
-  color: var(--pp-gold);
-  font-size: 1.5rem;
-  background: rgba(226, 201, 143, 0.06);
-}
-
-.pp-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.pp-member {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 12px;
-  border: 1px solid rgba(226, 201, 143, 0.4);
-  color: var(--pp-gold);
-  font-family: var(--pp-mono);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-
-.pp-idline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-top: 12px;
-  color: var(--pp-muted);
-  font-size: 0.84rem;
-}
-
-.pp-idline i {
-  width: 26px;
-  height: 1px;
-  background: var(--pp-hairline);
-}
-
-.pp-masthead__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 18px;
-}
-
-/* —— 数据卡 —— */
-.pp-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 14px;
-  margin-top: clamp(20px, 4vh, 30px);
-}
-
-.pp-stats article {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  padding: 18px 20px;
-  border: 1px solid var(--pp-hairline);
-  border-top: 2px solid rgba(226, 201, 143, 0.34);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.pp-stats__label {
-  color: var(--pp-faint);
-  font-family: var(--pp-mono);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.pp-stats__value {
-  font-family: var(--pp-serif);
-  font-size: clamp(1.5rem, 2.6vw, 1.9rem);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.pp-stats__value.is-gold {
-  color: var(--pp-gold);
-}
-
-.pp-stats__foot {
-  font-size: 0.76rem;
-  color: var(--pp-faint);
-  text-decoration: none;
-}
-
-a.pp-stats__foot,
-.pp-stats__foot.is-link {
-  border: none;
-  background: none;
-  padding: 0;
-  text-align: left;
-  color: var(--pp-gold);
-  cursor: pointer;
-}
-
-.pp-stats__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-}
-
-.pp-type-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.pp-type-chip {
-  padding: 4px 12px;
-  border: 1px solid var(--pp-hairline);
-  color: var(--pp-muted);
-  font-family: var(--pp-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-}
-
-/* —— Tab —— */
-.pp-tabs {
-  display: flex;
-  gap: 0;
-  margin-top: clamp(28px, 5vh, 40px);
-  border-bottom: 1px solid var(--pp-hairline);
-  overflow-x: auto;
-}
-
-.pp-tabs button {
-  display: grid;
-  gap: 2px;
-  justify-items: start;
-  padding: 10px 20px 12px 0;
-  margin-right: 26px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--pp-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  text-align: left;
-}
-
-.pp-tabs button small {
-  color: var(--pp-faint);
-  font-family: var(--pp-mono);
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-}
-
-.pp-tabs button span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--pp-serif);
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.pp-tabs button.is-active {
-  color: var(--pp-ink);
-  border-bottom-color: var(--pp-gold);
-}
-
-.pp-tabs button.is-active small {
-  color: var(--pp-gold);
-}
-
-.pp-tabs em {
-  font-style: normal;
-  min-width: 18px;
-  padding: 0 5px;
-  font-family: var(--pp-mono);
-  font-size: 0.66rem;
-  line-height: 18px;
-  text-align: center;
-  color: #16130a;
-  background: var(--pp-gold);
-}
-
-.pp-panel {
-  padding-top: 22px;
-}
-
-/* —— 我的作品 —— */
-.pp-works-filter {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.pp-works-filter button {
-  padding: 6px 14px;
-  border: 1px solid var(--pp-hairline);
-  background: transparent;
-  color: var(--pp-muted);
-  font-size: 0.8rem;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.pp-works-filter button.is-active {
-  border-color: rgba(226, 201, 143, 0.55);
-  color: var(--pp-gold);
-  background: rgba(226, 201, 143, 0.06);
-}
-
-.pp-works-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
-  gap: 16px;
-}
-
-.pp-work {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--pp-hairline);
-  background: rgba(255, 255, 255, 0.014);
-  transition:
-    border-color 0.25s ease,
-    transform 0.25s ease;
-}
-
-.pp-work:hover {
-  border-color: rgba(226, 201, 143, 0.36);
-  transform: translateY(-2px);
-}
-
-.pp-work__cover {
-  position: relative;
-  display: block;
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  border: none;
-  overflow: hidden;
-  padding: 0;
-  cursor: zoom-in;
-  background: rgba(0, 0, 0, 0.32);
-}
-
-.pp-work__cover:disabled {
-  cursor: default;
-}
-
-.pp-work__cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.4s ease;
-}
-
-.pp-work:hover .pp-work__cover img {
-  transform: scale(1.03);
-}
-
-.pp-work__mark {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  padding: 2px 8px;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(0, 0, 0, 0.5);
-  font-family: var(--pp-mono);
-  font-size: 0.6rem;
-  letter-spacing: 0.14em;
-}
-
-.pp-work__placeholder {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  height: 100%;
-  font-size: 0.8rem;
-  color: var(--pp-faint);
-}
-
-.pp-work__meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.pp-work__type {
-  color: var(--pp-gold);
-  font-family: var(--pp-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-}
-
-.pp-work__status {
-  font-family: var(--pp-mono);
-  font-size: 0.64rem;
-  letter-spacing: 0.06em;
-  padding: 2px 8px;
-  border: 1px solid var(--pp-hairline);
-  color: var(--pp-muted);
-}
-
-.pp-work__status[data-status='succeeded'] {
-  color: var(--pp-cyan);
-  border-color: rgba(143, 216, 210, 0.3);
-}
-
-.pp-work__status[data-status='failed'] {
-  color: var(--pp-danger);
-  border-color: rgba(224, 133, 133, 0.3);
-}
-
-.pp-work__status[data-status='running'],
-.pp-work__status[data-status='queued'] {
-  color: #f0b453;
-  border-color: rgba(240, 180, 83, 0.3);
-}
-
-.pp-work__prompt {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.55;
-  color: var(--pp-muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.pp-work__caption {
-  font-family: var(--pp-mono);
-  font-size: 0.66rem;
-  color: var(--pp-faint);
-}
-
-.pp-work__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.pp-work__actions button {
-  flex: 1;
-  padding: 7px 0;
-  border: 1px solid var(--pp-hairline);
-  background: transparent;
-  color: var(--pp-muted);
-  font-size: 0.78rem;
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.pp-work__actions button:hover:not(:disabled) {
-  border-color: rgba(226, 201, 143, 0.45);
-  color: var(--pp-gold);
-}
-
-.pp-work__actions .is-danger {
-  color: var(--pp-danger);
-}
-
-.pp-work__actions .is-danger:hover:not(:disabled) {
-  border-color: rgba(224, 133, 133, 0.5);
-  color: var(--pp-danger);
-}
-
-/* —— 投稿列表 —— */
-.pp-submission-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.pp-submission-list li {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--pp-hairline);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.pp-submission-list img {
-  width: 72px;
-  height: 54px;
-  object-fit: cover;
-}
-
-.pp-submission__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.pp-submission__body strong {
-  display: block;
-  font-size: 0.9rem;
-  letter-spacing: 0.03em;
-}
-
-.pp-submission__body small {
-  font-family: var(--pp-mono);
-  font-size: 0.68rem;
-  color: var(--pp-faint);
-}
-
-.pp-submission__reason {
-  margin: 4px 0 0;
-  font-size: 0.78rem;
-  color: var(--pp-danger);
-}
-
-.pp-submission__status {
-  flex-shrink: 0;
-  font-family: var(--pp-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.06em;
-  padding: 3px 10px;
-  border: 1px solid var(--pp-hairline);
-  color: var(--pp-muted);
-}
-
-.pp-submission__status[data-status='pending'] {
-  color: #f0b453;
-  border-color: rgba(240, 180, 83, 0.3);
-}
-
-.pp-submission__status[data-status='approved'] {
-  color: var(--pp-cyan);
-  border-color: rgba(143, 216, 210, 0.3);
-}
-
-.pp-submission__status[data-status='rejected'],
-.pp-submission__status[data-status='removed'] {
-  color: var(--pp-danger);
-  border-color: rgba(224, 133, 133, 0.3);
-}
-
-.pp-submission__remove {
-  border: none;
-  background: transparent;
-  color: var(--pp-faint);
-  cursor: pointer;
-  font-size: 0.95rem;
-}
-
-.pp-submission__remove:hover {
-  color: var(--pp-danger);
-}
-
-/* —— 通知 —— */
-.pp-notify-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 14px;
-}
-
-.pp-notify-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.pp-notify-list li {
-  display: flex;
-  gap: 12px;
-  padding: 13px 15px;
-  border: 1px solid var(--pp-hairline);
-  background: rgba(255, 255, 255, 0.01);
-}
-
-.pp-notify-list li.is-unread {
-  border-color: rgba(226, 201, 143, 0.3);
-  background: rgba(226, 201, 143, 0.03);
-}
-
-.pp-notify-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  margin-top: 7px;
-  transform: rotate(45deg);
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.pp-notify-list li.is-unread .pp-notify-dot {
-  background: var(--pp-gold);
-}
-
-.pp-notify-list strong {
-  font-size: 0.88rem;
-  letter-spacing: 0.03em;
-}
-
-.pp-notify-list p {
-  margin: 3px 0 0;
-  font-size: 0.8rem;
-  color: var(--pp-muted);
-  line-height: 1.6;
-}
-
-.pp-notify-list small {
-  font-family: var(--pp-mono);
-  font-size: 0.66rem;
-  color: var(--pp-faint);
-}
-
-/* —— 账号设置 —— */
-.pp-account-forms {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 18px;
-}
-
-.pp-account-form {
-  display: grid;
-  gap: 12px;
-  padding: 22px;
-  border: 1px solid var(--pp-hairline);
-  border-top: 2px solid rgba(226, 201, 143, 0.34);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.pp-account-form h3 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-family: var(--pp-serif);
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-}
-
-.pp-account-form h3 i {
-  color: var(--pp-gold);
-}
-
-.pp-account-form.is-preferences {
-  align-content: start;
-}
-
-.pp-preference-intro {
-  margin: -2px 0 2px;
-  color: var(--pp-faint);
-  font-size: 0.75rem;
-  line-height: 1.65;
-}
-
-.pp-account-form .pp-preference-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 68px;
-  padding: 14px 0;
-  border-top: 1px solid var(--pp-hairline);
-  border-bottom: 1px solid var(--pp-hairline);
-  cursor: pointer;
-}
-
-.pp-account-form .pp-preference-row.is-saving {
-  cursor: wait;
-}
-
-.pp-account-form .pp-preference-copy {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.pp-account-form .pp-preference-copy strong {
-  color: var(--pp-ink);
-  font-size: 0.84rem;
-  font-weight: 650;
-}
-
-.pp-account-form .pp-preference-copy small {
-  color: var(--pp-faint);
-  font-size: 0.7rem;
-  line-height: 1.5;
-}
-
-.pp-account-form .pp-preference-row input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.pp-preference-switch {
-  position: relative;
-  flex: 0 0 auto;
-  width: 42px;
-  height: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  transition:
-    background 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.pp-preference-switch i {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--pp-muted);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
-  transition:
-    transform 0.22s ease,
-    background 0.2s ease;
-}
-
-.pp-preference-row input:checked + .pp-preference-switch {
-  border-color: rgba(226, 201, 143, 0.62);
-  background: rgba(226, 201, 143, 0.2);
-}
-
-.pp-preference-row input:checked + .pp-preference-switch i {
-  transform: translateX(18px);
-  background: var(--pp-gold);
-}
-
-.pp-preference-row input:focus-visible + .pp-preference-switch {
-  outline: 2px solid rgba(226, 201, 143, 0.54);
-  outline-offset: 3px;
-}
-
-.pp-preference-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--pp-faint);
-  font-size: 0.68rem;
-}
-
-.pp-preference-state[data-enabled='true'] i {
-  color: var(--pp-gold);
-}
-
-.pp-account-form label {
-  display: grid;
-  gap: 6px;
-}
-
-.pp-account-form label span {
-  font-size: 0.76rem;
-  color: var(--pp-faint);
-  letter-spacing: 0.04em;
-}
-
-.pp-account-form input {
-  padding: 10px 12px;
-  border: 1px solid var(--pp-hairline);
-  border-radius: 0;
-  background: rgba(0, 0, 0, 0.28);
-  color: inherit;
-  outline: none;
-}
-
-.pp-account-form input:focus {
-  border-color: rgba(226, 201, 143, 0.5);
-}
-
-/* —— 按钮 —— */
-.pp-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 9px 18px;
-  border-radius: 0;
-  font-size: 0.84rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  transition:
-    background 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.pp-btn.is-primary {
-  border: 1px solid var(--pp-gold);
-  background: var(--pp-gold);
-  color: #16130a;
-}
-
-.pp-btn.is-primary:hover:not(:disabled) {
-  background: transparent;
-  color: var(--pp-gold);
-}
-
-.pp-btn.is-primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.pp-btn.is-ghost {
-  border: 1px solid var(--pp-hairline);
-  background: transparent;
-  color: var(--pp-muted);
-}
-
-.pp-btn.is-ghost:hover:not(:disabled) {
-  border-color: rgba(226, 201, 143, 0.45);
-  color: var(--pp-gold);
-}
-
-.pp-btn.is-text {
-  border: none;
-  background: transparent;
-  color: var(--pp-faint);
-  padding: 9px 4px;
-}
-
-.pp-btn.is-text:hover {
-  color: var(--pp-danger);
-}
-
-.pp-load-more {
-  margin-top: 18px;
-}
-
-.pp-empty {
-  padding: 30px 0;
-  color: var(--pp-faint);
-  font-size: 0.86rem;
-}
-
-.pp-panel-head {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.pp-panel-head h2 {
-  margin: 0;
-  font-family: var(--pp-serif);
-  font-size: 1.2rem;
-  letter-spacing: 0.06em;
-}
-
-.pp-panel-head p {
-  margin: 6px 0 0;
-  color: var(--pp-muted);
-  font-size: 0.82rem;
-}
-
-.pp-state {
-  display: grid;
-  justify-items: start;
-  gap: 10px;
-  padding: 28px 22px;
-  border: 1px dashed rgba(226, 201, 143, 0.24);
-  background: rgba(226, 201, 143, 0.02);
-}
-
-.pp-state strong {
-  font-family: var(--pp-serif);
-  font-size: 1.05rem;
-  letter-spacing: 0.04em;
-}
-
-.pp-state p {
-  margin: 0;
-  color: var(--pp-muted);
-  font-size: 0.84rem;
-  line-height: 1.6;
-}
-
-.pp-state.is-error {
-  border-color: rgba(224, 133, 133, 0.35);
-  background: rgba(224, 133, 133, 0.04);
-}
-
-.pp-skel-list {
-  display: grid;
-  gap: 10px;
-}
-
-.pp-skel-row,
-.pp-skel-card {
-  min-height: 64px;
-  border: 1px solid var(--pp-hairline);
-  background: linear-gradient(
-    110deg,
-    rgba(255, 255, 255, 0.02) 30%,
-    rgba(255, 255, 255, 0.05) 50%,
-    rgba(255, 255, 255, 0.02) 70%
-  );
-  background-size: 200% 100%;
-  animation: pp-skel 1.4s ease infinite;
-}
-
-.pp-skel-card {
-  min-height: 120px;
-}
-
-@keyframes pp-skel {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-.pp-order-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.pp-order-list li {
-  padding: 16px 18px;
-  border: 1px solid var(--pp-hairline);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.pp-order__main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-
-.pp-order__amount {
-  font-family: var(--pp-serif);
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: var(--pp-gold);
-  font-variant-numeric: tabular-nums;
-}
-
-.pp-order__status {
-  padding: 3px 10px;
-  border: 1px solid var(--pp-hairline);
-  font-family: var(--pp-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  color: var(--pp-muted);
-}
-
-.pp-order__status[data-status='pending'] {
-  color: #f0b453;
-  border-color: rgba(240, 180, 83, 0.35);
-}
-
-.pp-order__status[data-status='paid'] {
-  color: var(--pp-gold);
-  border-color: rgba(226, 201, 143, 0.35);
-}
-
-.pp-order__status[data-status='completed'] {
-  color: var(--pp-cyan);
-  border-color: rgba(143, 216, 210, 0.35);
-}
-
-.pp-order__status[data-status='failed'],
-.pp-order__status[data-status='expired'] {
-  color: var(--pp-danger);
-  border-color: rgba(224, 133, 133, 0.35);
-}
-
-.pp-order__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 8px;
-  color: var(--pp-faint);
-  font-size: 0.76rem;
-}
-
-.pp-order__hint {
-  margin: 10px 0 0;
-  color: #f0b453;
-  font-size: 0.78rem;
-}
-
-.pp-wallet-hero {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 18px;
-  padding: 22px 22px 20px;
-  border: 1px solid var(--pp-hairline);
-  border-left: 2px solid var(--pp-gold);
-  background: linear-gradient(150deg, rgba(226, 201, 143, 0.05), rgba(255, 255, 255, 0.012) 55%);
-}
-
-.pp-wallet-hero__label {
-  display: block;
-  color: var(--pp-faint);
-  font-family: var(--pp-mono);
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-}
-
-.pp-wallet-hero__amount {
-  display: block;
-  margin-top: 8px;
-  font-family: var(--pp-serif);
-  font-size: clamp(2rem, 4vw, 2.6rem);
-  font-weight: 700;
-  color: var(--pp-gold);
-  font-variant-numeric: tabular-nums;
-}
-
-.pp-wallet-hero__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 8px;
-  color: var(--pp-muted);
-  font-size: 0.8rem;
-}
-
-.pp-wallet-hero__meta .is-frozen {
-  color: #f0b453;
-}
-
-.pp-redeem {
-  margin-top: 18px;
-  padding: 20px 22px;
-  border: 1px solid var(--pp-hairline);
-  border-left: 2px solid rgba(143, 216, 210, 0.55);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.pp-redeem__head h3 {
-  margin: 0;
-  font-family: var(--pp-serif);
-  font-size: 1.02rem;
-  letter-spacing: 0.05em;
-}
-
-.pp-redeem__head p {
-  margin: 6px 0 0;
-  color: var(--pp-muted);
-  font-size: 0.8rem;
-}
-
-.pp-redeem__form {
-  display: flex;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.pp-redeem__input {
-  flex: 1;
-  min-width: 0;
-  padding: 11px 14px;
-  border: 1px solid var(--pp-hairline);
-  border-radius: 0;
-  background: rgba(0, 0, 0, 0.28);
-  color: inherit;
-  font-family: var(--pp-mono);
-  font-size: 0.86rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.pp-redeem__input::placeholder {
-  color: var(--pp-faint);
-  text-transform: none;
-}
-
-.pp-redeem__input:focus {
-  outline: none;
-  border-color: rgba(226, 201, 143, 0.5);
-}
-
-.pp-ledger {
-  margin-top: 22px;
-}
-
-.pp-ledger__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.pp-ledger__head h3 {
-  margin: 0;
-  font-family: var(--pp-serif);
-  font-size: 1.02rem;
-  letter-spacing: 0.05em;
-}
-
-.pp-ledger__error {
-  color: var(--pp-danger);
-  font-size: 0.76rem;
-}
-
-.pp-ledger-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--pp-hairline);
-}
-
-.pp-ledger-list li {
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.pp-ledger__main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  font-size: 0.88rem;
-}
-
-.pp-ledger-list small {
-  display: block;
-  margin-top: 4px;
-  color: var(--pp-faint);
-  font-size: 0.74rem;
-}
-
-.is-income {
-  color: var(--pp-cyan);
-  font-variant-numeric: tabular-nums;
-}
-
-.is-spend {
-  color: var(--pp-danger);
-  font-variant-numeric: tabular-nums;
-}
-
-/* —— 弹层 —— */
-.pp-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 3600;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(4, 5, 10, 0.82);
-  backdrop-filter: blur(10px);
-}
-
-.pp-preview {
-  width: min(880px, 96vw);
-  max-height: 92vh;
-  overflow-y: auto;
-  border: 1px solid rgba(226, 201, 143, 0.22);
-  background: #0f111a;
-  padding: 18px 20px;
-}
-
-.pp-preview header,
-.pp-dialog header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.pp-preview header strong,
-.pp-dialog header strong {
-  font-family: var(--pp-serif);
-  font-size: 1.02rem;
-  letter-spacing: 0.06em;
-}
-
-.pp-preview header button,
-.pp-dialog header button {
-  border: none;
-  background: transparent;
-  color: var(--pp-muted);
-  cursor: pointer;
-}
-
-.pp-preview__media {
-  display: grid;
-  gap: 12px;
-}
-
-.pp-preview__media img {
-  width: 100%;
-}
-
-.pp-preview__prompt {
-  margin: 14px 0 0;
-  font-size: 0.82rem;
-  color: var(--pp-muted);
-  line-height: 1.7;
-}
-
-.pp-dialog {
-  width: min(440px, 96vw);
-  max-height: 92vh;
-  overflow-y: auto;
-  display: grid;
-  gap: 14px;
-  border: 1px solid rgba(226, 201, 143, 0.22);
-  background: #0f111a;
-  padding: 18px 20px 20px;
-}
-
-.pp-dialog header {
-  margin-bottom: 0;
-}
-
-.pp-dialog__cover {
-  width: 100%;
-  max-height: 220px;
-  object-fit: cover;
-}
-
-.pp-dialog label {
-  display: grid;
-  gap: 6px;
-}
-
-.pp-dialog label span {
-  font-size: 0.76rem;
-  color: var(--pp-faint);
-}
-
-.pp-dialog input,
-.pp-dialog select {
-  padding: 10px 12px;
-  border: 1px solid var(--pp-hairline);
-  border-radius: 0;
-  background: rgba(0, 0, 0, 0.28);
-  color: inherit;
-  outline: none;
-}
-
-.pp-dialog input:focus,
-.pp-dialog select:focus {
-  border-color: rgba(226, 201, 143, 0.5);
-}
-
-.pp-dialog select option {
-  color: #eceaf2;
-  background: #0f111a;
-}
-
-.pp-dialog footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.spin {
-  animation: pp-spin 1s linear infinite;
-}
-
-@keyframes pp-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* —— 响应式 —— */
-@media (max-width: 640px) {
-  .pp-masthead {
-    grid-template-columns: 1fr;
-  }
-
-  .pp-masthead__spine {
-    display: none;
-  }
-
-  .pp-redeem__form {
-    flex-direction: column;
-  }
-
-  .pp-tabs button {
-    margin-right: 18px;
-    padding-right: 4px;
-  }
-}
-</style>
 <style scoped src="./ProfileView.modern.css"></style>

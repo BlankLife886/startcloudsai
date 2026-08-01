@@ -8,6 +8,7 @@ import { useWallpaperInputs } from '@/features/ai-wallpaper/composables/useWallp
 import { useWallpaperModels } from '@/features/ai-wallpaper/composables/useWallpaperModels'
 import { useWallpaperTasks } from '@/features/ai-wallpaper/composables/useWallpaperTasks'
 import { WALLPAPER_INSPECTOR_TABS } from '@/features/ai-wallpaper/composables/wallpaperStudioConstants'
+import { takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { getDisplayImageUrl } from '@/services/aiWallpaper'
 import { resolveAiFeatureRuntimeConfig } from '@/config/aiFeatureSettings'
 import notificationService from '@/services/notification'
@@ -263,16 +264,46 @@ export function useAiWallpaperStudioState() {
     if (unitPriceCents != null) generationUnitPriceCents.value = unitPriceCents
   }
 
-  async function requestCreateTask() {
+  const pendingCreateOptions = ref(null)
+
+  async function dispatchCreateOrRegenerate(createOptions = {}) {
+    const regenerateTaskId = String(createOptions.regenerateTaskId || '').trim()
+    if (regenerateTaskId) {
+      await tasks.regenerateTaskInPlace(regenerateTaskId, {
+        skipClientBudgetCheck: createOptions.skipClientBudgetCheck === true,
+      })
+      return
+    }
+    await tasks.createTask(createOptions)
+  }
+
+  async function requestCreateTask(options = {}) {
     if (!canCreateTask.value) return
     void runtimeConfigStore.refreshRuntimeConfigInBackground()
     const dispatchModel =
       outputType.value === 'video'
         ? models.videoDispatchModel.value
         : models.imageDispatchModel.value
-    const count = outputType.value === 'image' ? inputs.imageCount.value : 1
+    const regenerateTaskId = String(options.regenerateTaskId || '').trim()
+    const count =
+      outputType.value === 'image'
+        ? Math.min(
+            4,
+            Math.max(
+              1,
+              Number(regenerateTaskId ? 1 : (options.count ?? inputs.imageCount.value)) || 1,
+            ),
+          )
+        : 1
+    const createOptions = {
+      ...options,
+      regenerateTaskId,
+      count: outputType.value === 'image' ? count : 1,
+      skipClientBudgetCheck: true,
+    }
     if (authStore.user?.requireCostConfirm === false) {
-      tasks.createTask({ skipClientBudgetCheck: true })
+      pendingCreateOptions.value = null
+      await dispatchCreateOrRegenerate(createOptions)
       return
     }
 
@@ -288,20 +319,24 @@ export function useAiWallpaperStudioState() {
       notificationService.error(error?.message || '预算不足')
       return
     }
+    pendingCreateOptions.value = createOptions
     costConfirmPayload.value = costSnapshot
     costConfirmVisible.value = true
   }
 
   function confirmCostAndCreate() {
     if (!costConfirmVisible.value) return
+    const createOptions = pendingCreateOptions.value || { skipClientBudgetCheck: true }
+    pendingCreateOptions.value = null
     costConfirmVisible.value = false
     costConfirmPayload.value = null
-    tasks.createTask({ skipClientBudgetCheck: true })
+    void dispatchCreateOrRegenerate(createOptions)
   }
 
   function cancelCostConfirm() {
     costConfirmVisible.value = false
     costConfirmPayload.value = null
+    pendingCreateOptions.value = null
   }
 
   function readPersistableSourcePreview() {
@@ -421,12 +456,24 @@ export function useAiWallpaperStudioState() {
     inputs.useOutputAsUpload(url)
   }
 
+  function hasTaskBeforeLocalToday() {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const startMs = start.getTime()
+    return tasks.tasks.value.some((task) => {
+      const created = Date.parse(String(task?.createdAt || task?.created_at || ''))
+      return Number.isFinite(created) && created > 0 && created < startMs
+    })
+  }
+
   async function preloadFilmstripHistory() {
     let loadedPages = 0
+    // 舞台/底部栏只展示当天，预取碰到更早任务即可停止
     while (
       tasks.serverJobsHasMore.value &&
       tasks.tasks.value.length < FILMSTRIP_HISTORY_TASK_LIMIT &&
-      loadedPages < FILMSTRIP_HISTORY_MAX_PREFETCH_PAGES
+      loadedPages < FILMSTRIP_HISTORY_MAX_PREFETCH_PAGES &&
+      !hasTaskBeforeLocalToday()
     ) {
       const loaded = await tasks.loadMoreServerJobs()
       if (!loaded) break
@@ -436,22 +483,31 @@ export function useAiWallpaperStudioState() {
 
   async function initPage() {
     isPageLoading.value = true
-    // —— 本地数据同步恢复：草稿、任务、能力包在首帧前就位，
-    // 参数/提示词/作品不再先渲染默认值再被网络回包覆盖（状态闪现） ——
+    // —— 本地数据同步恢复：草稿、能力包在首帧前就位；
+    // 历史任务仅登录用户可恢复，游客不允许保留历史记录 ——
     models.loadCapabilityKit()
-    tasks.loadTasks()
     restoreStudioDraft()
+    const pendingPrompt = takePendingPrompt('t2i')
+    if (pendingPrompt?.prompt) {
+      inputs.prompt.value = pendingPrompt.prompt
+    }
     inputs.inputMode.value = 'text'
     outputType.value = 'image'
-    // 本地已有作品时立即结束骨架屏，服务端同步在后台静默进行
-    if (tasks.tasks.value.length) isPageLoading.value = false
     try {
       await Promise.all([
         runtimeConfigStore.loadRuntimeConfig({ force: true }).catch(() => {}),
         authStore.initAuth().catch(() => null),
       ])
-      // 历史同步不等设置/能力位:auth 一就绪立刻并行拉取,砍掉两跳串行 RTT
-      const earlyJobsSync = tasks.refreshServerAiJobs().catch(() => false)
+      const earlyJobsSync = authStore.isAuthenticated
+        ? tasks.refreshServerAiJobs().catch(() => false)
+        : Promise.resolve(false)
+      if (authStore.isAuthenticated) {
+        tasks.loadTasks()
+        // 本地已有作品时立即结束骨架屏，服务端同步在后台静默进行
+        if (tasks.tasks.value.length) isPageLoading.value = false
+      } else {
+        tasks.clearLocalTaskHistory()
+      }
       await settingsStore.initSettings()
       const config = resolveAiFeatureRuntimeConfig(settingsStore, 'wallpaper')
       if (!models.studioProvider.value) models.studioProvider.value = config.provider
@@ -460,6 +516,7 @@ export function useAiWallpaperStudioState() {
       privacyMode.value = settingsStore.getSetting('ai_enable_privacy_mode', privacyMode.value)
       await models.syncCapabilityKitFromServer()
       models.ensureRuntimeProviderAndModels()
+      if (!authStore.isAuthenticated) return
       // refreshServerAiJobs owns the in-memory merge. Reloading local storage here races with
       // output hydration and can replace freshly restored images with an older empty snapshot.
       await earlyJobsSync
@@ -505,6 +562,24 @@ export function useAiWallpaperStudioState() {
   watch(tasks.latestOutput, (next, prev) => {
     canvas.beginResultReveal(next, prev)
   })
+
+  // 登出后立刻清空历史；登录后再恢复本地缓存并同步云端
+  watch(
+    () => authStore.isAuthenticated,
+    (authenticated, wasAuthenticated) => {
+      if (!authenticated) {
+        tasks.clearLocalTaskHistory()
+        return
+      }
+      if (wasAuthenticated === false) {
+        tasks.loadTasks()
+        void tasks
+          .refreshServerAiJobs()
+          .then(() => preloadFilmstripHistory())
+          .catch(() => false)
+      }
+    },
+  )
 
   watch(
     [
@@ -692,13 +767,16 @@ export function useAiWallpaperStudioState() {
     handleSourcePreviewError: inputs.handleSourcePreviewError,
     composePrompt: inputs.composePrompt,
     removeTask: tasks.removeTask,
+    clearLocalTaskHistory: tasks.clearLocalTaskHistory,
     clearFailedAndPausedTasks: tasks.clearFailedAndPausedTasks,
+    isAuthenticated: computed(() => Boolean(authStore.isAuthenticated)),
     loadMoreServerJobs: tasks.loadMoreServerJobs,
     serverJobsHasMore: tasks.serverJobsHasMore,
     serverJobsLoadingMore: tasks.serverJobsLoadingMore,
     viewTask: tasks.viewTask,
     createUpscaleTask: tasks.createUpscaleTask,
     createMaskedEditTask: tasks.createMaskedEditTask,
+    regenerateTaskInPlace: tasks.regenerateTaskInPlace,
     reuseTask: tasks.reuseTask,
     updateTask: tasks.updateTask,
     cancelTask: tasks.cancelTask,

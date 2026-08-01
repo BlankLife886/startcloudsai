@@ -457,6 +457,12 @@ function newConversation() {
   draft.value = ''
   referenceImages.value = []
   quotedMessage.value = null
+  // 新对话回到 Agent，避免空态文案与底部模式不一致
+  creationType.value = 'agent'
+  mode.value = 'chat'
+  generationModel.value =
+    conversationModel.value || conversationModels.value[0]?.model || generationModel.value
+  closeComposerPanels()
   closeInlineMenu()
   nextTick(() => promptInput.value?.focus())
 }
@@ -2117,6 +2123,13 @@ onMounted(async () => {
     historySyncing.value = false
   }
   restoreWorkspaceState(workspaceState)
+  try {
+    const { takePendingPrompt } = await import('@/features/creator-hub/studioTools')
+    const pending = takePendingPrompt(['assistant', 't2i'])
+    if (pending?.prompt) draft.value = pending.prompt.slice(0, 12000)
+  } catch {
+    // ignore
+  }
   activeId.value = conversations.value.some((item) => item.id === workspaceState.activeId)
     ? workspaceState.activeId
     : listableConversations.value[0]?.id || ''
@@ -2248,6 +2261,8 @@ onBeforeUnmount(() => {
                   v-if="conversationPreviewImage(conversation)"
                   :src="conversationPreviewImage(conversation)"
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                 />
                 <i v-else class="bi bi-chat-square"></i>
                 <i
@@ -2337,7 +2352,11 @@ onBeforeUnmount(() => {
         </section>
         <section v-else-if="!messages.length" class="assistant-empty-state" aria-label="空白创作区">
           <span class="empty-mark"><i class="bi bi-stars"></i></span>
-          <p class="empty-mode-label"><i class="bi bi-magic"></i>Agent 模式 · 自动识别对话与生图</p>
+          <p class="empty-mode-label">
+            <i class="bi" :class="selectedCreation.icon"></i>
+            <template v-if="mode === 'image'">图片生成 · 描述画面并上传参考图</template>
+            <template v-else>Agent 模式 · 自动识别对话与生图</template>
+          </p>
           <h1>今天想创作什么？</h1>
           <div class="suggestion-grid">
             <button
@@ -2532,6 +2551,8 @@ onBeforeUnmount(() => {
                             :alt="
                               assistantImageAt(message, slot - 1).revisedPrompt || 'AI 生成图片'
                             "
+                            loading="lazy"
+                            decoding="async"
                             @load="onGeneratedImageLoad(message.id, slot - 1)"
                             @error="onGeneratedImageError(message.id, slot - 1)"
                           />
@@ -2573,6 +2594,8 @@ onBeforeUnmount(() => {
                         <img
                           :src="image.dataUrl"
                           :alt="image.name || '参考图'"
+                          loading="lazy"
+                          decoding="async"
                           @load="followConversationBottom"
                         />
                       </button>
@@ -2619,6 +2642,8 @@ onBeforeUnmount(() => {
                           <img
                             :src="image.dataUrl"
                             :alt="image.revisedPrompt || 'AI 生成图片'"
+                            loading="lazy"
+                            decoding="async"
                             @load="onGeneratedImageLoad(message.id, imageIndex)"
                             @error="onGeneratedImageError(message.id, imageIndex)"
                           />
@@ -3093,7 +3118,12 @@ onBeforeUnmount(() => {
                 @mouseenter="expandReferenceDock"
                 @focusin="expandReferenceDock"
               >
-                <img :src="image.dataUrl" :alt="image.name || `参考图 ${imageIndex + 1}`" />
+                <img
+                  :src="image.dataUrl"
+                  :alt="image.name || `参考图 ${imageIndex + 1}`"
+                  loading="eager"
+                  decoding="async"
+                />
                 <button
                   type="button"
                   title="移除参考图"
@@ -3337,7 +3367,7 @@ onBeforeUnmount(() => {
             :title="`添加 ${asset.label} 到参考图`"
             @click="addAssetReference(asset)"
           >
-            <img :src="asset.dataUrl" :alt="asset.label" />
+            <img :src="asset.dataUrl" :alt="asset.label" loading="lazy" decoding="async" />
             <span><i class="bi bi-plus-lg"></i></span>
           </button>
         </div>

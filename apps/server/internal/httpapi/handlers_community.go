@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -391,6 +392,11 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		fail(c, apperr.E("unsupported_file", "审核图片格式不支持", 400))
 		return
 	}
+	coverWidth, coverHeight, err := media.Dimensions(data)
+	if err != nil {
+		fail(c, apperr.E("unsupported_file", "审核图片尺寸过大或内容无法读取", 400))
+		return
+	}
 	maxSort, err := store.MaxPromptSort(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
@@ -416,13 +422,15 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		fail(c, err)
 		return
 	}
-	if err := store.UpdatePromptCoverKey(ctx, s.St.Pool, created.ID, coverKey); err != nil {
+	if err := store.UpdatePromptCover(ctx, s.St.Pool, created.ID, coverKey, coverWidth, coverHeight); err != nil {
 		_ = store.DeletePromptEntry(ctx, s.St.Pool, created.ID)
 		_ = s.Storage.DeleteKeys(ctx, []string{coverKey})
 		fail(c, err)
 		return
 	}
 	created.CoverKey = &coverKey
+	created.CoverWidth = &coverWidth
+	created.CoverHeight = &coverHeight
 	ok(c, promptDict(created, true))
 }
 
@@ -717,6 +725,11 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
 		return
 	}
+	coverWidth, coverHeight, err := media.Dimensions(data)
+	if err != nil {
+		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
+		return
+	}
 	newKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
 	oldKey := ""
 	if entry.CoverKey != nil {
@@ -727,7 +740,7 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if err := store.UpdatePromptCoverKey(ctx, s.St.Pool, entry.ID, newKey); err != nil {
+	if err := store.UpdatePromptCover(ctx, s.St.Pool, entry.ID, newKey, coverWidth, coverHeight); err != nil {
 		if newKey != oldKey {
 			_ = s.Storage.DeleteKeys(ctx, []string{newKey})
 		}
@@ -739,7 +752,11 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 			log.Printf("delete old prompt cover %s: %v", oldKey, derr)
 		}
 	}
-	ok(c, gin.H{"coverUrl": "/api/files/" + newKey})
+	ok(c, gin.H{
+		"coverUrl":    "/api/files/" + newKey,
+		"coverWidth":  coverWidth,
+		"coverHeight": coverHeight,
+	})
 }
 
 // ---------- 画廊分类（管理） ----------

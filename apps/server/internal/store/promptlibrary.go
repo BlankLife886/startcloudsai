@@ -9,13 +9,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const promptCols = `id, title, prompt, task_type, category, tags, cover_key, gallery_submission_id,
+const promptCols = `id, title, prompt, task_type, category, tags, cover_key, cover_width, cover_height, gallery_submission_id,
 	sort, like_count, favorite_count, use_count, active, created_at`
 
 func scanPromptEntry(row pgx.Row) (*PromptEntry, error) {
 	var p PromptEntry
 	err := row.Scan(&p.ID, &p.Title, &p.Prompt, &p.TaskType, &p.Category, &p.Tags,
-		&p.CoverKey, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
+		&p.CoverKey, &p.CoverWidth, &p.CoverHeight, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
 		&p.UseCount, &p.Active, &p.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -364,8 +364,51 @@ func MovePromptEntry(ctx context.Context, q Q, id uuid.UUID, position int, f Pro
 	return len(ids), true, nil
 }
 
-func UpdatePromptCoverKey(ctx context.Context, q Q, id uuid.UUID, coverKey string) error {
-	_, err := q.Exec(ctx, `UPDATE prompt_library SET cover_key = $2 WHERE id = $1`, id, coverKey)
+func UpdatePromptCover(ctx context.Context, q Q, id uuid.UUID, coverKey string, width, height int) error {
+	_, err := q.Exec(ctx, `UPDATE prompt_library
+		SET cover_key = $2, cover_width = NULLIF($3, 0), cover_height = NULLIF($4, 0),
+			cover_metadata_checked_at = now()
+		WHERE id = $1`, id, coverKey, width, height)
+	return err
+}
+
+type PromptCoverDimensionCandidate struct {
+	ID       uuid.UUID
+	CoverURL string
+}
+
+func ListPromptCoverDimensionCandidates(ctx context.Context, q Q, limit int) ([]PromptCoverDimensionCandidate, error) {
+	rows, err := q.Query(ctx, `SELECT id, cover_key
+		FROM prompt_library
+		WHERE cover_key ~* '^https?://'
+			AND (cover_width IS NULL OR cover_height IS NULL)
+			AND (cover_metadata_checked_at IS NULL OR cover_metadata_checked_at < now() - interval '24 hours')
+		ORDER BY cover_metadata_checked_at ASC NULLS FIRST, created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]PromptCoverDimensionCandidate, 0, limit)
+	for rows.Next() {
+		var item PromptCoverDimensionCandidate
+		if err := rows.Scan(&item.ID, &item.CoverURL); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func SetPromptCoverDimensions(ctx context.Context, q Q, id uuid.UUID, width, height int) error {
+	_, err := q.Exec(ctx, `UPDATE prompt_library
+		SET cover_width = $2, cover_height = $3, cover_metadata_checked_at = now()
+		WHERE id = $1`, id, width, height)
+	return err
+}
+
+func MarkPromptCoverDimensionsChecked(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE prompt_library SET cover_metadata_checked_at = now() WHERE id = $1`, id)
 	return err
 }
 

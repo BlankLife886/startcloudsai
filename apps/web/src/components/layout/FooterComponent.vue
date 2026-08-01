@@ -23,7 +23,9 @@ const footerGroups = [
   {
     title: '发现',
     links: [
-      { label: '共享画廊', to: '/share' },
+      { label: '创作台', to: '/studio' },
+      { label: '提示词', to: '/prompts' },
+      { label: '社区', to: '/share' },
       { label: '应用空间', to: '/app-space' },
       { label: '更新说明', to: '/updates' },
     ],

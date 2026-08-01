@@ -33,7 +33,9 @@ const isProfileConsoleRoute = computed(() => route.name === 'profile')
 const isShareGalleryRoute = computed(() => route.name === 'share')
 const isUpdatesGalleryRoute = computed(() => route.name === 'updates')
 const isDocumentScrollRoute = computed(() =>
-  ['home', 'pricing', 'updates'].includes(String(route.name || '')),
+  ['home', 'pricing', 'updates', 'studio', 'prompts', 'history', 'share'].includes(
+    String(route.name || ''),
+  ),
 )
 const isStudioConsoleRoute = computed(() =>
   [
@@ -242,9 +244,6 @@ function scrollToTop() {
   >
     <!-- 导航栏 -->
     <NavBar v-if="showAppChrome" />
-    <div v-if="showAppChrome" class="page-scroll-progress" aria-hidden="true">
-      <i></i>
-    </div>
 
     <!-- 主内容区域 -->
     <main

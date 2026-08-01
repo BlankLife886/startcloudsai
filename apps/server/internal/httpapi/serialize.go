@@ -262,6 +262,8 @@ func promptDict(p *store.PromptEntry, includeAdmin bool) gin.H {
 		"category":      p.Category,
 		"tags":          nonNilStrings(p.Tags),
 		"coverUrl":      promptCoverURL(p.CoverKey),
+		"coverWidth":    p.CoverWidth,
+		"coverHeight":   p.CoverHeight,
 		"likeCount":     p.LikeCount,
 		"favoriteCount": p.FavoriteCount,
 		"useCount":      p.UseCount,

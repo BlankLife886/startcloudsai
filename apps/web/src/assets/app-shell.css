@@ -2,7 +2,7 @@
 :root {
   --primary-color: #4caf50;
   --secondary-color: #2196f3;
-  --background-color: #060707;
+  --background-color: transparent;
   --text-color: #f0f0f0;
   --text-muted-color: rgba(240, 240, 240, 0.72);
   --card-bg-color: #1e1e1e;
@@ -32,6 +32,7 @@ html,
   width: 100%;
   max-width: 100%;
   overflow-x: clip;
+  background: transparent;
 }
 
 html {
@@ -127,9 +128,8 @@ html.color-scheme-dark .main-content.main--search-gallery {
   --app-page-content-top-gap: clamp(28px, 5vh, 52px);
 }
 
-/* 自带工作台顶栏的页面：顶栏表面延伸到 Header 后方，避免额外色块。 */
-.app-container > .main-content.main--studio-console > .collage-studio-page,
-.app-container > .main-content.main--studio-console > .assistant-workspace {
+/* 拼图台：顶栏表面延伸到 Header 后方 */
+.app-container > .main-content.main--studio-console > .collage-studio-page {
   padding-top: 0;
 }
 
@@ -141,16 +141,25 @@ html.color-scheme-dark .main-content.main--search-gallery {
   -webkit-backdrop-filter: none;
 }
 
-.main-content.main--studio-console > .assistant-workspace > .assistant-sidebar {
-  padding-top: calc(var(--app-header-offset, 82px) + 14px);
+/*
+ * AI 助手：整页统一底色垫到顶栏后方，
+ * 避免侧栏/主区分列在顶栏下形成竖缝。
+ */
+.app-container > .main-content.main--studio-console > .assistant-workspace {
+  padding-top: var(--app-header-offset, 82px);
 }
 
-.main-content.main--studio-console > .assistant-workspace > .assistant-main {
-  grid-template-rows: calc(72px + var(--app-header-offset, 82px)) minmax(0, 1fr);
+/* 助手页顶栏：亮色固定白底 */
+body:has(.assistant-workspace) .site-header:not(.is-dark),
+body:has(.assistant-workspace) .site-header:not(.is-dark).is-scrolled {
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
-.main-content.main--studio-console > .assistant-workspace > .assistant-main > .assistant-topbar {
-  padding-top: calc(var(--app-header-offset, 82px) + 10px);
+html.settings-no-blur body:has(.assistant-workspace) .site-header:not(.is-dark),
+html.settings-no-blur body:has(.assistant-workspace) .site-header:not(.is-dark).is-scrolled {
+  background: #ffffff;
 }
 
 .main-content.main--browse-dock {
@@ -232,11 +241,14 @@ html.color-scheme-dark .main-content.main--history-gallery {
   padding-bottom: 0;
   overflow-x: clip;
   overflow-y: visible;
-  background: #0c0e16;
+  background: #09090c;
 }
 
-/* 个人中心是深色美术馆页面：底色固定深色。
-   （此前浅色模式下底色为 #f7f7ff，深色半透明卡片叠上去整页发灰） */
+html:not(.color-scheme-dark) .main-content.main--pricing-console {
+  background: #f3f4f8;
+}
+
+/* 个人中心：底色交给页面氛围层（风景/玻璃），壳层保持透明 */
 .main-content.main--profile-console {
   padding-top: 0;
   padding-bottom: 0;
@@ -245,7 +257,34 @@ html.color-scheme-dark .main-content.main--history-gallery {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: #0c0e16;
+  background: transparent;
+}
+
+html.color-scheme-dark .main-content.main--profile-console {
+  background: #07090f;
+}
+
+html:not(.color-scheme-dark) .main-content.main--profile-console {
+  background: #eef4ff;
+}
+
+/* 个人中心：顶栏彻底关闭磨砂，亮色也不糊背景图 */
+body:has(.main--profile-console) .site-header,
+body:has(.main--profile-console) .site-header.is-scrolled,
+body:has(.main--profile-console) .site-header.is-dark,
+body:has(.main--profile-console) .site-header.is-dark.is-scrolled,
+body:has(.main--profile-console) .site-header .header-shell,
+body:has(.main--profile-console) .site-header.is-scrolled .header-shell {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body:has(.main--profile-console) .site-header.is-scrolled {
+  background: rgba(255, 255, 255, 0.92) !important;
+}
+
+body:has(.main--profile-console) .site-header.is-dark.is-scrolled {
+  background: rgba(12, 14, 22, 0.92) !important;
 }
 
 .main-content.main--profile-console > * {
@@ -286,11 +325,12 @@ html.color-scheme-dark .main-content.main--settings-console {
   max-height: 100svh;
   display: flex;
   flex-direction: column;
-  background: #f7f7ff;
+  /* 底色由各工作台页面自己负责，避免顶栏后方再叠一层壳色 */
+  background: transparent;
 }
 
 html.color-scheme-dark .main-content.main--studio-console {
-  background: #0d0f18;
+  background: transparent;
 }
 
 .main-content.main--studio-console > * {
@@ -302,41 +342,6 @@ html.color-scheme-dark .main-content.main--studio-console {
 .main-content.main--no-header {
   padding-top: 0;
   padding-bottom: 0;
-}
-
-/* 页面滚动进度：贴合顶栏下沿，避免遮挡页面内容 */
-.page-scroll-progress {
-  position: fixed;
-  top: calc(var(--app-header-offset, 82px) - 2px);
-  right: 0;
-  left: 0;
-  z-index: 3010;
-  height: 2px;
-  overflow: hidden;
-  pointer-events: none;
-  opacity: 0;
-  background: rgba(106, 79, 224, 0.08);
-  transition: opacity 180ms ease;
-}
-
-html.has-page-scroll .page-scroll-progress {
-  opacity: 1;
-}
-
-.page-scroll-progress > i {
-  display: block;
-  width: 100%;
-  height: 100%;
-  transform: scaleX(var(--page-scroll-ratio, 0));
-  transform-origin: 0 50%;
-  background: linear-gradient(90deg, #6a4fe0, #9a83ff 68%, #63d9cf);
-  box-shadow: 0 0 12px rgba(106, 79, 224, 0.42);
-  transition: transform 80ms linear;
-  will-change: transform;
-}
-
-html.color-scheme-dark .page-scroll-progress {
-  background: rgba(180, 164, 255, 0.08);
 }
 
 html.is-page-scrolled .site-header {
@@ -431,7 +436,7 @@ html.settings-no-blur.is-page-scrolled .site-header .header-shell {
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: 50%;
   background: conic-gradient(
     #795eea calc(var(--page-scroll-ratio, 0) * 1turn),
     rgba(21, 26, 45, 0.18) 0
@@ -452,7 +457,7 @@ html.settings-no-blur.is-page-scrolled .site-header .header-shell {
 .back-to-top-btn::before {
   position: absolute;
   inset: 2px;
-  border-radius: 12px;
+  border-radius: 50%;
   background: #151a2d;
   content: '';
 }
@@ -971,7 +976,6 @@ html.is-page-scrolling ::-webkit-scrollbar-thumb {
     scroll-behavior: auto !important;
   }
 
-  .page-scroll-progress > i,
   .backtop-enter-active,
   .backtop-leave-active,
   #back-to-top,

@@ -4,7 +4,7 @@
  * 任务类型：t2i | coloring | ui_design | model_sheet | game_art | puzzle
  * 状态机：queued → running → succeeded | failed | canceled
  */
-import { apiDelete, apiGet, apiPost, apiRequest, buildApiPath } from './apiClient'
+import { apiDelete, apiGet, apiPost, apiRequest, buildApiPath } from './apiClient.js'
 
 export const TASK_TYPES = ['t2i', 'coloring', 'ui_design', 'model_sheet', 'game_art', 'puzzle']
 
@@ -20,13 +20,74 @@ export const TASK_TYPE_LABELS = {
 export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
 export const TASK_UPDATE_EVENT = 'starclouds:task-update'
 
+const TASK_BATCH_LIMIT = 100
+const TASK_SUBMISSION_CONCURRENCY = 6
+const taskWaitEntries = new Map()
+const submissionQueue = []
+let activeSubmissions = 0
+let taskPollTimer = 0
+let taskPollScheduledAt = 0
+let taskPollRunning = false
+let taskUpdateBridgeReady = false
+
 export function isTerminalTaskStatus(status = '') {
-  return TERMINAL_TASK_STATUSES.has(String(status || '').trim().toLowerCase())
+  return TERMINAL_TASK_STATUSES.has(
+    String(status || '')
+      .trim()
+      .toLowerCase(),
+  )
 }
 
 function dispatchTaskUpdate(task, payload) {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent(TASK_UPDATE_EVENT, { detail: { task, payload } }))
+}
+
+function runSubmissionQueue() {
+  while (activeSubmissions < TASK_SUBMISSION_CONCURRENCY && submissionQueue.length) {
+    const queued = submissionQueue.shift()
+    activeSubmissions += 1
+    Promise.resolve()
+      .then(queued.operation)
+      .then(queued.resolve, queued.reject)
+      .finally(() => {
+        activeSubmissions -= 1
+        runSubmissionQueue()
+      })
+  }
+}
+
+function withSubmissionSlot(operation) {
+  return new Promise((resolve, reject) => {
+    submissionQueue.push({ operation, resolve, reject })
+    runSubmissionQueue()
+  })
+}
+
+async function postTaskWithRecovery(body, idempotencyKey) {
+  const attempts = idempotencyKey ? 2 : 1
+  let lastError = null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = globalThis.setTimeout(() => controller.abort(), 30000)
+    try {
+      return await apiPost('/tasks', body, {
+        signal: controller.signal,
+        fallbackMessage: '任务创建失败',
+      })
+    } catch (error) {
+      lastError = error
+      const retryable =
+        error?.name === 'AbortError' ||
+        error?.code === 'network_error' ||
+        Number(error?.status) >= 500
+      if (!retryable || attempt + 1 >= attempts) throw error
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 300))
+    } finally {
+      globalThis.clearTimeout(timeout)
+    }
+  }
+  throw lastError || new Error('任务创建失败')
 }
 
 /**
@@ -41,18 +102,15 @@ export async function createTask({
   count = 1,
   idempotencyKey = '',
 } = {}) {
-  const data = await apiPost(
-    '/tasks',
-    {
-      type,
-      prompt: String(prompt || ''),
-      params: params && typeof params === 'object' ? params : {},
-      inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
-      count: Math.max(1, Math.min(Number(count) || 1, 4)),
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-    },
-    { fallbackMessage: '任务创建失败' },
-  )
+  const body = {
+    type,
+    prompt: String(prompt || ''),
+    params: params && typeof params === 'object' ? params : {},
+    inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
+    count: Math.max(1, Math.min(Number(count) || 1, 4)),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  }
+  const data = await withSubmissionSlot(() => postTaskWithRecovery(body, idempotencyKey))
   return data?.task || data
 }
 
@@ -63,6 +121,20 @@ export async function getTask(id, { signal } = {}) {
     fallbackMessage: '任务读取失败',
   })
   return data?.task || data
+}
+
+/** 批量读取任务快照，供高并发等待协调器使用。 */
+export async function getTasksBatch(ids, { signal } = {}) {
+  const unique = Array.from(
+    new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || '').trim()).filter(Boolean)),
+  ).slice(0, TASK_BATCH_LIMIT)
+  if (!unique.length) return []
+  const data = await apiGet('/tasks/batch', {
+    query: { ids: unique.join(',') },
+    signal,
+    fallbackMessage: '任务批量读取失败',
+  })
+  return Array.isArray(data?.items) ? data.items : []
 }
 
 /**
@@ -77,7 +149,7 @@ export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
       const payload = JSON.parse(event.data || '{}')
       const task = payload?.task || payload
       if (typeof onUpdate === 'function') onUpdate(task, payload)
-	  dispatchTaskUpdate(task, payload)
+      dispatchTaskUpdate(task, payload)
       if (isTerminalTaskStatus(task?.status)) source.close()
     } catch {
       // Ignore malformed transient events; the polling path remains authoritative.
@@ -98,7 +170,7 @@ export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
     try {
       const payload = JSON.parse(event.data || '{}')
       const task = payload?.task || payload
-	  dispatchTaskUpdate(task, payload)
+      dispatchTaskUpdate(task, payload)
       if (typeof onUpdate === 'function') onUpdate(task, payload)
     } catch {
       // Keep the stream alive; a later persisted snapshot can still recover it.
@@ -108,6 +180,109 @@ export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
     if (typeof onError === 'function') onError(event)
   }
   return () => source.close()
+}
+
+function taskSnapshotSignature(task) {
+  return JSON.stringify([
+    task?.status,
+    task?.errorCode,
+    task?.outputKeys,
+    task?.thumbnailKeys,
+    task?.finishedAt,
+  ])
+}
+
+function applyWaitingTaskSnapshot(task, payload = null, broadcast = false) {
+  const id = String(task?.id || '').trim()
+  const entry = taskWaitEntries.get(id)
+  if (!entry) return
+  const terminal = isTerminalTaskStatus(task?.status)
+  for (const waiter of [...entry.waiters]) {
+    const signature = taskSnapshotSignature(task)
+    if (signature !== waiter.lastSignature) {
+      waiter.lastSignature = signature
+      if (typeof waiter.onUpdate === 'function') waiter.onUpdate(task)
+    }
+    if (terminal) waiter.finish(waiter.resolve, task)
+  }
+  if (broadcast) dispatchTaskUpdate(task, payload || { source: 'batch-poll' })
+}
+
+function ensureTaskUpdateBridge() {
+  if (taskUpdateBridgeReady || typeof window === 'undefined') return
+  taskUpdateBridgeReady = true
+  window.addEventListener(TASK_UPDATE_EVENT, (event) => {
+    applyWaitingTaskSnapshot(event?.detail?.task, event?.detail?.payload, false)
+  })
+}
+
+function taskPollDelay(entry) {
+  const waitingCount = taskWaitEntries.size
+  const loadDelay =
+    waitingCount > 50 ? 6000 : waitingCount > 20 ? 5000 : waitingCount > 4 ? 3500 : 0
+  const visibleDelay = Math.max(entry.pollEvery, loadDelay)
+  const hiddenDelay = typeof document !== 'undefined' && document.hidden ? 12000 : visibleDelay
+  return Math.min(30000, hiddenDelay * 2 ** Math.min(entry.failureCount, 3))
+}
+
+function scheduleTaskPoll(delay = null) {
+  if (taskPollRunning || !taskWaitEntries.size) return
+  const now = Date.now()
+  const nextAt = Math.min(...[...taskWaitEntries.values()].map((entry) => entry.nextPollAt))
+  const wait = delay == null ? Math.max(0, nextAt - now) : Math.max(0, delay)
+  const scheduledAt = now + wait
+  if (taskPollTimer && taskPollScheduledAt <= scheduledAt) return
+  if (taskPollTimer) globalThis.clearTimeout(taskPollTimer)
+  taskPollScheduledAt = scheduledAt
+  taskPollTimer = globalThis.setTimeout(() => {
+    taskPollTimer = 0
+    taskPollScheduledAt = 0
+    void pollWaitingTasks()
+  }, wait)
+}
+
+async function pollWaitingTasks() {
+  if (taskPollRunning || !taskWaitEntries.size) return
+  const now = Date.now()
+  const dueIDs = [...taskWaitEntries.entries()]
+    .filter(([, entry]) => entry.nextPollAt <= now)
+    .slice(0, TASK_BATCH_LIMIT)
+    .map(([id]) => id)
+  if (!dueIDs.length) {
+    scheduleTaskPoll()
+    return
+  }
+  taskPollRunning = true
+  try {
+    const tasks = await getTasksBatch(dueIDs)
+    const received = new Set()
+    for (const task of tasks) {
+      const id = String(task?.id || '')
+      received.add(id)
+      const entry = taskWaitEntries.get(id)
+      if (entry) entry.failureCount = 0
+      applyWaitingTaskSnapshot(task, { source: 'batch-poll' }, true)
+    }
+    for (const id of dueIDs) {
+      const entry = taskWaitEntries.get(id)
+      if (entry && !received.has(id)) entry.failureCount += 1
+    }
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      for (const id of dueIDs) {
+        const entry = taskWaitEntries.get(id)
+        if (entry) entry.failureCount += 1
+      }
+    }
+  } finally {
+    const nextNow = Date.now()
+    for (const id of dueIDs) {
+      const entry = taskWaitEntries.get(id)
+      if (entry) entry.nextPollAt = nextNow + taskPollDelay(entry)
+    }
+    taskPollRunning = false
+    scheduleTaskPoll(taskWaitEntries.size > TASK_BATCH_LIMIT ? 0 : null)
+  }
 }
 
 /**
@@ -128,9 +303,13 @@ export async function listTasks({ type = '', status = '', limit = 20, cursor = '
 
 /** 取消任务（仅 queued 状态可取消，解冻费用）。 */
 export async function cancelTask(id) {
-  const data = await apiPost(`/tasks/${encodeURIComponent(id)}/cancel`, {}, {
-    fallbackMessage: '任务取消失败',
-  })
+  const data = await apiPost(
+    `/tasks/${encodeURIComponent(id)}/cancel`,
+    {},
+    {
+      fallbackMessage: '任务取消失败',
+    },
+  )
   return data?.task || data
 }
 
@@ -171,16 +350,27 @@ export async function waitForTask(
 ) {
   const pollEvery = Math.max(500, Number(intervalMs) || 2000)
   const timeoutAfter = Math.max(pollEvery, Number(maxWaitMs) || 15 * 60 * 1000)
+  ensureTaskUpdateBridge()
   return new Promise((resolve, reject) => {
     let settled = false
-    let polling = false
-    let lastSignature = ''
-
+    const taskID = String(id || '').trim()
+    if (!taskID) {
+      reject(new Error('任务 ID 无效'))
+      return
+    }
+    let entry = taskWaitEntries.get(taskID)
+    if (!entry) {
+      entry = { waiters: new Set(), pollEvery, failureCount: 0, nextPollAt: 0 }
+      taskWaitEntries.set(taskID, entry)
+    } else {
+      entry.pollEvery = Math.min(entry.pollEvery, pollEvery)
+      entry.nextPollAt = 0
+    }
     const cleanup = () => {
-      unsubscribe()
-      window.clearInterval(pollTimer)
-      window.clearTimeout(timeoutTimer)
+      entry.waiters.delete(waiter)
+      globalThis.clearTimeout(timeoutTimer)
       signal?.removeEventListener('abort', abort)
+      if (!entry.waiters.size) taskWaitEntries.delete(taskID)
     }
     const finish = (callback, value) => {
       if (settled) return
@@ -188,36 +378,10 @@ export async function waitForTask(
       cleanup()
       callback(value)
     }
-    const apply = (task) => {
-      if (!task || settled) return
-      const signature = JSON.stringify([
-        task.status,
-        task.errorCode,
-        task.outputKeys,
-        task.thumbnailKeys,
-      ])
-      if (signature !== lastSignature) {
-        lastSignature = signature
-        if (typeof onUpdate === 'function') onUpdate(task)
-      }
-      if (isTerminalTaskStatus(task.status)) finish(resolve, task)
-    }
-    const poll = async () => {
-      if (polling || settled) return
-      polling = true
-      try {
-        apply(await getTask(id, { signal }))
-      } catch (error) {
-        if (error?.name === 'AbortError') finish(reject, error)
-        // A transient poll failure does not stop an active SSE connection.
-      } finally {
-        polling = false
-      }
-    }
     const abort = () => finish(reject, createAbortError())
-    const unsubscribe = subscribeTask(id, { onUpdate: apply })
-    const pollTimer = window.setInterval(poll, pollEvery)
-    const timeoutTimer = window.setTimeout(() => {
+    const waiter = { resolve, reject, finish, onUpdate, lastSignature: '' }
+    entry.waiters.add(waiter)
+    const timeoutTimer = globalThis.setTimeout(() => {
       finish(reject, new Error('任务等待超时，请稍后在历史记录中查看结果'))
     }, timeoutAfter)
     signal?.addEventListener('abort', abort, { once: true })
@@ -225,7 +389,7 @@ export async function waitForTask(
       abort()
       return
     }
-    void poll()
+    scheduleTaskPoll(0)
   })
 }
 

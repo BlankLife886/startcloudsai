@@ -19,6 +19,8 @@ function normalizePromptItem(raw = {}) {
     category: String(raw?.category || '').trim(),
     tags: Array.isArray(raw?.tags) ? raw.tags.map((tag) => String(tag)).filter(Boolean) : [],
     coverUrl: String(raw?.coverUrl || ''),
+    coverWidth: Math.max(0, Number(raw?.coverWidth) || 0),
+    coverHeight: Math.max(0, Number(raw?.coverHeight) || 0),
     likeCount: Math.max(0, Number(raw?.likeCount) || 0),
     favoriteCount: Math.max(0, Number(raw?.favoriteCount) || 0),
     useCount: Math.max(0, Number(raw?.useCount) || 0),

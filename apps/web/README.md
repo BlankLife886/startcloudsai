@@ -20,6 +20,7 @@ npm run build
 npm run test:image-sizes
 npm run test:transparent-upscale
 npm run test:coloring-upload-compression
+npm run test:task-concurrency
 ```
 
 `playwright.config.js` 仍引用旧 monorepo 的 `@walleven/*` pnpm filter，当前 `tests/e2e` 也只有 helper；在重建 web/API/admin 的测试启动器和实际 spec 前，`npm run test:e2e` 不是可用的验证命令。`npm run build` 输出到 `VITE_BUILD_OUT_DIR`，未设置时为 `dist/`。
@@ -69,6 +70,12 @@ src/
 - `meApi.js`：个人中心、钱包、通知、投稿和兑换码。
 - `shareGallery.js`、`promptLibrary.js`：共享画廊与公开提示词库。
 - `runtimeConfig.js`：从后端运营配置构造前端运行时开关。
+
+## 提示词瀑布流
+
+`/prompts` 使用确定性最短列布局和视口虚拟化。服务端返回 `coverWidth`、`coverHeight` 时，页面在图片下载前预留准确高度；历史远程封面缺少尺寸时，客户端首次加载后按动画帧批量测量，Worker 同时在后台渐进回填数据库。图片按自然比例使用 `object-fit: contain` 完整显示，长列表只挂载视口附近的卡片。
+
+完整的数据模型、回填策略、全站组件分层、布局公式、性能参数、部署和验证方法见 [全站图片加载与瀑布流滚动性能方案](../../docs/PROMPT_MASONRY_PERFORMANCE.md)。
 
 ## Docker
 

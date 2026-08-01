@@ -9,6 +9,7 @@ import (
 func TestRouterRegistersTaskStream(t *testing.T) {
 	server := &Server{Cfg: &config.Config{AppEnv: "test", TrustedProxies: "127.0.0.1"}}
 	wanted := map[string]bool{
+		"/api/tasks/batch":      false,
 		"/api/tasks/:id/stream": false,
 		"/api/me/tasks/stream":  false,
 	}

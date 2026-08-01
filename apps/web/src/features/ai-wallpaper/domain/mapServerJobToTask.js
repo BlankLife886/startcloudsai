@@ -221,6 +221,8 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
     localUpscaleMessage: existingTask?.localUpscaleMessage || '',
     localUpscaleProfile: existingTask?.localUpscaleProfile || '',
     localUpscaleFormat: existingTask?.localUpscaleFormat || '',
+    regenerateStatus: existingTask?.regenerateStatus || '',
+    regenerateSnapshot: existingTask?.regenerateSnapshot || null,
     originalOutputUrl: pickPersistableUrl(
       job?.originalResultMediaUrl,
       existingTask?.originalOutputUrl,

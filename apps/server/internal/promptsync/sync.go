@@ -10,10 +10,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -21,6 +23,7 @@ import (
 const (
 	maxSourceBytes = 16 * 1024 * 1024
 	maxSourceItems = 2000
+	maxCoverBytes  = 8 * 1024 * 1024
 
 	fetchTimeout = 30 * time.Second
 	lockTTL      = 20 * time.Minute
@@ -37,6 +40,66 @@ type Result struct {
 	Failed     int   `json:"failed"`
 	DurationMs int64 `json:"durationMs"`
 	ItemCount  int   `json:"itemCount"`
+}
+
+func (e *Engine) BackfillCoverDimensions(ctx context.Context, limit int) error {
+	items, err := store.ListPromptCoverDimensionCandidates(ctx, e.St.Pool, limit)
+	if err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for _, item := range items {
+		item := item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			width, height, resolveErr := e.fetchCoverDimensions(ctx, item.CoverURL)
+			if resolveErr != nil {
+				log.Printf("prompt cover dimensions %s failed: %v", item.ID, resolveErr)
+				_ = store.MarkPromptCoverDimensionsChecked(context.Background(), e.St.Pool, item.ID)
+				return
+			}
+			if resolveErr = store.SetPromptCoverDimensions(ctx, e.St.Pool, item.ID, width, height); resolveErr != nil {
+				log.Printf("save prompt cover dimensions %s failed: %v", item.ID, resolveErr)
+			}
+		}()
+	}
+	wg.Wait()
+	return ctx.Err()
+}
+
+func (e *Engine) fetchCoverDimensions(ctx context.Context, coverURL string) (int, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coverURL, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*")
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, 0, fmt.Errorf("封面源返回 HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxCoverBytes {
+		return 0, 0, errors.New("封面超过 8MB 限制")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(data) > maxCoverBytes {
+		return 0, 0, errors.New("封面超过 8MB 限制")
+	}
+	return media.Dimensions(data)
 }
 
 // ErrSyncBusy 抢锁失败：该源正在同步中。

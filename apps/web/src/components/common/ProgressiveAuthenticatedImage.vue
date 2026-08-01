@@ -16,9 +16,11 @@ const props = defineProps({
   retryCount: { type: Number, default: 1 },
   loadOriginal: { type: Boolean, default: false },
   hideStatus: { type: Boolean, default: false },
+  width: { type: [Number, String], default: 0 },
+  height: { type: [Number, String], default: 0 },
 })
 
-const emit = defineEmits(['load', 'error', 'preview-load', 'original-error'])
+const emit = defineEmits(['load', 'error', 'preview-load', 'original-error', 'dimensions'])
 const previewLoaded = ref(false)
 const previewFailed = ref(false)
 const originalActive = ref(false)
@@ -74,6 +76,10 @@ function handlePreviewLoad(event) {
   else emit('load', event)
 }
 
+function handleDimensions(dimensions) {
+  emit('dimensions', dimensions)
+}
+
 function handlePreviewError(event) {
   previewLoaded.value = false
   previewFailed.value = true
@@ -127,8 +133,11 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
       :fetchpriority="fetchpriority"
       :root-margin="rootMargin"
       :retry-count="retryCount"
+      :width="width"
+      :height="height"
       @load="handlePreviewLoad"
       @error="handlePreviewError"
+      @dimensions="handleDimensions"
     />
     <AuthenticatedImage
       v-if="originalActive"
@@ -141,8 +150,11 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
       :fetchpriority="fetchpriority"
       :root-margin="rootMargin"
       :retry-count="retryCount"
+      :width="width"
+      :height="height"
       @load="handleOriginalLoad"
       @error="handleOriginalError"
+      @dimensions="handleDimensions"
     />
     <span
       v-if="!hideStatus && hasLoadTarget && !targetLoaded"
@@ -199,7 +211,8 @@ watch(() => [props.src, props.previewSrc, props.loadOriginal], reset, { immediat
 }
 
 /* 原图命中缓存：不做淡入过渡，加载即显示 */
-.progressive-authenticated-image.is-original-cached .progressive-authenticated-image__layer.is-original {
+.progressive-authenticated-image.is-original-cached
+  .progressive-authenticated-image__layer.is-original {
   transition: none;
 }
 

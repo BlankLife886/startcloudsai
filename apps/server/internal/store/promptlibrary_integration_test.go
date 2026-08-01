@@ -52,6 +52,27 @@ func TestPromptLibrarySortCursorAndCategoryCounts(t *testing.T) {
 	}
 }
 
+func TestPromptCoverDimensionsPersist(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	entry, err := store.InsertPromptEntry(ctx, st.Pool, &store.PromptEntry{
+		Title: "封面尺寸", Prompt: "cover dimensions", TaskType: "t2i", Sort: 10, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdatePromptCover(ctx, st.Pool, entry.ID, "prompt-covers/test.webp", 1200, 800); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.GetPromptEntry(ctx, st.Pool, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CoverWidth == nil || updated.CoverHeight == nil || *updated.CoverWidth != 1200 || *updated.CoverHeight != 800 {
+		t.Fatalf("cover dimensions = %v x %v, want 1200 x 800", updated.CoverWidth, updated.CoverHeight)
+	}
+}
+
 func TestReorderPromptEntriesKeepsUnselectedRelativeSlots(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

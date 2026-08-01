@@ -2,7 +2,10 @@
 package promptsync
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +14,43 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
+
+func TestBackfillCoverDimensions(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 720, 1280))); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(encoded.Bytes())
+	}))
+	defer server.Close()
+
+	entry, err := store.InsertPromptEntry(ctx, st.Pool, &store.PromptEntry{
+		Title: "远程封面", Prompt: "remote cover dimensions", TaskType: "t2i", Sort: 10, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdatePromptCover(ctx, st.Pool, entry.ID, server.URL+"/cover.png", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE prompt_library SET cover_metadata_checked_at = NULL WHERE id = $1`, entry.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(st, true).BackfillCoverDimensions(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.GetPromptEntry(ctx, st.Pool, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CoverWidth == nil || updated.CoverHeight == nil || *updated.CoverWidth != 720 || *updated.CoverHeight != 1280 {
+		t.Fatalf("cover dimensions = %v x %v, want 720 x 1280", updated.CoverWidth, updated.CoverHeight)
+	}
+}
 
 func insertTestSource(t *testing.T, st *store.Store, id, url, format string) *store.PromptSource {
 	t.Helper()

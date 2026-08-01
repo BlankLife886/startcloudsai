@@ -9,6 +9,8 @@ const props = defineProps({
   description: { type: String, default: '' },
   confirmLabel: { type: String, default: '确认删除' },
   busyLabel: { type: String, default: '删除中…' },
+  icon: { type: String, default: 'bi-trash3' },
+  tone: { type: String, default: 'danger' },
   light: { type: Boolean, default: false },
 })
 
@@ -52,8 +54,8 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
           aria-labelledby="delete-confirm-title"
           aria-describedby="delete-confirm-description"
         >
-          <div class="delete-confirm__icon" aria-hidden="true">
-            <i class="bi bi-trash3"></i>
+          <div class="delete-confirm__icon" :class="`is-${tone}`" aria-hidden="true">
+            <i class="bi" :class="icon"></i>
           </div>
           <div class="delete-confirm__copy">
             <h2 id="delete-confirm-title">{{ heading }}</h2>
@@ -74,7 +76,13 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
             >
               取消
             </button>
-            <button type="button" class="is-confirm" :disabled="busy" @click="emit('confirm')">
+            <button
+              type="button"
+              class="is-confirm"
+              :class="`is-${tone}`"
+              :disabled="busy"
+              @click="emit('confirm')"
+            >
               <i v-if="busy" class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
               {{ busy ? busyLabel : confirmLabel }}
             </button>
@@ -122,6 +130,11 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
   font-size: 1.2rem;
 }
 
+.delete-confirm__icon.is-accent {
+  background: rgba(126, 108, 255, 0.16);
+  color: #b7aeff;
+}
+
 .delete-confirm__copy {
   min-width: 0;
 }
@@ -167,9 +180,16 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
   color: rgba(255, 255, 255, 0.72);
 }
 
-.delete-confirm__actions .is-confirm {
+.delete-confirm__actions .is-confirm,
+.delete-confirm__actions .is-confirm.is-danger {
   border-color: rgba(255, 110, 110, 0.38);
   background: #e95f67;
+  color: #fff;
+}
+
+.delete-confirm__actions .is-confirm.is-accent {
+  border-color: rgba(126, 108, 255, 0.45);
+  background: #7e6cff;
   color: #fff;
 }
 
@@ -240,5 +260,10 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .delete-confirm__backdrop.is-light .delete-confirm__actions .is-cancel {
   background: #f5f6f9;
   color: rgba(43, 45, 60, 0.72);
+}
+
+.delete-confirm__backdrop.is-light .delete-confirm__icon.is-accent {
+  background: rgba(126, 108, 255, 0.12);
+  color: #6b5ce6;
 }
 </style>

@@ -33,6 +33,21 @@ func TestThumbnailJPEGScalesLargeImage(t *testing.T) {
 	}
 }
 
+func TestDimensionsReadsImageMetadata(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	width, height, err := Dimensions(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width != 640 || height != 360 {
+		t.Fatalf("dimensions = %dx%d, want 640x360", width, height)
+	}
+}
+
 func TestThumbnailJPEGRejectsUnsupportedData(t *testing.T) {
 	if _, err := ThumbnailJPEG([]byte("not an image"), 512); err == nil {
 		t.Fatal("expected unsupported image error")

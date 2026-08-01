@@ -1,7 +1,9 @@
 const locks = new Map()
 
 let bodyStyleSnapshot = null
+let htmlStyleSnapshot = null
 let frozenScrollY = 0
+let usedFreezeViewport = false
 
 function readBodyStyle(body) {
   return {
@@ -20,28 +22,56 @@ function writeBodyStyle(body, style) {
   })
 }
 
+function restoreScrollPosition(y) {
+  const html = document.documentElement
+  const previousBehavior = html.style.scrollBehavior
+  html.style.scrollBehavior = 'auto'
+  html.scrollTop = y
+  document.body.scrollTop = y
+  window.scrollTo(0, y)
+  html.style.scrollBehavior = previousBehavior
+}
+
 function syncBodyScrollLock() {
   if (typeof document === 'undefined' || typeof window === 'undefined') return
 
   const body = document.body
+  const html = document.documentElement
+
   if (locks.size === 0) {
-    if (!bodyStyleSnapshot) return
+    if (!bodyStyleSnapshot && !htmlStyleSnapshot) return
 
-    writeBodyStyle(body, bodyStyleSnapshot)
-    bodyStyleSnapshot = null
+    const y = frozenScrollY
+    const shouldRestoreScroll = usedFreezeViewport
 
-    if (frozenScrollY > 0) window.scrollTo(0, frozenScrollY)
+    if (bodyStyleSnapshot) {
+      writeBodyStyle(body, bodyStyleSnapshot)
+      bodyStyleSnapshot = null
+    }
+    if (htmlStyleSnapshot) {
+      html.style.overflow = htmlStyleSnapshot.overflow
+      htmlStyleSnapshot = null
+    }
+
     frozenScrollY = 0
+    usedFreezeViewport = false
+
+    // 只有用过 position:fixed 冻结时才需要回跳；否则 scrollTo 会造成“自动滚动”
+    if (shouldRestoreScroll) restoreScrollPosition(y)
     return
   }
 
   if (!bodyStyleSnapshot) {
     bodyStyleSnapshot = readBodyStyle(body)
-    frozenScrollY = window.scrollY || document.documentElement.scrollTop || 0
+    htmlStyleSnapshot = { overflow: html.style.overflow }
+    frozenScrollY = window.scrollY || html.scrollTop || body.scrollTop || 0
   }
 
   const shouldFreezeViewport = Array.from(locks.values()).some((lock) => lock.freezeViewport)
+  usedFreezeViewport = usedFreezeViewport || shouldFreezeViewport
+
   body.style.overflow = 'hidden'
+  html.style.overflow = 'hidden'
 
   if (shouldFreezeViewport) {
     body.style.position = 'fixed'

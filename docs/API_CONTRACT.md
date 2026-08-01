@@ -37,43 +37,43 @@
 
 ## 认证
 
-| 方法 | 路径 | 认证 | 请求/说明 |
-| --- | --- | --- | --- |
-| GET | `/api/auth/providers` | 公开 | 返回邮箱验证码可用状态和允许的邮箱域名 |
-| POST | `/api/auth/email/code` | 公开 | `{email}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送 |
-| POST | `/api/auth/email/verify` | 公开 | `{email,code}`；已有用户直接登录，首次邮箱原子创建用户、钱包、初始积分和 session；返回 `isNewUser` |
-| POST | `/api/auth/logout` | 可匿名 | 删除当前 session 并清 Cookie |
-| GET | `/api/auth/me` | 可匿名 | 返回 `{user}`；未登录时 `user:null` |
+| 方法 | 路径                     | 认证   | 请求/说明                                                                                          |
+| ---- | ------------------------ | ------ | -------------------------------------------------------------------------------------------------- |
+| GET  | `/api/auth/providers`    | 公开   | 返回邮箱验证码可用状态和允许的邮箱域名                                                             |
+| POST | `/api/auth/email/code`   | 公开   | `{email}`；仅 Gmail、Googlemail、QQ 邮箱，60 秒内不可重复发送                                      |
+| POST | `/api/auth/email/verify` | 公开   | `{email,code}`；已有用户直接登录，首次邮箱原子创建用户、钱包、初始积分和 session；返回 `isNewUser` |
+| POST | `/api/auth/logout`       | 可匿名 | 删除当前 session 并清 Cookie                                                                       |
+| GET  | `/api/auth/me`           | 可匿名 | 返回 `{user}`；未登录时 `user:null`                                                                |
 
 用户状态为 banned 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/email/code` 会额外返回 `developmentCode`，生产环境不会返回。
 
 ## 管理员认证
 
-| 方法 | 路径 | 认证 | 请求/说明 |
-| --- | --- | --- | --- |
-| POST | `/api/admin/auth/login` | 公开 | `{email,password}`；验证独立管理员账号后设置 `sc_admin_session` |
-| POST | `/api/admin/auth/logout` | 可匿名 | 删除当前管理员 session 并清除管理员 Cookie |
-| GET | `/api/admin/auth/me` | 可匿名 | 返回 `{admin}`；未登录时 `admin:null` |
-| PATCH | `/api/admin/auth/password` | 管理员 | `{old,new}`；成功后清除该管理员全部 session，要求重新登录 |
+| 方法  | 路径                       | 认证   | 请求/说明                                                       |
+| ----- | -------------------------- | ------ | --------------------------------------------------------------- |
+| POST  | `/api/admin/auth/login`    | 公开   | `{email,password}`；验证独立管理员账号后设置 `sc_admin_session` |
+| POST  | `/api/admin/auth/logout`   | 可匿名 | 删除当前管理员 session 并清除管理员 Cookie                      |
+| GET   | `/api/admin/auth/me`       | 可匿名 | 返回 `{admin}`；未登录时 `admin:null`                           |
+| PATCH | `/api/admin/auth/password` | 管理员 | `{old,new}`；成功后清除该管理员全部 session，要求重新登录       |
 
 管理员账号由 `server create-admin --email ... --password-stdin` 创建或更新，不通过用户登录流程产生。管理员密码为 12-72 字节且只从标准输入读取。系统不生成或校验管理员密钥。管理员会话有效期 12 小时并滑动续期；用户 Cookie 不能访问管理接口，管理员 Cookie 也不会建立用户身份。
 
 ## 个人中心
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| PATCH | `/api/me/profile` | 更新 `{username?,avatarUrl?,bio?,location?,websiteUrl?,password?:{old,new}}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址；改密后撤销旧 session 并签发当前新 session，头像只能引用本人站内上传 |
-| GET | `/api/me/overview` | 钱包、任务汇总/分类型统计、未读数和最近任务 |
-| GET | `/api/me/wallet` | `{balanceCents,frozenCents}` |
-| GET | `/api/me/wallet/ledger` | 当前用户账本 cursor 分页 |
-| POST | `/api/me/wallet/redeem` | `{code}`，兑换成功返回 `{grantCents,balanceCents}` |
-| GET | `/api/me/notifications` | 个人通知与全站通知合并后的 cursor 分页 |
-| POST | `/api/me/notifications/read` | `{ids?:[]}`；省略 ids 表示全部已读 |
-| GET | `/api/me/gallery/submissions` | 我的投稿 cursor 分页 |
-| DELETE | `/api/me/gallery/submissions/{id}` | 删除自己的投稿 |
-| GET | `/api/me/assets` | 个人素材 cursor 分页；列表返回 `thumbnailUrl`，原图地址为 `url` |
-| POST | `/api/me/assets` | 保存 `{title,fileKey,thumbnailKey,contentType}`；仅允许本人上传、原图不超过 10MB、每账号最多 200 项 |
-| DELETE | `/api/me/assets/{id}` | 删除自己的素材记录、原图与缩略图 |
+| 方法   | 路径                               | 说明                                                                                                                                                                                                             |
+| ------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PATCH  | `/api/me/profile`                  | 更新 `{username?,avatarUrl?,bio?,location?,websiteUrl?,password?:{old,new}}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址；改密后撤销旧 session 并签发当前新 session，头像只能引用本人站内上传 |
+| GET    | `/api/me/overview`                 | 钱包、任务汇总/分类型统计、未读数和最近任务                                                                                                                                                                      |
+| GET    | `/api/me/wallet`                   | `{balanceCents,frozenCents}`                                                                                                                                                                                     |
+| GET    | `/api/me/wallet/ledger`            | 当前用户账本 cursor 分页                                                                                                                                                                                         |
+| POST   | `/api/me/wallet/redeem`            | `{code}`，兑换成功返回 `{grantCents,balanceCents}`                                                                                                                                                               |
+| GET    | `/api/me/notifications`            | 个人通知与全站通知合并后的 cursor 分页                                                                                                                                                                           |
+| POST   | `/api/me/notifications/read`       | `{ids?:[]}`；省略 ids 表示全部已读                                                                                                                                                                               |
+| GET    | `/api/me/gallery/submissions`      | 我的投稿 cursor 分页                                                                                                                                                                                             |
+| DELETE | `/api/me/gallery/submissions/{id}` | 删除自己的投稿                                                                                                                                                                                                   |
+| GET    | `/api/me/assets`                   | 个人素材 cursor 分页；列表返回 `thumbnailUrl`，原图地址为 `url`                                                                                                                                                  |
+| POST   | `/api/me/assets`                   | 保存 `{title,fileKey,thumbnailKey,contentType}`；仅允许本人上传、原图不超过 10MB、每账号最多 200 项                                                                                                              |
+| DELETE | `/api/me/assets/{id}`              | 删除自己的素材记录、原图与缩略图                                                                                                                                                                                 |
 
 账本条目包含 `{id,kind,deltaCents,balanceAfterCents,sourceType,sourceId,reason,createdAt}`。
 
@@ -83,13 +83,14 @@
 
 任务类型：`t2i|coloring|ui_design|model_sheet|game_art|puzzle`。状态：`queued|running|succeeded|failed|canceled`。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/tasks` | `{type,prompt,params?,inputKeys?,count?,idempotencyKey?}`；校验并冻结余额后入队 |
-| GET | `/api/tasks` | 当前用户列表；筛选 `type`、`status`，支持 cursor |
-| GET | `/api/tasks/{id}` | 当前用户任务详情 |
-| POST | `/api/tasks/{id}/cancel` | 仅 queued 可取消并释放冻结额 |
-| DELETE | `/api/tasks/{id}` | 删除终态任务记录及对应 R2 产物 |
+| 方法   | 路径                              | 说明                                                                            |
+| ------ | --------------------------------- | ------------------------------------------------------------------------------- |
+| POST   | `/api/tasks`                      | `{type,prompt,params?,inputKeys?,count?,idempotencyKey?}`；校验并冻结余额后入队 |
+| GET    | `/api/tasks`                      | 当前用户列表；筛选 `type`、`status`，支持 cursor                                |
+| GET    | `/api/tasks/batch?ids=<uuid>,...` | 批量读取最多 100 个当前用户任务快照；按输入顺序返回                             |
+| GET    | `/api/tasks/{id}`                 | 当前用户任务详情                                                                |
+| POST   | `/api/tasks/{id}/cancel`          | 仅 queued 可取消并释放冻结额                                                    |
+| DELETE | `/api/tasks/{id}`                 | 删除终态任务记录及对应 R2 产物                                                  |
 
 task 主要字段：
 
@@ -124,10 +125,10 @@ task 主要字段：
 
 ## 上传与文件
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/uploads` | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP；同步生成 512px JPEG 缩略图，返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` |
-| GET | `/api/files/{key...}` | 校验访问权限后由 API 代理读取 R2 并直接返回文件（`200`，私有缓存 1 小时）；客户端无需直连对象存储 |
+| 方法 | 路径                  | 说明                                                                                                                                                |
+| ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST | `/api/uploads`        | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP；同步生成 512px JPEG 缩略图，返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` |
+| GET  | `/api/files/{key...}` | 校验访问权限后由 API 代理读取 R2 并直接返回文件（`200`，私有缓存 1 小时）；客户端无需直连对象存储                                                   |
 
 用户只能读取属于自己的 `uploads/`、`tasks/` key；已审核画廊资源公开；管理员可读取任意业务 key。网关请求体上限为 20 MB，应用层限制仍是 15 MB。
 
@@ -137,112 +138,114 @@ task 主要字段：
 
 ## 画廊与公开提示词
 
-| 方法 | 路径 | 认证 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/api/gallery` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor |
-| GET | `/api/gallery/categories` | 公开 | active 分类 |
-| POST | `/api/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务 |
-| GET | `/api/prompts` | 公开 | active 提示词；支持 `type`、`category` 和 cursor |
+| 方法 | 路径                       | 认证 | 说明                                                |
+| ---- | -------------------------- | ---- | --------------------------------------------------- |
+| GET  | `/api/gallery`             | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor |
+| GET  | `/api/gallery/categories`  | 公开 | active 分类                                         |
+| POST | `/api/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务           |
+| GET  | `/api/prompts`             | 公开 | active 提示词；支持 `type`、`category` 和 cursor    |
 
 画廊 item 包含封面/媒体 URL、作者、精选状态和可空分类。投稿受 `submissionEnabled`、`dailyLimit`、用户禁投时间和任务归属/状态约束；可能返回 `submission_disabled`、`submission_daily_limit`、`submission_banned`。
 
+提示词 item 的封面字段为 `coverUrl`、`coverWidth`、`coverHeight`。宽高已解析时为正整数；历史或暂时无法探测的远程封面返回 `null`，客户端必须允许降级测量。字段用于预计算图片比例和布局，不参与文件授权。
+
 ## 元信息
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/meta/pricing` | `{taskPrices,freeDailyCents}`；当前免费日额度为兼容字段 |
-| GET | `/api/meta/changelog` | 公开更新说明 |
-| GET | `/api/meta/announcements` | 当前生效公告 |
-| GET | `/api/health` | API、PostgreSQL 与 Redis 健康状态；成功 `{status:"ok"}` |
+| 方法 | 路径                      | 说明                                                    |
+| ---- | ------------------------- | ------------------------------------------------------- |
+| GET  | `/api/meta/pricing`       | `{taskPrices,freeDailyCents}`；当前免费日额度为兼容字段 |
+| GET  | `/api/meta/changelog`     | 公开更新说明                                            |
+| GET  | `/api/meta/announcements` | 当前生效公告                                            |
+| GET  | `/api/health`             | API、PostgreSQL 与 Redis 健康状态；成功 `{status:"ok"}` |
 
 ## 管理端：用户、账本和任务
 
 以下接口全部要求管理员权限。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/admin/stats` | 用户、任务、全站余额、运行中任务和类型分布 |
-| GET | `/api/admin/users` | `search`、`status` 筛选的 cursor 列表 |
-| GET | `/api/admin/users/{id}` | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
-| PATCH | `/api/admin/users/{id}` | 更新 `{status?,role?}` |
-| GET | `/api/admin/users/{id}/ledger` | 指定用户账本 |
-| POST | `/api/admin/users/{id}/wallet-adjust` | `{deltaCents,reason}`，写 admin_adjust 账本 |
-| GET | `/api/admin/ledger` | 全站账本；筛选 `kind`、`sourceType`、`user` |
-| GET | `/api/admin/tasks` | 按 `type`、`status`、`user` 筛选全站任务 |
-| POST | `/api/admin/tasks/{id}/requeue` | 重新冻结费用并重入队 failed 任务 |
-| POST | `/api/admin/tasks/{id}/cancel` | 取消任意用户 queued 任务 |
-| POST | `/api/admin/tasks/{id}/force-fail` | 将 running 任务置 failed 并释放费用 |
-| GET | `/api/admin/audit-logs` | 按 `admin`、`path` 筛选审计日志 |
+| 方法  | 路径                                  | 说明                                                      |
+| ----- | ------------------------------------- | --------------------------------------------------------- |
+| GET   | `/api/admin/stats`                    | 用户、任务、全站余额、运行中任务和类型分布                |
+| GET   | `/api/admin/users`                    | `search`、`status` 筛选的 cursor 列表                     |
+| GET   | `/api/admin/users/{id}`               | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
+| PATCH | `/api/admin/users/{id}`               | 更新 `{status?,role?}`                                    |
+| GET   | `/api/admin/users/{id}/ledger`        | 指定用户账本                                              |
+| POST  | `/api/admin/users/{id}/wallet-adjust` | `{deltaCents,reason}`，写 admin_adjust 账本               |
+| GET   | `/api/admin/ledger`                   | 全站账本；筛选 `kind`、`sourceType`、`user`               |
+| GET   | `/api/admin/tasks`                    | 按 `type`、`status`、`user` 筛选全站任务                  |
+| POST  | `/api/admin/tasks/{id}/requeue`       | 重新冻结费用并重入队 failed 任务                          |
+| POST  | `/api/admin/tasks/{id}/cancel`        | 取消任意用户 queued 任务                                  |
+| POST  | `/api/admin/tasks/{id}/force-fail`    | 将 running 任务置 failed 并释放费用                       |
+| GET   | `/api/admin/audit-logs`               | 按 `admin`、`path` 筛选审计日志                           |
 
 `stats` 包含 `{totalUsers,newUsersToday,taskDaily,walletBalanceCents,runningTasks,typeDistribution}` 等字段。管理任务列表提供扁平 `userEmail`。
 
 ## 管理端：兑换码
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/admin/redemption-codes/generate` | `{count,grantCents,expiresAt?,note?}`；count 为 1 至 1000 |
-| GET | `/api/admin/redemption-codes` | `status`、`batchId`、`search` 筛选的 cursor 列表 |
-| POST | `/api/admin/redemption-codes/{id}/disable` | 仅 active 可停用 |
-| GET | `/api/admin/redemption-codes/batches` | 最近批次汇总 |
+| 方法 | 路径                                       | 说明                                                      |
+| ---- | ------------------------------------------ | --------------------------------------------------------- |
+| POST | `/api/admin/redemption-codes/generate`     | `{count,grantCents,expiresAt?,note?}`；count 为 1 至 1000 |
+| GET  | `/api/admin/redemption-codes`              | `status`、`batchId`、`search` 筛选的 cursor 列表          |
+| POST | `/api/admin/redemption-codes/{id}/disable` | 仅 active 可停用                                          |
+| GET  | `/api/admin/redemption-codes/batches`      | 最近批次汇总                                              |
 
 明文码格式为 `SC-XXXX-XXXX-XXXX`，批量生成响应是导出的权威来源。已兑换或停用的码不能再次操作。
 
 ## 管理端：画廊与社区
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/admin/gallery/submissions` | 按状态查看投稿 |
-| POST | `/api/admin/gallery/submissions/{id}/review` | `{action:approve|reject|remove,reason?}` |
-| POST | `/api/admin/gallery/submissions/{id}/curate` | `{featured?,categoryId?,sort?,tags?}` 更新作品详情 |
-| POST | `/api/admin/gallery/submissions/batch-curate` | `{ids,featured?,categoryId?,tags?,tagMode?}` 批量更新；`tagMode` 为 `replace|add|remove` |
-| POST | `/api/admin/gallery/submissions/reorder` | `{ids}` 按数组顺序写入作品展示排序 |
-| POST | `/api/admin/gallery/submissions/{id}/violation` | `{reason,banDays,deleteMedia?}` |
-| POST | `/api/admin/gallery/users/{id}/unban` | 解除用户禁投 |
-| GET | `/api/admin/gallery/categories` | 全部分类 |
-| POST | `/api/admin/gallery/categories` | 新建分类 |
-| PATCH | `/api/admin/gallery/categories/{id}` | 修改分类 |
-| DELETE | `/api/admin/gallery/categories/{id}` | 删除分类，投稿关联置空 |
-| GET | `/api/admin/gallery/settings` | `{submissionEnabled,autoApprove,dailyLimit}` |
-| PUT | `/api/admin/gallery/settings` | 保存投稿规则 |
-| GET | `/api/admin/gallery/authors` | 按 `search` 聚合创作者与投稿/禁投信息 |
+| 方法   | 路径                                            | 说明                                                                         |
+| ------ | ----------------------------------------------- | ---------------------------------------------------------------------------- | ------ | ---------------- |
+| GET    | `/api/admin/gallery/submissions`                | 按状态查看投稿                                                               |
+| POST   | `/api/admin/gallery/submissions/{id}/review`    | `{action:approve                                                             | reject | remove,reason?}` |
+| POST   | `/api/admin/gallery/submissions/{id}/curate`    | `{featured?,categoryId?,sort?,tags?}` 更新作品详情                           |
+| POST   | `/api/admin/gallery/submissions/batch-curate`   | `{ids,featured?,categoryId?,tags?,tagMode?}` 批量更新；`tagMode` 为 `replace | add    | remove`          |
+| POST   | `/api/admin/gallery/submissions/reorder`        | `{ids}` 按数组顺序写入作品展示排序                                           |
+| POST   | `/api/admin/gallery/submissions/{id}/violation` | `{reason,banDays,deleteMedia?}`                                              |
+| POST   | `/api/admin/gallery/users/{id}/unban`           | 解除用户禁投                                                                 |
+| GET    | `/api/admin/gallery/categories`                 | 全部分类                                                                     |
+| POST   | `/api/admin/gallery/categories`                 | 新建分类                                                                     |
+| PATCH  | `/api/admin/gallery/categories/{id}`            | 修改分类                                                                     |
+| DELETE | `/api/admin/gallery/categories/{id}`            | 删除分类，投稿关联置空                                                       |
+| GET    | `/api/admin/gallery/settings`                   | `{submissionEnabled,autoApprove,dailyLimit}`                                 |
+| PUT    | `/api/admin/gallery/settings`                   | 保存投稿规则                                                                 |
+| GET    | `/api/admin/gallery/authors`                    | 按 `search` 聚合创作者与投稿/禁投信息                                        |
 
 `banDays` 范围为 0 至 365；0 表示只下架不新增禁投期限。`deleteMedia` 会删除对应任务产物，属于不可恢复操作。
 
 ## 管理端：提示词库与数据源
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/admin/prompt-library` | 按 `type`、`category`、`search` 筛选词条 |
-| POST | `/api/admin/prompt-library` | 新建手工词条 |
-| PATCH | `/api/admin/prompt-library/{id}` | 修改词条、排序或 active |
-| DELETE | `/api/admin/prompt-library/{id}` | 删除词条 |
-| POST | `/api/admin/prompt-library/{id}/cover` | multipart 封面上传 |
-| GET | `/api/admin/prompt-sources` | `{items:[...]}`，不分页 |
-| POST | `/api/admin/prompt-sources` | 新建 JSON/Markdown/HTML 数据源 |
-| PATCH | `/api/admin/prompt-sources/{id}` | 修改数据源与同步配置 |
-| DELETE | `/api/admin/prompt-sources/{id}` | 可带 `purgeItems=1`；内置源不可删除 |
-| POST | `/api/admin/prompt-sources/{id}/sync` | 立即同步，返回 imported/updated/unchanged/failed 统计 |
+| 方法   | 路径                                   | 说明                                                         |
+| ------ | -------------------------------------- | ------------------------------------------------------------ |
+| GET    | `/api/admin/prompt-library`            | 按 `type`、`category`、`search` 筛选词条                     |
+| POST   | `/api/admin/prompt-library`            | 新建手工词条                                                 |
+| PATCH  | `/api/admin/prompt-library/{id}`       | 修改词条、排序或 active                                      |
+| DELETE | `/api/admin/prompt-library/{id}`       | 删除词条                                                     |
+| POST   | `/api/admin/prompt-library/{id}/cover` | multipart 封面上传；返回 `{coverUrl,coverWidth,coverHeight}` |
+| GET    | `/api/admin/prompt-sources`            | `{items:[...]}`，不分页                                      |
+| POST   | `/api/admin/prompt-sources`            | 新建 JSON/Markdown/HTML 数据源                               |
+| PATCH  | `/api/admin/prompt-sources/{id}`       | 修改数据源与同步配置                                         |
+| DELETE | `/api/admin/prompt-sources/{id}`       | 可带 `purgeItems=1`；内置源不可删除                          |
+| POST   | `/api/admin/prompt-sources/{id}/sync`  | 立即同步，返回 imported/updated/unchanged/failed 统计        |
 
 源对象使用 camelCase。同步条目的远程图片 URL 可以直接存于 `coverKey`，序列化时 http(s) URL 原样返回。部分条目失败仍返回 200，并在 `failed` 中计数。
 
 ## 管理端：内容与设置
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET/POST | `/api/admin/announcements` | 列表/新建公告 |
-| PATCH/DELETE | `/api/admin/announcements/{id}` | 修改/删除公告 |
-| GET/POST | `/api/admin/changelog` | 列表/新建更新说明 |
-| PATCH/DELETE | `/api/admin/changelog/{id}` | 修改/删除更新说明 |
-| GET | `/api/admin/settings` | 获取运营配置 |
-| PUT | `/api/admin/settings` | 保存运营配置 |
-| POST | `/api/admin/settings/test-c2a` | 调用上游 `/v1/models`，返回模型数量与最多 20 个 ID |
+| 方法         | 路径                            | 说明                                               |
+| ------------ | ------------------------------- | -------------------------------------------------- |
+| GET/POST     | `/api/admin/announcements`      | 列表/新建公告                                      |
+| PATCH/DELETE | `/api/admin/announcements/{id}` | 修改/删除公告                                      |
+| GET/POST     | `/api/admin/changelog`          | 列表/新建更新说明                                  |
+| PATCH/DELETE | `/api/admin/changelog/{id}`     | 修改/删除更新说明                                  |
+| GET          | `/api/admin/settings`           | 获取运营配置                                       |
+| PUT          | `/api/admin/settings`           | 保存运营配置                                       |
+| POST         | `/api/admin/settings/test-c2a`  | 调用上游 `/v1/models`，返回模型数量与最多 20 个 ID |
 
 settings 请求/响应：
 
 ```json
 {
-  "taskPrices": {"t2i": 20},
-  "taskModels": {"default": "gpt-image-2"},
+  "taskPrices": { "t2i": 20 },
+  "taskModels": { "default": "gpt-image-2" },
   "userMaxRunningTasks": 3,
   "registrationEnabled": true,
   "signupBonusCents": 100,
@@ -260,24 +263,25 @@ settings 请求/响应：
 
 ## 常见错误码
 
-| 类别 | 错误码 |
-| --- | --- |
-| 鉴权 | `auth_required`, `admin_required`, `invalid_credentials`, `rate_limited` |
+| 类别      | 错误码                                                                                          |
+| --------- | ----------------------------------------------------------------------------------------------- |
+| 鉴权      | `auth_required`, `admin_required`, `invalid_credentials`, `rate_limited`                        |
 | 参数/资源 | `validation_error`, `not_found`, `email_exists`, `registration_required`, `registration_closed` |
-| 任务 | `insufficient_balance`, `user_task_limit`, `task_not_found`, `task_not_cancelable` |
-| 文件 | `upload_too_large`, `unsupported_file` |
-| 投稿 | `submission_not_allowed`, `submission_disabled`, `submission_daily_limit`, `submission_banned` |
-| 兑换码 | `code_invalid`, `code_redeemed`, `code_expired`, `code_disabled`, `code_not_active` |
-| 数据源 | `builtin_source_protected` |
-| 服务端 | `internal_error` |
+| 任务      | `insufficient_balance`, `user_task_limit`, `task_not_found`, `task_not_cancelable`              |
+| 文件      | `upload_too_large`, `unsupported_file`                                                          |
+| 投稿      | `submission_not_allowed`, `submission_disabled`, `submission_daily_limit`, `submission_banned`  |
+| 兑换码    | `code_invalid`, `code_redeemed`, `code_expired`, `code_disabled`, `code_not_active`             |
+| 数据源    | `builtin_source_protected`                                                                      |
+| 服务端    | `internal_error`                                                                                |
 
 调用方应以 HTTP 状态和 `code` 分支，不应解析中文 `error` 文案。
+
 ## AI助手
 
 以下接口要求用户 Cookie `sc_session`，由服务端使用 `SUB2API_API_KEY` 调用本地或远程 Sub2API。Key 不返回浏览器。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/assistant/config` | 返回当前对话与生图模型名称 |
-| POST | `/api/assistant/chat` | `{messages:[{role,content,referenceImages?:string[]}], referenceImages?: string[]}`；每条用户消息均可携带图片，服务端会转换为多模态 `image_url` 内容；顶层字段兼容旧客户端并附加到最后一条用户消息；整段请求最多 4 张图；返回 `text/event-stream`，透传 OpenAI Chat Completions SSE |
-| POST | `/api/assistant/images` | `{prompt,size,quality}`；返回 `{images:[{dataUrl,revisedPrompt}],model}` |
+| 方法 | 路径                    | 说明                                                                                                                                                                                                                                                                                |
+| ---- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET  | `/api/assistant/config` | 返回当前对话与生图模型名称                                                                                                                                                                                                                                                          |
+| POST | `/api/assistant/chat`   | `{messages:[{role,content,referenceImages?:string[]}], referenceImages?: string[]}`；每条用户消息均可携带图片，服务端会转换为多模态 `image_url` 内容；顶层字段兼容旧客户端并附加到最后一条用户消息；整段请求最多 4 张图；返回 `text/event-stream`，透传 OpenAI Chat Completions SSE |
+| POST | `/api/assistant/images` | `{prompt,size,quality}`；返回 `{images:[{dataUrl,revisedPrompt}],model}`                                                                                                                                                                                                            |

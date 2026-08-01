@@ -13,6 +13,20 @@ import (
 
 const MaxDecodedPixels = 40_000_000
 
+func Dimensions(data []byte) (int, int, error) {
+	if ext, _ := Detect(data); ext == "" {
+		return 0, 0, fmt.Errorf("unsupported image data")
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxDecodedPixels {
+		return 0, 0, fmt.Errorf("image dimensions exceed limit")
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
 func Detect(data []byte) (ext, contentType string) {
 	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
 		return "png", "image/png"
@@ -30,18 +44,15 @@ func ThumbnailJPEG(data []byte, maxDimension int) ([]byte, error) {
 	if ext, _ := Detect(data); ext == "" {
 		return nil, fmt.Errorf("unsupported image data")
 	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	width, height, err := Dimensions(data)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxDecodedPixels {
-		return nil, fmt.Errorf("image dimensions exceed limit")
 	}
 	src, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	w, h := cfg.Width, cfg.Height
+	w, h := width, height
 	if w > maxDimension || h > maxDimension {
 		if w >= h {
 			h = max(1, h*maxDimension/w)
