@@ -59,7 +59,7 @@ func (s *Server) redeemCode(c *gin.Context) {
 	if nerr := store.InsertNotification(ctx, s.St.Pool, &user.ID, "system", "兑换码入账", &msg); nerr != nil {
 		log.Printf("notify redeem code %s: %v", redeemed.ID, nerr)
 	}
-	ok(c, gin.H{"grantCents": redeemed.GrantCents, "balanceCents": entry.BalanceAfterCents})
+	respondCreated(c, gin.H{"grantCents": redeemed.GrantCents, "balanceCents": entry.BalanceAfterCents})
 }
 
 // ---------- Admin ----------
@@ -131,7 +131,7 @@ func (s *Server) adminGenerateRedemptionCodes(c *gin.Context, admin *store.User)
 		return
 	}
 	// 明文码仅生成时返回一次；审计 detail 只含请求体（count/grantCents），不含码
-	ok(c, gin.H{"batchId": batchID, "grantCents": *body.GrantCents, "codes": codes})
+	respondCreated(c, gin.H{"batchId": batchID, "grantCents": *body.GrantCents, "codes": codes})
 }
 
 func redemptionCodeDict(r *store.RedemptionCode) gin.H {

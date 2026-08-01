@@ -24,7 +24,7 @@
   -> Docker gateway
      -> /          用户端 web
      -> /admin/    管理端 admin
-     -> /api/      Go server
+     -> /api/v1/      Go server
                      -> PostgreSQL
                      -> Redis / Worker
                      -> ChatGPT2API / Sub2API / Cloudflare R2
@@ -209,7 +209,7 @@ docker compose --env-file .env up -d --force-recreate server
 验证：
 
 ```bash
-curl -s https://starcloudisai.com/api/auth/providers
+curl -s https://starcloudisai.com/api/v1/auth/providers
 ```
 
 响应中的 `email` 必须为 `true`。不要把 SMTP 授权码发送到聊天、截图或提交到 Git。
@@ -244,7 +244,7 @@ docker compose --env-file .env ps
 验证：
 
 ```bash
-curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1:8080/api/v1/health
 curl -I http://127.0.0.1:8080/
 ```
 
@@ -331,7 +331,7 @@ client_max_body_size 20m;
 验证：
 
 ```bash
-curl https://starcloudisai.com/api/health
+curl https://starcloudisai.com/api/v1/health
 ```
 
 生产入口：
@@ -339,7 +339,7 @@ curl https://starcloudisai.com/api/health
 ```text
 用户端：https://starcloudisai.com/
 管理端：https://starcloudisai.com/admin/
-健康检查：https://starcloudisai.com/api/health
+健康检查：https://starcloudisai.com/api/v1/health
 ```
 
 ## 5. 创建和重置管理员
@@ -479,8 +479,8 @@ git fetch origin
 git pull --ff-only origin codex/product-experience-updates
 docker compose --env-file .env up -d --build
 docker compose --env-file .env ps
-curl http://127.0.0.1:8080/api/health
-curl https://starcloudisai.com/api/health
+curl http://127.0.0.1:8080/api/v1/health
+curl https://starcloudisai.com/api/v1/health
 ```
 
 `server` 启动时自动执行数据库迁移。更新期间不要同时手动执行迁移。
@@ -599,7 +599,7 @@ ALLOWED_ORIGINS=https://starcloudisai.com
 2. 后台任务详情是否有结果 URL 或错误。
 3. R2 四项配置是否完整。
 4. `server` 和 `worker` 日志是否出现 R2、C2A 或 Sub2API 错误。
-5. `/api/files/*` 是否能通过当前登录会话访问。
+5. `/api/v1/files/*` 是否能通过当前登录会话访问。
 
 ### 11.8 更新后页面仍是旧版本
 
@@ -638,7 +638,7 @@ cd /www/wwwroot/startcloudsai
 docker compose --env-file .env ps
 
 # 健康检查
-curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1:8080/api/v1/health
 
 # 日志
 docker compose --env-file .env logs --tail=100 server worker gateway

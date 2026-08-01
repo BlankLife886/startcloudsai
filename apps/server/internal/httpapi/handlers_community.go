@@ -165,7 +165,7 @@ func (s *Server) promptEngagement(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{
+	respondCreated(c, gin.H{
 		"action": body.Action, "active": active,
 		"likeCount": likes, "favoriteCount": favorites, "useCount": uses,
 	})
@@ -301,7 +301,7 @@ func (s *Server) adminCreatePrompt(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, promptDict(entry, true))
+	respondCreated(c, promptDict(entry, true))
 }
 
 type galleryPromptIn struct {
@@ -431,7 +431,7 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 	created.CoverKey = &coverKey
 	created.CoverWidth = &coverWidth
 	created.CoverHeight = &coverHeight
-	ok(c, promptDict(created, true))
+	respondCreated(c, promptDict(created, true))
 }
 
 type reorderPromptsIn struct {
@@ -659,7 +659,7 @@ func (s *Server) adminDeletePrompt(c *gin.Context, _ *store.User) {
 			log.Printf("delete prompt cover %s: %v", *entry.CoverKey, derr)
 		}
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
@@ -753,7 +753,7 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		}
 	}
 	ok(c, gin.H{
-		"coverUrl":    "/api/files/" + newKey,
+		"coverUrl":    "/api/v1/files/" + newKey,
 		"coverWidth":  coverWidth,
 		"coverHeight": coverHeight,
 	})
@@ -803,7 +803,7 @@ func (s *Server) adminCreateGalleryCategory(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, galleryCategoryDict(category))
+	respondCreated(c, galleryCategoryDict(category))
 }
 
 type galleryCategoryPatchIn struct {
@@ -873,7 +873,7 @@ func (s *Server) adminDeleteGalleryCategory(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 // ---------- 策展 ----------
@@ -1346,7 +1346,7 @@ func (s *Server) adminSubmissionViolation(c *gin.Context, admin *store.User) {
 	out := submissionDict(submission, nil)
 	out["bannedUntil"] = iso(bannedUntil)
 	out["deletedMedia"] = deletedMedia
-	ok(c, out)
+	respondCreated(c, out)
 }
 
 func (s *Server) adminUnbanGalleryUser(c *gin.Context, _ *store.User) {
@@ -1369,5 +1369,5 @@ func (s *Server) adminUnbanGalleryUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"userId": userID.String(), "bannedUntil": nil})
+	respondNoContent(c)
 }

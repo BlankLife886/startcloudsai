@@ -21,11 +21,11 @@ export function normalizeImageRequestUrl(url) {
 export function isImageProxyUrl(url) {
   const value = String(url || '').trim()
   if (!value) return false
-  if (value.startsWith('/api/image-proxy')) return true
+  if (value.startsWith('/api/v1/image-proxy')) return true
   try {
     const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
     const parsed = new URL(value, base)
-    return parsed.pathname === '/api/image-proxy'
+    return parsed.pathname === '/api/v1/image-proxy'
   } catch {
     return false
   }

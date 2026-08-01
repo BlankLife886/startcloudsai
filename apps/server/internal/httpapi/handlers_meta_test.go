@@ -34,7 +34,7 @@ func TestPricingReturnsStructuredModelRoutePrices(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/meta/pricing", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/pricing", nil)
 	(&Server{St: st}).pricing(c)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -76,7 +76,7 @@ func TestRuntimeConfigExposesOnlyPublicModelMapping(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/meta/runtime-config", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
 	(&Server{St: st}).runtimeConfig(c)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -119,7 +119,7 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/meta/runtime-config", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
 	(&Server{St: st}).runtimeConfig(c)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())

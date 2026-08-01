@@ -66,8 +66,8 @@ function toAbsoluteMediaUrl(pathOrUrl = '') {
   const value = String(pathOrUrl || '').trim()
   if (!value) return ''
   if (/^(https?:|data:|blob:)/i.test(value)) return value
-  if (value.startsWith('/api/')) {
-    return buildApiUrl(value.replace(/^\/api/, '') || '/')
+  if (value.startsWith('/api/v1/')) {
+    return buildApiUrl(value.replace(/^\/api\/v1/, '') || '/')
   }
   if (value.startsWith('/')) return buildApiUrl(value)
   return value

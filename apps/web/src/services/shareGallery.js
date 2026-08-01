@@ -1,5 +1,5 @@
 /**
- * 画廊 API（新契约 /api/gallery*，含社区运营 v3 增补：分类 / 精选 / 投稿分类）。
+ * 画廊 API（新契约 /api/v1/gallery*，含社区运营 v3 增补：分类 / 精选 / 投稿分类）。
  * 公开列表 + 分类 + 投稿 + 我的投稿；旧的评论/收藏/浏览统计接口已随后端下线。
  */
 import { apiGet, apiPost, isApiError } from './apiClient'
@@ -29,7 +29,7 @@ export async function listShareItems({
   featured = false,
   signal,
 } = {}) {
-  const data = await apiGet('/gallery', {
+  const data = await apiGet('/gallery/submissions', {
     query: { limit, cursor, category, ...(featured ? { featured: 1 } : {}) },
     signal,
     fallbackMessage: '画廊读取失败',

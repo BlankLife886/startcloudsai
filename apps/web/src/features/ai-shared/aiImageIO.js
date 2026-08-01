@@ -1,6 +1,6 @@
 /**
  * AI 输入图读取/压缩/上传工具（从旧 fullscreen-preview 迁出）。
- * 上传统一走新契约 /api/uploads。
+ * 上传统一走新契约 /api/v1/uploads。
  */
 import { uploadFile } from '@/services/tasksApi'
 import { normalizeImageOutput } from './aiPreviewUtils'
@@ -25,7 +25,7 @@ export async function fetchImageBlobForAi(url) {
     const response = await fetch(sourceUrl, {
       method: 'GET',
       cache: 'no-store',
-      credentials: sourceUrl.includes('/api/') ? 'include' : 'same-origin',
+      credentials: sourceUrl.includes('/api/v1/') ? 'include' : 'same-origin',
       referrerPolicy: 'no-referrer',
     })
     if (!response.ok) throw new Error(`图片拉取失败(${response.status})`)
@@ -122,7 +122,7 @@ function normalizeScaleSteps(values) {
   return steps
 }
 
-/** 上传输入图 blob，返回可展示/可下发的 URL（内部走 /api/uploads）。 */
+/** 上传输入图 blob，返回可展示/可下发的 URL（内部走 /api/v1/uploads）。 */
 export async function uploadAiTempBlob(blob, { signal } = {}) {
   const file = new File([blob], `ai-input-${Date.now()}.jpg`, {
     type: blob.type || 'image/jpeg',
@@ -193,7 +193,7 @@ export async function fetchImageAsDataUrl({ url, notificationService }) {
       method: 'GET',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      credentials: sourceUrl.includes('/api/') ? 'include' : 'same-origin',
+      credentials: sourceUrl.includes('/api/v1/') ? 'include' : 'same-origin',
     })
     if (!response.ok) {
       const text = await response.text().catch(() => '')

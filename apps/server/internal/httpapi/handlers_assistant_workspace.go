@@ -98,7 +98,7 @@ func (s *Server) createAssistantConversation(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, assistantConversationDict(item, nil))
+	respondCreated(c, assistantConversationDict(item, nil))
 }
 
 func (s *Server) deleteAssistantConversation(c *gin.Context) {
@@ -155,7 +155,7 @@ func (s *Server) deleteAssistantConversation(c *gin.Context) {
 			s.Queue.CancelAssistantRun(runID.String())
 		}
 	}
-	ok(c, gin.H{"deleted": true, "canceledRuns": len(canceledRunIDs)})
+	respondNoContent(c)
 }
 
 func (s *Server) deleteAssistantMessage(c *gin.Context) {
@@ -178,7 +178,7 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 		fail(c, apperr.E("not_found", "消息不存在", 404))
 		return
 	}
-	ok(c, gin.H{"deleted": true})
+	respondNoContent(c)
 }
 
 func (s *Server) importAssistantConversations(c *gin.Context) {
@@ -202,7 +202,7 @@ func (s *Server) importAssistantConversations(c *gin.Context) {
 		return
 	}
 	if len(existing) > 0 || len(body.Conversations) == 0 {
-		ok(c, gin.H{"imported": 0})
+		respondCreated(c, gin.H{"imported": 0})
 		return
 	}
 	imported := 0
@@ -252,7 +252,7 @@ func (s *Server) importAssistantConversations(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"imported": imported})
+	respondCreated(c, gin.H{"imported": imported})
 }
 
 func (s *Server) createAssistantRun(c *gin.Context) {
@@ -564,7 +564,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("queue_error", message, 503))
 		return
 	}
-	ok(c, gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
+	respondCreated(c, gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
 		"assistantMessage": assistantMessageDict(assistantMessage)})
 }
 
@@ -670,6 +670,23 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 	}
 	updated, _ := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
 	ok(c, gin.H{"run": assistantRunDict(updated), "canceled": canceled})
+}
+
+type assistantRunPatchIn struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) patchAssistantRun(c *gin.Context) {
+	var body assistantRunPatchIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Status != "canceled" {
+		fail(c, apperr.E("validation_error", "status: 仅支持更新为 canceled", 422))
+		return
+	}
+	s.cancelAssistantRun(c)
 }
 
 func assistantConversationDict(item *store.AssistantConversation, messages []*store.AssistantMessage) gin.H {
@@ -783,7 +800,7 @@ func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) []map
 		copyItem := map[string]any{"id": assistantMapText(item, "id"), "name": assistantMapText(item, "name")}
 		if allowedKey {
 			copyItem["fileKey"] = key
-			copyItem["dataUrl"] = "/api/files/" + key
+			copyItem["dataUrl"] = "/api/v1/files/" + key
 		} else {
 			copyItem["dataUrl"] = dataURL
 		}

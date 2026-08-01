@@ -140,7 +140,7 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 	if s.Cfg.AppEnv == "development" && s.Cfg.SMTPAddr == "" {
 		result["developmentCode"] = code
 	}
-	ok(c, result)
+	respondCreated(c, result)
 }
 
 type emailCodeState uint8

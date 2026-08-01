@@ -553,7 +553,7 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 		return nil, err
 	}
 	stored := map[string]any{
-		"id": uuid.NewString(), "index": index, "dataUrl": "/api/files/" + key, "fileKey": key,
+		"id": uuid.NewString(), "index": index, "dataUrl": "/api/v1/files/" + key, "fileKey": key,
 		"revisedPrompt": revisedPrompt,
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
@@ -654,8 +654,8 @@ func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.Assi
 		item, _ := raw.(map[string]any)
 		key := assistantMapString(item, "fileKey")
 		value := assistantMapString(item, "dataUrl")
-		if key == "" && strings.HasPrefix(value, "/api/files/") {
-			key = strings.TrimPrefix(value, "/api/files/")
+		if key == "" && strings.HasPrefix(value, "/api/v1/files/") {
+			key = strings.TrimPrefix(value, "/api/v1/files/")
 		}
 		if key != "" {
 			presigned, err := w.Storage.PresignGet(ctx, key)
@@ -809,8 +809,8 @@ func (w *Worker) loadAssistantReferences(ctx context.Context, params map[string]
 		item, _ := raw.(map[string]any)
 		key := assistantMapString(item, "fileKey")
 		value := assistantMapString(item, "dataUrl")
-		if key == "" && strings.HasPrefix(value, "/api/files/") {
-			key = strings.TrimPrefix(value, "/api/files/")
+		if key == "" && strings.HasPrefix(value, "/api/v1/files/") {
+			key = strings.TrimPrefix(value, "/api/v1/files/")
 		}
 		if key != "" {
 			data, err := w.Storage.GetBytesLimit(ctx, key, 16<<20)

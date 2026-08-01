@@ -1,14 +1,14 @@
 /**
- * 统一 API 客户端（新 FastAPI 后端）。
+ * 统一 API 客户端（Go REST API）。
  *
- * 所有接口前缀 /api，响应统一：
+ * 所有接口前缀 /api/v1，响应统一：
  *   成功 { success: true, data: {...} }
  *   失败 { success: false, code: 'xxx', error: '...' }
  *
  * 鉴权使用 HttpOnly Cookie（sc_session），因此所有请求 credentials: 'include'。
  */
 
-const API_PREFIX = '/api'
+const API_PREFIX = '/api/v1'
 
 export class ApiError extends Error {
   constructor(message, { code = '', status = 0 } = {}) {
@@ -48,13 +48,14 @@ export function buildApiPath(path, query = null) {
 }
 
 async function parsePayload(response) {
+  if (response.status === 204) return { success: true, data: null }
   return response.json().catch(() => null)
 }
 
 /**
  * 发起请求并解析统一响应格式，失败时抛出带 code 的 ApiError。
  *
- * @param {string} path - 不含 /api 前缀的路径，如 '/tasks'
+ * @param {string} path - 不含 /api/v1 前缀的路径，如 '/tasks'
  * @param {object} options
  * @param {string} [options.method]
  * @param {object|FormData|null} [options.body] - 普通对象自动 JSON 序列化

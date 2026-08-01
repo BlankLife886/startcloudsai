@@ -154,7 +154,7 @@ export async function fetchStudioCreditAccountSnapshot({ maxAgeMs = CREDIT_SNAPS
 
 /**
  * 打开费用确认弹窗前补齐：
- * 1. 服务端任务单价（GET /api/meta/pricing，5 分钟缓存）→ 整数积分；
+ * 1. 服务端任务单价（GET /api/v1/pricing，5 分钟缓存）→ 整数积分；
  *    单价拉取失败时置 serverPricingUnavailable，弹窗显示「以服务端结算为准」且不禁用确认。
  * 2. 账户余额与今日/本月消耗（刷新后仍准确）。
  */

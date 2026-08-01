@@ -275,7 +275,7 @@ function referenceDescriptor(source, name = '当前 UI 设计成稿') {
   const value = String(source || '').trim()
   if (!value) return null
   const url = new URL(value, window.location.origin)
-  const marker = '/api/files/'
+  const marker = '/api/v1/files/'
   const markerIndex = url.pathname.indexOf(marker)
   const fileKey =
     markerIndex >= 0 ? decodeURIComponent(url.pathname.slice(markerIndex + marker.length)) : ''

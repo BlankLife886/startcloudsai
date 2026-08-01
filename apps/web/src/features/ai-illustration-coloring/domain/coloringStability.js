@@ -6,9 +6,9 @@ const COLORING_INTERNAL_DIAGNOSTIC_PATTERN =
   /(?:^|[;\s])(?:stage|endpoint|requestId|providerStatus|providerMessage|providerCode|bodyPreview|keys|dataKeys|outputCandidates|resultUrlHost)=/i
 
 export function isAiTempSourceUrl(url = '') {
-  // 历史 ai-temp 网关已下线：新契约上传落在 /api/files/uploads/{uid}/...
+  // 历史 ai-temp 网关已下线：新契约上传落在 /api/v1/files/uploads/{uid}/...
   // 旧正则只认 ai-temp,导致所有新上传被客户端自己判为“未就绪”,提交必报错
-  return /\/(?:api\/)?(?:ai-temp|files\/uploads)\//i.test(String(url || ''))
+  return /\/(?:api\/(?:v1\/)?)?(?:ai-temp|files\/uploads)\//i.test(String(url || ''))
 }
 
 export function coloringRetryMayCreatePaidRequest(item = {}) {

@@ -1787,7 +1787,7 @@ async function downloadImage(image, index = 0) {
   if (!source) return
   const filename = `starclouds-${Date.now()}-${Number(index) + 1}.png`
   try {
-    // 经 blob 下载：/api/files 需带 Cookie，跨域 presigned URL 上 download 属性会被忽略
+    // 经 blob 下载：/api/v1/files 需带 Cookie，跨域 presigned URL 上 download 属性会被忽略
     const response = await fetch(source, { credentials: 'include' })
     if (!response.ok) throw new Error(`status ${response.status}`)
     const blob = await response.blob()

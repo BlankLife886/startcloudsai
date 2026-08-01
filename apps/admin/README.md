@@ -1,6 +1,6 @@
 # StarCloudsAI 管理端
 
-管理端是 Vue 3 + Vite + TypeScript strict + Pinia + Vue Router + Element Plus 的轻量 SPA。它部署在 `/admin/`，使用独立的 `admin_accounts`、`admin_sessions`、`sc_admin_session` 和 `/api/admin/auth/*`，不接受用户端账号或 `sc_session`。
+管理端是 Vue 3 + Vite + TypeScript strict + Pinia + Vue Router + Element Plus 的轻量 SPA。它部署在 `/admin/`，使用独立的 `admin_accounts`、`admin_sessions`、`sc_admin_session` 和 `/api/v1/admin/auth/*`，不接受用户端账号或 `sc_session`。
 
 ## 开发与构建
 

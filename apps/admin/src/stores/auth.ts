@@ -22,7 +22,7 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async fetchMe() {
       try {
-        const data = await request<{ admin: AdminAccount | null }>('/api/admin/auth/me', { silent: true })
+        const data = await request<{ admin: AdminAccount | null }>('/api/v1/admin/auth/session', { silent: true })
         this.user = data.admin
       } catch {
         this.user = null
@@ -31,7 +31,7 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async login(email: string, password: string, options: { silent?: boolean } = {}) {
-      const data = await request<{ admin: AdminAccount }>('/api/admin/auth/login', {
+      const data = await request<{ admin: AdminAccount }>('/api/v1/admin/auth/session', {
         method: 'POST',
         body: { email, password },
         silent: options.silent,
@@ -42,7 +42,7 @@ export const useAuthStore = defineStore('auth', {
     },
     async logout() {
       try {
-        await request('/api/admin/auth/logout', { method: 'POST', silent: true })
+        await request('/api/v1/admin/auth/session', { method: 'DELETE', silent: true })
       } catch {
         // 忽略退出失败，本地状态照常清空
       }

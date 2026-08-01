@@ -46,7 +46,7 @@ const statusFilters = [
 const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<AdminSubmission>(
     (cursor) =>
-      request<AdminSubmission[] | Page<AdminSubmission>>('/api/admin/gallery/submissions', {
+      request<AdminSubmission[] | Page<AdminSubmission>>('/api/v1/admin/gallery/submissions', {
         query: { status: status.value, limit: 12, cursor },
       }).then(normalizeList),
     () => status.value,
@@ -153,7 +153,7 @@ async function createPromptFromSubmission() {
   }
   promptCreatorSaving.value = true
   try {
-    const created = await request<{ id: string }>(`/api/admin/gallery/submissions/${target.id}/prompt`, {
+    const created = await request<{ id: string }>(`/api/v1/admin/gallery/submissions/${target.id}/prompts`, {
       method: 'POST',
       body: {
         title: normalizePromptTitle(promptCreatorForm.title),
@@ -182,7 +182,7 @@ async function approve(item: AdminSubmission) {
   if (operatingId.value) return
   operatingId.value = item.id
   try {
-    await request(`/api/admin/gallery/submissions/${item.id}/review`, {
+    await request(`/api/v1/admin/gallery/submissions/${item.id}/reviews`, {
       method: 'POST',
       body: { action: 'approve' },
     })
@@ -226,7 +226,7 @@ async function confirmReject() {
   }
   operatingId.value = item.id
   try {
-    await request(`/api/admin/gallery/submissions/${item.id}/review`, {
+    await request(`/api/v1/admin/gallery/submissions/${item.id}/reviews`, {
       method: 'POST',
       body: { action: 'reject', reason: rejectNote.value.trim() },
     })
@@ -278,7 +278,7 @@ async function confirmViolation() {
   }
   operatingId.value = item.id
   try {
-    await request(`/api/admin/gallery/submissions/${item.id}/violation`, {
+    await request(`/api/v1/admin/gallery/submissions/${item.id}/violations`, {
       method: 'POST',
       body: { reason: violationForm.value.reason.trim(), banDays, deleteMedia: violationForm.value.deleteMedia },
     })

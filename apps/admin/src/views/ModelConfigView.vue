@@ -326,7 +326,7 @@ async function load() {
   autoSaveReady.value = false;
   loading.value = true;
   try {
-    hydrate(await request<ModelConfig>("/api/admin/model-config"));
+    hydrate(await request<ModelConfig>("/api/v1/admin/model-config"));
   } finally {
     loading.value = false;
     autoSaveReady.value = true;
@@ -346,7 +346,7 @@ async function save() {
   let succeeded = false;
   saving.value = true;
   try {
-    const saved = await request<ModelConfig>("/api/admin/model-config", {
+    const saved = await request<ModelConfig>("/api/v1/admin/model-config", {
       method: "PUT",
       body: payload,
     });
@@ -602,7 +602,7 @@ function invalidateProviderModels() {
 
 async function fetchProviderModels(provider: ModelProvider) {
   return request<ModelDiscoveryResult>(
-    "/api/admin/model-config/discover-models",
+    "/api/v1/admin/model-config/discoveries",
     { method: "POST", body: provider },
   );
 }

@@ -20,7 +20,7 @@
 
 | 服务 | 职责 |
 | --- | --- |
-| `gateway` | 唯一入口；`/` 转发用户端，`/admin/` 转发管理端，`/api/` 转发 API |
+| `gateway` | 唯一入口；`/` 转发用户端，`/admin/` 转发管理端，`/api/v1/` 转发 API |
 | `web` | 用户端静态站 |
 | `admin` | 管理端静态站 |
 | `server` | Gin API；启动时自动执行 Goose 数据库迁移 |
@@ -38,7 +38,7 @@
 cp .env.development.example .env.development
 docker compose --env-file .env.development up -d --build
 docker compose ps
-curl http://localhost:8080/api/health
+curl http://localhost:8080/api/v1/health
 ```
 
 默认地址：
@@ -47,7 +47,7 @@ curl http://localhost:8080/api/health
 | --- | --- |
 | 用户端 | `http://localhost:8080/` |
 | 管理端 | `http://localhost:8080/admin/` |
-| API 健康检查 | `http://localhost:8080/api/health` |
+| API 健康检查 | `http://localhost:8080/api/v1/health` |
 
 创建或更新独立管理员账号。密码只经标准输入传入，不进入 shell 历史或进程参数。后台使用独立的管理员邮箱和密码登录：
 

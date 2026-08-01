@@ -40,8 +40,8 @@ func developmentCode(t *testing.T, responseBody []byte) string {
 
 func requestDevelopmentCode(t *testing.T, engine http.Handler, email string) string {
 	t.Helper()
-	w := authRequest(t, engine, http.MethodPost, "/api/auth/email/code", gin.H{"email": email})
-	if w.Code != http.StatusOK {
+	w := authRequest(t, engine, http.MethodPost, "/api/v1/auth/email-verification-codes", gin.H{"email": email})
+	if w.Code != http.StatusCreated {
 		t.Fatalf("send code for %q = %d %s", email, w.Code, w.Body.String())
 	}
 	return developmentCode(t, w.Body.Bytes())
@@ -74,12 +74,12 @@ func TestUnifiedEmailAuthenticationCreatesThenLogsIn(t *testing.T) {
 	firstAlias := "first.user+campaign@googlemail.com"
 	code := requestDevelopmentCode(t, engine, firstAlias)
 
-	wrong := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": firstAlias, "code": "000000"})
+	wrong := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": firstAlias, "code": "000000"})
 	if wrong.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong code = %d %s", wrong.Code, wrong.Body.String())
 	}
-	created := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": firstAlias, "code": code})
-	if created.Code != http.StatusOK || len(created.Result().Cookies()) == 0 {
+	created := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": firstAlias, "code": code})
+	if created.Code != http.StatusCreated || len(created.Result().Cookies()) == 0 {
 		t.Fatalf("first verify = %d %s", created.Code, created.Body.String())
 	}
 	createdBody := decodeVerifyEmailResponse(t, created.Body.Bytes())
@@ -98,8 +98,8 @@ func TestUnifiedEmailAuthenticationCreatesThenLogsIn(t *testing.T) {
 
 	returningAlias := "f.i.r.s.t.u.s.e.r+return@gmail.com"
 	returningCode := requestDevelopmentCode(t, engine, returningAlias)
-	returning := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": returningAlias, "code": returningCode})
-	if returning.Code != http.StatusOK {
+	returning := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": returningAlias, "code": returningCode})
+	if returning.Code != http.StatusCreated {
 		t.Fatalf("returning verify = %d %s", returning.Code, returning.Body.String())
 	}
 	returningBody := decodeVerifyEmailResponse(t, returning.Body.Bytes())
@@ -123,15 +123,15 @@ func TestUnifiedEmailAuthenticationPreservesCodeWhenRegistrationClosed(t *testin
 	email := "closed.registration@qq.com"
 	code := requestDevelopmentCode(t, engine, email)
 
-	closed := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": email, "code": code})
+	closed := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
 	if closed.Code != http.StatusForbidden {
 		t.Fatalf("closed registration = %d %s", closed.Code, closed.Body.String())
 	}
 	if err := settings.Set(ctx, st.Pool, "registration_enabled", json.RawMessage(`true`)); err != nil {
 		t.Fatal(err)
 	}
-	retry := authRequest(t, engine, http.MethodPost, "/api/auth/email/verify", gin.H{"email": email, "code": code})
-	if retry.Code != http.StatusOK {
+	retry := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
+	if retry.Code != http.StatusCreated {
 		t.Fatalf("code was consumed by rolled back registration = %d %s", retry.Code, retry.Body.String())
 	}
 }
@@ -159,14 +159,14 @@ func TestRemovedUserAuthRoutesAndProviders(t *testing.T) {
 	s := newUserLoginTestServer(nil)
 	engine := s.Router()
 	for _, path := range []string{
-		"/api/auth/register", "/api/auth/login", "/api/auth/password/reset",
-		"/api/auth/oauth/google", "/api/auth/oauth/github", "/api/auth/oauth/github/callback",
+		"/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/password/reset",
+		"/api/v1/auth/oauth/google", "/api/v1/auth/oauth/github", "/api/v1/auth/oauth/github/callback",
 	} {
 		if w := authRequest(t, engine, http.MethodGet, path, nil); w.Code != http.StatusNotFound {
 			t.Fatalf("removed auth route %s = %d %s", path, w.Code, w.Body.String())
 		}
 	}
-	providers := authRequest(t, engine, http.MethodGet, "/api/auth/providers", nil)
+	providers := authRequest(t, engine, http.MethodGet, "/api/v1/auth/providers", nil)
 	var payload struct {
 		Data map[string]any `json:"data"`
 	}

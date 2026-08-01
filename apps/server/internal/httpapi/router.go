@@ -23,11 +23,11 @@ var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, 
 func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	limit := int64(1 << 20)
 	switch {
-	case path == "/api/uploads":
+	case path == "/api/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
-	case strings.HasPrefix(path, "/api/assistant/"):
+	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
-	case strings.HasPrefix(path, "/api/admin/prompt-library/") && strings.HasSuffix(path, "/cover"):
+	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
 	default:
@@ -118,14 +118,14 @@ func (s *Server) Router() *gin.Engine {
 		c.JSON(405, gin.H{"success": false, "code": "bad_request", "error": "Method Not Allowed"})
 	})
 
-	api := r.Group("/api")
+	api := r.Group("/api/v1")
 
 	// auth
 	api.GET("/auth/providers", s.authProviders)
-	api.POST("/auth/email/code", s.requestEmailLoginCode)
-	api.POST("/auth/email/verify", s.verifyEmailCode)
-	api.POST("/auth/logout", s.logout)
-	api.GET("/auth/me", s.authMe)
+	api.POST("/auth/email-verification-codes", s.requestEmailLoginCode)
+	api.POST("/auth/session", s.verifyEmailCode)
+	api.GET("/auth/session", s.authMe)
+	api.DELETE("/auth/session", s.logout)
 
 	// assistant workspace (Sub2API server-side bridge)
 	api.GET("/assistant/config", s.assistantConfig)
@@ -136,22 +136,22 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/assistant/conversations", s.createAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
 	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
-	api.POST("/assistant/import", s.importAssistantConversations)
+	api.POST("/assistant/conversation-imports", s.importAssistantConversations)
 	api.GET("/assistant/runs", s.assistantRuns)
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
-	api.GET("/assistant/runs/:id/stream", s.assistantRunStream)
-	api.POST("/assistant/runs/:id/cancel", s.cancelAssistantRun)
+	api.GET("/assistant/runs/:id/events", s.assistantRunStream)
+	api.PATCH("/assistant/runs/:id", s.patchAssistantRun)
 
 	// me
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/wallet", s.myWallet)
-	api.GET("/me/wallet/ledger", s.myLedger)
-	api.POST("/me/wallet/redeem", s.redeemCode)
+	api.GET("/me/wallet/entries", s.myLedger)
+	api.POST("/me/wallet/redemptions", s.redeemCode)
 	api.GET("/me/notifications", s.myNotifications)
-	api.POST("/me/notifications/read", s.markNotificationsRead)
-	api.GET("/me/tasks/stream", s.userTaskStream)
+	api.PATCH("/me/notifications", s.markNotificationsRead)
+	api.GET("/me/tasks/events", s.userTaskStream)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
 	api.GET("/me/assets", s.myAssets)
@@ -161,10 +161,9 @@ func (s *Server) Router() *gin.Engine {
 	// tasks
 	api.POST("/tasks", s.createTask)
 	api.GET("/tasks", s.listTasks)
-	api.GET("/tasks/batch", s.getTasksBatch)
 	api.GET("/tasks/:id", s.getTask)
-	api.GET("/tasks/:id/stream", s.taskStream)
-	api.POST("/tasks/:id/cancel", s.cancelTask)
+	api.GET("/tasks/:id/events", s.taskStream)
+	api.PATCH("/tasks/:id", s.patchTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
 
 	// uploads & files
@@ -172,56 +171,54 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/files/*key", s.getFile)
 
 	// gallery
-	api.GET("/gallery", s.publicGallery)
+	api.GET("/gallery/submissions", s.publicGallery)
 	api.GET("/gallery/categories", s.publicGalleryCategories)
 	api.POST("/gallery/submissions", s.submitGallery)
 
 	// prompts（提示词库，公开）
 	api.GET("/prompts", s.publicPrompts)
-	api.POST("/prompts/:id/engagement", s.promptEngagement)
+	api.POST("/prompts/:id/engagements", s.promptEngagement)
 
 	// plans（只读）。支付、订单创建和 webhook 仍未注册。
 	api.GET("/plans", s.listPlans)
 
 	// meta
-	api.GET("/meta/pricing", s.pricing)
-	api.GET("/meta/runtime-config", s.runtimeConfig)
-	api.GET("/meta/changelog", s.metaChangelog)
-	api.GET("/meta/announcements", s.metaAnnouncements)
+	api.GET("/pricing", s.pricing)
+	api.GET("/runtime-config", s.runtimeConfig)
+	api.GET("/changelog", s.metaChangelog)
+	api.GET("/announcements", s.metaAnnouncements)
 	api.GET("/health", s.health)
 
 	// admin auth（独立账号、会话与 Cookie）
-	api.POST("/admin/auth/login", s.adminLogin)
-	api.POST("/admin/auth/logout", s.adminLogout)
-	api.GET("/admin/auth/me", s.adminAuthMe)
+	api.POST("/admin/auth/session", s.adminLogin)
+	api.GET("/admin/auth/session", s.adminAuthMe)
+	api.DELETE("/admin/auth/session", s.adminLogout)
 	api.PATCH("/admin/auth/password", s.adminChangePassword)
 
 	// admin protected
 	admin := api.Group("/admin")
 	admin.Use(s.adminAudit)
-	admin.GET("/stats", s.adminOnly(s.adminStats))
+	admin.GET("/statistics", s.adminOnly(s.adminStats))
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
 	admin.GET("/users/:id", s.adminOnly(s.adminGetUser))
 	admin.PATCH("/users/:id", s.adminOnly(s.adminPatchUser))
-	admin.GET("/users/:id/ledger", s.adminOnly(s.adminUserLedger))
-	admin.POST("/users/:id/wallet-adjust", s.adminOnly(s.adminWalletAdjust))
-	admin.GET("/ledger", s.adminOnly(s.adminSiteLedger))
+	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
+	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
+	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
 	admin.GET("/tasks", s.adminOnly(s.adminListTasks))
-	admin.POST("/tasks/:id/requeue", s.adminOnly(s.adminRequeueTask))
-	admin.POST("/tasks/:id/cancel", s.adminOnly(s.adminCancelTask))
-	admin.POST("/tasks/:id/force-fail", s.adminOnly(s.adminForceFailTask))
+	admin.PATCH("/tasks/:id", s.adminOnly(s.adminPatchTask))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
-	admin.POST("/redemption-codes/generate", s.adminOnly(s.adminGenerateRedemptionCodes))
+	admin.POST("/redemption-code-batches", s.adminOnly(s.adminGenerateRedemptionCodes))
 	admin.GET("/redemption-codes", s.adminOnly(s.adminListRedemptionCodes))
-	admin.POST("/redemption-codes/:id/disable", s.adminOnly(s.adminDisableRedemptionCode))
-	admin.GET("/redemption-codes/batches", s.adminOnly(s.adminRedemptionBatches))
+	admin.PATCH("/redemption-codes/:id", s.adminOnly(s.adminDisableRedemptionCode))
+	admin.GET("/redemption-code-batches", s.adminOnly(s.adminRedemptionBatches))
 	admin.GET("/gallery/submissions", s.adminOnly(s.adminSubmissions))
-	admin.POST("/gallery/submissions/:id/review", s.adminOnly(s.adminReviewSubmission))
-	admin.POST("/gallery/submissions/:id/curate", s.adminOnly(s.adminCurateSubmission))
-	admin.POST("/gallery/submissions/batch-curate", s.adminOnly(s.adminBatchCurateSubmissions))
-	admin.POST("/gallery/submissions/reorder", s.adminOnly(s.adminReorderSubmissions))
-	admin.POST("/gallery/submissions/:id/violation", s.adminOnly(s.adminSubmissionViolation))
-	admin.POST("/gallery/users/:id/unban", s.adminOnly(s.adminUnbanGalleryUser))
+	admin.POST("/gallery/submissions/:id/reviews", s.adminOnly(s.adminReviewSubmission))
+	admin.PUT("/gallery/submissions/:id/curation", s.adminOnly(s.adminCurateSubmission))
+	admin.PATCH("/gallery/submissions", s.adminOnly(s.adminBatchCurateSubmissions))
+	admin.PATCH("/gallery/submissions/order", s.adminOnly(s.adminReorderSubmissions))
+	admin.POST("/gallery/submissions/:id/violations", s.adminOnly(s.adminSubmissionViolation))
+	admin.DELETE("/gallery/users/:id/ban", s.adminOnly(s.adminUnbanGalleryUser))
 	admin.GET("/gallery/categories", s.adminOnly(s.adminGalleryCategories))
 	admin.POST("/gallery/categories", s.adminOnly(s.adminCreateGalleryCategory))
 	admin.PATCH("/gallery/categories/:id", s.adminOnly(s.adminPatchGalleryCategory))
@@ -229,20 +226,20 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/gallery/settings", s.adminOnly(s.adminGetGallerySettings))
 	admin.PUT("/gallery/settings", s.adminOnly(s.adminPutGallerySettings))
 	admin.GET("/gallery/authors", s.adminOnly(s.adminGalleryAuthors))
-	admin.GET("/prompt-library", s.adminOnly(s.adminListPrompts))
-	admin.POST("/prompt-library", s.adminOnly(s.adminCreatePrompt))
-	admin.POST("/prompt-library/reorder", s.adminOnly(s.adminReorderPrompts))
-	admin.GET("/prompt-library/:id/position", s.adminOnly(s.adminPromptPosition))
-	admin.POST("/prompt-library/:id/move", s.adminOnly(s.adminMovePrompt))
-	admin.PATCH("/prompt-library/:id", s.adminOnly(s.adminPatchPrompt))
-	admin.DELETE("/prompt-library/:id", s.adminOnly(s.adminDeletePrompt))
-	admin.POST("/prompt-library/:id/cover", s.adminOnly(s.adminUploadPromptCover))
-	admin.POST("/gallery/submissions/:id/prompt", s.adminOnly(s.adminCreatePromptFromSubmission))
+	admin.GET("/prompts", s.adminOnly(s.adminListPrompts))
+	admin.POST("/prompts", s.adminOnly(s.adminCreatePrompt))
+	admin.PATCH("/prompts/order", s.adminOnly(s.adminReorderPrompts))
+	admin.GET("/prompts/:id/position", s.adminOnly(s.adminPromptPosition))
+	admin.PATCH("/prompts/:id/position", s.adminOnly(s.adminMovePrompt))
+	admin.PATCH("/prompts/:id", s.adminOnly(s.adminPatchPrompt))
+	admin.DELETE("/prompts/:id", s.adminOnly(s.adminDeletePrompt))
+	admin.PUT("/prompts/:id/cover", s.adminOnly(s.adminUploadPromptCover))
+	admin.POST("/gallery/submissions/:id/prompts", s.adminOnly(s.adminCreatePromptFromSubmission))
 	admin.GET("/prompt-sources", s.adminOnly(s.adminListPromptSources))
 	admin.POST("/prompt-sources", s.adminOnly(s.adminCreatePromptSource))
 	admin.PATCH("/prompt-sources/:id", s.adminOnly(s.adminPatchPromptSource))
 	admin.DELETE("/prompt-sources/:id", s.adminOnly(s.adminDeletePromptSource))
-	admin.POST("/prompt-sources/:id/sync", s.adminOnly(s.adminSyncPromptSource))
+	admin.POST("/prompt-sources/:id/synchronizations", s.adminOnly(s.adminSyncPromptSource))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
@@ -253,12 +250,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.DELETE("/changelog/:id", s.adminOnly(s.adminDeleteChangelog))
 	admin.GET("/settings", s.adminOnly(s.adminGetSettings))
 	admin.PUT("/settings", s.adminOnly(s.adminPutSettings))
-	admin.POST("/settings/test-c2a", s.adminOnly(s.adminTestC2A))
-	admin.POST("/settings/test-sub2api", s.adminOnly(s.adminTestSub2API))
-	admin.POST("/settings/test-crun", s.adminOnly(s.adminTestCRUN))
+	admin.POST("/providers/c2a/tests", s.adminOnly(s.adminTestC2A))
+	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
+	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
-	admin.POST("/model-config/discover-models", s.adminOnly(s.adminDiscoverProviderModels))
+	admin.POST("/model-config/discoveries", s.adminOnly(s.adminDiscoverProviderModels))
 
 	return r
 }

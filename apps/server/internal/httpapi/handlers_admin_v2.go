@@ -20,6 +20,28 @@ import (
 
 // ---------- users ----------
 
+type adminTaskPatchIn struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) adminPatchTask(c *gin.Context, admin *store.User) {
+	var body adminTaskPatchIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	switch body.Status {
+	case "queued":
+		s.adminRequeueTask(c, admin)
+	case "canceled":
+		s.adminCancelTask(c, admin)
+	case "failed":
+		s.adminForceFailTask(c, admin)
+	default:
+		fail(c, apperr.E("validation_error", "status: 仅支持 queued、canceled 或 failed", 422))
+	}
+}
+
 func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 	userID, err := parseUUIDParam(c, "id")
 	if err != nil {

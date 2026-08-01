@@ -21,7 +21,7 @@
 
 ### 单事件流与批量轮询
 
-应用只维持 `/api/me/tasks/stream` 一条账户级 SSE。任务页面不再为每个任务创建一条 EventSource。
+应用只维持 `/api/v1/me/tasks/events` 一条账户级 SSE。任务页面不再为每个任务创建一条 EventSource。
 
 SSE 是低延迟路径，批量轮询是可靠兜底：
 
@@ -33,7 +33,7 @@ N 个 waitForTask 调用
         |
         +--> 账户级 SSE 按 task.id 分发
         |
-        +--> GET /api/tasks/batch?ids=... （每批最多 100）
+        +--> GET /api/v1/tasks?ids=... （每批最多 100）
 ```
 
 轮询间隔按等待任务数自适应：
@@ -105,13 +105,13 @@ Worker 并发窗口（默认 2）
 批量任务快照：
 
 ```http
-GET /api/tasks/batch?ids=<uuid>,<uuid>,...
+GET /api/v1/tasks?ids=<uuid>,<uuid>,...
 ```
 
 - 一次最多 100 个 ID。
 - 自动去重，响应保持输入顺序。
 - 只返回当前登录用户拥有的任务；不存在或属于其他用户的 ID 被忽略。
-- 返回对象与 `GET /api/tasks/:id` 相同，包含缩略图和原图 URL。
+- 返回对象与 `GET /api/v1/tasks/:id` 相同，包含缩略图和原图 URL。
 
 ## 验证和监控
 

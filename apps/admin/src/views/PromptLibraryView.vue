@@ -135,7 +135,7 @@ async function loadPromptPage(cursor: string | null) {
   error.value = null
   try {
     const page = normalizeList(
-      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+      await request<PromptItem[] | Page<PromptItem>>('/api/v1/admin/prompts', {
         query: params,
       }),
     )
@@ -330,7 +330,7 @@ async function applyBatchEdit() {
       const item = queue.shift()
       if (!item) return
       try {
-        await request(`/api/admin/prompt-library/${item.id}`, {
+        await request(`/api/v1/admin/prompts/${item.id}`, {
           method: 'PATCH',
           body: changes,
           silent: true,
@@ -396,7 +396,7 @@ async function quickChangeCategory(item: PromptItem, category: string) {
   item.category = category
   updatingItemFields.add(key)
   try {
-    await request(`/api/admin/prompt-library/${item.id}`, { method: 'PATCH', body: { category } })
+    await request(`/api/v1/admin/prompts/${item.id}`, { method: 'PATCH', body: { category } })
     ElMessage.success(`已移入「${categoryMeta(category).label}」`)
     if (categoryFilter.value !== 'all') await refresh()
   } catch {
@@ -414,7 +414,7 @@ async function quickChangeTaskType(item: PromptItem, taskType: string) {
   item.taskType = taskType
   updatingItemFields.add(key)
   try {
-    await request(`/api/admin/prompt-library/${item.id}`, { method: 'PATCH', body: { taskType } })
+    await request(`/api/v1/admin/prompts/${item.id}`, { method: 'PATCH', body: { taskType } })
     ElMessage.success(`已投放到「${taskTypeLabel(taskType)}」`)
     if (typeFilter.value !== 'all') await refresh()
   } catch {
@@ -450,7 +450,7 @@ async function openQuickSort(item: PromptItem) {
   try {
     const scope = quickSortScope.value
     const result = await request<{ position: number; count: number }>(
-      `/api/admin/prompt-library/${item.id}/position`,
+      `/api/v1/admin/prompts/${item.id}/position`,
       {
         query: { type: scope.taskType, category: scope.category, status: scope.status },
       },
@@ -471,9 +471,9 @@ async function submitQuickSort(position = quickSortPosition.value) {
   quickSortSaving.value = true
   try {
     const result = await request<{ position: number; count: number }>(
-      `/api/admin/prompt-library/${item.id}/move`,
+      `/api/v1/admin/prompts/${item.id}/position`,
       {
-        method: 'POST',
+        method: 'PATCH',
         body: {
           position: target,
           taskType: scope.taskType,
@@ -594,7 +594,7 @@ async function loadSortItems(resetPaging = false) {
   sortLoading.value = true
   try {
     const page: Page<PromptItem> = normalizeList(
-      await request<PromptItem[] | Page<PromptItem>>('/api/admin/prompt-library', {
+      await request<PromptItem[] | Page<PromptItem>>('/api/v1/admin/prompts', {
         query: {
           type: sortType.value === 'all' ? '' : sortType.value,
           category: sortCategory.value === 'all' ? '' : sortCategory.value,
@@ -686,8 +686,8 @@ async function saveSortOrder(refreshLibrary = true) {
   if (!sortItems.value.length || !sortDirty.value || sortSaving.value) return false
   sortSaving.value = true
   try {
-    await request('/api/admin/prompt-library/reorder', {
-      method: 'POST',
+    await request('/api/v1/admin/prompts/order', {
+      method: 'PATCH',
       body: { ids: sortItems.value.map((item) => item.id) },
     })
     sortSnapshot.value = sortItems.value.map((item) => item.id)
@@ -707,9 +707,9 @@ async function moveSelectedPrompt(position = sortTargetPosition.value) {
   sortSaving.value = true
   try {
     const result = await request<{ position: number; count: number }>(
-      `/api/admin/prompt-library/${item.id}/move`,
+      `/api/v1/admin/prompts/${item.id}/position`,
       {
-        method: 'POST',
+        method: 'PATCH',
         body: {
           position: target,
           taskType: sortType.value === 'all' ? '' : sortType.value,
@@ -788,8 +788,8 @@ function pickImage(event: Event) {
 async function uploadCover(id: string, file: File) {
   const body = new FormData()
   body.append('file', file)
-  const res = await fetch(`/api/admin/prompt-library/${id}/cover`, {
-    method: 'POST',
+  const res = await fetch(`/api/v1/admin/prompts/${id}/cover`, {
+    method: 'PUT',
     credentials: 'include',
     body,
   })
@@ -824,8 +824,8 @@ async function save() {
     }
     const creating = !editingId.value
     const saved = editingId.value
-      ? await request<PromptItem>(`/api/admin/prompt-library/${editingId.value}`, { method: 'PATCH', body })
-      : await request<PromptItem>('/api/admin/prompt-library', { method: 'POST', body })
+      ? await request<PromptItem>(`/api/v1/admin/prompts/${editingId.value}`, { method: 'PATCH', body })
+      : await request<PromptItem>('/api/v1/admin/prompts', { method: 'POST', body })
     const id = saved?.id || editingId.value
     // 新增内容已落库后立即切换到编辑态，封面失败重试时不会重复创建词条。
     if (creating && id) editingId.value = id
@@ -853,7 +853,7 @@ watch(editorOpen, (open) => {
 async function toggleItem(item: PromptItem, active: boolean) {
   item.active = active
   try {
-    await request(`/api/admin/prompt-library/${item.id}`, { method: 'PATCH', body: { active } })
+    await request(`/api/v1/admin/prompts/${item.id}`, { method: 'PATCH', body: { active } })
   } catch {
     item.active = !active
   }
@@ -865,13 +865,13 @@ async function remove(item: PromptItem) {
     confirmButtonText: '确认删除',
     cancelButtonText: '取消',
   })
-  await request(`/api/admin/prompt-library/${item.id}`, { method: 'DELETE' })
+  await request(`/api/v1/admin/prompts/${item.id}`, { method: 'DELETE' })
   selectedIds.delete(item.id)
   ElMessage.success('提示词已删除')
   await refresh()
 }
 
-/* ============ 数据源管理（契约 v4：/api/admin/prompt-sources） ============ */
+/* ============ 数据源管理（契约 v4：/api/v1/admin/prompt-sources） ============ */
 
 interface FormatMeta {
   label: string
@@ -897,7 +897,7 @@ const syncingSourceId = ref('')
 async function loadSources(silent = false) {
   sourcesLoading.value = true
   try {
-    const data = await request<PromptSource[] | Page<PromptSource>>('/api/admin/prompt-sources', { silent })
+    const data = await request<PromptSource[] | Page<PromptSource>>('/api/v1/admin/prompt-sources', { silent })
     sources.value = normalizeList(data).items
   } catch {
     // 错误提示由 request 统一处理（silent 时静默，页头徽标保持旧值）
@@ -948,7 +948,7 @@ async function copySourceUrl(source: PromptSource) {
 async function toggleSource(source: PromptSource, enabled: boolean) {
   source.enabled = enabled
   try {
-    await request(`/api/admin/prompt-sources/${source.id}`, { method: 'PATCH', body: { enabled } })
+    await request(`/api/v1/admin/prompt-sources/${source.id}`, { method: 'PATCH', body: { enabled } })
   } catch {
     source.enabled = !enabled
   }
@@ -957,7 +957,7 @@ async function toggleSource(source: PromptSource, enabled: boolean) {
 async function syncSource(source: PromptSource) {
   syncingSourceId.value = source.id
   try {
-    const result = await request<SourceSyncResult>(`/api/admin/prompt-sources/${source.id}/sync`, {
+    const result = await request<SourceSyncResult>(`/api/v1/admin/prompt-sources/${source.id}/synchronizations`, {
       method: 'POST',
     })
     const failedText = result.failed ? `，失败 ${result.failed} 条` : ''
@@ -994,7 +994,7 @@ async function removeSource(source: PromptSource) {
         ),
       ]),
   })
-  await request(`/api/admin/prompt-sources/${source.id}`, {
+  await request(`/api/v1/admin/prompt-sources/${source.id}`, {
     method: 'DELETE',
     query: purgeItems.value ? { purgeItems: 1 } : undefined,
   })
@@ -1048,9 +1048,9 @@ async function saveSource() {
       autoSyncEnabled: sourceForm.autoSyncEnabled,
     }
     if (editingSourceId.value) {
-      await request(`/api/admin/prompt-sources/${editingSourceId.value}`, { method: 'PATCH', body })
+      await request(`/api/v1/admin/prompt-sources/${editingSourceId.value}`, { method: 'PATCH', body })
     } else {
-      await request('/api/admin/prompt-sources', { method: 'POST', body: { ...body, enabled: true } })
+      await request('/api/v1/admin/prompt-sources', { method: 'POST', body: { ...body, enabled: true } })
     }
     ElMessage.success('数据源已保存')
     sourceEditorOpen.value = false

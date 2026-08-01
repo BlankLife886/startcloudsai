@@ -1,4 +1,4 @@
-// 新后端产物为短期 presigned URL 或 /api/files/{key} 站内地址，
+// 新后端产物为短期 presigned URL 或 /api/v1/files/{key} 站内地址，
 // 鉴权靠 HttpOnly Cookie，无需附加 Authorization 头。
 
 const mediaCache = new Map()
@@ -215,7 +215,7 @@ function scheduleMediaCacheTrim() {
 
 export function isAuthenticatedAiMediaUrl(value = '') {
   const url = String(value || '')
-  return /\/api\/files\//i.test(url)
+  return /\/api\/v1\/files\//i.test(url)
 }
 
 export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {

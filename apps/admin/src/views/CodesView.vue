@@ -56,7 +56,7 @@ const filters = reactive({ status: '', batchId: '', search: '' })
 const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<RedemptionCode>(
     (cursor) =>
-      request<Page<RedemptionCode>>('/api/admin/redemption-codes', {
+      request<Page<RedemptionCode>>('/api/v1/admin/redemption-codes', {
         query: {
           status: filters.status,
           batchId: filters.batchId,
@@ -116,7 +116,10 @@ async function disableCode(row: RedemptionCode) {
     '禁用兑换码',
     { type: 'warning', confirmButtonText: '禁用', cancelButtonText: '取消' },
   )
-  await request(`/api/admin/redemption-codes/${row.id}/disable`, { method: 'POST' })
+  await request(`/api/v1/admin/redemption-codes/${row.id}`, {
+    method: 'PATCH',
+    body: { active: false },
+  })
   ElMessage.success('已禁用')
   refresh()
   loadBatches()
@@ -130,7 +133,7 @@ async function loadBatches() {
   batchesLoading.value = true
   try {
     const data = await request<CodeBatch[] | { items: CodeBatch[] }>(
-      '/api/admin/redemption-codes/batches',
+      '/api/v1/admin/redemption-code-batches',
       { silent: true },
     )
     batches.value = normalizeList(data).items
@@ -203,7 +206,7 @@ async function submitGenerate() {
   }
   genSubmitting.value = true
   try {
-    genResult.value = await request<GenerateResult>('/api/admin/redemption-codes/generate', {
+    genResult.value = await request<GenerateResult>('/api/v1/admin/redemption-code-batches', {
       method: 'POST',
       body: {
         count,

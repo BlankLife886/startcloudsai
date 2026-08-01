@@ -70,7 +70,7 @@ const {
   prev,
   retry: retryWorks,
 } = usePagedList<CommunityWork>((cursor) =>
-  request<CommunityWork[] | Page<CommunityWork>>('/api/admin/gallery/submissions', {
+  request<CommunityWork[] | Page<CommunityWork>>('/api/v1/admin/gallery/submissions', {
     query: { status: 'approved', limit: 100, cursor },
   }).then(normalizeList),
 )
@@ -121,8 +121,8 @@ async function persistWorkOrder() {
   works.value = works.value.map((item) => ({ ...item, sort: sortByID.get(item.id) ?? item.sort }))
   workOrderSaving.value = true
   try {
-    await request('/api/admin/gallery/submissions/reorder', {
-      method: 'POST',
+    await request('/api/v1/admin/gallery/submissions/order', {
+      method: 'PATCH',
       body: { ids: ordered.map((item) => item.id) },
     })
     ElMessage.success('作品顺序已更新')
@@ -215,8 +215,8 @@ async function saveCurate() {
   const tags = cleanTagValues(editForm.tags)
   editSaving.value = true
   try {
-    await request(`/api/admin/gallery/submissions/${target.id}/curate`, {
-      method: 'POST',
+    await request(`/api/v1/admin/gallery/submissions/${target.id}/curation`, {
+      method: 'PUT',
       body: {
         featured: editForm.featured,
         categoryId: editForm.categoryId || null,
@@ -295,7 +295,7 @@ async function saveBatchEdit() {
   }
   batchSaving.value = true
   try {
-    await request('/api/admin/gallery/submissions/batch-curate', { method: 'POST', body })
+    await request('/api/v1/admin/gallery/submissions', { method: 'PATCH', body })
     const category = categories.value.find((row) => row.id === batchForm.categoryId)
     works.value = works.value.map((item) => {
       if (!selectedWorkIds.value.has(item.id)) return item
@@ -318,8 +318,8 @@ async function toggleFeatured(item: CommunityWork) {
   workOperating.value = item.id
   const nextValue = item.featured !== true
   try {
-    await request(`/api/admin/gallery/submissions/${item.id}/curate`, {
-      method: 'POST',
+    await request(`/api/v1/admin/gallery/submissions/${item.id}/curation`, {
+      method: 'PUT',
       body: { featured: nextValue },
     })
     mergeWork(item.id, { featured: nextValue })
@@ -363,7 +363,7 @@ watch(
 )
 
 async function loadCategories() {
-  const page = await request<GalleryCategory[] | Page<GalleryCategory>>('/api/admin/gallery/categories').then(
+  const page = await request<GalleryCategory[] | Page<GalleryCategory>>('/api/v1/admin/gallery/categories').then(
     normalizeList,
   )
   categories.value = page.items
@@ -378,7 +378,7 @@ async function submitCategoryEditor() {
   categorySaving.value = '__create__'
   try {
     const nextSort = categories.value.reduce((max, item) => Math.max(max, item.sort), 0) + 10
-    await request('/api/admin/gallery/categories', {
+    await request('/api/v1/admin/gallery/categories', {
       method: 'POST',
       body: { name, sort: nextSort, active: categoryEditorForm.active },
     })
@@ -393,7 +393,7 @@ async function submitCategoryEditor() {
 async function patchCategory(item: GalleryCategory, body: Partial<GalleryCategory>) {
   categorySaving.value = item.id
   try {
-    await request(`/api/admin/gallery/categories/${item.id}`, { method: 'PATCH', body })
+    await request(`/api/v1/admin/gallery/categories/${item.id}`, { method: 'PATCH', body })
     await loadCategories()
     return true
   } catch {
@@ -416,7 +416,7 @@ async function removeCategory(item: GalleryCategory) {
     confirmButtonText: '确认删除',
     cancelButtonText: '取消',
   })
-  await request(`/api/admin/gallery/categories/${item.id}`, { method: 'DELETE' })
+  await request(`/api/v1/admin/gallery/categories/${item.id}`, { method: 'DELETE' })
   ElMessage.success('分类已删除')
   await loadCategories()
 }
@@ -454,7 +454,7 @@ async function persistCategoryOrder() {
   try {
     await Promise.all(
       dirty.map(({ item, sort }) =>
-        request(`/api/admin/gallery/categories/${item.id}`, { method: 'PATCH', body: { sort } }),
+        request(`/api/v1/admin/gallery/categories/${item.id}`, { method: 'PATCH', body: { sort } }),
       ),
     )
   } finally {
@@ -485,7 +485,7 @@ function authorInitial(row: CommunityAuthor) {
 async function loadAuthors() {
   authorsLoading.value = true
   try {
-    const page = await request<CommunityAuthor[] | Page<CommunityAuthor>>('/api/admin/gallery/authors', {
+    const page = await request<CommunityAuthor[] | Page<CommunityAuthor>>('/api/v1/admin/gallery/authors', {
       query: { search: authorQuery.value.trim() },
     }).then(normalizeList)
     authors.value = page.items
@@ -502,7 +502,7 @@ function isBanned(row: CommunityAuthor) {
 async function unbanAuthor(row: CommunityAuthor) {
   unbanning.value = row.userId
   try {
-    await request(`/api/admin/gallery/users/${row.userId}/unban`, { method: 'POST' })
+    await request(`/api/v1/admin/gallery/users/${row.userId}/ban`, { method: 'DELETE' })
     ElMessage.success('已解除禁投')
     await loadAuthors()
   } finally {
@@ -517,7 +517,7 @@ const settingsLoaded = ref(false)
 const settingsSaving = ref(false)
 
 async function loadSettings() {
-  const data = await request<GallerySettings>('/api/admin/gallery/settings')
+  const data = await request<GallerySettings>('/api/v1/admin/gallery/settings')
   settings.submissionEnabled = data.submissionEnabled
   settings.autoApprove = data.autoApprove
   settings.dailyLimit = data.dailyLimit
@@ -528,7 +528,7 @@ async function saveSettings(message: string) {
   if (!settingsLoaded.value) return
   settingsSaving.value = true
   try {
-    await request('/api/admin/gallery/settings', {
+    await request('/api/v1/admin/gallery/settings', {
       method: 'PUT',
       body: {
         submissionEnabled: settings.submissionEnabled,

@@ -85,7 +85,7 @@ const {
   retry,
 } = usePagedList<AdminTask>(
   async (cursor) => {
-    const page = await request<TaskPage>("/api/admin/tasks", {
+    const page = await request<TaskPage>("/api/v1/admin/tasks", {
       query: {
         type: filters.type,
         status: filters.status,
@@ -325,7 +325,7 @@ function taskCount(task: AdminTask): number | string {
 
 /** 输入图直接走文件网关（302 到 R2 presigned URL） */
 function fileUrl(key: string): string {
-  return `/api/files/${key}`;
+  return `/api/v1/files/${key}`;
 }
 
 // 详情抽屉
@@ -380,7 +380,10 @@ async function requeue(task: AdminTask) {
   );
   acting.value = true;
   try {
-    await request(`/api/admin/tasks/${task.id}/requeue`, { method: "POST" });
+    await request(`/api/v1/admin/tasks/${task.id}`, {
+      method: "PATCH",
+      body: { status: "queued" },
+    });
     ElMessage.success("已重新入队");
     detailVisible.value = false;
     refresh();
@@ -403,7 +406,10 @@ async function cancel(task: AdminTask) {
   );
   acting.value = true;
   try {
-    await request(`/api/admin/tasks/${task.id}/cancel`, { method: "POST" });
+    await request(`/api/v1/admin/tasks/${task.id}`, {
+      method: "PATCH",
+      body: { status: "canceled" },
+    });
     ElMessage.success(
       task.source === "assistant" ? "AI 助手任务已取消" : "已取消并解冻费用",
     );
@@ -429,7 +435,10 @@ async function forceFail(task: AdminTask) {
   );
   acting.value = true;
   try {
-    await request(`/api/admin/tasks/${task.id}/force-fail`, { method: "POST" });
+    await request(`/api/v1/admin/tasks/${task.id}`, {
+      method: "PATCH",
+      body: { status: "failed" },
+    });
     ElMessage.success("已强制失败并解冻退款");
     detailVisible.value = false;
     refresh();

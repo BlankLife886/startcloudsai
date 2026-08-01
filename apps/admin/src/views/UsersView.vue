@@ -66,7 +66,7 @@ const filters = reactive({ search: '', status: '' })
 const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<AdminUser>(
     (cursor) =>
-      request<Page<AdminUser>>('/api/admin/users', {
+      request<Page<AdminUser>>('/api/v1/admin/users', {
         query: { search: filters.search, status: filters.status, limit: 20, cursor },
       }),
     () => filters,
@@ -81,7 +81,7 @@ async function toggleBan(user: AdminUser) {
     banning ? '封禁用户' : '解封用户',
     { type: 'warning', confirmButtonText: banning ? '封禁' : '解封', cancelButtonText: '取消' },
   )
-  await request(`/api/admin/users/${user.id}`, {
+  await request(`/api/v1/admin/users/${user.id}`, {
     method: 'PATCH',
     body: { status: banning ? 'banned' : 'active' },
   })
@@ -117,7 +117,7 @@ async function submitAdjust() {
   }
   adjustSubmitting.value = true
   try {
-    await request(`/api/admin/users/${adjustTarget.value.id}/wallet-adjust`, {
+    await request(`/api/v1/admin/users/${adjustTarget.value.id}/wallet/entries`, {
       method: 'POST',
       body: { deltaCents: adjustCents.value, reason: adjustForm.reason.trim() },
     })
@@ -189,7 +189,7 @@ const overview = ref<UserDetail | null>(null)
 
 const ledgerList = usePagedList<LedgerEntry>(
   (cursor) =>
-    request<Page<LedgerEntry>>(`/api/admin/users/${drawerUser.value?.id}/ledger`, {
+    request<Page<LedgerEntry>>(`/api/v1/admin/users/${drawerUser.value?.id}/wallet/entries`, {
       query: { limit: 20, cursor },
     }),
   () => drawerUser.value?.id ?? '',
@@ -197,7 +197,7 @@ const ledgerList = usePagedList<LedgerEntry>(
 
 const taskList = usePagedList<UserTask>(
   (cursor) =>
-    request<Page<UserTask>>('/api/admin/tasks', {
+    request<Page<UserTask>>('/api/v1/admin/tasks', {
       query: { user: drawerUser.value?.id, limit: 20, cursor },
     }),
   () => drawerUser.value?.id ?? '',
@@ -207,7 +207,7 @@ async function loadOverview() {
   if (!drawerUser.value) return
   overviewLoading.value = true
   try {
-    overview.value = await request<UserDetail>(`/api/admin/users/${drawerUser.value.id}`)
+    overview.value = await request<UserDetail>(`/api/v1/admin/users/${drawerUser.value.id}`)
   } finally {
     overviewLoading.value = false
   }

@@ -31,7 +31,7 @@ const showMobileSection = computed(() => isHomeModuleVisible('mobile'))
 const showDesktopSection = computed(() => isHomeModuleVisible('desktop'))
 const showRandomSection = computed(() => isHomeModuleVisible('random'))
 
-/* —— 馆藏数据：全部来自共享画廊 GET /api/gallery —— */
+/* —— 馆藏数据：全部来自共享画廊 GET /api/v1/gallery/submissions —— */
 const { galleryItems, galleryStats, isLoading, error, hasMore, reload } = useHomeGalleryData()
 
 /* —— 动效中枢：GSAP ScrollTrigger + anime.js + three.js 星幕 —— */

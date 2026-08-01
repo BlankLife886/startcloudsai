@@ -82,10 +82,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   let payload: unknown = null
-  try {
-    payload = await res.json()
-  } catch {
-    // 非 JSON 响应（如网关 5xx），走下面的统一失败处理
+  if (res.status === 204) {
+    if (res.ok) return undefined as T
+  } else {
+    try {
+      payload = await res.json()
+    } catch {
+      // 非 JSON 响应（如网关 5xx），走下面的统一失败处理
+    }
   }
 
   const envelope = payload as

@@ -111,28 +111,14 @@ func buildAuditEntry(admin *store.User, method, path, targetID string, status in
 	return entry
 }
 
-// auditAction 从 method+path 归纳动作名：资源段.动词。
-// 资源段取离末尾最近的非 id 段（嵌套路径归属子资源，如
-// POST /api/admin/gallery/submissions/:id/violation → submissions.violation）。
-// POST /api/admin/plans → plans.create；PATCH/PUT → .update；DELETE → .delete；
-// 末段为动词（非 id）时直接采用，如 POST /api/admin/tasks/:id/requeue → tasks.requeue。
+// auditAction derives a stable resource.operation label from a REST path.
+// UUID path segments are identifiers; the nearest named segment is the resource.
 func auditAction(method, path string) string {
-	trimmed := strings.Trim(strings.TrimPrefix(path, "/api/admin"), "/")
+	trimmed := strings.Trim(strings.TrimPrefix(path, "/api/v1/admin"), "/")
 	if trimmed == "" {
 		return strings.ToLower(method)
 	}
 	segs := strings.Split(trimmed, "/")
-	last := segs[len(segs)-1]
-	if len(segs) > 1 && !isUUIDSegment(last) {
-		resource := segs[0]
-		for i := len(segs) - 2; i >= 0; i-- {
-			if !isUUIDSegment(segs[i]) {
-				resource = segs[i]
-				break
-			}
-		}
-		return resource + "." + last
-	}
 	resource := segs[0]
 	for i := len(segs) - 1; i >= 0; i-- {
 		if !isUUIDSegment(segs[i]) {
@@ -143,6 +129,8 @@ func auditAction(method, path string) string {
 	switch method {
 	case "POST":
 		return resource + ".create"
+	case "GET":
+		return resource + ".read"
 	case "PATCH", "PUT":
 		return resource + ".update"
 	case "DELETE":

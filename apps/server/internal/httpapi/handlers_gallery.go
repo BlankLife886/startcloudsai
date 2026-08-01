@@ -19,7 +19,7 @@ func (s *Server) presignSafe(c *gin.Context, key *string) *string {
 	if key == nil || *key == "" {
 		return nil
 	}
-	u := "/api/files/" + strings.TrimLeft(strings.TrimSpace(*key), "/")
+	u := "/api/v1/files/" + strings.TrimLeft(strings.TrimSpace(*key), "/")
 	return &u
 }
 
@@ -257,7 +257,7 @@ func (s *Server) submitGallery(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, submissionDict(submission, nil))
+	respondCreated(c, submissionDict(submission, nil))
 }
 
 func (s *Server) mySubmissions(c *gin.Context) {
@@ -321,5 +321,5 @@ func (s *Server) deleteSubmission(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }

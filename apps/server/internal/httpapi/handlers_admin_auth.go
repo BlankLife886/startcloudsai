@@ -44,7 +44,7 @@ func adminAccountAsUser(admin *store.AdminAccount) *store.User {
 
 func (s *Server) setAdminSessionCookie(c *gin.Context, token string, maxAge int) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(adminSessionCookieName, token, maxAge, "/api", "",
+	c.SetCookie(adminSessionCookieName, token, maxAge, "/api/v1/admin", "",
 		s.Cfg.AppEnv == "production", true)
 }
 
@@ -134,7 +134,7 @@ func (s *Server) adminLogin(c *gin.Context) {
 		return
 	}
 	s.setAdminSessionCookie(c, token, int(adminSessionTTL/time.Second))
-	ok(c, gin.H{"admin": adminAccountDict(admin)})
+	respondCreated(c, gin.H{"admin": adminAccountDict(admin)})
 }
 
 func truncateRunes(value string, max int) string {
@@ -163,7 +163,7 @@ func (s *Server) adminLogout(c *gin.Context) {
 		}
 	}
 	s.setAdminSessionCookie(c, "", -1)
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 func (s *Server) adminAuthMe(c *gin.Context) {

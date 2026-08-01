@@ -18,7 +18,7 @@ func TestMockPaymentRouteDisabled(t *testing.T) {
 	cfg := config.Load()
 	cfg.PaymentMockEnabled = false
 	s := &Server{Cfg: cfg}
-	w := authRequest(t, s.Router(), http.MethodPost, "/api/payments/webhook/mock", gin.H{
+	w := authRequest(t, s.Router(), http.MethodPost, "/api/v1/payments/webhook/mock", gin.H{
 		"orderId": "00000000-0000-0000-0000-000000000000", "secret": "x",
 	})
 	if w.Code != http.StatusNotFound {
@@ -35,12 +35,12 @@ func TestPlansAreReadOnlyWhilePaymentIsDisabled(t *testing.T) {
 	for _, route := range routes {
 		registered[route.Method+" "+route.Path] = true
 	}
-	if !registered[http.MethodGet+" /api/plans"] {
+	if !registered[http.MethodGet+" /api/v1/plans"] {
 		t.Fatal("read-only plan list route is not registered")
 	}
 	for _, route := range []string{
-		http.MethodPost + " /api/orders",
-		http.MethodPost + " /api/payments/webhook/:provider",
+		http.MethodPost + " /api/v1/orders",
+		http.MethodPost + " /api/v1/payments/webhook/:provider",
 	} {
 		if registered[route] {
 			t.Fatalf("payment write route unexpectedly registered: %s", route)
@@ -67,7 +67,7 @@ func TestUserPasswordChangeIsRejected(t *testing.T) {
 	}
 	cfg := config.Load()
 	s := &Server{Cfg: cfg, St: st}
-	w := authRequest(t, s.Router(), http.MethodPatch, "/api/me/profile", gin.H{
+	w := authRequest(t, s.Router(), http.MethodPatch, "/api/v1/me/profile", gin.H{
 		"password": gin.H{"old": "old-password", "new": "new-password"},
 	}, &http.Cookie{Name: cfg.SessionCookieName, Value: tokens[0]})
 	if w.Code != http.StatusUnprocessableEntity {

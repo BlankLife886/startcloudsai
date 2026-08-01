@@ -127,7 +127,7 @@ async function loadAnnouncements() {
   annError.value = "";
   try {
     const data = await request<Announcement[] | { items: Announcement[] }>(
-      "/api/admin/announcements",
+      "/api/v1/admin/announcements",
       { silent: true },
     );
     const items = normalizeList(data).items;
@@ -268,13 +268,13 @@ async function submitAnn() {
   annSubmitting.value = true;
   try {
     if (annEditingId.value) {
-      await request(`/api/admin/announcements/${annEditingId.value}`, {
+      await request(`/api/v1/admin/announcements/${annEditingId.value}`, {
         method: "PATCH",
         body,
       });
       ElMessage.success("公告已更新");
     } else {
-      await request("/api/admin/announcements", { method: "POST", body });
+      await request("/api/v1/admin/announcements", { method: "POST", body });
       ElMessage.success("公告已发布");
     }
     annDialogVisible.value = false;
@@ -294,7 +294,7 @@ async function removeAnn(item: Announcement) {
   } catch {
     return;
   }
-  await request(`/api/admin/announcements/${item.id}`, { method: "DELETE" });
+  await request(`/api/v1/admin/announcements/${item.id}`, { method: "DELETE" });
   ElMessage.success("已删除");
   await loadAnnouncements();
 }
@@ -325,7 +325,7 @@ async function loadChangelog() {
   logError.value = "";
   try {
     const data = await request<ChangelogEntry[] | { items: ChangelogEntry[] }>(
-      "/api/admin/changelog",
+      "/api/v1/admin/changelog",
       { silent: true },
     );
     const items = normalizeList(data).items;
@@ -396,13 +396,13 @@ async function submitLog() {
   logSubmitting.value = true;
   try {
     if (logEditingId.value) {
-      await request(`/api/admin/changelog/${logEditingId.value}`, {
+      await request(`/api/v1/admin/changelog/${logEditingId.value}`, {
         method: "PATCH",
         body,
       });
       ElMessage.success("更新说明已保存");
     } else {
-      await request("/api/admin/changelog", { method: "POST", body });
+      await request("/api/v1/admin/changelog", { method: "POST", body });
       ElMessage.success("更新说明已发布");
     }
     logDialogVisible.value = false;
@@ -426,7 +426,7 @@ async function removeLog(entry: ChangelogEntry) {
   } catch {
     return;
   }
-  await request(`/api/admin/changelog/${entry.id}`, { method: "DELETE" });
+  await request(`/api/v1/admin/changelog/${entry.id}`, { method: "DELETE" });
   ElMessage.success("已删除");
   await loadChangelog();
 }

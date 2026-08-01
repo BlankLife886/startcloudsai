@@ -1,5 +1,5 @@
 /**
- * 个人中心相关 API（/api/me/*）。
+ * 个人中心相关 API（/api/v1/me/*）。
  */
 import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
 
@@ -19,12 +19,12 @@ export async function getWallet({ signal } = {}) {
 }
 
 /**
- * 兑换码入账：POST /api/me/wallet/redeem → { grantCents, balanceCents }。
+ * 兑换码入账：POST /api/v1/me/wallet/redemptions → { grantCents, balanceCents }。
  * 错误码：code_invalid / code_redeemed / code_expired / code_disabled / rate_limited。
  */
 export async function redeemWalletCode(code) {
   return apiPost(
-    '/me/wallet/redeem',
+    '/me/wallet/redemptions',
     {
       code: String(code || '')
         .trim()
@@ -36,7 +36,7 @@ export async function redeemWalletCode(code) {
 
 /** 钱包账本（cursor 分页）。 */
 export async function listWalletLedger({ limit = 20, cursor = '', signal } = {}) {
-  const data = await apiGet('/me/wallet/ledger', {
+  const data = await apiGet('/me/wallet/entries', {
     query: { limit, cursor },
     signal,
     fallbackMessage: '账本读取失败',
@@ -62,7 +62,7 @@ export async function listNotifications({ limit = 20, cursor = '', signal } = {}
 
 /** 标记已读；不传 ids 则全部已读。 */
 export async function markNotificationsRead(ids = null) {
-  return apiPost('/me/notifications/read', Array.isArray(ids) && ids.length ? { ids } : {}, {
+  return apiPatch('/me/notifications', Array.isArray(ids) && ids.length ? { ids } : {}, {
     fallbackMessage: '标记已读失败',
   })
 }

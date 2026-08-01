@@ -1,5 +1,5 @@
 /**
- * 提示词库公开接口（社区运营 v3）：GET /api/prompts
+ * 提示词库公开接口（社区运营 v3）：GET /api/v1/prompts
  *
  * 词条字段：{id, title, prompt, taskType, category, tags[], coverUrl}
  * 带简单内存缓存（按 type/category/cursor/limit 维度，短 TTL），
@@ -79,7 +79,7 @@ export async function listPrompts({
 }
 
 export async function recordPromptEngagement(id, action, active = true) {
-  const data = await apiPost(`/prompts/${encodeURIComponent(String(id))}/engagement`, {
+  const data = await apiPost(`/prompts/${encodeURIComponent(String(id))}/engagements`, {
     action,
     active,
   })

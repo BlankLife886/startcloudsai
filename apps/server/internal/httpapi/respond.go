@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,7 +13,17 @@ import (
 
 // ok 输出 {"success": true, "data": ...}。
 func ok(c *gin.Context, data any) {
-	c.JSON(200, gin.H{"success": true, "data": data})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+// created returns a newly created resource using the HTTP 201 semantic.
+func respondCreated(c *gin.Context, data any) {
+	c.JSON(http.StatusCreated, gin.H{"success": true, "data": data})
+}
+
+// noContent confirms a successful mutation that has no response representation.
+func respondNoContent(c *gin.Context) {
+	c.Status(http.StatusNoContent)
 }
 
 // fail 输出统一错误格式；非 apperr 记录日志并回 500 internal_error。

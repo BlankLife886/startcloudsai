@@ -63,7 +63,7 @@ services:
     cpus: 1.0
     pids_limit: 200
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/v1/health"]
       interval: 10s
       timeout: 3s
       retries: 12

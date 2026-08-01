@@ -111,7 +111,7 @@ func (e *communityEnv) do(t *testing.T, method, path string, body any, token str
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		cookieName := e.cfg.SessionCookieName
-		if strings.HasPrefix(path, "/api/admin") {
+		if strings.HasPrefix(path, "/api/v1/admin") {
 			cookieName = adminSessionCookieName
 		}
 		req.AddCookie(&http.Cookie{Name: cookieName, Value: token})
@@ -144,8 +144,8 @@ func TestViolationBanThenUnban(t *testing.T) {
 	task2 := env.newSucceededTask(t, user.ID)
 
 	// 正常投稿
-	w := env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task1.String(), "title": "作品一"}, userToken)
-	if w.Code != 200 {
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task1.String(), "title": "作品一"}, userToken)
+	if w.Code != http.StatusCreated {
 		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
 	}
 	data, _ := decode(t, w)
@@ -155,9 +155,9 @@ func TestViolationBanThenUnban(t *testing.T) {
 	}
 
 	// 违规下架 + 禁投 7 天
-	w = env.do(t, "POST", "/api/admin/gallery/submissions/"+submissionID+"/violation",
+	w = env.do(t, "POST", "/api/v1/admin/gallery/submissions/"+submissionID+"/violations",
 		gin.H{"reason": "违规内容", "banDays": 7}, adminToken)
-	if w.Code != 200 {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("violation: status %d body %s", w.Code, w.Body.String())
 	}
 	data, _ = decode(t, w)
@@ -166,7 +166,7 @@ func TestViolationBanThenUnban(t *testing.T) {
 	}
 
 	// 禁投期内再投稿被拒
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
 	if w.Code != 403 {
 		t.Fatalf("banned submit: status %d body %s", w.Code, w.Body.String())
 	}
@@ -185,12 +185,12 @@ func TestViolationBanThenUnban(t *testing.T) {
 	}
 
 	// 解禁后恢复投稿
-	w = env.do(t, "POST", "/api/admin/gallery/users/"+user.ID.String()+"/unban", gin.H{}, adminToken)
-	if w.Code != 200 {
+	w = env.do(t, "DELETE", "/api/v1/admin/gallery/users/"+user.ID.String()+"/ban", nil, adminToken)
+	if w.Code != http.StatusNoContent {
 		t.Fatalf("unban: status %d body %s", w.Code, w.Body.String())
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
-	if w.Code != 200 {
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
+	if w.Code != http.StatusCreated {
 		t.Fatalf("submit after unban: status %d body %s", w.Code, w.Body.String())
 	}
 }
@@ -203,37 +203,37 @@ func TestSubmissionDisabledAndDailyLimit(t *testing.T) {
 	task2 := env.newSucceededTask(t, user.ID)
 
 	// 关闭投稿
-	w := env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"submissionEnabled": false}, adminToken)
+	w := env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"submissionEnabled": false}, adminToken)
 	if w.Code != 200 {
 		t.Fatalf("put settings: status %d body %s", w.Code, w.Body.String())
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
 	if _, code := decode(t, w); w.Code != 403 || code != "submission_disabled" {
 		t.Fatalf("disabled submit: status %d code %s", w.Code, code)
 	}
 
 	// 开启 + 每日限额 1
-	w = env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"submissionEnabled": true, "dailyLimit": 1}, adminToken)
+	w = env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"submissionEnabled": true, "dailyLimit": 1}, adminToken)
 	data, _ := decode(t, w)
 	if data["submissionEnabled"] != true || data["dailyLimit"] != float64(1) {
 		t.Fatalf("settings resp = %v", data)
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
-	if w.Code != 200 {
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
+	if w.Code != http.StatusCreated {
 		t.Fatalf("first submit: status %d body %s", w.Code, w.Body.String())
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
 	if _, code := decode(t, w); w.Code != 429 || code != "submission_daily_limit" {
 		t.Fatalf("over-limit submit: status %d code %s body %s", w.Code, code, w.Body.String())
 	}
 
 	// dailyLimit 0 = 不限
-	w = env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"dailyLimit": 0}, adminToken)
+	w = env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"dailyLimit": 0}, adminToken)
 	if w.Code != 200 {
 		t.Fatalf("reset limit: status %d", w.Code)
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
-	if w.Code != 200 {
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task2.String()}, userToken)
+	if w.Code != http.StatusCreated {
 		t.Fatalf("submit with no limit: status %d body %s", w.Code, w.Body.String())
 	}
 }
@@ -244,13 +244,13 @@ func TestAutoApprovePassThrough(t *testing.T) {
 	_, adminToken := env.newUserSession(t, "admin")
 	task1 := env.newSucceededTask(t, user.ID)
 
-	w := env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken)
+	w := env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken)
 	if w.Code != 200 {
 		t.Fatalf("put settings: status %d", w.Code)
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
+	w = env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": task1.String()}, userToken)
 	data, _ := decode(t, w)
-	if w.Code != 200 || data["status"] != "approved" {
+	if w.Code != http.StatusCreated || data["status"] != "approved" {
 		t.Fatalf("auto-approve submit: status %d data %v", w.Code, data)
 	}
 }
@@ -278,7 +278,7 @@ func TestAdminPromptCoverReportsOversizeInsteadOfMissingFile(t *testing.T) {
 		t.Fatalf("close multipart writer: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/prompt-library/"+entry.ID.String()+"/cover", &body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/prompts/"+entry.ID.String()+"/cover", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: adminToken})
 	w := httptest.NewRecorder()
@@ -298,14 +298,14 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 	_, adminToken := env.newUserSession(t, "admin")
 	taskID := env.newSucceededTask(t, user.ID)
 
-	w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{
 		"taskId": taskID.String(), "title": "审核图片回归测试",
 	}, userToken)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
 	}
 
-	w = env.do(t, "GET", "/api/admin/gallery/submissions?status=pending&limit=20", nil, adminToken)
+	w = env.do(t, "GET", "/api/v1/admin/gallery/submissions?status=pending&limit=20", nil, adminToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("admin submissions: status %d body %s", w.Code, w.Body.String())
 	}
@@ -320,7 +320,7 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 	}
 	coverURL, _ := item["coverUrl"].(string)
 	mediaURLs, _ := item["mediaUrls"].([]any)
-	if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
+	if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
 		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
 	}
 	if len(mediaURLs) != 1 || mediaURLs[0] != coverURL {
@@ -349,10 +349,10 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		if _, err := env.st.Pool.Exec(ctx, `UPDATE tasks SET type = $2 WHERE id = $1`, taskID, want.taskType); err != nil {
 			t.Fatalf("update task type: %v", err)
 		}
-		w := env.do(t, "POST", "/api/gallery/submissions", gin.H{
+		w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{
 			"taskId": taskID.String(), "title": title,
 		}, userToken)
-		if w.Code != http.StatusOK {
+		if w.Code != http.StatusCreated {
 			t.Fatalf("submit %q: status %d body %s", title, w.Code, w.Body.String())
 		}
 		if _, err := env.st.Pool.Exec(ctx, `UPDATE gallery_submissions SET status = $2 WHERE task_id = $1`, taskID, want.status); err != nil {
@@ -360,7 +360,7 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		}
 	}
 
-	w := env.do(t, "GET", "/api/me/gallery/submissions?limit=20", nil, userToken)
+	w := env.do(t, "GET", "/api/v1/me/gallery/submissions?limit=20", nil, userToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("my submissions: status %d body %s", w.Code, w.Body.String())
 	}
@@ -384,7 +384,7 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		}
 		coverURL, _ := item["coverUrl"].(string)
 		mediaURLs, _ := item["mediaUrls"].([]any)
-		if !strings.HasPrefix(coverURL, "/api/files/tasks/"+user.ID.String()+"/") {
+		if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
 			t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
 		}
 		if len(mediaURLs) != 1 {
@@ -402,7 +402,7 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	banUntil := now.Add(48 * time.Hour)
 
 	_, err := env.st.Pool.Exec(ctx,
-		`UPDATE users SET avatar_url = '/api/files/avatar.jpg', bio = '个人简介', location = '上海',
+		`UPDATE users SET avatar_url = '/api/v1/files/avatar.jpg', bio = '个人简介', location = '上海',
 		 website_url = 'https://example.com', last_login_at = $2, submission_banned_until = $3 WHERE id = $1`,
 		user.ID, now, banUntil)
 	if err != nil {
@@ -423,7 +423,7 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 		t.Fatalf("insert recent session: %v", err)
 	}
 
-	w := env.do(t, "GET", "/api/admin/users/"+user.ID.String(), nil, adminToken)
+	w := env.do(t, "GET", "/api/v1/admin/users/"+user.ID.String(), nil, adminToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("admin user detail: status %d body %s", w.Code, w.Body.String())
 	}
@@ -452,21 +452,21 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	task1 := env.newSucceededTask(t, user.ID)
 
 	// 建分类
-	w := env.do(t, "POST", "/api/admin/gallery/categories", gin.H{"name": "插画", "sort": 1}, adminToken)
+	w := env.do(t, "POST", "/api/v1/admin/gallery/categories", gin.H{"name": "插画", "sort": 1}, adminToken)
 	data, _ := decode(t, w)
-	if w.Code != 200 {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("create category: status %d body %s", w.Code, w.Body.String())
 	}
 	categoryID := data["id"].(string)
 
 	// autoApprove 直通，方便公开画廊断言
-	if w := env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken); w.Code != 200 {
+	if w := env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken); w.Code != 200 {
 		t.Fatalf("put settings: status %d", w.Code)
 	}
-	w = env.do(t, "POST", "/api/gallery/submissions",
+	w = env.do(t, "POST", "/api/v1/gallery/submissions",
 		gin.H{"taskId": task1.String(), "categoryId": categoryID}, userToken)
 	data, _ = decode(t, w)
-	if w.Code != 200 || data["categoryId"] != categoryID {
+	if w.Code != http.StatusCreated || data["categoryId"] != categoryID {
 		t.Fatalf("submit with category: status %d data %v", w.Code, data)
 	}
 	submissionID := data["id"].(string)
@@ -474,7 +474,7 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	// curate 两次同一 payload：幂等
 	payload := gin.H{"featured": true, "categoryId": categoryID, "sort": 5}
 	for i := 0; i < 2; i++ {
-		w = env.do(t, "POST", "/api/admin/gallery/submissions/"+submissionID+"/curate", payload, adminToken)
+		w = env.do(t, "PUT", "/api/v1/admin/gallery/submissions/"+submissionID+"/curation", payload, adminToken)
 		data, _ = decode(t, w)
 		if w.Code != 200 || data["featured"] != true || data["categoryId"] != categoryID || data["sort"] != float64(5) {
 			t.Fatalf("curate #%d: status %d data %v", i+1, w.Code, data)
@@ -482,7 +482,7 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	}
 
 	// 显式 categoryId=null 清除归类，featured 不受影响
-	w = env.do(t, "POST", "/api/admin/gallery/submissions/"+submissionID+"/curate",
+	w = env.do(t, "PUT", "/api/v1/admin/gallery/submissions/"+submissionID+"/curation",
 		gin.H{"categoryId": nil}, adminToken)
 	data, _ = decode(t, w)
 	if w.Code != 200 || data["featured"] != true || data["categoryId"] != nil {
@@ -490,12 +490,12 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 	}
 
 	// 恢复归类，验证公开画廊 featured/category 筛选与字段
-	w = env.do(t, "POST", "/api/admin/gallery/submissions/"+submissionID+"/curate",
+	w = env.do(t, "PUT", "/api/v1/admin/gallery/submissions/"+submissionID+"/curation",
 		gin.H{"categoryId": categoryID}, adminToken)
 	if w.Code != 200 {
 		t.Fatalf("curate restore category: status %d", w.Code)
 	}
-	w = env.do(t, "GET", "/api/gallery?featured=1", nil, "")
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?featured=1", nil, "")
 	data, _ = decode(t, w)
 	items := data["items"].([]any)
 	if len(items) != 1 {
@@ -510,20 +510,20 @@ func TestCurateIdempotentAndFeaturedFilter(t *testing.T) {
 		t.Fatalf("item category = %v", category)
 	}
 	// featured=0 时不含精选
-	w = env.do(t, "GET", "/api/gallery?featured=0", nil, "")
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?featured=0", nil, "")
 	data, _ = decode(t, w)
 	if n := len(data["items"].([]any)); n != 0 {
 		t.Fatalf("featured=0 items = %d, want 0", n)
 	}
 	// category 筛选
-	w = env.do(t, "GET", "/api/gallery?category="+categoryID, nil, "")
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?category="+categoryID, nil, "")
 	data, _ = decode(t, w)
 	if n := len(data["items"].([]any)); n != 1 {
 		t.Fatalf("category filter items = %d, want 1", n)
 	}
 
 	// 公开分类列表
-	w = env.do(t, "GET", "/api/gallery/categories", nil, "")
+	w = env.do(t, "GET", "/api/v1/gallery/categories", nil, "")
 	data, _ = decode(t, w)
 	if n := len(data["items"].([]any)); n != 1 {
 		t.Fatalf("public categories = %d, want 1", n)
@@ -535,21 +535,21 @@ func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
 	user, userToken := env.newUserSession(t, "user")
 	_, adminToken := env.newUserSession(t, "admin")
 
-	if w := env.do(t, "PUT", "/api/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken); w.Code != 200 {
+	if w := env.do(t, "PUT", "/api/v1/admin/gallery/settings", gin.H{"autoApprove": true}, adminToken); w.Code != 200 {
 		t.Fatalf("put settings: status %d body %s", w.Code, w.Body.String())
 	}
 	ids := make([]string, 0, 2)
 	for range 2 {
 		taskID := env.newSucceededTask(t, user.ID)
-		w := env.do(t, "POST", "/api/gallery/submissions", gin.H{"taskId": taskID.String()}, userToken)
+		w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": taskID.String()}, userToken)
 		data, _ := decode(t, w)
-		if w.Code != 200 {
+		if w.Code != http.StatusCreated {
 			t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
 		}
 		ids = append(ids, data["id"].(string))
 	}
 
-	w := env.do(t, "POST", "/api/admin/gallery/submissions/"+ids[0]+"/curate",
+	w := env.do(t, "PUT", "/api/v1/admin/gallery/submissions/"+ids[0]+"/curation",
 		gin.H{"tags": []string{" 人像 ", "电影感", "人像"}}, adminToken)
 	data, _ := decode(t, w)
 	if w.Code != 200 {
@@ -560,7 +560,7 @@ func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
 		t.Fatalf("normalized tags = %#v", tags)
 	}
 
-	w = env.do(t, "POST", "/api/admin/gallery/submissions/batch-curate", gin.H{
+	w = env.do(t, "PATCH", "/api/v1/admin/gallery/submissions", gin.H{
 		"ids": ids, "featured": true, "tags": []string{"精选"}, "tagMode": "add",
 	}, adminToken)
 	data, _ = decode(t, w)
@@ -578,7 +578,7 @@ func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
 		}
 	}
 
-	w = env.do(t, "POST", "/api/admin/gallery/submissions/reorder", gin.H{
+	w = env.do(t, "PATCH", "/api/v1/admin/gallery/submissions/order", gin.H{
 		"ids": []string{ids[1], ids[0]},
 	}, adminToken)
 	if w.Code != 200 {
@@ -596,19 +596,18 @@ func TestAuditActionCommunityPaths(t *testing.T) {
 	cases := []struct {
 		method, path, want string
 	}{
-		{"POST", "/api/admin/prompt-library", "prompt-library.create"},
-		{"PATCH", "/api/admin/prompt-library/" + id, "prompt-library.update"},
-		{"POST", "/api/admin/prompt-library/" + id + "/cover", "prompt-library.cover"},
-		{"POST", "/api/admin/gallery/submissions/" + id + "/violation", "submissions.violation"},
-		{"POST", "/api/admin/gallery/submissions/" + id + "/curate", "submissions.curate"},
-		{"POST", "/api/admin/gallery/submissions/batch-curate", "submissions.batch-curate"},
-		{"POST", "/api/admin/gallery/submissions/reorder", "submissions.reorder"},
-		{"POST", "/api/admin/gallery/users/" + id + "/unban", "users.unban"},
-		// 集合 POST 沿用既有「resource.末段」约定（同 settings.test-c2a）
-		{"POST", "/api/admin/gallery/categories", "gallery.categories"},
-		{"PATCH", "/api/admin/gallery/categories/" + id, "categories.update"},
-		{"DELETE", "/api/admin/gallery/categories/" + id, "categories.delete"},
-		{"PUT", "/api/admin/gallery/settings", "gallery.settings"},
+		{"POST", "/api/v1/admin/prompts", "prompts.create"},
+		{"PATCH", "/api/v1/admin/prompts/" + id, "prompts.update"},
+		{"PUT", "/api/v1/admin/prompts/" + id + "/cover", "cover.update"},
+		{"POST", "/api/v1/admin/gallery/submissions/" + id + "/violations", "violations.create"},
+		{"PUT", "/api/v1/admin/gallery/submissions/" + id + "/curation", "curation.update"},
+		{"PATCH", "/api/v1/admin/gallery/submissions", "submissions.update"},
+		{"PATCH", "/api/v1/admin/gallery/submissions/order", "order.update"},
+		{"DELETE", "/api/v1/admin/gallery/users/" + id + "/ban", "ban.delete"},
+		{"POST", "/api/v1/admin/gallery/categories", "categories.create"},
+		{"PATCH", "/api/v1/admin/gallery/categories/" + id, "categories.update"},
+		{"DELETE", "/api/v1/admin/gallery/categories/" + id, "categories.delete"},
+		{"PUT", "/api/v1/admin/gallery/settings", "settings.update"},
 	}
 	for _, c := range cases {
 		if got := auditAction(c.method, c.path); got != c.want {

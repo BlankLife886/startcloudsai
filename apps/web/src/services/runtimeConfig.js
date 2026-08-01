@@ -46,7 +46,7 @@ export function normalizeRuntimeConfig(config = {}) {
 }
 
 export async function fetchRuntimeConfig() {
-  const config = await apiGet('/meta/runtime-config', {
+  const config = await apiGet('/runtime-config', {
     fallbackMessage: '模型配置读取失败',
   })
   return normalizeRuntimeConfig(config)

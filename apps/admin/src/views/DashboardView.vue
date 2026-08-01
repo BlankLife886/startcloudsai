@@ -301,7 +301,7 @@ async function load() {
 	if (loading.value) return
   loading.value = true
   try {
-    stats.value = await request<AdminStats>('/api/admin/stats')
+    stats.value = await request<AdminStats>('/api/v1/admin/statistics')
     loadedAt.value = formatTime(new Date().toISOString())
   } finally {
     loading.value = false

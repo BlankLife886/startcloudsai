@@ -9,9 +9,9 @@ import (
 func TestRouterRegistersTaskStream(t *testing.T) {
 	server := &Server{Cfg: &config.Config{AppEnv: "test", TrustedProxies: "127.0.0.1"}}
 	wanted := map[string]bool{
-		"/api/tasks/batch":      false,
-		"/api/tasks/:id/stream": false,
-		"/api/me/tasks/stream":  false,
+		"/api/v1/tasks":            false,
+		"/api/v1/tasks/:id/events": false,
+		"/api/v1/me/tasks/events":  false,
 	}
 	for _, route := range server.Router().Routes() {
 		if route.Method == "GET" {

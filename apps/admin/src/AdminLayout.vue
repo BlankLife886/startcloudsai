@@ -96,7 +96,7 @@ async function loadTodoCounts() {
       items: unknown[];
       nextCursor: string | null;
       total?: number;
-    }>("/api/admin/gallery/submissions", {
+    }>("/api/v1/admin/gallery/submissions", {
       query: { status: "pending", limit: 50 },
       silent: true,
     });
@@ -111,7 +111,7 @@ async function loadTodoCounts() {
     // 静默：徽标缺失不影响使用
   }
   try {
-    const stats = await request<{ runningTasks?: number }>("/api/admin/stats", {
+    const stats = await request<{ runningTasks?: number }>("/api/v1/admin/statistics", {
       silent: true,
     });
     runningTasks.value = stats.runningTasks ?? 0;
@@ -206,7 +206,7 @@ async function submitPassword() {
   }
   passwordSubmitting.value = true;
   try {
-    await request("/api/admin/auth/password", {
+    await request("/api/v1/admin/auth/password", {
       method: "PATCH",
       body: { old: passwordForm.old, new: passwordForm.next },
     });

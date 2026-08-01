@@ -2,7 +2,7 @@
 
 用户端基于 Vue 3、Vite、Pinia、Vue Router 和 Tailwind CSS 4。GSAP、anime.js 与 Three.js 用于首页和部分工作台动效；Bootstrap Icons 提供界面图标。
 
-所有业务请求使用同源 `/api`，鉴权凭据为 HttpOnly Cookie。生产构建由 nginx 托管，并由仓库根网关统一转发 API。
+所有业务请求使用同源 `/api/v1`，鉴权凭据为 HttpOnly Cookie。生产构建由 nginx 托管，并由仓库根网关统一转发 API。
 
 ## 开发与验证
 

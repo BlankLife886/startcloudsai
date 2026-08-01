@@ -1,10 +1,10 @@
 /**
- * AI 任务 API（新契约 /api/tasks*、/api/uploads）。
+ * AI 任务 API（新契约 /api/v1/tasks*、/api/v1/uploads）。
  *
  * 任务类型：t2i | coloring | ui_design | model_sheet | game_art | puzzle
  * 状态机：queued → running → succeeded | failed | canceled
  */
-import { apiDelete, apiGet, apiPost, apiRequest, buildApiPath } from './apiClient.js'
+import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
 
 export const TASK_TYPES = ['t2i', 'coloring', 'ui_design', 'model_sheet', 'game_art', 'puzzle']
 
@@ -129,7 +129,7 @@ export async function getTasksBatch(ids, { signal } = {}) {
     new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || '').trim()).filter(Boolean)),
   ).slice(0, TASK_BATCH_LIMIT)
   if (!unique.length) return []
-  const data = await apiGet('/tasks/batch', {
+  const data = await apiGet('/tasks', {
     query: { ids: unique.join(',') },
     signal,
     fallbackMessage: '任务批量读取失败',
@@ -143,7 +143,7 @@ export async function getTasksBatch(ids, { signal } = {}) {
  */
 export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
   if (!id || typeof EventSource === 'undefined') return () => {}
-  const source = new EventSource(buildApiPath(`/tasks/${encodeURIComponent(id)}/stream`))
+  const source = new EventSource(buildApiPath(`/tasks/${encodeURIComponent(id)}/events`))
   source.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
@@ -165,7 +165,7 @@ export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
 /** Account-wide task events keep completion notifications live across pages. */
 export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
   if (typeof EventSource === 'undefined') return () => {}
-  const source = new EventSource(buildApiPath('/me/tasks/stream'))
+  const source = new EventSource(buildApiPath('/me/tasks/events'))
   source.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
@@ -303,9 +303,9 @@ export async function listTasks({ type = '', status = '', limit = 20, cursor = '
 
 /** 取消任务（仅 queued 状态可取消，解冻费用）。 */
 export async function cancelTask(id) {
-  const data = await apiPost(
-    `/tasks/${encodeURIComponent(id)}/cancel`,
-    {},
+  const data = await apiPatch(
+    `/tasks/${encodeURIComponent(id)}`,
+    { status: 'canceled' },
     {
       fallbackMessage: '任务取消失败',
     },

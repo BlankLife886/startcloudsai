@@ -37,7 +37,7 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	response := env.do(t, http.MethodGet, "/api/assistant/config", nil, token)
+	response := env.do(t, http.MethodGet, "/api/v1/assistant/config", nil, token)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
 	}
@@ -185,8 +185,8 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, token := env.newUserSession(t, "user")
 
-	created := env.do(t, http.MethodPost, "/api/assistant/conversations", map[string]any{"title": "持久化测试"}, token)
-	if created.Code != http.StatusOK {
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{"title": "持久化测试"}, token)
+	if created.Code != http.StatusCreated {
 		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
 	}
 	data, _ := decode(t, created)
@@ -195,7 +195,7 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 		t.Fatalf("created conversation = %#v", data)
 	}
 
-	listed := env.do(t, http.MethodGet, "/api/assistant/conversations", nil, token)
+	listed := env.do(t, http.MethodGet, "/api/v1/assistant/conversations", nil, token)
 	if listed.Code != http.StatusOK {
 		t.Fatalf("list conversations: status %d body %s", listed.Code, listed.Body.String())
 	}
@@ -212,8 +212,8 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 		t.Fatalf("listed conversations = %#v", response.Data.Conversations)
 	}
 
-	deleted := env.do(t, http.MethodDelete, "/api/assistant/conversations/"+id, nil, token)
-	if deleted.Code != http.StatusOK {
+	deleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+id, nil, token)
+	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete conversation: status %d body %s", deleted.Code, deleted.Body.String())
 	}
 }
@@ -274,7 +274,7 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := "/api/assistant/conversations/" + conversation.ID.String()
+	path := "/api/v1/assistant/conversations/" + conversation.ID.String()
 	refused := env.do(t, http.MethodDelete, path, nil, token)
 	if refused.Code != http.StatusConflict {
 		t.Fatalf("delete active conversation: status %d body %s", refused.Code, refused.Body.String())
@@ -284,7 +284,7 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	}
 
 	confirmed := env.do(t, http.MethodDelete, path+"?cancelActive=true", nil, token)
-	if confirmed.Code != http.StatusOK {
+	if confirmed.Code != http.StatusNoContent {
 		t.Fatalf("confirmed delete: status %d body %s", confirmed.Code, confirmed.Body.String())
 	}
 	stored, err := store.GetUserAssistantConversation(ctx, env.st.Pool, user.ID, conversation.ID)

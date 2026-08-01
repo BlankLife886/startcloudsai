@@ -29,8 +29,8 @@ export function normalizeImageOutput(raw) {
   if (!value) return ''
   if (value.startsWith('data:image/')) return value
   if (/^https?:\/\//i.test(value)) return value
-  // 同源媒体路径（如 /api/files/...）可直接给 <img> 使用
-  if (value.startsWith('/api/') || value.startsWith('/')) return value
+  // 同源媒体路径（如 /api/v1/files/...）可直接给 <img> 使用
+  if (value.startsWith('/api/v1/') || value.startsWith('/')) return value
   // 服务商偶尔只返回裸 base64。这里补齐 data URL 头，避免浏览器当成相对路径。
   if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/.test(value)) {
     return `data:image/png;base64,${value}`

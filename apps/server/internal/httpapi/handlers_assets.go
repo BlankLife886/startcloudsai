@@ -23,8 +23,8 @@ type createUserAssetIn struct {
 func userAssetDict(asset *store.UserAsset) gin.H {
 	return gin.H{
 		"id": asset.ID.String(), "title": asset.Title,
-		"url":          "/api/files/" + asset.FileKey,
-		"thumbnailUrl": "/api/files/" + asset.ThumbnailKey,
+		"url":          "/api/v1/files/" + asset.FileKey,
+		"thumbnailUrl": "/api/v1/files/" + asset.ThumbnailKey,
 		"contentType":  asset.ContentType, "sizeBytes": asset.SizeBytes,
 		"createdAt": isoValue(asset.CreatedAt),
 	}
@@ -104,7 +104,7 @@ func (s *Server) createUserAsset(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, userAssetDict(asset))
+	respondCreated(c, userAssetDict(asset))
 }
 
 func (s *Server) deleteUserAsset(c *gin.Context) {
@@ -134,5 +134,5 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 	if err := s.Storage.DeleteKeys(c.Request.Context(), []string{asset.FileKey, asset.ThumbnailKey}); err != nil {
 		log.Printf("delete user asset files %s failed: %v", asset.ID, err)
 	}
-	ok(c, gin.H{"deleted": true})
+	respondNoContent(c)
 }

@@ -1,4 +1,4 @@
-import { ApiError, apiDelete, apiGet, apiPost, buildApiPath } from './apiClient'
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost, buildApiPath } from './apiClient'
 
 // 旧的客户端直连管线（streamAssistantChat / classifyAssistantIntent / generateAssistantImage）
 // 已由服务端 runs 管线取代并删除：意图路由与生图统一走 /assistant/runs。
@@ -45,7 +45,7 @@ export async function deleteAssistantMessage(id) {
 
 export async function importAssistantConversations(conversations) {
   return apiPost(
-    '/assistant/import',
+    '/assistant/conversation-imports',
     { conversations },
     { fallbackMessage: '旧对话迁移失败' },
   )
@@ -63,7 +63,7 @@ export async function createAssistantRun(input, { signal } = {}) {
 export function openAssistantRunStream(id, { onEvent } = {}) {
   let source
   try {
-    source = new EventSource(buildApiPath(`/assistant/runs/${encodeURIComponent(id)}/stream`))
+    source = new EventSource(buildApiPath(`/assistant/runs/${encodeURIComponent(id)}/events`))
   } catch {
     return null
   }
@@ -98,9 +98,9 @@ export async function listActiveAssistantRuns({ signal } = {}) {
 }
 
 export async function cancelAssistantRun(id) {
-  return apiPost(
-    `/assistant/runs/${encodeURIComponent(id)}/cancel`,
-    {},
+  return apiPatch(
+    `/assistant/runs/${encodeURIComponent(id)}`,
+    { status: 'canceled' },
     { fallbackMessage: '停止任务失败' },
   )
 }

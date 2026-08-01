@@ -233,7 +233,7 @@ func (s *Server) adminWalletAdjust(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, ledgerDict(entry))
+	respondCreated(c, ledgerDict(entry))
 }
 
 // ---------- orders ----------
@@ -875,7 +875,7 @@ func (s *Server) adminReviewSubmission(c *gin.Context, admin *store.User) {
 	submission.RejectReason = rejectReason
 	submission.ReviewedBy = &admin.ID
 	submission.ReviewedAt = &now
-	ok(c, submissionDict(submission, nil))
+	respondCreated(c, submissionDict(submission, nil))
 }
 
 // ---------- announcements ----------
@@ -1094,7 +1094,7 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, announcementDict(announcement))
+	respondCreated(c, announcementDict(announcement))
 }
 
 type announcementPatchIn struct {
@@ -1206,7 +1206,7 @@ func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 // ---------- changelog ----------
@@ -1285,7 +1285,7 @@ func (s *Server) adminCreateChangelog(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, changelogDict(entry))
+	respondCreated(c, changelogDict(entry))
 }
 
 type changelogPatchIn struct {
@@ -1388,7 +1388,7 @@ func (s *Server) adminDeleteChangelog(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 // ---------- settings ----------

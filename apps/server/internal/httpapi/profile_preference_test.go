@@ -15,7 +15,7 @@ func TestPatchProfilePersistsCostConfirmationPreference(t *testing.T) {
 		t.Fatal("new users should require cost confirmation by default")
 	}
 
-	w := env.do(t, http.MethodPatch, "/api/me/profile", map[string]any{
+	w := env.do(t, http.MethodPatch, "/api/v1/me/profile", map[string]any{
 		"requireCostConfirm": false,
 	}, token)
 	if w.Code != http.StatusOK {

@@ -76,7 +76,7 @@ func (s *Server) patchProfile(c *gin.Context) {
 	}
 	if body.AvatarURL.Valid && body.AvatarURL.Value != "" {
 		avatar := strings.TrimSpace(body.AvatarURL.Value)
-		allowedPrefix := "/api/files/uploads/" + user.ID.String() + "/"
+		allowedPrefix := "/api/v1/files/uploads/" + user.ID.String() + "/"
 		if len(avatar) > 2048 || !strings.HasPrefix(avatar, allowedPrefix) {
 			fail(c, apperr.E("validation_error", "avatarUrl: 仅允许使用自己上传的站内图片", 422))
 			return
@@ -335,5 +335,5 @@ func (s *Server) markNotificationsRead(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }

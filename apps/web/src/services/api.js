@@ -10,7 +10,7 @@ export function proxyWallhavenImageUrl(url) {
 
 export function buildApiUrl(path) {
   const normalized = String(path || '').startsWith('/') ? path : `/${path}`
-  return `/api${normalized}`
+  return `/api/v1${normalized}`
 }
 
 export const wallpaperApi = {

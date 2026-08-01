@@ -26,7 +26,7 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 	}
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest("GET", "/api/admin/settings", nil)
+	c.Request = httptest.NewRequest("GET", "/api/v1/admin/settings", nil)
 	srv := &Server{Cfg: &config.Config{AppSecret: masterKey}, St: st}
 	out, err := srv.settingsToCamel(c)
 	if err != nil {

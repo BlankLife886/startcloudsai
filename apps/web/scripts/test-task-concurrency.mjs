@@ -20,7 +20,7 @@ test('100 task waiters use one batch snapshot request', async () => {
   let individualCalls = 0
   globalThis.fetch = async (url) => {
     const parsed = new URL(String(url), 'http://localhost')
-    if (parsed.pathname === '/api/tasks/batch') {
+    if (parsed.pathname === '/api/v1/tasks' && parsed.searchParams.has('ids')) {
       batchCalls += 1
       const ids = String(parsed.searchParams.get('ids') || '')
         .split(',')
@@ -41,7 +41,7 @@ test('100 task waiters use one batch snapshot request', async () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
     }
-    if (parsed.pathname.startsWith('/api/tasks/')) individualCalls += 1
+    if (parsed.pathname.startsWith('/api/v1/tasks/')) individualCalls += 1
     throw new Error(`unexpected request: ${parsed.pathname}`)
   }
 
@@ -61,7 +61,7 @@ test('task submissions never exceed the global browser concurrency window', asyn
   let requests = 0
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url), 'http://localhost')
-    assert.equal(parsed.pathname, '/api/tasks')
+    assert.equal(parsed.pathname, '/api/v1/tasks')
     assert.equal(options.method, 'POST')
     active += 1
     requests += 1

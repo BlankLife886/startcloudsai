@@ -32,7 +32,7 @@ Go 解码图片头，得到 width / height
 prompt_library.cover_width / cover_height
         |
         v
-GET /api/prompts 返回 coverWidth / coverHeight
+GET /api/v1/prompts 返回 coverWidth / coverHeight
         |
         v
 前端计算每张卡片的 top / left / mediaHeight
@@ -95,7 +95,7 @@ Worker 每 10 分钟领取 24 张缺少尺寸的远程封面
 
 ```json
 {
-  "coverUrl": "/api/files/prompt-covers/example.webp",
+  "coverUrl": "/api/v1/files/prompt-covers/example.webp",
   "coverWidth": 1200,
   "coverHeight": 800
 }
@@ -284,7 +284,7 @@ CSS 必须给固定格式区域稳定约束：瀑布流由宽高比计算媒体�
 
 ## 一致性与失败边界
 
-- 宽高不是安全授权字段，不参与文件访问判断；文件权限仍由 `/api/files` 完成。
+- 宽高不是安全授权字段，不参与文件访问判断；文件权限仍由 `/api/v1/files` 完成。
 - 无宽高不会导致提示词不可见，只会进入客户端测量降级。
 - 远程尺寸探测失败不会让周期任务整体失败，也不会清空封面 URL。
 - 尺寸回填只更新对应提示词的元数据，不修改标题、prompt、分类、排序或运营状态。

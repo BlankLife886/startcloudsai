@@ -146,7 +146,7 @@ func (s *Server) adminCreatePromptSource(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, promptSourceDict(created))
+	respondCreated(c, promptSourceDict(created))
 }
 
 type promptSourcePatchIn struct {
@@ -232,7 +232,7 @@ func (s *Server) adminDeletePromptSource(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 func (s *Server) adminSyncPromptSource(c *gin.Context, _ *store.User) {
@@ -249,5 +249,5 @@ func (s *Server) adminSyncPromptSource(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "数据源不存在", 404))
 		return
 	}
-	ok(c, result)
+	respondCreated(c, result)
 }

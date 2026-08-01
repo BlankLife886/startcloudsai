@@ -22,7 +22,7 @@ const filters = reactive({ admin: '', path: '' })
 const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, retry } =
   usePagedList<AuditLog>(
     (cursor) =>
-      request<Page<AuditLog>>('/api/admin/audit-logs', {
+      request<Page<AuditLog>>('/api/v1/admin/audit-logs', {
         query: { admin: filters.admin, path: filters.path, limit: 20, cursor },
       }),
     () => filters,

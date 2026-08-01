@@ -161,7 +161,7 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 	}
 	s.LoginLimiter.SuccessAttempt(email, clientIP)
 	s.setSessionCookie(c, token)
-	ok(c, gin.H{"user": userDict(user), "isNewUser": created})
+	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created})
 }
 
 func (s *Server) logout(c *gin.Context) {
@@ -173,7 +173,7 @@ func (s *Server) logout(c *gin.Context) {
 	}
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(s.Cfg.SessionCookieName, "", -1, "/", "", s.Cfg.AppEnv == "production", true)
-	ok(c, gin.H{})
+	respondNoContent(c)
 }
 
 func (s *Server) authMe(c *gin.Context) {

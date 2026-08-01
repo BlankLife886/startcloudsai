@@ -45,7 +45,7 @@ function hydrate(settings: AdminSettings) {
 async function load() {
   loading.value = true;
   try {
-    hydrate(await request<AdminSettings>("/api/admin/settings"));
+    hydrate(await request<AdminSettings>("/api/v1/admin/settings"));
   } finally {
     loading.value = false;
   }
@@ -55,7 +55,7 @@ async function save() {
   saving.value = true;
   try {
     hydrate(
-      await request<AdminSettings>("/api/admin/settings", {
+      await request<AdminSettings>("/api/v1/admin/settings", {
         method: "PUT",
         body: {
           userMaxRunningTasks: form.userMaxRunningTasks,

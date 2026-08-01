@@ -3,7 +3,7 @@
  *
  * 三套旧任务链路（文生图 useWallpaperTasks、插画染色 useIllustrationColoringState、
  * 创意工作台 useCreativeImageJob）都通过本文件的 createServerAiJob / waitForServerAiJob /
- * listServerAiJobs 等函数访问网络。这里把它们统一映射到 /api/tasks，
+ * listServerAiJobs 等函数访问网络。这里把它们统一映射到 /api/v1/tasks，
  * 上层组合式函数无需大改。
  */
 import { invalidateStudioCreditSnapshot } from '@/features/ai-shared/studioUsage'
@@ -52,7 +52,7 @@ export function normalizeAiOutput(raw) {
   if (!value) return ''
   if (value.startsWith('data:')) return value
   if (/^https?:\/\//i.test(value)) return value
-  if (value.startsWith('/api/')) return value
+  if (value.startsWith('/api/v1/')) return value
   if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/.test(value)) {
     return `data:image/png;base64,${value}`
   }
@@ -184,8 +184,8 @@ function lookupKeyForUrl(url) {
   const value = String(url || '').trim()
   if (!value) return ''
   if (urlKeyRegistry.has(value)) return urlKeyRegistry.get(value)
-  // /api/files/{key} 形式的站内地址可直接还原 key
-  const match = value.match(/\/api\/files\/(.+?)(?:\?|$)/)
+  // /api/v1/files/{key} 形式的站内地址可直接还原 key
+  const match = value.match(/\/api\/v1\/files\/(.+?)(?:\?|$)/)
   if (match) return decodeURIComponent(match[1])
   return ''
 }

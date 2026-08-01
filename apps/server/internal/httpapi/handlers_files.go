@@ -106,9 +106,9 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, uploadErr)
 		return
 	}
-	ok(c, gin.H{
-		"key": key, "url": "/api/files/" + key,
-		"thumbnailKey": thumbnailKey, "thumbnailUrl": "/api/files/" + thumbnailKey,
+	respondCreated(c, gin.H{
+		"key": key, "url": "/api/v1/files/" + key,
+		"thumbnailKey": thumbnailKey, "thumbnailUrl": "/api/v1/files/" + thumbnailKey,
 		"contentType": contentType, "sizeBytes": len(data),
 	})
 }

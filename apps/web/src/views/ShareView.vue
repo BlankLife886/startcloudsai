@@ -14,7 +14,7 @@ const pageRoot = ref(null)
 const feedRoot = ref(null)
 const detailRoot = ref(null)
 
-/* —— 作品列表：GET /api/gallery，cursor 分页做成前后翻页 —— */
+/* —— 作品列表：GET /api/v1/gallery/submissions，cursor 分页做成前后翻页 —— */
 const items = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -31,7 +31,7 @@ const seenItems = ref(new Map())
 /* 精选轮播优先用 ?featured=1 数据，不足 3 件时回退第一页样本 */
 const featuredItems = ref([])
 
-/* 分类筛选：GET /api/gallery/categories，选中后带 ?category= 重新拉列表 */
+/* 分类筛选：GET /api/v1/gallery/categories，选中后带 ?category= 重新拉列表 */
 const categories = ref([])
 const activeCategory = ref('')
 

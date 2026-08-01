@@ -61,12 +61,12 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	engine := server.Router()
 
 	// 用户端没有密码登录入口；管理员密码与用户会话完全独立。
-	if w := authRequest(t, engine, "POST", "/api/auth/login", gin.H{
+	if w := authRequest(t, engine, "POST", "/api/v1/auth/login", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
 	}); w.Code != 404 {
 		t.Fatalf("removed user password login accepted admin password: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "POST", "/api/admin/auth/login", gin.H{
+	if w := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "user-password",
 	}); w.Code != 401 {
 		t.Fatalf("user password entered on admin login: %d %s", w.Code, w.Body.String())
@@ -75,10 +75,10 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(userToken), time.Now().Add(time.Hour), nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	adminLogin := authRequest(t, engine, "POST", "/api/admin/auth/login", gin.H{
+	adminLogin := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
 	})
-	if adminLogin.Code != 200 {
+	if adminLogin.Code != http.StatusCreated {
 		t.Fatalf("admin login failed: %d %s", adminLogin.Code, adminLogin.Body.String())
 	}
 
@@ -94,39 +94,39 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	}
 	userCookie := &http.Cookie{Name: cfg.SessionCookieName, Value: userToken, Path: "/"}
 	adminCookie := findCookie(adminLogin, adminSessionCookieName)
-	if userCookie.Path != "/" || adminCookie.Path != "/api" {
-		t.Fatalf("cookie paths = (%q, %q), want (\"/\", \"/api\")", userCookie.Path, adminCookie.Path)
+	if userCookie.Path != "/" || adminCookie.Path != "/api/v1/admin" {
+		t.Fatalf("cookie paths = (%q, %q), want (\"/\", \"/api/v1/admin\")", userCookie.Path, adminCookie.Path)
 	}
-	if w := authRequest(t, engine, "GET", "/api/admin/stats", nil, userCookie); w.Code != 401 {
+	if w := authRequest(t, engine, "GET", "/api/v1/admin/statistics", nil, userCookie); w.Code != 401 {
 		t.Fatalf("user cookie accessed admin route: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "GET", "/api/admin/stats", nil, adminCookie); w.Code != 200 {
+	if w := authRequest(t, engine, "GET", "/api/v1/admin/statistics", nil, adminCookie); w.Code != 200 {
 		t.Fatalf("admin cookie rejected: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "GET", "/api/auth/me", nil, adminCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"user":null`)) {
+	if w := authRequest(t, engine, "GET", "/api/v1/auth/session", nil, adminCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"user":null`)) {
 		t.Fatalf("admin cookie leaked into user auth: %d %s", w.Code, w.Body.String())
 	}
 
-	changePassword := authRequest(t, engine, "PATCH", "/api/admin/auth/password", gin.H{
+	changePassword := authRequest(t, engine, "PATCH", "/api/v1/admin/auth/password", gin.H{
 		"old": "admin-password", "new": "changed-admin-password",
 	}, adminCookie)
 	if changePassword.Code != 200 {
 		t.Fatalf("admin password change failed: %d %s", changePassword.Code, changePassword.Body.String())
 	}
-	if w := authRequest(t, engine, "GET", "/api/admin/stats", nil, adminCookie); w.Code != 401 {
+	if w := authRequest(t, engine, "GET", "/api/v1/admin/statistics", nil, adminCookie); w.Code != 401 {
 		t.Fatalf("admin session survived password change: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "POST", "/api/admin/auth/login", gin.H{
+	if w := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
 	}); w.Code != 401 {
 		t.Fatalf("old admin password remained valid: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "POST", "/api/admin/auth/login", gin.H{
+	if w := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "changed-admin-password",
-	}); w.Code != 200 {
+	}); w.Code != http.StatusCreated {
 		t.Fatalf("new admin password rejected: %d %s", w.Code, w.Body.String())
 	}
-	if w := authRequest(t, engine, "GET", "/api/auth/me", nil, userCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"email":"same@gmail.com"`)) {
+	if w := authRequest(t, engine, "GET", "/api/v1/auth/session", nil, userCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"email":"same@gmail.com"`)) {
 		t.Fatalf("user session changed with admin password: %d %s", w.Code, w.Body.String())
 	}
 }

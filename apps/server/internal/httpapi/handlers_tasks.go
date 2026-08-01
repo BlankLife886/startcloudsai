@@ -39,7 +39,7 @@ func (s *Server) urlsForKeys(c *gin.Context, keys []string) []string {
 	for _, key := range keys {
 		key = strings.TrimLeft(strings.TrimSpace(key), "/")
 		if key != "" {
-			urls = append(urls, "/api/files/"+key)
+			urls = append(urls, "/api/v1/files/"+key)
 		}
 	}
 	return urls
@@ -182,10 +182,19 @@ func (s *Server) createTask(c *gin.Context) {
 			log.Printf("task %s idempotent re-enqueue failed (queued reaper will pick up): %v", task.ID, err)
 		}
 	}
-	ok(c, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
+	data := taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task))
+	if created {
+		respondCreated(c, data)
+		return
+	}
+	ok(c, data)
 }
 
 func (s *Server) listTasks(c *gin.Context) {
+	if strings.TrimSpace(c.Query("ids")) != "" {
+		s.getTasksBatch(c)
+		return
+	}
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
@@ -318,6 +327,23 @@ func (s *Server) cancelTask(c *gin.Context) {
 	ok(c, taskDict(task, nil, nil))
 }
 
+type taskPatchIn struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) patchTask(c *gin.Context) {
+	var body taskPatchIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Status != "canceled" {
+		fail(c, apperr.E("validation_error", "status: 仅支持更新为 canceled", 422))
+		return
+	}
+	s.cancelTask(c)
+}
+
 func (s *Server) deleteTask(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -351,5 +377,5 @@ func (s *Server) deleteTask(c *gin.Context) {
 			log.Printf("failed to delete R2 keys for task %s: %v", task.ID, err)
 		}
 	}
-	ok(c, gin.H{})
+	respondNoContent(c)
 }

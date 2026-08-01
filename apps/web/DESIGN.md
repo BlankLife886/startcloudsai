@@ -47,7 +47,7 @@
 
 ## 数据规则
 
-- 首页馆藏全部来自 `GET /api/gallery`，不使用假作品占位。
+- 首页馆藏全部来自 `GET /api/v1/gallery/submissions`，不使用假作品占位。
 - `useHomeGalleryData.js` 负责列表、统计、分页/补充加载和错误状态。
 - 每张图使用 `ShareProgressiveImage.vue`，提供 skeleton、加载完成和失败回退。
 - 作品点击进入 `/share?item={id}`；主 CTA 对已登录用户进入文生图，对匿名用户进入认证页。
