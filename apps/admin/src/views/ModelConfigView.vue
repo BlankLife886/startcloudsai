@@ -8,7 +8,7 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Refresh } from "@element-plus/icons-vue";
+import { Delete, Plus, Refresh } from "@element-plus/icons-vue";
 import { request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
 import { formatPoints, normalizePoints } from "@/utils";
@@ -28,17 +28,17 @@ interface ModelProvider {
   maxConcurrency: number;
   enabled: boolean;
   discoveredModels: string[];
-	routes: ProviderRoute[];
+  routes: ProviderRoute[];
 }
 
 interface ProviderRoute {
-	id: string;
-	name: string;
-	baseUrl: string;
-	apiKey: string;
-	timeoutSecs: number;
-	maxConcurrency: number;
-	enabled: boolean;
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  timeoutSecs: number;
+  maxConcurrency: number;
+  enabled: boolean;
 }
 
 interface ModelItem {
@@ -1529,8 +1529,10 @@ onBeforeUnmount(() => {
     <el-dialog
       v-model="providerDialogVisible"
       :title="providerEditIndex >= 0 ? '编辑服务商' : '添加服务商'"
-      width="min(680px, calc(100% - 20px))"
+      class="provider-editor-dialog"
+      width="min(1120px, calc(100% - 24px))"
       top="4vh"
+      append-to-body
       destroy-on-close
     >
       <el-form label-position="top" class="dialog-form">
@@ -1550,73 +1552,94 @@ onBeforeUnmount(() => {
               ><el-radio-button value="crun">CRUN</el-radio-button>
             </el-radio-group>
           </el-form-item>
-		  <el-form-item label="主线路名称" class="is-wide">
-			<el-input v-model="providerDraft.routes[0].name" placeholder="例如 主线路" />
-		  </el-form-item>
-          <el-form-item label="主线路 Base URL" class="is-wide"
-            ><el-input
-              v-model="providerDraft.routes[0].baseUrl"
-              :placeholder="
-                providerDraft.adapter === 'crun'
-                  ? 'https://api.crun.ai'
-                  : 'https://gpt.xkyh.cc.cd/v1'
-              "
-              @input="invalidateProviderModels"
-          /></el-form-item>
-          <el-form-item label="主线路 API Key" class="is-wide"
-            ><el-input
-              v-model="providerDraft.routes[0].apiKey"
-              type="password"
-              show-password
-              :placeholder="
-                providerDraft.routes[0].apiKey.startsWith('****')
-                  ? providerDraft.routes[0].apiKey
-                  : 'API Key'
-              "
-              @input="invalidateProviderModels"
-          /></el-form-item>
-          <el-form-item label="主线路超时（秒）"
-            ><el-input-number
-              v-model="providerDraft.routes[0].timeoutSecs"
-              :min="0"
-              :max="1800"
-              :step="30"
-              style="width: 100%"
-          /></el-form-item>
-          <el-form-item label="主线路并发容量"
-            ><el-input-number
-              v-model="providerDraft.routes[0].maxConcurrency"
-              :min="1"
-              :max="10000"
-              :step="10"
-              style="width: 100%"
-          /></el-form-item>
-		  <el-form-item label="启用主线路">
-			<el-switch v-model="providerDraft.routes[0].enabled" />
-		  </el-form-item>
           <el-form-item label="启用服务商"
             ><el-switch v-model="providerDraft.enabled"
           /></el-form-item>
         </div>
-		<div class="provider-route-editor">
-		  <div class="provider-route-heading">
-			<strong>Base URL 线路</strong>
-			<el-button :icon="Plus" @click="addProviderRoute">添加线路</el-button>
-		  </div>
-		  <div
-			v-for="route in providerDraft.routes.slice(1)"
-			:key="route.id"
-			class="provider-route-row"
-		  >
-			<el-input v-model="route.name" placeholder="线路名称" />
-			<el-input v-model="route.baseUrl" placeholder="Base URL" @input="invalidateProviderModels" />
-			<el-input v-model="route.apiKey" type="password" show-password placeholder="API Key" />
-			<el-input-number v-model="route.maxConcurrency" :min="1" :max="10000" :step="10" />
-			<el-input-number v-model="route.timeoutSecs" :min="0" :max="1800" :step="30" />
-			<el-switch v-model="route.enabled" />
-			<el-button type="danger" link @click="removeProviderRoute(route.id)">删除</el-button>
-		  </div>
-		</div>
+        <section class="provider-route-editor">
+          <div class="provider-route-heading">
+            <div>
+              <strong>Base URL 线路</strong>
+              <span>
+                已启用 {{ providerDraft.routes.filter((route) => route.enabled).length }} 条，
+                总并发 {{ providerCapacity(providerDraft) }}
+              </span>
+            </div>
+            <el-button :icon="Plus" @click="addProviderRoute">添加线路</el-button>
+          </div>
+          <div
+            v-for="(route, routeIndex) in providerDraft.routes"
+            :key="route.id"
+            class="provider-route-item"
+          >
+            <div class="provider-route-item-head">
+              <div>
+                <strong>{{ route.name || `线路 ${routeIndex + 1}` }}</strong>
+                <el-tag v-if="routeIndex === 0" size="small" effect="plain">主线路</el-tag>
+              </div>
+              <div class="provider-route-actions">
+                <span>启用</span>
+                <el-switch v-model="route.enabled" />
+                <el-tooltip v-if="routeIndex > 0" content="删除线路" placement="top">
+                  <el-button
+                    :icon="Delete"
+                    circle
+                    plain
+                    type="danger"
+                    aria-label="删除线路"
+                    @click="removeProviderRoute(route.id)"
+                  />
+                </el-tooltip>
+              </div>
+            </div>
+            <div class="provider-route-fields">
+              <label class="provider-route-field route-name-field">
+                <span>线路名称</span>
+                <el-input v-model="route.name" placeholder="例如 主线路" />
+              </label>
+              <label class="provider-route-field route-url-field">
+                <span>Base URL</span>
+                <el-input
+                  v-model="route.baseUrl"
+                  :placeholder="
+                    providerDraft.adapter === 'crun'
+                      ? 'https://api.crun.ai'
+                      : 'https://api.example.com/v1'
+                  "
+                  @input="invalidateProviderModels"
+                />
+              </label>
+              <label class="provider-route-field route-key-field">
+                <span>API Key</span>
+                <el-input
+                  v-model="route.apiKey"
+                  type="password"
+                  show-password
+                  :placeholder="route.apiKey.startsWith('****') ? route.apiKey : 'API Key'"
+                  @input="invalidateProviderModels"
+                />
+              </label>
+              <label class="provider-route-field route-limit-field">
+                <span>并发容量</span>
+                <el-input-number
+                  v-model="route.maxConcurrency"
+                  :min="1"
+                  :max="10000"
+                  :step="10"
+                />
+              </label>
+              <label class="provider-route-field route-timeout-field">
+                <span>超时（秒）</span>
+                <el-input-number
+                  v-model="route.timeoutSecs"
+                  :min="0"
+                  :max="1800"
+                  :step="30"
+                />
+              </label>
+            </div>
+          </div>
+        </section>
         <div class="model-discovery">
           <div>
             <strong>模型目录</strong
@@ -1991,6 +2014,21 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding-top: 0;
   overflow: hidden;
+}
+:global(.provider-editor-dialog) {
+  display: flex;
+  max-height: calc(100dvh - 8vh);
+  flex-direction: column;
+  overflow: hidden;
+}
+:global(.provider-editor-dialog .el-dialog__header),
+:global(.provider-editor-dialog .el-dialog__footer) {
+  flex: none;
+}
+:global(.provider-editor-dialog .el-dialog__body) {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .model-editor-form,
 .model-editor-tabs {
@@ -2788,15 +2826,85 @@ onBeforeUnmount(() => {
   color: var(--ink-1);
   font-size: 13px;
 }
-.provider-route-row {
+.provider-route-heading > div {
   display: grid;
-  grid-template-columns: 120px minmax(180px, 1fr) minmax(160px, 1fr) 120px 120px auto auto;
+  gap: 2px;
+}
+.provider-route-heading span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.provider-route-item {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.provider-route-item-head,
+.provider-route-actions,
+.provider-route-item-head > div {
+  display: flex;
   align-items: center;
+}
+.provider-route-item-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+.provider-route-item-head > div,
+.provider-route-actions {
   gap: 8px;
 }
-@media (max-width: 900px) {
-  .provider-route-row {
-    grid-template-columns: 1fr 1fr;
+.provider-route-actions > span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.provider-route-fields {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 8px;
+}
+.provider-route-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.provider-route-field > span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.provider-route-field :deep(.el-input-number) {
+  width: 100%;
+}
+.route-name-field {
+  grid-column: span 4;
+}
+.route-url-field {
+  grid-column: span 8;
+}
+.route-key-field {
+  grid-column: span 6;
+}
+.route-limit-field,
+.route-timeout-field {
+  grid-column: span 3;
+}
+@media (max-width: 720px) {
+  .provider-route-heading,
+  .provider-route-item-head {
+    align-items: flex-start;
+  }
+  .provider-route-fields {
+    grid-template-columns: 1fr;
+  }
+  .route-name-field,
+  .route-url-field,
+  .route-key-field,
+  .route-limit-field,
+  .route-timeout-field {
+    grid-column: 1;
   }
 }
 .model-discovery > div {
