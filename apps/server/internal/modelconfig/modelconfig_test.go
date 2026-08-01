@@ -140,6 +140,32 @@ func TestExecutionCandidatesCanFailOverFromDisabledRoute(t *testing.T) {
 	}
 }
 
+func TestExecutionCandidatesUsesExplicitPoolAcrossProviderAliases(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[0].ExecutionPoolID = "quality-pool"
+	cfg.Providers = append(cfg.Providers,
+		Provider{ID: "alias", Name: "别名线路", Adapter: AdapterOpenAI, APIKey: "alias-secret", Enabled: true, MaxConcurrency: 100},
+		Provider{ID: "other", Name: "其他线路", Adapter: AdapterOpenAI, APIKey: "other-secret", Enabled: true, MaxConcurrency: 100},
+	)
+	cfg.Models = append(cfg.Models,
+		Model{ID: "alias-image", Name: "供应商别名", ProviderID: "alias", UpstreamModel: "vendor-image-v2", ExecutionPoolID: "quality-pool", Kind: ModelKindImage, Enabled: true},
+		Model{ID: "same-upstream-other-pool", Name: "独立池", ProviderID: "other", UpstreamModel: "image-quality", ExecutionPoolID: "independent-pool", Kind: ModelKindImage, Enabled: true},
+	)
+	candidates := ExecutionCandidates(cfg, "provider", "image-quality")
+	if len(candidates) != 2 || candidates[0].Provider.ID != "provider" || candidates[1].Provider.ID != "alias" {
+		t.Fatalf("explicit pool candidates = %#v", candidates)
+	}
+}
+
+func TestValidateRejectsMixedKindsInExecutionPool(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[0].ExecutionPoolID = "mixed-pool"
+	cfg.Models[2].ExecutionPoolID = "mixed-pool"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "不能混合") {
+		t.Fatalf("mixed pool validation error = %v", err)
+	}
+}
+
 func TestLegacyImageModelReceivesDefaultCapabilities(t *testing.T) {
 	var cfg Config
 	if err := json.Unmarshal([]byte(`{
