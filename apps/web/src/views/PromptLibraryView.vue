@@ -93,6 +93,8 @@ const {
   items: masonryItems,
   fallbackAspect: 3 / 4,
   bodyHeight: 178,
+  minColumnWidth: 260,
+  maxColumns: 12,
   overscan: 960,
   getAspect: (entry) => entry.aspect,
 })

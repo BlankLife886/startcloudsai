@@ -65,6 +65,12 @@ html.color-scheme-dark .ch-page.ch-page--prompts {
   margin: 0 auto;
 }
 
+.ch-page--history .ch-shell,
+.ch-page--prompts .ch-shell {
+  width: calc(100% - clamp(32px, 4vw, 80px));
+  max-width: none;
+}
+
 .ch-hero {
   display: grid;
   gap: 10px;
@@ -1070,6 +1076,11 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
 
 @media (max-width: 760px) {
   .ch-shell {
+    width: calc(100% - 28px);
+  }
+
+  .ch-page--history .ch-shell,
+  .ch-page--prompts .ch-shell {
     width: calc(100% - 28px);
   }
 
