@@ -35,7 +35,6 @@ interface ModelItem {
   name: string;
   providerId: string;
   upstreamModel: string;
-  executionPoolId: string;
   kind: ModelKind;
   description: string;
   priceCents: number;
@@ -266,7 +265,6 @@ function hydrate(value: ModelConfig) {
   }));
   config.models = (value.models || []).map((model) => ({
     ...model,
-    executionPoolId: model.executionPoolId || model.id,
     kind: model.kind || "image",
     description: model.description || "",
     resolutions: (model.resolutions || []).filter(
@@ -394,16 +392,6 @@ function providerName(id: string) {
   return (
     config.providers.find((item) => item.id === id)?.name || "服务商已删除"
   );
-}
-
-function executionPoolSummary(value: unknown) {
-	const model = value as ModelItem;
-	const poolId = model.executionPoolId || model.id;
-	const members = config.models.filter(
-		(item) => (item.executionPoolId || item.id) === poolId,
-	);
-	const primary = members.find((item) => item.public) || members[0] || model;
-	return `${primary.name} · ${members.length} 条`;
 }
 
 function providerModels(id: string) {
@@ -700,7 +688,6 @@ const modelDraft = reactive<ModelDraft>({
   name: "",
   providerId: "",
   upstreamModel: "",
-  executionPoolId: "",
   kind: "image",
   description: "",
   pricePoints: 20,
@@ -726,7 +713,6 @@ const modelDraft = reactive<ModelDraft>({
 
 function openModel(index = -1) {
   const source = index >= 0 ? config.models[index] : null;
-	const newModelId = createId("model");
   const defaultProvider =
     config.providers.find((item) => item.enabled)?.id || "";
   Object.assign(
@@ -737,7 +723,6 @@ function openModel(index = -1) {
           name: source.name,
           providerId: source.providerId,
           upstreamModel: source.upstreamModel,
-          executionPoolId: source.executionPoolId || source.id,
           kind: source.kind,
           description: source.description,
           fastMode: source.fastMode,
@@ -768,11 +753,10 @@ function openModel(index = -1) {
           discountPoints: normalizePoints(source.discountPriceCents),
         }
       : {
-		  id: newModelId,
+          id: createId("model"),
           name: "",
           providerId: defaultProvider,
           upstreamModel: "",
-		  executionPoolId: newModelId,
           kind: kindFilter.value === "chat" ? "chat" : "image",
           description: "",
           pricePoints: 20,
@@ -807,33 +791,12 @@ const modelProviderOptions = computed(
       ?.discoveredModels || [],
 );
 
-const executionPoolOptions = computed(() => {
-	const pools = new Map<string, { id: string; name: string; count: number }>();
-	for (const model of config.models) {
-		if (model.kind !== modelDraft.kind || model.id === modelDraft.id) continue;
-		const id = model.executionPoolId || model.id;
-		const current = pools.get(id);
-		if (current) current.count += 1;
-		else pools.set(id, { id, name: model.name, count: 1 });
-	}
-	const currentId = modelDraft.executionPoolId || modelDraft.id;
-	if (currentId && !pools.has(currentId)) {
-		pools.set(currentId, {
-			id: currentId,
-			name: modelDraft.name.trim() || "独立资源池",
-			count: 1,
-		});
-	}
-	return [...pools.values()];
-});
-
 function onModelProviderChange() {
   modelDraft.upstreamModel = "";
 }
 
 function onModelKindChange(value: unknown) {
   const kind = String(value) as ModelKind;
-	modelDraft.executionPoolId = modelDraft.id;
   if (kind === "chat") {
     modelDraft.resolutions = [];
     modelDraft.fastMode = false;
@@ -974,7 +937,6 @@ function saveModelDraft() {
     name: modelDraft.name.trim(),
     providerId: modelDraft.providerId,
     upstreamModel: modelDraft.upstreamModel.trim(),
-    executionPoolId: modelDraft.executionPoolId.trim() || modelDraft.id,
     kind: modelDraft.kind,
     description: modelDraft.description.trim(),
     priceCents: normalizePoints(modelDraft.pricePoints),
@@ -1182,11 +1144,6 @@ onBeforeUnmount(() => {
             </div></template
           >
         </el-table-column>
-		<el-table-column label="调度资源池" min-width="150">
-		  <template #default="{ row }">
-			<span>{{ executionPoolSummary(row) }}</span>
-		  </template>
-		</el-table-column>
         <el-table-column label="积分价格" width="135">
           <template #default="{ row }"
             ><div class="price-cell">
@@ -1678,22 +1635,6 @@ onBeforeUnmount(() => {
                     >
                   </div>
                 </el-form-item>
-				<el-form-item label="调度资源池" class="is-wide">
-				  <el-select
-					v-model="modelDraft.executionPoolId"
-					filterable
-					allow-create
-					default-first-option
-					style="width: 100%"
-				  >
-					<el-option
-					  v-for="pool in executionPoolOptions"
-					  :key="pool.id"
-					  :value="pool.id"
-					  :label="`${pool.name} · ${pool.count} 条线路`"
-					/>
-				  </el-select>
-				</el-form-item>
                 <el-form-item label="模型说明" class="is-wide">
                   <el-input
                     v-model="modelDraft.description"

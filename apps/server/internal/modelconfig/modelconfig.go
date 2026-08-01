@@ -116,7 +116,6 @@ type Model struct {
 	Name                        string              `json:"name"`
 	ProviderID                  string              `json:"providerId"`
 	UpstreamModel               string              `json:"upstreamModel"`
-	ExecutionPoolID             string              `json:"executionPoolId"`
 	Kind                        string              `json:"kind"`
 	Description                 string              `json:"description,omitempty"`
 	PriceCents                  int64               `json:"priceCents"`
@@ -283,10 +282,6 @@ func normalize(cfg *Config) {
 		}
 	}
 	defaultKinds := map[string]bool{}
-	providerAdapters := make(map[string]string, len(cfg.Providers))
-	for _, provider := range cfg.Providers {
-		providerAdapters[provider.ID] = provider.Adapter
-	}
 	for index := range cfg.Models {
 		model := &cfg.Models[index]
 		model.ID = strings.TrimSpace(model.ID)
@@ -296,12 +291,6 @@ func normalize(cfg *Config) {
 		model.Kind = strings.TrimSpace(model.Kind)
 		if model.Kind == "" {
 			model.Kind = ModelKindImage
-		}
-		model.ExecutionPoolID = strings.TrimSpace(model.ExecutionPoolID)
-		if model.ExecutionPoolID == "" {
-			model.ExecutionPoolID = strings.Join([]string{
-				"legacy", providerAdapters[model.ProviderID], model.Kind, model.UpstreamModel,
-			}, ":")
 		}
 		model.Description = strings.TrimSpace(model.Description)
 		model.Resolutions = cleanStrings(model.Resolutions)
@@ -548,7 +537,6 @@ func Validate(cfg Config) error {
 	}
 	models := make(map[string]Model, len(cfg.Models))
 	defaults := map[string]bool{}
-	poolKinds := map[string]string{}
 	for _, model := range cfg.Models {
 		if model.ID == "" || model.Name == "" || model.UpstreamModel == "" || !ValidModelKind(model.Kind) {
 			return errors.New("模型 ID、名称、类型和上游模型不能为空")
@@ -559,13 +547,6 @@ func Validate(cfg Config) error {
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
 		}
-		if model.ExecutionPoolID == "" {
-			return fmt.Errorf("模型 %s 必须指定调度资源池", model.Name)
-		}
-		if kind, exists := poolKinds[model.ExecutionPoolID]; exists && kind != model.Kind {
-			return fmt.Errorf("调度资源池 %s 不能混合不同模型类型", model.ExecutionPoolID)
-		}
-		poolKinds[model.ExecutionPoolID] = model.Kind
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
 		}
@@ -890,7 +871,9 @@ func FindExecution(cfg Config, providerID, modelID string) (*Selection, bool) {
 	return nil, false
 }
 
-// ExecutionCandidates returns enabled routes explicitly assigned to the same pool.
+// ExecutionCandidates returns interchangeable execution routes for a selected
+// public model. Providers join the same pool by configuring an enabled model
+// with the same adapter, kind and upstream model ID.
 func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 	normalize(&cfg)
 	providers := activeProviders(cfg)
@@ -905,12 +888,23 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 	if !found {
 		return nil
 	}
+	var selectedProvider Provider
+	for _, provider := range cfg.Providers {
+		if provider.ID == selected.ProviderID {
+			selectedProvider = provider
+			break
+		}
+	}
+	if selectedProvider.ID == "" {
+		return nil
+	}
 	out := make([]Selection, 0, len(providers))
 	seenProviders := map[string]bool{}
 	for _, model := range cfg.Models {
 		provider, providerOK := providers[model.ProviderID]
 		if !providerOK || seenProviders[provider.ID] || strings.TrimSpace(provider.APIKey) == "" ||
-			!model.Enabled || model.Kind != selected.Kind || model.ExecutionPoolID != selected.ExecutionPoolID {
+			!model.Enabled || model.Kind != selected.Kind || model.UpstreamModel != selected.UpstreamModel ||
+			provider.Adapter != selectedProvider.Adapter {
 			continue
 		}
 		seenProviders[provider.ID] = true
