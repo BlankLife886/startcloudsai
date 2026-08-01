@@ -159,7 +159,7 @@ func Load() *Config {
 		R2Bucket:            getenv("R2_BUCKET", "starcloudsai"),
 		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
 
-		WorkerConcurrency:    getenvInt("WORKER_CONCURRENCY", 8),
+		WorkerConcurrency:    getenvInt("WORKER_CONCURRENCY", 32),
 		UserMaxRunningTasks:  getenvInt("USER_MAX_RUNNING_TASKS", 100),
 		WorkerImageMemoryMiB: int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
 		APIPprofAddr:         strings.TrimSpace(getenv("API_PPROF_ADDR", "")),

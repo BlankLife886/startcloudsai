@@ -27,7 +27,7 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("GET", "/api/v1/admin/settings", nil)
-	srv := &Server{Cfg: &config.Config{AppSecret: masterKey}, St: st}
+	srv := &Server{Cfg: &config.Config{AppSecret: masterKey, WorkerConcurrency: 32}, St: st}
 	out, err := srv.settingsToCamel(c)
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +35,9 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 	masked, ok := out["sub2apiApiKey"].(json.RawMessage)
 	if !ok || string(masked) != `"****1234"` {
 		t.Fatalf("sub2apiApiKey = %#v", out["sub2apiApiKey"])
+	}
+	if out["workerConcurrencyCeiling"] != int64(32) || out["effectiveGlobalConcurrency"] != int64(4) {
+		t.Fatalf("concurrency settings = ceiling %#v effective %#v", out["workerConcurrencyCeiling"], out["effectiveGlobalConcurrency"])
 	}
 }
 

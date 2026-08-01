@@ -151,6 +151,9 @@ interface SystemMetrics {
 		active: number
 		globalLimit: number
 		userConcurrencyLimit: number
+		globalConcurrencyLimit: number
+		workerConcurrencyCeiling: number
+		effectiveGlobalConcurrency: number
 		utilizationPercent: number
 		oldestQueuedSeconds: number
 		error?: string
@@ -278,7 +281,7 @@ const systemCards = computed<KpiCard[]>(() => {
 		},
 			{
 				label: '任务容量', value: `${pressure.active} / ${pressure.globalLimit}`,
-				caption: `使用 ${pressure.utilizationPercent.toFixed(1)}% · 最久排队 ${formatDuration(pressure.oldestQueuedSeconds * 1000)}`,
+				caption: `运行 ${pressure.running}/${pressure.effectiveGlobalConcurrency} · 最久排队 ${formatDuration(pressure.oldestQueuedSeconds * 1000)}`,
 				icon: Tickets, tone: pressure.utilizationPercent >= 90 ? 'danger' : pressure.utilizationPercent >= 70 ? 'warning' : 'success',
 			},
 			{
@@ -661,6 +664,7 @@ onBeforeUnmount(() => {
 					<div><dt>Stack 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.stackInUseBytes) }}</dd></div>
 					<div><dt>GC CPU</dt><dd>{{ systemMetrics.process.memory.gcCPUFraction.toFixed(2) }}%</dd></div>
 					<div><dt>用户执行上限</dt><dd>{{ systemMetrics.taskPressure.userConcurrencyLimit }} 个 / 用户</dd></div>
+					<div><dt>全站执行并发</dt><dd>{{ systemMetrics.taskPressure.effectiveGlobalConcurrency }} 有效 / {{ systemMetrics.taskPressure.workerConcurrencyCeiling }} 物理槽</dd></div>
 					<div><dt>私有 pprof</dt><dd>{{ systemMetrics.profiling.enabled ? '已启用' : '未启用' }}</dd></div>
 				</dl>
 			</PageCard>

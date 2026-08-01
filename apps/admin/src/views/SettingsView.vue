@@ -8,7 +8,10 @@ import { normalizePoints } from "@/utils";
 interface AdminSettings {
   userMaxRunningTasks?: number;
   userMaxConcurrentTasks?: number;
+  globalMaxConcurrentTasks?: number;
   globalMaxActiveTasks?: number;
+  workerConcurrencyCeiling?: number;
+  effectiveGlobalConcurrency?: number;
   registrationEnabled?: boolean;
   signupBonusCents?: number;
 }
@@ -16,10 +19,12 @@ interface AdminSettings {
 const loading = ref(false);
 const saving = ref(false);
 const savedSignature = ref("");
+const workerConcurrencyCeiling = ref(1);
 
 const form = reactive({
   userMaxRunningTasks: 100,
   userMaxConcurrentTasks: 2,
+  globalMaxConcurrentTasks: 4,
   globalMaxActiveTasks: 2000,
   registrationEnabled: true,
   signupBonusPoints: 0,
@@ -29,6 +34,7 @@ const settingsSignature = () =>
   JSON.stringify({
     userMaxRunningTasks: form.userMaxRunningTasks,
     userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+    globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
     registrationEnabled: form.registrationEnabled,
     signupBonusPoints: form.signupBonusPoints,
@@ -40,11 +46,16 @@ const isDirty = computed(
     savedSignature.value !== "" &&
     settingsSignature() !== savedSignature.value,
 );
+const effectiveGlobalConcurrency = computed(() =>
+  Math.min(form.globalMaxConcurrentTasks, workerConcurrencyCeiling.value),
+);
 
 function hydrate(settings: AdminSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
   form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 2;
+  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks ?? 4;
   form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 2000;
+  workerConcurrencyCeiling.value = Math.max(1, settings.workerConcurrencyCeiling ?? 1);
   form.registrationEnabled = settings.registrationEnabled ?? true;
   form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
   savedSignature.value = settingsSignature();
@@ -68,6 +79,7 @@ async function save() {
         body: {
           userMaxRunningTasks: form.userMaxRunningTasks,
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+          globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
           registrationEnabled: form.registrationEnabled,
           signupBonusCents: normalizePoints(form.signupBonusPoints),
@@ -139,8 +151,24 @@ onMounted(load);
 
           <label class="setting-row">
             <span
+              ><strong>全站同时执行</strong
+              ><small
+                >实时生效 · 当前有效 {{ effectiveGlobalConcurrency }} / 物理上限
+                {{ workerConcurrencyCeiling }}</small
+              ></span
+            >
+            <el-input-number
+              v-model="form.globalMaxConcurrentTasks"
+              :min="1"
+              :max="workerConcurrencyCeiling"
+              controls-position="right"
+            />
+          </label>
+
+          <label class="setting-row">
+            <span
               ><strong>单用户同时执行</strong
-              ><small>每个账号真正占用 Worker 的任务数，其余任务公平排队</small></span
+              ><small>每个账号的执行配额，实际不超过全站同时执行数</small></span
             >
             <el-input-number
               v-model="form.userMaxConcurrentTasks"

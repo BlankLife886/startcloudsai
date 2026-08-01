@@ -550,6 +550,12 @@ func LockGlobalTaskCreation(ctx context.Context, q Q) error {
 	return err
 }
 
+// LockGlobalTaskExecution serializes cluster-wide running-slot claims.
+func LockGlobalTaskExecution(ctx context.Context, q Q) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('global-task-execution', 1))`)
+	return err
+}
+
 // LockUserTaskExecution serializes running-slot claims for one user across all workers.
 func LockUserTaskExecution(ctx context.Context, q Q, userID uuid.UUID) error {
 	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 1))`, userID.String())

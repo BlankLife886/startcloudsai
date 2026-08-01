@@ -147,30 +147,48 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 }
 
 // claimTask 条件更新 queued→running，抢不到返回 nil。
-func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, bool, error) {
+func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, string, error) {
 	queued, err := store.GetTask(ctx, w.St.Pool, taskID)
 	if err != nil || queued == nil || queued.Status != "queued" {
-		return nil, false, err
+		return nil, "", err
 	}
 	var claimedTask *store.Task
-	deferred := false
+	deferReason := ""
 	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockGlobalTaskExecution(ctx, tx); err != nil {
+			return err
+		}
 		if err := store.LockUserTaskExecution(ctx, tx, queued.UserID); err != nil {
 			return err
 		}
-		limit, err := settings.GetInt(ctx, tx, "user_max_concurrent_tasks")
+		globalLimit, err := settings.GetInt(ctx, tx, "global_max_concurrent_tasks")
 		if err != nil {
 			return err
 		}
-		if limit <= 0 {
-			limit = 2
+		if globalLimit <= 0 {
+			globalLimit = 4
+		}
+		globalRunning, err := store.CountTasksInStatuses(ctx, tx, []string{"running"})
+		if err != nil {
+			return err
+		}
+		if globalRunning >= globalLimit {
+			deferReason = "global_execution_limit"
+			return nil
+		}
+		userLimit, err := settings.GetInt(ctx, tx, "user_max_concurrent_tasks")
+		if err != nil {
+			return err
+		}
+		if userLimit <= 0 {
+			userLimit = 2
 		}
 		running, err := store.CountRunningTasks(ctx, tx, queued.UserID)
 		if err != nil {
 			return err
 		}
-		if running >= limit {
-			deferred = true
+		if running >= userLimit {
+			deferReason = "user_execution_limit"
 			return nil
 		}
 		claimed, err := store.ClaimTask(ctx, tx, taskID, time.Now().UTC())
@@ -180,7 +198,7 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		claimedTask, err = store.GetTask(ctx, tx, taskID)
 		return err
 	})
-	return claimedTask, deferred, err
+	return claimedTask, deferReason, err
 }
 
 func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([][]byte, error) {
@@ -727,16 +745,16 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("bad task_id: %w", err)
 	}
 
-	task, deferred, err := w.claimTask(ctx, taskID)
+	task, deferReason, err := w.claimTask(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if deferred {
+	if deferReason != "" {
 		delay := 2*time.Second + time.Duration(taskID[0]%4)*time.Second
 		if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, taskID.String(), delay); err != nil {
 			return err
 		}
-		log.Printf("task %s deferred for per-user execution fairness delay=%s", taskID, delay)
+		log.Printf("task %s deferred reason=%s delay=%s", taskID, deferReason, delay)
 		return nil
 	}
 	if task == nil {

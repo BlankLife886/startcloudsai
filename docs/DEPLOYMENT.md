@@ -173,7 +173,7 @@ SMTP_USER=<完整邮箱地址>
 SMTP_PASSWORD=<邮箱客户端专用密码>
 SMTP_FROM=<完整发件邮箱>
 
-WORKER_CONCURRENCY=2
+WORKER_CONCURRENCY=32
 USER_MAX_RUNNING_TASKS=100
 SERVER_GOMEMLIMIT=900MiB
 WORKER_GOMEMLIMIT=1700MiB
@@ -192,7 +192,7 @@ GATEWAY_PORT=8080
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - R2 未配置时，上传和生成图片无法正常持久化。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
-- 2 核 2 GB 服务器建议使用 `WORKER_CONCURRENCY=2`。生图任务会长时间等待上游，设置为 `1` 会让后续任务全部串行排队；不要在 2 GB 机器上直接提高到 `4` 以上。
+- `WORKER_CONCURRENCY=32` 是 Worker 启动时的物理槽位，不代表同时执行 32 个图片任务。图片实际并发在后台“全站同时执行”中调整，2 核 2 GB 服务器建议从 4 开始逐级压测。
 - `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 

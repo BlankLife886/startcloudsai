@@ -209,7 +209,9 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	queue := s.Queue.Metrics()
 	pressure, pressureErr := store.GetTaskPressure(c.Request.Context(), s.St.Pool)
 	globalLimit, globalLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_tasks")
+	globalConcurrency, globalConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_concurrent_tasks")
 	userConcurrency, userConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "user_max_concurrent_tasks")
+	workerCeiling := int64(s.workerConcurrencyCeiling())
 	profilingEnabled := s.Cfg.APIPprofAddr != "" || s.Cfg.WorkerPprofAddr != ""
 
 	ok(c, gin.H{
@@ -237,26 +239,29 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 			"acquireDurationMs":       roundMetric(float64(pool.AcquireDuration())/float64(time.Millisecond), 2),
 		},
 		"queue":        queue,
-		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, userConcurrency, userConcurrencyErr),
+		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
 		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
 }
 
-func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, userConcurrency int64, userConcurrencyErr error) gin.H {
+func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error, workerCeiling int64) gin.H {
 	out := gin.H{
-		"queued":               pressure.Queued,
-		"running":              pressure.Running,
-		"active":               pressure.Queued + pressure.Running,
-		"globalLimit":          globalLimit,
-		"userConcurrencyLimit": userConcurrency,
-		"utilizationPercent":   roundMetric(percentOf64(pressure.Queued+pressure.Running, globalLimit), 2),
+		"queued":                     pressure.Queued,
+		"running":                    pressure.Running,
+		"active":                     pressure.Queued + pressure.Running,
+		"globalLimit":                globalLimit,
+		"userConcurrencyLimit":       userConcurrency,
+		"globalConcurrencyLimit":     globalConcurrency,
+		"workerConcurrencyCeiling":   workerCeiling,
+		"effectiveGlobalConcurrency": min(max(globalConcurrency, 1), workerCeiling),
+		"utilizationPercent":         roundMetric(percentOf64(pressure.Queued+pressure.Running, globalLimit), 2),
 	}
 	if pressure.OldestQueuedAt != nil {
 		out["oldestQueuedSeconds"] = max(int64(now.Sub(*pressure.OldestQueuedAt).Seconds()), 0)
 	} else {
 		out["oldestQueuedSeconds"] = int64(0)
 	}
-	if pressureErr != nil || globalLimitErr != nil || userConcurrencyErr != nil {
+	if pressureErr != nil || globalLimitErr != nil || globalConcurrencyErr != nil || userConcurrencyErr != nil {
 		out["error"] = "task_pressure_unavailable"
 	}
 	return out

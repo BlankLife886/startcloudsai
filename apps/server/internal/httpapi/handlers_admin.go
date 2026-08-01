@@ -1394,30 +1394,31 @@ func (s *Server) adminDeleteChangelog(c *gin.Context, _ *store.User) {
 // ---------- settings ----------
 
 var settingsCamel = map[string]string{
-	"task_prices":               "taskPrices",
-	"user_max_running_tasks":    "userMaxRunningTasks",
-	"user_max_concurrent_tasks": "userMaxConcurrentTasks",
-	"global_max_active_tasks":   "globalMaxActiveTasks",
-	"signup_bonus_cents":        "signupBonusCents",
-	"registration_enabled":      "registrationEnabled",
-	"task_models":               "taskModels",
-	"image_service_routes":      "imageServiceRoutes",
-	"free_daily_cents":          "freeDailyCents",
-	"submission_enabled":        "submissionEnabled",
-	"auto_approve":              "autoApprove",
-	"daily_limit":               "dailyLimit",
-	"c2a_base_url":              "c2aBaseUrl",
-	"c2a_api_key":               "c2aApiKey",
-	"c2a_timeout_secs":          "c2aTimeoutSecs",
-	"sub2api_base_url":          "sub2apiBaseUrl",
-	"sub2api_api_key":           "sub2apiApiKey",
-	"sub2api_chat_model":        "sub2apiChatModel",
-	"sub2api_chat_models":       "sub2apiChatModels",
-	"sub2api_image_model":       "sub2apiImageModel",
-	"sub2api_timeout_secs":      "sub2apiTimeoutSecs",
-	"crun_base_url":             "crunBaseUrl",
-	"crun_api_key":              "crunApiKey",
-	"crun_timeout_secs":         "crunTimeoutSecs",
+	"task_prices":                 "taskPrices",
+	"user_max_running_tasks":      "userMaxRunningTasks",
+	"user_max_concurrent_tasks":   "userMaxConcurrentTasks",
+	"global_max_concurrent_tasks": "globalMaxConcurrentTasks",
+	"global_max_active_tasks":     "globalMaxActiveTasks",
+	"signup_bonus_cents":          "signupBonusCents",
+	"registration_enabled":        "registrationEnabled",
+	"task_models":                 "taskModels",
+	"image_service_routes":        "imageServiceRoutes",
+	"free_daily_cents":            "freeDailyCents",
+	"submission_enabled":          "submissionEnabled",
+	"auto_approve":                "autoApprove",
+	"daily_limit":                 "dailyLimit",
+	"c2a_base_url":                "c2aBaseUrl",
+	"c2a_api_key":                 "c2aApiKey",
+	"c2a_timeout_secs":            "c2aTimeoutSecs",
+	"sub2api_base_url":            "sub2apiBaseUrl",
+	"sub2api_api_key":             "sub2apiApiKey",
+	"sub2api_chat_model":          "sub2apiChatModel",
+	"sub2api_chat_models":         "sub2apiChatModels",
+	"sub2api_image_model":         "sub2apiImageModel",
+	"sub2api_timeout_secs":        "sub2apiTimeoutSecs",
+	"crun_base_url":               "crunBaseUrl",
+	"crun_api_key":                "crunApiKey",
+	"crun_timeout_secs":           "crunTimeoutSecs",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1439,6 +1440,19 @@ var settingsSnake = func() map[string]string {
 	}
 	return m
 }()
+
+func (s *Server) workerConcurrencyCeiling() int {
+	ceiling := 1
+	if s.Cfg != nil && s.Cfg.WorkerConcurrency > ceiling {
+		ceiling = s.Cfg.WorkerConcurrency
+	}
+	if s.Queue != nil {
+		if online := s.Queue.Metrics().WorkerConcurrency; online > ceiling {
+			ceiling = online
+		}
+	}
+	return ceiling
+}
 
 func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 	all, err := settings.GetAll(c.Request.Context(), s.St.Pool)
@@ -1465,6 +1479,11 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		}
 		out[camel] = v
 	}
+	configured := int64(4)
+	_ = json.Unmarshal(all["global_max_concurrent_tasks"], &configured)
+	ceiling := int64(s.workerConcurrencyCeiling())
+	out["workerConcurrencyCeiling"] = ceiling
+	out["effectiveGlobalConcurrency"] = min(max(configured, 1), ceiling)
 	return out, nil
 }
 
@@ -1528,6 +1547,13 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 20 {
 				fail(c, apperr.E("validation_error", "userMaxConcurrentTasks: 须在 1-20 之间", 422))
+				return
+			}
+		case "global_max_concurrent_tasks":
+			var v int64
+			ceiling := int64(s.workerConcurrencyCeiling())
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > ceiling {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("globalMaxConcurrentTasks: 须在 1-%d 之间（当前在线 Worker 物理上限）", ceiling), 422))
 				return
 			}
 		case "global_max_active_tasks":

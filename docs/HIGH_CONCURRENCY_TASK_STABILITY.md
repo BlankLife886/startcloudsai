@@ -69,7 +69,7 @@ N 个 waitForTask 调用
 
 计数和插入位于同一个 PostgreSQL 事务。全局和用户 advisory transaction lock 使多个 API 实例也不能同时越过水位。用户重试携带的幂等键在容量判断之前读取，已经成功创建的任务仍能被找回。达到全站水位时 API 返回 `429 system_task_capacity`，前端保留本地任务和提示词，用户可以稍后重试。
 
-Worker 使用 `user_max_concurrent_tasks`（默认 2）作为每用户真实执行上限。每次 `queued -> running` 认领都在用户级 advisory lock 内重新统计 running 数，因此多个 Worker 实例共享同一限制。没有用户槽位时，业务任务保持 queued，并以 2-5 秒抖动延迟重新入队，让队列继续处理其他用户，形成跨实例的用户公平性。
+Worker 使用 `global_max_concurrent_tasks`（默认 4）作为全站动态执行上限，使用 `user_max_concurrent_tasks`（默认 2）作为每用户执行配额。每次 `queued -> running` 认领都依次取得全站和用户 advisory lock，并在事务内重新统计 running 数，因此多个 Worker 实例共同遵守同一组限制。没有槽位时，业务任务保持 queued，并以 2-5 秒抖动延迟重新入队，让队列继续处理其他用户。
 
 数据库迁移 `00029_task_concurrency_indexes.sql` 为用户活跃计数、running 计数、queued 年龄和僵尸 running 扫描增加部分索引。
 
@@ -77,7 +77,7 @@ Worker 使用 `user_max_concurrent_tasks`（默认 2）作为每用户真实执�
 
 `user_max_running_tasks` 是单用户“运行中 + 排队中”任务总量上限，默认 100。迁移 `00028_user_task_burst_capacity.sql` 只把仍为旧默认值 3 的配置提升到 100，不覆盖管理员已经设置的其他值。
 
-真正访问上游的并发由 `WORKER_CONCURRENCY` 控制，Compose 默认 2。两者必须保持分离：
+`WORKER_CONCURRENCY` 是启动时分配的物理槽位，Compose 默认 32；`global_max_concurrent_tasks` 是后台可实时修改的实际图片执行并发，默认 4。较大的物理工作池不会自动增加图片并发，只提供无需重启即可调节的安全范围：
 
 ```text
 用户突发提交 <= 100
@@ -86,13 +86,13 @@ Worker 使用 `user_max_concurrent_tasks`（默认 2）作为每用户真实执�
 PostgreSQL 持久任务 + Redis Asynq 队列
         |
         v
-Worker 并发窗口（默认 2）
+后台全站执行窗口（默认 4，实时生效）
         |
         v
 图片上游
 ```
 
-增加 Worker 实例或并发前，必须确认上游限额、数据库连接池和 R2 上传带宽。不能为了缩短队列直接把 Worker 并发调到 100。
+后台实际并发不能超过当前在线 Worker 物理槽位总数。增加后台并发前，必须确认上游限额、数据库连接池和 R2 上传带宽。只有需要突破物理槽位时才修改 `WORKER_CONCURRENCY` 并重启 Worker。
 
 ### 图片内存背压
 
@@ -157,7 +157,7 @@ go test ./...
 go vet ./...
 ```
 
-后台 `/api/v1/admin/system/metrics` 额外返回 `taskPressure`：数据库 queued、running、active、全站容量、容量利用率、最久排队秒数和单用户执行上限。生产监控至少还要包含队列等待 P50/P95/P99、任务成功率、网络恢复次数、最终失败错误码、上游耗时、R2 持久化失败数。容量利用率达到 70% 应预警，达到 90% 应检查扩容或上游降速；不能只扩大浏览器轮询频率。
+后台 `/api/v1/admin/system/metrics` 额外返回 `taskPressure`：数据库 queued/running/active、全站容量、动态执行上限、物理槽位、当前有效并发、最久排队秒数和单用户执行配额。生产监控至少还要包含队列等待 P50/P95/P99、任务成功率、网络恢复次数、最终失败错误码、上游耗时、R2 持久化失败数。容量利用率达到 70% 应预警，达到 90% 应检查扩容或上游降速。
 
 ## 部署
 
@@ -167,4 +167,4 @@ go vet ./...
 docker compose --env-file .env up -d --build server worker web gateway
 ```
 
-部署后在后台确认“用户同时任务上限”为预期值。`WORKER_CONCURRENCY` 建议从 2 开始，根据上游 429、队列等待时间和 CPU/内存逐步调整。
+部署后在后台确认“全站同时执行”和“单用户同时执行”为预期值。日常调节只修改后台动态值；根据上游 429、队列等待时间和 CPU/内存从 4 逐步提高，不需要重启 Worker。

@@ -13,7 +13,7 @@
 - PostgreSQL：最大、总计、占用、空闲、构建中连接数，连接池利用率、等待和取消次数。
 - Asynq：队列积压、活跃/计划/重试/归档任务、队列延迟、当日处理与失败数。
 - Worker：Redis 心跳可见的实例、PID、状态、并发槽和活跃槽。
-- 任务压力：数据库 queued/running、全站容量利用率、最久排队时间和单用户执行槽上限。
+- 任务压力：数据库 queued/running、全站容量利用率、动态执行上限、在线物理槽位、有效并发和单用户执行配额。
 
 请求指标使用固定 60 槽滚动窗口和延迟直方图，内存占用恒定，不保存 URL、用户信息或请求体。
 
@@ -29,12 +29,13 @@ SERVER_DB_MIN_CONNS=1
 WORKER_DB_MAX_CONNS=5
 WORKER_DB_MIN_CONNS=1
 WORKER_IMAGE_MEMORY_MIB=1024
+WORKER_CONCURRENCY=32
 DB_MAX_CONN_LIFETIME=30m
 DB_MAX_CONN_IDLE_TIME=5m
 DB_HEALTH_CHECK_PERIOD=1m
 ```
 
-`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。不要在没有 Heap Profile 和峰值压测的情况下继续降低。PostgreSQL 当前只有 `1 CPU / 1 GiB`，API 与 Worker 总连接预算应保持保守。
+`WORKER_CONCURRENCY` 是物理工作池上限，实际图片并发由后台 `global_max_concurrent_tasks` 动态控制。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。不要在没有 Heap Profile 和峰值压测的情况下继续降低。PostgreSQL 当前只有 `1 CPU / 1 GiB`，API 与 Worker 总连接预算应保持保守。
 
 ## 私有 pprof
 
