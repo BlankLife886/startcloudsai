@@ -190,6 +190,18 @@ const routes = [
     },
   },
   {
+    path: '/infinite-canvas',
+    name: 'infinite-canvas',
+    component: () => import('../views/InfiniteCanvasView.vue'),
+    meta: {
+      title: `无限画布 - ${siteName}`,
+      titleLabel: '无限画布',
+      icon: 'bi-bounding-box-circles',
+      description: '在无限画布中组织图片、文本、便签、形状和画板。',
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/profile',
     name: 'profile',
     component: () => import('../views/ProfileView.vue'),

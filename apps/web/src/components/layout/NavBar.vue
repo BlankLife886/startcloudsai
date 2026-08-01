@@ -110,6 +110,7 @@ const shareLink = { to: '/share', label: '社区', icon: 'bi-images' }
 const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-credit-card-2-front-fill' }
 
 const toolLinks = [
+  { to: '/infinite-canvas', label: '无限画布', icon: 'bi-bounding-box-circles' },
   { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
   { to: '/updates', label: '更新说明', icon: 'bi-megaphone-fill' },
 ]
@@ -117,6 +118,7 @@ const toolLinks = [
 /** bento 布局：hero 左侧通高 / tile 叠字卡 */
 const BENTO_VARIANT = {
   assistant: 'hero',
+  canvas: 'tile',
   t2i: 'tile',
   coloring: 'tile',
   ui: 'tile',
@@ -147,6 +149,7 @@ const routePrefetchers = {
   '/studio': () => import('@/views/StudioHubView.vue'),
   '/prompts': () => import('@/views/PromptLibraryView.vue'),
   '/history': () => import('@/views/CreationHistoryView.vue'),
+  '/infinite-canvas': () => import('@/views/InfiniteCanvasView.vue'),
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
   '/ai-illustration-coloring': () => import('@/views/AiIllustrationColoringView.vue'),
   '/ai-puzzle': () => import('@/views/AiPuzzleView.vue'),
