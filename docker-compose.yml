@@ -43,6 +43,10 @@ services:
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
       SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://host.docker.internal:8080}
+      GOMEMLIMIT: ${SERVER_GOMEMLIMIT:-900MiB}
+      DB_MAX_CONNS: ${SERVER_DB_MAX_CONNS:-10}
+      DB_MIN_CONNS: ${SERVER_DB_MIN_CONNS:-1}
+      API_PPROF_ADDR: 127.0.0.1:6060
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -76,6 +80,10 @@ services:
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      GOMEMLIMIT: ${WORKER_GOMEMLIMIT:-1700MiB}
+      DB_MAX_CONNS: ${WORKER_DB_MAX_CONNS:-5}
+      DB_MIN_CONNS: ${WORKER_DB_MIN_CONNS:-1}
+      WORKER_PPROF_ADDR: 127.0.0.1:6060
     depends_on:
       # server 健康 = 数据库迁移已完成，避免 worker 抢跑
       server:

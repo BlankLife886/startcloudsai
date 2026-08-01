@@ -35,14 +35,17 @@ scripts/                 # 运维/回填 SQL
 | --- | --- |
 | 应用 | `APP_ENV`、`APP_SECRET`、`ALLOWED_ORIGINS`、`TRUSTED_PROXIES` |
 | 用户认证 | `SMTP_*` |
-| 数据 | `DATABASE_URL`、`REDIS_URL` |
+| 数据 | `DATABASE_URL`、`REDIS_URL`、`DB_MAX_CONNS`、`DB_MIN_CONNS`、`DB_MAX_CONN_LIFETIME`、`DB_MAX_CONN_IDLE_TIME`、`DB_HEALTH_CHECK_PERIOD` |
 | 图片上游 | `C2A_BASE_URL`、`C2A_API_KEY`、`C2A_TIMEOUT_SECS` |
 | 对话与生图工作区 | `SUB2API_BASE_URL`、`SUB2API_API_KEY`、`SUB2API_CHAT_MODEL`、`SUB2API_IMAGE_MODEL` |
 | CRUN 异步生图 | `CRUN_BASE_URL`、`CRUN_API_KEY`、`CRUN_TIMEOUT_SECS` |
 | 对象存储 | `R2_ENDPOINT`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`、`R2_PRESIGN_EXPIRE_SECS` |
 | Worker | `WORKER_CONCURRENCY`、`USER_MAX_RUNNING_TASKS` |
+| 诊断 | `API_PPROF_ADDR`、`WORKER_PPROF_ADDR`（仅允许回环地址） |
 
 `serve` 还接受 `PORT`，默认 `8000`。生产环境会拒绝短于 32 位或仍为模板值的 `APP_SECRET`。
+
+管理端通过 `GET /api/v1/admin/system/metrics` 查看 API、Runtime、连接池、队列和 Worker 实时指标。完整采集、pprof、Race Detector、Benchmark 与 PGO 流程见 [Go 性能与实时可观测性](../../docs/GO_PERFORMANCE_OBSERVABILITY.md)。
 
 ## 本地运行
 

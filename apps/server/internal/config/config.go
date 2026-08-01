@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -22,8 +23,13 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
-	DatabaseURL string
-	RedisURL    string
+	DatabaseURL         string
+	RedisURL            string
+	DBMaxConns          int32
+	DBMinConns          int32
+	DBMaxConnLifetime   time.Duration
+	DBMaxConnIdleTime   time.Duration
+	DBHealthCheckPeriod time.Duration
 
 	C2ABaseURL     string
 	C2AAPIKey      string
@@ -47,6 +53,8 @@ type Config struct {
 
 	WorkerConcurrency   int
 	UserMaxRunningTasks int
+	APIPprofAddr        string
+	WorkerPprofAddr     string
 
 	SessionCookieName string
 	SessionTTLDays    int
@@ -64,6 +72,24 @@ func getenvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func getenvInt32(key string, def int32) int32 {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 32); err == nil {
+			return int32(parsed)
+		}
+	}
+	return def
+}
+
+func getenvDuration(key string, def time.Duration) time.Duration {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
+			return parsed
 		}
 	}
 	return def
@@ -104,8 +130,13 @@ func Load() *Config {
 		SMTPPassword:   getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:       getenv("SMTP_FROM", ""),
 
-		DatabaseURL: getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
-		RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"),
+		DatabaseURL:         getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
+		RedisURL:            getenv("REDIS_URL", "redis://localhost:6379/0"),
+		DBMaxConns:          getenvInt32("DB_MAX_CONNS", 0),
+		DBMinConns:          getenvInt32("DB_MIN_CONNS", 0),
+		DBMaxConnLifetime:   getenvDuration("DB_MAX_CONN_LIFETIME", 30*time.Minute),
+		DBMaxConnIdleTime:   getenvDuration("DB_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		DBHealthCheckPeriod: getenvDuration("DB_HEALTH_CHECK_PERIOD", time.Minute),
 
 		C2ABaseURL:     getenv("C2A_BASE_URL", "http://localhost:3000"),
 		C2AAPIKey:      getenv("C2A_API_KEY", ""),
@@ -129,10 +160,15 @@ func Load() *Config {
 
 		WorkerConcurrency:   getenvInt("WORKER_CONCURRENCY", 8),
 		UserMaxRunningTasks: getenvInt("USER_MAX_RUNNING_TASKS", 100),
+		APIPprofAddr:        strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
+		WorkerPprofAddr:     strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
 
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,
 		UploadMaxBytes:    15 * 1024 * 1024,
+	}
+	if cfg.DBMaxConns < 0 || cfg.DBMinConns < 0 || (cfg.DBMaxConns == 0 && cfg.DBMinConns > 0) || (cfg.DBMaxConns > 0 && cfg.DBMinConns > cfg.DBMaxConns) {
+		log.Fatal("数据库连接池配置无效：须满足 0 <= DB_MIN_CONNS <= DB_MAX_CONNS")
 	}
 	validateSecret(cfg.AppEnv, cfg.AppSecret)
 	if cfg.AppEnv == "production" {

@@ -123,6 +123,7 @@ func boxBlur(levels []uint8, w, h, radius int) []uint8 {
 				sum += int(src[base+idx*step])
 			}
 			for i := 0; i < lineLen; i++ {
+				// #nosec G115 -- the average of uint8 samples is always within [0, 255].
 				dst[base+i*step] = uint8(sum / window)
 				add := i + radius + 1
 				if add > lineLen-1 {
@@ -198,6 +199,7 @@ func CompositeMaskedEdit(baseData, maskData, resultData []byte, rect image.Recta
 			for c := 0; c < 4; c++ {
 				bv := int(baseRow[bi+c])
 				ev := int(editRow[ei+c])
+				// #nosec G115 -- alpha blending of uint8 channels stays within [0, 255].
 				baseRow[bi+c] = uint8((ev*a + bv*(255-a) + 127) / 255)
 			}
 		}

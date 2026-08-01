@@ -22,6 +22,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/diagnostics"
 	"github.com/BlankLife886/startcloudsai/server/internal/httpapi"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
@@ -59,7 +60,7 @@ func runServe(cfg *config.Config) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	ctx := context.Background()
-	st, err := store.New(ctx, cfg.DatabaseURL)
+	st, err := newStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -96,6 +97,8 @@ func runServe(cfg *config.Config) error {
 	// H2 优雅停机：SIGTERM/SIGINT 后 30s 内完成在途请求
 	notifyCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	stopPprof := diagnostics.StartPprof(cfg.APIPprofAddr, "api")
+	defer stopPprof()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", portNumber),
@@ -127,7 +130,7 @@ func runServe(cfg *config.Config) error {
 
 func runWorker(cfg *config.Config) error {
 	ctx := context.Background()
-	st, err := store.New(ctx, cfg.DatabaseURL)
+	st, err := newStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -144,7 +147,17 @@ func runWorker(cfg *config.Config) error {
 	defer queue.Close()
 
 	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	stopPprof := diagnostics.StartPprof(cfg.WorkerPprofAddr, "worker")
+	defer stopPprof()
 	return worker.New(cfg, st, stg, c2aClient, queue).Run()
+}
+
+func newStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
+	return store.NewWithPoolConfig(ctx, cfg.DatabaseURL, store.PoolConfig{
+		MaxConns: cfg.DBMaxConns, MinConns: cfg.DBMinConns,
+		MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DBHealthCheckPeriod,
+	})
 }
 
 // runCreateAdmin 创建或更新独立管理员账号，不写 users/wallets。

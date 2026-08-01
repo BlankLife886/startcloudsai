@@ -35,6 +35,37 @@ type Queue struct {
 	timeout   time.Duration
 }
 
+type WorkerMetrics struct {
+	ID          string         `json:"id"`
+	Host        string         `json:"host"`
+	PID         int            `json:"pid"`
+	Concurrency int            `json:"concurrency"`
+	Active      int            `json:"active"`
+	Status      string         `json:"status"`
+	StartedAt   time.Time      `json:"startedAt"`
+	Queues      map[string]int `json:"queues"`
+}
+
+type QueueMetrics struct {
+	Available         bool            `json:"available"`
+	Paused            bool            `json:"paused"`
+	LatencyMs         int64           `json:"latencyMs"`
+	MemoryBytes       int64           `json:"memoryBytes"`
+	Size              int             `json:"size"`
+	Pending           int             `json:"pending"`
+	Active            int             `json:"active"`
+	Scheduled         int             `json:"scheduled"`
+	Retry             int             `json:"retry"`
+	Archived          int             `json:"archived"`
+	ProcessedToday    int             `json:"processedToday"`
+	FailedToday       int             `json:"failedToday"`
+	OnlineWorkers     int             `json:"onlineWorkers"`
+	WorkerConcurrency int             `json:"workerConcurrency"`
+	ActiveWorkers     int             `json:"activeWorkers"`
+	Workers           []WorkerMetrics `json:"workers"`
+	Error             string          `json:"error,omitempty"`
+}
+
 // NewQueue timeoutSecs 为任务执行超时（上游超时×2 + 上传余量）。
 func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 	opt, err := asynq.ParseRedisURI(redisURL)
@@ -62,6 +93,57 @@ func (q *Queue) Close() error {
 
 // Ping 检查 Redis 连通性（健康检查用）。
 func (q *Queue) Ping() error { return q.client.Ping() }
+
+// Metrics returns a lightweight Redis-backed queue and worker heartbeat
+// snapshot for the authenticated operations dashboard.
+func (q *Queue) Metrics() QueueMetrics {
+	out := QueueMetrics{Workers: []WorkerMetrics{}}
+	if q == nil || q.inspector == nil {
+		out.Error = "queue_unavailable"
+		return out
+	}
+	info, err := q.inspector.GetQueueInfo("default")
+	if errors.Is(err, asynq.ErrQueueNotFound) {
+		out.Available = true
+	} else if err != nil {
+		out.Error = "queue_unavailable"
+		return out
+	} else {
+		out.Available = true
+		out.Paused = info.Paused
+		out.LatencyMs = info.Latency.Milliseconds()
+		out.MemoryBytes = info.MemoryUsage
+		out.Size = info.Size
+		out.Pending = info.Pending
+		out.Active = info.Active
+		out.Scheduled = info.Scheduled
+		out.Retry = info.Retry
+		out.Archived = info.Archived
+		out.ProcessedToday = info.Processed
+		out.FailedToday = info.Failed
+	}
+
+	servers, err := q.inspector.Servers()
+	if err != nil {
+		out.Error = "worker_heartbeat_unavailable"
+		return out
+	}
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		worker := WorkerMetrics{
+			ID: server.ID, Host: server.Host, PID: server.PID,
+			Concurrency: server.Concurrency, Active: len(server.ActiveWorkers),
+			Status: server.Status, StartedAt: server.Started, Queues: server.Queues,
+		}
+		out.Workers = append(out.Workers, worker)
+		out.OnlineWorkers++
+		out.WorkerConcurrency += server.Concurrency
+		out.ActiveWorkers += len(server.ActiveWorkers)
+	}
+	return out
+}
 
 // EnqueueRunTask payload 只放 task_id；MaxRetry=0，业务层自控重试。
 // asynq.TaskID 固定为任务 uuid：同一任务重复入队返回 TaskIDConflict，

@@ -3,11 +3,16 @@ import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import {
 	AlarmClock,
   CircleCheck,
+	Coin,
 	Clock,
 	Connection,
+	Cpu,
 	DataAnalysis,
   Histogram,
 	Loading,
+	Memo,
+	Odometer,
+	Platform,
 	Refresh,
   TrendCharts,
   User,
@@ -62,10 +67,103 @@ interface AdminStats {
 	providerPerformance?: ProviderPerformance[]
 }
 
+interface RuntimeMemoryMetrics {
+	usedBytes: number
+	limitBytes: number
+	heapAllocBytes: number
+	heapInUseBytes: number
+	heapObjects: number
+	stackInUseBytes: number
+	nextGCBytes: number
+	gcCycles: number
+	gcPauseTotalMs: number
+	gcCPUFraction: number
+}
+
+interface SystemMetrics {
+	sampledAt: string
+	process: {
+		goVersion: string
+		uptimeSeconds: number
+		cpuUsagePercent: number
+		logicalCPUs: number
+		goMaxProcs: number
+		goroutines: number
+		memory: RuntimeMemoryMetrics
+	}
+	http: {
+		inFlight: number
+		total: number
+		windowSeconds: number
+		requests: number
+		requestsPerSecond: number
+		status2xx: number
+		status4xx: number
+		status5xx: number
+		averageLatencyMs: number
+		p95LatencyMs: number
+		maximumLatencyMs: number
+	}
+	database: {
+		maxConnections: number
+		totalConnections: number
+		acquiredConnections: number
+		idleConnections: number
+		constructingConnections: number
+		utilizationPercent: number
+		acquireCount: number
+		emptyAcquireCount: number
+		canceledAcquireCount: number
+		acquireDurationMs: number
+	}
+	queue: {
+		available: boolean
+		paused: boolean
+		latencyMs: number
+		memoryBytes: number
+		size: number
+		pending: number
+		active: number
+		scheduled: number
+		retry: number
+		archived: number
+		processedToday: number
+		failedToday: number
+		onlineWorkers: number
+		workerConcurrency: number
+		activeWorkers: number
+		error?: string
+		workers: Array<{
+			id: string
+			host: string
+			pid: number
+			concurrency: number
+			active: number
+			status: string
+			startedAt: string
+			queues: Record<string, number>
+		}>
+	}
+	profiling: { enabled: boolean }
+}
+
+interface SystemMetricPoint {
+	time: string
+	cpu: number
+	memory: number
+	rps: number
+	p95: number
+}
+
 const loading = ref(false)
+const systemLoading = ref(false)
 const stats = ref<AdminStats | null>(null)
+const systemMetrics = ref<SystemMetrics | null>(null)
+const systemHistory = ref<SystemMetricPoint[]>([])
+const systemError = ref('')
 const loadedAt = ref('')
 let refreshTimer: number | null = null
+let systemRefreshTimer: number | null = null
 
 const taskDaily = computed(() => stats.value?.taskDaily ?? [])
 
@@ -95,6 +193,122 @@ function formatDuration(milliseconds: number) {
 	const seconds = Math.round((value % 60_000) / 1000)
 	return `${minutes} 分 ${seconds} 秒`
 }
+
+function formatBytes(bytes: number) {
+	const value = Math.max(0, Number(bytes) || 0)
+	if (value < 1024) return `${Math.round(value)} B`
+	if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`
+	if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`
+	return `${(value / 1024 ** 3).toFixed(2)} GiB`
+}
+
+function formatUptime(seconds: number) {
+	const value = Math.max(0, Math.floor(Number(seconds) || 0))
+	const days = Math.floor(value / 86_400)
+	const hours = Math.floor((value % 86_400) / 3600)
+	const minutes = Math.floor((value % 3600) / 60)
+	if (days > 0) return `${days} 天 ${hours} 小时`
+	if (hours > 0) return `${hours} 小时 ${minutes} 分`
+	return `${minutes} 分钟`
+}
+
+function finiteMemoryLimit(limit: number) {
+	return Number.isFinite(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER
+}
+
+const memoryUsagePercent = computed(() => {
+	const memory = systemMetrics.value?.process.memory
+	if (!memory || !finiteMemoryLimit(memory.limitBytes)) return 0
+	return Math.min(100, (memory.usedBytes / memory.limitBytes) * 100)
+})
+
+const systemCards = computed<KpiCard[]>(() => {
+	const metrics = systemMetrics.value
+	if (!metrics) return []
+	const queue = metrics.queue
+	return [
+		{
+			label: 'API 吞吐', value: `${metrics.http.requestsPerSecond.toFixed(2)} req/s`,
+			caption: `在途 ${metrics.http.inFlight} · 近 60 秒 ${metrics.http.requests}`,
+			icon: Odometer, tone: 'accent',
+		},
+		{
+			label: 'API P95', value: formatDuration(metrics.http.p95LatencyMs),
+			caption: `平均 ${formatDuration(metrics.http.averageLatencyMs)} · 5xx ${metrics.http.status5xx}`,
+			icon: TrendCharts, tone: metrics.http.status5xx > 0 ? 'danger' : 'success',
+		},
+		{
+			label: '进程 CPU', value: `${metrics.process.cpuUsagePercent.toFixed(1)}%`,
+			caption: `${metrics.process.goMaxProcs} 并行线程 · ${metrics.process.logicalCPUs} 逻辑核`,
+			icon: Cpu, tone: metrics.process.cpuUsagePercent >= 85 ? 'danger' : metrics.process.cpuUsagePercent >= 65 ? 'warning' : 'info',
+		},
+		{
+			label: 'Go 内存', value: formatBytes(metrics.process.memory.usedBytes),
+			caption: finiteMemoryLimit(metrics.process.memory.limitBytes)
+				? `${memoryUsagePercent.value.toFixed(1)}% / ${formatBytes(metrics.process.memory.limitBytes)}`
+				: '未设置 GOMEMLIMIT',
+			icon: Memo, tone: memoryUsagePercent.value >= 90 ? 'danger' : memoryUsagePercent.value >= 75 ? 'warning' : 'info',
+		},
+		{
+			label: 'Goroutine', value: metrics.process.goroutines,
+			caption: `运行 ${formatUptime(metrics.process.uptimeSeconds)} · GC ${metrics.process.memory.gcCycles} 次`,
+			icon: Platform, tone: 'violet',
+		},
+		{
+			label: '数据库连接', value: `${metrics.database.acquiredConnections} / ${metrics.database.maxConnections}`,
+			caption: `利用率 ${metrics.database.utilizationPercent.toFixed(1)}% · 空闲 ${metrics.database.idleConnections}`,
+			icon: Coin, tone: metrics.database.utilizationPercent >= 90 ? 'danger' : metrics.database.utilizationPercent >= 70 ? 'warning' : 'success',
+		},
+		{
+			label: '队列积压', value: queue.available ? queue.pending : '-',
+			caption: queue.available ? `活跃 ${queue.active} · 延迟 ${formatDuration(queue.latencyMs)}` : 'Redis 队列不可用',
+			icon: AlarmClock, tone: !queue.available || queue.paused ? 'danger' : queue.pending > queue.workerConcurrency ? 'warning' : 'success',
+		},
+		{
+			label: 'Worker', value: `${queue.onlineWorkers} 在线`,
+			caption: `活跃 ${queue.activeWorkers} / 并发 ${queue.workerConcurrency}`,
+			icon: Connection, tone: queue.onlineWorkers > 0 ? 'success' : 'danger',
+		},
+	]
+})
+
+const runtimeChartOption = computed<EChartOption>(() => {
+	const base = chartBase()
+	return {
+		color: [CHART_COLORS[0], CHART_COLORS[3]],
+		tooltip: { trigger: 'axis', ...base.tooltip },
+		legend: { data: ['CPU', '内存'], top: 0, textStyle: base.legendText },
+		grid: { left: 42, right: 18, top: 34, bottom: 24 },
+		xAxis: { type: 'category', data: systemHistory.value.map((point) => point.time), axisLabel: base.axisLabel, axisLine: base.axisLine },
+		yAxis: [
+			{ type: 'value', min: 0, max: 100, axisLabel: { ...base.axisLabel, formatter: '{value}%' }, splitLine: base.splitLine },
+			{ type: 'value', min: 0, axisLabel: { ...base.axisLabel, formatter: '{value} MiB' }, splitLine: { show: false } },
+		],
+		series: [
+			{ name: 'CPU', type: 'line', showSymbol: false, data: systemHistory.value.map((point) => point.cpu) },
+			{ name: '内存', type: 'line', yAxisIndex: 1, showSymbol: false, data: systemHistory.value.map((point) => point.memory) },
+		],
+	}
+})
+
+const trafficChartOption = computed<EChartOption>(() => {
+	const base = chartBase()
+	return {
+		color: [CHART_COLORS[2], CHART_COLORS[4]],
+		tooltip: { trigger: 'axis', ...base.tooltip },
+		legend: { data: ['请求/秒', 'P95 延迟'], top: 0, textStyle: base.legendText },
+		grid: { left: 42, right: 52, top: 34, bottom: 24 },
+		xAxis: { type: 'category', data: systemHistory.value.map((point) => point.time), axisLabel: base.axisLabel, axisLine: base.axisLine },
+		yAxis: [
+			{ type: 'value', min: 0, axisLabel: base.axisLabel, splitLine: base.splitLine },
+			{ type: 'value', min: 0, axisLabel: { ...base.axisLabel, formatter: '{value} ms' }, splitLine: { show: false } },
+		],
+		series: [
+			{ name: '请求/秒', type: 'line', showSymbol: false, data: systemHistory.value.map((point) => point.rps) },
+			{ name: 'P95 延迟', type: 'line', yAxisIndex: 1, showSymbol: false, data: systemHistory.value.map((point) => point.p95) },
+		],
+	}
+})
 
 const successRate24h = computed(() => percent(performance.value.succeeded, performance.value.created))
 
@@ -308,15 +522,49 @@ async function load() {
   }
 }
 
+async function loadSystemMetrics(silent = true) {
+	if (systemLoading.value) return
+	systemLoading.value = true
+	try {
+		const snapshot = await request<SystemMetrics>('/api/v1/admin/system/metrics', { silent })
+		systemMetrics.value = snapshot
+		systemError.value = ''
+		const sampled = new Date(snapshot.sampledAt)
+		const timeLabel = sampled.toLocaleTimeString('zh-CN', { hour12: false })
+		const point: SystemMetricPoint = {
+			time: timeLabel,
+			cpu: snapshot.process.cpuUsagePercent,
+			memory: Number((snapshot.process.memory.usedBytes / 1024 ** 2).toFixed(2)),
+			rps: snapshot.http.requestsPerSecond,
+			p95: snapshot.http.p95LatencyMs,
+		}
+		if (systemHistory.value.at(-1)?.time !== point.time) {
+			systemHistory.value = [...systemHistory.value.slice(-59), point]
+		}
+	} catch {
+		systemError.value = '系统指标暂时不可用'
+	} finally {
+		systemLoading.value = false
+	}
+}
+
+async function refreshAll() {
+	await Promise.all([load(), loadSystemMetrics(false)])
+}
+
 onMounted(() => {
-	void load()
+	void refreshAll()
 	refreshTimer = window.setInterval(() => {
 	  if (document.visibilityState === 'visible') void load()
 	}, 20_000)
+	systemRefreshTimer = window.setInterval(() => {
+		if (document.visibilityState === 'visible') void loadSystemMetrics()
+	}, 5_000)
 })
 
 onBeforeUnmount(() => {
 	if (refreshTimer !== null) window.clearInterval(refreshTimer)
+	if (systemRefreshTimer !== null) window.clearInterval(systemRefreshTimer)
 })
 </script>
 
@@ -325,10 +573,10 @@ onBeforeUnmount(() => {
     <div class="page-header">
 	  <div class="dashboard-title">
 		<span class="title">任务运营仪表盘</span>
-		<span class="dashboard-live"><i />20 秒自动刷新</span>
+		<span class="dashboard-live"><i />系统指标 5 秒刷新</span>
 	  </div>
 	  <span v-if="loadedAt" class="text-muted">更新于 {{ loadedAt }}</span>
-	  <el-button :icon="Refresh" size="small" :loading="loading" @click="load">刷新</el-button>
+	  <el-button :icon="Refresh" size="small" :loading="loading || systemLoading" @click="refreshAll">刷新</el-button>
     </div>
 
     <div class="kpi-grid">
@@ -349,6 +597,70 @@ onBeforeUnmount(() => {
 		<span>{{ item.label }}</span>
 		<strong>{{ item.value }}</strong>
 	  </div>
+	</section>
+
+	<section class="system-monitor" aria-labelledby="system-monitor-title">
+		<div class="section-heading">
+			<div>
+				<h2 id="system-monitor-title">实时系统性能</h2>
+				<p>API 进程、数据库连接池与任务 Worker 实时状态</p>
+			</div>
+			<div class="system-status">
+				<el-tag v-if="systemMetrics" :type="systemMetrics.queue.available ? 'success' : 'danger'" effect="plain" size="small">
+					{{ systemMetrics.queue.available ? '服务在线' : '队列异常' }}
+				</el-tag>
+				<span v-if="systemMetrics" class="text-muted">{{ systemMetrics.process.goVersion }}</span>
+			</div>
+		</div>
+
+		<el-alert v-if="systemError" :title="systemError" type="warning" :closable="false" show-icon />
+		<div v-if="systemMetrics" class="system-kpi-grid">
+			<StatCard
+				v-for="card in systemCards"
+				:key="card.label"
+				:label="card.label"
+				:value="card.value"
+				:caption="card.caption"
+				:icon="card.icon"
+				:tone="card.tone"
+			/>
+		</div>
+
+		<div v-if="systemMetrics" class="system-charts">
+			<PageCard title="运行时资源" subtitle="最近 5 分钟 CPU 与 Go 内存占用">
+				<EChart :option="runtimeChartOption" height="240px" />
+			</PageCard>
+			<PageCard title="API 实时流量" subtitle="近 60 秒请求速率与 P95 延迟">
+				<EChart :option="trafficChartOption" height="240px" />
+			</PageCard>
+		</div>
+
+		<div v-if="systemMetrics" class="system-details">
+			<PageCard title="资源明细" subtitle="连接池、GC 与诊断配置">
+				<dl class="metric-list">
+					<div><dt>数据库连接</dt><dd>{{ systemMetrics.database.totalConnections }} 总计 / {{ systemMetrics.database.idleConnections }} 空闲</dd></div>
+					<div><dt>连接池等待</dt><dd>{{ systemMetrics.database.emptyAcquireCount }} 次 / {{ formatDuration(systemMetrics.database.acquireDurationMs) }}</dd></div>
+					<div><dt>Heap 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.heapInUseBytes) }}</dd></div>
+					<div><dt>Stack 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.stackInUseBytes) }}</dd></div>
+					<div><dt>GC CPU</dt><dd>{{ systemMetrics.process.memory.gcCPUFraction.toFixed(2) }}%</dd></div>
+					<div><dt>私有 pprof</dt><dd>{{ systemMetrics.profiling.enabled ? '已启用' : '未启用' }}</dd></div>
+				</dl>
+			</PageCard>
+			<PageCard title="Worker 实例" :subtitle="`今日处理 ${systemMetrics.queue.processedToday} · 失败 ${systemMetrics.queue.failedToday}`">
+				<el-table v-if="systemMetrics.queue.workers.length" :data="systemMetrics.queue.workers" class="worker-table" max-height="260">
+					<el-table-column prop="host" label="主机" min-width="130" show-overflow-tooltip />
+					<el-table-column prop="pid" label="PID" width="80" align="right" />
+					<el-table-column prop="active" label="活跃" width="75" align="right" />
+					<el-table-column prop="concurrency" label="并发" width="75" align="right" />
+					<el-table-column label="状态" width="90" align="right">
+						<template #default="{ row }"><el-tag type="success" effect="plain" size="small">{{ row.status }}</el-tag></template>
+					</el-table-column>
+				</el-table>
+				<div v-else class="worker-empty">
+					<el-empty description="没有在线 Worker" :image-size="48" />
+				</div>
+			</PageCard>
+		</div>
 	</section>
 
     <div class="charts">
@@ -477,6 +789,100 @@ onBeforeUnmount(() => {
 	font-variant-numeric: tabular-nums;
 }
 
+.system-monitor {
+	display: grid;
+	gap: 14px;
+	margin-bottom: 18px;
+	padding: 18px 0;
+	border-top: 1px solid var(--border);
+	border-bottom: 1px solid var(--border);
+}
+
+.section-heading {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.section-heading h2 {
+	margin: 0;
+	color: var(--ink-1);
+	font-size: 15px;
+	font-weight: 650;
+	letter-spacing: 0;
+}
+
+.section-heading p {
+	margin: 4px 0 0;
+	color: var(--ink-3);
+	font-size: 11px;
+}
+
+.system-status {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.system-kpi-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.system-charts,
+.system-details {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 14px;
+}
+
+.metric-list {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	margin: 0;
+}
+
+.metric-list > div {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.metric-list > div:nth-last-child(-n + 2) {
+	border-bottom: 0;
+}
+
+.metric-list dt {
+	color: var(--ink-3);
+	font-size: 11px;
+}
+
+.metric-list dd {
+	margin: 0;
+	overflow: hidden;
+	color: var(--ink-1);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	text-align: right;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.worker-table {
+	width: 100%;
+}
+
+.worker-empty {
+	min-height: 160px;
+}
+
 .charts {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -543,10 +949,15 @@ onBeforeUnmount(() => {
 	.business-metric:nth-child(-n + 2) {
 		border-bottom: 1px solid var(--border);
 	}
+	.system-kpi-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
 }
 
 @media (max-width: 1100px) {
-  .charts {
+  .charts,
+	.system-charts,
+	.system-details {
     grid-template-columns: 1fr;
   }
 }
@@ -568,6 +979,21 @@ onBeforeUnmount(() => {
 	}
 	.business-metric:last-child {
 		border-bottom: 0;
+	}
+	.system-kpi-grid,
+	.metric-list {
+		grid-template-columns: 1fr;
+	}
+	.metric-list > div,
+	.metric-list > div:nth-last-child(-n + 2) {
+		border-bottom: 1px solid var(--border);
+	}
+	.metric-list > div:last-child {
+		border-bottom: 0;
+	}
+	.section-heading {
+		align-items: flex-start;
+		flex-direction: column;
 	}
 }
 </style>

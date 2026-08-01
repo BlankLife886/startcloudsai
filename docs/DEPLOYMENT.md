@@ -175,6 +175,12 @@ SMTP_FROM=<完整发件邮箱>
 
 WORKER_CONCURRENCY=2
 USER_MAX_RUNNING_TASKS=100
+SERVER_GOMEMLIMIT=900MiB
+WORKER_GOMEMLIMIT=1700MiB
+SERVER_DB_MAX_CONNS=10
+SERVER_DB_MIN_CONNS=1
+WORKER_DB_MAX_CONNS=5
+WORKER_DB_MIN_CONNS=1
 
 GATEWAY_BIND=127.0.0.1
 GATEWAY_PORT=8080
@@ -187,6 +193,7 @@ GATEWAY_PORT=8080
 - R2 未配置时，上传和生成图片无法正常持久化。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
 - 2 核 2 GB 服务器建议使用 `WORKER_CONCURRENCY=2`。生图任务会长时间等待上游，设置为 `1` 会让后续任务全部串行排队；不要在 2 GB 机器上直接提高到 `4` 以上。
+- `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
 ### 3.4 配置邮箱验证码
@@ -363,6 +370,7 @@ unset ADMIN_PASSWORD
 - 用户端首页、更新页和画廊可以打开和滚动。
 - 用户邮箱验证码认证、首次自动建号和退出正常。
 - 管理员可以登录 `/admin/`。
+- 后台仪表盘能每 5 秒更新 API、内存、数据库、队列和 Worker 指标。
 - 后台系统设置能读取上游模型。
 - 文生图可以提交、扣积分、完成并显示历史记录。
 - AI 助手对话、图片生成、刷新恢复和任务监控正常。

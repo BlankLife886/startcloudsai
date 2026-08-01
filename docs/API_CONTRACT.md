@@ -168,6 +168,7 @@ task 主要字段：
 | 方法  | 路径                                  | 说明                                                      |
 | ----- | ------------------------------------- | --------------------------------------------------------- |
 | GET   | `/api/v1/admin/statistics`                    | 用户、任务、全站余额、运行中任务和类型分布                |
+| GET   | `/api/v1/admin/system/metrics`                | API、Go Runtime、数据库池、Asynq 队列和 Worker 实时快照   |
 | GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表                     |
 | GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
 | PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?}`                                    |
@@ -179,6 +180,8 @@ task 主要字段：
 | GET   | `/api/v1/admin/audit-logs`               | 按 `admin`、`path` 筛选审计日志                           |
 
 `stats` 包含 `{totalUsers,newUsersToday,taskDaily,walletBalanceCents,runningTasks,typeDistribution}` 等字段。管理任务列表提供扁平 `userEmail`。
+
+`system/metrics` 只允许管理员读取。HTTP 指标为近 60 秒滚动窗口，不包含健康检查和指标请求自身；队列或 Worker 心跳不可用时返回 `available:false` 与稳定错误码，不泄露 Redis 错误详情。pprof 不属于 REST API，永远不通过公开网关提供。
 
 ## 管理端：兑换码
 

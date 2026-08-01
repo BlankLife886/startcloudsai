@@ -133,6 +133,7 @@ cd apps/admin && npm ci && npm run build
 - [数据库设计](docs/DATABASE.md)
 - [全站图片加载与瀑布流滚动性能方案](docs/PROMPT_MASONRY_PERFORMANCE.md)
 - [高并发任务稳定性方案](docs/HIGH_CONCURRENCY_TASK_STABILITY.md)
+- [Go 性能与实时可观测性](docs/GO_PERFORMANCE_OBSERVABILITY.md)
 - [管理端 UI 规范](docs/ADMIN_UI_STYLE.md)
 - [用户端首页设计规范](apps/web/DESIGN.md)
 - [用户端开发说明](apps/web/README.md)

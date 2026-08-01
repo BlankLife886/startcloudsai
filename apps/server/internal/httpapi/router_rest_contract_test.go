@@ -25,6 +25,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"GET /api/v1/admin/prompts",
 		"POST /api/v1/admin/prompts",
 		"PATCH /api/v1/admin/tasks/:id",
+		"GET /api/v1/admin/system/metrics",
 	}
 	for _, route := range wanted {
 		if !registered[route] {

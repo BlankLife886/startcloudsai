@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -45,6 +46,7 @@ type Server struct {
 	AdminLoginLimiter auth.AttemptLimiter
 	RedeemLimiter     auth.AttemptLimiter
 	PromptSync        *promptsync.Engine
+	Metrics           *systemMetrics
 	limiterClosers    []func() error
 }
 
@@ -59,6 +61,7 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 		AdminLoginLimiter: auth.NewLoginLimiter(),
 		RedeemLimiter:     auth.NewRedeemLimiter(),
 		PromptSync:        promptsync.New(st, cfg.AppEnv == "development"),
+		Metrics:           newSystemMetrics(time.Now()),
 	}
 	if cfg.AppEnv == "production" {
 		login, err := auth.NewRedisLoginLimiter(cfg.RedisURL, "user-login", false)
@@ -89,6 +92,9 @@ func (s *Server) Close() {
 }
 
 func (s *Server) Router() *gin.Engine {
+	if s.Metrics == nil {
+		s.Metrics = newSystemMetrics(time.Now())
+	}
 	if s.Cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -100,6 +106,7 @@ func (s *Server) Router() *gin.Engine {
 	}
 	r.HandleMethodNotAllowed = true
 	r.Use(gin.Logger())
+	r.Use(s.requestMetricsMiddleware)
 	r.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
 		log.Printf("panic on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
 		c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
@@ -199,6 +206,7 @@ func (s *Server) Router() *gin.Engine {
 	admin := api.Group("/admin")
 	admin.Use(s.adminAudit)
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
+	admin.GET("/system/metrics", s.adminOnly(s.adminSystemMetrics))
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
 	admin.GET("/users/:id", s.adminOnly(s.adminGetUser))
 	admin.PATCH("/users/:id", s.adminOnly(s.adminPatchUser))

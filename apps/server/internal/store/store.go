@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -27,8 +28,39 @@ type Store struct {
 	Pool *pgxpool.Pool
 }
 
+type PoolConfig struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+}
+
 func New(ctx context.Context, databaseURL string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	return NewWithPoolConfig(ctx, databaseURL, PoolConfig{})
+}
+
+func NewWithPoolConfig(ctx context.Context, databaseURL string, tuning PoolConfig) (*Store, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse pgx pool config: %w", err)
+	}
+	if tuning.MaxConns > 0 {
+		cfg.MaxConns = tuning.MaxConns
+	}
+	if tuning.MinConns > 0 {
+		cfg.MinConns = tuning.MinConns
+	}
+	if tuning.MaxConnLifetime > 0 {
+		cfg.MaxConnLifetime = tuning.MaxConnLifetime
+	}
+	if tuning.MaxConnIdleTime > 0 {
+		cfg.MaxConnIdleTime = tuning.MaxConnIdleTime
+	}
+	if tuning.HealthCheckPeriod > 0 {
+		cfg.HealthCheckPeriod = tuning.HealthCheckPeriod
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pgx pool: %w", err)
 	}
