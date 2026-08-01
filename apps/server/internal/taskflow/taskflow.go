@@ -250,6 +250,8 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_serviceProvider"] = provider
 			params["_modelConfigId"] = selection.Model.ID
 			params["_providerConfigId"] = selection.Provider.ID
+			params["_providerRouteId"] = selection.Provider.RouteID
+			params["_providerRouteKey"] = modelconfig.ExecutionRouteKey(selection.Provider)
 			params["_providerDisplayName"] = selection.Provider.Name
 			params["_modelDisplayName"] = selection.Model.Name
 			params["_modelFastMode"] = selection.Model.FastMode

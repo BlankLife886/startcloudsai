@@ -174,13 +174,14 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 	}
 	var candidates []modelconfig.Selection
 	providerID := taskParamString(queued.Params, "_providerConfigId")
+	routeID := taskParamString(queued.Params, "_providerRouteId")
 	modelID := taskParamString(queued.Params, "_modelConfigId")
 	if providerID != "" && modelID != "" {
 		cfg, runtimeErr := w.runtimeModelConfig(ctx)
 		if runtimeErr != nil {
 			return nil, "", runtimeErr
 		}
-		candidates = modelconfig.ExecutionCandidates(cfg, providerID, modelID)
+		candidates = modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
 		if len(candidates) == 0 {
 			return nil, "", errors.New("任务绑定的模型没有可用服务商")
 		}
@@ -227,7 +228,7 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		if len(candidates) > 0 {
 			providerIDs := make([]string, 0, len(candidates))
 			for _, candidate := range candidates {
-				providerIDs = append(providerIDs, candidate.Provider.ID)
+				providerIDs = append(providerIDs, modelconfig.ExecutionRouteKey(candidate.Provider))
 			}
 			runningByProvider, err := store.RunningTasksByProvider(ctx, tx, providerIDs)
 			if err != nil {
@@ -250,6 +251,8 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			route := map[string]any{
 				"_serviceProvider":     selected.Provider.Adapter,
 				"_providerConfigId":    selected.Provider.ID,
+				"_providerRouteId":     selected.Provider.RouteID,
+				"_providerRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
 				"_modelConfigId":       selected.Model.ID,
 				"_providerDisplayName": selected.Provider.Name,
 				"_modelDisplayName":    selected.Model.Name,
@@ -293,11 +296,12 @@ func selectExecutionCandidateExcluding(candidates []modelconfig.Selection, runni
 	var selectedRunning int64
 	for index := range candidates {
 		candidate := &candidates[index]
-		if excluded[candidate.Provider.ID] {
+		routeKey := modelconfig.ExecutionRouteKey(candidate.Provider)
+		if excluded[routeKey] {
 			continue
 		}
 		limit := int64(candidate.Provider.MaxConcurrency)
-		current := running[candidate.Provider.ID]
+		current := running[routeKey]
 		if limit <= 0 || current >= limit {
 			continue
 		}
@@ -638,6 +642,7 @@ func (w *Worker) callCRUN(ctx context.Context, task *store.Task, onImage imageRe
 
 func (w *Worker) configuredModelSelection(ctx context.Context, task *store.Task) (*modelconfig.Selection, bool, error) {
 	providerID := taskParamString(task.Params, "_providerConfigId")
+	routeID := taskParamString(task.Params, "_providerRouteId")
 	modelID := taskParamString(task.Params, "_modelConfigId")
 	if providerID == "" || modelID == "" {
 		return nil, false, nil
@@ -646,7 +651,7 @@ func (w *Worker) configuredModelSelection(ctx context.Context, task *store.Task)
 	if err != nil {
 		return nil, false, err
 	}
-	selection, found := modelconfig.FindExecution(cfg, providerID, modelID)
+	selection, found := modelconfig.FindExecutionRoute(cfg, providerID, modelID, routeID)
 	if !found {
 		return nil, false, errors.New("任务绑定的模型或服务商配置已失效")
 	}
@@ -946,11 +951,16 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	if errors.As(callErr, &pendingErr) {
 		delay := 2*time.Second + time.Duration(taskID[0]%3)*time.Second
 		providerID := taskParamString(task.Params, "_providerConfigId")
+		routeID := taskParamString(task.Params, "_providerRouteId")
+		routeKey := taskParamString(task.Params, "_providerRouteKey")
+		if routeKey == "" {
+			routeKey = providerID
+		}
 		if markErr := store.MarkTaskUpstreamPending(ctx, w.St.Pool, taskID); markErr != nil {
 			_, _ = store.RequeueRunningTask(ctx, w.St.Pool, taskID)
 			return markErr
 		}
-		if enqueueErr := w.Queue.EnqueueImagePoll(ctx, providerID, 0, delay); enqueueErr != nil {
+		if enqueueErr := w.Queue.EnqueueImagePoll(ctx, providerID, routeID, routeKey, 0, delay); enqueueErr != nil {
 			_, _ = store.RequeueRunningTask(ctx, w.St.Pool, taskID)
 			return enqueueErr
 		}
@@ -1071,15 +1081,26 @@ func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
 	var provider *modelconfig.Provider
 	for index := range cfg.Providers {
 		if cfg.Providers[index].ID == payload.ProviderID && cfg.Providers[index].Enabled {
-			provider = &cfg.Providers[index]
+			for _, route := range modelconfig.ExecutionRoutes(cfg.Providers[index]) {
+				if payload.RouteID == "" || route.RouteID == payload.RouteID {
+					selected := route
+					provider = &selected
+					break
+				}
+			}
 			break
 		}
 	}
-	if provider == nil || (provider.Adapter != modelconfig.AdapterOpenAI && provider.Adapter != modelconfig.AdapterCRUN) {
-		return w.requeueUnavailableProviderTasks(ctx, payload.ProviderID)
+	routeKey := payload.RouteKey
+	if routeKey == "" {
+		routeKey = payload.ProviderID
 	}
+	if provider == nil || (provider.Adapter != modelconfig.AdapterOpenAI && provider.Adapter != modelconfig.AdapterCRUN) {
+		return w.requeueUnavailableProviderTasks(ctx, routeKey)
+	}
+	routeKey = modelconfig.ExecutionRouteKey(*provider)
 	limit := min(max(provider.MaxConcurrency, 100), 10000)
-	tasks, err := store.ListAsyncPendingTasksByProvider(ctx, w.St.Pool, provider.ID, limit)
+	tasks, err := store.ListAsyncPendingTasksByProvider(ctx, w.St.Pool, routeKey, limit)
 	if err != nil || len(tasks) == 0 {
 		return err
 	}
@@ -1090,7 +1111,7 @@ func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
 		w.pollCRUNProviderTasks(ctx, provider, tasks)
 	}
 	delay := 2*time.Second + time.Duration(len(tasks)%3)*time.Second
-	return w.Queue.EnqueueImagePoll(ctx, provider.ID, (payload.Generation+1)%2, delay)
+	return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, delay)
 }
 
 func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
@@ -1208,7 +1229,10 @@ func (w *Worker) requeueUnavailableProviderTasks(ctx context.Context, providerID
 }
 
 func (w *Worker) recordFailedTaskProvider(ctx context.Context, task *store.Task) {
-	providerID := taskParamString(task.Params, "_providerConfigId")
+	providerID := taskParamString(task.Params, "_providerRouteKey")
+	if providerID == "" {
+		providerID = taskParamString(task.Params, "_providerConfigId")
+	}
 	if providerID == "" {
 		return
 	}
@@ -1234,8 +1258,9 @@ func (w *Worker) configuredTaskRecoveryLimit(ctx context.Context, task *store.Ta
 	if err != nil {
 		return maxNetworkRecoveries
 	}
-	candidates := modelconfig.ExecutionCandidates(
+	candidates := modelconfig.ExecutionCandidatesRoute(
 		cfg, taskParamString(task.Params, "_providerConfigId"), taskParamString(task.Params, "_modelConfigId"),
+		taskParamString(task.Params, "_providerRouteId"),
 	)
 	return min(max(len(candidates)*2, maxNetworkRecoveries), 1000)
 }

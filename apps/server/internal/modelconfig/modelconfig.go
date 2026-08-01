@@ -53,31 +53,45 @@ var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
 
 type Provider struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Adapter          string   `json:"adapter"`
-	BaseURL          string   `json:"baseUrl"`
-	APIKey           string   `json:"apiKey"`
-	TimeoutSecs      int      `json:"timeoutSecs"`
-	MaxConcurrency   int      `json:"maxConcurrency"`
-	Enabled          bool     `json:"enabled"`
-	DiscoveredModels []string `json:"discoveredModels"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Adapter          string          `json:"adapter"`
+	Routes           []ProviderRoute `json:"routes"`
+	BaseURL          string          `json:"baseUrl"`
+	APIKey           string          `json:"apiKey"`
+	TimeoutSecs      int             `json:"timeoutSecs"`
+	MaxConcurrency   int             `json:"maxConcurrency"`
+	Enabled          bool            `json:"enabled"`
+	DiscoveredModels []string        `json:"discoveredModels"`
+	RouteID          string          `json:"-"`
+	RouteName        string          `json:"-"`
+}
+
+type ProviderRoute struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	BaseURL        string `json:"baseUrl"`
+	APIKey         string `json:"apiKey"`
+	TimeoutSecs    int    `json:"timeoutSecs"`
+	MaxConcurrency int    `json:"maxConcurrency"`
+	Enabled        bool   `json:"enabled"`
 }
 
 // UnmarshalJSON migrates the previous provider type + key-pool representation
 // into the single-key adapter representation when the stored setting is read.
 func (p *Provider) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID               string   `json:"id"`
-		Name             string   `json:"name"`
-		Adapter          string   `json:"adapter"`
-		Type             string   `json:"type"`
-		BaseURL          string   `json:"baseUrl"`
-		APIKey           string   `json:"apiKey"`
-		TimeoutSecs      int      `json:"timeoutSecs"`
-		MaxConcurrency   int      `json:"maxConcurrency"`
-		Enabled          bool     `json:"enabled"`
-		DiscoveredModels []string `json:"discoveredModels"`
+		ID               string          `json:"id"`
+		Name             string          `json:"name"`
+		Adapter          string          `json:"adapter"`
+		Routes           []ProviderRoute `json:"routes"`
+		Type             string          `json:"type"`
+		BaseURL          string          `json:"baseUrl"`
+		APIKey           string          `json:"apiKey"`
+		TimeoutSecs      int             `json:"timeoutSecs"`
+		MaxConcurrency   int             `json:"maxConcurrency"`
+		Enabled          bool            `json:"enabled"`
+		DiscoveredModels []string        `json:"discoveredModels"`
 		Keys             []struct {
 			Secret  string `json:"secret"`
 			Enabled bool   `json:"enabled"`
@@ -106,7 +120,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 	*p = Provider{
 		ID: raw.ID, Name: raw.Name, Adapter: adapter, BaseURL: raw.BaseURL,
 		APIKey: apiKey, TimeoutSecs: raw.TimeoutSecs, MaxConcurrency: raw.MaxConcurrency, Enabled: raw.Enabled,
-		DiscoveredModels: raw.DiscoveredModels,
+		DiscoveredModels: raw.DiscoveredModels, Routes: raw.Routes,
 	}
 	return nil
 }
@@ -272,13 +286,36 @@ func normalize(cfg *Config) {
 		provider.ID = strings.TrimSpace(provider.ID)
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.Adapter = strings.TrimSpace(provider.Adapter)
-		provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-		if provider.Adapter == AdapterCRUN {
-			provider.BaseURL = strings.TrimSuffix(provider.BaseURL, "/api/v1")
-		}
 		provider.DiscoveredModels = cleanStrings(provider.DiscoveredModels)
-		if provider.MaxConcurrency <= 0 {
-			provider.MaxConcurrency = 100
+		if len(provider.Routes) == 0 && (provider.BaseURL != "" || provider.APIKey != "") {
+			provider.Routes = []ProviderRoute{{
+				ID: provider.ID + "-default", Name: "默认线路", BaseURL: provider.BaseURL,
+				APIKey: provider.APIKey, TimeoutSecs: provider.TimeoutSecs,
+				MaxConcurrency: provider.MaxConcurrency, Enabled: provider.Enabled,
+			}}
+		}
+		for routeIndex := range provider.Routes {
+			route := &provider.Routes[routeIndex]
+			route.ID = strings.TrimSpace(route.ID)
+			if route.ID == "" {
+				route.ID = fmt.Sprintf("%s-route-%d", provider.ID, routeIndex+1)
+			}
+			route.Name = strings.TrimSpace(route.Name)
+			if route.Name == "" {
+				route.Name = fmt.Sprintf("线路 %d", routeIndex+1)
+			}
+			route.BaseURL = strings.TrimRight(strings.TrimSpace(route.BaseURL), "/")
+			if provider.Adapter == AdapterCRUN {
+				route.BaseURL = strings.TrimSuffix(route.BaseURL, "/api/v1")
+			}
+			if route.MaxConcurrency <= 0 {
+				route.MaxConcurrency = 100
+			}
+		}
+		if len(provider.Routes) > 0 {
+			primary := provider.Routes[0]
+			provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
+			provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
 		}
 	}
 	defaultKinds := map[string]bool{}
@@ -521,17 +558,31 @@ func Validate(cfg Config) error {
 		if _, exists := providers[provider.ID]; exists {
 			return fmt.Errorf("服务商 ID 重复：%s", provider.ID)
 		}
-		if provider.BaseURL == "" {
-			return fmt.Errorf("服务商 %s 缺少 Base URL", provider.Name)
+		if len(provider.Routes) == 0 {
+			return fmt.Errorf("服务商 %s 至少需要一条 Base URL 线路", provider.Name)
 		}
-		if provider.Enabled && strings.TrimSpace(provider.APIKey) == "" {
-			return fmt.Errorf("服务商 %s 缺少 API Key", provider.Name)
+		routeIDs := map[string]bool{}
+		enabledRoutes := 0
+		for _, route := range provider.Routes {
+			if route.ID == "" || routeIDs[route.ID] || route.BaseURL == "" {
+				return fmt.Errorf("服务商 %s 的线路 ID 或 Base URL 无效", provider.Name)
+			}
+			routeIDs[route.ID] = true
+			if route.TimeoutSecs < 0 || route.TimeoutSecs > 1800 {
+				return fmt.Errorf("服务商 %s 的线路超时须在 0-1800 秒之间", provider.Name)
+			}
+			if route.MaxConcurrency < 1 || route.MaxConcurrency > 10000 {
+				return fmt.Errorf("服务商 %s 的线路并发容量须在 1-10000 之间", provider.Name)
+			}
+			if route.Enabled {
+				enabledRoutes++
+				if strings.TrimSpace(route.APIKey) == "" {
+					return fmt.Errorf("服务商 %s 的启用线路缺少 API Key", provider.Name)
+				}
+			}
 		}
-		if provider.TimeoutSecs < 0 || provider.TimeoutSecs > 1800 {
-			return fmt.Errorf("服务商 %s 的超时须在 0-1800 秒之间", provider.Name)
-		}
-		if provider.MaxConcurrency < 1 || provider.MaxConcurrency > 10000 {
-			return fmt.Errorf("服务商 %s 的并发容量须在 1-10000 之间", provider.Name)
+		if provider.Enabled && enabledRoutes == 0 {
+			return fmt.Errorf("服务商 %s 至少需要一条启用线路", provider.Name)
 		}
 		providers[provider.ID] = provider
 	}
@@ -643,21 +694,34 @@ func maskSecret(secret string) string {
 	return "****" + string(runes[len(runes)-4:])
 }
 
+func syncProviderPrimary(provider *Provider) {
+	if provider == nil || len(provider.Routes) == 0 {
+		return
+	}
+	primary := provider.Routes[0]
+	provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
+	provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
+}
+
 func AdminView(ctx context.Context, q store.Q, masterKey string) (Config, error) {
 	cfg, err := Load(ctx, q)
 	if err != nil {
 		return Config{}, err
 	}
 	for index := range cfg.Providers {
-		stored := cfg.Providers[index].APIKey
-		if stored == "" {
-			continue
+		provider := &cfg.Providers[index]
+		for routeIndex := range provider.Routes {
+			stored := provider.Routes[routeIndex].APIKey
+			if stored == "" {
+				continue
+			}
+			plain, err := settings.DecryptSecret(stored, masterKey)
+			if err != nil {
+				return Config{}, err
+			}
+			provider.Routes[routeIndex].APIKey = maskSecret(plain)
 		}
-		plain, err := settings.DecryptSecret(stored, masterKey)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Providers[index].APIKey = maskSecret(plain)
+		syncProviderPrimary(provider)
 	}
 	return cfg, nil
 }
@@ -667,26 +731,33 @@ func PrepareAdminSave(ctx context.Context, q store.Q, input Config, masterKey st
 	if err != nil {
 		return Config{}, err
 	}
-	existingKeys := make(map[string]string, len(existing.Providers))
+	normalize(&input)
+	existingKeys := map[string]string{}
 	for _, provider := range existing.Providers {
-		existingKeys[provider.ID] = provider.APIKey
+		for _, route := range provider.Routes {
+			existingKeys[provider.ID+"/"+route.ID] = route.APIKey
+		}
 	}
 	for index := range input.Providers {
 		provider := &input.Providers[index]
-		secret := strings.TrimSpace(provider.APIKey)
-		if secret == "" || strings.HasPrefix(secret, "****") {
-			if stored := existingKeys[provider.ID]; stored != "" {
-				provider.APIKey = stored
+		for routeIndex := range provider.Routes {
+			route := &provider.Routes[routeIndex]
+			secret := strings.TrimSpace(route.APIKey)
+			if secret == "" || strings.HasPrefix(secret, "****") {
+				if stored := existingKeys[provider.ID+"/"+route.ID]; stored != "" {
+					route.APIKey = stored
+					continue
+				}
+				route.APIKey = ""
 				continue
 			}
-			provider.APIKey = ""
-			continue
+			encrypted, err := settings.EncryptSecret(secret, masterKey)
+			if err != nil {
+				return Config{}, err
+			}
+			route.APIKey = encrypted
 		}
-		encrypted, err := settings.EncryptSecret(secret, masterKey)
-		if err != nil {
-			return Config{}, err
-		}
-		provider.APIKey = encrypted
+		syncProviderPrimary(provider)
 	}
 	if err := Validate(input); err != nil {
 		return Config{}, err
@@ -701,15 +772,19 @@ func Runtime(ctx context.Context, q store.Q, masterKey string) (Config, error) {
 		return Config{}, err
 	}
 	for index := range cfg.Providers {
-		stored := cfg.Providers[index].APIKey
-		if stored == "" {
-			continue
+		provider := &cfg.Providers[index]
+		for routeIndex := range provider.Routes {
+			stored := provider.Routes[routeIndex].APIKey
+			if stored == "" {
+				continue
+			}
+			plain, err := settings.DecryptSecret(stored, masterKey)
+			if err != nil {
+				return Config{}, err
+			}
+			provider.Routes[routeIndex].APIKey = plain
 		}
-		plain, err := settings.DecryptSecret(stored, masterKey)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Providers[index].APIKey = plain
+		syncProviderPrimary(provider)
 	}
 	return cfg, nil
 }
@@ -725,10 +800,44 @@ func activeProviders(cfg Config) map[string]Provider {
 	providers := make(map[string]Provider, len(cfg.Providers))
 	for _, provider := range cfg.Providers {
 		if provider.Enabled {
-			providers[provider.ID] = provider
+			routes := executionRoutes(provider)
+			if len(routes) > 0 {
+				providers[provider.ID] = routes[0]
+			}
 		}
 	}
 	return providers
+}
+
+func executionRoutes(provider Provider) []Provider {
+	out := make([]Provider, 0, len(provider.Routes))
+	if !provider.Enabled {
+		return out
+	}
+	if len(provider.Routes) == 0 {
+		return append(out, provider)
+	}
+	for _, route := range provider.Routes {
+		if !route.Enabled {
+			continue
+		}
+		candidate := provider
+		candidate.RouteID = route.ID
+		candidate.RouteName = route.Name
+		candidate.BaseURL, candidate.APIKey = route.BaseURL, route.APIKey
+		candidate.TimeoutSecs, candidate.MaxConcurrency = route.TimeoutSecs, route.MaxConcurrency
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func ExecutionRoutes(provider Provider) []Provider { return executionRoutes(provider) }
+
+func ExecutionRouteKey(provider Provider) string {
+	if provider.RouteID == "" {
+		return provider.ID
+	}
+	return provider.ID + "/" + provider.RouteID
 }
 
 func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) {
@@ -858,6 +967,11 @@ func HasPublicKind(cfg Config, kind string) bool {
 }
 
 func FindExecution(cfg Config, providerID, modelID string) (*Selection, bool) {
+	return FindExecutionRoute(cfg, providerID, modelID, "")
+}
+
+func FindExecutionRoute(cfg Config, providerID, modelID, routeID string) (*Selection, bool) {
+	normalize(&cfg)
 	providers := activeProviders(cfg)
 	provider, providerOK := providers[providerID]
 	if !providerOK || strings.TrimSpace(provider.APIKey) == "" {
@@ -865,22 +979,41 @@ func FindExecution(cfg Config, providerID, modelID string) (*Selection, bool) {
 	}
 	for _, model := range cfg.Models {
 		if model.ID == modelID && model.ProviderID == providerID && model.Enabled {
+			if routeID != "" {
+				for _, route := range executionRoutes(cfgProviderByID(cfg, providerID)) {
+					if route.RouteID == routeID && strings.TrimSpace(route.APIKey) != "" {
+						return &Selection{Provider: route, Model: model}, true
+					}
+				}
+				return nil, false
+			}
 			return &Selection{Provider: provider, Model: model}, true
 		}
 	}
 	return nil, false
 }
 
-// ExecutionCandidates returns interchangeable execution routes for a selected
-// public model. Providers join the same pool by configuring an enabled model
-// with the same adapter, kind and upstream model ID.
+func cfgProviderByID(cfg Config, providerID string) Provider {
+	for _, provider := range cfg.Providers {
+		if provider.ID == providerID {
+			return provider
+		}
+	}
+	return Provider{}
+}
+
+// ExecutionCandidates returns the enabled Base URL routes owned by the
+// provider bound to the selected model.
 func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
+	return ExecutionCandidatesRoute(cfg, providerID, modelID, "")
+}
+
+func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) []Selection {
 	normalize(&cfg)
-	providers := activeProviders(cfg)
 	var selected Model
 	found := false
 	for _, model := range cfg.Models {
-		if model.ID == modelID && model.ProviderID == providerID {
+		if model.ID == modelID && model.ProviderID == providerID && model.Enabled {
 			selected, found = model, true
 			break
 		}
@@ -898,27 +1031,19 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 	if selectedProvider.ID == "" {
 		return nil
 	}
-	out := make([]Selection, 0, len(providers))
-	seenProviders := map[string]bool{}
-	for _, model := range cfg.Models {
-		provider, providerOK := providers[model.ProviderID]
-		if !providerOK || seenProviders[provider.ID] || strings.TrimSpace(provider.APIKey) == "" ||
-			!model.Enabled || model.Kind != selected.Kind || model.UpstreamModel != selected.UpstreamModel ||
-			provider.Adapter != selectedProvider.Adapter {
+	routes := executionRoutes(selectedProvider)
+	out := make([]Selection, 0, len(routes))
+	for _, route := range routes {
+		if strings.TrimSpace(route.APIKey) == "" {
 			continue
 		}
-		seenProviders[provider.ID] = true
-		out = append(out, Selection{Provider: provider, Model: model})
+		out = append(out, Selection{Provider: route, Model: selected})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Provider.ID == providerID {
-			return true
-		}
-		if out[j].Provider.ID == providerID {
-			return false
-		}
-		return out[i].Provider.ID < out[j].Provider.ID
-	})
+	if routeID != "" {
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].Provider.RouteID == routeID && out[j].Provider.RouteID != routeID
+		})
+	}
 	return out
 }
 

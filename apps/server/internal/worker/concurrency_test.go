@@ -100,24 +100,27 @@ func TestSelectExecutionCandidateDistributesTenThousandAcrossProviderPool(t *tes
 	}
 }
 
-func TestClaimTaskDistributesAcrossConfiguredProviderCapacity(t *testing.T) {
+func TestClaimTaskDistributesAcrossBaseURLRoutes(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
-	const masterKey = "worker-provider-pool-test-key"
-	encrypted, err := settings.EncryptSecret("provider-secret", masterKey)
+	const masterKey = "worker-base-url-route-test-key"
+	encrypted, err := settings.EncryptSecret("route-secret", masterKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := modelconfig.Config{
 		Version: modelconfig.Version,
-		Providers: []modelconfig.Provider{
-			{ID: "provider-a", Name: "A", Adapter: modelconfig.AdapterOpenAI, BaseURL: "https://a.example.com", APIKey: encrypted, MaxConcurrency: 2, Enabled: true},
-			{ID: "provider-b", Name: "B", Adapter: modelconfig.AdapterOpenAI, BaseURL: "https://b.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true},
-		},
-		Models: []modelconfig.Model{
-			{ID: "model-a", Name: "Image", ProviderID: "provider-a", UpstreamModel: "image-model", Kind: modelconfig.ModelKindImage, Enabled: true, Public: true},
-			{ID: "model-b", Name: "Image backup", ProviderID: "provider-b", UpstreamModel: "image-model", Kind: modelconfig.ModelKindImage, Enabled: true},
-		},
+		Providers: []modelconfig.Provider{{
+			ID: "provider", Name: "Image Provider", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+			Routes: []modelconfig.ProviderRoute{
+				{ID: "route-a", Name: "A", BaseURL: "https://a.example.com", APIKey: encrypted, MaxConcurrency: 2, Enabled: true},
+				{ID: "route-b", Name: "B", BaseURL: "https://b.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true},
+			},
+		}},
+		Models: []modelconfig.Model{{
+			ID: "image", Name: "Image", ProviderID: "provider", UpstreamModel: "image-model",
+			Kind: modelconfig.ModelKindImage, Enabled: true, Public: true,
+		}},
 	}
 	if err := modelconfig.Save(ctx, st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -127,13 +130,13 @@ func TestClaimTaskDistributesAcrossConfiguredProviderCapacity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("provider-pool-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("base-url-routes-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ids := make([]uuid.UUID, 4)
 	for index := range ids {
-		params := `{"_providerConfigId":"provider-a","_modelConfigId":"model-a","_serviceProvider":"openai"}`
+		params := `{"_providerConfigId":"provider","_modelConfigId":"image","_serviceProvider":"openai"}`
 		if err := st.Pool.QueryRow(ctx,
 			`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents) VALUES ($1, 't2i', 'test', $2, 'queued', 0) RETURNING id`,
 			user.ID, params).Scan(&ids[index]); err != nil {
@@ -147,13 +150,13 @@ func TestClaimTaskDistributesAcrossConfiguredProviderCapacity(t *testing.T) {
 			t.Fatalf("claim %d task=%#v reason=%q err=%v", index, claimed, reason, err)
 		}
 	}
-	counts, err := store.RunningTasksByProvider(ctx, st.Pool, []string{"provider-a", "provider-b"})
-	if err != nil || counts["provider-a"] != 2 || counts["provider-b"] != 1 {
-		t.Fatalf("provider counts=%#v err=%v", counts, err)
+	counts, err := store.RunningTasksByProvider(ctx, st.Pool, []string{"provider/route-a", "provider/route-b"})
+	if err != nil || counts["provider/route-a"] != 2 || counts["provider/route-b"] != 1 {
+		t.Fatalf("route counts=%#v err=%v", counts, err)
 	}
 	claimed, reason, err := w.claimTask(ctx, ids[3])
 	if err != nil || claimed != nil || reason != "provider_execution_limit" {
-		t.Fatalf("full pool task=%#v reason=%q err=%v", claimed, reason, err)
+		t.Fatalf("full routes task=%#v reason=%q err=%v", claimed, reason, err)
 	}
 }
 

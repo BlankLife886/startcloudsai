@@ -28,6 +28,17 @@ interface ModelProvider {
   maxConcurrency: number;
   enabled: boolean;
   discoveredModels: string[];
+	routes: ProviderRoute[];
+}
+
+interface ProviderRoute {
+	id: string;
+	name: string;
+	baseUrl: string;
+	apiKey: string;
+	timeoutSecs: number;
+	maxConcurrency: number;
+	enabled: boolean;
 }
 
 interface ModelItem {
@@ -262,7 +273,16 @@ function hydrate(value: ModelConfig) {
     adapter: provider.adapter || "openai",
     maxConcurrency: provider.maxConcurrency || 100,
     discoveredModels: provider.discoveredModels || [],
+	routes:
+		provider.routes?.length
+			? provider.routes.map((route) => ({ ...route, maxConcurrency: route.maxConcurrency || 100 }))
+			: [{
+				id: `${provider.id}-default`, name: "默认线路", baseUrl: provider.baseUrl,
+				apiKey: provider.apiKey, timeoutSecs: provider.timeoutSecs,
+				maxConcurrency: provider.maxConcurrency || 100, enabled: provider.enabled,
+			  }],
   }));
+	for (const provider of config.providers) syncProviderPrimary(provider);
   config.models = (value.models || []).map((model) => ({
     ...model,
     kind: model.kind || "image",
@@ -547,6 +567,13 @@ function adapterName(value: unknown) {
   return adapterMeta[String(value) as ProviderAdapter]?.name || "未知协议";
 }
 
+function providerCapacity(value: unknown) {
+	const provider = value as ModelProvider;
+	return (provider.routes || [])
+		.filter((route) => route.enabled)
+		.reduce((total, route) => total + (route.maxConcurrency || 0), 0);
+}
+
 const providerDialogVisible = ref(false);
 const providerEditIndex = ref(-1);
 const discoveringProviderModels = ref(false);
@@ -561,7 +588,17 @@ const providerDraft = reactive<ModelProvider>({
   maxConcurrency: 100,
   enabled: true,
   discoveredModels: [],
+	routes: [],
 });
+
+function syncProviderPrimary(provider: ModelProvider) {
+	const primary = provider.routes[0];
+	if (!primary) return;
+	provider.baseUrl = primary.baseUrl;
+	provider.apiKey = primary.apiKey;
+	provider.timeoutSecs = primary.timeoutSecs;
+	provider.maxConcurrency = primary.maxConcurrency;
+}
 
 function copyProvider(source: ModelProvider): ModelProvider {
   return {
@@ -574,6 +611,7 @@ function copyProvider(source: ModelProvider): ModelProvider {
     maxConcurrency: source.maxConcurrency || 100,
     enabled: source.enabled,
     discoveredModels: [...(source.discoveredModels || [])],
+	routes: (source.routes || []).map((route) => ({ ...route })),
   };
 }
 
@@ -593,6 +631,10 @@ function openProvider(index = -1) {
           maxConcurrency: 100,
           enabled: true,
           discoveredModels: [],
+		  routes: [{
+			  id: createId("route"), name: "默认线路", baseUrl: "", apiKey: "",
+			  timeoutSecs: 300, maxConcurrency: 100, enabled: true,
+		  }],
         },
   );
   providerEditIndex.value = index;
@@ -606,6 +648,7 @@ function invalidateProviderModels() {
 }
 
 async function fetchProviderModels(provider: ModelProvider) {
+	syncProviderPrimary(provider);
   return request<ModelDiscoveryResult>(
     "/api/v1/admin/model-config/discoveries",
     { method: "POST", body: provider },
@@ -647,13 +690,16 @@ async function discoverProviderModels() {
 
 async function saveProviderDraft() {
   providerDraft.name = providerDraft.name.trim();
-  providerDraft.baseUrl = providerDraft.baseUrl.trim().replace(/\/$/, "");
-  if (!providerDraft.name || !/^https?:\/\//.test(providerDraft.baseUrl)) {
-    ElMessage.warning("请填写服务商名称和完整 Base URL");
-    return;
-  }
-  if (!providerDraft.apiKey.trim()) {
-    ElMessage.warning("请填写 API Key");
+	providerDraft.routes = providerDraft.routes.map((route) => ({
+		...route, name: route.name.trim(), baseUrl: route.baseUrl.trim().replace(/\/$/, ""),
+	}));
+	syncProviderPrimary(providerDraft);
+	if (!providerDraft.name || !providerDraft.routes.length || providerDraft.routes.some((route) => !route.name || !/^https?:\/\//.test(route.baseUrl))) {
+		ElMessage.warning("请填写服务商名称和每条线路的完整 Base URL");
+		return;
+	}
+	if (providerDraft.routes.some((route) => route.enabled && !route.apiKey.trim())) {
+		ElMessage.warning("请填写启用线路的 API Key");
     return;
   }
   const value = copyProvider(providerDraft);
@@ -661,6 +707,22 @@ async function saveProviderDraft() {
     config.providers[providerEditIndex.value] = value;
   else config.providers.push(value);
   providerDialogVisible.value = false;
+}
+
+function addProviderRoute() {
+	providerDraft.routes.push({
+		id: createId("route"), name: `线路 ${providerDraft.routes.length + 1}`,
+		baseUrl: "", apiKey: "", timeoutSecs: 300, maxConcurrency: 100, enabled: true,
+	});
+}
+
+function removeProviderRoute(routeId: string) {
+	if (providerDraft.routes.length <= 1) {
+		ElMessage.warning("服务商至少需要一条线路");
+		return;
+	}
+	providerDraft.routes = providerDraft.routes.filter((route) => route.id !== routeId);
+	syncProviderPrimary(providerDraft);
 }
 
 async function removeProvider(index: number) {
@@ -1415,7 +1477,7 @@ onBeforeUnmount(() => {
         >
         <el-table-column label="Base URL" min-width="250"
           ><template #default="{ row }"
-            ><span class="mono endpoint">{{ row.baseUrl }}</span></template
+            ><div class="primary-cell"><span class="mono endpoint">{{ row.baseUrl }}</span><small>{{ row.routes?.length || 1 }} 条线路</small></div></template
           ></el-table-column
         >
         <el-table-column label="已配置模型" min-width="230">
@@ -1440,7 +1502,7 @@ onBeforeUnmount(() => {
         >
         <el-table-column label="并发容量" width="105" align="center"
           ><template #default="{ row }"
-            ><strong>{{ row.maxConcurrency || 100 }}</strong></template
+            ><strong>{{ providerCapacity(row) }}</strong></template
         ></el-table-column>
         <el-table-column label="状态" width="80" align="center"
           ><template #default="{ row }"
@@ -1488,9 +1550,12 @@ onBeforeUnmount(() => {
               ><el-radio-button value="crun">CRUN</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item label="Base URL" class="is-wide"
+		  <el-form-item label="主线路名称" class="is-wide">
+			<el-input v-model="providerDraft.routes[0].name" placeholder="例如 主线路" />
+		  </el-form-item>
+          <el-form-item label="主线路 Base URL" class="is-wide"
             ><el-input
-              v-model="providerDraft.baseUrl"
+              v-model="providerDraft.routes[0].baseUrl"
               :placeholder="
                 providerDraft.adapter === 'crun'
                   ? 'https://api.crun.ai'
@@ -1498,38 +1563,60 @@ onBeforeUnmount(() => {
               "
               @input="invalidateProviderModels"
           /></el-form-item>
-          <el-form-item label="API Key" class="is-wide"
+          <el-form-item label="主线路 API Key" class="is-wide"
             ><el-input
-              v-model="providerDraft.apiKey"
+              v-model="providerDraft.routes[0].apiKey"
               type="password"
               show-password
               :placeholder="
-                providerDraft.apiKey.startsWith('****')
-                  ? providerDraft.apiKey
+                providerDraft.routes[0].apiKey.startsWith('****')
+                  ? providerDraft.routes[0].apiKey
                   : 'API Key'
               "
               @input="invalidateProviderModels"
           /></el-form-item>
-          <el-form-item label="请求超时（秒）"
+          <el-form-item label="主线路超时（秒）"
             ><el-input-number
-              v-model="providerDraft.timeoutSecs"
+              v-model="providerDraft.routes[0].timeoutSecs"
               :min="0"
               :max="1800"
               :step="30"
               style="width: 100%"
           /></el-form-item>
-          <el-form-item label="并发容量"
+          <el-form-item label="主线路并发容量"
             ><el-input-number
-              v-model="providerDraft.maxConcurrency"
+              v-model="providerDraft.routes[0].maxConcurrency"
               :min="1"
               :max="10000"
               :step="10"
               style="width: 100%"
           /></el-form-item>
+		  <el-form-item label="启用主线路">
+			<el-switch v-model="providerDraft.routes[0].enabled" />
+		  </el-form-item>
           <el-form-item label="启用服务商"
             ><el-switch v-model="providerDraft.enabled"
           /></el-form-item>
         </div>
+		<div class="provider-route-editor">
+		  <div class="provider-route-heading">
+			<strong>Base URL 线路</strong>
+			<el-button :icon="Plus" @click="addProviderRoute">添加线路</el-button>
+		  </div>
+		  <div
+			v-for="route in providerDraft.routes.slice(1)"
+			:key="route.id"
+			class="provider-route-row"
+		  >
+			<el-input v-model="route.name" placeholder="线路名称" />
+			<el-input v-model="route.baseUrl" placeholder="Base URL" @input="invalidateProviderModels" />
+			<el-input v-model="route.apiKey" type="password" show-password placeholder="API Key" />
+			<el-input-number v-model="route.maxConcurrency" :min="1" :max="10000" :step="10" />
+			<el-input-number v-model="route.timeoutSecs" :min="0" :max="1800" :step="30" />
+			<el-switch v-model="route.enabled" />
+			<el-button type="danger" link @click="removeProviderRoute(route.id)">删除</el-button>
+		  </div>
+		</div>
         <div class="model-discovery">
           <div>
             <strong>模型目录</strong
@@ -2686,6 +2773,31 @@ onBeforeUnmount(() => {
   gap: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+.provider-route-editor {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.provider-route-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-1);
+  font-size: 13px;
+}
+.provider-route-row {
+  display: grid;
+  grid-template-columns: 120px minmax(180px, 1fr) minmax(160px, 1fr) 120px 120px auto auto;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .provider-route-row {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 .model-discovery > div {
   display: grid;

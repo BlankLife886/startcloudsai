@@ -134,9 +134,9 @@ func RunningTasksByProvider(ctx context.Context, q Q, providerIDs []string) (map
 		return out, nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT params ->> '_providerConfigId', count(*)
+		SELECT COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId'), count(*)
 		FROM tasks
-		WHERE status = 'running' AND params ->> '_providerConfigId' = ANY($1)
+		WHERE status = 'running' AND COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId') = ANY($1)
 		GROUP BY 1`, providerIDs)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func ListAsyncPendingTasksByProvider(ctx context.Context, q Q, providerID string
 	rows, err := q.Query(ctx, `SELECT `+taskCols+` FROM tasks
 		WHERE status = 'running'
 		  AND params ->> '_upstreamStage' = 'async_pending'
-		  AND params ->> '_providerConfigId' = $1
+		  AND COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId') = $1
 		ORDER BY started_at, id
 		LIMIT $2`, providerID, limit)
 	if err != nil {

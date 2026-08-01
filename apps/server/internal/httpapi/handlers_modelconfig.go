@@ -29,10 +29,20 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 	}
 	for index := range input.Providers {
 		provider := &input.Providers[index]
-		provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-		if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
-			fail(c, apperr.E("validation_error", "服务商 "+provider.Name+" 的地址无效或指向受限网络", 422))
-			return
+		if len(provider.Routes) == 0 {
+			provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+			if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+				fail(c, apperr.E("validation_error", "服务商 "+provider.Name+" 的地址无效或指向受限网络", 422))
+				return
+			}
+		}
+		for routeIndex := range provider.Routes {
+			route := &provider.Routes[routeIndex]
+			route.BaseURL = strings.TrimRight(strings.TrimSpace(route.BaseURL), "/")
+			if route.BaseURL == "" || netguard.ValidateURL(route.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+				fail(c, apperr.E("validation_error", "服务商 "+provider.Name+" 的线路地址无效或指向受限网络", 422))
+				return
+			}
 		}
 	}
 	prepared, err := modelconfig.PrepareAdminSave(c.Request.Context(), s.St.Pool, input, s.Cfg.AppSecret)

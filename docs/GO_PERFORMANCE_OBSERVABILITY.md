@@ -94,7 +94,7 @@ go version -m server | grep pgo
 - API P95：相对同时间段基线持续上升 50% 时排查数据库、Redis 和外部请求。
 - 内存：持续超过 `GOMEMLIMIT` 的 85% 时采集 Heap Profile。
 - 数据库：连接池利用率持续超过 80%，且等待次数持续增长时才考虑调大。
-- 队列：Pending 持续增长时检查提交/轮询/持久化耗时；服务商 running 接近容量时增加等价线路。
+- 队列：Pending 持续增长时检查提交/轮询/持久化耗时；Base URL 路由 running 接近容量时在对应服务商内增加路由。
 - Worker：在线实例为 0 或队列 Paused 时立即处理。
 
 这些阈值是起始参考，不替代基于真实业务流量建立的基线。

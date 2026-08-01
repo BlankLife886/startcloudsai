@@ -255,8 +255,8 @@ func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
 	}
 	providerIDs := make([]string, 0, len(cfg.Providers))
 	for _, provider := range cfg.Providers {
-		if provider.Enabled {
-			providerIDs = append(providerIDs, provider.ID)
+		for _, route := range modelconfig.ExecutionRoutes(provider) {
+			providerIDs = append(providerIDs, modelconfig.ExecutionRouteKey(route))
 		}
 	}
 	running, err := store.RunningTasksByProvider(ctx, s.St.Pool, providerIDs)
@@ -265,15 +265,15 @@ func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
 	}
 	out := make([]gin.H, 0, len(providerIDs))
 	for _, provider := range cfg.Providers {
-		if !provider.Enabled {
-			continue
+		for _, route := range modelconfig.ExecutionRoutes(provider) {
+			key := modelconfig.ExecutionRouteKey(route)
+			current := running[key]
+			out = append(out, gin.H{
+				"id": key, "name": provider.Name + " / " + route.RouteName, "adapter": provider.Adapter,
+				"running": current, "limit": route.MaxConcurrency,
+				"utilizationPercent": roundMetric(percentOf64(current, int64(route.MaxConcurrency)), 2),
+			})
 		}
-		current := running[provider.ID]
-		out = append(out, gin.H{
-			"id": provider.ID, "name": provider.Name, "adapter": provider.Adapter,
-			"running": current, "limit": provider.MaxConcurrency,
-			"utilizationPercent": roundMetric(percentOf64(current, int64(provider.MaxConcurrency)), 2),
-		})
 	}
 	return out
 }

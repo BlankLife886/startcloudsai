@@ -108,7 +108,7 @@ func TestProviderConcurrencyDefaultsToOneHundred(t *testing.T) {
 	}
 }
 
-func TestExecutionCandidatesOnlyReturnsEquivalentRoutes(t *testing.T) {
+func TestExecutionCandidatesStayWithinBoundProvider(t *testing.T) {
 	cfg := testConfig()
 	cfg.Providers = append(cfg.Providers,
 		Provider{ID: "backup", Name: "备用", Adapter: AdapterOpenAI, APIKey: "backup-secret", Enabled: true, MaxConcurrency: 200},
@@ -120,12 +120,27 @@ func TestExecutionCandidatesOnlyReturnsEquivalentRoutes(t *testing.T) {
 		Model{ID: "different-adapter", Name: "不同协议", ProviderID: "crun", UpstreamModel: "image-quality", Kind: ModelKindImage, Enabled: true},
 	)
 	candidates := ExecutionCandidates(cfg, "provider", "image-quality")
-	if len(candidates) != 2 || candidates[0].Provider.ID != "provider" || candidates[1].Provider.ID != "backup" {
+	if len(candidates) != 1 || candidates[0].Provider.ID != "provider" {
 		t.Fatalf("execution candidates = %#v", candidates)
 	}
 }
 
-func TestExecutionCandidatesCanFailOverFromDisabledRoute(t *testing.T) {
+func TestExecutionCandidatesExpandsProviderBaseURLRoutes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[0].Routes = []ProviderRoute{
+		{ID: "primary", Name: "主线路", BaseURL: "https://a.example.com", APIKey: "a-key", MaxConcurrency: 100, Enabled: true},
+		{ID: "backup", Name: "备用线路", BaseURL: "https://b.example.com", APIKey: "b-key", MaxConcurrency: 80, Enabled: true},
+	}
+	candidates := ExecutionCandidatesRoute(cfg, "provider", "image-quality", "backup")
+	if len(candidates) != 2 || candidates[0].Provider.RouteID != "backup" || candidates[0].Provider.BaseURL != "https://b.example.com" {
+		t.Fatalf("route candidates = %#v", candidates)
+	}
+	if ExecutionRouteKey(candidates[1].Provider) != "provider/primary" {
+		t.Fatalf("second route key = %q", ExecutionRouteKey(candidates[1].Provider))
+	}
+}
+
+func TestExecutionCandidatesDoNotCrossProviderWhenBoundProviderIsDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Providers[0].Enabled = false
 	cfg.Providers = append(cfg.Providers, Provider{
@@ -135,8 +150,8 @@ func TestExecutionCandidatesCanFailOverFromDisabledRoute(t *testing.T) {
 		ID: "backup-image", Name: "备用高质量", ProviderID: "backup", UpstreamModel: "image-quality", Kind: ModelKindImage, Enabled: true,
 	})
 	candidates := ExecutionCandidates(cfg, "provider", "image-quality")
-	if len(candidates) != 1 || candidates[0].Provider.ID != "backup" {
-		t.Fatalf("disabled route failover candidates = %#v", candidates)
+	if len(candidates) != 0 {
+		t.Fatalf("disabled provider candidates = %#v", candidates)
 	}
 }
 
@@ -277,16 +292,22 @@ func TestAdminAPIKeyIsEncryptedMaskedAndPreserved(t *testing.T) {
 	ctx := context.Background()
 	const masterKey = "model-config-test-master-key"
 	cfg := testConfig()
-	cfg.Providers[0].APIKey = "plain-secret-1234"
+	plainKeys := []string{"plain-secret-1234", "backup-secret-5678"}
+	cfg.Providers[0].Routes = []ProviderRoute{
+		{ID: "primary", Name: "主线路", BaseURL: "https://primary.example.com", APIKey: plainKeys[0], TimeoutSecs: 120, MaxConcurrency: 100, Enabled: true},
+		{ID: "backup", Name: "备用线路", BaseURL: "https://backup.example.com", APIKey: plainKeys[1], TimeoutSecs: 90, MaxConcurrency: 80, Enabled: true},
+	}
 	cfg.Providers[0].DiscoveredModels = []string{" z-model ", "a-model", "z-model"}
 
 	prepared, err := PrepareAdminSave(ctx, st.Pool, cfg, masterKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedKey := prepared.Providers[0].APIKey
-	if storedKey == "plain-secret-1234" || strings.Contains(storedKey, "plain-secret") {
-		t.Fatalf("API key was not encrypted: %q", storedKey)
+	storedKeys := []string{prepared.Providers[0].Routes[0].APIKey, prepared.Providers[0].Routes[1].APIKey}
+	for index, storedKey := range storedKeys {
+		if storedKey == plainKeys[index] || strings.Contains(storedKey, "secret") {
+			t.Fatalf("route %d API key was not encrypted: %q", index, storedKey)
+		}
 	}
 	if err := Save(ctx, st.Pool, prepared); err != nil {
 		t.Fatal(err)
@@ -295,8 +316,11 @@ func TestAdminAPIKeyIsEncryptedMaskedAndPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := adminView.Providers[0].APIKey; got != "****1234" {
-		t.Fatalf("masked API key = %q", got)
+	if got := adminView.Providers[0].Routes[0].APIKey; got != "****1234" {
+		t.Fatalf("primary masked API key = %q", got)
+	}
+	if got := adminView.Providers[0].Routes[1].APIKey; got != "****5678" {
+		t.Fatalf("backup masked API key = %q", got)
 	}
 	if got := adminView.Providers[0].DiscoveredModels; len(got) != 2 || got[0] != "a-model" || got[1] != "z-model" {
 		t.Fatalf("discovered models = %#v", got)
@@ -305,15 +329,20 @@ func TestAdminAPIKeyIsEncryptedMaskedAndPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preserved.Providers[0].APIKey != storedKey {
-		t.Fatal("masked save replaced the stored API key")
+	for index, storedKey := range storedKeys {
+		if preserved.Providers[0].Routes[index].APIKey != storedKey {
+			t.Fatalf("route %d masked save replaced the stored API key", index)
+		}
 	}
 	runtimeCfg, err := Runtime(ctx, st.Pool, masterKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtimeCfg.Providers[0].APIKey != "plain-secret-1234" {
-		t.Fatalf("runtime API key = %q", runtimeCfg.Providers[0].APIKey)
+	if got := runtimeCfg.Providers[0].Routes[0].APIKey; got != "plain-secret-1234" {
+		t.Fatalf("primary runtime API key = %q", got)
+	}
+	if got := runtimeCfg.Providers[0].Routes[1].APIKey; got != "backup-secret-5678" {
+		t.Fatalf("backup runtime API key = %q", got)
 	}
 }
 

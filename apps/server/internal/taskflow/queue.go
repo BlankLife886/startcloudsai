@@ -27,6 +27,8 @@ type RunTaskPayload struct {
 
 type PollImageTasksPayload struct {
 	ProviderID string `json:"provider_id"`
+	RouteID    string `json:"route_id"`
+	RouteKey   string `json:"route_key"`
 	Generation int    `json:"generation"`
 }
 
@@ -178,8 +180,10 @@ func (q *Queue) EnqueueRunTaskRecoveryIn(ctx context.Context, taskID string, del
 	return err
 }
 
-func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID string, generation int, delay time.Duration) error {
-	payload, err := json.Marshal(PollImageTasksPayload{ProviderID: providerID, Generation: generation % 2})
+func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID, routeID, routeKey string, generation int, delay time.Duration) error {
+	payload, err := json.Marshal(PollImageTasksPayload{
+		ProviderID: providerID, RouteID: routeID, RouteKey: routeKey, Generation: generation % 2,
+	})
 	if err != nil {
 		return err
 	}
