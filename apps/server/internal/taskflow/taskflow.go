@@ -391,7 +391,21 @@ func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*sto
 // MarkSucceeded running→succeeded + settle，同事务。返回是否抢到状态迁移。
 // 通知已解耦：调用方在事务提交后调用 NotifyTaskSucceeded（尽力而为）。
 func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
-	ok, err := store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt)
+	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, "")
+}
+
+func MarkSucceededClaimed(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
+	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, claimID)
+}
+
+func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
+	var ok bool
+	var err error
+	if claimID == "" {
+		ok, err = store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt)
+	} else {
+		ok, err = store.MarkTaskSucceededClaimed(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt, claimID)
+	}
 	if err != nil || !ok {
 		return false, err
 	}
@@ -418,11 +432,25 @@ func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys,
 // MarkFailed fromStatus→failed + release，同事务。返回是否抢到状态迁移。
 // 通知已解耦：调用方在事务提交后调用 NotifyTaskFailed（尽力而为）。
 func MarkFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus string) (bool, error) {
+	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, "")
+}
+
+func MarkFailedClaimed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, claimID string) (bool, error) {
+	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, claimID)
+}
+
+func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, claimID string) (bool, error) {
 	msg := []rune(errorMessage)
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
-	ok, err := store.MarkTaskFailed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now())
+	var ok bool
+	var err error
+	if claimID == "" {
+		ok, err = store.MarkTaskFailed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now())
+	} else {
+		ok, err = store.MarkTaskFailedClaimed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now(), claimID)
+	}
 	if err != nil || !ok {
 		return false, err
 	}

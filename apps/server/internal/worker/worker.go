@@ -44,6 +44,7 @@ const (
 	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
 
 	zombieRunningMinutes = 30
+	taskCompletionLease  = 5 * time.Minute
 	staleQueuedMinutes   = 10
 	maxNetworkRecoveries = 3
 )
@@ -839,6 +840,25 @@ func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, er
 	return err
 }
 
+func (w *Worker) markFailedClaimed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage, claimID string) error {
+	var task *store.Task
+	won := false
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		t, err := store.GetTask(ctx, tx, taskID)
+		if err != nil || t == nil {
+			return err
+		}
+		task = t
+		won, err = taskflow.MarkFailedClaimed(ctx, tx, t, errorCode, errorMessage, "running", claimID)
+		return err
+	})
+	if err == nil && won {
+		taskflow.NotifyTaskFailed(ctx, w.St.Pool, task)
+		w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
+	}
+	return err
+}
+
 func (w *Worker) publishTaskEvent(ctx context.Context, task *store.Task, event taskstream.Event) {
 	if task == nil {
 		return
@@ -1122,35 +1142,58 @@ func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelcon
 		ids := make([]string, 0, len(batch))
 		expected := make(map[string]int, len(batch))
 		byID := make(map[string]*store.Task, len(batch))
+		claims := make(map[string]string, len(batch))
 		for _, task := range batch {
 			id := task.ID.String()
+			claimID := uuid.NewString()
+			claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
+			if err != nil {
+				log.Printf("task %s async completion claim failed: %v", task.ID, err)
+				continue
+			}
+			if !claimed {
+				continue
+			}
 			ids = append(ids, id)
 			expected[id] = task.Count
 			byID[id] = task
+			claims[id] = claimID
 		}
+		if len(ids) == 0 {
+			continue
+		}
+		processed := make(map[string]bool, len(ids))
 		for taskID, result := range client.PollImageTasks(ctx, ids, expected) {
 			task := byID[taskID]
 			if task == nil {
 				continue
 			}
+			processed[taskID] = true
+			claimID := claims[taskID]
 			if result.Pending {
-				w.failExpiredImagePoll(ctx, task, provider)
+				w.finishPendingImagePoll(ctx, task, provider, claimID)
 				continue
 			}
 			if result.Err == nil {
-				if err := w.completePolledImageTask(ctx, task, result.Images); err != nil {
+				if err := w.completePolledImageTask(ctx, task, result.Images, claimID); err != nil {
 					log.Printf("task %s async completion failed: %v", task.ID, err)
 				}
 				continue
 			}
 			if c2a.IsRetryableError(result.Err) && !imagePollExpired(task, providerTimeoutSecs(provider)) {
+				_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
 				continue
 			}
 			var upstreamErr *c2a.UpstreamError
 			if errors.As(result.Err, &upstreamErr) {
-				_ = w.markFailed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(upstreamErr.Message))
+				_ = w.markFailedClaimed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(upstreamErr.Message), claimID)
 			} else {
-				_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "生成服务暂时不可用，请稍后重试")
+				_ = w.markFailedClaimed(ctx, task.ID, "upstream_unreachable", "生成服务暂时不可用，请稍后重试", claimID)
+			}
+		}
+		for taskID, claimID := range claims {
+			if !processed[taskID] {
+				_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, byID[taskID].ID, claimID)
 			}
 		}
 	}
@@ -1158,18 +1201,28 @@ func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelcon
 
 func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
 	for _, task := range tasks {
+		claimID := uuid.NewString()
+		claimed, claimErr := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
+		if claimErr != nil {
+			log.Printf("task %s CRUN completion claim failed: %v", task.ID, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
 		client, err := crun.New(provider.BaseURL, provider.APIKey, task.Model, provider.TimeoutSecs)
 		if err != nil {
+			_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
 			_ = w.markFailed(ctx, task.ID, "model_config_error", "任务绑定的服务商配置已失效")
 			continue
 		}
 		urls, pending, pollErr := client.PollTasks(ctx, taskParamStrings(task.Params, "_crunTaskIds"))
 		if pending || crun.IsRetryableError(pollErr) {
-			w.failExpiredImagePoll(ctx, task, provider)
+			w.finishPendingImagePoll(ctx, task, provider, claimID)
 			continue
 		}
 		if pollErr != nil {
-			_ = w.markFailed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(pollErr.Error()))
+			_ = w.markFailedClaimed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(pollErr.Error()), claimID)
 			continue
 		}
 		images := make([]string, 0, len(urls))
@@ -1182,10 +1235,11 @@ func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfi
 			images = append(images, base64.StdEncoding.EncodeToString(data))
 		}
 		if pollErr != nil {
+			_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
 			log.Printf("task %s CRUN image download failed: %v", task.ID, pollErr)
 			continue
 		}
-		if err := w.completePolledImageTask(ctx, task, images); err != nil {
+		if err := w.completePolledImageTask(ctx, task, images, claimID); err != nil {
 			log.Printf("task %s CRUN completion failed: %v", task.ID, err)
 		}
 	}
@@ -1201,10 +1255,12 @@ func providerTimeoutSecs(provider *modelconfig.Provider) int {
 	return 300
 }
 
-func (w *Worker) failExpiredImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider) {
+func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider, claimID string) {
 	if imagePollExpired(task, providerTimeoutSecs(provider)) {
-		_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试")
+		_ = w.markFailedClaimed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试", claimID)
+		return
 	}
+	_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
 }
 
 func (w *Worker) requeueUnavailableProviderTasks(ctx context.Context, providerID string) error {
@@ -1265,15 +1321,20 @@ func (w *Worker) configuredTaskRecoveryLimit(ctx context.Context, task *store.Ta
 	return min(max(len(candidates)*2, maxNetworkRecoveries), 1000)
 }
 
-func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, images []string) error {
-	collector := newTaskOutputCollector(w, ctx, task)
+func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, images []string, claimID string) error {
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = store.ReleaseTaskCompletionClaim(releaseCtx, w.St.Pool, task.ID, claimID)
+	}()
+	collector := newClaimedTaskOutputCollector(w, ctx, task, claimID)
 	if err := deliverEncodedImages(images, collector.persist); err != nil {
 		collector.cleanup()
-		return w.markFailed(ctx, task.ID, "storage_error", "图片保存失败，请重试")
+		return w.markFailedClaimed(ctx, task.ID, "storage_error", "图片保存失败，请重试", claimID)
 	}
 	outputKeys, thumbnailKeys := collector.completed()
 	if len(outputKeys) == 0 {
-		return w.markFailed(ctx, task.ID, "upstream_error", "生成服务未返回图片，请重试")
+		return w.markFailedClaimed(ctx, task.ID, "upstream_error", "生成服务未返回图片，请重试", claimID)
 	}
 	var succeeded *store.Task
 	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -1281,7 +1342,7 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 		if getErr != nil || dbTask == nil {
 			return getErr
 		}
-		won, markErr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC())
+		won, markErr := taskflow.MarkSucceededClaimed(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC(), claimID)
 		if won {
 			succeeded = dbTask
 		}
@@ -1289,7 +1350,11 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 	})
 	if err != nil {
 		collector.cleanup()
-		return w.markFailed(ctx, task.ID, "storage_error", "图片保存失败，请重试")
+		return w.markFailedClaimed(ctx, task.ID, "storage_error", "图片保存失败，请重试", claimID)
+	}
+	if succeeded == nil {
+		collector.cleanup()
+		return nil
 	}
 	if succeeded != nil {
 		taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))

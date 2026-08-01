@@ -10,6 +10,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
+	storagepkg "github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -163,6 +164,10 @@ func (s *Server) getFile(c *gin.Context) {
 	// 权限校验后由服务端读取并返回，交付链路会更稳定。
 	data, err := s.Storage.GetBytesLimit(ctx, key, 32<<20)
 	if err != nil {
+		if storagepkg.IsNotFound(err) {
+			fail(c, apperr.E("not_found", "文件不存在", 404))
+			return
+		}
 		fail(c, err)
 		return
 	}

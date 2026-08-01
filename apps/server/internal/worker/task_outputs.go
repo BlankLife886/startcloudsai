@@ -14,14 +14,21 @@ import (
 )
 
 type taskOutputCollector struct {
-	w              *Worker
-	ctx            context.Context
-	task           *store.Task
-	mu             sync.Mutex
-	outputSlots    []string
-	thumbnailSlots []string
-	newKeys        []string
-	newIndexes     map[int]struct{}
+	w                 *Worker
+	ctx               context.Context
+	task              *store.Task
+	mu                sync.Mutex
+	outputSlots       []string
+	thumbnailSlots    []string
+	newKeys           []string
+	newIndexes        map[int]struct{}
+	completionClaimID string
+}
+
+func newClaimedTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task, claimID string) *taskOutputCollector {
+	collector := newTaskOutputCollector(w, ctx, task)
+	collector.completionClaimID = claimID
+	return collector
 }
 
 func newTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task) *taskOutputCollector {
@@ -101,8 +108,14 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		return err
 	}
 
-	key := fmt.Sprintf("tasks/%s/%s/original/%d.%s", c.task.UserID, c.task.ID, index, ext)
-	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%d.jpg", c.task.UserID, c.task.ID, index)
+	objectIndex := fmt.Sprintf("%d", index)
+	if c.completionClaimID != "" {
+		// Claimed async completions use attempt-unique keys. A stale lease holder
+		// can then clean up only its own objects, never the winning result.
+		objectIndex += "-" + c.completionClaimID
+	}
+	key := fmt.Sprintf("tasks/%s/%s/original/%s.%s", c.task.UserID, c.task.ID, objectIndex, ext)
+	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%s.jpg", c.task.UserID, c.task.ID, objectIndex)
 	type uploadResult struct {
 		key string
 		err error
@@ -136,12 +149,18 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	c.thumbnailSlots[index] = thumbKey
 	outputKeys := compactTaskKeys(c.outputSlots)
 	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
-	if err := store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys); err != nil {
+	var persistErr error
+	if c.completionClaimID == "" {
+		persistErr = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+	} else {
+		persistErr = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
+	}
+	if persistErr != nil {
 		c.outputSlots[index] = ""
 		c.thumbnailSlots[index] = ""
 		c.mu.Unlock()
 		_ = c.w.Storage.DeleteKeys(c.ctx, uploaded)
-		return err
+		return persistErr
 	}
 	c.newKeys = append(c.newKeys, uploaded...)
 	c.newIndexes[index] = struct{}{}
@@ -171,7 +190,11 @@ func (c *taskOutputCollector) cleanup() {
 	outputKeys := compactTaskKeys(c.outputSlots)
 	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
 	c.mu.Unlock()
-	_ = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+	if c.completionClaimID == "" {
+		_ = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+	} else {
+		_ = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
+	}
 	if len(keys) > 0 {
 		_ = c.w.Storage.DeleteKeys(c.ctx, keys)
 	}

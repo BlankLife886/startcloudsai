@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -576,6 +577,14 @@ func SetTaskModel(ctx context.Context, q Q, id uuid.UUID, model string) error {
 // SetTaskPartialOutputs persists images while generation is still running so
 // reconnecting clients can recover already completed results.
 func SetTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string) error {
+	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, "")
+}
+
+func SetTaskPartialOutputsClaimed(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID string) error {
+	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, claimID)
+}
+
+func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID string) error {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
@@ -583,8 +592,10 @@ func SetTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, t
 		thumbnailKeys = []string{}
 	}
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3 WHERE id = $1 AND status = 'running'`,
-		id, outputKeys, thumbnailKeys)
+		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3
+		 WHERE id = $1 AND status = 'running'
+		   AND ($4 = '' OR params->>'_completionClaimId' = $4)`,
+		id, outputKeys, thumbnailKeys, claimID)
 	if err != nil {
 		return err
 	}
@@ -592,6 +603,38 @@ func SetTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, t
 		return fmt.Errorf("task %s is no longer running", id)
 	}
 	return nil
+}
+
+// TryClaimTaskCompletion fences provider-level pollers before they download and
+// persist a completed result. Expired claims can be recovered after a crash.
+func TryClaimTaskCompletion(ctx context.Context, q Q, id uuid.UUID, claimID string, claimedAt time.Time, lease time.Duration) (bool, error) {
+	if strings.TrimSpace(claimID) == "" {
+		return false, errors.New("completion claim id is required")
+	}
+	claimedAtMs := claimedAt.UTC().UnixMilli()
+	cutoffMs := claimedAt.Add(-lease).UTC().UnixMilli()
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET params = jsonb_set(
+			jsonb_set(COALESCE(params, '{}'::jsonb), '{_completionClaimId}', to_jsonb($2::text), true),
+			'{_completionClaimedAtMs}', to_jsonb($3::bigint), true)
+		WHERE id = $1 AND status = 'running'
+		  AND (COALESCE(params->>'_completionClaimId', '') = ''
+			OR COALESCE((params->>'_completionClaimedAtMs')::bigint, 0) < $4)`,
+		id, claimID, claimedAtMs, cutoffMs)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func ReleaseTaskCompletionClaim(ctx context.Context, q Q, id uuid.UUID, claimID string) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		WHERE id = $1 AND status = 'running' AND params->>'_completionClaimId' = $2`, id, claimID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (bool, error) {
@@ -604,6 +647,14 @@ func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (b
 }
 
 func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
+	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, "")
+}
+
+func MarkTaskSucceededClaimed(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
+	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, claimID)
+}
+
+func markTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
@@ -611,8 +662,11 @@ func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumb
 		thumbnailKeys = []string{}
 	}
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'succeeded', output_keys = $2, thumbnail_keys = $3, finished_at = $4, error_code = NULL, error_message = NULL
-		 WHERE id = $1 AND status = 'running'`, id, outputKeys, thumbnailKeys, finishedAt)
+		`UPDATE tasks SET status = 'succeeded', output_keys = $2, thumbnail_keys = $3, finished_at = $4,
+			error_code = NULL, error_message = NULL,
+			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		 WHERE id = $1 AND status = 'running'
+		   AND ($5 = '' OR params->>'_completionClaimId' = $5)`, id, outputKeys, thumbnailKeys, finishedAt, claimID)
 	if err != nil {
 		return false, err
 	}
@@ -645,9 +699,19 @@ func LockUserTaskExecution(ctx context.Context, q Q, userID uuid.UUID) error {
 }
 
 func MarkTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time) (bool, error) {
+	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, "")
+}
+
+func MarkTaskFailedClaimed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, claimID string) (bool, error) {
+	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, claimID)
+}
+
+func markTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, claimID string) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'failed', error_code = $3, error_message = $4, finished_at = $5
-		 WHERE id = $1 AND status = $2`, id, fromStatus, errorCode, errorMessage, finishedAt)
+		`UPDATE tasks SET status = 'failed', error_code = $3, error_message = $4, finished_at = $5,
+			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		 WHERE id = $1 AND status = $2
+		   AND ($6 = '' OR params->>'_completionClaimId' = $6)`, id, fromStatus, errorCode, errorMessage, finishedAt, claimID)
 	if err != nil {
 		return false, err
 	}

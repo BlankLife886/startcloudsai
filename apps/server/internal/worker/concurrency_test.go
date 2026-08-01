@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -225,5 +226,70 @@ func TestOutputCollectorIgnoresUnexpectedExtraOutput(t *testing.T) {
 	collector := newTaskOutputCollector(&Worker{}, context.Background(), &store.Task{ID: uuid.New(), Count: 1})
 	if err := collector.persist(1, "not-used"); err != nil {
 		t.Fatalf("extra output should be ignored: %v", err)
+	}
+}
+
+func TestTaskCompletionClaimIsExclusiveAndFencesStaleWriters(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("completion-claim-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents)
+		 VALUES ($1, 't2i', 'test', '{}'::jsonb, 'running', 0) RETURNING id`, user.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	const lease = 5 * time.Minute
+	firstClaim := uuid.NewString()
+	claimed, err := store.TryClaimTaskCompletion(ctx, st.Pool, taskID, firstClaim, now, lease)
+	if err != nil || !claimed {
+		t.Fatalf("first claim = %v, err=%v", claimed, err)
+	}
+	secondClaim := uuid.NewString()
+	claimed, err = store.TryClaimTaskCompletion(ctx, st.Pool, taskID, secondClaim, now.Add(time.Second), lease)
+	if err != nil || claimed {
+		t.Fatalf("overlapping claim = %v, err=%v", claimed, err)
+	}
+	if err := store.SetTaskPartialOutputsClaimed(ctx, st.Pool, taskID, []string{"stale"}, nil, secondClaim); err == nil {
+		t.Fatal("stale claim must not persist outputs")
+	}
+	if err := store.SetTaskPartialOutputsClaimed(ctx, st.Pool, taskID, []string{"first"}, nil, firstClaim); err != nil {
+		t.Fatalf("owner persist: %v", err)
+	}
+
+	claimed, err = store.TryClaimTaskCompletion(ctx, st.Pool, taskID, secondClaim, now.Add(lease+time.Second), lease)
+	if err != nil || !claimed {
+		t.Fatalf("expired claim takeover = %v, err=%v", claimed, err)
+	}
+	if err := store.SetTaskPartialOutputsClaimed(ctx, st.Pool, taskID, []string{"expired"}, nil, firstClaim); err == nil {
+		t.Fatal("expired owner must be fenced")
+	}
+	if err := store.SetTaskPartialOutputsClaimed(ctx, st.Pool, taskID, []string{"winner"}, nil, secondClaim); err != nil {
+		t.Fatalf("takeover persist: %v", err)
+	}
+
+	completed, err := store.MarkTaskSucceededClaimed(ctx, st.Pool, taskID, []string{"stale"}, nil, now, firstClaim)
+	if err != nil || completed {
+		t.Fatalf("stale completion = %v, err=%v", completed, err)
+	}
+	failed, err := store.MarkTaskFailedClaimed(ctx, st.Pool, taskID, "running", "stale", "stale", now, firstClaim)
+	if err != nil || failed {
+		t.Fatalf("stale failure = %v, err=%v", failed, err)
+	}
+	completed, err = store.MarkTaskSucceededClaimed(ctx, st.Pool, taskID, []string{"winner"}, nil, now, secondClaim)
+	if err != nil || !completed {
+		t.Fatalf("winning completion = %v, err=%v", completed, err)
+	}
+	var params map[string]any
+	if err := st.Pool.QueryRow(ctx, `SELECT params FROM tasks WHERE id = $1`, taskID).Scan(&params); err != nil {
+		t.Fatal(err)
+	}
+	if params["_completionClaimId"] != nil || params["_completionClaimedAtMs"] != nil {
+		t.Fatalf("completion claim leaked into finished task: %#v", params)
 	}
 }
