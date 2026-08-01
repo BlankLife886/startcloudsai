@@ -160,7 +160,7 @@ onMounted(load);
             <el-input-number
               v-model="form.globalMaxConcurrentTasks"
               :min="1"
-			  :max="100000"
+			  :max="10000000"
 			  :step="100"
               controls-position="right"
             />
@@ -174,7 +174,7 @@ onMounted(load);
             <el-input-number
               v-model="form.userMaxConcurrentTasks"
               :min="1"
-              :max="20"
+              :max="10000"
               controls-position="right"
             />
           </label>
@@ -187,7 +187,7 @@ onMounted(load);
             <el-input-number
               v-model="form.globalMaxActiveTasks"
               :min="10"
-              :max="100000"
+              :max="10000000"
               :step="100"
               controls-position="right"
             />
@@ -201,7 +201,7 @@ onMounted(load);
             <el-input-number
               v-model="form.userMaxRunningTasks"
               :min="1"
-              :max="100"
+              :max="10000"
               controls-position="right"
             />
           </label>

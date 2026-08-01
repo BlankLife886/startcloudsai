@@ -1539,26 +1539,26 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			}
 		case "user_max_running_tasks":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100 {
-				fail(c, apperr.E("validation_error", "userMaxRunningTasks: 须在 1-100 之间", 422))
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 10000 {
+				fail(c, apperr.E("validation_error", "userMaxRunningTasks: 须在 1-10000 之间", 422))
 				return
 			}
 		case "user_max_concurrent_tasks":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 20 {
-				fail(c, apperr.E("validation_error", "userMaxConcurrentTasks: 须在 1-20 之间", 422))
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 10000 {
+				fail(c, apperr.E("validation_error", "userMaxConcurrentTasks: 须在 1-10000 之间", 422))
 				return
 			}
 		case "global_max_concurrent_tasks":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100000 {
-				fail(c, apperr.E("validation_error", "globalMaxConcurrentTasks: 须在 1-100000 之间", 422))
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 10000000 {
+				fail(c, apperr.E("validation_error", "globalMaxConcurrentTasks: 须在 1-10000000 之间", 422))
 				return
 			}
 		case "global_max_active_tasks":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 10 || v > 100000 {
-				fail(c, apperr.E("validation_error", "globalMaxActiveTasks: 须在 10-100000 之间", 422))
+			if err := json.Unmarshal(raw, &v); err != nil || v < 10 || v > 10000000 {
+				fail(c, apperr.E("validation_error", "globalMaxActiveTasks: 须在 10-10000000 之间", 422))
 				return
 			}
 		case "signup_bonus_cents", "free_daily_cents", "daily_limit":

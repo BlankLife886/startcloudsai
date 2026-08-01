@@ -322,3 +322,22 @@ func TestSubmitAndPollImageTaskAreOneShotOperations(t *testing.T) {
 		t.Fatalf("poll images=%#v pending=%v submits=%d polls=%d err=%v", images, pending, submits, polls, err)
 	}
 }
+
+func TestPollImageTasksBatchesMultipleIDs(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Query().Get("ids"); got != "task-a,task-b" {
+			t.Fatalf("ids = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-a","status":"running","data":[]},{"id":"task-b","status":"success","data":[{"b64_json":"done-b"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1})
+	if requests != 1 || !results["task-a"].Pending || results["task-b"].Pending || len(results["task-b"].Images) != 1 {
+		t.Fatalf("requests=%d results=%#v", requests, results)
+	}
+}

@@ -209,6 +209,12 @@ type imageTaskList struct {
 	MissingIDs []string    `json:"missing_ids"`
 }
 
+type ImageTaskPollResult struct {
+	Images  []string
+	Pending bool
+	Err     error
+}
+
 func parseImageTask(body []byte) (imageTask, error) {
 	var task imageTask
 	if err := json.Unmarshal(body, &task); err != nil || task.ID == "" {
@@ -444,17 +450,50 @@ func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, p
 
 // PollImageTask performs exactly one status request.
 func (c *Client) PollImageTask(ctx context.Context, taskID string, expected int) ([]string, bool, error) {
-	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(taskID)
+	results := c.PollImageTasks(ctx, []string{taskID}, map[string]int{taskID: expected})
+	result := results[taskID]
+	return result.Images, result.Pending, result.Err
+}
+
+// PollImageTasks fetches up to 100 task states in one upstream request.
+func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected map[string]int) map[string]ImageTaskPollResult {
+	results := make(map[string]ImageTaskPollResult, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return results
+	}
+	if len(taskIDs) > 100 {
+		taskIDs = taskIDs[:100]
+	}
+	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(strings.Join(taskIDs, ","))
 	body, err := c.doRequest(ctx, http.MethodGet, statusPath, nil, asyncPollTimeout)
 	if err != nil {
-		return nil, false, err
+		for _, taskID := range taskIDs {
+			results[taskID] = ImageTaskPollResult{Err: err}
+		}
+		return results
 	}
-	task, err := parseImageTaskList(body, taskID)
-	if err != nil {
-		return nil, false, err
+	var payload imageTaskList
+	if err := json.Unmarshal(body, &payload); err != nil {
+		pollErr := &UpstreamError{Message: "上游未返回有效的图片任务状态"}
+		for _, taskID := range taskIDs {
+			results[taskID] = ImageTaskPollResult{Err: pollErr}
+		}
+		return results
 	}
-	images, done, err := c.completedTaskImages(ctx, task, expected)
-	return images, !done, err
+	byID := make(map[string]imageTask, len(payload.Items))
+	for _, task := range payload.Items {
+		byID[task.ID] = task
+	}
+	for _, taskID := range taskIDs {
+		task, ok := byID[taskID]
+		if !ok {
+			results[taskID] = ImageTaskPollResult{Pending: true}
+			continue
+		}
+		images, done, taskErr := c.completedTaskImages(ctx, task, expected[taskID])
+		results[taskID] = ImageTaskPollResult{Images: images, Pending: !done, Err: taskErr}
+	}
+	return results
 }
 
 func imageGenerationPayload(prompt, model string, n int, size string, options ImageOptions) map[string]any {
@@ -502,6 +541,8 @@ func isRetryablePollError(err error) bool {
 		return false
 	}
 }
+
+func IsRetryableError(err error) bool { return isRetryablePollError(err) }
 
 func shouldFallbackToSync(err error) bool {
 	var upstream *UpstreamError

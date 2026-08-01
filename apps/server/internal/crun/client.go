@@ -254,56 +254,24 @@ func (c *Client) WaitTasks(ctx context.Context, taskIDs []string, onImage func(i
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	results := make([]string, len(taskIDs))
-	remaining := len(taskIDs)
-
-	for remaining > 0 {
-		for index, taskID := range taskIDs {
-			if results[index] != "" {
-				continue
-			}
-			info, err := c.GetTask(waitCtx, taskID)
-			if err != nil {
-				var upstream *UpstreamError
-				if errors.As(err, &upstream) && (upstream.Status == 429 || upstream.Status >= 500 || upstream.Code == 455) {
-					continue
-				}
+	for {
+		results, pending, err := c.PollTasks(waitCtx, taskIDs)
+		if err != nil {
+			if IsRetryableError(err) {
+				pending = true
+			} else {
 				return nil, err
 			}
-			switch strings.ToLower(strings.TrimSpace(info.Status)) {
-			case "pending", "running", "":
-				continue
-			case "success":
-				if info.Result == nil || info.Result.Code != 200 || len(info.Result.MediaURLs) == 0 {
-					return nil, &UpstreamError{Code: 501, Message: "CRUN task completed without an image"}
-				}
-				imageURL := strings.TrimSpace(info.Result.MediaURLs[0])
-				if imageURL == "" {
-					return nil, &UpstreamError{Code: 501, Message: "CRUN returned an empty image URL"}
-				}
+		}
+		if !pending {
+			for index, imageURL := range results {
 				if onImage != nil {
 					if err := onImage(index, imageURL); err != nil {
 						return nil, err
 					}
 				}
-				results[index] = imageURL
-				remaining--
-			case "failed":
-				message := "CRUN image generation failed"
-				code := 501
-				if info.Result != nil {
-					code = info.Result.Code
-					if strings.TrimSpace(info.Result.Message) != "" {
-						message = info.Result.Message
-					}
-				}
-				return nil, &UpstreamError{Code: code, Message: message}
-			default:
-				return nil, &UpstreamError{Code: 500, Message: "unknown CRUN task status: " + info.Status}
 			}
-		}
-		if remaining == 0 {
-			break
+			return results, nil
 		}
 		timer := time.NewTimer(c.pollInterval)
 		select {
@@ -313,5 +281,48 @@ func (c *Client) WaitTasks(ctx context.Context, taskIDs []string, onImage func(i
 		case <-timer.C:
 		}
 	}
-	return results, nil
+}
+
+func IsRetryableError(err error) bool {
+	var upstream *UpstreamError
+	return errors.As(err, &upstream) && (upstream.Status == 429 || upstream.Status >= 500 || upstream.Code == 455)
+}
+
+// PollTasks performs one status query per CRUN job and never waits between queries.
+func (c *Client) PollTasks(ctx context.Context, taskIDs []string) ([]string, bool, error) {
+	if len(taskIDs) == 0 {
+		return nil, false, errors.New("CRUN task ids are empty")
+	}
+	results := make([]string, len(taskIDs))
+	pending := false
+	for index, taskID := range taskIDs {
+		info, err := c.GetTask(ctx, taskID)
+		if err != nil {
+			return nil, false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(info.Status)) {
+		case "pending", "running", "":
+			pending = true
+		case "success":
+			if info.Result == nil || info.Result.Code != 200 || len(info.Result.MediaURLs) == 0 {
+				return nil, false, &UpstreamError{Code: 501, Message: "CRUN task completed without an image"}
+			}
+			results[index] = strings.TrimSpace(info.Result.MediaURLs[0])
+			if results[index] == "" {
+				return nil, false, &UpstreamError{Code: 501, Message: "CRUN returned an empty image URL"}
+			}
+		case "failed":
+			message, code := "CRUN image generation failed", 501
+			if info.Result != nil {
+				code = info.Result.Code
+				if strings.TrimSpace(info.Result.Message) != "" {
+					message = info.Result.Message
+				}
+			}
+			return nil, false, &UpstreamError{Code: code, Message: message}
+		default:
+			return nil, false, &UpstreamError{Code: 500, Message: "unknown CRUN task status: " + info.Status}
+		}
+	}
+	return results, pending, nil
 }

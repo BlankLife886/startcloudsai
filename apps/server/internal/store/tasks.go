@@ -167,6 +167,49 @@ func SetQueuedTaskExecutionRoute(ctx context.Context, q Q, id uuid.UUID, model s
 	return tag.RowsAffected() > 0, nil
 }
 
+func MarkTaskUpstreamPending(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE tasks
+		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_upstreamStage}', '"async_pending"'::jsonb, true)
+		WHERE id = $1 AND status = 'running'`, id)
+	return err
+}
+
+func SetTaskFailedProviderIDs(ctx context.Context, q Q, id uuid.UUID, providerIDs []string) error {
+	raw, err := json.Marshal(providerIDs)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE tasks
+		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_failedProviderConfigIds}', $2::jsonb, true)
+		WHERE id = $1 AND status IN ('queued', 'running')`, id, raw)
+	return err
+}
+
+func ListAsyncPendingTasksByProvider(ctx context.Context, q Q, providerID string, limit int) ([]*Task, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	rows, err := q.Query(ctx, `SELECT `+taskCols+` FROM tasks
+		WHERE status = 'running'
+		  AND params ->> '_upstreamStage' = 'async_pending'
+		  AND params ->> '_providerConfigId' = $1
+		ORDER BY started_at, id
+		LIMIT $2`, providerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*Task, 0, limit)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, task)
+	}
+	return out, rows.Err()
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
 	sql := `SELECT ` + taskCols + ` FROM tasks WHERE true`

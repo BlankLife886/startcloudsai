@@ -25,6 +25,11 @@ type RunTaskPayload struct {
 	TaskID string `json:"task_id"`
 }
 
+type PollImageTasksPayload struct {
+	ProviderID string `json:"provider_id"`
+	Generation int    `json:"generation"`
+}
+
 type RunAssistantPayload struct {
 	RunID string `json:"run_id"`
 }
@@ -173,14 +178,16 @@ func (q *Queue) EnqueueRunTaskRecoveryIn(ctx context.Context, taskID string, del
 	return err
 }
 
-func (q *Queue) EnqueueImagePoll(ctx context.Context, taskID string, delay time.Duration) error {
-	payload, err := json.Marshal(RunTaskPayload{TaskID: taskID})
+func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID string, generation int, delay time.Duration) error {
+	payload, err := json.Marshal(PollImageTasksPayload{ProviderID: providerID, Generation: generation % 2})
 	if err != nil {
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypePollImageTask, payload),
-		asynq.MaxRetry(0), asynq.Timeout(30*time.Second), asynq.ProcessIn(delay),
-		asynq.TaskID(taskID+":poll:"+uuid.NewString()))
+		asynq.MaxRetry(0), asynq.Timeout(2*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
 	return err
 }
 

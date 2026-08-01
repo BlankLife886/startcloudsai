@@ -36,7 +36,7 @@ DB_MAX_CONN_IDLE_TIME=5m
 DB_HEALTH_CHECK_PERIOD=1m
 ```
 
-`WORKER_CONCURRENCY` 是提交、单次轮询和图片持久化的短操作工作池；`global_max_concurrent_tasks` 是上游在途任务上限，默认 2000，不再受 Worker 槽位数限制。服务商自己的 `maxConcurrency` 决定分流容量。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。
+`WORKER_CONCURRENCY` 是提交、聚合轮询和图片持久化的短操作工作池；`global_max_concurrent_tasks` 是上游在途任务上限，默认 2000，不再受 Worker 槽位数限制。OpenAI/C2A 每个服务商每次最多批量查询 100 个任务，CRUN 服务商执行集中式单轮查询。服务商自己的 `maxConcurrency` 决定分流容量。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。
 
 ## 私有 pprof
 

@@ -880,7 +880,7 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 	var selected Model
 	found := false
 	for _, model := range cfg.Models {
-		if model.ID == modelID && model.ProviderID == providerID && model.Enabled {
+		if model.ID == modelID && model.ProviderID == providerID {
 			selected, found = model, true
 			break
 		}
@@ -888,8 +888,14 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 	if !found {
 		return nil
 	}
-	selectedProvider, ok := providers[selected.ProviderID]
-	if !ok || strings.TrimSpace(selectedProvider.APIKey) == "" {
+	var selectedProvider Provider
+	for _, provider := range cfg.Providers {
+		if provider.ID == selected.ProviderID {
+			selectedProvider = provider
+			break
+		}
+	}
+	if selectedProvider.ID == "" {
 		return nil
 	}
 	out := make([]Selection, 0, len(providers))

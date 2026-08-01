@@ -125,6 +125,21 @@ func TestExecutionCandidatesOnlyReturnsEquivalentRoutes(t *testing.T) {
 	}
 }
 
+func TestExecutionCandidatesCanFailOverFromDisabledRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[0].Enabled = false
+	cfg.Providers = append(cfg.Providers, Provider{
+		ID: "backup", Name: "备用", Adapter: AdapterOpenAI, APIKey: "backup-secret", Enabled: true, MaxConcurrency: 100,
+	})
+	cfg.Models = append(cfg.Models, Model{
+		ID: "backup-image", Name: "备用高质量", ProviderID: "backup", UpstreamModel: "image-quality", Kind: ModelKindImage, Enabled: true,
+	})
+	candidates := ExecutionCandidates(cfg, "provider", "image-quality")
+	if len(candidates) != 1 || candidates[0].Provider.ID != "backup" {
+		t.Fatalf("disabled route failover candidates = %#v", candidates)
+	}
+}
+
 func TestLegacyImageModelReceivesDefaultCapabilities(t *testing.T) {
 	var cfg Config
 	if err := json.Unmarshal([]byte(`{

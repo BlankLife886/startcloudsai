@@ -72,6 +72,9 @@ func TestCreateAndWaitTasks(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
+	if results, pending, err := client.PollTasks(context.Background(), ids); err != nil || !pending || len(results) != 2 {
+		t.Fatalf("one-shot poll results=%#v pending=%v err=%v", results, pending, err)
+	}
 	var streamed []string
 	results, err := client.WaitTasks(context.Background(), ids, func(_ int, imageURL string) error {
 		streamed = append(streamed, imageURL)
