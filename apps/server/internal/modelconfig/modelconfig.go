@@ -59,6 +59,7 @@ type Provider struct {
 	BaseURL          string   `json:"baseUrl"`
 	APIKey           string   `json:"apiKey"`
 	TimeoutSecs      int      `json:"timeoutSecs"`
+	MaxConcurrency   int      `json:"maxConcurrency"`
 	Enabled          bool     `json:"enabled"`
 	DiscoveredModels []string `json:"discoveredModels"`
 }
@@ -74,6 +75,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 		BaseURL          string   `json:"baseUrl"`
 		APIKey           string   `json:"apiKey"`
 		TimeoutSecs      int      `json:"timeoutSecs"`
+		MaxConcurrency   int      `json:"maxConcurrency"`
 		Enabled          bool     `json:"enabled"`
 		DiscoveredModels []string `json:"discoveredModels"`
 		Keys             []struct {
@@ -103,7 +105,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 	}
 	*p = Provider{
 		ID: raw.ID, Name: raw.Name, Adapter: adapter, BaseURL: raw.BaseURL,
-		APIKey: apiKey, TimeoutSecs: raw.TimeoutSecs, Enabled: raw.Enabled,
+		APIKey: apiKey, TimeoutSecs: raw.TimeoutSecs, MaxConcurrency: raw.MaxConcurrency, Enabled: raw.Enabled,
 		DiscoveredModels: raw.DiscoveredModels,
 	}
 	return nil
@@ -275,6 +277,9 @@ func normalize(cfg *Config) {
 			provider.BaseURL = strings.TrimSuffix(provider.BaseURL, "/api/v1")
 		}
 		provider.DiscoveredModels = cleanStrings(provider.DiscoveredModels)
+		if provider.MaxConcurrency <= 0 {
+			provider.MaxConcurrency = 100
+		}
 	}
 	defaultKinds := map[string]bool{}
 	for index := range cfg.Models {
@@ -524,6 +529,9 @@ func Validate(cfg Config) error {
 		}
 		if provider.TimeoutSecs < 0 || provider.TimeoutSecs > 1800 {
 			return fmt.Errorf("服务商 %s 的超时须在 0-1800 秒之间", provider.Name)
+		}
+		if provider.MaxConcurrency < 1 || provider.MaxConcurrency > 10000 {
+			return fmt.Errorf("服务商 %s 的并发容量须在 1-10000 之间", provider.Name)
 		}
 		providers[provider.ID] = provider
 	}
@@ -861,6 +869,51 @@ func FindExecution(cfg Config, providerID, modelID string) (*Selection, bool) {
 		}
 	}
 	return nil, false
+}
+
+// ExecutionCandidates returns interchangeable execution routes for a selected
+// public model. Providers join the same pool by configuring an enabled model
+// with the same adapter, kind and upstream model ID.
+func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
+	normalize(&cfg)
+	providers := activeProviders(cfg)
+	var selected Model
+	found := false
+	for _, model := range cfg.Models {
+		if model.ID == modelID && model.ProviderID == providerID && model.Enabled {
+			selected, found = model, true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	selectedProvider, ok := providers[selected.ProviderID]
+	if !ok || strings.TrimSpace(selectedProvider.APIKey) == "" {
+		return nil
+	}
+	out := make([]Selection, 0, len(providers))
+	seenProviders := map[string]bool{}
+	for _, model := range cfg.Models {
+		provider, providerOK := providers[model.ProviderID]
+		if !providerOK || seenProviders[provider.ID] || strings.TrimSpace(provider.APIKey) == "" ||
+			!model.Enabled || model.Kind != selected.Kind || model.UpstreamModel != selected.UpstreamModel ||
+			provider.Adapter != selectedProvider.Adapter {
+			continue
+		}
+		seenProviders[provider.ID] = true
+		out = append(out, Selection{Provider: provider, Model: model})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Provider.ID == providerID {
+			return true
+		}
+		if out[j].Provider.ID == providerID {
+			return false
+		}
+		return out[i].Provider.ID < out[j].Provider.ID
+	})
+	return out
 }
 
 func PublicModels(cfg Config, kind string) []Selection {

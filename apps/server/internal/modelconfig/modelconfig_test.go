@@ -100,6 +100,31 @@ func TestLegacyProviderMigratesToSingleKeyAdapter(t *testing.T) {
 	}
 }
 
+func TestProviderConcurrencyDefaultsToOneHundred(t *testing.T) {
+	cfg := testConfig()
+	normalize(&cfg)
+	if got := cfg.Providers[0].MaxConcurrency; got != 100 {
+		t.Fatalf("default max concurrency = %d", got)
+	}
+}
+
+func TestExecutionCandidatesOnlyReturnsEquivalentRoutes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers = append(cfg.Providers,
+		Provider{ID: "backup", Name: "备用", Adapter: AdapterOpenAI, APIKey: "backup-secret", Enabled: true, MaxConcurrency: 200},
+		Provider{ID: "crun", Name: "CRUN", Adapter: AdapterCRUN, APIKey: "crun-secret", Enabled: true, MaxConcurrency: 200},
+	)
+	cfg.Models = append(cfg.Models,
+		Model{ID: "backup-image", Name: "备用高质量", ProviderID: "backup", UpstreamModel: "image-quality", Kind: ModelKindImage, Enabled: true},
+		Model{ID: "different-model", Name: "不同模型", ProviderID: "backup", UpstreamModel: "other-image", Kind: ModelKindImage, Enabled: true},
+		Model{ID: "different-adapter", Name: "不同协议", ProviderID: "crun", UpstreamModel: "image-quality", Kind: ModelKindImage, Enabled: true},
+	)
+	candidates := ExecutionCandidates(cfg, "provider", "image-quality")
+	if len(candidates) != 2 || candidates[0].Provider.ID != "provider" || candidates[1].Provider.ID != "backup" {
+		t.Fatalf("execution candidates = %#v", candidates)
+	}
+}
+
 func TestLegacyImageModelReceivesDefaultCapabilities(t *testing.T) {
 	var cfg Config
 	if err := json.Unmarshal([]byte(`{

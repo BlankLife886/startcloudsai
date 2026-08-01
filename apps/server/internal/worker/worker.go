@@ -94,6 +94,7 @@ func (w *Worker) Run() error {
 	log.Printf("worker ready concurrency=%d", w.Cfg.WorkerConcurrency)
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
+	mux.HandleFunc(taskflow.TypePollImageTask, w.handlePollImageTask)
 	mux.HandleFunc(taskflow.TypeRunAssistant, w.handleRunAssistant)
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
@@ -152,6 +153,19 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 	if err != nil || queued == nil || queued.Status != "queued" {
 		return nil, "", err
 	}
+	var candidates []modelconfig.Selection
+	providerID := taskParamString(queued.Params, "_providerConfigId")
+	modelID := taskParamString(queued.Params, "_modelConfigId")
+	if providerID != "" && modelID != "" {
+		cfg, runtimeErr := modelconfig.Runtime(ctx, w.St.Pool, w.Cfg.AppSecret)
+		if runtimeErr != nil {
+			return nil, "", runtimeErr
+		}
+		candidates = modelconfig.ExecutionCandidates(cfg, providerID, modelID)
+		if len(candidates) == 0 {
+			return nil, "", errors.New("任务绑定的模型没有可用服务商")
+		}
+	}
 	var claimedTask *store.Task
 	deferReason := ""
 	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -191,6 +205,32 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			deferReason = "user_execution_limit"
 			return nil
 		}
+		if len(candidates) > 0 {
+			providerIDs := make([]string, 0, len(candidates))
+			for _, candidate := range candidates {
+				providerIDs = append(providerIDs, candidate.Provider.ID)
+			}
+			runningByProvider, err := store.RunningTasksByProvider(ctx, tx, providerIDs)
+			if err != nil {
+				return err
+			}
+			selected, ok := selectExecutionCandidate(candidates, runningByProvider)
+			if !ok {
+				deferReason = "provider_execution_limit"
+				return nil
+			}
+			route := map[string]any{
+				"_serviceProvider":     selected.Provider.Adapter,
+				"_providerConfigId":    selected.Provider.ID,
+				"_modelConfigId":       selected.Model.ID,
+				"_providerDisplayName": selected.Provider.Name,
+				"_modelDisplayName":    selected.Model.Name,
+			}
+			updated, err := store.SetQueuedTaskExecutionRoute(ctx, tx, taskID, selected.Model.UpstreamModel, route)
+			if err != nil || !updated {
+				return err
+			}
+		}
 		claimed, err := store.ClaimTask(ctx, tx, taskID, time.Now().UTC())
 		if err != nil || !claimed {
 			return err
@@ -199,6 +239,24 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		return err
 	})
 	return claimedTask, deferReason, err
+}
+
+func selectExecutionCandidate(candidates []modelconfig.Selection, running map[string]int64) (*modelconfig.Selection, bool) {
+	var selected *modelconfig.Selection
+	var selectedRunning int64
+	for index := range candidates {
+		candidate := &candidates[index]
+		limit := int64(candidate.Provider.MaxConcurrency)
+		current := running[candidate.Provider.ID]
+		if limit <= 0 || current >= limit {
+			continue
+		}
+		if selected == nil || current*int64(selected.Provider.MaxConcurrency) < selectedRunning*limit {
+			selected = candidate
+			selectedRunning = current
+		}
+	}
+	return selected, selected != nil
 }
 
 func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([][]byte, error) {
@@ -247,6 +305,10 @@ func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
 }
 
 type imageReadyFunc func(index int, encoded string) error
+
+type asyncImagePendingError struct{}
+
+func (*asyncImagePendingError) Error() string { return "upstream image task pending" }
 
 func compactEncodedImages(images []string) []string {
 	completed := make([]string, 0, len(images))
@@ -551,18 +613,22 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 			ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
 		}
 		var images []string
+		var pending bool
 		var err error
 		if len(task.InputKeys) > 0 {
 			inputs, err := w.loadInputImagesB64(ctx, task.InputKeys)
 			if err != nil {
 				return nil, err
 			}
-			images, err = client.EditImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
+			images, pending, err = client.SubmitEditImages(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
 		} else {
-			images, err = client.GenerateImagesWithOptions(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
+			images, pending, err = client.SubmitGenerateImages(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
 		}
 		if err != nil {
 			return images, err
+		}
+		if pending {
+			return nil, &asyncImagePendingError{}
 		}
 		return images, deliverEncodedImages(images, onImage)
 	case modelconfig.AdapterCRUN:
@@ -804,6 +870,17 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	collector := newTaskOutputCollector(w, ctx, task)
 	upstreamStartedAt := time.Now()
 	imagesB64, callErr := w.callUpstream(ctx, task, provider, model, collector.persist)
+	var pendingErr *asyncImagePendingError
+	if errors.As(callErr, &pendingErr) {
+		delay := 2*time.Second + time.Duration(taskID[0]%3)*time.Second
+		if enqueueErr := w.Queue.EnqueueImagePoll(ctx, taskID.String(), delay); enqueueErr != nil {
+			_, _ = store.RequeueRunningTask(ctx, w.St.Pool, taskID)
+			return enqueueErr
+		}
+		w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "upstream_pending", Status: "running"})
+		log.Printf("task %s submitted asynchronously poll_in=%s", taskID, delay)
+		return nil
+	}
 	var netErr *c2a.NetworkError
 	if callErr != nil && errors.As(callErr, &netErr) {
 		// 连接/超时类错误重试一次（attempt+1 落库）
@@ -895,6 +972,100 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	}
 
 	return w.markFailed(ctx, taskID, errorCode, errorMessage)
+}
+
+func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
+	var payload taskflow.RunTaskPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("bad poll payload: %w", err)
+	}
+	taskID, err := uuid.Parse(payload.TaskID)
+	if err != nil {
+		return fmt.Errorf("bad task_id: %w", err)
+	}
+	task, err := store.GetTask(ctx, w.St.Pool, taskID)
+	if err != nil || task == nil || task.Status != "running" {
+		return err
+	}
+	selection, configured, err := w.configuredModelSelection(ctx, task)
+	if err != nil {
+		return w.markFailed(ctx, taskID, "model_config_error", "任务绑定的服务商配置已失效")
+	}
+	if !configured || selection.Provider.Adapter != modelconfig.AdapterOpenAI {
+		return w.markFailed(ctx, taskID, "internal_error", "异步任务路由无效，请重试")
+	}
+	client := c2a.NewWithPolicy(selection.Provider.BaseURL, selection.Provider.APIKey, selection.Provider.TimeoutSecs, w.Cfg.AppEnv == "development")
+	images, pending, pollErr := client.PollImageTask(ctx, task.ID.String(), task.Count)
+	if pollErr == nil && pending {
+		return w.scheduleNextImagePoll(ctx, task, selection.Provider.TimeoutSecs)
+	}
+	if pollErr != nil {
+		var networkErr *c2a.NetworkError
+		if errors.As(pollErr, &networkErr) && !imagePollExpired(task, selection.Provider.TimeoutSecs) {
+			log.Printf("task %s image poll retry after network error: %v", taskID, pollErr)
+			return w.scheduleNextImagePoll(ctx, task, selection.Provider.TimeoutSecs)
+		}
+		var upstreamErr *c2a.UpstreamError
+		if errors.As(pollErr, &upstreamErr) {
+			return w.markFailed(ctx, taskID, "upstream_error", sanitizeUpstreamMessage(upstreamErr.Message))
+		}
+		return w.markFailed(ctx, taskID, "upstream_unreachable", "生成服务暂时不可用，请稍后重试")
+	}
+	collector := newTaskOutputCollector(w, ctx, task)
+	if err := deliverEncodedImages(images, collector.persist); err != nil {
+		collector.cleanup()
+		return w.markFailed(ctx, taskID, "storage_error", "图片保存失败，请重试")
+	}
+	outputKeys, thumbnailKeys := collector.completed()
+	if len(outputKeys) == 0 {
+		return w.markFailed(ctx, taskID, "upstream_error", "生成服务未返回图片，请重试")
+	}
+	var succeeded *store.Task
+	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
+		dbTask, getErr := store.GetTask(ctx, tx, taskID)
+		if getErr != nil || dbTask == nil {
+			return getErr
+		}
+		won, markErr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC())
+		if won {
+			succeeded = dbTask
+		}
+		return markErr
+	})
+	if err != nil {
+		collector.cleanup()
+		return w.markFailed(ctx, taskID, "storage_error", "图片保存失败，请重试")
+	}
+	if succeeded != nil {
+		taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
+	}
+	w.publishTaskEvent(ctx, task, taskstream.Event{
+		Stage: "complete", Status: "succeeded", ImageCount: len(outputKeys), Done: true,
+	})
+	return nil
+}
+
+func imagePollExpired(task *store.Task, timeoutSecs int) bool {
+	if timeoutSecs <= 0 {
+		timeoutSecs = 300
+	}
+	startedAt := task.CreatedAt
+	if task.StartedAt != nil {
+		startedAt = *task.StartedAt
+	}
+	return time.Since(startedAt) >= time.Duration(timeoutSecs)*time.Second
+}
+
+func (w *Worker) scheduleNextImagePoll(ctx context.Context, task *store.Task, timeoutSecs int) error {
+	if imagePollExpired(task, timeoutSecs) {
+		return w.markFailed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试")
+	}
+	delay := 2*time.Second + time.Duration(task.ID[1]%3)*time.Second
+	if err := w.Queue.EnqueueImagePoll(ctx, task.ID.String(), delay); err != nil {
+		return err
+	}
+	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "upstream_pending", Status: "running"})
+	return nil
 }
 
 // handleCleanupSessions cron：每小时清理过期 session。

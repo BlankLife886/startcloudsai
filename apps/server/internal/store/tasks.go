@@ -128,6 +128,45 @@ func CountRunningTasks(ctx context.Context, q Q, userID uuid.UUID) (int64, error
 	return n, err
 }
 
+func RunningTasksByProvider(ctx context.Context, q Q, providerIDs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(providerIDs))
+	if len(providerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT params ->> '_providerConfigId', count(*)
+		FROM tasks
+		WHERE status = 'running' AND params ->> '_providerConfigId' = ANY($1)
+		GROUP BY 1`, providerIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var providerID string
+		var count int64
+		if err := rows.Scan(&providerID, &count); err != nil {
+			return nil, err
+		}
+		out[providerID] = count
+	}
+	return out, rows.Err()
+}
+
+func SetQueuedTaskExecutionRoute(ctx context.Context, q Q, id uuid.UUID, model string, params map[string]any) (bool, error) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx,
+		`UPDATE tasks SET model = $2, params = params || $3::jsonb WHERE id = $1 AND status = 'queued'`,
+		id, model, raw)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
 	sql := `SELECT ` + taskCols + ` FROM tasks WHERE true`

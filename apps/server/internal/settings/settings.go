@@ -14,9 +14,9 @@ import (
 var Defaults = map[string]json.RawMessage{
 	"task_prices":                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
 	"user_max_running_tasks":      json.RawMessage(`100`),
-	"user_max_concurrent_tasks":   json.RawMessage(`2`),
-	"global_max_concurrent_tasks": json.RawMessage(`4`),
-	"global_max_active_tasks":     json.RawMessage(`2000`),
+	"user_max_concurrent_tasks":   json.RawMessage(`20`),
+	"global_max_concurrent_tasks": json.RawMessage(`2000`),
+	"global_max_active_tasks":     json.RawMessage(`5000`),
 	"signup_bonus_cents":          json.RawMessage(`100`),
 	"registration_enabled":        json.RawMessage(`true`),
 	"task_models":                 json.RawMessage(`{"default": "gpt-image-2"}`),

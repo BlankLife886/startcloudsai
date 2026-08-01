@@ -153,14 +153,15 @@ onMounted(load);
             <span
               ><strong>全站同时执行</strong
               ><small
-                >实时生效 · 当前有效 {{ effectiveGlobalConcurrency }} / 物理上限
-                {{ workerConcurrencyCeiling }}</small
+				>上游在途任务上限 · 当前 {{ effectiveGlobalConcurrency }}；Worker 短操作槽
+				{{ workerConcurrencyCeiling }}</small
               ></span
             >
             <el-input-number
               v-model="form.globalMaxConcurrentTasks"
               :min="1"
-              :max="workerConcurrencyCeiling"
+			  :max="100000"
+			  :step="100"
               controls-position="right"
             />
           </label>
@@ -168,7 +169,7 @@ onMounted(load);
           <label class="setting-row">
             <span
               ><strong>单用户同时执行</strong
-              ><small>每个账号的执行配额，实际不超过全站同时执行数</small></span
+			  ><small>每个账号允许同时处于上游执行中的任务数</small></span
             >
             <el-input-number
               v-model="form.userMaxConcurrentTasks"

@@ -294,3 +294,31 @@ func TestGenerateImagesKeepsPollingAfterTransientGatewayFailure(t *testing.T) {
 		t.Fatalf("polls = %d, images = %#v", polls, images)
 	}
 }
+
+func TestSubmitAndPollImageTaskAreOneShotOperations(t *testing.T) {
+	submits, polls := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/image-tasks/generations":
+			submits++
+			_, _ = w.Write([]byte(`{"id":"task-one-shot","status":"running","data":[]}`))
+		case "/api/image-tasks":
+			polls++
+			_, _ = w.Write([]byte(`{"items":[{"id":"task-one-shot","status":"success","data":[{"b64_json":"done"}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, err := client.SubmitGenerateImages(context.Background(), "task-one-shot", "draw", "image-model", 1, "", ImageOptions{})
+	if err != nil || !pending || len(images) != 0 || submits != 1 || polls != 0 {
+		t.Fatalf("submit images=%#v pending=%v submits=%d polls=%d err=%v", images, pending, submits, polls, err)
+	}
+	images, pending, err = client.PollImageTask(context.Background(), "task-one-shot", 1)
+	if err != nil || pending || len(images) != 1 || images[0] != "done" || submits != 1 || polls != 1 {
+		t.Fatalf("poll images=%#v pending=%v submits=%d polls=%d err=%v", images, pending, submits, polls, err)
+	}
+}

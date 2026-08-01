@@ -158,6 +158,14 @@ interface SystemMetrics {
 		oldestQueuedSeconds: number
 		error?: string
 	}
+	providers: Array<{
+		id: string
+		name: string
+		adapter: string
+		running: number
+		limit: number
+		utilizationPercent: number
+	}>
 	profiling: { enabled: boolean }
 }
 
@@ -664,7 +672,7 @@ onBeforeUnmount(() => {
 					<div><dt>Stack 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.stackInUseBytes) }}</dd></div>
 					<div><dt>GC CPU</dt><dd>{{ systemMetrics.process.memory.gcCPUFraction.toFixed(2) }}%</dd></div>
 					<div><dt>用户执行上限</dt><dd>{{ systemMetrics.taskPressure.userConcurrencyLimit }} 个 / 用户</dd></div>
-					<div><dt>全站执行并发</dt><dd>{{ systemMetrics.taskPressure.effectiveGlobalConcurrency }} 有效 / {{ systemMetrics.taskPressure.workerConcurrencyCeiling }} 物理槽</dd></div>
+					<div><dt>上游在途上限</dt><dd>{{ systemMetrics.taskPressure.effectiveGlobalConcurrency }} 个 / Worker {{ systemMetrics.taskPressure.workerConcurrencyCeiling }} 短操作槽</dd></div>
 					<div><dt>私有 pprof</dt><dd>{{ systemMetrics.profiling.enabled ? '已启用' : '未启用' }}</dd></div>
 				</dl>
 			</PageCard>
@@ -681,6 +689,18 @@ onBeforeUnmount(() => {
 				<div v-else class="worker-empty">
 					<el-empty description="没有在线 Worker" :image-size="48" />
 				</div>
+			</PageCard>
+			<PageCard title="服务商实时容量" subtitle="同模型线路按容量利用率自动分流">
+				<el-table v-if="systemMetrics.providers.length" :data="systemMetrics.providers" class="worker-table" max-height="260">
+					<el-table-column prop="name" label="服务商" min-width="130" show-overflow-tooltip />
+					<el-table-column prop="adapter" label="协议" width="90" />
+					<el-table-column prop="running" label="在途" width="75" align="right" />
+					<el-table-column prop="limit" label="容量" width="75" align="right" />
+					<el-table-column label="利用率" width="90" align="right">
+						<template #default="{ row }">{{ row.utilizationPercent.toFixed(1) }}%</template>
+					</el-table-column>
+				</el-table>
+				<el-empty v-else description="没有启用的服务商" :image-size="48" />
 			</PageCard>
 		</div>
 	</section>

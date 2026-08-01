@@ -36,7 +36,7 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 	if !ok || string(masked) != `"****1234"` {
 		t.Fatalf("sub2apiApiKey = %#v", out["sub2apiApiKey"])
 	}
-	if out["workerConcurrencyCeiling"] != int64(32) || out["effectiveGlobalConcurrency"] != int64(4) {
+	if out["workerConcurrencyCeiling"] != int64(32) || out["effectiveGlobalConcurrency"] != int64(2000) {
 		t.Fatalf("concurrency settings = ceiling %#v effective %#v", out["workerConcurrencyCeiling"], out["effectiveGlobalConcurrency"])
 	}
 }

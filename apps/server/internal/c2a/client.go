@@ -425,6 +425,61 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 	}
 }
 
+// SubmitImageTask submits once and reports whether the upstream task still
+// needs polling. It is used by queue workers so upstream wait time does not
+// occupy a worker goroutine.
+func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, error) {
+	payload["client_task_id"] = taskID
+	body, err := c.doRequest(ctx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
+	if err != nil {
+		return nil, false, err
+	}
+	task, err := parseImageTask(body)
+	if err != nil {
+		return nil, false, err
+	}
+	images, done, err := c.completedTaskImages(ctx, task, expected)
+	return images, !done, err
+}
+
+// PollImageTask performs exactly one status request.
+func (c *Client) PollImageTask(ctx context.Context, taskID string, expected int) ([]string, bool, error) {
+	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(taskID)
+	body, err := c.doRequest(ctx, http.MethodGet, statusPath, nil, asyncPollTimeout)
+	if err != nil {
+		return nil, false, err
+	}
+	task, err := parseImageTaskList(body, taskID)
+	if err != nil {
+		return nil, false, err
+	}
+	images, done, err := c.completedTaskImages(ctx, task, expected)
+	return images, !done, err
+}
+
+func imageGenerationPayload(prompt, model string, n int, size string, options ImageOptions) map[string]any {
+	payload := map[string]any{
+		"model": model, "prompt": prompt, "n": n,
+		"response_format":  "b64_json",
+		"history_disabled": true, "stream": false,
+	}
+	applyImageOptions(payload, options)
+	if size != "" {
+		payload["size"] = size
+	}
+	return payload
+}
+
+func imageEditPayload(prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) map[string]any {
+	images := make([]map[string]string, 0, len(inputImagesB64))
+	for _, b64 := range inputImagesB64 {
+		images = append(images, map[string]string{"b64_json": b64})
+	}
+	payload := imageGenerationPayload(prompt, model, n, size, options)
+	payload["images"] = images
+	return payload
+}
+
 func isRetryablePollError(err error) bool {
 	var networkErr *NetworkError
 	if errors.As(err, &networkErr) {
@@ -492,15 +547,7 @@ func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model
 }
 
 func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, error) {
-	payload := map[string]any{
-		"model": model, "prompt": prompt, "n": n,
-		"response_format":  "b64_json",
-		"history_disabled": true, "stream": false,
-	}
-	applyImageOptions(payload, options)
-	if size != "" {
-		payload["size"] = size
-	}
+	payload := imageGenerationPayload(prompt, model, n, size, options)
 	images, err := c.submitAndPollImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
 		return images, err
@@ -510,6 +557,20 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 		return nil, err
 	}
 	return extractB64List(body)
+}
+
+func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, error) {
+	payload := imageGenerationPayload(prompt, model, n, size, options)
+	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
+	if err == nil || !shouldFallbackToSync(err) {
+		return images, pending, err
+	}
+	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
+	if err != nil {
+		return nil, false, err
+	}
+	images, err = extractB64List(body)
+	return images, false, err
 }
 
 // EditImages 图生图 /v1/images/edits（JSON base64 引用）→ base64 列表。
@@ -527,19 +588,7 @@ func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model str
 }
 
 func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, error) {
-	images := make([]map[string]string, 0, len(inputImagesB64))
-	for _, b64 := range inputImagesB64 {
-		images = append(images, map[string]string{"b64_json": b64})
-	}
-	payload := map[string]any{
-		"model": model, "prompt": prompt, "n": n,
-		"response_format":  "b64_json",
-		"history_disabled": true, "stream": false, "images": images,
-	}
-	applyImageOptions(payload, options)
-	if size != "" {
-		payload["size"] = size
-	}
+	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
 	result, err := c.submitAndPollImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
 		return result, err
@@ -549,6 +598,20 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 		return nil, err
 	}
 	return extractB64List(body)
+}
+
+func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
+	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
+	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	if err == nil || !shouldFallbackToSync(err) {
+		return images, pending, err
+	}
+	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
+	if err != nil {
+		return nil, false, err
+	}
+	images, err = extractB64List(body)
+	return images, false, err
 }
 
 func normalizedImageQuality(values ...string) string {

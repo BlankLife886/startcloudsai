@@ -8,10 +8,46 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
+
+func TestSelectExecutionCandidateUsesCapacityWeightedLoad(t *testing.T) {
+	candidates := []modelconfig.Selection{
+		{Provider: modelconfig.Provider{ID: "small", MaxConcurrency: 10}},
+		{Provider: modelconfig.Provider{ID: "large", MaxConcurrency: 100}},
+	}
+	selected, ok := selectExecutionCandidate(candidates, map[string]int64{"small": 2, "large": 10})
+	if !ok || selected.Provider.ID != "large" {
+		t.Fatalf("selected = %#v, ok=%v", selected, ok)
+	}
+	if _, ok := selectExecutionCandidate(candidates, map[string]int64{"small": 10, "large": 100}); ok {
+		t.Fatal("all full providers must defer")
+	}
+}
+
+func TestSelectExecutionCandidateDistributesSyntheticLoadByCapacity(t *testing.T) {
+	candidates := []modelconfig.Selection{
+		{Provider: modelconfig.Provider{ID: "a", MaxConcurrency: 200}},
+		{Provider: modelconfig.Provider{ID: "b", MaxConcurrency: 600}},
+	}
+	running := map[string]int64{}
+	for index := 0; index < 800; index++ {
+		selected, ok := selectExecutionCandidate(candidates, running)
+		if !ok {
+			t.Fatalf("selection stopped at %d", index)
+		}
+		running[selected.Provider.ID]++
+	}
+	if running["a"] != 200 || running["b"] != 600 {
+		t.Fatalf("distribution = %#v", running)
+	}
+	if _, ok := selectExecutionCandidate(candidates, running); ok {
+		t.Fatal("801st task must wait for provider capacity")
+	}
+}
 
 func TestClaimTaskDefersWhenUserExecutionSlotsAreFull(t *testing.T) {
 	st := testdb.Setup(t)

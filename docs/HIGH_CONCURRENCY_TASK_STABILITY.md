@@ -1,13 +1,13 @@
 # 高并发任务稳定性方案
 
-本文定义用户连续创建几十到一百个图片任务时的调度、状态同步、失败恢复和容量边界。目标不是让一百个请求同时打向上游，而是允许用户快速提交工作，由平台平稳排队，并保证切换页面、网络波动或 Worker 重启后仍能回收结果。
+本文定义 100 个以上用户分别连续创建 8-20 个图片任务时的调度、状态同步、失败恢复和容量边界。平台允许 800-2000 个任务处于上游在途状态；具体生成吞吐由服务商池容量决定，平台 Worker 不再因等待上游生成而成为主要瓶颈。
 
 ## 核心不变量
 
 1. 一个业务任务只冻结一次费用、只使用一个稳定任务 ID。
 2. 页面卸载不会取消服务端任务，上游结果由 Worker 持久化到 R2 和数据库。
 3. 客户端等待任务数增加时，连接数和轮询请求数不线性增长。
-4. Worker 并发始终小于用户可排队数量，突发流量通过队列吸收。
+4. Worker 槽位只承担短提交、短轮询和结果持久化；上游等待不长期占用槽位。
 5. 上游超时不能立即等价为生成失败；具备幂等 ID 的任务必须先尝试恢复。
 6. 恢复任务有次数、批量和时间边界，不能形成无限重试或重复队列记录。
 7. 全站达到容量水位后快速拒绝新任务，不能继续堆积直到数据库、Redis 或上游失效。
@@ -65,11 +65,11 @@ N 个 waitForTask 调用
 任务创建同时受两层持久化水位保护：
 
 - `user_max_running_tasks`：单用户 queued + running，默认 100。
-- `global_max_active_tasks`：全站 queued + running，默认 2000。
+- `global_max_active_tasks`：全站 queued + running，默认 5000，为 2000 个在途任务保留排队缓冲。
 
 计数和插入位于同一个 PostgreSQL 事务。全局和用户 advisory transaction lock 使多个 API 实例也不能同时越过水位。用户重试携带的幂等键在容量判断之前读取，已经成功创建的任务仍能被找回。达到全站水位时 API 返回 `429 system_task_capacity`，前端保留本地任务和提示词，用户可以稍后重试。
 
-Worker 使用 `global_max_concurrent_tasks`（默认 4）作为全站动态执行上限，使用 `user_max_concurrent_tasks`（默认 2）作为每用户执行配额。每次 `queued -> running` 认领都依次取得全站和用户 advisory lock，并在事务内重新统计 running 数，因此多个 Worker 实例共同遵守同一组限制。没有槽位时，业务任务保持 queued，并以 2-5 秒抖动延迟重新入队，让队列继续处理其他用户。
+Worker 使用 `global_max_concurrent_tasks`（默认 2000）作为全站上游在途上限，使用 `user_max_concurrent_tasks`（默认 20）作为每用户在途配额。每次 `queued -> running` 认领都依次取得全站和用户 advisory lock，并在事务内重新统计 running 数，因此多个 Worker 实例共同遵守同一组限制。没有配额时，业务任务保持 queued，并以 2-5 秒抖动延迟重新入队。
 
 数据库迁移 `00029_task_concurrency_indexes.sql` 为用户活跃计数、running 计数、queued 年龄和僵尸 running 扫描增加部分索引。
 
@@ -77,7 +77,7 @@ Worker 使用 `global_max_concurrent_tasks`（默认 4）作为全站动态执�
 
 `user_max_running_tasks` 是单用户“运行中 + 排队中”任务总量上限，默认 100。迁移 `00028_user_task_burst_capacity.sql` 只把仍为旧默认值 3 的配置提升到 100，不覆盖管理员已经设置的其他值。
 
-`WORKER_CONCURRENCY` 是启动时分配的物理槽位，Compose 默认 32；`global_max_concurrent_tasks` 是后台可实时修改的实际图片执行并发，默认 4。较大的物理工作池不会自动增加图片并发，只提供无需重启即可调节的安全范围：
+`WORKER_CONCURRENCY` 是短操作工作池，Compose 默认 32；`global_max_concurrent_tasks` 是数据库中允许的上游在途任务数，默认 2000。两者不再取最小值：
 
 ```text
 用户突发提交 <= 100
@@ -86,13 +86,22 @@ Worker 使用 `global_max_concurrent_tasks`（默认 4）作为全站动态执�
 PostgreSQL 持久任务 + Redis Asynq 队列
         |
         v
-后台全站执行窗口（默认 4，实时生效）
+后台上游在途窗口（默认 2000，实时生效）
         |
         v
-图片上游
+按服务商容量加权分流
+        |
+        v
+异步提交 -> 延迟短轮询 -> 结果持久化
 ```
 
-后台实际并发不能超过当前在线 Worker 物理槽位总数。增加后台并发前，必须确认上游限额、数据库连接池和 R2 上传带宽。只有需要突破物理槽位时才修改 `WORKER_CONCURRENCY` 并重启 Worker。
+支持 `/api/image-tasks` 异步接口的 OpenAI 兼容服务商在提交后立即释放 Worker。每次轮询只发一个状态请求，未完成则以 2-4 秒抖动重新计划。旧服务商返回 404/405 时自动回退同步 OpenAI Images 接口；这类线路仍会在生成期间占用 Worker，因此不应承担大规模在途容量。
+
+### 多服务商容量加权
+
+同一个公开模型可配置多条执行线路。备用线路必须使用相同 adapter、模型类型和 `upstreamModel`；模型记录本身可以不公开。领取任务时在 PostgreSQL 全局执行锁内读取各服务商 running 数，排除达到 `maxConcurrency` 的线路，并选择 `running / maxConcurrency` 最低者。该比较使用整数交叉相乘，避免浮点误差；同负载时保持稳定顺序。
+
+例如服务商 A 容量 200、B 容量 600，800 个合成在途任务会分配为 200/600；第 801 个保持排队，直到任一线路释放容量。增加服务商只需要在模型配置中添加等价模型线路并设置容量，无需修改用户端。
 
 ### 图片内存背压
 
@@ -112,7 +121,7 @@ PostgreSQL 持久任务 + Redis Asynq 队列
 - 图片每完成一张就由 `taskOutputCollector` 持久化，部分成功不会因后续网络错误丢失。
 - 任务成功状态、原图 keys、缩略图 keys 和费用结算在事务中完成。
 
-对于 C2A 和 CRUN，单轮网络错误先立即重试一次。仍失败且尚无产物时，任务从 `running` 恢复为 `queued`，分别在 15 秒、30 秒后使用同一任务 ID 接管。持久化 attempt 达到 3 后才进入最终失败结算，防止无限恢复。
+对于异步 C2A，轮询网络错误在服务商总超时内继续延迟查询，不重新提交任务。同步兼容线路和 CRUN 仍保留原有网络恢复：失败且尚无产物时，任务从 `running` 恢复为 `queued`，使用同一任务 ID 接管；持久化 attempt 达到 3 后才进入最终失败结算。
 
 ### 僵尸与丢队列恢复
 
@@ -157,7 +166,7 @@ go test ./...
 go vet ./...
 ```
 
-后台 `/api/v1/admin/system/metrics` 额外返回 `taskPressure`：数据库 queued/running/active、全站容量、动态执行上限、物理槽位、当前有效并发、最久排队秒数和单用户执行配额。生产监控至少还要包含队列等待 P50/P95/P99、任务成功率、网络恢复次数、最终失败错误码、上游耗时、R2 持久化失败数。容量利用率达到 70% 应预警，达到 90% 应检查扩容或上游降速。
+后台 `/api/v1/admin/system/metrics` 返回 `taskPressure` 和 `providers`：数据库 queued/running/active、全站在途上限、Worker 短操作槽、单用户配额，以及每个服务商的 running、容量和利用率。服务商利用率达到 70% 应预警，达到 90% 应扩容线路或降低其配置容量。
 
 ## 部署
 
@@ -167,4 +176,4 @@ go vet ./...
 docker compose --env-file .env up -d --build server worker web gateway
 ```
 
-部署后在后台确认“全站同时执行”和“单用户同时执行”为预期值。日常调节只修改后台动态值；根据上游 429、队列等待时间和 CPU/内存从 4 逐步提高，不需要重启 Worker。
+部署后在后台确认“全站同时执行”为 2000、“单用户同时执行”为 20，并为每个服务商填写经过验证的并发容量。日常增减服务商与容量实时生效，不需要重启 Worker。

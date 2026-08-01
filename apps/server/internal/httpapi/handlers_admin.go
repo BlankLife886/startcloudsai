@@ -1479,11 +1479,11 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		}
 		out[camel] = v
 	}
-	configured := int64(4)
+	configured := int64(2000)
 	_ = json.Unmarshal(all["global_max_concurrent_tasks"], &configured)
 	ceiling := int64(s.workerConcurrencyCeiling())
 	out["workerConcurrencyCeiling"] = ceiling
-	out["effectiveGlobalConcurrency"] = min(max(configured, 1), ceiling)
+	out["effectiveGlobalConcurrency"] = max(configured, 1)
 	return out, nil
 }
 
@@ -1551,9 +1551,8 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			}
 		case "global_max_concurrent_tasks":
 			var v int64
-			ceiling := int64(s.workerConcurrencyCeiling())
-			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > ceiling {
-				fail(c, apperr.E("validation_error", fmt.Sprintf("globalMaxConcurrentTasks: 须在 1-%d 之间（当前在线 Worker 物理上限）", ceiling), 422))
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100000 {
+				fail(c, apperr.E("validation_error", "globalMaxConcurrentTasks: 须在 1-100000 之间", 422))
 				return
 			}
 		case "global_max_active_tasks":

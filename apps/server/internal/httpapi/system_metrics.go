@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"math"
 	"runtime"
 	"runtime/debug"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -213,6 +215,7 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	userConcurrency, userConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "user_max_concurrent_tasks")
 	workerCeiling := int64(s.workerConcurrencyCeiling())
 	profilingEnabled := s.Cfg.APIPprofAddr != "" || s.Cfg.WorkerPprofAddr != ""
+	providerCapacity := s.providerCapacityMetrics(c.Request.Context())
 
 	ok(c, gin.H{
 		"sampledAt": now.UTC().Format(time.RFC3339Nano),
@@ -240,8 +243,39 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 		},
 		"queue":        queue,
 		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
+		"providers":    providerCapacity,
 		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
+}
+
+func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
+	cfg, err := modelconfig.Runtime(ctx, s.St.Pool, s.Cfg.AppSecret)
+	if err != nil {
+		return []gin.H{}
+	}
+	providerIDs := make([]string, 0, len(cfg.Providers))
+	for _, provider := range cfg.Providers {
+		if provider.Enabled {
+			providerIDs = append(providerIDs, provider.ID)
+		}
+	}
+	running, err := store.RunningTasksByProvider(ctx, s.St.Pool, providerIDs)
+	if err != nil {
+		return []gin.H{}
+	}
+	out := make([]gin.H, 0, len(providerIDs))
+	for _, provider := range cfg.Providers {
+		if !provider.Enabled {
+			continue
+		}
+		current := running[provider.ID]
+		out = append(out, gin.H{
+			"id": provider.ID, "name": provider.Name, "adapter": provider.Adapter,
+			"running": current, "limit": provider.MaxConcurrency,
+			"utilizationPercent": roundMetric(percentOf64(current, int64(provider.MaxConcurrency)), 2),
+		})
+	}
+	return out
 }
 
 func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error, workerCeiling int64) gin.H {
@@ -253,7 +287,7 @@ func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureEr
 		"userConcurrencyLimit":       userConcurrency,
 		"globalConcurrencyLimit":     globalConcurrency,
 		"workerConcurrencyCeiling":   workerCeiling,
-		"effectiveGlobalConcurrency": min(max(globalConcurrency, 1), workerCeiling),
+		"effectiveGlobalConcurrency": max(globalConcurrency, 1),
 		"utilizationPercent":         roundMetric(percentOf64(pressure.Queued+pressure.Running, globalLimit), 2),
 	}
 	if pressure.OldestQueuedAt != nil {

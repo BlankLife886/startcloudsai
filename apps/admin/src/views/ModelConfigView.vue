@@ -25,6 +25,7 @@ interface ModelProvider {
   baseUrl: string;
   apiKey: string;
   timeoutSecs: number;
+  maxConcurrency: number;
   enabled: boolean;
   discoveredModels: string[];
 }
@@ -259,6 +260,7 @@ function hydrate(value: ModelConfig) {
   config.providers = (value.providers || []).map((provider) => ({
     ...provider,
     adapter: provider.adapter || "openai",
+    maxConcurrency: provider.maxConcurrency || 100,
     discoveredModels: provider.discoveredModels || [],
   }));
   config.models = (value.models || []).map((model) => ({
@@ -556,6 +558,7 @@ const providerDraft = reactive<ModelProvider>({
   baseUrl: "",
   apiKey: "",
   timeoutSecs: 300,
+  maxConcurrency: 100,
   enabled: true,
   discoveredModels: [],
 });
@@ -568,6 +571,7 @@ function copyProvider(source: ModelProvider): ModelProvider {
     baseUrl: source.baseUrl,
     apiKey: source.apiKey,
     timeoutSecs: source.timeoutSecs,
+    maxConcurrency: source.maxConcurrency || 100,
     enabled: source.enabled,
     discoveredModels: [...(source.discoveredModels || [])],
   };
@@ -586,6 +590,7 @@ function openProvider(index = -1) {
           baseUrl: "",
           apiKey: "",
           timeoutSecs: 300,
+          maxConcurrency: 100,
           enabled: true,
           discoveredModels: [],
         },
@@ -1433,6 +1438,10 @@ onBeforeUnmount(() => {
             }}</strong></template
           ></el-table-column
         >
+        <el-table-column label="并发容量" width="105" align="center"
+          ><template #default="{ row }"
+            ><strong>{{ row.maxConcurrency || 100 }}</strong></template
+        ></el-table-column>
         <el-table-column label="状态" width="80" align="center"
           ><template #default="{ row }"
             ><el-switch v-model="row.enabled" /></template
@@ -1507,6 +1516,14 @@ onBeforeUnmount(() => {
               :min="0"
               :max="1800"
               :step="30"
+              style="width: 100%"
+          /></el-form-item>
+          <el-form-item label="并发容量"
+            ><el-input-number
+              v-model="providerDraft.maxConcurrency"
+              :min="1"
+              :max="10000"
+              :step="10"
               style="width: 100%"
           /></el-form-item>
           <el-form-item label="启用服务商"

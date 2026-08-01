@@ -13,7 +13,8 @@
 - PostgreSQL：最大、总计、占用、空闲、构建中连接数，连接池利用率、等待和取消次数。
 - Asynq：队列积压、活跃/计划/重试/归档任务、队列延迟、当日处理与失败数。
 - Worker：Redis 心跳可见的实例、PID、状态、并发槽和活跃槽。
-- 任务压力：数据库 queued/running、全站容量利用率、动态执行上限、在线物理槽位、有效并发和单用户执行配额。
+- 任务压力：数据库 queued/running、全站在途上限、Worker 短操作槽和单用户执行配额。
+- 服务商容量：每条启用线路的 running、`maxConcurrency` 和实时利用率。
 
 请求指标使用固定 60 槽滚动窗口和延迟直方图，内存占用恒定，不保存 URL、用户信息或请求体。
 
@@ -35,7 +36,7 @@ DB_MAX_CONN_IDLE_TIME=5m
 DB_HEALTH_CHECK_PERIOD=1m
 ```
 
-`WORKER_CONCURRENCY` 是物理工作池上限，实际图片并发由后台 `global_max_concurrent_tasks` 动态控制。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。不要在没有 Heap Profile 和峰值压测的情况下继续降低。PostgreSQL 当前只有 `1 CPU / 1 GiB`，API 与 Worker 总连接预算应保持保守。
+`WORKER_CONCURRENCY` 是提交、单次轮询和图片持久化的短操作工作池；`global_max_concurrent_tasks` 是上游在途任务上限，默认 2000，不再受 Worker 槽位数限制。服务商自己的 `maxConcurrency` 决定分流容量。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。
 
 ## 私有 pprof
 
@@ -93,7 +94,7 @@ go version -m server | grep pgo
 - API P95：相对同时间段基线持续上升 50% 时排查数据库、Redis 和外部请求。
 - 内存：持续超过 `GOMEMLIMIT` 的 85% 时采集 Heap Profile。
 - 数据库：连接池利用率持续超过 80%，且等待次数持续增长时才考虑调大。
-- 队列：Pending 长期大于 Worker 总并发，先确认上游耗时与 429，再调整并发。
+- 队列：Pending 持续增长时检查提交/轮询/持久化耗时；服务商 running 接近容量时增加等价线路。
 - Worker：在线实例为 0 或队列 Paused 时立即处理。
 
 这些阈值是起始参考，不替代基于真实业务流量建立的基线。

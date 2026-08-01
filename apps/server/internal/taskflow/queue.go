@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	TypeRunTask      = "task:run"
-	TypeRunAssistant = "assistant:run"
+	TypeRunTask       = "task:run"
+	TypePollImageTask = "task:poll-image"
+	TypeRunAssistant  = "assistant:run"
 )
 
 // 后台允许把 C2A 超时动态调到 600 秒。队列超时必须覆盖这个上限，
@@ -169,6 +170,17 @@ func (q *Queue) EnqueueRunTaskRecoveryIn(ctx context.Context, taskID string, del
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunTask, payload),
 		asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.ProcessIn(delay),
 		asynq.TaskID(taskID+":recover:"+uuid.NewString()))
+	return err
+}
+
+func (q *Queue) EnqueueImagePoll(ctx context.Context, taskID string, delay time.Duration) error {
+	payload, err := json.Marshal(RunTaskPayload{TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypePollImageTask, payload),
+		asynq.MaxRetry(0), asynq.Timeout(30*time.Second), asynq.ProcessIn(delay),
+		asynq.TaskID(taskID+":poll:"+uuid.NewString()))
 	return err
 }
 
