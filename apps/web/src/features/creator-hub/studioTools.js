@@ -1,17 +1,6 @@
 /** 创作台工具目录 — 对齐大厂「创作入口」卡片墙 */
 export const STUDIO_TOOLS = [
   {
-    id: 'canvas',
-    to: '/infinite-canvas',
-    label: '无限画布',
-    tagline: '自由编排图片与灵感',
-    icon: 'bi-bounding-box-circles',
-    cover: '/sucai/ui-design-1785420316960.png',
-    tone: 'violet',
-    badge: '画布',
-    taskType: 'canvas',
-  },
-  {
     id: 'assistant',
     to: '/assistant',
     label: 'AI 助手',

@@ -36,6 +36,9 @@ const nodeCount = ref(0)
 const zoomPercent = ref(100)
 const saveState = ref('ready')
 const exporting = ref(false)
+const minimapOpen = ref(true)
+const minimapDragging = ref(false)
+const minimapData = ref({ nodes: [], viewport: null, world: null })
 const historyPast = ref([])
 const historyFuture = ref([])
 
@@ -43,6 +46,7 @@ let app = null
 let resizeObserver = null
 let saveTimer = 0
 let historyTimer = 0
+let minimapFrame = 0
 let applyingSnapshot = false
 let lastSnapshot = ''
 let placementIndex = 0
@@ -100,6 +104,94 @@ function updateSelection(target = app?.editor?.target) {
 
 function updateNodeCount() {
   nodeCount.value = app?.tree?.children?.length || 0
+  scheduleMinimapUpdate()
+}
+
+function scheduleMinimapUpdate() {
+  if (minimapFrame || !mounted) return
+  minimapFrame = window.requestAnimationFrame(() => {
+    minimapFrame = 0
+    updateMinimap()
+  })
+}
+
+function updateMinimap() {
+  const host = canvasHost.value
+  const layer = app?.tree?.zoomLayer
+  if (!host || !layer) return
+  const mapWidth = 220
+  const mapHeight = 140
+  const nodes = (app.tree.children || []).map((node) => {
+    const bounds = node.getBounds?.('render', app.tree) || node
+    return {
+      kind: node.data?.kind || 'shape',
+      x: Number(bounds.x ?? node.x) || 0,
+      y: Number(bounds.y ?? node.y) || 0,
+      width: Math.max(1, Number(bounds.width ?? node.width) || 1),
+      height: Math.max(1, Number(bounds.height ?? node.height) || 1),
+    }
+  })
+  const visible = {
+    x: -(Number(layer.x) || 0) / (Number(layer.scaleX) || 1),
+    y: -(Number(layer.y) || 0) / (Number(layer.scaleY) || 1),
+    width: host.clientWidth / (Number(layer.scaleX) || 1),
+    height: host.clientHeight / (Number(layer.scaleY) || 1),
+  }
+  const areas = nodes.length ? [...nodes, visible] : [visible]
+  const minX = Math.min(...areas.map((item) => item.x)) - 240
+  const minY = Math.min(...areas.map((item) => item.y)) - 240
+  const maxX = Math.max(...areas.map((item) => item.x + item.width)) + 240
+  const maxY = Math.max(...areas.map((item) => item.y + item.height)) + 240
+  const worldWidth = Math.max(1, maxX - minX)
+  const worldHeight = Math.max(1, maxY - minY)
+  const scale = Math.min(mapWidth / worldWidth, mapHeight / worldHeight)
+  const offsetX = (mapWidth - worldWidth * scale) / 2
+  const offsetY = (mapHeight - worldHeight * scale) / 2
+  const project = (item) => ({
+    ...item,
+    left: (item.x - minX) * scale + offsetX,
+    top: (item.y - minY) * scale + offsetY,
+    mapWidth: Math.max(2, item.width * scale),
+    mapHeight: Math.max(2, item.height * scale),
+  })
+  minimapData.value = {
+    nodes: nodes.map(project),
+    viewport: project(visible),
+    world: { x: minX, y: minY, scale, offsetX, offsetY },
+  }
+}
+
+function moveViewportFromMinimap(event) {
+  const host = canvasHost.value
+  const layer = app?.tree?.zoomLayer
+  const world = minimapData.value.world
+  const target = event.currentTarget
+  if (!host || !layer || !world || !(target instanceof HTMLElement)) return
+  const rect = target.getBoundingClientRect()
+  const worldX = (event.clientX - rect.left - world.offsetX) / world.scale + world.x
+  const worldY = (event.clientY - rect.top - world.offsetY) / world.scale + world.y
+  const scale = Number(layer.scaleX) || 1
+  layer.set({
+    x: host.clientWidth / 2 - worldX * scale,
+    y: host.clientHeight / 2 - worldY * scale,
+  })
+}
+
+function startMinimapDrag(event) {
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  minimapDragging.value = true
+  moveViewportFromMinimap(event)
+}
+
+function continueMinimapDrag(event) {
+  if (minimapDragging.value) moveViewportFromMinimap(event)
+}
+
+function stopMinimapDrag() {
+  if (!minimapDragging.value) return
+  minimapDragging.value = false
+  scheduleSave()
 }
 
 function viewState() {
@@ -132,6 +224,7 @@ function applyView(view) {
     scaleY: Number(view.scaleY) || 1,
   })
   updateZoomLabel()
+  scheduleMinimapUpdate()
 }
 
 function restoreDocument(document, { remember = true } = {}) {
@@ -239,6 +332,7 @@ function redo() {
 
 function updateZoomLabel() {
   zoomPercent.value = Math.round((app?.tree?.zoomLayer?.scaleX || 1) * 100)
+  scheduleMinimapUpdate()
 }
 
 function setZoom(scale) {
@@ -626,6 +720,7 @@ function createApp() {
   app.editor.on(EditorScaleEvent.SCALE, scheduleDocumentChange)
   app.editor.on(EditorRotateEvent.ROTATE, scheduleDocumentChange)
   app.tree.on(PropertyEvent.CHANGE, scheduleDocumentChange)
+  app.tree.on(PropertyEvent.CHANGE, scheduleMinimapUpdate)
   app.tree.zoomLayer.on(PropertyEvent.CHANGE, () => {
     updateZoomLabel()
     scheduleSave()
@@ -636,6 +731,7 @@ function createApp() {
       width: Math.max(1, canvasHost.value.clientWidth),
       height: Math.max(1, canvasHost.value.clientHeight),
     })
+    scheduleMinimapUpdate()
   })
   resizeObserver.observe(host)
 }
@@ -663,6 +759,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(saveTimer)
     void persistDocument()
   }
+  if (minimapFrame) window.cancelAnimationFrame(minimapFrame)
+  minimapFrame = 0
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('paste', onPaste)
   resizeObserver?.disconnect()
@@ -706,6 +804,14 @@ onBeforeUnmount(() => {
         <button type="button" title="适配视图" @click="fitView">
           <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
         </button>
+        <button
+          type="button"
+          title="小地图"
+          :class="{ 'is-active': minimapOpen }"
+          @click="minimapOpen = !minimapOpen"
+        >
+          <i class="bi bi-compass" aria-hidden="true"></i>
+        </button>
       </div>
 
       <div class="canvas-topbar-actions">
@@ -719,6 +825,16 @@ onBeforeUnmount(() => {
         <button type="button" title="清空画布" :disabled="!nodeCount" @click="clearCanvas">
           <i class="bi bi-trash3" aria-hidden="true"></i>
         </button>
+        <a
+          class="canvas-source-link"
+          href="https://github.com/ddcat-ai/open-ai-canvas"
+          target="_blank"
+          rel="noreferrer"
+          title="基于 Open AI Canvas"
+          aria-label="Open AI Canvas 开源项目"
+        >
+          <i class="bi bi-github" aria-hidden="true"></i>
+        </a>
       </div>
       <input
         ref="fileInput"
@@ -776,6 +892,39 @@ onBeforeUnmount(() => {
         <div v-if="!nodeCount" class="canvas-empty-state" aria-hidden="true">
           <i class="bi bi-bounding-box-circles"></i>
           <span>空白画布</span>
+        </div>
+        <div
+          v-if="minimapOpen"
+          class="canvas-minimap"
+          :class="{ 'is-dragging': minimapDragging }"
+          aria-label="画布小地图"
+          @pointerdown.stop="startMinimapDrag"
+          @pointermove.stop="continueMinimapDrag"
+          @pointerup.stop="stopMinimapDrag"
+          @pointercancel.stop="stopMinimapDrag"
+        >
+          <span
+            v-for="(node, index) in minimapData.nodes"
+            :key="index"
+            class="minimap-node"
+            :class="`is-${node.kind}`"
+            :style="{
+              left: `${node.left}px`,
+              top: `${node.top}px`,
+              width: `${node.mapWidth}px`,
+              height: `${node.mapHeight}px`,
+            }"
+          ></span>
+          <span
+            v-if="minimapData.viewport"
+            class="minimap-viewport"
+            :style="{
+              left: `${minimapData.viewport.left}px`,
+              top: `${minimapData.viewport.top}px`,
+              width: `${minimapData.viewport.mapWidth}px`,
+              height: `${minimapData.viewport.mapHeight}px`,
+            }"
+          ></span>
         </div>
       </div>
 
@@ -949,6 +1098,7 @@ html.color-scheme-dark .infinite-canvas-page {
 }
 
 .canvas-topbar button,
+.canvas-source-link,
 .canvas-toolrail button,
 .canvas-inspector button {
   display: inline-grid;
@@ -964,12 +1114,18 @@ html.color-scheme-dark .infinite-canvas-page {
 }
 
 .canvas-topbar button:hover,
+.canvas-source-link:hover,
 .canvas-toolrail button:hover,
 .canvas-inspector button:hover,
+.canvas-command-group button.is-active,
 .canvas-toolrail button.is-active {
   border-color: var(--canvas-line);
   background: rgba(91, 77, 255, 0.08);
   color: var(--canvas-accent);
+}
+
+.canvas-source-link {
+  text-decoration: none;
 }
 
 .canvas-topbar button:disabled,
@@ -1072,6 +1228,66 @@ html.color-scheme-dark .canvas-stage {
 
 .canvas-empty-state span {
   font-size: 12px;
+}
+
+.canvas-minimap {
+  position: absolute;
+  z-index: 10;
+  bottom: 18px;
+  left: 18px;
+  width: 220px;
+  height: 140px;
+  overflow: hidden;
+  border: 1px solid var(--canvas-line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--canvas-surface) 88%, transparent);
+  box-shadow: 0 16px 42px rgba(28, 32, 45, 0.18);
+  cursor: crosshair;
+  touch-action: none;
+  backdrop-filter: blur(14px);
+}
+
+.canvas-minimap.is-dragging {
+  cursor: grabbing;
+}
+
+.minimap-node,
+.minimap-viewport {
+  position: absolute;
+  pointer-events: none;
+}
+
+.minimap-node {
+  min-width: 2px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: #8b93a7;
+  opacity: 0.82;
+}
+
+.minimap-node.is-image {
+  background: #2eb98c;
+}
+
+.minimap-node.is-text {
+  background: #5b7cff;
+}
+
+.minimap-node.is-note {
+  background: #e7ad35;
+}
+
+.minimap-node.is-frame {
+  border: 1px solid #7b6dff;
+  background: rgba(123, 109, 255, 0.08);
+}
+
+.minimap-viewport {
+  min-width: 4px;
+  min-height: 4px;
+  border: 1px solid var(--canvas-accent);
+  background: rgba(91, 77, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45) inset;
 }
 
 .canvas-inspector {
