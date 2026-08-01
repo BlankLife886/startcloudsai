@@ -14,6 +14,7 @@ import {
 	Odometer,
 	Platform,
 	Refresh,
+  Tickets,
   TrendCharts,
   User,
   UserFilled,
@@ -144,6 +145,16 @@ interface SystemMetrics {
 			queues: Record<string, number>
 		}>
 	}
+	taskPressure: {
+		queued: number
+		running: number
+		active: number
+		globalLimit: number
+		userConcurrencyLimit: number
+		utilizationPercent: number
+		oldestQueuedSeconds: number
+		error?: string
+	}
 	profiling: { enabled: boolean }
 }
 
@@ -225,7 +236,8 @@ const memoryUsagePercent = computed(() => {
 const systemCards = computed<KpiCard[]>(() => {
 	const metrics = systemMetrics.value
 	if (!metrics) return []
-	const queue = metrics.queue
+		const queue = metrics.queue
+		const pressure = metrics.taskPressure
 	return [
 		{
 			label: 'API 吞吐', value: `${metrics.http.requestsPerSecond.toFixed(2)} req/s`,
@@ -264,8 +276,13 @@ const systemCards = computed<KpiCard[]>(() => {
 			caption: queue.available ? `活跃 ${queue.active} · 延迟 ${formatDuration(queue.latencyMs)}` : 'Redis 队列不可用',
 			icon: AlarmClock, tone: !queue.available || queue.paused ? 'danger' : queue.pending > queue.workerConcurrency ? 'warning' : 'success',
 		},
-		{
-			label: 'Worker', value: `${queue.onlineWorkers} 在线`,
+			{
+				label: '任务容量', value: `${pressure.active} / ${pressure.globalLimit}`,
+				caption: `使用 ${pressure.utilizationPercent.toFixed(1)}% · 最久排队 ${formatDuration(pressure.oldestQueuedSeconds * 1000)}`,
+				icon: Tickets, tone: pressure.utilizationPercent >= 90 ? 'danger' : pressure.utilizationPercent >= 70 ? 'warning' : 'success',
+			},
+			{
+				label: 'Worker', value: `${queue.onlineWorkers} 在线`,
 			caption: `活跃 ${queue.activeWorkers} / 并发 ${queue.workerConcurrency}`,
 			icon: Connection, tone: queue.onlineWorkers > 0 ? 'success' : 'danger',
 		},
@@ -643,6 +660,7 @@ onBeforeUnmount(() => {
 					<div><dt>Heap 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.heapInUseBytes) }}</dd></div>
 					<div><dt>Stack 使用</dt><dd>{{ formatBytes(systemMetrics.process.memory.stackInUseBytes) }}</dd></div>
 					<div><dt>GC CPU</dt><dd>{{ systemMetrics.process.memory.gcCPUFraction.toFixed(2) }}%</dd></div>
+					<div><dt>用户执行上限</dt><dd>{{ systemMetrics.taskPressure.userConcurrencyLimit }} 个 / 用户</dd></div>
 					<div><dt>私有 pprof</dt><dd>{{ systemMetrics.profiling.enabled ? '已启用' : '未启用' }}</dd></div>
 				</dl>
 			</PageCard>

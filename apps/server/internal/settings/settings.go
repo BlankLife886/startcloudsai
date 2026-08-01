@@ -12,13 +12,15 @@ import (
 
 // Defaults 与 Python 版 settings_service.DEFAULTS 一致。
 var Defaults = map[string]json.RawMessage{
-	"task_prices":            json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
-	"user_max_running_tasks": json.RawMessage(`100`),
-	"signup_bonus_cents":     json.RawMessage(`100`),
-	"registration_enabled":   json.RawMessage(`true`),
-	"task_models":            json.RawMessage(`{"default": "gpt-image-2"}`),
-	"image_service_routes":   json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
-	"free_daily_cents":       json.RawMessage(`0`),
+	"task_prices":               json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
+	"user_max_running_tasks":    json.RawMessage(`100`),
+	"user_max_concurrent_tasks": json.RawMessage(`2`),
+	"global_max_active_tasks":   json.RawMessage(`2000`),
+	"signup_bonus_cents":        json.RawMessage(`100`),
+	"registration_enabled":      json.RawMessage(`true`),
+	"task_models":               json.RawMessage(`{"default": "gpt-image-2"}`),
+	"image_service_routes":      json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
+	"free_daily_cents":          json.RawMessage(`0`),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),

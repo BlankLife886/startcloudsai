@@ -51,10 +51,11 @@ type Config struct {
 	R2Bucket            string
 	R2PresignExpireSecs int
 
-	WorkerConcurrency   int
-	UserMaxRunningTasks int
-	APIPprofAddr        string
-	WorkerPprofAddr     string
+	WorkerConcurrency    int
+	UserMaxRunningTasks  int
+	WorkerImageMemoryMiB int64
+	APIPprofAddr         string
+	WorkerPprofAddr      string
 
 	SessionCookieName string
 	SessionTTLDays    int
@@ -158,10 +159,11 @@ func Load() *Config {
 		R2Bucket:            getenv("R2_BUCKET", "starcloudsai"),
 		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
 
-		WorkerConcurrency:   getenvInt("WORKER_CONCURRENCY", 8),
-		UserMaxRunningTasks: getenvInt("USER_MAX_RUNNING_TASKS", 100),
-		APIPprofAddr:        strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
-		WorkerPprofAddr:     strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
+		WorkerConcurrency:    getenvInt("WORKER_CONCURRENCY", 8),
+		UserMaxRunningTasks:  getenvInt("USER_MAX_RUNNING_TASKS", 100),
+		WorkerImageMemoryMiB: int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
+		APIPprofAddr:         strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
+		WorkerPprofAddr:      strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
 
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,
@@ -169,6 +171,9 @@ func Load() *Config {
 	}
 	if cfg.DBMaxConns < 0 || cfg.DBMinConns < 0 || (cfg.DBMaxConns == 0 && cfg.DBMinConns > 0) || (cfg.DBMaxConns > 0 && cfg.DBMinConns > cfg.DBMaxConns) {
 		log.Fatal("数据库连接池配置无效：须满足 0 <= DB_MIN_CONNS <= DB_MAX_CONNS")
+	}
+	if cfg.WorkerImageMemoryMiB < 64 {
+		log.Fatal("WORKER_IMAGE_MEMORY_MIB 不能小于 64")
 	}
 	validateSecret(cfg.AppEnv, cfg.AppSecret)
 	if cfg.AppEnv == "production" {

@@ -107,6 +107,9 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	var task *store.Task
 	created := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockGlobalTaskCreation(ctx, tx); err != nil {
+			return err
+		}
 		if err := store.LockUserTaskCreation(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -134,6 +137,20 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		}
 		if activeCount >= maxRunning {
 			return apperr.E("user_task_limit", fmt.Sprintf("同时进行中的任务不能超过 %d 个", maxRunning), 429)
+		}
+		globalLimit, err := settings.GetInt(ctx, tx, "global_max_active_tasks")
+		if err != nil {
+			return err
+		}
+		if globalLimit <= 0 {
+			globalLimit = 2000
+		}
+		globalActive, err := store.CountTasksInStatuses(ctx, tx, []string{"queued", "running"})
+		if err != nil {
+			return err
+		}
+		if globalActive >= globalLimit {
+			return apperr.E("system_task_capacity", "当前生成任务较多，请稍后再试；你的提示词不会丢失", 429)
 		}
 
 		taskID := uuid.New()

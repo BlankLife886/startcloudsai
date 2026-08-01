@@ -7,6 +7,8 @@ import { normalizePoints } from "@/utils";
 
 interface AdminSettings {
   userMaxRunningTasks?: number;
+  userMaxConcurrentTasks?: number;
+  globalMaxActiveTasks?: number;
   registrationEnabled?: boolean;
   signupBonusCents?: number;
 }
@@ -17,6 +19,8 @@ const savedSignature = ref("");
 
 const form = reactive({
   userMaxRunningTasks: 100,
+  userMaxConcurrentTasks: 2,
+  globalMaxActiveTasks: 2000,
   registrationEnabled: true,
   signupBonusPoints: 0,
 });
@@ -24,6 +28,8 @@ const form = reactive({
 const settingsSignature = () =>
   JSON.stringify({
     userMaxRunningTasks: form.userMaxRunningTasks,
+    userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+    globalMaxActiveTasks: form.globalMaxActiveTasks,
     registrationEnabled: form.registrationEnabled,
     signupBonusPoints: form.signupBonusPoints,
   });
@@ -37,6 +43,8 @@ const isDirty = computed(
 
 function hydrate(settings: AdminSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
+  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 2;
+  form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 2000;
   form.registrationEnabled = settings.registrationEnabled ?? true;
   form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
   savedSignature.value = settingsSignature();
@@ -59,6 +67,8 @@ async function save() {
         method: "PUT",
         body: {
           userMaxRunningTasks: form.userMaxRunningTasks,
+          userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+          globalMaxActiveTasks: form.globalMaxActiveTasks,
           registrationEnabled: form.registrationEnabled,
           signupBonusCents: normalizePoints(form.signupBonusPoints),
         },
@@ -125,6 +135,33 @@ onMounted(load);
               ><strong>开放注册</strong><small>控制新用户注册入口</small></span
             >
             <el-switch v-model="form.registrationEnabled" />
+          </label>
+
+          <label class="setting-row">
+            <span
+              ><strong>单用户同时执行</strong
+              ><small>每个账号真正占用 Worker 的任务数，其余任务公平排队</small></span
+            >
+            <el-input-number
+              v-model="form.userMaxConcurrentTasks"
+              :min="1"
+              :max="20"
+              controls-position="right"
+            />
+          </label>
+
+          <label class="setting-row">
+            <span
+              ><strong>全站待处理容量</strong
+              ><small>排队与运行任务达到该水位后停止接收新任务，保护服务稳定</small></span
+            >
+            <el-input-number
+              v-model="form.globalMaxActiveTasks"
+              :min="10"
+              :max="100000"
+              :step="100"
+              controls-position="right"
+            />
           </label>
 
           <label class="setting-row">

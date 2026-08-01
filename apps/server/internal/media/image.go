@@ -2,16 +2,25 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/jpeg"
 	_ "image/png"
+	"strings"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
 
 const MaxDecodedPixels = 40_000_000
+
+func validateDimensions(width, height int) (int, int, error) {
+	if width <= 0 || height <= 0 || int64(width)*int64(height) > MaxDecodedPixels {
+		return 0, 0, fmt.Errorf("image dimensions exceed limit")
+	}
+	return width, height, nil
+}
 
 func Dimensions(data []byte) (int, int, error) {
 	if ext, _ := Detect(data); ext == "" {
@@ -21,10 +30,18 @@ func Dimensions(data []byte) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxDecodedPixels {
-		return 0, 0, fmt.Errorf("image dimensions exceed limit")
+	return validateDimensions(cfg.Width, cfg.Height)
+}
+
+// Base64Dimensions reads only the encoded image header. Workers can reserve
+// pixel-weighted memory before allocating the complete decoded byte slice.
+func Base64Dimensions(encoded string) (int, int, error) {
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+	cfg, _, err := image.DecodeConfig(decoder)
+	if err != nil {
+		return 0, 0, err
 	}
-	return cfg.Width, cfg.Height, nil
+	return validateDimensions(cfg.Width, cfg.Height)
 }
 
 func Detect(data []byte) (ext, contentType string) {

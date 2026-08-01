@@ -18,6 +18,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
@@ -54,14 +55,19 @@ type Worker struct {
 	Queue      *taskflow.Queue
 	PromptSync *promptsync.Engine
 	// Stream 用于把助手回答增量推给 API 层 SSE；nil 时静默降级为纯轮询。
-	Stream *redis.Client
+	Stream           *redis.Client
+	imageMemory      *semaphore.Weighted
+	imageMemoryBytes int64
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Worker {
+	imageMemoryBytes := max(cfg.WorkerImageMemoryMiB, 64) << 20
 	return &Worker{
 		Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue,
-		PromptSync: promptsync.New(st, cfg.AppEnv == "development"),
-		Stream:     assistantstream.NewClient(cfg.RedisURL),
+		PromptSync:       promptsync.New(st, cfg.AppEnv == "development"),
+		Stream:           assistantstream.NewClient(cfg.RedisURL),
+		imageMemory:      semaphore.NewWeighted(imageMemoryBytes),
+		imageMemoryBytes: imageMemoryBytes,
 	}
 }
 
@@ -141,15 +147,40 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 }
 
 // claimTask 条件更新 queued→running，抢不到返回 nil。
-func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, error) {
-	claimed, err := store.ClaimTask(ctx, w.St.Pool, taskID, time.Now().UTC())
-	if err != nil {
-		return nil, err
+func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, bool, error) {
+	queued, err := store.GetTask(ctx, w.St.Pool, taskID)
+	if err != nil || queued == nil || queued.Status != "queued" {
+		return nil, false, err
 	}
-	if !claimed {
-		return nil, nil
-	}
-	return store.GetTask(ctx, w.St.Pool, taskID)
+	var claimedTask *store.Task
+	deferred := false
+	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockUserTaskExecution(ctx, tx, queued.UserID); err != nil {
+			return err
+		}
+		limit, err := settings.GetInt(ctx, tx, "user_max_concurrent_tasks")
+		if err != nil {
+			return err
+		}
+		if limit <= 0 {
+			limit = 2
+		}
+		running, err := store.CountRunningTasks(ctx, tx, queued.UserID)
+		if err != nil {
+			return err
+		}
+		if running >= limit {
+			deferred = true
+			return nil
+		}
+		claimed, err := store.ClaimTask(ctx, tx, taskID, time.Now().UTC())
+		if err != nil || !claimed {
+			return err
+		}
+		claimedTask, err = store.GetTask(ctx, tx, taskID)
+		return err
+	})
+	return claimedTask, deferred, err
 }
 
 func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([][]byte, error) {
@@ -248,6 +279,10 @@ func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client
 	}
 	encodedByIndex := make([]string, task.Count)
 	images, err := client.GenerateImageProgressive(ctx, finalPrompt, size, quality, task.Count, references, func(index int, image sub2api.Image) error {
+		if index < 0 || index >= len(encodedByIndex) {
+			log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", task.ID, index, len(encodedByIndex))
+			return nil
+		}
 		data, _, _, downloadErr := downloadAssistantImage(ctx, image.DataURL)
 		if downloadErr != nil {
 			return downloadErr
@@ -431,6 +466,10 @@ func (w *Worker) callCRUNClient(ctx context.Context, task *store.Task, client *c
 	}
 	encodedByIndex := make([]string, len(taskIDs))
 	imageURLs, err := client.WaitTasks(ctx, taskIDs, func(index int, imageURL string) error {
+		if index < 0 || index >= len(encodedByIndex) {
+			log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", task.ID, index, len(encodedByIndex))
+			return nil
+		}
 		data, _, _, downloadErr := downloadAssistantImage(ctx, imageURL)
 		if downloadErr != nil {
 			return downloadErr
@@ -688,9 +727,17 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("bad task_id: %w", err)
 	}
 
-	task, err := w.claimTask(ctx, taskID)
+	task, deferred, err := w.claimTask(ctx, taskID)
 	if err != nil {
 		return err
+	}
+	if deferred {
+		delay := 2*time.Second + time.Duration(taskID[0]%4)*time.Second
+		if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, taskID.String(), delay); err != nil {
+			return err
+		}
+		log.Printf("task %s deferred for per-user execution fairness delay=%s", taskID, delay)
+		return nil
 	}
 	if task == nil {
 		log.Printf("task %s not claimable, skip", taskID)

@@ -13,6 +13,7 @@
 - PostgreSQL：最大、总计、占用、空闲、构建中连接数，连接池利用率、等待和取消次数。
 - Asynq：队列积压、活跃/计划/重试/归档任务、队列延迟、当日处理与失败数。
 - Worker：Redis 心跳可见的实例、PID、状态、并发槽和活跃槽。
+- 任务压力：数据库 queued/running、全站容量利用率、最久排队时间和单用户执行槽上限。
 
 请求指标使用固定 60 槽滚动窗口和延迟直方图，内存占用恒定，不保存 URL、用户信息或请求体。
 
@@ -27,6 +28,7 @@ SERVER_DB_MAX_CONNS=10
 SERVER_DB_MIN_CONNS=1
 WORKER_DB_MAX_CONNS=5
 WORKER_DB_MIN_CONNS=1
+WORKER_IMAGE_MEMORY_MIB=1024
 DB_MAX_CONN_LIFETIME=30m
 DB_MAX_CONN_IDLE_TIME=5m
 DB_HEALTH_CHECK_PERIOD=1m

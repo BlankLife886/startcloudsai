@@ -660,6 +660,18 @@ const filmstripGroups = computed(() => {
     }
   })
 })
+const FILMSTRIP_DOM_WINDOW = 30
+const visibleFilmstripGroups = computed(() => {
+  const groups = filmstripGroups.value
+  if (groups.length <= FILMSTRIP_DOM_WINDOW) return groups
+  const focusedIndex = Math.max(
+    0,
+    groups.findIndex((group) => group.key === focusGroupKey.value),
+  )
+  const half = Math.floor(FILMSTRIP_DOM_WINDOW / 2)
+  const start = Math.min(Math.max(0, focusedIndex - half), groups.length - FILMSTRIP_DOM_WINDOW)
+  return groups.slice(start, start + FILMSTRIP_DOM_WINDOW)
+})
 const featuredGroup = computed(() => {
   const item = featuredItem.value
   if (!item) return null
@@ -3579,9 +3591,9 @@ function setMainTab(tab) {
               </div>
             </div>
 
-            <div v-if="filmstripGroups.length > 1" class="t2i-filmstrip" aria-label="作品列表">
-              <button
-                v-for="(group, groupIndex) in filmstripGroups"
+			<div v-if="filmstripGroups.length > 1" class="t2i-filmstrip" aria-label="作品列表">
+			  <button
+				v-for="(group, groupIndex) in visibleFilmstripGroups"
                 :key="group.key"
                 type="button"
                 class="t2i-film-item"

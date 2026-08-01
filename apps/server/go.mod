@@ -14,6 +14,8 @@ require (
 	github.com/pressly/goose/v3 v3.27.2
 	github.com/redis/go-redis/v9 v9.14.1
 	golang.org/x/crypto v0.54.0
+	golang.org/x/image v0.44.0
+	golang.org/x/sync v0.22.0
 )
 
 require (
@@ -65,9 +67,7 @@ require (
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

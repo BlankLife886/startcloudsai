@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -206,6 +207,9 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	mem, cpu := s.Metrics.runtimeSnapshot(now)
 	pool := s.St.Pool.Stat()
 	queue := s.Queue.Metrics()
+	pressure, pressureErr := store.GetTaskPressure(c.Request.Context(), s.St.Pool)
+	globalLimit, globalLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_tasks")
+	userConcurrency, userConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "user_max_concurrent_tasks")
 	profilingEnabled := s.Cfg.APIPprofAddr != "" || s.Cfg.WorkerPprofAddr != ""
 
 	ok(c, gin.H{
@@ -232,9 +236,30 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 			"canceledAcquireCount":    pool.CanceledAcquireCount(),
 			"acquireDurationMs":       roundMetric(float64(pool.AcquireDuration())/float64(time.Millisecond), 2),
 		},
-		"queue":     queue,
-		"profiling": gin.H{"enabled": profilingEnabled},
+		"queue":        queue,
+		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, userConcurrency, userConcurrencyErr),
+		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
+}
+
+func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, userConcurrency int64, userConcurrencyErr error) gin.H {
+	out := gin.H{
+		"queued":               pressure.Queued,
+		"running":              pressure.Running,
+		"active":               pressure.Queued + pressure.Running,
+		"globalLimit":          globalLimit,
+		"userConcurrencyLimit": userConcurrency,
+		"utilizationPercent":   roundMetric(percentOf64(pressure.Queued+pressure.Running, globalLimit), 2),
+	}
+	if pressure.OldestQueuedAt != nil {
+		out["oldestQueuedSeconds"] = max(int64(now.Sub(*pressure.OldestQueuedAt).Seconds()), 0)
+	} else {
+		out["oldestQueuedSeconds"] = int64(0)
+	}
+	if pressureErr != nil || globalLimitErr != nil || userConcurrencyErr != nil {
+		out["error"] = "task_pressure_unavailable"
+	}
+	return out
 }
 
 func (m *systemMetrics) runtimeSnapshot(now time.Time) (gin.H, float64) {
@@ -271,6 +296,13 @@ func (m *systemMetrics) runtimeSnapshot(now time.Time) (gin.H, float64) {
 }
 
 func percentOf(value, total int32) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(value) / float64(total) * 100
+}
+
+func percentOf64(value, total int64) float64 {
 	if total <= 0 {
 		return 0
 	}

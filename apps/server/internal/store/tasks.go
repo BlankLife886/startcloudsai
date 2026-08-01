@@ -99,6 +99,35 @@ func CountTasksInStatuses(ctx context.Context, q Q, statuses []string) (int64, e
 	return n, err
 }
 
+type TaskPressure struct {
+	Queued          int64
+	Running         int64
+	OldestQueuedAt  *time.Time
+	OldestRunningAt *time.Time
+}
+
+func GetTaskPressure(ctx context.Context, q Q) (TaskPressure, error) {
+	var out TaskPressure
+	err := q.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'queued'),
+			count(*) FILTER (WHERE status = 'running'),
+			min(created_at) FILTER (WHERE status = 'queued'),
+			min(started_at) FILTER (WHERE status = 'running')
+		FROM tasks
+		WHERE status IN ('queued', 'running')`).Scan(
+		&out.Queued, &out.Running, &out.OldestQueuedAt, &out.OldestRunningAt,
+	)
+	return out, err
+}
+
+func CountRunningTasks(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE user_id = $1 AND status = 'running'`, userID).Scan(&n)
+	return n, err
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
 	sql := `SELECT ` + taskCols + ` FROM tasks WHERE true`
@@ -511,6 +540,19 @@ func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumb
 // LockUserTaskCreation serializes the count-and-insert critical section per user.
 func LockUserTaskCreation(ctx context.Context, q Q, userID uuid.UUID) error {
 	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID.String())
+	return err
+}
+
+// LockGlobalTaskCreation serializes the short global count-and-insert section.
+// It prevents multiple API instances from accepting work past the configured cap.
+func LockGlobalTaskCreation(ctx context.Context, q Q) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('global-task-admission', 0))`)
+	return err
+}
+
+// LockUserTaskExecution serializes running-slot claims for one user across all workers.
+func LockUserTaskExecution(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 1))`, userID.String())
 	return err
 }
 

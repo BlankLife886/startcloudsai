@@ -54,7 +54,8 @@ func compactTaskKeys(slots []string) []string {
 
 func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if index < 0 || index >= len(c.outputSlots) {
-		return fmt.Errorf("output index %d is out of range", index)
+		log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", c.task.ID, index, len(c.outputSlots))
+		return nil
 	}
 	c.mu.Lock()
 	if c.outputSlots[index] != "" && c.thumbnailSlots[index] != "" {
@@ -68,6 +69,22 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if len(processed) == 1 {
 		encoded = processed[0]
 	}
+	decodedBytes := base64.StdEncoding.DecodedLen(len(encoded))
+	if decodedBytes <= 0 || decodedBytes > 20<<20 {
+		return fmt.Errorf("output image exceeds 20 MiB limit")
+	}
+	width, height, err := media.Base64Dimensions(encoded)
+	if err != nil {
+		return err
+	}
+	// Decode + source image + RGBA destination dominate memory. Weight by pixels
+	// and compressed buffers, then clamp so a valid large image can make progress.
+	memoryWeight := int64(width)*int64(height)*8 + int64(decodedBytes)*2
+	memoryWeight = min(max(memoryWeight, 1<<20), c.w.imageMemoryBytes)
+	if err := c.w.imageMemory.Acquire(c.ctx, memoryWeight); err != nil {
+		return err
+	}
+	defer c.w.imageMemory.Release(memoryWeight)
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return err

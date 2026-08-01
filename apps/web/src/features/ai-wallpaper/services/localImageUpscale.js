@@ -13,6 +13,50 @@ const LOCAL_UPSCALE_MAX_EDGE = 7680
 const LOCAL_UPSCALE_MAX_PIXELS = 7680 * 7680
 const LARGE_IMAGE_PIXEL_THRESHOLD = 7680 * 4320
 const ALPHA_REFINEMENT_MAX_PIXELS = 6_000_000
+const LOCAL_UPSCALE_CONCURRENCY = 1
+const localUpscaleQueue = []
+let activeLocalUpscales = 0
+
+function abortError() {
+  return new DOMException('操作已取消', 'AbortError')
+}
+
+function pumpLocalUpscaleQueue() {
+  while (activeLocalUpscales < LOCAL_UPSCALE_CONCURRENCY && localUpscaleQueue.length) {
+    const entry = localUpscaleQueue.shift()
+    if (entry.signal?.aborted) {
+      entry.reject(abortError())
+      continue
+    }
+    activeLocalUpscales += 1
+    entry.cleanup()
+    entry.resolve(() => {
+      activeLocalUpscales = Math.max(0, activeLocalUpscales - 1)
+      pumpLocalUpscaleQueue()
+    })
+  }
+}
+
+function acquireLocalUpscaleSlot(signal) {
+  if (signal?.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    const entry = {
+      signal,
+      resolve,
+      reject,
+      cleanup: () => signal?.removeEventListener('abort', onAbort),
+    }
+    const onAbort = () => {
+      const index = localUpscaleQueue.indexOf(entry)
+      if (index >= 0) localUpscaleQueue.splice(index, 1)
+      entry.cleanup()
+      reject(abortError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    localUpscaleQueue.push(entry)
+    pumpLocalUpscaleQueue()
+  })
+}
 
 function getResizer() {
   if (!sharedResizer) {
@@ -260,7 +304,7 @@ function releaseDecodedImage(image) {
   if (src.startsWith('blob:')) URL.revokeObjectURL(src)
 }
 
-export async function createLocalUpscaledImage({
+async function createLocalUpscaledImageUnlocked({
   sourceUrl,
   resolutionScale,
   transparentPng = false,
@@ -385,5 +429,18 @@ export async function createLocalUpscaledImage({
     releaseDecodedImage(sourceImage)
     canvas.width = 1
     canvas.height = 1
+  }
+}
+
+export async function createLocalUpscaledImage(options) {
+  const { signal, onProgress = () => {} } = options || {}
+  if (activeLocalUpscales >= LOCAL_UPSCALE_CONCURRENCY || localUpscaleQueue.length) {
+    onProgress(2, '正在等待本地高清处理资源', { stage: 'queued' })
+  }
+  const release = await acquireLocalUpscaleSlot(signal)
+  try {
+    return await createLocalUpscaledImageUnlocked(options || {})
+  } finally {
+    release()
   }
 }

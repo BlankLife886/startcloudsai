@@ -275,6 +275,39 @@ func TestUserTaskLimitUnderConcurrentCreation(t *testing.T) {
 	}
 }
 
+func TestGlobalTaskCapacityPreservesIdempotentReplay(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user := newUserWithBalance(t, st, 1000)
+	if err := settings.Set(ctx, st.Pool, "global_max_active_tasks", json.RawMessage(`10`)); err != nil {
+		t.Fatal(err)
+	}
+	key := "capacity-replay"
+	var first *store.Task
+	for index := range 10 {
+		idem := (*string)(nil)
+		if index == 0 {
+			idem = &key
+		}
+		task, _, err := createT2I(t, st, user.ID, 1, idem)
+		if err != nil {
+			t.Fatalf("fill capacity at %d: %v", index, err)
+		}
+		if index == 0 {
+			first = task
+		}
+	}
+	if _, _, err := createT2I(t, st, user.ID, 1, nil); err == nil {
+		t.Fatal("expected global capacity rejection")
+	} else {
+		mustAppErr(t, err, "system_task_capacity")
+	}
+	replayed, created, err := createT2I(t, st, user.ID, 1, &key)
+	if err != nil || created || replayed.ID != first.ID {
+		t.Fatalf("idempotent replay at capacity = task %v created=%v err=%v", replayed, created, err)
+	}
+}
+
 func TestSettleOnSuccess(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)

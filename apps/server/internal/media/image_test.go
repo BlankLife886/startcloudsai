@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -45,6 +46,21 @@ func TestDimensionsReadsImageMetadata(t *testing.T) {
 	}
 	if width != 640 || height != 360 {
 		t.Fatalf("dimensions = %dx%d, want 640x360", width, height)
+	}
+}
+
+func TestBase64DimensionsReadsHeaderWithoutFullDecode(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 320, 180))
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	width, height, err := Base64Dimensions(base64.StdEncoding.EncodeToString(encoded.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width != 320 || height != 180 {
+		t.Fatalf("base64 dimensions = %dx%d, want 320x180", width, height)
 	}
 }
 
