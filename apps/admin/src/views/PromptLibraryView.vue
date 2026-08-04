@@ -3445,58 +3445,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 720px) {
-  .prompt-library-page {
-    grid-template-rows: auto minmax(0, 1fr);
-    padding: 10px;
-  }
 
-  .prompt-content__scroll {
-    padding: 12px;
-  }
-
-  .toolbar-select,
-  .toolbar-select.is-short {
-    width: calc(50% - 5px);
-  }
-
-  .library-toolbar__actions {
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .prompt-bulk-bar {
-    position: relative;
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .prompt-bulk-controls {
-    justify-content: flex-start;
-
-    :deep(.el-select) {
-      width: calc(50% - 4px);
-    }
-  }
-
-  .editor-meta-grid,
-  .editor-publish-row,
-  .editor-heat-metrics,
-  .editor-form .form-grid,
-  .editor-options-lower,
-  .form-settings {
-    grid-template-columns: 1fr;
-  }
-
-  .editor-tags-field,
-  .editor-task-field {
-    grid-column: auto;
-  }
-
-  .type-checkboxes {
-    grid-template-columns: 1fr 1fr;
-  }
-}
 
 @keyframes prompt-load-spin {
   to {

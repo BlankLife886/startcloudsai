@@ -316,28 +316,7 @@ const stageLabel = computed(() => {
   100% { transform: translate3d(12px, -180px, 0) scale(1.5); opacity: 0; }
 }
 
-@media (max-width: 640px) {
-  .upscale-processing__hud {
-    bottom: 12px;
-    gap: 9px;
-    padding: 10px;
-  }
 
-  .upscale-processing__ring {
-    width: 46px;
-    height: 46px;
-  }
-
-  .upscale-processing__ring::before {
-    width: 38px;
-    height: 38px;
-  }
-
-  .upscale-processing__hud button span,
-  .upscale-processing__copy p {
-    display: none;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .upscale-processing__scan,

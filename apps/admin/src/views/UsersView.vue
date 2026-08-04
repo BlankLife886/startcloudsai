@@ -1493,21 +1493,7 @@ html.dark .status-tab.is-active {
   white-space: nowrap;
 }
 
-@media (max-width: 720px) {
-  .profile-overview,
-  .wallet-overview {
-    grid-template-columns: 1fr;
-  }
 
-  .wallet-overview > div + div {
-    border-top: 1px solid var(--border);
-    border-left: 0;
-  }
-
-  .count-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 
 </style>
 

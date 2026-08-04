@@ -506,30 +506,9 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 768px) {
-  .card-swap-gallery {
-    transform: translate(20%, 50%) scale(0.68);
-  }
 
-  .swap-art-card__windowbar {
-    gap: 10px;
-    padding-inline: 16px;
-  }
 
-  .swap-art-card__windowbar > i {
-    font-size: 16px;
-  }
 
-  .swap-art-card__windowbar > strong {
-    font-size: 15px;
-  }
-}
-
-@media (max-width: 480px) {
-  .card-swap-gallery {
-    transform: translate(20%, 50%) scale(0.56);
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .swap-art-card {

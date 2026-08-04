@@ -1320,29 +1320,7 @@
   transform: translateY(9px) scale(0.985);
 }
 
-@media (max-width: 560px) {
-  .t2i-skill-dialog-backdrop {
-    padding: 10px;
-  }
 
-  .t2i-skill-dialog {
-    width: min(100%, 520px);
-    max-height: calc(100dvh - 20px);
-  }
-
-  .t2i-skill-dialog-form {
-    padding: 17px 16px 14px;
-  }
-
-  .t2i-skill-dialog-form > footer {
-    margin: 2px -16px -14px;
-    padding: 12px 14px;
-  }
-
-  .t2i-skill-dialog-form > footer button {
-    flex: 1;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .t2i-skill-create,
@@ -3435,16 +3413,7 @@
   cursor: pointer;
 }
 
-@media (max-width: 760px) {
-  .t2i-library-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
 
-  .t2i-library-sort {
-    align-self: flex-end;
-  }
-}
 
 .t2i-library-categories button {
   min-height: 32px;
@@ -4550,39 +4519,9 @@ html.settings-no-animations .t2i-lightbox-image-layer {
   }
 }
 
-@media (max-width: 640px) {
-  .t2i-history-skeleton {
-    grid-template-columns: 1fr;
-  }
 
-  .t2i-history-skeleton-col:nth-child(2) {
-    display: none;
-  }
-}
 
-@media (max-width: 480px) {
-  .t2i-stage-cell-pending {
-    gap: 5px;
-    padding: 8px;
-  }
 
-  .t2i-stage-cell-pending .t2i-pending-orb {
-    width: 38px;
-    height: 38px;
-  }
-
-  .t2i-stage-cell-pending .t2i-pending-orb i {
-    font-size: 1rem;
-  }
-
-  .t2i-stage-cell-pending .t2i-pending-stage {
-    display: none;
-  }
-
-  .t2i-stage-cell-pending .t2i-pending-bar {
-    width: 70%;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .t2i-history-image-overlay,

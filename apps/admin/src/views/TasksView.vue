@@ -1894,15 +1894,7 @@ html.dark .status-tab.is-active em {
   background: var(--surface-2);
 }
 
-@media (max-width: 640px) {
-  .info-rows--flat {
-    grid-template-columns: 1fr;
-  }
 
-  .stat-item {
-    border-right: 0;
-  }
-}
 
 @media (max-width: 960px) {
   .tasks-toolbar {
@@ -2091,10 +2083,5 @@ html.dark .status-tab.is-active em {
   text-align: center;
 }
 
-@media (max-width: 640px) {
-  .task-params-panel__row {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-}
+
 </style>

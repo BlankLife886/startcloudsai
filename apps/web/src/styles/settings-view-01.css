@@ -409,15 +409,7 @@
     0 0 0 2px color-mix(in srgb, var(--primary-color) 18%, transparent);
 }
 
-@media (max-width: 760px) {
-  .download-browser-strip {
-    grid-template-columns: 1fr;
-  }
 
-  .download-rule-grid {
-    grid-template-columns: 1fr;
-  }
-}
 
 .ai-console {
   display: grid;

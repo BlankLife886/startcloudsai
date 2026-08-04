@@ -381,12 +381,5 @@ function updateSize(key, event) {
   appearance: none;
 }
 
-@media (max-width: 768px) {
-  .desktop-mockup-settings {
-    top: auto;
-    right: 12px;
-    bottom: 16px;
-    width: min(304px, calc(100vw - 24px));
-  }
-}
+
 </style>

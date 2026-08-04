@@ -1073,23 +1073,3 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
     max-height: none;
   }
 }
-
-@media (max-width: 760px) {
-  .ch-shell {
-    width: calc(100% - 28px);
-  }
-
-  .ch-page--history .ch-shell,
-  .ch-page--prompts .ch-shell {
-    width: calc(100% - 28px);
-  }
-
-  .ch-tool-grid,
-  .ch-quick-row {
-    grid-template-columns: 1fr;
-  }
-
-  .ch-tool-card {
-    grid-template-rows: 132px auto;
-  }
-}

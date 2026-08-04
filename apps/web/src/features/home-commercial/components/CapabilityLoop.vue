@@ -64,12 +64,7 @@ onBeforeUnmount(() => {
 .capability-loop small { color: rgba(240, 243, 239, 0.62); font-size: 12px; line-height: 19px; }
 @keyframes capability-loop-slide { to { transform: translate3d(-50%, 0, 0); } }
 
-@media (max-width: 760px) {
-  .capability-loop::before,
-  .capability-loop::after { width: 32px; }
-  .capability-loop ul { gap: 36px; padding-inline: 18px; }
-  .capability-loop li { min-width: 150px; }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .capability-loop { overflow-x: auto; scrollbar-width: none; }

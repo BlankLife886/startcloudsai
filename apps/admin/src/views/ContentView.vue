@@ -1262,15 +1262,5 @@ onMounted(() => {
   }
 }
 
-@media (max-width: 560px) {
-  .announcement-editor__row {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
 
-  .announcement-editor__form,
-  .announcement-preview-stage {
-    padding: 16px;
-  }
-}
 </style>

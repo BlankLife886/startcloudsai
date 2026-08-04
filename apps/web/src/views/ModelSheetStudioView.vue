@@ -4458,26 +4458,7 @@ function refreshHistory() {
   }
 }
 
-@media (max-width: 460px) {
-  .ms3 {
-    gap: 9px;
-    padding: 9px;
-  }
 
-  .ms3-generate {
-    grid-template-columns: 34px minmax(0, 1fr) auto;
-    gap: 8px;
-  }
-
-  .ms3-generate-icon {
-    width: 34px;
-    height: 34px;
-  }
-
-  .ms3-generate-price em {
-    display: none;
-  }
-}
 
 /* Light appearance */
 .ms3.is-light {

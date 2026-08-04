@@ -514,19 +514,7 @@
   }
 }
 
-@media (max-width: 640px) {
-  .tech-studio-v3 {
-    padding: 8px;
-  }
 
-  .tech-studio-v3 .studio-top-bar {
-    padding: 0 10px;
-  }
-
-  .tech-studio-v3 .studio-brand-badge {
-    display: none;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .tech-studio-v3 .studio-status-chip.running .status-pulse {

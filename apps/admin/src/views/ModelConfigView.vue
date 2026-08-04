@@ -4328,22 +4328,7 @@ html.dark .assignment-panel {
 .route-timeout-field {
   grid-column: span 3;
 }
-@media (max-width: 720px) {
-  .provider-route-heading,
-  .provider-route-item-head {
-    align-items: flex-start;
-  }
-  .provider-route-fields {
-    grid-template-columns: 1fr;
-  }
-  .route-name-field,
-  .route-url-field,
-  .route-key-field,
-  .route-limit-field,
-  .route-timeout-field {
-    grid-column: 1;
-  }
-}
+
 .model-discovery > div {
   display: grid;
   gap: 2px;
@@ -4393,98 +4378,5 @@ html.dark .assignment-panel {
   }
 }
 
-@media (max-width: 720px) {
-  .config-toolbar,
-  .config-toolbar__actions {
-    align-items: stretch;
-    flex-direction: column;
-    flex-wrap: wrap;
-  }
 
-  .status-tabs,
-  .kind-filter {
-    width: 100%;
-  }
-
-  .status-tab {
-    flex: 1 1 auto;
-    justify-content: center;
-  }
-
-  .model-search {
-    width: 100%;
-    max-width: none;
-  }
-
-  .config-toolbar__buttons {
-    width: 100%;
-  }
-
-  .config-toolbar__buttons :deep(.el-button) {
-    flex: 1 1 auto;
-  }
-
-  .assignment-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .assignment-rail {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(160px, 1fr);
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-  }
-
-  .assignment-transfer {
-    grid-template-columns: 1fr;
-  }
-
-  .assignment-defaults {
-    grid-template-columns: 1fr;
-  }
-
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-  .form-grid .is-wide {
-    grid-column: auto;
-  }
-  .model-card-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .model-card__highlights {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .model-kind-switch,
-  .model-field-grid,
-  .model-status-grid,
-  .model-capability-tiles,
-  .capability-compact-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .model-capability-tile.is-wide {
-    grid-column: auto;
-  }
-
-  .capability-tile + .capability-tile,
-  .capability-tile:nth-child(4) {
-    border-left: 0;
-    border-top: 1px solid var(--border);
-  }
-  .auto-aspect-rules__grid {
-    grid-template-columns: 1fr;
-  }
-  .model-discovery {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .model-picker {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

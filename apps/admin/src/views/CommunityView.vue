@@ -2062,21 +2062,6 @@ onUnmounted(() => {
     }
   }
 
-  @media (max-width: 760px) {
-    .authors-overview {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .author-row {
-      grid-template-columns: 44px minmax(0, 1fr) auto;
-    }
-
-    .author-row__metrics {
-      grid-column: 2 / -1;
-      grid-row: 2;
-      flex-wrap: wrap;
-    }
-  }
 }
 
 .community-batch-dialog {
@@ -2106,15 +2091,6 @@ onUnmounted(() => {
     }
   }
 
-  @media (max-width: 640px) {
-    .community-batch__row {
-      grid-template-columns: 1fr;
-
-      &.is-tags .el-select {
-        grid-column: 1;
-      }
-    }
-  }
 }
 
 .community-edit-dialog {

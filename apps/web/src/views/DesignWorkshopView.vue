@@ -57,13 +57,6 @@ const DEVICE_OPTIONS = [
     prompt: '桌面端网页界面（1440px 宽度、12 列栅格）',
   },
   {
-    id: 'mobile',
-    label: '手机 App',
-    icon: 'bi-phone',
-    ratio: '9:16',
-    prompt: '移动端 App 界面（375pt 宽度、含状态栏与底部安全区）',
-  },
-  {
     id: 'tablet',
     label: '平板',
     icon: 'bi-tablet-landscape',
@@ -191,9 +184,8 @@ const RADIUS_OPTIONS = [
 ]
 
 const RESPONSIVE_OPTIONS = [
-  { id: 'adaptive', label: '自适应', prompt: '同时定义桌面、平板和手机的布局重排策略' },
+  { id: 'adaptive', label: '自适应', prompt: '同时定义桌面、宽屏和平板的布局重排策略' },
   { id: 'desktop-first', label: '桌面优先', prompt: '桌面端信息完整，窄屏逐级收敛并保留核心操作' },
-  { id: 'mobile-first', label: '移动优先', prompt: '移动端任务路径优先，再渐进增强到宽屏多栏布局' },
 ]
 
 const COMPONENT_STATE_OPTIONS = [
@@ -300,7 +292,7 @@ const editableCanvasOpen = ref(false)
 const editableGenerationNonce = ref(0)
 const editableDocumentId = ref('')
 const editableResumeSession = ref(readStoredActiveAnalysisSession())
-const mobilePane = ref('controls')
+const tabletPane = ref('controls')
 const historyMode = ref('images')
 const editableHistory = ref([])
 
@@ -550,7 +542,6 @@ const artboardStyle = computed(() => {
 
 const editableViewport = computed(() => {
   const background = colorScheme.value === 'dark' ? '#111217' : '#ffffff'
-  if (deviceId.value === 'mobile') return { width: 390, height: 693, background }
   if (deviceId.value === 'tablet') return { width: 1024, height: 768, background }
   return { width: 1440, height: 810, background }
 })
@@ -569,7 +560,7 @@ function restoreActiveAnalysisSession() {
   editableDocumentId.value = ''
   editableCanvasOpen.value = true
   editableGenerationNonce.value += 1
-  mobilePane.value = 'canvas'
+  tabletPane.value = 'canvas'
 }
 
 onMounted(async () => {
@@ -580,7 +571,7 @@ onMounted(async () => {
 })
 
 watch(activeOutput, (value) => {
-  if (value) mobilePane.value = 'canvas'
+  if (value) tabletPane.value = 'canvas'
 })
 
 watch(
@@ -659,7 +650,7 @@ function iterateFromActive() {
   sourcePreview.value = ''
   if (fileInput.value) fileInput.value.value = ''
   localError.value = ''
-  mobilePane.value = 'controls'
+  tabletPane.value = 'controls'
   nextTick(() => briefField.value?.focus())
 }
 
@@ -668,7 +659,7 @@ async function generate() {
   mediaError.value = ''
   if (isIteration.value && !iterationBrief.value.trim()) {
     localError.value = '请描述本次迭代只需要修改的内容'
-    mobilePane.value = 'controls'
+    tabletPane.value = 'controls'
     nextTick(() => briefField.value?.focus())
     return
   }
@@ -677,7 +668,7 @@ async function generate() {
     return
   }
   const iterationBase = iterationSource.value
-  mobilePane.value = 'canvas'
+  tabletPane.value = 'canvas'
   const generated = await generateImage({
     prompt: assembledPrompt.value,
     file: inputFile.value,
@@ -701,12 +692,12 @@ function openEditableCanvas() {
     editableDocumentId.value = ''
     editableGenerationNonce.value += 1
     editableCanvasOpen.value = true
-    mobilePane.value = 'canvas'
+    tabletPane.value = 'canvas'
     return
   }
   if (!activeOutput.value) {
     localError.value = '请先生成或选择一张设计稿，再分析其中的元素'
-    mobilePane.value = 'canvas'
+    tabletPane.value = 'canvas'
     return
   }
   editableResumeSession.value = null
@@ -727,7 +718,7 @@ async function downloadActive() {
 
 function selectOutput(output, openPreview = false) {
   activeOutput.value = output
-  mobilePane.value = 'canvas'
+  tabletPane.value = 'canvas'
   mediaError.value = ''
   if (openPreview) fullscreenOpen.value = true
 }
@@ -780,27 +771,27 @@ function formatEditableHistoryDate(value) {
     class="dws"
     :class="{
       'is-blank': !outputs.length && !running,
-      'is-mobile-controls': mobilePane === 'controls',
-      'is-mobile-canvas': mobilePane === 'canvas',
+      'is-tablet-controls': tabletPane === 'controls',
+      'is-tablet-canvas': tabletPane === 'canvas',
       'is-light': !appearanceStore.isDark,
     }"
     :style="ambientStyle"
   >
     <div class="dws-shell">
-      <nav class="dws-mobile-tabs" aria-label="工作区视图">
+      <nav class="dws-tablet-tabs" aria-label="平板工作区视图">
         <button
           type="button"
-          :class="{ 'is-on': mobilePane === 'controls' }"
-          :aria-pressed="mobilePane === 'controls'"
-          @click="mobilePane = 'controls'"
+          :class="{ 'is-on': tabletPane === 'controls' }"
+          :aria-pressed="tabletPane === 'controls'"
+          @click="tabletPane = 'controls'"
         >
           <i class="bi bi-sliders2" aria-hidden="true"></i><span>参数</span>
         </button>
         <button
           type="button"
-          :class="{ 'is-on': mobilePane === 'canvas' }"
-          :aria-pressed="mobilePane === 'canvas'"
-          @click="mobilePane = 'canvas'"
+          :class="{ 'is-on': tabletPane === 'canvas' }"
+          :aria-pressed="tabletPane === 'canvas'"
+          @click="tabletPane = 'canvas'"
         >
           <i class="bi bi-easel2" aria-hidden="true"></i><span>画布</span>
           <em v-if="versionGroups.length">{{ versionGroups.length }}</em>
@@ -1353,7 +1344,7 @@ function formatEditableHistoryDate(value) {
   mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 72%, transparent);
 }
 
-.dws-mobile-tabs {
+.dws-tablet-tabs {
   display: none;
 }
 
@@ -2564,7 +2555,7 @@ function formatEditableHistoryDate(value) {
 }
 
 /* ————— 响应式 ————— */
-@media (max-width: 1080px) {
+@media (min-width: 768px) and (max-width: 1080px) {
   .dws {
     height: calc(100dvh - var(--app-header-offset, 64px));
     min-height: 0;
@@ -2583,7 +2574,7 @@ function formatEditableHistoryDate(value) {
     transform-origin: 50% 0;
   }
 
-  .dws-mobile-tabs {
+  .dws-tablet-tabs {
     z-index: 8;
     display: grid;
     grid-row: 1;
@@ -2594,7 +2585,7 @@ function formatEditableHistoryDate(value) {
     background: #0c0c13;
   }
 
-  .dws-mobile-tabs button {
+  .dws-tablet-tabs button {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2608,16 +2599,16 @@ function formatEditableHistoryDate(value) {
     cursor: pointer;
   }
 
-  .dws-mobile-tabs button.is-on {
+  .dws-tablet-tabs button.is-on {
     background: var(--dws-fill-hover);
     color: #fff;
   }
 
-  .dws-mobile-tabs button.is-on i {
+  .dws-tablet-tabs button.is-on i {
     color: #bdb3ff;
   }
 
-  .dws-mobile-tabs em {
+  .dws-tablet-tabs em {
     display: grid;
     min-width: 17px;
     height: 17px;
@@ -2656,8 +2647,8 @@ function formatEditableHistoryDate(value) {
     height: 100%;
   }
 
-  .dws.is-mobile-controls .dws-stage,
-  .dws.is-mobile-canvas .dws-panel {
+  .dws.is-tablet-controls .dws-stage,
+  .dws.is-tablet-canvas .dws-panel {
     display: none;
   }
 
@@ -2680,50 +2671,7 @@ function formatEditableHistoryDate(value) {
   }
 }
 
-@media (max-width: 560px) {
-  .dws {
-    height: calc(100dvh - var(--app-header-offset, 56px) - 61px);
-  }
 
-  .dws-shell {
-    height: calc(100dvh - var(--app-header-offset, 56px) - 61px);
-  }
-
-  .dws-panel {
-    padding-top: 13px;
-  }
-
-  .dws-panel-head {
-    min-height: 38px;
-  }
-
-  .dws-color-row {
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-
-  .dws-stage-meta {
-    top: 10px;
-    left: 12px;
-  }
-
-  .dws-stage-actions {
-    top: 10px;
-    right: 12px;
-  }
-
-  .dws-canvas {
-    padding: 54px 12px 12px;
-  }
-
-  .dws-empty-sketch {
-    width: min(76%, 280px);
-  }
-
-  .dws-generate {
-    min-height: 58px;
-  }
-}
 
 /* Light appearance */
 .dws.is-light {
@@ -2894,18 +2842,18 @@ function formatEditableHistoryDate(value) {
   background-size: 220% 100%;
 }
 
-@media (max-width: 1080px) {
-  .dws.is-light .dws-mobile-tabs,
+@media (min-width: 768px) and (max-width: 1080px) {
+  .dws.is-light .dws-tablet-tabs,
   .dws.is-light .dws-panel {
     border-color: rgba(35, 37, 52, 0.09);
     background: #f8f8fb;
   }
 
-  .dws.is-light .dws-mobile-tabs button.is-on {
+  .dws.is-light .dws-tablet-tabs button.is-on {
     color: var(--dws-ink);
   }
 
-  .dws.is-light .dws-mobile-tabs button.is-on i {
+  .dws.is-light .dws-tablet-tabs button.is-on i {
     color: #6250e8;
   }
 }

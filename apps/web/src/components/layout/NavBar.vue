@@ -10,7 +10,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { navigationTarget } from '@/router'
-import { setBodyScrollLock } from '@/utils/bodyScrollLock'
 import ThemeDayNightSwitch from '@/components/layout/ThemeDayNightSwitch.vue'
 import LocaleSwitcher from '@/components/layout/LocaleSwitcher.vue'
 import RedeemCodeDialog from '@/components/layout/RedeemCodeDialog.vue'
@@ -26,21 +25,13 @@ const { balanceDisplay, availableCents, refreshWalletBalance } = useClientWallet
 const balanceNumberDisplay = computed(() => formatPoints(availableCents.value, { withUnit: false }))
 const redeemDialogOpen = ref(false)
 
-const MOBILE_NAV_MQ = '(max-width: 920px)'
-
-const menuOpen = ref(false)
-const mobileSheetKind = ref('')
 const activeDropdown = ref('')
 let dropdownCloseTimer = null
 const DROPDOWN_CLOSE_DELAY_MS = 100
-const isMobileNav = ref(false)
 const isScrolled = ref(false)
 const siteHeaderEl = ref(null)
-const mobileBottomNavEl = ref(null)
 let headerResizeObserver = null
-let mobileNavMq = null
 let scrollRaf = 0
-const MOBILE_NAV_SCROLL_LOCK = 'mobile-navigation'
 const SCROLL_FROST_THRESHOLD = 10
 
 function syncHeaderScrollState() {
@@ -70,13 +61,7 @@ function publishChromeOffsets() {
       document.documentElement.style.setProperty('--app-header-offset', `${h}px`)
     }
 
-    const bottomEl = mobileBottomNavEl.value
-    if (bottomEl && isMobileNav.value) {
-      const bottomH = Math.ceil(bottomEl.getBoundingClientRect().height)
-      document.documentElement.style.setProperty('--app-bottom-nav-offset', `${bottomH}px`)
-    } else {
-      document.documentElement.style.setProperty('--app-bottom-nav-offset', '0px')
-    }
+    document.documentElement.style.setProperty('--app-bottom-nav-offset', '0px')
   })
 }
 
@@ -92,9 +77,6 @@ function bindChromeResizeObservers() {
 
   headerResizeObserver = new ResizeObserver(() => publishChromeOffsets())
   if (siteHeaderEl.value) headerResizeObserver.observe(siteHeaderEl.value)
-  if (mobileBottomNavEl.value && isMobileNav.value) {
-    headerResizeObserver.observe(mobileBottomNavEl.value)
-  }
 }
 
 const homeLink = { to: '/', label: '首页', icon: 'bi-house-door-fill' }
@@ -205,14 +187,6 @@ const NAV_ORDER = [
   { type: 'group', key: 'tools' },
 ]
 
-/** 移动端底部 Tab：首页 / 创作台 / 社区 / 我的 */
-const BOTTOM_TAB_DEFS = [
-  { id: 'home', label: '首页', icon: 'bi-house-door-fill', kind: 'link', link: homeLink },
-  { id: 'studio', label: '创作台', icon: 'bi-grid-1x2-fill', kind: 'link', link: studioLink },
-  { id: 'share', label: '社区', icon: 'bi-images', kind: 'link', link: shareLink },
-  { id: 'mine', label: '我的', icon: 'bi-person-circle', kind: 'mine' },
-]
-
 const navItems = computed(() => {
   const items = []
 
@@ -242,73 +216,6 @@ const navItems = computed(() => {
 
   return items
 })
-
-const mobileSheetTitle = computed(() => {
-  if (mobileSheetKind.value === 'ai' || mobileSheetKind.value === 'image-design') return '图片设计'
-  if (mobileSheetKind.value === 'mine') return '我的'
-  return ''
-})
-
-const mobileSheetLinks = computed(() => {
-  const kind = mobileSheetKind.value
-  if (!kind) return []
-
-  const toCell = (link) => ({
-    id: typeof link.to === 'string' ? link.to : link.id || link.label,
-    to: link.to,
-    href: link.href,
-    external: link.external,
-    label: link.label,
-    icon: link.icon,
-    disabled: isLinkDisabled(link),
-  })
-
-  if (kind === 'ai' || kind === 'image-design') {
-    return imageDesignLinks.filter((link) => isLinkVisible(link)).map(toCell)
-  }
-
-  if (kind === 'mine') {
-    const cells = []
-
-    if (!authStore.isAuthenticated && authVisible.value) {
-      cells.push({
-        id: 'auth',
-        to: loginRoute.value,
-        label: '登录',
-        icon: 'bi-box-arrow-in-right',
-        disabled: authDisabled.value,
-      })
-    }
-    if (authStore.isAuthenticated && profileVisible.value) {
-      cells.push({
-        id: 'profile',
-        to: profileRoute,
-        label: '个人中心',
-        icon: 'bi-person-circle',
-        disabled: profileDisabled.value,
-      })
-    }
-    const mineLinks = [canvasLink, promptsLink, historyLink, pricingLink, ...toolLinks]
-    mineLinks.filter((link) => isLinkVisible(link)).forEach((link) => cells.push(toCell(link)))
-
-    return cells
-  }
-
-  return []
-})
-
-const bottomTabs = computed(() =>
-  BOTTOM_TAB_DEFS.filter((tab) => {
-    if (tab.kind === 'mine') return true
-    if (tab.kind === 'link') return isLinkVisible(tab.link)
-    if (tab.kind === 'group') {
-      const def = dropdownGroupDefs[tab.groupKey]
-      if (!def) return false
-      return def.links.some((link) => isLinkVisible(link))
-    }
-    return false
-  }),
-)
 
 const profileVisible = computed(() => isLinkVisible({ to: '/profile' }))
 const authVisible = computed(() => isLinkVisible({ to: '/auth' }))
@@ -350,7 +257,6 @@ function toggleAccountMenu() {
 function openRedeemDialog() {
   if (!authStore.isAuthenticated) return
   closeDropdowns()
-  closeMobileSheet()
   redeemDialogOpen.value = true
 }
 
@@ -463,117 +369,6 @@ function onMegaCardEnter(link) {
   prefetchRoute(link?.to)
 }
 
-function closeMobileSheet() {
-  mobileSheetKind.value = ''
-  menuOpen.value = false
-  syncBodyScrollLock()
-}
-
-function openMobileSheet(kind) {
-  if (mobileSheetKind.value === kind) {
-    closeMobileSheet()
-    return
-  }
-
-  mobileSheetKind.value = kind
-  menuOpen.value = true
-
-  if (kind === 'ai') prefetchLinks(aiLinks)
-  if (kind === 'mine') {
-    prefetchLinks([canvasLink, pricingLink, ...toolLinks, { to: '/auth' }, { to: '/profile' }])
-  }
-
-  syncBodyScrollLock()
-}
-
-function isBottomTabActive(tab) {
-  if (tab.kind === 'mine') {
-    if (mobileSheetKind.value === 'mine') return true
-    if (isRouteActive('/profile') || route.path.startsWith('/auth')) {
-      return true
-    }
-    return [canvasLink, pricingLink, ...toolLinks].some(
-      (link) => isLinkVisible(link) && isRouteActive(link.to),
-    )
-  }
-
-  if (mobileSheetKind.value === tab.id || mobileSheetKind.value === tab.groupKey) {
-    return true
-  }
-
-  if (tab.kind === 'group') {
-    const def = dropdownGroupDefs[tab.groupKey]
-    return def?.links.some((link) => isRouteActive(link.to)) ?? false
-  }
-
-  if (tab.kind === 'link' && tab.link?.to) {
-    return isRouteActive(tab.link.to)
-  }
-
-  return false
-}
-
-function handleBottomTabClick(tab) {
-  if (tab.kind === 'mine') {
-    openMobileSheet('mine')
-    return
-  }
-
-  if (tab.kind === 'group') {
-    const inGroup = isBottomTabGroupRouteActive(tab.groupKey)
-    if (inGroup) {
-      openMobileSheet(tab.groupKey)
-      return
-    }
-
-    closeMobileSheet()
-    const group = navItems.value.find((item) => item.type === 'group' && item.id === tab.groupKey)
-    if (group) {
-      const firstLink = getFirstNavigableLink(group.links)
-      if (firstLink && !isLinkDisabled(firstLink) && !isRouteActive(firstLink.to)) {
-        router.push(firstLink.to)
-      }
-      prefetchLinks(group.links)
-    }
-    return
-  }
-
-  closeMobileSheet()
-
-  if (tab.kind === 'link' && tab.link) {
-    if (isLinkDisabled(tab.link)) return
-    prefetchRoute(tab.link.to)
-    if (!isRouteActive(tab.link.to)) {
-      router.push(tab.link.to)
-    }
-  }
-}
-
-function isBottomTabGroupRouteActive(groupKey) {
-  const def = dropdownGroupDefs[groupKey]
-  return def?.links.some((link) => isLinkVisible(link) && isRouteActive(link.to)) ?? false
-}
-
-function syncMobileNavMode() {
-  if (typeof window === 'undefined') return
-  const nextMobile = window.matchMedia(MOBILE_NAV_MQ).matches
-  if (isMobileNav.value === nextMobile) return
-  isMobileNav.value = nextMobile
-  if (!nextMobile) {
-    closeMenu()
-  }
-  publishChromeOffsets()
-}
-
-function syncBodyScrollLock() {
-  if (typeof document === 'undefined') return
-  const locked = isMobileNav.value && Boolean(mobileSheetKind.value)
-
-  document.documentElement.classList.toggle('nav-mobile-open', locked)
-  document.body.classList.toggle('nav-mobile-open', locked)
-  setBodyScrollLock(MOBILE_NAV_SCROLL_LOCK, locked, { freezeViewport: true })
-}
-
 function clearDropdownCloseTimer() {
   if (dropdownCloseTimer == null) return
   window.clearTimeout(dropdownCloseTimer)
@@ -588,7 +383,6 @@ function toggleDropdown(name) {
 }
 
 function openDropdown(name) {
-  if (isMobileNav.value && mobileSheetKind.value) return
   clearDropdownCloseTimer()
   activeDropdown.value = name
   const group = navItems.value.find((item) => item.type === 'group' && item.name === name)
@@ -597,7 +391,6 @@ function openDropdown(name) {
 
 function closeMenu() {
   clearDropdownCloseTimer()
-  closeMobileSheet()
   activeDropdown.value = ''
 }
 
@@ -659,14 +452,6 @@ function handleDropdownKeydown(event, name) {
   }
 }
 
-function handleMobileSheetLinkClick(link, event) {
-  if (link.disabled) {
-    handleDisabledLinkClick(event)
-    return
-  }
-  closeMobileSheet()
-}
-
 function closeDropdowns() {
   clearDropdownCloseTimer()
   activeDropdown.value = ''
@@ -682,7 +467,6 @@ function scheduleCloseDropdowns() {
 }
 
 function handleDocumentClick(event) {
-  if (isMobileNav.value) return
   // account-menu 使用 @click.stop，内部点击不会冒泡到这里；点到页头其它区域应关闭
   if (activeDropdown.value === 'account') {
     closeDropdowns()
@@ -715,24 +499,7 @@ watch(
   () => publishHeaderOffset(),
 )
 
-watch(mobileSheetKind, () => {
-  publishChromeOffsets()
-  syncBodyScrollLock()
-})
-
 watch(activeDropdown, () => publishChromeOffsets())
-
-watch(isMobileNav, () => {
-  syncBodyScrollLock()
-  publishChromeOffsets()
-  nextTick(() => bindChromeResizeObservers())
-})
-
-watch(bottomTabs, () => publishChromeOffsets())
-
-watch(mobileBottomNavEl, () => {
-  nextTick(() => bindChromeResizeObservers())
-})
 
 watch(
   () => authStore.isAuthenticated,
@@ -742,16 +509,12 @@ watch(
 )
 
 onMounted(() => {
-  syncMobileNavMode()
   if (typeof window !== 'undefined') {
-    mobileNavMq = window.matchMedia(MOBILE_NAV_MQ)
-    mobileNavMq.addEventListener('change', syncMobileNavMode)
     syncHeaderScrollState()
     window.addEventListener('scroll', onWindowScroll, { passive: true })
   }
   publishHeaderOffset()
   window.addEventListener('resize', publishHeaderOffset)
-  window.addEventListener('resize', syncMobileNavMode)
   document.addEventListener('click', handleDocumentClick)
   document.addEventListener('keydown', handleEscape)
   nextTick(() => bindChromeResizeObservers())
@@ -769,18 +532,12 @@ function onDropdownFocusOut(event, name) {
 
 onBeforeUnmount(() => {
   clearDropdownCloseTimer()
-  mobileNavMq?.removeEventListener('change', syncMobileNavMode)
-  mobileNavMq = null
-  document.documentElement.classList.remove('nav-mobile-open')
-  document.body.classList.remove('nav-mobile-open')
-  setBodyScrollLock(MOBILE_NAV_SCROLL_LOCK, false)
   window.removeEventListener('scroll', onWindowScroll)
   if (scrollRaf) {
     window.cancelAnimationFrame(scrollRaf)
     scrollRaf = 0
   }
   window.removeEventListener('resize', publishHeaderOffset)
-  window.removeEventListener('resize', syncMobileNavMode)
   document.removeEventListener('click', handleDocumentClick)
   document.removeEventListener('keydown', handleEscape)
   headerResizeObserver?.disconnect()
@@ -795,7 +552,6 @@ onBeforeUnmount(() => {
     :class="{
       'nav-compact': settingsStore.settings.sidebar_compact,
       'nav-motion-off': !settingsStore.getSetting('sidebar_animation_effect', true),
-      'nav-mobile-sheet-open': isMobileNav && Boolean(mobileSheetKind),
       'is-dark': appearanceStore.isDark,
       'is-scrolled': isScrolled,
     }"
@@ -814,7 +570,7 @@ onBeforeUnmount(() => {
           </router-link>
         </div>
 
-        <nav v-if="!isMobileNav" class="main-nav" aria-label="主导航">
+        <nav class="main-nav" aria-label="主导航">
           <template v-for="item in navItems" :key="item.id">
             <router-link
               v-if="item.type === 'link'"
@@ -965,7 +721,7 @@ onBeforeUnmount(() => {
           </template>
         </nav>
 
-        <div v-if="!isMobileNav" class="header-tools">
+        <div class="header-tools">
           <div class="tool-actions">
             <LocaleSwitcher class="nav-locale-switch" />
             <ThemeDayNightSwitch class="nav-theme-switch" />
@@ -1128,128 +884,6 @@ onBeforeUnmount(() => {
     </div>
   </header>
 
-  <Teleport to="body">
-    <Transition name="msheet">
-      <div
-        v-if="isMobileNav && mobileSheetKind"
-        class="msheet-root"
-        @keydown.esc.stop="closeMobileSheet"
-      >
-        <button
-          type="button"
-          class="msheet-scrim"
-          aria-label="关闭菜单"
-          @click="closeMobileSheet"
-        ></button>
-
-        <section
-          class="msheet-panel"
-          :class="{ 'is-dark': appearanceStore.isDark }"
-          role="dialog"
-          aria-modal="true"
-          :aria-label="mobileSheetTitle"
-        >
-          <div class="msheet-handle" aria-hidden="true"></div>
-          <header class="msheet-header">
-            <h2 class="msheet-title">{{ mobileSheetTitle }}</h2>
-            <div class="msheet-header-actions">
-              <LocaleSwitcher v-if="mobileSheetKind === 'mine'" class="msheet-locale-switch" />
-              <ThemeDayNightSwitch v-if="mobileSheetKind === 'mine'" class="msheet-theme-switch" />
-              <button
-                type="button"
-                class="msheet-close"
-                aria-label="关闭"
-                @click="closeMobileSheet"
-              >
-                <i class="bi bi-x-lg" aria-hidden="true"></i>
-              </button>
-            </div>
-          </header>
-
-          <div
-            v-if="mobileSheetKind === 'mine' && authStore.isAuthenticated"
-            class="msheet-account"
-          >
-            <img
-              class="msheet-account__avatar"
-              :src="accountAvatarUrl"
-              alt=""
-              @error="$event.target.src = '/brand/avatar-placeholder.svg'"
-            />
-            <div class="msheet-account__copy">
-              <strong>{{ accountDisplayName }}</strong>
-              <small>
-                <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
-                {{ balanceNumberDisplay }}
-              </small>
-            </div>
-            <button type="button" class="msheet-account__redeem" @click="openRedeemDialog">
-              兑换
-            </button>
-            <button
-              type="button"
-              class="msheet-account__logout"
-              :disabled="accountLoggingOut"
-              @click="handleAccountLogout"
-            >
-              {{ accountLoggingOut ? '退出中…' : '退出' }}
-            </button>
-          </div>
-
-          <div class="msheet-grid">
-            <component
-              v-for="link in mobileSheetLinks"
-              :key="link.id"
-              :is="link.external ? 'a' : RouterLink"
-              :to="link.external ? undefined : link.to"
-              :href="link.external ? link.href : undefined"
-              class="msheet-cell"
-              :class="{
-                active: typeof link.to === 'string' && isRouteActive(link.to),
-                disabled: link.disabled,
-              }"
-              :aria-disabled="link.disabled"
-              @click="handleMobileSheetLinkClick(link, $event)"
-            >
-              <i class="bi" :class="link.icon" aria-hidden="true"></i>
-              <span>{{ link.label }}</span>
-            </component>
-          </div>
-        </section>
-      </div>
-    </Transition>
-  </Teleport>
-
-  <Teleport to="body">
-    <nav
-      v-if="isMobileNav && bottomTabs.length"
-      ref="mobileBottomNavEl"
-      class="mbottom-nav"
-      :class="{ 'is-dark': appearanceStore.isDark }"
-      :style="{ '--mbottom-nav-count': bottomTabs.length }"
-      aria-label="底部导航"
-    >
-      <button
-        v-for="tab in bottomTabs"
-        :key="tab.id"
-        type="button"
-        class="mbottom-nav-item"
-        :class="{
-          active: isBottomTabActive(tab),
-          'has-sheet': tab.kind === 'group' || tab.kind === 'mine',
-        }"
-        :aria-current="isBottomTabActive(tab) && !mobileSheetKind ? 'page' : undefined"
-        :aria-expanded="
-          mobileSheetKind === tab.id || mobileSheetKind === tab.groupKey ? true : undefined
-        "
-        @click="handleBottomTabClick(tab)"
-      >
-        <i class="bi" :class="tab.icon" aria-hidden="true"></i>
-        <span>{{ tab.label }}</span>
-      </button>
-    </nav>
-  </Teleport>
-
   <RedeemCodeDialog :open="redeemDialogOpen" @close="closeRedeemDialog" />
 </template>
 
@@ -1356,7 +990,7 @@ onBeforeUnmount(() => {
   min-height: inherit;
 }
 
-.header-row .main-nav:not(.is-mobile) {
+.header-row .main-nav {
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
@@ -2401,404 +2035,11 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 920px) {
-  .site-header {
-    padding: 0;
-    border-bottom: 0;
-    background: transparent;
-  }
-
-  .header-shell {
-    max-width: none;
-    min-height: 0;
-    padding: 0;
-    border: 0;
-    box-shadow: none;
-    background: transparent;
-  }
-
-  .header-row {
-    min-height: 56px;
-    padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
-  }
-
-  .brand-cluster {
-    width: 100%;
-    justify-content: center;
-  }
-}
 </style>
 
 <style>
-html.nav-mobile-open,
-body.nav-mobile-open {
-  overscroll-behavior: none;
-}
-
-.msheet-root {
-  position: fixed;
-  inset: 0;
-  z-index: 4200;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  touch-action: none;
-}
-
-.msheet-scrim {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  margin: 0;
-  padding: 0;
-  background: rgba(23, 28, 47, 0.38);
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.msheet-panel {
-  --ms-accent: #6a4fe0;
-  --ms-line: rgba(21, 26, 45, 0.08);
-  --ms-card: #ffffff;
-  --ms-heading: #171c2f;
-  --ms-muted: #7a8299;
-  --ms-soft: rgba(106, 79, 224, 0.07);
-
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  max-height: min(72dvh, 520px);
-  margin-bottom: var(--app-bottom-nav-offset, 62px);
-  padding: 10px 16px 16px;
-  border: 1px solid var(--ms-line);
-  border-bottom: 0;
-  background: var(--ms-card);
-  box-shadow: 0 -14px 36px rgba(58, 51, 112, 0.12);
-}
-
-.msheet-panel.is-dark {
-  --ms-accent: #b4a4ff;
-  --ms-line: rgba(255, 255, 255, 0.08);
-  --ms-card: #151826;
-  --ms-heading: #f5f3ff;
-  --ms-muted: rgba(205, 200, 235, 0.62);
-  --ms-soft: rgba(160, 139, 255, 0.12);
-  box-shadow: 0 -14px 36px rgba(0, 0, 0, 0.4);
-}
-
-.msheet-handle {
-  width: 34px;
-  height: 3px;
-  margin: 0 auto 12px;
-  background: rgba(106, 79, 224, 0.28);
-}
-
-.msheet-panel.is-dark .msheet-handle {
-  background: rgba(180, 164, 255, 0.35);
-}
-
-.msheet-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.msheet-header-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.msheet-locale-switch {
-  flex: 0 0 auto;
-}
-
-.msheet-title {
-  margin: 0;
-  font-family: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
-  font-size: 1.04rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--ms-heading);
-}
-
-.msheet-account {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--ms-line);
-  border-radius: 14px;
-  background: var(--ms-soft);
-}
-
-.msheet-account__avatar {
-  width: 42px;
-  height: 42px;
-  object-fit: cover;
-  border: 1px solid var(--ms-line);
-  border-radius: 50%;
-  flex: 0 0 auto;
-}
-
-.msheet-account__copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  flex: 1;
-}
-
-.msheet-account__copy strong {
-  font-size: 0.92rem;
-  font-weight: 720;
-  color: var(--ms-heading);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.msheet-account__copy small {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.74rem;
-  font-weight: 700;
-  color: #7ed321;
-}
-
-.msheet-account__redeem,
-.msheet-account__logout {
-  flex: 0 0 auto;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  font: inherit;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.msheet-account__redeem {
-  border: 1px solid var(--ms-line);
-  background: var(--ms-soft);
-  color: var(--ms-heading);
-}
-
-.msheet-account__logout {
-  border: 1px solid rgba(255, 141, 141, 0.3);
-  background: rgba(255, 104, 104, 0.1);
-  color: #ff9a9a;
-}
-
-.msheet-account__logout:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
-
-.msheet-theme-switch {
-  flex: 0 0 auto;
-  touch-action: manipulation;
-}
-
-.msheet-close {
-  width: 38px;
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--ms-line);
-  color: var(--ms-heading);
-  background: transparent;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.msheet-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  padding-bottom: 4px;
-}
-
-.msheet-cell {
-  min-height: 82px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 8px;
-  border: 1px solid var(--ms-line);
-  color: var(--ms-heading);
-  text-decoration: none;
-  font-size: 0.8rem;
-  font-weight: 640;
-  text-align: center;
-  background: transparent;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.msheet-cell > i {
-  font-size: 1.22rem;
-  color: var(--ms-accent);
-}
-
-.msheet-cell:active {
-  background: var(--ms-soft);
-}
-
-.msheet-cell.active {
-  color: var(--ms-accent);
-  background: var(--ms-soft);
-  border-color: rgba(106, 79, 224, 0.28);
-  box-shadow: inset 0 -2px 0 var(--ms-accent);
-}
-
-.msheet-panel.is-dark .msheet-cell.active {
-  border-color: rgba(180, 164, 255, 0.34);
-}
-
-.msheet-cell.disabled,
-.msheet-cell.disabled:active {
-  opacity: 0.4;
-  pointer-events: none;
-}
-
-.msheet-enter-active,
-.msheet-leave-active {
-  transition: opacity 0.22s ease;
-}
-
-.msheet-enter-active .msheet-panel,
-.msheet-leave-active .msheet-panel {
-  transition: transform 0.26s cubic-bezier(0.22, 0.8, 0.24, 1);
-}
-
-.msheet-enter-from,
-.msheet-leave-to {
-  opacity: 0;
-}
-
-.msheet-enter-from .msheet-panel,
-.msheet-leave-to .msheet-panel {
-  transform: translate3d(0, 100%, 0);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .msheet-enter-active,
-  .msheet-leave-active,
-  .msheet-enter-active .msheet-panel,
-  .msheet-leave-active .msheet-panel {
-    transition: none;
-  }
-}
-
-.mbottom-nav {
-  --mb-accent: #6a4fe0;
-  --mb-line: rgba(21, 26, 45, 0.08);
-  --mb-card: #ffffff;
-  --mb-muted: #7a8299;
-  --mb-heading: #171c2f;
-
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 4100;
-  display: grid;
-  grid-template-columns: repeat(var(--mbottom-nav-count, 5), minmax(0, 1fr));
-  gap: 0;
-  min-height: 56px;
-  padding: 6px max(8px, env(safe-area-inset-right, 0px))
-    calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
-  border-top: 1px solid var(--mb-line);
-  background: var(--mb-card);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  box-shadow: 0 -8px 24px rgba(58, 51, 112, 0.06);
-}
-
-.mbottom-nav.is-dark {
-  --mb-accent: #b4a4ff;
-  --mb-line: rgba(255, 255, 255, 0.08);
-  --mb-card: #10121c;
-  --mb-muted: rgba(205, 200, 235, 0.58);
-  --mb-heading: #f5f3ff;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
-}
-
-.mbottom-nav-item {
-  position: relative;
-  min-width: 0;
-  min-height: 48px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  padding: 4px 2px;
-  border: 0;
-  color: var(--mb-muted);
-  background: transparent;
-  font-family:
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
-  font-size: 0.68rem;
-  font-weight: 650;
-  line-height: 1.1;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.mbottom-nav-item > i {
-  font-size: 1.12rem;
-  line-height: 1;
-}
-
-.mbottom-nav-item span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mbottom-nav-item:active {
-  background: rgba(106, 79, 224, 0.07);
-}
-
-.mbottom-nav.is-dark .mbottom-nav-item:active {
-  background: rgba(160, 139, 255, 0.1);
-}
-
-.mbottom-nav-item.active {
-  color: var(--mb-accent);
-}
-
-.mbottom-nav-item.has-sheet.active::after {
-  content: '';
-  position: absolute;
-  top: 6px;
-  right: calc(50% - 15px);
-  width: 5px;
-  height: 5px;
-  background: var(--mb-accent);
-}
-
 html.settings-no-blur .site-header,
-html.settings-no-blur .mbottom-nav {
+html.settings-no-blur .site-header {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
@@ -2819,11 +2060,4 @@ html.settings-no-blur .site-header.is-dark.is-scrolled {
   background: rgba(18, 18, 24, 0.94);
 }
 
-html.settings-no-blur .mbottom-nav {
-  background: #ffffff;
-}
-
-html.settings-no-blur .mbottom-nav.is-dark {
-  background: #10121c;
-}
 </style>

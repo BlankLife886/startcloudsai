@@ -1295,62 +1295,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 720px) {
-  .pricing-shell {
-    width: calc(100% - 28px);
-    padding: calc(var(--app-header-offset, 68px) + 18px) 0
-      calc(128px + var(--app-bottom-floating-clearance, 0px));
-  }
 
-  .pricing-hero__copy,
-  .pricing-wallet {
-    padding: 20px;
-  }
-
-  .pricing-tabs {
-    display: flex;
-    flex-wrap: nowrap;
-    width: 100%;
-    overflow-x: auto;
-    border-radius: 8px;
-    scrollbar-width: none;
-  }
-
-  .pricing-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .pricing-tabs__item {
-    flex: 0 0 auto;
-  }
-
-  .pricing-plan-grid,
-  .pricing-pay-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .pricing-metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .pricing-unit-row {
-    grid-template-columns: 40px minmax(0, 1fr) auto;
-    gap: 10px;
-  }
-
-  .pricing-unit-row__bar {
-    display: none;
-  }
-
-  .pricing-hero h1 {
-    font-size: 32px;
-  }
-
-  .pricing-section__head h2,
-  .pricing-cta h2 {
-    font-size: 24px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .pricing-page [data-reveal] {

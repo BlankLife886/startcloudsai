@@ -2928,11 +2928,6 @@ const ASSET_TYPES = [
             label: 'PC/主机',
             prompt: '面向 PC 或主机平台，信息密度和操作距离适合大屏幕',
           },
-          {
-            id: 'mobile',
-            label: '移动端',
-            prompt: '面向移动端，触控热区充足，关键操作位于单手可达区域',
-          },
           { id: 'tablet', label: '平板', prompt: '面向平板横屏或竖屏，兼顾触控效率与较高信息密度' },
           {
             id: 'cross',
@@ -7738,26 +7733,7 @@ function assetStatusLabel(statusValue) {
     padding-bottom: 14px;
   }
 }
-@media (max-width: 560px) {
-  .ga-canvas {
-    padding: 12px;
-  }
-  .ga-output {
-    min-height: 260px;
-  }
-  .ga-console-title {
-    padding: 14px 16px 12px;
-  }
-  .ga-console-body {
-    padding: 0 16px 12px;
-  }
-  .ga-console-foot {
-    padding: 12px 16px 14px;
-  }
-  .ga-workspace {
-    min-height: 0;
-  }
-}
+
 .game-art-studio {
   position: relative;
   box-sizing: border-box;
@@ -8395,30 +8371,7 @@ function assetStatusLabel(statusValue) {
   text-align: left;
 }
 
-@media (max-width: 700px) {
-  .ga-inspo {
-    grid-template-columns: 1fr;
-    width: min(420px, 94%);
-  }
 
-  .ga-inspo button span {
-    -webkit-line-clamp: 1;
-  }
-
-  /* 小屏画布高度有限：只保留两张灵感卡，准星缩小防止溢出裁切 */
-  .ga-inspo button:nth-child(n + 3) {
-    display: none;
-  }
-
-  .ga-crosshair {
-    width: 58px;
-    height: 72px;
-  }
-
-  .ga-crosshair i {
-    font-size: 26px;
-  }
-}
 
 .ga-empty em {
   max-width: 420px;
@@ -8725,25 +8678,7 @@ function assetStatusLabel(statusValue) {
   color: #666;
 }
 
-@media (max-width: 560px) {
-  .ga-canvas-head {
-    flex-wrap: wrap;
-  }
 
-  .ga-render-stack {
-    order: 3;
-    flex-basis: 100%;
-    margin-left: 0;
-  }
-
-  .ga-render {
-    width: max-content;
-  }
-
-  .ga-render.is-collapsed {
-    width: max-content;
-  }
-}
 
 /* 程序化线框地形位于全部工作面板之后。 */
 .ga-terrain-background {
@@ -9203,48 +9138,7 @@ function assetStatusLabel(statusValue) {
   will-change: transform, opacity;
 }
 
-@media (max-width: 700px) {
-  .ga-output.has-results {
-    min-height: 430px;
-    max-height: 68vh;
-  }
 
-  .ga-viewer-layout {
-    inset: 10px;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) 84px;
-    gap: 10px;
-  }
-
-  .ga-filmstrip-skeleton {
-    width: 100%;
-    height: 64px;
-    max-height: none;
-    flex-direction: row;
-    gap: 6px;
-  }
-
-  .ga-filmstrip-skeleton span {
-    flex-basis: 56px;
-    width: 56px;
-    height: 56px;
-  }
-
-  .ga-results.is-group .ga-card-actions {
-    gap: 3px;
-  }
-
-  .ga-results.is-group .ga-card-actions button {
-    width: 26px;
-    height: 26px;
-    font-size: 11px;
-  }
-
-  .ga-card-error svg {
-    width: 40px;
-    height: 40px;
-  }
-}
 
 /* ---------- 画布顶部的模型切换 ---------- */
 .ga-canvas-tools {
@@ -10207,42 +10101,7 @@ function assetStatusLabel(statusValue) {
   }
 }
 
-@media (max-width: 700px) {
-  .ga-composer {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
 
-  .ga-composer-ref {
-    grid-row: 1;
-  }
-
-  .ga-composer-features {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
-
-  .ga-composer-run {
-    grid-column: 1 / -1;
-    grid-row: 3;
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .ga-composer-run .ga-generate {
-    width: 100%;
-    min-width: 0;
-    height: 58px;
-  }
-
-  .ga-feature-popover {
-    right: auto;
-    left: 0;
-    width: min(520px, calc(100vw - 48px));
-  }
-
-  .ga-canvas-head .ga-model-trigger {
-    max-width: 112px;
-  }
-}
 
 /* ---------- 资产库抽屉 ---------- */
 .ga-drawer-backdrop {

@@ -589,33 +589,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
   }
 }
 
-@media (max-width: 560px) {
-  .share-publish-backdrop {
-    padding: 10px;
-  }
 
-  .share-publish-dialog {
-    width: min(100%, 500px);
-    max-height: calc(100dvh - 20px);
-    border-radius: 16px;
-  }
-
-  .share-publish-dialog > header {
-    padding: 14px 14px 12px;
-  }
-
-  .share-publish-body {
-    padding: 16px 14px;
-  }
-
-  .share-publish-dialog > footer {
-    padding: 12px 14px 14px;
-  }
-
-  .share-publish-dialog > footer button {
-    flex: 1;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .share-publish-enter-active,

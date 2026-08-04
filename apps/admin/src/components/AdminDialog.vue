@@ -488,41 +488,5 @@ html.dark .admin-dialog__chip {
   }
 }
 
-@media (max-width: 640px) {
-  .admin-dialog-modal .el-overlay-dialog {
-    padding: 16px 10px;
-  }
 
-  .admin-dialog .el-dialog__header {
-    padding: 16px 52px 14px 16px;
-  }
-
-  .admin-dialog .el-dialog__footer {
-    padding: 12px 16px 14px;
-  }
-
-  .admin-dialog__head {
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .admin-dialog__meta {
-    align-items: flex-start;
-    width: 100%;
-    max-width: 100%;
-    padding-left: 50px;
-  }
-
-  .admin-dialog__hint {
-    display: none;
-  }
-
-  .admin-dialog__actions {
-    width: 100%;
-  }
-
-  .admin-dialog__btn {
-    flex: 1 1 auto;
-  }
-}
 </style>

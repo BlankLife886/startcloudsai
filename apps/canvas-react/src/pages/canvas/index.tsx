@@ -126,7 +126,7 @@ export default function CanvasPage() {
 
                 <section className="mt-8">
                     <h2 className="text-sm font-semibold">快速开始</h2>
-                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
+                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-5">
                         {[
                             { title: "空白画布", meta: "自由创作", icon: Sparkles, image: `${import.meta.env.BASE_URL}quick-start/canvas.webp`, action: createAndEnter },
                             { title: "AI 图片创作", meta: "图片工作台", icon: ImagePlus, image: `${import.meta.env.BASE_URL}quick-start/image.webp`, action: () => navigate("/image") },
@@ -136,13 +136,13 @@ export default function CanvasPage() {
                         ].map((item) => {
                             const Icon = item.icon;
                             return (
-                                <button key={item.title} type="button" className="canvas-quick-start-card group relative aspect-[3/2] min-w-0 text-left sm:aspect-[2/1]" onClick={item.action} disabled={!hydrated}>
+                                <button key={item.title} type="button" className="canvas-quick-start-card group relative aspect-[3/2] min-w-0 text-left md:aspect-[2/1]" onClick={item.action} disabled={!hydrated}>
                                     <span className="canvas-quick-start-card__surface absolute inset-0 overflow-hidden">
                                         <img src={item.image} alt="" className="absolute inset-0 size-full object-cover opacity-90 transition-opacity duration-300 group-hover:opacity-100" decoding="async" />
                                         <span className="absolute right-2.5 top-2.5 grid size-7 place-items-center rounded-full border border-white/25 bg-black/45 text-white opacity-0 transition group-hover:opacity-100">
                                             <ArrowUpRight className="size-3.5" />
                                         </span>
-                                        <span className="pointer-events-none absolute inset-0 flex items-end gap-2.5 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-3 pb-2.5 pt-12 text-white sm:pb-3 sm:pt-16">
+                                        <span className="pointer-events-none absolute inset-0 flex items-end gap-2.5 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-3 pb-2.5 pt-12 text-white md:pb-3 md:pt-16">
                                             <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-white/15 bg-white/10">
                                                 <Icon className="size-4" />
                                             </span>

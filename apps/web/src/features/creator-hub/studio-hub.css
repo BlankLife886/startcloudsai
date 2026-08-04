@@ -694,47 +694,7 @@ html.color-scheme-dark .studio-composer:focus-within {
   }
 }
 
-@media (max-width: 720px) {
-  .studio-hub__shell {
-    width: calc(100% - 28px);
-    padding-top: 12px;
-  }
 
-  .studio-hero {
-    padding-top: 22px;
-    gap: 16px;
-  }
-
-  .studio-composer {
-    padding: 14px 12px 12px;
-    border-radius: 22px;
-  }
-
-  .studio-bento {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'assistant'
-      'model'
-      't2i'
-      'coloring'
-      'ui'
-      'game'
-      'puzzle';
-  }
-
-  .studio-bento__item.is-assistant,
-  .studio-bento__item.is-model {
-    min-height: 200px;
-  }
-
-  .studio-bento__item.is-t2i,
-  .studio-bento__item.is-coloring,
-  .studio-bento__item.is-ui,
-  .studio-bento__item.is-game,
-  .studio-bento__item.is-puzzle {
-    min-height: 148px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .studio-hub__orb,

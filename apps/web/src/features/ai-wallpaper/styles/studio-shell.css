@@ -47,7 +47,7 @@
 }
 
 .left-collapsed .left-side .side-head,
-.right-collapsed .right-side:not(.mobile-open) .side-head {
+.right-collapsed .right-side .side-head {
   justify-content: center;
 }
 
@@ -676,21 +676,7 @@
   }
 }
 
-@media (max-width: 767px) {
-  .timeline-rail-list {
-    /* horizontal strip: force fixed-width cards, hide secondary text */
-  }
 
-  .timeline-item {
-    flex: 0 0 62px;
-    width: 62px;
-  }
-
-  .timeline-item-info,
-  .timeline-item-actions {
-    display: none;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .status-dot[data-status='running'],

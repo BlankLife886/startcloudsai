@@ -324,30 +324,7 @@ const gridFrameStyle = computed(() => ({
   transform: translateY(8px);
 }
 
-@media (max-width: 768px) {
-  .decompose-panel {
-    left: 12px;
-    bottom: 12px;
-    padding: 8px;
-    border-radius: 14px;
-  }
 
-  .decompose-panel--landscape {
-    width: min(320px, calc(100vw - 24px));
-  }
-
-  .decompose-panel--portrait {
-    width: min(200px, calc(100vw - 24px));
-  }
-
-  .decompose-panel--landscape .decompose-grid-frame {
-    max-height: min(200px, 30vh);
-  }
-
-  .decompose-panel--portrait .decompose-grid-frame {
-    max-height: min(280px, 40vh);
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .decompose-panel-enter-active,

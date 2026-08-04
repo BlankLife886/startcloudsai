@@ -2,7 +2,6 @@ import { createStudioBudgetGuard } from '@/features/ai-shared/studioBudgetGuard'
 import { enrichStudioCreditCostSnapshot } from '@/features/ai-shared/studioUsage'
 import { isWallpaperStudioJobKind } from '@/features/ai-shared/aiJobKinds'
 import { useInsufficientCreditsPrompt } from '@/composables/useInsufficientCreditsPrompt'
-import { useStudioLayout } from '@/features/ai-wallpaper/composables/useStudioLayout'
 import { useWallpaperCanvas } from '@/features/ai-wallpaper/composables/useWallpaperCanvas'
 import { useWallpaperInputs } from '@/features/ai-wallpaper/composables/useWallpaperInputs'
 import { useWallpaperModels } from '@/features/ai-wallpaper/composables/useWallpaperModels'
@@ -34,15 +33,12 @@ export function useAiWallpaperStudioState() {
   const historyStore = null
   const authStore = useAuthStore()
   const userStore = null
-  const { isMobile } = useStudioLayout()
-
   const autoSaveConfig = ref(true)
   const executionMode = ref('server')
   const outputType = ref('image')
   const privacyMode = ref(settingsStore.getSetting('ai_enable_privacy_mode', true))
   const inspectorTab = ref('params')
   const inspectorTabs = WALLPAPER_INSPECTOR_TABS
-  const mobileInspectorOpen = ref(false)
   const leftCollapsed = ref(false)
   const rightCollapsed = ref(false)
   const costConfirmVisible = ref(false)
@@ -815,10 +811,8 @@ export function useAiWallpaperStudioState() {
     activeAuthor: inputs.activeAuthor,
     inspectorTab,
     inspectorTabs,
-    mobileInspectorOpen,
     leftCollapsed,
     rightCollapsed,
-    isMobile,
     previewStageRef: canvas.previewStageRef,
     isFullscreen: canvas.isFullscreen,
     holdoverPreviewUrl: canvas.holdoverPreviewUrl,

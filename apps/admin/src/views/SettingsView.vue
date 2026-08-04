@@ -461,24 +461,5 @@ onMounted(load)
   text-align: center;
 }
 
-@media (max-width: 720px) {
-  .settings-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
 
-  .settings-toolbar__actions {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .settings-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .setting-tile__top {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
 </style>

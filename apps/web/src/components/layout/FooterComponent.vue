@@ -461,15 +461,5 @@ function onLinkClick(link, event) {
   }
 }
 
-@media (max-width: 560px) {
-  .footer-shell {
-    padding: 40px 16px 20px;
-  }
 
-  .footer-bottom {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-}
 </style>

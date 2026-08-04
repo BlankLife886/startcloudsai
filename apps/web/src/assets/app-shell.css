@@ -391,56 +391,6 @@ html.settings-no-blur.is-page-scrolled .site-header .header-shell {
   -webkit-backdrop-filter: none;
 }
 
-@media (max-width: 920px) {
-  :root {
-    --app-header-offset: 56px;
-    --app-bottom-nav-offset: 62px;
-  }
-
-  .main-content:not(.main--no-header) {
-    padding-bottom: calc(1rem + var(--app-bottom-nav-offset, 62px));
-  }
-
-  .main-content.main--browse-dock {
-    padding-bottom: calc(
-      1rem + var(--app-bottom-nav-offset, 62px) + var(--app-bottom-floating-clearance, 144px)
-    );
-  }
-
-  .main-content.main--pricing-console,
-  .main-content.main--profile-console,
-  .main-content.main--ziwei-console,
-  .main-content.main--studio-console,
-  .main-content.main--downloads-gallery,
-  .main-content.main--favorites-gallery,
-  .main-content.main--users-gallery,
-  .main-content.main--author-gallery,
-  .main-content.main--tags-gallery,
-  .main-content.main--history-gallery {
-    padding-bottom: var(--app-bottom-nav-offset, 62px);
-  }
-
-  /* 设置页可用高度已扣底栏，main 不再额外 padding，避免裁切无法滚动 */
-  .main-content.main--settings-console {
-    padding-bottom: 0;
-  }
-
-  #back-to-top,
-  .back-to-top-btn {
-    margin-bottom: calc(var(--app-bottom-nav-offset, 62px) + 0.25rem) !important;
-  }
-}
-
-@media (max-width: 780px) {
-  .main-content.main--profile-console {
-    display: block;
-    height: auto;
-    max-height: none;
-    min-height: 100svh;
-    overflow: visible;
-  }
-}
-
 /* 回到顶部：进度环同步展示当前页面位置 */
 #back-to-top,
 .back-to-top-btn {
@@ -1124,36 +1074,6 @@ html.settings-no-blur .app-bottom-floating-dock-inner {
   -webkit-backdrop-filter: none !important;
 }
 
-@media (max-width: 920px) {
-  :root {
-    /* 两行硬边底栏：摘要 + 工具/分页 */
-    --app-bottom-floating-clearance: 118px;
-  }
-
-  .app-bottom-floating-dock {
-    left: 10px;
-    right: 10px;
-    width: auto;
-    max-width: none;
-    transform: none;
-    bottom: calc(var(--app-bottom-nav-offset, 62px) + 8px);
-  }
-
-  .app-bottom-floating-dock.is-dock-scroll-hidden {
-    transform: translateY(10px);
-  }
-
-  .app-bottom-floating-dock-inner {
-    width: 100%;
-    padding: 8px;
-    border-radius: 0;
-    box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.55);
-  }
-
-  html.color-scheme-dark .app-bottom-floating-dock-inner {
-    box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.4);
-  }
-}
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;

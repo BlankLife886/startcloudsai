@@ -104,14 +104,10 @@ function recoverDocumentScroll() {
 
   const root = document.documentElement
   const body = document.body
-  if (!document.querySelector('.msheet-root')) {
-    root.classList.remove('nav-mobile-open')
-    body.classList.remove('nav-mobile-open')
-  }
   root.classList.remove('assistant-image-viewer-open')
   body.classList.remove('share-detail-open', 'profile-overlay-open', 'download-session-locked')
 
-  // 公告和移动菜单由各自的 owner 锁管理；仅在没有活动锁时清理旧版本遗留样式。
+  // 公告等弹层由各自的 owner 锁管理；仅在没有活动锁时清理旧版本遗留样式。
   if (hasBodyScrollLocks()) return
 
   body.style.removeProperty('overflow')

@@ -535,37 +535,5 @@ onBeforeUnmount(() => {
   transition: opacity 0.28s ease, filter 0.28s ease;
 }
 
-@media (max-width: 700px) {
-  .clock-filmstrip {
-    align-self: stretch;
-    height: 64px;
-    max-height: none;
-    padding: 0;
-  }
 
-  .clock-filmstrip__track {
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    touch-action: pan-x;
-  }
-
-  .clock-filmstrip__track::-webkit-scrollbar { display: none; }
-
-  .clock-filmstrip__rail {
-    width: max-content;
-    min-width: 100%;
-    min-height: 0;
-    height: 100%;
-    flex-direction: row;
-    gap: 6px;
-    padding: 4px 6px;
-  }
-
-  .clock-filmstrip__rail > button {
-    flex-basis: 56px;
-    width: 56px;
-    height: 56px;
-  }
-}
 </style>

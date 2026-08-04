@@ -1706,74 +1706,7 @@ html.settings-no-animations .home-skeleton-block {
   }
 }
 
-@media (max-width: 640px) {
-  .home-orbit {
-    top: 180px;
-    right: -210px;
-    width: 520px;
-    opacity: 0.28;
-  }
-  .starcloud-home {
-    padding: 18px 14px calc(64px + var(--app-bottom-nav-offset, 0px));
-  }
-  .home-hero__collage {
-    min-height: 240px;
-    gap: 8px;
-  }
-  .home-hero__title {
-    font-size: 1.7rem;
-  }
-  .home-seal {
-    width: 38px;
-    height: 38px;
-    font-size: 0.74rem;
-  }
-  .home-search {
-    flex-wrap: nowrap;
-  }
-  .home-search button {
-    padding: 10px 12px;
-    font-size: 0.72rem;
-  }
-  .home-stats dd {
-    font-size: 1.1rem;
-  }
-  .home-studios__grid {
-    grid-template-columns: 1fr;
-    grid-auto-rows: 150px;
-  }
-  .home-studio-card.is-feature {
-    grid-column: span 1;
-    grid-row: span 2;
-  }
-  .home-studio-card:last-child {
-    grid-column: span 1;
-  }
-  .home-community__featured {
-    grid-template-columns: 1fr;
-  }
-  .home-community__loading {
-    grid-template-columns: 1fr 1fr;
-    min-height: 360px;
-  }
-  .home-community__loading .home-skeleton-block:last-child {
-    grid-column: 1 / -1;
-    grid-row: auto;
-  }
-  .home-wall__skeleton {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .home-wall__skeleton.is-portrait {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .home-outro__actions {
-    flex-direction: column;
-    align-items: center;
-  }
-  .home-hero__scroll {
-    display: none;
-  }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .home-cursor {

@@ -304,19 +304,7 @@ html.color-scheme-dark .studio-shell *::-webkit-scrollbar-thumb:hover {
   }
 }
 
-@media (max-width: 640px) {
-  .studio-top-bar {
-    padding: 0 12px;
-  }
 
-  .studio-brand small {
-    display: none;
-  }
-
-  .studio-inspector-toggle {
-    display: inline-flex;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .studio-status-chip.running .status-pulse {

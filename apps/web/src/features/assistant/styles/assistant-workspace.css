@@ -459,10 +459,6 @@
 .assistant-workspace .share-button:disabled {
   opacity: 0.4;
 }
-.assistant-workspace .mobile-sidebar-button {
-  display: none;
-}
-
 .assistant-workspace .assistant-messages {
   min-height: 0;
   overflow-y: auto;
@@ -1306,182 +1302,7 @@
   font-size: 0.82rem;
   text-align: center;
 }
-.assistant-workspace .assistant-scrim {
-  display: none;
-}
 
-@media (max-width: 767px) {
-  .assistant-workspace {
-    grid-template-columns: 1fr;
-  }
-  .assistant-workspace.is-sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
-  .assistant-workspace .assistant-sidebar {
-    position: absolute;
-    z-index: 20;
-    inset: 0 auto 0 0;
-    width: min(86vw, 310px);
-    transform: translateX(-102%);
-    box-shadow: none;
-    /* closing = exit */
-    transition:
-      transform 220ms ease-in,
-      box-shadow 220ms ease-in;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-sidebar {
-    align-items: stretch;
-    padding: 10px;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-brand-row {
-    flex-direction: row;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-brand {
-    padding: 7px;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-brand strong,
-  .assistant-workspace.is-sidebar-collapsed .new-chat-button span,
-  .assistant-workspace.is-sidebar-collapsed .sidebar-shortcuts span,
-  .assistant-workspace.is-sidebar-collapsed .account-meta {
-    display: block;
-  }
-  .assistant-workspace.is-sidebar-collapsed .conversation-section {
-    display: block;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-account > .icon-button {
-    display: grid;
-  }
-  .assistant-workspace.is-sidebar-collapsed .new-chat-button,
-  .assistant-workspace.is-sidebar-collapsed .sidebar-shortcuts button {
-    width: 100%;
-    height: auto;
-    justify-content: flex-start;
-  }
-  .assistant-workspace.is-sidebar-collapsed .new-chat-button {
-    padding: 10px 11px;
-  }
-  .assistant-workspace.is-sidebar-collapsed .sidebar-shortcuts button {
-    padding: 9px 11px;
-  }
-  .assistant-workspace.is-sidebar-collapsed .assistant-account {
-    justify-content: flex-start;
-    padding: 9px 6px 4px;
-  }
-  .assistant-workspace .assistant-sidebar.is-open {
-    transform: translateX(0);
-    box-shadow: 24px 0 64px rgb(0 0 0 / 18%);
-    /* opening = enter */
-    transition:
-      transform 300ms cubic-bezier(0.22, 1, 0.36, 1),
-      box-shadow 300ms ease;
-  }
-
-  .assistant-workspace.is-dark .assistant-sidebar.is-open {
-    box-shadow: 24px 0 64px rgb(0 0 0 / 45%);
-  }
-  .assistant-workspace .assistant-scrim {
-    position: absolute;
-    z-index: 19;
-    inset: 0;
-    display: block;
-    border: 0;
-    background: rgb(0 0 0 / 32%);
-  }
-  .assistant-workspace .mobile-sidebar-button {
-    display: grid;
-  }
-  .assistant-workspace .assistant-topbar {
-    padding-inline: 10px;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .assistant-workspace .active-conversation-title {
-    display: none;
-  }
-  .assistant-workspace .topbar-context {
-    min-width: 0;
-  }
-  .assistant-workspace .model-status {
-    max-width: min(44vw, 180px);
-  }
-  .assistant-workspace .share-button span {
-    display: none;
-  }
-  .assistant-workspace .assistant-empty-state {
-    min-height: 100%;
-    padding: 20px 16px max(220px, calc(8px + 170px + env(safe-area-inset-bottom, 0px)));
-  }
-  .assistant-workspace .suggestion-grid {
-    width: min(420px, 100%);
-    grid-template-columns: 1fr;
-  }
-  .assistant-workspace .message-thread {
-    width: calc(100% - 24px);
-    padding-top: 18px;
-  }
-  .assistant-workspace .message--user .message-content {
-    max-width: 88%;
-  }
-  .assistant-workspace .message--assistant .message-content {
-    padding-left: 40px;
-  }
-  .assistant-workspace .composer-zone {
-    padding: 12px 10px 7px;
-  }
-  .assistant-workspace .assistant-composer {
-    padding-left: 13px;
-    border-radius: 20px;
-  }
-  .assistant-workspace .composer-left {
-    max-width: calc(100vw - 78px);
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .assistant-workspace .mode-switch,
-  .assistant-workspace .compact-select {
-    flex: 0 0 auto;
-  }
-  .assistant-workspace .composer-note {
-    margin-top: 5px;
-  }
-  .image-viewer__head {
-    top: calc(10px + env(safe-area-inset-top, 0px));
-    left: 10px;
-    max-width: calc(100vw - 112px);
-    padding: 8px 12px;
-  }
-  .image-viewer__title small:not(.is-size) {
-    display: none;
-  }
-  .image-viewer__actions {
-    top: calc(10px + env(safe-area-inset-top, 0px));
-    right: 10px;
-    padding: 4px;
-  }
-  .image-viewer__actions button {
-    width: 34px;
-    height: 34px;
-  }
-  .image-viewer__nav {
-    width: 40px;
-    min-width: 40px;
-    height: 40px;
-  }
-  .image-viewer__nav.is-previous {
-    left: 10px;
-  }
-  .image-viewer__nav.is-next {
-    right: 10px;
-  }
-  .image-viewer__zoom-tools {
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-  }
-  .image-viewer__zoom-tools button span {
-    display: none;
-  }
-  .image-viewer__zoom-tools button:last-child span {
-    display: inline;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .assistant-sidebar,
@@ -1986,82 +1807,7 @@
   top: 20px;
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace,
-  .assistant-workspace.is-sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
 
-  .assistant-workspace .assistant-sidebar {
-    width: min(84vw, 300px);
-  }
-
-  .assistant-workspace .assistant-topbar {
-    min-width: 0;
-    padding: 8px 12px;
-  }
-
-  .assistant-workspace .topbar-title {
-    padding-left: 0;
-  }
-
-  .assistant-workspace .topbar-title h1 {
-    margin-left: 8px;
-    font-size: 19px;
-  }
-
-  .assistant-workspace .topbar-filters {
-    max-width: 64vw;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .assistant-workspace .topbar-filters > button:nth-child(2),
-  .assistant-workspace .topbar-filters > button:nth-child(4) {
-    display: none;
-  }
-
-  .assistant-workspace .composer-zone {
-    bottom: 8px;
-    padding-inline: 10px;
-  }
-
-  .assistant-workspace .assistant-composer {
-    min-height: 154px;
-    padding: 16px 12px 10px 66px;
-    border-radius: 18px;
-  }
-
-  .assistant-workspace .composer-attachment {
-    top: 20px;
-    left: 17px;
-    width: 38px;
-    height: 50px;
-  }
-
-  .assistant-workspace .assistant-composer textarea {
-    min-height: 78px;
-    max-height: 86px;
-    font-size: 13px;
-  }
-
-  .assistant-workspace .composer-left {
-    max-width: calc(100vw - 145px);
-  }
-
-  .assistant-workspace .composer-tool-button span {
-    display: none;
-  }
-
-  .assistant-workspace .message-thread {
-    width: calc(100% - 24px);
-    padding-bottom: 210px;
-  }
-
-  .assistant-workspace .message--user .message-content {
-    max-width: 84%;
-  }
-}
 
 /* Server-synced workbench header and compact conversation search. */
 .assistant-workspace .conversation-search {
@@ -2086,11 +1832,7 @@
   box-shadow: none;
 }
 
-@media (max-width: 640px) {
-  .assistant-workspace .assistant-topbar {
-    padding-inline: 12px;
-  }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .thinking-spark i {
@@ -3043,93 +2785,9 @@
   background: var(--assistant-panel-active);
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .composer-popover {
-    right: 8px;
-    bottom: 48px;
-    left: 8px;
-    width: auto;
-    max-height: calc(100vh - 150px);
-  }
 
-  .assistant-workspace .creation-type-menu {
-    right: auto;
-    width: min(270px, calc(100% - 16px));
-  }
 
-  .assistant-workspace .generation-preferences {
-    overflow-y: auto;
-    padding: 16px;
-  }
 
-  .assistant-workspace .ratio-options {
-    display: flex;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .assistant-workspace .ratio-options button {
-    min-width: 56px;
-  }
-
-  .assistant-workspace .skill-list {
-    max-height: min(300px, calc(100vh - 300px));
-  }
-
-  .assistant-workspace .nested-selection-menu {
-    right: 12px;
-    bottom: 68px;
-    left: 12px;
-  }
-
-  .assistant-workspace .quality-selection-menu {
-    left: auto;
-  }
-
-  .assistant-workspace .slash-hint {
-    bottom: 54px;
-    left: 178px;
-  }
-
-  .assistant-workspace .message-meta {
-    flex-wrap: wrap;
-  }
-}
-
-@media (max-width: 560px) {
-  .assistant-workspace .generated-images.is-single {
-    width: min(160px, 100%);
-  }
-
-  .assistant-workspace .generated-images.is-single .generated-image-preview img {
-    max-height: min(200px, 34vh);
-  }
-
-  .assistant-workspace .generation-setting-row {
-    grid-template-columns: 1fr;
-  }
-
-  .assistant-workspace .preferences-header strong {
-    font-size: 17px;
-  }
-
-  .assistant-workspace .media-type-tabs button {
-    height: 42px;
-  }
-
-  .assistant-workspace .message-more-menu {
-    right: 0;
-    left: auto;
-  }
-
-  .assistant-workspace .composer-quote {
-    margin-right: -2px;
-  }
-
-  .assistant-workspace .selected-skill {
-    max-width: calc(100% - 8px);
-  }
-}
 
 /* Image generation mode */
 /* 日期分隔：安静的细线分隔，不再抢过正文层级 */
@@ -3662,62 +3320,9 @@
   margin-left: 0;
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .image-mode-preferences,
-  .assistant-workspace .image-model-menu {
-    right: 8px;
-    left: 8px;
-    width: auto;
-  }
 
-  .assistant-workspace .image-mode-preferences {
-    overflow-y: auto;
-  }
 
-  .assistant-workspace .image-generation-stage {
-    width: 100%;
-  }
 
-  .assistant-workspace .image-dream-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .assistant-workspace .image-point-cost {
-    display: none;
-  }
-}
-
-@media (max-width: 560px) {
-  .assistant-workspace .message-date-divider {
-    margin-bottom: 22px;
-    font-size: 20px;
-  }
-
-  .assistant-workspace .image-generation-summary {
-    flex-wrap: wrap;
-  }
-
-  .assistant-workspace .image-generation-summary strong {
-    width: 100%;
-    max-width: none;
-  }
-
-  .assistant-workspace .image-dream-grid.is-single {
-    width: min(160px, 100%);
-  }
-
-  .assistant-workspace .image-mode-preferences {
-    padding: 15px;
-  }
-
-  .assistant-workspace .custom-image-size {
-    grid-template-columns: 1fr 28px 1fr;
-  }
-
-  .assistant-workspace .custom-image-size > span {
-    display: none;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .image-dream-slot::before,
@@ -4391,32 +3996,9 @@
   transform: translateY(-2px) scale(1.03);
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .reference-dock {
-    top: 15px;
-    left: 10px;
-    transform: scale(0.82);
-    transform-origin: top left;
-  }
 
-  .assistant-workspace .inline-trigger-menu {
-    max-width: calc(100% - 16px);
-  }
 
-  .assistant-workspace .asset-library-panel {
-    width: min(340px, 94vw);
-  }
-}
 
-@media (max-width: 560px) {
-  .assistant-workspace .asset-image-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .assistant-workspace .asset-library-footer small {
-    display: none;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .reference-dock,
@@ -4616,72 +4198,7 @@
   right: 76px;
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer {
-    min-height: 154px;
-    padding: 16px 12px 10px 66px;
-    border-radius: 20px;
-  }
 
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer textarea {
-    min-height: 78px;
-    max-height: 86px;
-    padding: 3px 8px 8px 0;
-    font-size: 13px;
-  }
-
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .composer-toolbar {
-    min-height: 38px;
-    margin-left: -50px;
-  }
-
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .agent-mode-button,
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .composer-tool-button {
-    height: 34px;
-    padding-inline: 10px;
-    border-radius: 8px;
-  }
-
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .send-button {
-    width: 42px;
-    height: 42px;
-    flex-basis: 42px;
-  }
-
-  .assistant-workspace .return-to-bottom-row {
-    margin-bottom: 8px;
-  }
-
-  .assistant-workspace .return-to-bottom {
-    min-height: 38px;
-    padding-inline: 14px;
-    font-size: 12px;
-  }
-
-  .assistant-workspace .composer-zone.is-scrolled-away .assistant-composer {
-    min-height: 94px;
-    padding: 12px 60px 12px 66px;
-  }
-
-  .assistant-workspace .composer-zone.is-scrolled-away .assistant-composer textarea {
-    height: 68px !important;
-    min-height: 68px;
-    max-height: 68px;
-    padding-top: 9px;
-  }
-
-  .assistant-workspace .composer-zone.is-scrolled-away .composer-toolbar {
-    right: 10px;
-  }
-
-  .assistant-workspace .composer-zone.is-scrolled-away .reference-dock {
-    top: 12px;
-  }
-
-  .assistant-workspace .composer-zone.is-scrolled-away .draft-counter {
-    right: 60px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .return-to-bottom,
@@ -4822,17 +4339,7 @@
   }
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .assistant-sidebar {
-    background: color-mix(in srgb, var(--assistant-card) 78%, transparent);
-    backdrop-filter: blur(10px) saturate(1.08);
-    -webkit-backdrop-filter: blur(10px) saturate(1.08);
-  }
 
-  .assistant-workspace.is-dark .assistant-sidebar {
-    background: rgb(13 16 17 / 78%);
-  }
-}
 
 @media (prefers-reduced-transparency: reduce) {
   .assistant-workspace .assistant-sidebar,
@@ -4882,15 +4389,7 @@
   padding-top: 8px;
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .message-thread {
-    padding-top: 18px;
-  }
 
-  .assistant-workspace .message {
-    margin-bottom: 18px;
-  }
-}
 
 /* Conversation navigator: exactly one marker for each user prompt. */
 .assistant-workspace .conversation-minimap {
@@ -5496,11 +4995,7 @@
   opacity: 0.45;
 }
 
-@media (max-width: 760px) {
-  .assistant-workspace .user-message-editor {
-    width: min(90%, 620px);
-  }
-}
+
 
 @media (hover: none) {
   .assistant-workspace .user-message-actions {
@@ -5709,31 +5204,7 @@
   box-shadow: inset 0 1px rgb(255 255 255 / 22%);
 }
 
-@media (max-width: 767px) {
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer {
-    min-height: 148px;
-    padding: 15px 11px 10px 66px;
-    border-radius: 20px;
-  }
 
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer textarea {
-    min-height: 74px;
-    max-height: 82px;
-    padding: 4px 7px 9px 0;
-    font-size: 13px;
-  }
-
-  .assistant-workspace .composer-zone:not(.is-scrolled-away) .composer-toolbar {
-    min-height: 38px;
-    margin-left: -50px;
-    padding-top: 7px;
-  }
-
-  .assistant-workspace .reference-dock {
-    top: 12px;
-    left: 9px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .assistant-composer::after {
@@ -5881,12 +5352,7 @@
   }
 }
 
-@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
-  .assistant-workspace .assistant-sidebar,
-  .assistant-workspace .assistant-sidebar.is-open {
-    transition: none;
-  }
-}
+
 
 .assistant-workspace .scrim-fade-enter-active {
   transition: opacity 240ms ease;
@@ -6856,22 +6322,7 @@
   grid-auto-columns: 232px;
 }
 
-@media (max-width: 640px) {
-  .assistant-workspace .generated-images,
-  .assistant-workspace .image-dream-grid {
-    grid-template-columns: repeat(var(--image-slot-count, 2), minmax(0, 1fr));
-  }
 
-  .assistant-workspace .generated-images.is-many,
-  .assistant-workspace .image-dream-grid.is-many {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .assistant-workspace .generated-images.is-single,
-  .assistant-workspace .image-dream-grid.is-single {
-    grid-auto-columns: 196px;
-  }
-}
 
 /* —— 侧栏焕新 —— */
 .assistant-workspace .assistant-sidebar {
@@ -8005,35 +7456,7 @@
   line-height: 1.4;
 }
 
-@media (max-width: 640px) {
-  .assistant-workspace .agent-proposal:not(.is-dismissed) {
-    gap: 12px;
-    padding: 13px;
-  }
 
-  .assistant-workspace .agent-proposal-head {
-    grid-template-columns: 34px minmax(0, 1fr);
-  }
-
-  .assistant-workspace .agent-proposal-icon {
-    width: 34px;
-    height: 34px;
-  }
-
-  .assistant-workspace .agent-proposal-state {
-    grid-column: 2;
-    width: fit-content;
-  }
-
-  .assistant-workspace .agent-proposal-params {
-    grid-template-columns: 1fr;
-  }
-
-  .assistant-workspace .agent-proposal-actions button {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .agent-proposal-actions button.is-primary .bi-arrow-repeat {
@@ -8074,7 +7497,7 @@
   white-space: nowrap;
 }
 
-/* Desktop assistant density pass. Mobile layout is intentionally left untouched. */
+/* Shared assistant density pass for tablet and larger layouts. */
 @media (min-width: 768px) {
   .assistant-workspace .image-model-menu {
     left: var(--model-menu-left, 24px);

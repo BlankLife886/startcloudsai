@@ -41,8 +41,7 @@ const referencePanelCollapsed = ref(
     const stored = localStorage.getItem(REFERENCE_PANEL_KEY)
     if (stored === '1') return true
     if (stored === '0') return false
-    // 小屏上浮层会盖住画布，未设置偏好时默认收起
-    return typeof window !== 'undefined' && window.innerWidth < 760
+    return false
   })(),
 )
 const showDebugTools = import.meta.env.DEV

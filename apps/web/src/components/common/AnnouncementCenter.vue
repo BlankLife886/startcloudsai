@@ -722,73 +722,7 @@ onBeforeUnmount(() => {
   font-size: 0.8rem;
 }
 
-@media (max-width: 720px) {
-  .announcement-layer {
-    align-items: end;
-    padding: 14px;
-  }
 
-  .announcement-panel,
-  .announcement-panel.is-image-left,
-  .announcement-panel.is-image-right {
-    width: 100%;
-    max-height: 86vh;
-    grid-template-columns: 1fr;
-  }
-
-  .announcement-panel.is-image-left .announcement-media,
-  .announcement-panel.is-image-right .announcement-media {
-    order: 0;
-    border-right: 0;
-    border-left: 0;
-    border-bottom: 1px solid var(--an-line);
-    min-height: 180px;
-    max-height: 34vh;
-  }
-
-  .announcement-media {
-    min-height: 180px;
-    max-height: 34vh;
-  }
-
-  .announcement-media img {
-    min-height: 180px;
-  }
-
-  .announcement-copy {
-    padding: 22px;
-  }
-
-  .announcement-copy h3 {
-    font-size: 1.22rem;
-  }
-
-  .announcement-actions {
-    flex-direction: column;
-  }
-
-  .announcement-primary,
-  .announcement-secondary {
-    width: 100%;
-  }
-
-  .announcement-banner {
-    top: calc(var(--app-header-offset, 56px) + 10px);
-    align-items: flex-start;
-  }
-
-  .announcement-banner__text span {
-    white-space: normal;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
-
-  .announcement-banner__actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-}
 </style>
 
 <style scoped>
@@ -1175,47 +1109,5 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 720px) {
-  .announcement-layer {
-    padding: 12px;
-  }
 
-  .announcement-panel,
-  .announcement-panel.is-image-left,
-  .announcement-panel.is-image-right {
-    max-height: 88vh;
-    border-radius: 18px;
-  }
-
-  .announcement-panel.is-image-left .announcement-media,
-  .announcement-panel.is-image-right .announcement-media {
-    min-height: 170px;
-    max-height: 31vh;
-  }
-
-  .announcement-copy {
-    padding: 22px;
-  }
-
-  .announcement-banner {
-    top: calc(var(--app-header-offset, 56px) + 8px);
-    gap: 9px;
-    min-height: 64px;
-    padding: 9px;
-  }
-
-  .announcement-signal {
-    display: none;
-  }
-
-  .announcement-banner__actions {
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .announcement-banner__cta {
-    min-height: 32px;
-    padding: 0 10px;
-  }
-}
 </style>

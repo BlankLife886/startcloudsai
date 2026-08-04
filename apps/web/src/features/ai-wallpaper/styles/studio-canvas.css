@@ -416,16 +416,7 @@
   background: var(--studio-field);
 }
 
-@media (max-width: 640px) {
-  .preview-frame {
-    padding: 48px 12px 56px;
-  }
 
-  .compare-frame {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .preview-stage.is-running-breathe {

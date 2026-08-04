@@ -132,11 +132,9 @@ const PALETTE = {
 
 function pickInitialTier() {
   if (typeof window === 'undefined') return 1
-  const smallScreen = window.matchMedia('(max-width: 768px)').matches
   const lowMemory = Number(navigator.deviceMemory || 8) <= 4
   const lowCores = Number(navigator.hardwareConcurrency || 8) <= 4
-  if (smallScreen && (lowMemory || lowCores)) return 0
-  if (smallScreen || lowMemory || lowCores) return 1
+  if (lowMemory || lowCores) return 1
   return 2
 }
 

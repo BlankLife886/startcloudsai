@@ -17,8 +17,6 @@ import { animate as animeAnimate } from '@/lib/anime'
 import { createTitleParticles } from '../scene/particleText'
 
 gsap.registerPlugin(ScrollTrigger)
-// 移动端地址栏伸缩不触发全量 refresh（重排风暴源）；滚动性能优先
-ScrollTrigger.config({ ignoreMobileResize: true })
 
 const REVEAL_SELECTOR = '[data-home-reveal]:not(.home-hero__copy):not(.home-hero__wall)'
 

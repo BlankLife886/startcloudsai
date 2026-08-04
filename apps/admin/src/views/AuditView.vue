@@ -406,23 +406,5 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
   word-break: break-word;
 }
 
-@media (max-width: 720px) {
-  .audit-toolbar {
-    align-items: stretch;
-  }
 
-  .audit-toolbar__actions {
-    width: 100%;
-  }
-
-  .audit-search {
-    flex: 1;
-    width: auto;
-    min-width: 0;
-  }
-
-  .detail-grid {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

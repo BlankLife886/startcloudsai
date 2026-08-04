@@ -83,18 +83,5 @@ defineExpose({
   align-items: center;
 }
 
-@media (max-width: 768px) {
-  .mockup-stage {
-    padding: 18px 12px 30px;
-  }
 
-  .mockup-stage--desktop {
-    padding-top: 10px;
-    padding-bottom: 24px;
-  }
-
-  .mockup-stage--phone {
-    padding: 44px 12px 42px;
-  }
-}
 </style>

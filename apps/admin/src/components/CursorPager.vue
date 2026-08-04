@@ -64,14 +64,5 @@ defineEmits<{
 .cursor-pager__next {
   margin-left: 5px;
 }
-@media (max-width: 560px) {
-  .cursor-pager {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .cursor-pager :deep(.el-button-group) {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-}
+
 </style>

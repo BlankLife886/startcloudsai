@@ -1228,18 +1228,6 @@ html.settings-no-animations .settings-console__skel {
   }
 }
 
-@media (max-width: 640px) {
-  .settings-console .data-chip-grid,
-  .settings-console .data-action-row {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-console .cloud-stat-row,
-  .settings-console .data-center-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 .settings-console .preview-cache-settings .compact-field {
   width: max-content;
   max-width: 100%;
@@ -1668,27 +1656,7 @@ html.settings-no-animations .settings-console__skel {
     0 0 0 2px rgba(106, 79, 224, 0.1);
 }
 
-@media (max-width: 720px) {
-  .settings-console .perf-row__tools,
-  .settings-console .perf-quality__options,
-  .settings-console .perf-storage-line,
-  .settings-console .perf-storage-line__usage,
-  .settings-console .perf-cache-fields {
-    grid-template-columns: 1fr;
-  }
 
-  .settings-console .perf-quality__options {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .settings-console .perf-storage-line__usage > span {
-    display: none;
-  }
-
-  .settings-console .perf-strategy {
-    width: 100%;
-  }
-}
 
 .settings-console.is-scheme-dark .perf-num,
 .settings-console.is-scheme-dark .perf-quality__option span,
@@ -1953,42 +1921,5 @@ html.color-scheme-dark .settings-console .secret-inline-button.danger:hover:not(
 
   .settings-console .settings-save-dock {
     padding-left: 14px;
-  }
-}
-
-@media (max-width: 640px) {
-  .settings-console__shell {
-    padding: 10px 12px calc(var(--sc-dock-clearance) + env(safe-area-inset-bottom, 0px)) 16px;
-  }
-
-  .settings-console__topbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .settings-console__pulse {
-    align-self: flex-start;
-    min-width: 0;
-  }
-
-  .settings-console .performance-metric-grid,
-  .settings-console .preview-cache-limits {
-    grid-template-columns: 1fr;
-    max-width: none;
-  }
-
-  .settings-console .metric-number-shell,
-  .settings-console .compact-field .metric-number-shell {
-    max-width: none;
-    width: 100%;
-  }
-
-  .settings-console .metric-input-card {
-    max-width: none;
-  }
-
-  .settings-console .compact-control-grid,
-  .settings-console .field-grid.three-up {
-    grid-template-columns: 1fr;
   }
 }

@@ -36,8 +36,7 @@ function setupCanvas() {
   function resize() {
     width = Math.max(1, container.clientWidth)
     height = Math.max(1, container.clientHeight)
-    const mobile = window.matchMedia('(max-width: 760px)').matches
-    const dpr = Math.min(window.devicePixelRatio || 1, mobile ? 1 : 1.3)
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.3)
     canvas.width = Math.round(width * dpr)
     canvas.height = Math.round(height * dpr)
     canvas.style.width = `${width}px`

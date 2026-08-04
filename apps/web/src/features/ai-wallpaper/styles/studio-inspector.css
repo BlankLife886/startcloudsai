@@ -1,7 +1,6 @@
 /* ==========================================================================
    Wallpaper Atelier — Inspector
-   Right side: 3 tabs, controls, ranges, capability grid. Becomes a bottom
-   drawer on mobile via .mobile-open (paired with .studio-mobile-backdrop).
+   Right side: 3 tabs, controls, ranges, capability grid.
    ========================================================================== */
 
 .studio-inspector {
@@ -661,23 +660,6 @@ html.color-scheme-dark .inspector-tab.active {
   }
   100% {
     transform: translateX(140%);
-  }
-}
-
-/* ── Mobile drawer ────────────────────────────────────────────────────── */
-
-.studio-mobile-backdrop {
-  position: fixed;
-  inset: var(--app-header-offset, 0px) 0 0;
-  z-index: 87;
-  background: rgba(4, 5, 8, 0.55);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-@media (min-width: 768px) {
-  .studio-mobile-backdrop {
-    display: none;
   }
 }
 

@@ -335,11 +335,7 @@
   }
 }
 
-@media (max-width: 560px) {
-  .app-space-grid {
-    grid-template-columns: 1fr;
-  }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .app-card-shimmer {

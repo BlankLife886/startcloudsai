@@ -66,16 +66,16 @@
 }
 
 .left-collapsed .left-side,
-.right-collapsed .right-side:not(.mobile-open) {
+.right-collapsed .right-side {
   padding: 8px;
   align-items: center;
 }
 
 .left-collapsed .left-side .side-head > div,
-.right-collapsed .right-side:not(.mobile-open) .side-head > div,
+.right-collapsed .right-side .side-head > div,
 .left-collapsed .left-side .side-panel-body,
-.right-collapsed .right-side:not(.mobile-open) .side-panel-body,
-.right-collapsed .right-side:not(.mobile-open) .studio-inspector {
+.right-collapsed .right-side .side-panel-body,
+.right-collapsed .right-side .studio-inspector {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -160,84 +160,6 @@
     --left-width: 220px;
     --right-width: 250px;
     --timeline-rail-width: 88px;
-  }
-}
-
-/* ── Mobile: canvas first, sides collapse to sheets ──────────────────── */
-
-@media (max-width: 767px) {
-  .ai-hero-workspace {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .canvas-column {
-    order: -1;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .studio-side.left-side {
-    order: 0;
-    flex: 0 0 auto;
-    width: 100%;
-    max-height: 28vh;
-  }
-
-  .canvas-row {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .timeline-rail {
-    flex: 0 0 auto;
-    width: 100%;
-    max-height: 88px;
-    height: auto;
-  }
-
-  .timeline-rail-list {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .timeline-item {
-    flex: 0 0 72px;
-    width: 72px;
-  }
-
-  .timeline-item-info,
-  .timeline-item-actions {
-    display: none;
-  }
-
-  .prompt-dock {
-    position: relative;
-    z-index: 6;
-  }
-
-  .studio-side.right-side {
-    position: fixed;
-    inset: auto 0 0 0;
-    z-index: 88;
-    width: 100%;
-    min-width: 0;
-    height: auto;
-    max-height: min(74vh, 560px);
-    border-radius: var(--studio-radius-lg) var(--studio-radius-lg) 0 0;
-    transform: translateY(100%);
-    transition: transform 0.3s var(--ease-out);
-  }
-
-  .studio-side.right-side.mobile-open {
-    transform: translateY(0);
-  }
-
-  .right-collapsed .right-side {
-    width: 100%;
-    min-width: 0;
   }
 }
 

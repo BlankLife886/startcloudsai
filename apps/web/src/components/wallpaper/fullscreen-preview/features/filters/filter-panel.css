@@ -381,14 +381,7 @@
   cursor: pointer;
 }
 
-@media (max-width: 768px) {
-  .preview-filter-panel {
-    width: min(320px, calc(100vw - 20px));
-    top: 10px;
-    left: 10px;
-    max-height: calc(100% - 20px);
-  }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .preview-filter-panel {

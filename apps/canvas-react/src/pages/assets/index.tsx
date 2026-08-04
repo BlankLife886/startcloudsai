@@ -214,8 +214,8 @@ export default function AssetsPage() {
                     </div>
 
                     <div className="mx-auto mt-6 grid max-w-6xl gap-3 text-left">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-center">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                            <div className="grid gap-2 md:grid-cols-[56px_minmax(0,1fr)] md:items-center">
                                 <div className="text-xs font-medium text-stone-500 dark:text-stone-400">类型</div>
                                 <div className="flex flex-wrap gap-2">
                                     {kindOptions.map((option) => (
@@ -257,7 +257,7 @@ export default function AssetsPage() {
                 </div>
 
                 <div className="mx-auto flex max-w-7xl flex-col gap-5">
-                    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {visibleAssets.map((asset) => (
                             <AssetCard key={asset.id} asset={asset} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
                         ))}
@@ -307,7 +307,7 @@ export default function AssetsPage() {
                         <Form.Item name="tags" label="标签">
                             <Select mode="tags" tokenSeparators={[",", "，"]} placeholder="输入标签后回车" />
                         </Form.Item>
-                        <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="grid gap-4 md:grid-cols-2">
                             <Form.Item name="source" label="来源">
                                 <Input placeholder="手动添加 / 画布 / 提示词库" />
                             </Form.Item>

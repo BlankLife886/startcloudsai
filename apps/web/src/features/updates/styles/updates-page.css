@@ -900,41 +900,7 @@ html.color-scheme-dark.updates-gallery-page .updates-page {
   }
 }
 
-@media (max-width: 760px) {
-  .updates-page {
-    padding-inline: 14px;
-  }
 
-  .updates-copy {
-    grid-template-columns: 1fr;
-  }
-
-  .updates-copy__spine {
-    display: none;
-  }
-
-  .updates-month-rail::before,
-  .updates-entry__dot {
-    display: none;
-  }
-
-  .updates-entry {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .updates-entry__aside {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding-top: 0;
-    text-align: left;
-  }
-
-  .updates-entry__version {
-    margin-top: 0;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .updates-hint-dot {

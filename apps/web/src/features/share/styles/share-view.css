@@ -1967,39 +1967,7 @@ html.settings-no-animations .share-detail__panel {
   .share-detail__spine { display: none; }
 }
 
-@media (max-width: 620px) {
-  .community-page { padding: 18px 12px calc(80px + var(--app-bottom-nav-offset, 0px)); }
-  .community-copy__title { font-size: 2.15rem; letter-spacing: 0.1em; }
-  .community-copy__spine { font-size: 0.56rem; }
-  .community-stats { display: flex; }
-  .community-stats.is-comments-off { display: flex; }
-  .community-featured {
-    min-height: 220px;
-    max-height: none;
-    border-radius: 2px;
-  }
-  .community-featured__meta { left: 18px; right: 18px; }
-  .community-categories button,
-  .community-category-more > button { min-width: 0; height: 34px; padding: 0 10px; }
-  .community-category-more__panel { grid-template-columns: 1fr; }
-  .community-grid { gap: 16px 12px; }
-  .community-card { border-radius: 0; }
-  .community-card footer { min-height: 0; padding: 8px 1px 0; }
-  .community-card__author small { max-width: 76px; }
-  .community-card__actions { gap: 5px; }
-  .community-sidebar { grid-template-columns: 1fr; }
-  .share-detail { padding: 0; align-items: end; }
-  .share-detail__panel {
-    width: 100%;
-    height: 96vh;
-    border-radius: 16px 16px 0 0;
-    box-shadow: 0 -18px 48px rgba(8, 10, 20, 0.4);
-  }
-  .share-detail__visual { min-height: 42vh; }
-  .share-detail__frame { inset: 10px; }
-  .share-detail__content { padding: 18px 16px 20px; }
-  .share-detail__top { padding-right: 44px; }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .community-stats div,

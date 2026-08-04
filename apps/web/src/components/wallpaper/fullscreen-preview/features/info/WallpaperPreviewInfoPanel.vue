@@ -247,12 +247,5 @@ watch(wallpaperId, loadUserContent, { immediate: true })
   gap: 14px;
 }
 
-@media (max-width: 768px) {
-  .preview-info-panel {
-    top: 10px;
-    left: 10px;
-    width: min(320px, calc(100vw - 20px));
-    max-height: calc(100% - 20px);
-  }
-}
+
 </style>

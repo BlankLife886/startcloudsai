@@ -1200,39 +1200,7 @@ defineExpose({
   display: none;
 }
 
-@media (max-width: 768px) {
-  .device-frame--desktop {
-    width: min(100%, calc(100vw - 48px));
-  }
 
-  .device-frame--phone {
-    width: min(340px, calc(100vw - 64px), calc((100vh - 112px) * 430 / 932));
-  }
-
-  .phone-companion {
-    display: none;
-  }
-
-  .desktop-folder-column {
-    top: 10px;
-    left: 9px;
-    gap: 6px;
-  }
-
-  .desktop-folder {
-    width: 30px;
-  }
-
-  .desktop-folder i {
-    width: 22px;
-    height: 18px;
-    font-size: 1.05rem;
-  }
-
-  .desktop-folder span {
-    font-size: 0.54rem;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .desktop-metal-shine {

@@ -320,17 +320,6 @@ onBeforeUnmount(() => {
   transform: translateY(0) scale(1);
 }
 
-.msheet-header-actions .locale-switcher {
-  --locale-ink: var(--ms-heading, var(--nav-heading));
-  --locale-line: var(--ms-line, var(--nav-line));
-  --locale-panel: var(--ms-card, var(--nav-bg-solid));
-  --locale-soft: var(--ms-soft, var(--nav-accent-soft));
-}
-
-.msheet-header-actions .locale-switcher__menu {
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .locale-switcher__trigger,
   .locale-switcher__chevron,

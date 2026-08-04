@@ -478,25 +478,7 @@ const breakdownLabel = computed(() => {
   }
 }
 
-@media (max-width: 520px) {
-  .ai-cost-confirm-layer {
-    padding: 12px;
-  }
-  .ai-cost-confirm-panel {
-    padding: 18px;
-  }
-  .ai-cost-confirm-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .ai-cost-confirm-preference {
-    min-height: 28px;
-  }
-  .ai-cost-confirm-actions {
-    display: grid;
-    grid-template-columns: 0.8fr 1.2fr;
-  }
-}
+
 
 @media (prefers-reduced-motion: reduce) {
   .ai-cost-confirm-panel {

@@ -769,66 +769,7 @@ async function save() {
   }
 }
 
-@media (max-width: 560px) {
-  .profile-onboarding-layer {
-    padding: 10px;
-  }
 
-  .profile-onboarding-dialog {
-    max-height: calc(100dvh - 20px);
-    border-radius: 12px;
-  }
-
-  .profile-onboarding-head {
-    gap: 11px;
-    padding: 19px 18px 16px;
-  }
-
-  .profile-onboarding-mark {
-    width: 42px;
-    height: 42px;
-    border-radius: 12px;
-    font-size: 18px;
-  }
-
-  .profile-onboarding-head h2 {
-    font-size: 21px;
-  }
-
-  .profile-onboarding-form {
-    gap: 16px;
-    padding: 18px;
-  }
-
-  .profile-onboarding-identity {
-    grid-template-columns: 86px minmax(0, 1fr);
-    gap: 13px;
-  }
-
-  .profile-onboarding-avatar {
-    width: 72px;
-    height: 72px;
-  }
-
-  .profile-onboarding-form footer {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .profile-onboarding-footer-note {
-    order: 2;
-  }
-
-  .profile-onboarding-actions {
-    width: 100%;
-  }
-
-  .profile-onboarding-actions button {
-    flex: 1;
-    padding: 0 10px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .profile-onboarding-enter-active,

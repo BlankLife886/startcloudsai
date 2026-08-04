@@ -1248,66 +1248,7 @@
   }
 }
 
-@media (max-width: 768px) {
-  .collage-studio-page {
-    height: auto;
-    max-height: none;
-    overflow: visible;
-  }
 
-  .collage-studio {
-    height: auto;
-  }
-
-  .collage-workspace {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: none;
-  }
-
-  .collage-sidebar {
-    grid-row: auto;
-    max-height: 320px;
-    border-right: 0;
-    border-bottom: 1px solid var(--collage-border);
-  }
-
-  .collage-stage-wrap {
-    min-height: 60svh;
-  }
-
-  .collage-inspector {
-    grid-column: auto;
-    grid-row: auto;
-    max-height: none;
-  }
-
-  .collage-brand small {
-    display: none;
-  }
-
-  .collage-topbar {
-    flex-wrap: wrap;
-    padding: 8px 10px;
-  }
-
-  .collage-top-status {
-    order: 3;
-    width: 100%;
-  }
-
-  .collage-top-status span {
-    flex: 1;
-    justify-content: center;
-  }
-
-  .collage-stage-sizer {
-    padding: 14px;
-  }
-
-  .collage-stage-hint {
-    display: none;
-  }
-}
 
 .spin {
   animation: collage-spin 0.85s linear infinite;

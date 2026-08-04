@@ -1483,12 +1483,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 720px) {
-  .status-rail__clock em,
-  .status-rail__title {
-    display: none;
-  }
-}
+
 
 .dashboard-board {
   flex: 1;

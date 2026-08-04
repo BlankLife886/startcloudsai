@@ -88,12 +88,5 @@ defineEmits<{
 .admin-list-shell__footer :deep(.cursor-pager) {
   width: 100%;
 }
-@media (max-width: 720px) {
-  .admin-list-shell:not(.is-fill) {
-    grid-template-rows: minmax(360px, 62vh) auto;
-  }
-  .admin-list-shell__footer {
-    padding: 8px 12px;
-  }
-}
+
 </style>

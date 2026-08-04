@@ -61,7 +61,6 @@ const imageSize = ref('1024x1024')
 const imageQuality = ref('high')
 const serviceError = ref('')
 const serviceLoading = ref(true)
-const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const pendingDeleteId = ref('')
 const selectedImage = ref(null)
@@ -473,7 +472,6 @@ function newConversation() {
   activeId.value = ''
   editingMessageId.value = ''
   editingMessageDraft.value = ''
-  sidebarOpen.value = false
   draft.value = ''
   referenceImages.value = []
   quotedMessage.value = null
@@ -661,7 +659,6 @@ function selectConversation(id) {
   editingMessageDraft.value = ''
   visibleMessageLimit.value = MESSAGE_BATCH_SIZE
   activeId.value = id
-  sidebarOpen.value = false
   nextTick(() => {
     animateConversationSelection(id, previousId)
     scrollToBottom()
@@ -2460,11 +2457,6 @@ function stepImagePreview(direction) {
 }
 
 function toggleSidebar() {
-  // 与 CSS 的抽屉断点保持一致（≤900px 走遮罩抽屉，>900px 走折叠）
-  if (window.matchMedia('(max-width: 900px)').matches) {
-    sidebarOpen.value = !sidebarOpen.value
-    return
-  }
   // FLIP + GSAP：布局仍瞬时切换（单次重排,不逐帧 reflow）,
   // 视觉上主区用纯 transform 从旧位置弹性滑入新位置（back.out 回弹）。
   const mainEl = mainRef.value
@@ -2614,7 +2606,6 @@ function handleGlobalKeydown(event) {
   } else if (inlineMenuType.value) closeInlineMenu()
   else if (assetLibraryOpen.value) assetLibraryOpen.value = false
   else if (pendingDeleteId.value) pendingDeleteId.value = ''
-  else if (sidebarOpen.value) sidebarOpen.value = false
 }
 
 function handleGlobalClick(event) {
@@ -2832,17 +2823,7 @@ onBeforeUnmount(() => {
       'is-sidebar-collapsed': sidebarCollapsed,
     }"
   >
-    <Transition name="scrim-fade">
-      <button
-        v-if="sidebarOpen"
-        class="assistant-scrim"
-        type="button"
-        aria-label="关闭侧栏"
-        @click="sidebarOpen = false"
-      ></button>
-    </Transition>
-
-    <aside ref="sidebarRef" class="assistant-sidebar" :class="{ 'is-open': sidebarOpen }">
+    <aside ref="sidebarRef" class="assistant-sidebar">
       <div class="assistant-brand-row">
         <div class="assistant-brand">
           <strong>开启创作</strong>
@@ -2962,15 +2943,6 @@ onBeforeUnmount(() => {
       </div>
       <header v-if="messages.length" class="assistant-topbar">
         <div class="topbar-title">
-          <button
-            class="icon-button mobile-sidebar-button"
-            type="button"
-            title="打开侧栏"
-            aria-label="打开侧栏"
-            @click="toggleSidebar"
-          >
-            <i class="bi bi-layout-sidebar"></i>
-          </button>
           <span
             v-if="activeConversation?.title"
             class="active-conversation-title"

@@ -143,26 +143,7 @@ function closeNotification(id) {
   transform: scale(0.96);
 }
 
-@media (max-width: 640px) {
-  .is-top-right,
-  .is-top-left {
-    left: 12px;
-    right: 12px;
-    width: auto;
-  }
 
-  .is-bottom-right,
-  .is-bottom-left {
-    left: 12px;
-    right: 12px;
-    width: auto;
-  }
-
-  .is-top-center,
-  .is-bottom-center {
-    width: calc(100vw - 24px);
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .toast-enter-active,

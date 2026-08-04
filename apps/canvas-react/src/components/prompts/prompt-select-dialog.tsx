@@ -38,7 +38,7 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
                     <Input size="large" prefix={<Search className="size-4 text-stone-400" />} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="按标题查询" />
                 </div>
                 <div className="mt-5 grid gap-3">
-                    <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-start">
+                    <div className="grid gap-2 md:grid-cols-[56px_minmax(0,1fr)] md:items-start">
                         <div className="pt-2 text-xs font-medium text-stone-500 dark:text-stone-400">分类</div>
                         <div className="flex flex-wrap gap-2">
                             {promptCategories.map((category) => (
@@ -48,7 +48,7 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
                             ))}
                         </div>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-start">
+                    <div className="grid gap-2 md:grid-cols-[56px_minmax(0,1fr)] md:items-start">
                         <div className="pt-2 text-xs font-medium text-stone-500 dark:text-stone-400">标签</div>
                         <div className="flex flex-wrap gap-2">
                             {promptTags.map((tag) => {
@@ -68,7 +68,7 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
                             <Spin />
                         </div>
                     ) : null}
-                    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
                         {items.map((item) => (
                             <PromptCard key={item.id} item={item} onOpen={() => selectPrompt(item.prompt)} onCopy={() => selectPrompt(item.prompt)} actionLabel="使用此提示词" actionIcon={<Check className="size-3.5" />} actionType="primary" />
                         ))}

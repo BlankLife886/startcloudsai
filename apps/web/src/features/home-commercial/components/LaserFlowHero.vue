@@ -154,8 +154,7 @@ function setupScene() {
   function resize() {
     const width = Math.max(1, mount.clientWidth)
     const height = Math.max(1, mount.clientHeight)
-    const mobile = window.matchMedia('(max-width: 760px)').matches
-    const dpr = Math.min(window.devicePixelRatio || 1, mobile ? 1 : 1.3)
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.3)
     renderer.setPixelRatio(dpr)
     renderer.setSize(width, height, false)
     uniforms.uResolution.value.set(width * dpr, height * dpr)

@@ -1056,21 +1056,7 @@ onUnmounted(() => {
   color: var(--accent-ink);
 }
 
-@media (max-width: 760px) {
-  .share-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
 
-  .share-toolbar__lead {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .share-toolbar__aside {
-    justify-content: space-between;
-  }
-}
 </style>
 
 <style lang="scss">
@@ -1541,34 +1527,7 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 760px) {
-  .share-lightbox__bar,
-  .share-lightbox__footer {
-    flex-direction: column;
-    align-items: stretch;
-  }
 
-  .share-lightbox__nav,
-  .share-lightbox__hint {
-    display: none;
-  }
-
-  .share-lightbox__actions {
-    width: 100%;
-    grid-auto-columns: minmax(0, 1fr);
-  }
-
-  .share-lightbox__tools {
-    justify-content: space-between;
-  }
-
-  .share-lightbox__image {
-    width: 100%;
-    height: 100%;
-    max-width: 100%;
-    max-height: 100%;
-  }
-}
 
 /* 审核对话框（拒绝 / 违规）——样式挂在弹窗内容根节点，不依赖 teleport 外层 class */
 .share-review-panel {
@@ -1774,15 +1733,5 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 760px) {
-  .gallery-prompt-layout {
-    grid-template-columns: 1fr;
-  }
 
-  .gallery-prompt-cover > .progressive-image,
-  .gallery-prompt-cover > div {
-    min-height: 190px;
-    height: 32vh;
-  }
-}
 </style>

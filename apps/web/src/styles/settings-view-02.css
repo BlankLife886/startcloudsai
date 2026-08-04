@@ -769,12 +769,7 @@
   text-align: left;
 }
 
-@media (max-width: 760px) {
-  .performance-quality-row,
-  .performance-metric-grid {
-    grid-template-columns: 1fr;
-  }
-}
+
 
 .metric-number-shell {
   min-height: 34px;
