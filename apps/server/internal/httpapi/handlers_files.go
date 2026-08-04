@@ -14,18 +14,32 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-// sniffImage 魔数识别 → (ext, contentType)；不支持返回 ("", "")。
-func sniffImage(data []byte) (string, string) {
+// sniffUploadMedia identifies supported upload formats from their signatures.
+func sniffUploadMedia(data []byte) (ext string, contentType string, image bool) {
 	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
-		return "png", "image/png"
+		return "png", "image/png", true
 	}
 	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
-		return "jpg", "image/jpeg"
+		return "jpg", "image/jpeg", true
 	}
 	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
-		return "webp", "image/webp"
+		return "webp", "image/webp", true
 	}
-	return "", ""
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		return "mp4", "video/mp4", false
+	}
+	if len(data) >= 4 && data[0] == 0x1a && data[1] == 0x45 && data[2] == 0xdf && data[3] == 0xa3 {
+		return "webm", "video/webm", false
+	}
+	return "", "", false
+}
+
+func sniffImage(data []byte) (string, string) {
+	ext, contentType, image := sniffUploadMedia(data)
+	if !image {
+		return "", ""
+	}
+	return ext, contentType
 }
 
 func (s *Server) upload(c *gin.Context) {
@@ -66,9 +80,22 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, apperr.E("unsupported_file", "文件为空", 400))
 		return
 	}
-	ext, contentType := sniffImage(data)
+	ext, contentType, isImage := sniffUploadMedia(data)
 	if ext == "" {
-		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
+		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片或 mp4 / webm 视频", 400))
+		return
+	}
+	fileID := uuid.NewString()
+	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
+	if !isImage {
+		if err := s.Storage.UploadBytes(c.Request.Context(), key, data, contentType); err != nil {
+			fail(c, err)
+			return
+		}
+		respondCreated(c, gin.H{
+			"key": key, "url": "/api/v1/files/" + key,
+			"contentType": contentType, "sizeBytes": len(data),
+		})
 		return
 	}
 	thumbnail, err := media.ThumbnailJPEG(data, 512)
@@ -76,8 +103,6 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
 		return
 	}
-	fileID := uuid.NewString()
-	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
 	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s.jpg", user.ID, fileID)
 	type uploadResult struct {
 		key string

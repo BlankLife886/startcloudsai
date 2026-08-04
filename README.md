@@ -2,13 +2,14 @@
 
 星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、UI 设计稿、超高清模型图、游戏美术和 AI 拼图工作台，并包含共享画廊、提示词库、价格页、兑换码钱包与独立运营后台。价格页和只读套餐展示已恢复；支付、订单创建和套餐购买当前在所有环境中停用。
 
-项目由两个 Vue 3 单页应用和一个 Go 服务组成，生产环境通过 Docker Compose 统一部署。
+项目由 Vue 主站、React 无限画布、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
 
 ## 仓库结构
 
 ```text
 .
 ├── apps/web/       # 用户端：Vue 3 + Vite + Pinia
+├── apps/canvas-react/ # 无限画布：React 19 + Zustand
 ├── apps/admin/     # 管理端：Vue 3 + Vite + TypeScript + Element Plus
 ├── apps/server/    # API 与 Worker：Go + Gin + pgx + Asynq
 ├── deploy/         # 统一 nginx 网关配置
@@ -20,8 +21,9 @@
 
 | 服务 | 职责 |
 | --- | --- |
-| `gateway` | 唯一入口；`/` 转发用户端，`/admin/` 转发管理端，`/api/v1/` 转发 API |
+| `gateway` | 唯一入口；`/` 转发用户端，`/canvas-app/` 转发 React 画布资源，`/admin/` 转发管理端，`/api/v1/` 转发 API |
 | `web` | 用户端静态站 |
+| `canvas` | React 无限画布静态站；项目保存、文件和 AI 请求复用站内 API |
 | `admin` | 管理端静态站 |
 | `server` | Gin API；启动时自动执行 Goose 数据库迁移 |
 | `worker` | Asynq Worker；执行图片任务和定时维护任务 |
@@ -102,6 +104,11 @@ go run ./cmd/server worker
 
 # 用户端：http://localhost:3102
 cd apps/web
+npm ci
+npm run dev
+
+# 无限画布独立开发服务：http://localhost:3104/canvas
+cd apps/canvas-react
 npm ci
 npm run dev
 

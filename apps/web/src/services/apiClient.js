@@ -41,6 +41,13 @@ export function buildApiPath(path, query = null) {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item === undefined || item === null || item === '') continue
+        params.append(key, String(item))
+      }
+      continue
+    }
     params.set(key, String(value))
   }
   const qs = params.toString()

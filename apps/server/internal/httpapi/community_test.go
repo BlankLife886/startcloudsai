@@ -38,6 +38,14 @@ func TestPromptTodayRangeUsesBeijingCalendarDay(t *testing.T) {
 	}
 }
 
+func TestNormalizePromptQueryTagsDropsEmptyAndDuplicateValues(t *testing.T) {
+	got := normalizePromptQueryTags([]string{"", " portrait ", "  ", "design", "portrait"})
+	want := []string{"portrait", "design"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("normalized tags = %v, want %v", got, want)
+	}
+}
+
 func newCommunityEnv(t *testing.T) *communityEnv {
 	t.Helper()
 	st := testdb.Setup(t)

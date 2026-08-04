@@ -4110,8 +4110,16 @@ function refreshHistory() {
 .ms3-ruler {
   position: absolute;
   z-index: 2;
-  pointer-events: none;
-  opacity: 0.55;
+  pointer-events: auto;
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0.72;
+  cursor: crosshair;
+  will-change: transform, opacity, filter;
+  transition:
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ms3-ruler.is-top {
@@ -4120,8 +4128,10 @@ function refreshHistory() {
   right: 0;
   height: 7px;
   background:
-    repeating-linear-gradient(90deg, #ffffff38 0 1px, transparent 1px 12px) 0 0 / 100% 4px no-repeat,
-    repeating-linear-gradient(90deg, #ffffff59 0 1px, transparent 1px 60px) 0 0 / 100% 7px no-repeat;
+    repeating-linear-gradient(90deg, #17191d 0 1px, transparent 1px 12px) 0 0 / 100% 4px
+      no-repeat,
+    repeating-linear-gradient(90deg, #c4c9d1 0 1px, transparent 1px 60px) 0 0 / 100% 7px
+      no-repeat;
 }
 
 .ms3-ruler.is-left {
@@ -4130,10 +4140,24 @@ function refreshHistory() {
   left: 0;
   width: 7px;
   background:
-    repeating-linear-gradient(180deg, #ffffff38 0 1px, transparent 1px 12px) 0 0 / 4px 100%
+    repeating-linear-gradient(180deg, #17191d 0 1px, transparent 1px 12px) 0 0 / 4px 100%
       no-repeat,
-    repeating-linear-gradient(180deg, #ffffff59 0 1px, transparent 1px 60px) 0 0 / 7px 100%
+    repeating-linear-gradient(180deg, #c4c9d1 0 1px, transparent 1px 60px) 0 0 / 7px 100%
       no-repeat;
+}
+
+.ms3-ruler.is-top:hover {
+  opacity: 1;
+  filter: brightness(1.05);
+  transform: scaleY(1.35);
+  transform-origin: center top;
+}
+
+.ms3-ruler.is-left:hover {
+  opacity: 1;
+  filter: brightness(1.05);
+  transform: scaleX(1.35);
+  transform-origin: left center;
 }
 
 /* 顶栏机加工斜纹 */
@@ -4581,7 +4605,7 @@ function refreshHistory() {
 
 .ms3.is-light .ms3-ruler.is-top,
 .ms3.is-light .ms3-ruler.is-left {
-  opacity: 0.42;
+  opacity: 0.78;
 }
 
 .ms3.is-light .ms3-groupbar button {

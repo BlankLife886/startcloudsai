@@ -8,6 +8,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AdminDialog: typeof import('./components/AdminDialog.vue')['default']
     AdminListShell: typeof import('./components/AdminListShell.vue')['default']
     CursorPager: typeof import('./components/CursorPager.vue')['default']
     EChart: typeof import('./components/EChart.vue')['default']

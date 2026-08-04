@@ -157,3 +157,33 @@ func TestBalance(t *testing.T) {
 		t.Fatalf("balance=%v err=%v", balance, err)
 	}
 }
+
+func TestCreateBackgroundRemovalTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/client/job/CreateTask" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var body struct {
+			Model string `json:"model"`
+			Input struct {
+				ImageURLs []string `json:"img_urls"`
+			} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Model != "image-background-remove" || len(body.Input.ImageURLs) != 1 || body.Input.ImageURLs[0] != "https://cdn.example/source.png" {
+			t.Fatalf("body = %#v", body)
+		}
+		fmt.Fprint(w, `{"code":200,"message":"success","data":{"task_id":"remove-1"}}`)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", "image-background-remove", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, err := client.CreateBackgroundRemovalTask(context.Background(), "https://cdn.example/source.png")
+	if err != nil || taskID != "remove-1" {
+		t.Fatalf("taskID=%q err=%v", taskID, err)
+	}
+}

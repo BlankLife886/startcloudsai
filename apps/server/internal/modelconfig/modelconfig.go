@@ -15,13 +15,16 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 3
+	Version    = 4
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
 
-	ModelKindImage = "image"
-	ModelKindChat  = "chat"
+	ModelKindImage     = "image"
+	ModelKindChat      = "chat"
+	ModelKindImageTool = "image_tool"
+
+	ImageToolBackgroundRemove = "background_remove"
 
 	WorkspaceAssistant  = "assistant"
 	WorkspaceT2I        = "t2i"
@@ -131,6 +134,7 @@ type Model struct {
 	ProviderID                  string              `json:"providerId"`
 	UpstreamModel               string              `json:"upstreamModel"`
 	Kind                        string              `json:"kind"`
+	Tool                        string              `json:"tool,omitempty"`
 	Description                 string              `json:"description,omitempty"`
 	PriceCents                  int64               `json:"priceCents"`
 	DiscountPriceCents          *int64              `json:"discountPriceCents"`
@@ -326,8 +330,12 @@ func normalize(cfg *Config) {
 		model.ProviderID = strings.TrimSpace(model.ProviderID)
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
 		model.Kind = strings.TrimSpace(model.Kind)
+		model.Tool = strings.TrimSpace(model.Tool)
 		if model.Kind == "" {
 			model.Kind = ModelKindImage
+		}
+		if model.Kind != ModelKindImageTool {
+			model.Tool = ""
 		}
 		model.Description = strings.TrimSpace(model.Description)
 		model.Resolutions = cleanStrings(model.Resolutions)
@@ -370,7 +378,7 @@ func normalize(cfg *Config) {
 			}
 		}
 	}
-	for _, kind := range []string{ModelKindImage, ModelKindChat} {
+	for _, kind := range []string{ModelKindImage, ModelKindChat, ModelKindImageTool} {
 		if defaultKinds[kind] {
 			continue
 		}
@@ -532,7 +540,11 @@ func ValidAdapter(value string) bool {
 }
 
 func ValidModelKind(value string) bool {
-	return value == ModelKindImage || value == ModelKindChat
+	return value == ModelKindImage || value == ModelKindChat || value == ModelKindImageTool
+}
+
+func ValidImageTool(value string) bool {
+	return value == ImageToolBackgroundRemove
 }
 
 func ValidWorkspace(value string) bool {
@@ -597,6 +609,14 @@ func Validate(cfg Config) error {
 		}
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
+		}
+		if model.Kind == ModelKindImageTool {
+			if !ValidImageTool(model.Tool) {
+				return fmt.Errorf("图片工具 %s 的工具能力无效", model.Name)
+			}
+			if providers[model.ProviderID].Adapter != AdapterCRUN {
+				return fmt.Errorf("图片工具 %s 当前只支持 CRUN 服务商", model.Name)
+			}
 		}
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
@@ -871,6 +891,39 @@ func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) 
 	return fallback, fallback != nil
 }
 
+func PublicImageTools(cfg Config, tool string) []Selection {
+	models := PublicModels(cfg, ModelKindImageTool)
+	out := make([]Selection, 0, len(models))
+	for _, selection := range models {
+		if selection.Model.Tool == tool {
+			out = append(out, selection)
+		}
+	}
+	return out
+}
+
+func SelectPublicImageTool(cfg Config, tool, requestedModelID string) (*Selection, bool) {
+	requestedModelID = strings.TrimSpace(requestedModelID)
+	models := PublicImageTools(cfg, tool)
+	if requestedModelID != "" {
+		for index := range models {
+			if models[index].Model.ID == requestedModelID {
+				return &models[index], true
+			}
+		}
+		return nil, false
+	}
+	for index := range models {
+		if models[index].Model.Default {
+			return &models[index], true
+		}
+	}
+	if len(models) == 0 {
+		return nil, false
+	}
+	return &models[0], true
+}
+
 // PublicModelsForWorkspace returns only the models explicitly assigned to a
 // page. A missing binding keeps Version 2 behavior; a present empty binding
 // intentionally disables models for that page.
@@ -1009,6 +1062,16 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 }
 
 func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, false, 0)
+}
+
+// ExecutionCandidatesRouteAcrossProviders expands execution capacity to enabled
+// public models with the same type, display name and effective task price.
+func ExecutionCandidatesRouteAcrossProviders(cfg Config, providerID, modelID, routeID string, expectedPrice int64) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, true, expectedPrice)
+}
+
+func executionCandidatesRoute(cfg Config, providerID, modelID, routeID string, acrossProviders bool, expectedPrice int64) []Selection {
 	normalize(&cfg)
 	var selected Model
 	found := false
@@ -1021,27 +1084,34 @@ func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) [
 	if !found {
 		return nil
 	}
-	var selectedProvider Provider
-	for _, provider := range cfg.Providers {
-		if provider.ID == selected.ProviderID {
-			selectedProvider = provider
-			break
+	models := []Model{selected}
+	seenProviders := map[string]bool{selected.ProviderID: true}
+	if acrossProviders && EffectivePrice(selected) == expectedPrice {
+		for _, model := range cfg.Models {
+			if seenProviders[model.ProviderID] || !model.Enabled || !model.Public || model.Kind != selected.Kind || model.Tool != selected.Tool ||
+				!strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(selected.Name)) ||
+				EffectivePrice(model) != expectedPrice {
+				continue
+			}
+			models = append(models, model)
+			seenProviders[model.ProviderID] = true
 		}
 	}
-	if selectedProvider.ID == "" {
-		return nil
-	}
-	routes := executionRoutes(selectedProvider)
-	out := make([]Selection, 0, len(routes))
-	for _, route := range routes {
-		if strings.TrimSpace(route.APIKey) == "" {
-			continue
+	out := make([]Selection, 0)
+	for _, model := range models {
+		provider := cfgProviderByID(cfg, model.ProviderID)
+		for _, route := range executionRoutes(provider) {
+			if strings.TrimSpace(route.APIKey) == "" {
+				continue
+			}
+			out = append(out, Selection{Provider: route, Model: model})
 		}
-		out = append(out, Selection{Provider: route, Model: selected})
 	}
 	if routeID != "" {
 		sort.SliceStable(out, func(i, j int) bool {
-			return out[i].Provider.RouteID == routeID && out[j].Provider.RouteID != routeID
+			leftPreferred := out[i].Provider.ID == providerID && out[i].Provider.RouteID == routeID
+			rightPreferred := out[j].Provider.ID == providerID && out[j].Provider.RouteID == routeID
+			return leftPreferred && !rightPreferred
 		})
 	}
 	return out

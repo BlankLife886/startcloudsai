@@ -6,6 +6,7 @@ import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import ProgressiveAuthenticatedImage from '@/components/common/ProgressiveAuthenticatedImage.vue'
 import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
 import AspectRatioSelect from './components/AspectRatioSelect.vue'
+import BackgroundRemovalSetupDialog from './components/BackgroundRemovalSetupDialog.vue'
 import DeleteHistoryConfirmDialog from './components/DeleteHistoryConfirmDialog.vue'
 import UpscaleProcessingOverlay from './components/UpscaleProcessingOverlay.vue'
 import '@/features/ai-wallpaper/styles/t2i-page.css'
@@ -53,6 +54,7 @@ const {
   promptPolishEnabled,
   autoTranslateEnabled,
   transparentPngEnabled,
+  autoBackgroundRemovalEnabled,
   referenceImages,
   aspectRatio,
   imageCount,
@@ -62,12 +64,14 @@ const {
   moderationLevel,
   maxReferenceImages,
   generationCostLabel,
+  localMaskEditCostLabel,
   inputMode,
   isRunning,
   isPageLoading,
   resultRevealing,
   clearResultReveal,
   requestCreateTask,
+  getLocalMaskEditCostSnapshot,
   canCreateTask,
   skillOptions,
   selectedSkills,
@@ -105,8 +109,37 @@ const {
   activePublicModelOptions,
   selectedPublicModel,
   currentPublicModel,
+  backgroundRemovalModel,
   isAuthenticated,
 } = useAiWallpaperStudioState()
+
+const backgroundRemovalAvailable = computed(() => Boolean(backgroundRemovalModel.value?.id))
+const SOLID_BACKGROUND_SKILL_ID = 'solid-background-for-removal'
+const backgroundRemovalSetupOpen = ref(false)
+
+function setSolidBackgroundSkill(enabled) {
+  const selected = selectedSkillIds.value.includes(SOLID_BACKGROUND_SKILL_ID)
+  if (selected !== enabled) toggleSkill(SOLID_BACKGROUND_SKILL_ID)
+}
+
+function handleAutoBackgroundRemovalToggle() {
+  if (autoBackgroundRemovalEnabled.value) {
+    autoBackgroundRemovalEnabled.value = false
+    setSolidBackgroundSkill(false)
+    return
+  }
+  backgroundRemovalSetupOpen.value = true
+}
+
+function chooseBackgroundRemovalSetup(useSolidBackground) {
+  backgroundRemovalSetupOpen.value = false
+  autoBackgroundRemovalEnabled.value = true
+  setSolidBackgroundSkill(useSolidBackground === true)
+}
+
+function cancelBackgroundRemovalSetup() {
+  backgroundRemovalSetupOpen.value = false
+}
 
 const modelSelectOptions = computed(() =>
   activePublicModelOptions.value.map((model) => ({
@@ -252,8 +285,21 @@ const actionBusyId = ref('')
 const localMaskEditorOpen = ref(false)
 const localMaskEditorMounted = ref(false)
 const localMaskEditorBusy = ref(false)
+const localMaskEditorSubmitted = ref(false)
+const localMaskSubmittedTaskId = ref('')
+const localMaskCostPreparing = ref(false)
+const localMaskPendingSubmit = ref(null)
+const localMaskCostConfirmPayload = ref(null)
 const localMaskEditorTask = ref(null)
 const localMaskEditorUrl = ref('')
+const localMaskSubmittedTask = computed(() =>
+  tasks.value.find((task) => String(task.id) === localMaskSubmittedTaskId.value),
+)
+const localMaskResultUrl = computed(() => uniqueTaskOutputs(localMaskSubmittedTask.value)[0] || '')
+const localMaskResultStatus = computed(() =>
+  String(localMaskSubmittedTask.value?.status || '').toLowerCase(),
+)
+const localMaskResultError = computed(() => String(localMaskSubmittedTask.value?.error || ''))
 const deleteConfirmOpen = ref(false)
 const deleteRequest = ref(null)
 const regenerateConfirmOpen = ref(false)
@@ -382,7 +428,12 @@ const enhanceParameterSummary = computed(() => {
     `润色${promptPolishEnabled.value ? '开' : '关'}`,
     `翻译${autoTranslateEnabled.value ? '开' : '关'}`,
     transparentLabel,
-  ].join(' · ')
+    backgroundRemovalAvailable.value
+      ? `抠图${autoBackgroundRemovalEnabled.value ? '开' : '关'}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 })
 
 watch(hasOutputControls, (available) => {
@@ -2001,6 +2052,44 @@ function taskThumbnailOutputs(task) {
   return uniqueTaskThumbnailOutputs(task)
 }
 
+function isLocalMaskEdit(task) {
+  return (
+    String(task?.sourceMode || '') === 'mask-edit' || task?.kind === 'wallpaper-image-mask-edit'
+  )
+}
+
+function localEditSourceTask(task) {
+  if (!isLocalMaskEdit(task)) return null
+  const localId = String(task?.localEditSourceTaskId || '')
+  const serverId = String(task?.localEditSourceServerJobId || '')
+  return (
+    tasks.value.find(
+      (candidate) =>
+        (localId && String(candidate?.id || '') === localId) ||
+        (serverId && String(candidate?.serverJobId || '') === serverId),
+    ) || null
+  )
+}
+
+function localEditSourcePreview(task) {
+  const sourceTask = localEditSourceTask(task)
+  const preferred = String(task?.localEditSourcePreview || task?.maskSourceUrl || '').trim()
+  if (preferred) return preferred
+  return taskThumbnailOutputs(sourceTask)[0] || taskOutputs(sourceTask)[0] || ''
+}
+
+function openLocalEditSource(task, event) {
+  const sourceTask = localEditSourceTask(task)
+  if (!sourceTask) {
+    notificationService.info('原始图片已不在当前作品列表中')
+    return
+  }
+  const outputs = taskOutputs(sourceTask)
+  const preferred = String(task?.localEditSourcePreview || task?.maskSourceUrl || '').trim()
+  const index = Math.max(0, outputs.indexOf(preferred))
+  openLightbox(sourceTask, index, event)
+}
+
 function taskMeta(task) {
   const upstreamSize = formatOutputSize(task?.upstreamOutputSize || task?.outputSize)
   const actualSize = formatOutputSize(task?.actualOutputSize)
@@ -2349,36 +2438,98 @@ function openLocalMaskEditor() {
   localMaskEditorTask.value = lightboxTask.value
   localMaskEditorUrl.value = lightboxUrl.value
   localMaskEditorMounted.value = true
+  localMaskEditorSubmitted.value = false
+  localMaskSubmittedTaskId.value = ''
+  clearLightboxChromeHideTimer()
+  lightboxChromeVisible.value = true
   localMaskEditorOpen.value = true
 }
 
-function closeLocalMaskEditor() {
-  if (localMaskEditorBusy.value) return
+function resetLocalMaskEditorState() {
   localMaskEditorOpen.value = false
+  localMaskEditorSubmitted.value = false
+  localMaskSubmittedTaskId.value = ''
+  localMaskCostPreparing.value = false
+  localMaskPendingSubmit.value = null
+  localMaskCostConfirmPayload.value = null
   localMaskEditorTask.value = null
   localMaskEditorUrl.value = ''
 }
 
+function closeLocalMaskEditor() {
+  const resultTask = localMaskSubmittedTask.value
+  const resultUrl = localMaskResultUrl.value
+  resetLocalMaskEditorState()
+  if (resultTask && resultUrl) {
+    applyLightboxContent(resultTask, 0, resultUrl)
+    return
+  }
+  wakeLightboxChrome()
+}
+
 async function submitLocalMaskEdit(payload) {
-  if (localMaskEditorBusy.value || !localMaskEditorTask.value) return
+  if (
+    localMaskEditorBusy.value ||
+    localMaskCostPreparing.value ||
+    localMaskEditorSubmitted.value ||
+    !localMaskEditorTask.value
+  ) {
+    return
+  }
+  localMaskCostPreparing.value = true
+  try {
+    const snapshot = await getLocalMaskEditCostSnapshot()
+    if (!snapshot) return
+    localMaskPendingSubmit.value = payload
+    localMaskCostConfirmPayload.value = snapshot
+  } catch (error) {
+    notificationService.error(error?.message || '无法读取局部编辑费用，请稍后重试')
+  } finally {
+    localMaskCostPreparing.value = false
+  }
+}
+
+async function runConfirmedLocalMaskEdit(payload) {
+  if (localMaskEditorBusy.value || !payload || !localMaskEditorTask.value) return
+  const sourceTask = localMaskEditorTask.value
+  const sourceUrl = localMaskEditorUrl.value
   localMaskEditorBusy.value = true
   try {
-    await createMaskedEditTask({
-      sourceTask: localMaskEditorTask.value,
-      sourceUrl: localMaskEditorUrl.value,
+    const submittedTask = await createMaskedEditTask({
+      sourceTask,
+      sourceUrl,
+      sourceBlob: payload?.sourceBlob,
       maskFile: payload?.maskFile,
       prompt: payload?.prompt,
     })
-    localMaskEditorOpen.value = false
-    localMaskEditorTask.value = null
-    localMaskEditorUrl.value = ''
-    closeLightbox()
-    notificationService.success('局部编辑任务已提交，未选区域将要求保持不变')
+    localMaskSubmittedTaskId.value = String(submittedTask?.id || '')
+    localMaskEditorSubmitted.value = true
+    notificationService.success('局部编辑任务已提交，可关闭窗口等待生成结果')
   } catch (error) {
     notificationService.error(error?.message || '局部编辑提交失败，请更换支持蒙版的模型重试')
   } finally {
     localMaskEditorBusy.value = false
   }
+}
+
+function confirmUnifiedCost() {
+  if (!localMaskCostConfirmPayload.value) {
+    confirmCostAndCreate()
+    return
+  }
+  const payload = localMaskPendingSubmit.value
+  localMaskPendingSubmit.value = null
+  localMaskCostConfirmPayload.value = null
+  void runConfirmedLocalMaskEdit(payload)
+}
+
+function cancelUnifiedCost() {
+  if (!localMaskCostConfirmPayload.value) {
+    cancelCostConfirm()
+    return
+  }
+  localMaskPendingSubmit.value = null
+  localMaskCostConfirmPayload.value = null
 }
 
 function clearLightboxChromeHideTimer() {
@@ -2415,6 +2566,7 @@ function closeLightbox() {
 }
 
 function finishCloseLightbox() {
+  resetLocalMaskEditorState()
   clearLightboxChromeHideTimer()
   lightboxChromeVisible.value = true
   resetLightboxView()
@@ -3102,6 +3254,23 @@ function setMainTab(tab) {
                   </span>
                   <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
                 </button>
+                <button
+                  v-if="backgroundRemovalAvailable"
+                  type="button"
+                  class="t2i-prompt-toggle"
+                  :class="{ 'is-on': autoBackgroundRemovalEnabled }"
+                  role="switch"
+                  :aria-checked="autoBackgroundRemovalEnabled"
+                  :disabled="outputType !== 'image'"
+                  title="生图成功后自动移除背景；生图失败、取消或无结果时不会调用"
+                  @click="handleAutoBackgroundRemovalToggle"
+                >
+                  <span class="t2i-prompt-toggle-copy">
+                    <i class="bi bi-person-bounding-box" aria-hidden="true"></i>
+                    生成后抠图
+                  </span>
+                  <span class="t2i-mini-switch" aria-hidden="true"><span></span></span>
+                </button>
               </div>
             </section>
           </Transition>
@@ -3281,6 +3450,22 @@ function setMainTab(tab) {
                           @error="markImageUnavailable(cell.task, cell.index, cell.url)"
                         />
                       </button>
+                      <button
+                        v-if="isLocalMaskEdit(cell.task)"
+                        type="button"
+                        class="t2i-local-edit-origin is-stage"
+                        title="查看本次局部编辑使用的原图"
+                        @click.stop="openLocalEditSource(cell.task, $event)"
+                      >
+                        <AuthenticatedImage
+                          v-if="localEditSourcePreview(cell.task)"
+                          :src="localEditSourcePreview(cell.task)"
+                          alt=""
+                          loading="lazy"
+                        />
+                        <i v-else class="bi bi-image" aria-hidden="true"></i>
+                        <span><strong>局部编辑</strong><small>查看来源原图</small></span>
+                      </button>
                       <div
                         v-if="isRegenerating(cell.task)"
                         class="t2i-regenerate-overlay is-cell"
@@ -3306,7 +3491,9 @@ function setMainTab(tab) {
                       <button
                         type="button"
                         class="t2i-stage-cell-delete"
-                        :disabled="actionBusyId === String(cell.task.id) || isRegenerating(cell.task)"
+                        :disabled="
+                          actionBusyId === String(cell.task.id) || isRegenerating(cell.task)
+                        "
                         aria-label="删除这张图片"
                         title="删除这张图片"
                         @click.stop="handleRemoveTask(cell.task)"
@@ -3487,9 +3674,7 @@ function setMainTab(tab) {
                 </div>
                 <div
                   v-if="
-                    featuredItem.task &&
-                    !stageGridItems.length &&
-                    isRegenerating(featuredItem.task)
+                    featuredItem.task && !stageGridItems.length && isRegenerating(featuredItem.task)
                   "
                   class="t2i-regenerate-overlay"
                   role="status"
@@ -3591,9 +3776,9 @@ function setMainTab(tab) {
               </div>
             </div>
 
-			<div v-if="filmstripGroups.length > 1" class="t2i-filmstrip" aria-label="作品列表">
-			  <button
-				v-for="(group, groupIndex) in visibleFilmstripGroups"
+            <div v-if="filmstripGroups.length > 1" class="t2i-filmstrip" aria-label="作品列表">
+              <button
+                v-for="(group, groupIndex) in visibleFilmstripGroups"
                 :key="group.key"
                 type="button"
                 class="t2i-film-item"
@@ -3711,6 +3896,20 @@ function setMainTab(tab) {
                   />
                   <span v-if="item.total > 1" class="t2i-history-batch-index">
                     {{ Number(item.batchIndex ?? item.index) + 1 }}/{{ item.total }}
+                  </span>
+                  <span
+                    v-if="isLocalMaskEdit(item.task)"
+                    class="t2i-local-edit-origin is-history"
+                    title="这张图片由另一张图片局部编辑生成"
+                  >
+                    <AuthenticatedImage
+                      v-if="localEditSourcePreview(item.task)"
+                      :src="localEditSourcePreview(item.task)"
+                      alt=""
+                      loading="lazy"
+                    />
+                    <i v-else class="bi bi-brush" aria-hidden="true"></i>
+                    <span><strong>局部编辑</strong><small>来自左侧缩略图</small></span>
                   </span>
                   <span class="t2i-history-image-overlay">
                     <span v-if="isDone(item.task)" class="t2i-history-image-prompt">
@@ -4296,15 +4495,34 @@ function setMainTab(tab) {
           'is-closing': lightboxClosing,
           'is-plain-open': lightboxPlainOpen,
           'is-chrome-hidden': !lightboxChromeVisible,
+          'is-editing': localMaskEditorOpen,
         }"
         role="dialog"
         aria-modal="true"
-        aria-label="全屏预览"
+        :aria-label="localMaskEditorOpen ? '全屏局部编辑' : '全屏预览'"
         @click.self="closeLightbox"
         @mousemove="wakeLightboxChrome"
         @touchstart.passive="wakeLightboxChrome"
       >
-        <div class="t2i-lightbox-stage">
+        <LocalMaskEditorDialog
+          v-if="localMaskEditorMounted && localMaskEditorOpen"
+          embedded
+          :open="localMaskEditorOpen"
+          :source-url="localMaskEditorUrl"
+          :source-title="localMaskEditorTask ? taskPrompt(localMaskEditorTask) : ''"
+          :busy="localMaskEditorBusy"
+          :submitted="localMaskEditorSubmitted"
+          :cost-pending="localMaskCostPreparing"
+          :cost-label="localMaskEditCostLabel"
+          :result-url="localMaskResultUrl"
+          :result-status="localMaskResultStatus"
+          :result-error="localMaskResultError"
+          :light="!appearanceStore.isDark"
+          @close="closeLocalMaskEditor"
+          @submit="submitLocalMaskEdit"
+        />
+
+        <div v-if="!localMaskEditorOpen" class="t2i-lightbox-stage">
           <div
             ref="lightboxFrameRef"
             class="t2i-lightbox-frame"
@@ -4383,14 +4601,14 @@ function setMainTab(tab) {
         </div>
 
         <UpscaleProcessingOverlay
-          v-if="lightboxLiveTask && isLocalUpscaling(lightboxLiveTask)"
+          v-if="!localMaskEditorOpen && lightboxLiveTask && isLocalUpscaling(lightboxLiveTask)"
           :task="lightboxLiveTask"
           fullscreen
           :cancelling="actionBusyId === String(lightboxLiveTask.id)"
           @cancel="handleCancelTask(lightboxLiveTask)"
         />
 
-        <template v-if="lightboxGalleryItems.length > 1">
+        <template v-if="!localMaskEditorOpen && lightboxGalleryItems.length > 1">
           <button
             type="button"
             class="t2i-lightbox-hotzone is-prev"
@@ -4412,6 +4630,7 @@ function setMainTab(tab) {
         </template>
 
         <div
+          v-if="!localMaskEditorOpen"
           class="t2i-lightbox-load-chip"
           :class="{ 'is-visible': lightboxImageLoading }"
           aria-hidden="true"
@@ -4420,7 +4639,12 @@ function setMainTab(tab) {
           <span>图片加载中</span>
         </div>
 
-        <div class="t2i-lightbox-controls" aria-label="预览操作" @click.stop>
+        <div
+          v-if="!localMaskEditorOpen"
+          class="t2i-lightbox-controls"
+          aria-label="预览操作"
+          @click.stop
+        >
           <div class="t2i-lightbox-controls-info">
             <strong
               class="t2i-lightbox-controls-title"
@@ -4507,16 +4731,6 @@ function setMainTab(tab) {
       </div>
     </Teleport>
 
-    <LocalMaskEditorDialog
-      v-if="localMaskEditorMounted"
-      :open="localMaskEditorOpen"
-      :source-url="localMaskEditorUrl"
-      :source-title="localMaskEditorTask ? taskPrompt(localMaskEditorTask) : ''"
-      :busy="localMaskEditorBusy"
-      @close="closeLocalMaskEditor"
-      @submit="submitLocalMaskEdit"
-    />
-
     <SharePublishDialog
       :open="publishOpen"
       :title="publishDialogTitle"
@@ -4563,16 +4777,28 @@ function setMainTab(tab) {
       @confirm="confirmClearFailedTasks"
     />
 
+    <BackgroundRemovalSetupDialog
+      :open="backgroundRemovalSetupOpen"
+      :light="!appearanceStore.isDark"
+      @cancel="cancelBackgroundRemovalSetup"
+      @choose="chooseBackgroundRemovalSetup"
+    />
+
     <AiCostConfirmDialog
-      :show="costConfirmVisible"
-      :cost="costConfirmPayload"
-      @confirm="confirmCostAndCreate"
-      @cancel="cancelCostConfirm"
+      :show="Boolean(localMaskCostConfirmPayload) || costConfirmVisible"
+      :cost="localMaskCostConfirmPayload || costConfirmPayload"
+      :light="!appearanceStore.isDark"
+      :elevated="Boolean(localMaskCostConfirmPayload)"
+      :hide-preference="Boolean(localMaskCostConfirmPayload)"
+      @confirm="confirmUnifiedCost"
+      @cancel="cancelUnifiedCost"
     />
     <InsufficientCreditsDialog
       :show="creditsDialogOpen"
       :required="requiredCredits"
       :available="availableCredits"
+      :light="!appearanceStore.isDark"
+      :elevated="localMaskEditorOpen"
       @close="closeCreditsDialog"
     />
   </div>

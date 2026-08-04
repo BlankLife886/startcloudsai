@@ -35,6 +35,23 @@ func promptTodayRange(now time.Time) (time.Time, time.Time) {
 	return start.UTC(), start.AddDate(0, 0, 1).UTC()
 }
 
+func normalizePromptQueryTags(values []string) []string {
+	tags := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		tag := strings.TrimSpace(value)
+		if tag == "" {
+			continue
+		}
+		if _, exists := seen[tag]; exists {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
 // ---------- 提示词库（公开） ----------
 
 func (s *Server) publicPrompts(c *gin.Context) {
@@ -63,7 +80,15 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), Order: order, ActiveOnly: true}
+	tags := normalizePromptQueryTags(c.QueryArray("tag"))
+	if len(tags) > 20 {
+		fail(c, apperr.E("validation_error", "tag: 最多允许 20 项", 422))
+		return
+	}
+	filter := store.PromptFilter{
+		TaskType: taskType, Category: c.Query("category"), Search: strings.TrimSpace(c.Query("search")),
+		Tags: tags, Order: order, ActiveOnly: true,
+	}
 	if scope == "favorites" {
 		if user == nil {
 			fail(c, apperr.E("auth_required", "请先登录后查看收藏", 401))
@@ -82,6 +107,16 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		return
 	}
 	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	total, err := store.CountPromptEntries(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	promptTags, err := store.ListPromptTags(c.Request.Context(), s.St.Pool, filter)
 	if err != nil {
 		fail(c, err)
 		return
@@ -106,6 +141,8 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		return d
 	})
 	page["categoryCounts"] = categoryCounts
+	page["tags"] = promptTags
+	page["total"] = total
 	ok(c, page)
 }
 
@@ -184,13 +221,34 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "无效的状态筛选", 422))
 		return
 	}
+	order := c.DefaultQuery("sort", "manual")
+	if order != "manual" && order != "recommended" && order != "latest" && order != "favorites" && order != "likes" && order != "usage" {
+		fail(c, apperr.E("validation_error", "无效的提示词排序", 422))
+		return
+	}
+	source := c.Query("source")
+	if source != "" && source != "synced" && source != "local" {
+		fail(c, apperr.E("validation_error", "无效的来源筛选", 422))
+		return
+	}
+	tags := normalizePromptQueryTags(c.QueryArray("tag"))
+	if len(tags) > 20 {
+		fail(c, apperr.E("validation_error", "tag: 最多允许 20 项", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	filter := store.PromptFilter{
-		TaskType: taskType, Category: c.Query("category"), Search: c.Query("search"), Status: status,
+		TaskType: taskType,
+		Category: c.Query("category"),
+		Search:   c.Query("search"),
+		Status:   status,
+		Source:   source,
+		Tags:     tags,
+		Order:    order,
 	}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
@@ -209,11 +267,25 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	tagScope := filter
+	tagScope.Tags = nil
+	promptTags, err := store.ListPromptTags(c.Request.Context(), s.St.Pool, tagScope)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	page := buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
 		return promptDict(p, true)
 	})
 	page["total"] = total
 	page["scopeTotal"] = scopeTotal
+	page["categoryCounts"] = categoryCounts
+	page["tags"] = promptTags
 	ok(c, page)
 }
 

@@ -7,7 +7,7 @@ import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { navigationTarget } from '@/router'
 import { setBodyScrollLock } from '@/utils/bodyScrollLock'
@@ -101,6 +101,8 @@ const homeLink = { to: '/', label: '首页', icon: 'bi-house-door-fill' }
 
 const studioLink = { to: '/studio', label: '创作台', icon: 'bi-grid-1x2-fill' }
 
+const canvasLink = { to: '/canvas', label: '智能画布', icon: 'bi-bounding-box-circles' }
+
 const promptsLink = { to: '/prompts', label: '提示词', icon: 'bi-journal-richtext' }
 
 const historyLink = { to: '/history', label: '历史记录', icon: 'bi-clock-history' }
@@ -110,6 +112,12 @@ const shareLink = { to: '/share', label: '社区', icon: 'bi-images' }
 const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-credit-card-2-front-fill' }
 
 const toolLinks = [
+  {
+    to: '/tools/background-remove',
+    label: '背景移除',
+    icon: 'bi-person-bounding-box',
+    feature: 'ai.imageTools',
+  },
   { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
   { to: '/updates', label: '更新说明', icon: 'bi-megaphone-fill' },
 ]
@@ -145,11 +153,13 @@ const routePrefetchers = {
   '/pricing': () => import('@/views/PricingView.vue'),
   '/share': () => import('@/views/ShareView.vue'),
   '/studio': () => import('@/views/StudioHubView.vue'),
+  '/canvas': () => import('@/views/CanvasAppView.vue'),
   '/prompts': () => import('@/views/PromptLibraryView.vue'),
   '/history': () => import('@/views/CreationHistoryView.vue'),
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
   '/ai-illustration-coloring': () => import('@/views/AiIllustrationColoringView.vue'),
   '/ai-puzzle': () => import('@/views/AiPuzzleView.vue'),
+  '/tools/background-remove': () => import('@/views/BackgroundRemoveView.vue'),
   '/design-workshop': () => import('@/views/DesignWorkshopView.vue'),
   '/model-sheet': () => import('@/views/ModelSheetStudioView.vue'),
   '/game-art': () => import('@/views/GameArtStudioView.vue'),
@@ -182,10 +192,11 @@ const dropdownGroupDefs = {
   },
 }
 
-/** 顶栏顺序：首页 → 创作台 → 图片设计 → 提示词 → 社区 → 历史 → 价格 → 工具 */
+/** 顶栏顺序：首页 → 创作台 → 智能画布 → 图片设计 → 提示词 → 社区 → 历史 → 价格 → 工具 */
 const NAV_ORDER = [
   { type: 'home' },
   { type: 'link', link: studioLink },
+  { type: 'link', link: canvasLink },
   { type: 'group', key: 'image-design' },
   { type: 'link', link: promptsLink },
   { type: 'link', link: shareLink },
@@ -245,6 +256,8 @@ const mobileSheetLinks = computed(() => {
   const toCell = (link) => ({
     id: typeof link.to === 'string' ? link.to : link.id || link.label,
     to: link.to,
+    href: link.href,
+    external: link.external,
     label: link.label,
     icon: link.icon,
     disabled: isLinkDisabled(link),
@@ -275,7 +288,7 @@ const mobileSheetLinks = computed(() => {
         disabled: profileDisabled.value,
       })
     }
-    const mineLinks = [promptsLink, historyLink, pricingLink, ...toolLinks]
+    const mineLinks = [canvasLink, promptsLink, historyLink, pricingLink, ...toolLinks]
     mineLinks.filter((link) => isLinkVisible(link)).forEach((link) => cells.push(toCell(link)))
 
     return cells
@@ -467,7 +480,7 @@ function openMobileSheet(kind) {
 
   if (kind === 'ai') prefetchLinks(aiLinks)
   if (kind === 'mine') {
-    prefetchLinks([pricingLink, ...toolLinks, { to: '/auth' }, { to: '/profile' }])
+    prefetchLinks([canvasLink, pricingLink, ...toolLinks, { to: '/auth' }, { to: '/profile' }])
   }
 
   syncBodyScrollLock()
@@ -479,7 +492,9 @@ function isBottomTabActive(tab) {
     if (isRouteActive('/profile') || route.path.startsWith('/auth')) {
       return true
     }
-    return [pricingLink, ...toolLinks].some((link) => isLinkVisible(link) && isRouteActive(link.to))
+    return [canvasLink, pricingLink, ...toolLinks].some(
+      (link) => isLinkVisible(link) && isRouteActive(link.to),
+    )
   }
 
   if (mobileSheetKind.value === tab.id || mobileSheetKind.value === tab.groupKey) {
@@ -840,7 +855,9 @@ onBeforeUnmount(() => {
                   :aria-controls="`nav-dropdown-${item.name}`"
                   @click="handleGroupPrimaryClick(item, $event)"
                   @keydown="handleDropdownKeydown($event, item.name)"
-                  @pointerenter="prefetchRoute(item.primaryTo || getFirstNavigableLink(item.links)?.to)"
+                  @pointerenter="
+                    prefetchRoute(item.primaryTo || getFirstNavigableLink(item.links)?.to)
+                  "
                 >
                   <i class="bi" :class="item.icon"></i>
                   <span>{{ groupDisplayLabel(item) }}</span>
@@ -924,10 +941,12 @@ onBeforeUnmount(() => {
                 role="menu"
                 :data-dropdown-menu="item.name"
               >
-                <router-link
+                <component
                   v-for="link in item.links"
                   :key="link.to"
-                  :to="link.to"
+                  :is="link.external ? 'a' : RouterLink"
+                  :to="link.external ? undefined : link.to"
+                  :href="link.external ? link.href : undefined"
                   class="nav-dropdown-item"
                   :class="{ active: isRouteActive(link.to), disabled: isLinkDisabled(link) }"
                   :aria-disabled="isLinkDisabled(link)"
@@ -940,7 +959,7 @@ onBeforeUnmount(() => {
                   <i class="bi" :class="link.icon"></i>
                   <span>{{ link.label }}</span>
                   <em v-if="isLinkDisabled(link)">未开放</em>
-                </router-link>
+                </component>
               </div>
             </div>
           </template>
@@ -1014,9 +1033,7 @@ onBeforeUnmount(() => {
                   aria-haspopup="menu"
                   :aria-disabled="profileDisabled"
                   :title="profileDisabled ? linkDisabledReason({ to: '/profile' }) : '个人中心'"
-                  @click="
-                    profileDisabled ? handleDisabledLinkClick($event) : toggleAccountMenu()
-                  "
+                  @click="profileDisabled ? handleDisabledLinkClick($event) : toggleAccountMenu()"
                   @focus="prefetchRoute('/profile')"
                   @pointerenter="prefetchRoute('/profile')"
                 >
@@ -1180,10 +1197,12 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="msheet-grid">
-            <router-link
+            <component
               v-for="link in mobileSheetLinks"
               :key="link.id"
-              :to="link.to"
+              :is="link.external ? 'a' : RouterLink"
+              :to="link.external ? undefined : link.to"
+              :href="link.external ? link.href : undefined"
               class="msheet-cell"
               :class="{
                 active: typeof link.to === 'string' && isRouteActive(link.to),
@@ -1194,7 +1213,7 @@ onBeforeUnmount(() => {
             >
               <i class="bi" :class="link.icon" aria-hidden="true"></i>
               <span>{{ link.label }}</span>
-            </router-link>
+            </component>
           </div>
         </section>
       </div>

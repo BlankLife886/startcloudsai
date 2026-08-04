@@ -82,7 +82,9 @@
 
 ## 图片任务
 
-任务类型：`t2i|coloring|ui_design|model_sheet|game_art|puzzle`。状态：`queued|running|succeeded|failed|canceled`。
+任务类型：`t2i|coloring|ui_design|model_sheet|game_art|puzzle|background_remove`。状态：`queued|running|succeeded|failed|canceled`。
+
+`background_remove` 是专用图片工具任务：必须提交恰好一个 `inputKeys`、`count=1` 和后台公开的 `image_tool/background_remove` 模型 ID。它不接受普通生图模型，输出一张透明背景图片，按所选工具模型的有效积分价格独立冻结和结算。
 
 | 方法   | 路径                              | 说明                                                                            |
 | ------ | --------------------------------- | ------------------------------------------------------------------------------- |
@@ -122,9 +124,25 @@ task 主要字段：
 }
 ```
 
+`GET /api/v1/runtime-config` 通过 `features["ai.imageTools"].config.backgroundRemovalModels` 单独公开背景移除工具的公开 ID、名称和积分价格。图片工具不会出现在 `aiModelCatalog.publicModels` 或各工作台的生图 `publicModels` 中，也不会返回服务商、Base URL、API Key 或上游模型 ID。
+
 新任务的 `model` 在提交时锁定，并由 Worker 实际调用；迁移前的历史任务因过去没有保存该字段，只能在迁移时按当时生效的 `task_models` 配置补齐，补齐后也不会再随后台配置改变。
 
 费用按 `count * taskPrices[type]` 计算。`idempotencyKey` 在同一用户内唯一，客户端重试提交时应复用。成功任务的 `outputKeys`/`originalUrls` 指向原图，`thumbnailKeys`/`thumbnailUrls` 指向最长边 512px 的 JPEG 缩略图；`outputUrls` 为兼容字段，优先返回缩略图。
+
+## 智能画布
+
+画布项目完全归属当前用户，服务端保存与具体图编辑器无关的 JSON 文档。服务端兼容版本 1（旧通用节点）和版本 2（TapCanvas 业务节点），最多包含 5000 个节点和 10000 条连线，单次请求体上限为 5 MB。
+
+| 方法   | 路径                           | 说明                                                                 |
+| ------ | ------------------------------ | -------------------------------------------------------------------- |
+| GET    | `/api/v1/canvas-projects`      | 最近更新的项目摘要，返回 `{items}`，当前最多 100 项                   |
+| POST   | `/api/v1/canvas-projects`      | 创建 `{title,document?}`；未提供 document 时创建空的版本 2 文档       |
+| GET    | `/api/v1/canvas-projects/{id}` | 读取项目及完整 document                                               |
+| PATCH  | `/api/v1/canvas-projects/{id}` | 更新 `{title?,document?,revision}`；成功后 revision 加 1              |
+| DELETE | `/api/v1/canvas-projects/{id}` | 删除项目，成功返回 204                                                |
+
+`PATCH` 使用乐观锁。客户端必须提交最后读取到的 `revision`；版本落后时返回 HTTP 409 `revision_conflict`，不得静默覆盖云端版本。document 必须包含 `version:1`、`nodes:[]`、`edges:[]`，可选的 `viewport` 必须是对象。
 
 ## 上传与文件
 
@@ -146,11 +164,11 @@ task 主要字段：
 | GET  | `/api/v1/gallery/submissions` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor |
 | GET  | `/api/v1/gallery/categories`  | 公开 | active 分类                                         |
 | POST | `/api/v1/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务           |
-| GET  | `/api/v1/prompts`             | 公开 | active 提示词；支持 `type`、`category` 和 cursor    |
+| GET  | `/api/v1/prompts`             | 公开 | active 提示词；支持 `type`、`category`、`search`、重复 `tag` 和 cursor |
 
 画廊 item 包含封面/媒体 URL、作者、精选状态和可空分类。投稿受 `submissionEnabled`、`dailyLimit`、用户禁投时间和任务归属/状态约束；可能返回 `submission_disabled`、`submission_daily_limit`、`submission_banned`。
 
-提示词 item 的封面字段为 `coverUrl`、`coverWidth`、`coverHeight`。宽高已解析时为正整数；历史或暂时无法探测的远程封面返回 `null`，客户端必须允许降级测量。字段用于预计算图片比例和布局，不参与文件授权。
+提示词列表响应除 `items` / `nextCursor` 外，还统一返回筛选后的 `total`、完整 `categoryCounts` 和可用 `tags`。提示词 item 的封面字段为 `coverUrl`、`coverWidth`、`coverHeight`。宽高已解析时为正整数；历史或暂时无法探测的远程封面返回 `null`，客户端必须允许降级测量。字段用于预计算图片比例和布局，不参与文件授权。
 
 ## 元信息
 
@@ -169,7 +187,7 @@ task 主要字段：
 | ----- | ------------------------------------- | --------------------------------------------------------- |
 | GET   | `/api/v1/admin/statistics`                    | 用户、任务、全站余额、运行中任务和类型分布                |
 | GET   | `/api/v1/admin/system/metrics`                | API、Go Runtime、数据库池、Asynq 队列和 Worker 实时快照   |
-| GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表                     |
+| GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表；每项附带 `usage` 使用摘要 |
 | GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
 | PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?}`                                    |
 | GET   | `/api/v1/admin/users/{id}/wallet/entries` | 指定用户账本                                              |
@@ -256,6 +274,8 @@ settings 请求/响应：
   "taskPrices": { "t2i": 20 },
   "taskModels": { "default": "gpt-image-2" },
   "userMaxRunningTasks": 3,
+  "taskFailureRetryCount": 0,
+  "crossProviderSameModelBalancingEnabled": false,
   "registrationEnabled": true,
   "signupBonusCents": 100,
   "freeDailyCents": 0,
@@ -268,7 +288,7 @@ settings 请求/响应：
 }
 ```
 
-`c2aBaseUrl`、`c2aApiKey` 非空以及 `c2aTimeoutSecs > 0` 时覆盖环境变量；空值/0 使用环境变量。API Key 永不明文返回，已配置时只返回末四位掩码；PUT 省略该字段、提交空串或原掩码均不会覆盖现有 key。`dailyLimit=0` 表示投稿不限次数。
+`taskFailureRetryCount` 为连接、超时、429 或临时上游错误的额外尝试次数，范围 `0-100`，默认 `0` 表示失败后不自动重试。`crossProviderSameModelBalancingEnabled` 默认关闭；开启后，同类型、同显示名称且有效积分价格与任务单价快照完全一致的公开模型可以跨服务商参与容量调度，参数能力不兼容的候选会被排除，任务冻结积分不会变化。`c2aBaseUrl`、`c2aApiKey` 非空以及 `c2aTimeoutSecs > 0` 时覆盖环境变量；空值/0 使用环境变量。API Key 永不明文返回，已配置时只返回末四位掩码；PUT 省略该字段、提交空串或原掩码均不会覆盖现有 key。`dailyLimit=0` 表示投稿不限次数。
 
 ## 常见错误码
 

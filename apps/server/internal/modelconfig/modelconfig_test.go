@@ -125,6 +125,62 @@ func TestExecutionCandidatesStayWithinBoundProvider(t *testing.T) {
 	}
 }
 
+func TestExecutionCandidatesAcrossProvidersRequireSameNameAndEffectivePrice(t *testing.T) {
+	cfg := testConfig()
+	equalDiscount := int64(30)
+	cfg.Providers = append(cfg.Providers,
+		Provider{ID: "equal", Name: "同价", Adapter: AdapterOpenAI, APIKey: "equal-secret", Enabled: true, MaxConcurrency: 200},
+		Provider{ID: "expensive", Name: "异价", Adapter: AdapterOpenAI, APIKey: "expensive-secret", Enabled: true, MaxConcurrency: 200},
+		Provider{ID: "different", Name: "异名", Adapter: AdapterOpenAI, APIKey: "different-secret", Enabled: true, MaxConcurrency: 200},
+		Provider{ID: "private", Name: "未公开", Adapter: AdapterOpenAI, APIKey: "private-secret", Enabled: true, MaxConcurrency: 200},
+	)
+	cfg.Models = append(cfg.Models,
+		Model{ID: "equal-model", Name: " 高质量 ", ProviderID: "equal", UpstreamModel: "provider-b-image", Kind: ModelKindImage, PriceCents: 50, DiscountPriceCents: &equalDiscount, Public: true, Enabled: true},
+		Model{ID: "expensive-model", Name: "高质量", ProviderID: "expensive", UpstreamModel: "provider-c-image", Kind: ModelKindImage, PriceCents: 31, Public: true, Enabled: true},
+		Model{ID: "different-model", Name: "高质量 Pro", ProviderID: "different", UpstreamModel: "provider-d-image", Kind: ModelKindImage, PriceCents: 30, Public: true, Enabled: true},
+		Model{ID: "private-model", Name: "高质量", ProviderID: "private", UpstreamModel: "provider-e-image", Kind: ModelKindImage, PriceCents: 30, Public: false, Enabled: true},
+	)
+	candidates := ExecutionCandidatesRouteAcrossProviders(cfg, "provider", "image-quality", "", 30)
+	if len(candidates) != 2 || candidates[0].Provider.ID != "provider" || candidates[1].Provider.ID != "equal" {
+		t.Fatalf("cross-provider candidates = %#v", candidates)
+	}
+	if candidates[1].Model.UpstreamModel != "provider-b-image" {
+		t.Fatalf("alternate upstream model = %q", candidates[1].Model.UpstreamModel)
+	}
+
+	candidates = ExecutionCandidatesRouteAcrossProviders(cfg, "provider", "image-quality", "", 29)
+	if len(candidates) != 1 || candidates[0].Provider.ID != "provider" {
+		t.Fatalf("price snapshot mismatch candidates = %#v", candidates)
+	}
+}
+
+func TestBackgroundRemovalToolSelectionAndValidation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers = append(cfg.Providers, Provider{
+		ID: "crun-tool", Name: "CRUN Tool", Adapter: AdapterCRUN,
+		BaseURL: "https://api.crun.ai", APIKey: "tool-secret", Enabled: true,
+	})
+	cfg.Models = append(cfg.Models, Model{
+		ID: "remove-bg", Name: "背景移除", ProviderID: "crun-tool",
+		UpstreamModel: "image-background-remove", Kind: ModelKindImageTool,
+		Tool: ImageToolBackgroundRemove, PriceCents: 5, Public: true, Enabled: true,
+	})
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid background removal tool: %v", err)
+	}
+	selected, ok := SelectPublicImageTool(cfg, ImageToolBackgroundRemove, "")
+	if !ok || selected.Model.ID != "remove-bg" || selected.Model.Tool != ImageToolBackgroundRemove {
+		t.Fatalf("selected tool = %#v ok=%v", selected, ok)
+	}
+
+	invalid := cfg
+	invalid.Models = append([]Model(nil), cfg.Models...)
+	invalid.Models[len(invalid.Models)-1].Tool = "unknown_tool"
+	if err := Validate(invalid); err == nil || !strings.Contains(err.Error(), "工具能力无效") {
+		t.Fatalf("invalid tool validation = %v", err)
+	}
+}
+
 func TestExecutionCandidatesExpandsProviderBaseURLRoutes(t *testing.T) {
 	cfg := testConfig()
 	cfg.Providers[0].Routes = []ProviderRoute{

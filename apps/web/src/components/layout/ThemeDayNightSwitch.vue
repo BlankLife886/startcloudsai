@@ -5,12 +5,16 @@
  */
 import { useId } from 'vue'
 import { useAppearanceStore } from '@/stores/appearance'
+import { runThemeTransition } from '@/utils/themeTransition'
 
 const appearanceStore = useAppearanceStore()
 const inputId = useId()
 
 function onChange(event) {
-  appearanceStore.setScheme(event.target.checked ? 'dark' : 'light')
+  const rect = event.target.closest('.theme-dn-switch')?.getBoundingClientRect()
+  const origin = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null
+  const next = event.target.checked ? 'dark' : 'light'
+  runThemeTransition(() => appearanceStore.setScheme(next, origin), origin)
 }
 </script>
 

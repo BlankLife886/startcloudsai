@@ -112,6 +112,14 @@ services:
     cpus: 0.5
     pids_limit: 100
 
+  canvas:
+    build: ./apps/canvas-react
+    restart: unless-stopped
+    networks: [frontend]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+
   admin:
     build: ./apps/admin
     restart: unless-stopped
@@ -131,6 +139,8 @@ services:
       server:
         condition: service_healthy
       web:
+        condition: service_started
+      canvas:
         condition: service_started
       admin:
         condition: service_started

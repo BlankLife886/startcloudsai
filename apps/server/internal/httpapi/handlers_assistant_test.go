@@ -242,6 +242,36 @@ func TestValidateAssistantRunCapacity(t *testing.T) {
 	}
 }
 
+func TestSelectAssistantRunModelFallsBackForHistoricalRetry(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "current-image", Name: "Current Image", ProviderID: "provider", UpstreamModel: "image-current",
+		Kind: modelconfig.ModelKindImage, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs:        []string{"current-image"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindImage: "current-image"},
+		},
+	}
+
+	if selection, ok := selectAssistantRunModel(
+		cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "removed-image", false,
+	); ok || selection != nil {
+		t.Fatalf("new request must reject removed model: %#v, %v", selection, ok)
+	}
+	selection, ok := selectAssistantRunModel(
+		cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "removed-image", true,
+	)
+	if !ok || selection == nil || selection.Model.ID != "current-image" {
+		t.Fatalf("historical retry fallback = %#v, %v", selection, ok)
+	}
+}
+
 func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

@@ -3,6 +3,7 @@ package sub2api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,6 +104,178 @@ func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
 		if snapshots[index] != want[index] {
 			t.Fatalf("snapshot %d = %q, want %q", index, snapshots[index], want[index])
 		}
+	}
+}
+
+func TestChatTextWithImagesFinalMessageReplacesStreamedText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"你好"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"，世界"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"message":{"content":"你好，世界"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	text, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "你好，世界" {
+		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestStreamTextFragmentsPrefersTopLevelProviderDelta(t *testing.T) {
+	fragments := streamTextFragments(map[string]any{
+		"delta": "唯一增量",
+		"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "重复增量"},
+		}},
+	})
+	if len(fragments) != 1 || fragments[0].value != "唯一增量" {
+		t.Fatalf("fragments = %#v", fragments)
+	}
+}
+
+func TestChatTextWithImagesDoesNotRetryCallbackFailure(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"部分输出"}}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil,
+		func(string) error { return errors.New("temporary callback failure") })
+	if err == nil {
+		t.Fatal("expected callback failure")
+	}
+	if requests != 1 {
+		t.Fatalf("callback failure retried %d requests", requests)
+	}
+}
+
+func TestChatAgentWithImagesStreamsTextReasoningAndToolArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		tools, _ := body["tools"].([]any)
+		if len(tools) != 1 {
+			t.Fatalf("tools = %#v", body["tools"])
+		}
+		tool, _ := tools[0].(map[string]any)
+		function, _ := tool["function"].(map[string]any)
+		parameters, _ := function["parameters"].(map[string]any)
+		properties, _ := parameters["properties"].(map[string]any)
+		if function["name"] != "propose_image_action" || properties["count"] == nil {
+			t.Fatalf("function tool = %#v", function)
+		}
+		if _, exists := tool["n"]; exists {
+			t.Fatalf("n must be inside function parameters: %#v", tool)
+		}
+		choice, _ := body["tool_choice"].(map[string]any)
+		choiceFunction, _ := choice["function"].(map[string]any)
+		if choice["type"] != "function" || choiceFunction["name"] != "propose_image_action" {
+			t.Fatalf("tool_choice = %#v", body["tool_choice"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"我会","reasoning_content":"分析","tool_calls":[{"index":0,"function":{"name":"propose_image_action","arguments":"{\"action\":\"generate\","}}]}}]}`+"\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"准备方案","tool_calls":[{"index":0,"function":{"arguments":"\"prompt\":\"星空\"}"}}]}}]}`+"\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	var snapshots []string
+	result, err := client.ChatAgentWithImages(context.Background(), []Message{{Role: "user", Content: "生成星空"}}, nil,
+		FunctionTool{Name: "propose_image_action", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"count": map[string]any{"type": "integer"}},
+		}}, true, func(text, reasoning string) error {
+			snapshots = append(snapshots, text+"|"+reasoning)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "我会准备方案" || result.Reasoning != "分析" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.ToolCall == nil || result.ToolCall.Name != "propose_image_action" || result.ToolCall.Arguments != `{"action":"generate","prompt":"星空"}` {
+		t.Fatalf("tool call = %#v", result.ToolCall)
+	}
+	if len(snapshots) != 2 || snapshots[0] != "我会|分析" || snapshots[1] != "我会准备方案|分析" {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+}
+
+func TestChatAgentWithImagesFinalMessageReplacesStreamedSnapshots(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"准备","reasoning_content":"先分析","tool_calls":[{"index":0,"function":{"name":"propose_image_action","arguments":"{\"count\":"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"方案","reasoning_content":"再规划","tool_calls":[{"index":0,"function":{"arguments":"3}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"message":{"content":"准备方案","reasoning_content":"先分析再规划","tool_calls":[{"index":0,"function":{"name":"propose_image_action","arguments":"{\"count\":3}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.ChatAgentWithImages(context.Background(), []Message{{Role: "user", Content: "生成三张图"}}, nil,
+		FunctionTool{Name: "propose_image_action", Parameters: map[string]any{"type": "object"}}, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "准备方案" || result.Reasoning != "先分析再规划" {
+		t.Fatalf("final snapshots were duplicated: %#v", result)
+	}
+	if result.ToolCall == nil || result.ToolCall.Arguments != `{"count":3}` {
+		t.Fatalf("final tool call = %#v", result.ToolCall)
+	}
+}
+
+func TestChatAgentWithImagesRetriesTransientFailureBeforeOutput(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, `{"error":{"message":"temporary gateway error"}}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"恢复成功"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.ChatAgentWithImages(context.Background(), []Message{{Role: "user", Content: "你好"}}, nil,
+		FunctionTool{Name: "propose_image_action", Parameters: map[string]any{"type": "object"}}, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || result.Text != "恢复成功" {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestStreamToolCallFragmentsSupportsLegacyFunctionCall(t *testing.T) {
+	fragments := streamToolCallFragments(map[string]any{
+		"choices": []any{map[string]any{
+			"delta": map[string]any{"function_call": map[string]any{
+				"name": "propose_image_action", "arguments": `{"count":3}`,
+			}},
+		}},
+	})
+	if len(fragments) != 1 || fragments[0].name != "propose_image_action" || fragments[0].arguments != `{"count":3}` {
+		t.Fatalf("fragments = %#v", fragments)
 	}
 }
 

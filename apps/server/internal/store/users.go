@@ -177,6 +177,101 @@ func GetUsersByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Us
 	return out, rows.Err()
 }
 
+// UserUsageSummary 后台用户列表用的轻量使用情况。
+type UserUsageSummary struct {
+	TasksTotal     int64
+	TasksSucceeded int64
+	TasksFailed    int64
+	TasksRunning   int64
+	TasksCanceled  int64
+	Submissions    int64
+	Assets         int64
+	Orders         int64
+}
+
+// UsageSummariesByUserIDs 批量汇总任务 / 投稿 / 素材 / 订单计数。
+func UsageSummariesByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]UserUsageSummary, error) {
+	out := make(map[uuid.UUID]UserUsageSummary, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	for _, id := range ids {
+		out[id] = UserUsageSummary{}
+	}
+
+	taskRows, err := q.Query(ctx, `
+		SELECT user_id,
+		       count(*),
+		       count(*) FILTER (WHERE status = 'succeeded'),
+		       count(*) FILTER (WHERE status = 'failed'),
+		       count(*) FILTER (WHERE status IN ('running', 'queued')),
+		       count(*) FILTER (WHERE status = 'canceled')
+		FROM tasks
+		WHERE user_id = ANY($1)
+		GROUP BY user_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer taskRows.Close()
+	for taskRows.Next() {
+		var id uuid.UUID
+		var summary UserUsageSummary
+		if err := taskRows.Scan(
+			&id,
+			&summary.TasksTotal,
+			&summary.TasksSucceeded,
+			&summary.TasksFailed,
+			&summary.TasksRunning,
+			&summary.TasksCanceled,
+		); err != nil {
+			return nil, err
+		}
+		out[id] = summary
+	}
+	if err := taskRows.Err(); err != nil {
+		return nil, err
+	}
+
+	mergeCount := func(query string, apply func(*UserUsageSummary, int64)) error {
+		rows, err := q.Query(ctx, query, ids)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var n int64
+			if err := rows.Scan(&id, &n); err != nil {
+				return err
+			}
+			summary := out[id]
+			apply(&summary, n)
+			out[id] = summary
+		}
+		return rows.Err()
+	}
+
+	if err := mergeCount(
+		`SELECT user_id, count(*) FROM gallery_submissions WHERE user_id = ANY($1) GROUP BY user_id`,
+		func(s *UserUsageSummary, n int64) { s.Submissions = n },
+	); err != nil {
+		return nil, err
+	}
+	if err := mergeCount(
+		`SELECT user_id, count(*) FROM user_assets WHERE user_id = ANY($1) GROUP BY user_id`,
+		func(s *UserUsageSummary, n int64) { s.Assets = n },
+	); err != nil {
+		return nil, err
+	}
+	if err := mergeCount(
+		`SELECT user_id, count(*) FROM orders WHERE user_id = ANY($1) GROUP BY user_id`,
+		func(s *UserUsageSummary, n int64) { s.Orders = n },
+	); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // appendCursor 追加 (created_at, id) 倒序 cursor 条件与 limit+1。
 func appendCursor(sql string, args []any, cursor *Cursor, limit int) (string, []any) {
 	if cursor != nil {

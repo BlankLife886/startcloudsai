@@ -93,6 +93,12 @@ const MESSAGE_STATUS = {
     tone: 'working',
     progress: 22,
   },
+  'planning-image': {
+    label: '正在整理创作方案',
+    detail: 'Agent 正在结合对话和参考图，准备可编辑的生成参数。',
+    tone: 'working',
+    progress: 48,
+  },
   'generating-image': {
     label: '正在生成图片',
     detail: '图片任务已进入生成阶段，完成后会自动显示结果。',
@@ -155,6 +161,15 @@ export function messageStatus(message) {
     return { key: stage, ...base }
   }
   const isImage = message?.kind === 'image' || Boolean(message?.images?.length)
+  if (message?.kind === 'proposal' && message?.proposal) {
+    return {
+      key: 'proposal',
+      label: '创作方案已准备',
+      detail: '确认提示词和参数后再开始图片生成。',
+      tone: 'complete',
+      progress: 100,
+    }
+  }
   return {
     key: 'complete',
     label: isImage ? '图片已生成' : '回答已完成',

@@ -39,6 +39,7 @@ type importAssistantConversationsIn struct {
 type assistantRunIn struct {
 	ConversationID           string           `json:"conversationId"`
 	Prompt                   string           `json:"prompt"`
+	UserMessageContent       string           `json:"userMessageContent"`
 	Mode                     string           `json:"mode"`
 	ClientUserMessageID      string           `json:"clientUserMessageId"`
 	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
@@ -56,6 +57,7 @@ type assistantRunIn struct {
 	Quality                  string           `json:"quality"`
 	ServiceKey               string           `json:"serviceKey"`
 	FastMode                 bool             `json:"fastMode"`
+	ProposalSourceMessageID  string           `json:"proposalSourceMessageId"`
 }
 
 func (s *Server) assistantConversations(c *gin.Context) {
@@ -158,6 +160,58 @@ func (s *Server) deleteAssistantConversation(c *gin.Context) {
 	respondNoContent(c)
 }
 
+func (s *Server) createAssistantContextBoundary(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	conversationID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	conversation, err := store.GetUserAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, conversationID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if conversation == nil {
+		fail(c, apperr.E("not_found", "对话不存在", 404))
+		return
+	}
+	now := time.Now().UTC()
+	var message *store.AssistantMessage
+	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		if err := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); err != nil {
+			return err
+		}
+		active, err := store.ListActiveUserAssistantRuns(c.Request.Context(), tx, user.ID)
+		if err != nil {
+			return err
+		}
+		for _, run := range active {
+			if run.ConversationID == conversationID {
+				return apperr.E("assistant_conversation_busy", "请先等待或停止当前任务", 409)
+			}
+		}
+		message, err = store.InsertAssistantMessage(c.Request.Context(), tx, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversationID, Role: "assistant",
+			Content: "已从这里开始新的上下文", Kind: "context-divider", Status: "complete",
+			Metadata: map[string]any{"contextDivider": true, "pending": false, "statusStage": "complete"}, CreatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+		return store.TouchAssistantConversation(c.Request.Context(), tx, user.ID, conversationID, nil, now)
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respondCreated(c, assistantMessageDict(message))
+}
+
 func (s *Server) deleteAssistantMessage(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -167,6 +221,43 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 	id, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Query("scope")), "turn") {
+		err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+			if err := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); err != nil {
+				return err
+			}
+			message, err := store.GetAssistantMessage(c.Request.Context(), tx, id)
+			if err != nil {
+				return err
+			}
+			if message == nil || message.Role != "user" {
+				return apperr.E("not_found", "用户消息不存在", 404)
+			}
+			conversation, err := store.GetUserAssistantConversation(c.Request.Context(), tx, user.ID, message.ConversationID)
+			if err != nil {
+				return err
+			}
+			if conversation == nil {
+				return apperr.E("not_found", "对话不存在", 404)
+			}
+			active, err := store.ListActiveUserAssistantRuns(c.Request.Context(), tx, user.ID)
+			if err != nil {
+				return err
+			}
+			for _, run := range active {
+				if run.ConversationID == message.ConversationID {
+					return apperr.E("assistant_conversation_busy", "请先停止当前任务", 409)
+				}
+			}
+			return store.DeleteAssistantMessagesFrom(c.Request.Context(), tx, message.ConversationID, id)
+		})
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		respondNoContent(c)
 		return
 	}
 	deleted, err := store.DeleteUserAssistantMessage(c.Request.Context(), s.St.Pool, user.ID, id)
@@ -271,6 +362,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "消息长度须在 1-12000 之间", 422))
 		return
 	}
+	body.UserMessageContent = strings.TrimSpace(body.UserMessageContent)
+	if body.UserMessageContent == "" {
+		body.UserMessageContent = body.Prompt
+	}
+	if len([]rune(body.UserMessageContent)) > maxAssistantMessageRunes {
+		fail(c, apperr.E("validation_error", "展示消息不能超过 12000 个字符", 422))
+		return
+	}
 	if body.Mode != "agent" && body.Mode != "chat" && body.Mode != "image" {
 		fail(c, apperr.E("validation_error", "无效的创作模式", 422))
 		return
@@ -297,7 +396,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if body.Mode == "image" {
 		requestedKind = modelconfig.ModelKindImage
 	}
-	selectedModel, modelConfigured := modelconfig.SelectPublicForWorkspace(modelCfg, workspace, requestedKind, body.Model)
+	allowModelFallback := body.Mode == "agent" || strings.TrimSpace(body.SourceUserMessageID) != "" ||
+		strings.TrimSpace(body.ProposalSourceMessageID) != ""
+	selectedModel, modelConfigured := selectAssistantRunModel(
+		modelCfg, workspace, requestedKind, body.Model, allowModelFallback,
+	)
 	if modelConfigured {
 		body.Model = selectedModel.Model.ID
 	} else if len(modelCfg.Models) > 0 {
@@ -435,11 +538,35 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	now := time.Now().UTC()
 	references := sanitizeAssistantReferences(body.ReferenceImages, user.ID)
 	userMetadata := map[string]any{"referenceImages": references, "quoted": body.Quoted, "skill": body.Skill}
+	if sourceID := strings.TrimSpace(body.ProposalSourceMessageID); sourceID != "" {
+		if _, parseErr := uuid.Parse(sourceID); parseErr != nil {
+			fail(c, apperr.E("validation_error", "proposalSourceMessageId 无效", 422))
+			return
+		}
+		userMetadata["proposalSourceMessageId"] = sourceID
+	}
 	params := map[string]any{
 		"referenceImages": references, "prompt": body.Prompt, "model": body.Model, "ratio": body.Ratio,
 		"resolution": body.Resolution, "count": body.Count, "requestSize": body.RequestSize,
 		"width": body.Width, "height": body.Height, "quality": body.Quality,
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
+		"requestedMode": body.Mode,
+	}
+	if body.Mode == "agent" {
+		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
+		catalog := make([]map[string]any, 0, len(selections))
+		for _, selection := range selections {
+			catalog = append(catalog, map[string]any{
+				"id": selection.Model.ID, "name": selection.Model.Name,
+				"description":        selection.Model.Description,
+				"resolutions":        selection.Model.Resolutions,
+				"aspectRatios":       selection.Model.AspectRatios,
+				"qualities":          selection.Model.Qualities,
+				"maxReferenceImages": selection.Model.MaxReferenceImages,
+				"fastMode":           selection.Model.FastMode,
+			})
+		}
+		params["_imageModelCatalog"] = catalog
 	}
 	if requestedAutoRatio {
 		params["requestedAspectRatio"] = "auto"
@@ -509,7 +636,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		} else {
 			var insertErr error
 			userMessage, insertErr = store.InsertAssistantMessage(c.Request.Context(), tx, store.AssistantMessage{
-				ID: userMessageID, ConversationID: conversationID, Role: "user", Content: body.Prompt,
+				ID: userMessageID, ConversationID: conversationID, Role: "user", Content: body.UserMessageContent,
 				Kind: "chat", Status: "complete", Metadata: userMetadata, CreatedAt: now,
 			})
 			if insertErr != nil {
@@ -559,7 +686,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if err := s.Queue.EnqueueAssistantRun(c.Request.Context(), run.ID.String()); err != nil {
 		message := "任务入队失败，请稍后重试"
 		_, _ = store.FailAssistantRun(c.Request.Context(), s.St.Pool, run.ID, "queue_error", message)
-		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, assistantMessage.ID, message, body.Mode, "failed",
+		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, assistantMessage.ID, "", body.Mode, "failed",
 			map[string]any{"runId": run.ID.String(), "pending": false, "statusStage": "failed", "error": message})
 		fail(c, apperr.E("queue_error", message, 503))
 		return
@@ -578,6 +705,14 @@ func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID u
 		return apperr.E("assistant_run_limit", "最多可同时运行 4 个对话任务", 409)
 	}
 	return nil
+}
+
+func selectAssistantRunModel(cfg modelconfig.Config, workspace, kind, requestedModelID string, allowFallback bool) (*modelconfig.Selection, bool) {
+	selection, configured := modelconfig.SelectPublicForWorkspace(cfg, workspace, kind, requestedModelID)
+	if configured || !allowFallback || strings.TrimSpace(requestedModelID) == "" {
+		return selection, configured
+	}
+	return modelconfig.SelectPublicForWorkspace(cfg, workspace, kind, "")
 }
 
 func (s *Server) assistantRuns(c *gin.Context) {

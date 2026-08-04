@@ -32,6 +32,7 @@ const isPricingConsoleRoute = computed(() => route.name === 'pricing')
 const isProfileConsoleRoute = computed(() => route.name === 'profile')
 const isShareGalleryRoute = computed(() => route.name === 'share')
 const isUpdatesGalleryRoute = computed(() => route.name === 'updates')
+const isCanvasAppRoute = computed(() => route.name === 'canvas-app')
 const isDocumentScrollRoute = computed(() =>
   ['home', 'pricing', 'updates', 'studio', 'prompts', 'history', 'share'].includes(
     String(route.name || ''),
@@ -173,7 +174,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-	closeUserTaskStream()
+  closeUserTaskStream()
   if (pageScrollbarTimer) {
     window.clearTimeout(pageScrollbarTimer)
     pageScrollbarTimer = null
@@ -254,6 +255,7 @@ function scrollToTop() {
         'main--studio-console': isStudioConsoleRoute,
         'main--share-gallery': isShareGalleryRoute,
         'main--updates-gallery': isUpdatesGalleryRoute,
+        'main--canvas-app': isCanvasAppRoute,
         'main--document-scroll': isDocumentScrollRoute,
         'main--no-header': !showAppChrome,
       }"

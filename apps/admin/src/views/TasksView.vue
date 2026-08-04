@@ -6,58 +6,59 @@ import {
   reactive,
   ref,
   watch,
-} from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
-import { CopyDocument, Refresh, Search } from "@element-plus/icons-vue";
-import { request, type Page } from "@/request";
-import { usePagedList } from "@/usePagedList";
+} from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { CopyDocument, Document, Picture, Refresh, Search } from '@element-plus/icons-vue'
+import AdminDialog from '@/components/AdminDialog.vue'
+import { request, type Page } from '@/request'
+import { usePagedList } from '@/usePagedList'
 import {
   formatPoints,
+  formatShortTime,
   formatTime,
-  shortId,
   TASK_STATUS_LABELS,
   TASK_TYPE_LABELS,
   taskTypeLabel,
-} from "@/utils";
+} from '@/utils'
 
 interface AdminTask {
-  id: string;
-  type: string;
-  status: string;
-  prompt: string;
-  params: Record<string, unknown> | null;
-  count: number;
-  inputKeys?: string[];
-  outputKeys?: string[];
-  outputUrls?: string[];
-  costCents: number;
-  errorCode: string | null;
-  errorMessage: string | null;
-  userId?: string;
-  userEmail?: string;
-  user?: { id: string; email: string };
-  source?: "task" | "assistant";
-  serviceProvider?: "c2a" | "sub2api" | "crun" | "local";
-  createdAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
+  id: string
+  type: string
+  status: string
+  prompt: string
+  params: Record<string, unknown> | null
+  count: number
+  inputKeys?: string[]
+  outputKeys?: string[]
+  outputUrls?: string[]
+  costCents: number
+  errorCode: string | null
+  errorMessage: string | null
+  userId?: string
+  userEmail?: string
+  user?: { id: string; email: string }
+  source?: 'task' | 'assistant'
+  serviceProvider?: 'c2a' | 'sub2api' | 'crun' | 'local'
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
 }
 
 interface TaskSummary {
-  total: number;
-  queued: number;
-  running: number;
-  succeeded: number;
-  failed: number;
-  canceled: number;
-  today: number;
+  total: number
+  queued: number
+  running: number
+  succeeded: number
+  failed: number
+  canceled: number
+  today: number
 }
 
 interface TaskPage extends Page<AdminTask> {
-  summary?: TaskSummary;
+  summary?: TaskSummary
 }
 
-const filters = reactive({ type: "", status: "", user: "", errorCode: "" });
+const filters = reactive({ type: '', status: '', user: '', errorCode: '' })
 const summary = ref<TaskSummary>({
   total: 0,
   queued: 0,
@@ -66,9 +67,9 @@ const summary = ref<TaskSummary>({
   failed: 0,
   canceled: 0,
   today: 0,
-});
-const lastUpdatedAt = ref<Date | null>(null);
-const autoRefresh = ref(true);
+})
+const lastUpdatedAt = ref<Date | null>(null)
+const autoRefresh = ref(true)
 
 const {
   items,
@@ -85,7 +86,7 @@ const {
   retry,
 } = usePagedList<AdminTask>(
   async (cursor) => {
-    const page = await request<TaskPage>("/api/v1/admin/tasks", {
+    const page = await request<TaskPage>('/api/v1/admin/tasks', {
       query: {
         type: filters.type,
         status: filters.status,
@@ -94,10 +95,10 @@ const {
         limit: 20,
         cursor,
       },
-    });
-    if (page.summary) summary.value = page.summary;
-    lastUpdatedAt.value = new Date();
-    return page;
+    })
+    if (page.summary) summary.value = page.summary
+    lastUpdatedAt.value = new Date()
+    return page
   },
   () => ({
     type: filters.type,
@@ -105,635 +106,846 @@ const {
     user: filters.user,
     errorCode: filters.errorCode,
   }),
-);
+)
 
-const statusCards = computed(() => [
+const statusTabs = computed(() => [
   {
-    value: "",
-    label: "全部任务",
+    value: '',
+    label: '全部',
     count: summary.value.total,
-    tone: "all",
-    hint: `今日新增 ${summary.value.today}`,
+    tone: 'all' as const,
   },
   {
-    value: "queued",
-    label: "等待中",
+    value: 'queued',
+    label: '等待中',
     count: summary.value.queued,
-    tone: "queued",
-    hint: "尚未开始执行",
+    tone: 'queued' as const,
   },
   {
-    value: "running",
-    label: "运行中",
+    value: 'running',
+    label: '运行中',
     count: summary.value.running,
-    tone: "running",
-    hint: "正在占用执行槽位",
+    tone: 'running' as const,
   },
   {
-    value: "failed",
-    label: "需要处理",
-    count: summary.value.failed,
-    tone: "failed",
-    hint: "可查看错误并重试",
-  },
-  {
-    value: "succeeded",
-    label: "已成功",
+    value: 'succeeded',
+    label: '已成功',
     count: summary.value.succeeded,
-    tone: "succeeded",
-    hint: "已完成交付",
+    tone: 'succeeded' as const,
   },
   {
-    value: "canceled",
-    label: "已取消",
-    count: summary.value.canceled,
-    tone: "canceled",
-    hint: "主动取消或终止",
+    value: 'failed',
+    label: '已失败',
+    count: summary.value.failed,
+    tone: 'failed' as const,
   },
-]);
+  {
+    value: 'canceled',
+    label: '已取消',
+    count: summary.value.canceled,
+    tone: 'canceled' as const,
+  },
+])
 
 const activeFilterCount = computed(
   () =>
-    [
-      filters.type,
-      filters.status,
-      filters.user.trim(),
-      filters.errorCode.trim(),
-    ].filter(Boolean).length,
-);
+    [filters.type, filters.user.trim(), filters.errorCode.trim()].filter(Boolean)
+      .length,
+)
+
 const lastUpdatedLabel = computed(() =>
   lastUpdatedAt.value
-    ? lastUpdatedAt.value.toLocaleTimeString("zh-CN", { hour12: false })
-    : "尚未刷新",
-);
+    ? lastUpdatedAt.value.toLocaleTimeString('zh-CN', { hour12: false })
+    : '尚未刷新',
+)
 
-let refreshTimer: number | null = null;
+let refreshTimer: number | null = null
 
 function stopAutoRefresh() {
-  if (refreshTimer !== null) window.clearInterval(refreshTimer);
-  refreshTimer = null;
+  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+  refreshTimer = null
 }
 
 function startAutoRefresh() {
-  stopAutoRefresh();
-  if (!autoRefresh.value) return;
+  stopAutoRefresh()
+  if (!autoRefresh.value) return
   refreshTimer = window.setInterval(() => {
-    if (!loading.value && document.visibilityState === "visible")
-      void refresh();
-  }, 15_000);
+    if (!loading.value && document.visibilityState === 'visible') void refresh()
+  }, 15_000)
 }
 
-watch(autoRefresh, startAutoRefresh);
+watch(autoRefresh, startAutoRefresh)
 
 onMounted(() => {
-  void reset();
-  startAutoRefresh();
-});
+  void reset()
+  startAutoRefresh()
+})
 
-onBeforeUnmount(stopAutoRefresh);
+onBeforeUnmount(stopAutoRefresh)
 
-function applyStatus(status: string) {
-  if (filters.status === status) return;
-  filters.status = status;
-  void reset();
+function setStatusTab(status: string) {
+  if (filters.status === status) return
+  filters.status = status
+  void reset()
 }
 
 function clearFilters() {
-  filters.type = "";
-  filters.status = "";
-  filters.user = "";
-  filters.errorCode = "";
-  void reset();
+  filters.type = ''
+  filters.status = ''
+  filters.user = ''
+  filters.errorCode = ''
+  void reset()
 }
 
 function refreshNow() {
-  if (!loading.value) void refresh();
+  if (!loading.value) void refresh()
 }
 
 function taskPrompt(task: AdminTask) {
   return (
     task.prompt?.trim() ||
-    (task.source === "assistant" ? "AI 助手任务" : "未填写提示词")
-  );
+    (task.source === 'assistant' ? 'AI 助手任务' : '未填写提示词')
+  )
 }
 
-function compactTaskId(id: string) {
-  return id.length > 8 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id;
+/** 列表展示：任务内容最多 4 字 */
+function taskPromptBrief(task: AdminTask) {
+  const text = taskPrompt(task)
+  return text.length > 4 ? `${text.slice(0, 4)}…` : text
+}
+
+/** 输入图直接走文件网关（302 到 R2 presigned URL） */
+function fileUrl(key: string): string {
+  return `/api/v1/files/${key}`
 }
 
 function taskMediaUrls(task: AdminTask) {
-  const outputs = (task.outputUrls ?? []).filter(Boolean);
-  if (outputs.length) return outputs;
-  return (task.inputKeys ?? []).filter(Boolean).map(fileUrl);
-}
-
-function taskOutputCount(task: AdminTask) {
-  return task.outputUrls?.length || task.outputKeys?.length || 0;
+  const outputs = (task.outputUrls ?? []).filter(Boolean)
+  if (outputs.length) return outputs
+  return (task.inputKeys ?? []).filter(Boolean).map(fileUrl)
 }
 
 function taskDuration(task: AdminTask) {
-  if (!task.startedAt) return "未开始";
-  const start = new Date(task.startedAt).getTime();
-  const end = task.finishedAt
-    ? new Date(task.finishedAt).getTime()
-    : Date.now();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
-    return "-";
-  const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  if (minutes < 60) return `${minutes} 分 ${rest} 秒`;
-  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+  if (!task.startedAt) return '未开始'
+  const start = new Date(task.startedAt).getTime()
+  const end = task.finishedAt ? new Date(task.finishedAt).getTime() : Date.now()
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '-'
+  const seconds = Math.max(0, Math.round((end - start) / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  if (minutes < 60) return `${minutes} 分 ${rest} 秒`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
 }
 
 function taskRowClass({ row }: { row: AdminTask }) {
-  return `task-row is-${row.status}`;
+  return `task-row is-${row.status}`
 }
 
 async function copyTaskId(id: string) {
-  await navigator.clipboard.writeText(id);
-  ElMessage.success("任务 ID 已复制");
+  await navigator.clipboard.writeText(id)
+  ElMessage.success('任务 ID 已复制')
 }
 
 async function copyTaskPrompt(task: AdminTask) {
-  await navigator.clipboard.writeText(taskPrompt(task));
-  ElMessage.success("任务内容已复制");
+  await navigator.clipboard.writeText(taskPrompt(task))
+  ElMessage.success('任务内容已复制')
 }
 
 function taskUser(task: AdminTask): string {
-  return task.userEmail ?? task.user?.email ?? task.userId ?? "-";
+  return task.userEmail ?? task.user?.email ?? task.userId ?? '-'
 }
 
 function taskSourceLabel(task: AdminTask) {
-  return task.source === "assistant" ? "AI 助手" : "图片任务";
+  return task.source === 'assistant' ? 'AI 助手' : '图片任务'
 }
 
 const serviceProviderMeta = {
-  c2a: { name: "C2A", detail: "gpt.xkyh.cc.cd/v1" },
-  sub2api: { name: "Sub2API", detail: "OpenAI 兼容服务" },
-  crun: { name: "CRUN", detail: "api.crun.ai" },
-  local: { name: "本地处理", detail: "浏览器 Canvas" },
-} as const;
+  c2a: { name: 'C2A', detail: 'gpt.xkyh.cc.cd/v1' },
+  sub2api: { name: 'Sub2API', detail: 'OpenAI 兼容服务' },
+  crun: { name: 'CRUN', detail: 'api.crun.ai' },
+  local: { name: '本地处理', detail: '浏览器 Canvas' },
+} as const
 
-function taskServiceProvider(
-  task: AdminTask,
-): keyof typeof serviceProviderMeta {
+function taskServiceProvider(task: AdminTask): keyof typeof serviceProviderMeta {
   if (task.serviceProvider && task.serviceProvider in serviceProviderMeta) {
-    return task.serviceProvider;
+    return task.serviceProvider
   }
-  if (task.type === "puzzle") return "local";
-  if (task.source === "assistant") return "sub2api";
-  const provider = String(task.params?._serviceProvider || "");
-  return provider === "sub2api" || provider === "crun" ? provider : "c2a";
+  if (task.type === 'puzzle') return 'local'
+  if (task.source === 'assistant') return 'sub2api'
+  const provider = String(task.params?._serviceProvider || '')
+  return provider === 'sub2api' || provider === 'crun' ? provider : 'c2a'
 }
 
 function taskServiceProviderMeta(task: AdminTask) {
-  const params = task.params || {};
+  const params = task.params || {}
   const providerNames = [
     params._providerDisplayName,
     params._chatProviderDisplayName,
     params._imageProviderDisplayName,
   ]
-    .map((value) => String(value || "").trim())
-    .filter((value, index, values) => value && values.indexOf(value) === index);
+    .map((value) => String(value || '').trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index)
   const modelNames = [
     params._modelDisplayName,
     params._chatModelDisplayName,
     params._imageModelDisplayName,
   ]
-    .map((value) => String(value || "").trim())
-    .filter((value, index, values) => value && values.indexOf(value) === index);
+    .map((value) => String(value || '').trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index)
   if (providerNames.length) {
     return {
-      name: providerNames.join(" / "),
+      name: providerNames.join(' / '),
       detail:
-        modelNames.join(" / ") ||
+        modelNames.join(' / ') ||
         serviceProviderMeta[taskServiceProvider(task)].detail,
-    };
+    }
   }
-  return serviceProviderMeta[taskServiceProvider(task)];
+  return serviceProviderMeta[taskServiceProvider(task)]
+}
+
+function taskOutputCount(task: AdminTask) {
+  return task.outputUrls?.length || task.outputKeys?.length || 0
+}
+
+function taskInputCount(task: AdminTask) {
+  return task.inputKeys?.length || 0
 }
 
 function taskCount(task: AdminTask): number | string {
-  if (task.source !== "assistant") return task.count;
-  const resolvedMode = String(
-    task.params?.resolvedMode || task.params?.mode || "",
-  );
-  return resolvedMode === "image" ? task.count : "-";
+  if (task.source !== 'assistant') return task.count
+  const resolvedMode = String(task.params?.resolvedMode || task.params?.mode || '')
+  return resolvedMode === 'image' ? task.count : '-'
 }
 
-/** 输入图直接走文件网关（302 到 R2 presigned URL） */
-function fileUrl(key: string): string {
-  return `/api/v1/files/${key}`;
+/** 未交付张数：请求 − 产出；排队/运行中尚未定论 */
+function taskFailedCount(task: AdminTask): number | string {
+  if (task.status === 'queued' || task.status === 'running') return '—'
+  const requested = taskCount(task)
+  if (typeof requested !== 'number') {
+    return task.status === 'failed' ? 1 : 0
+  }
+  return Math.max(0, requested - taskOutputCount(task))
 }
 
 // 详情抽屉
-const detailVisible = ref(false);
-const detail = ref<AdminTask | null>(null);
+const detailVisible = ref(false)
+const detail = ref<AdminTask | null>(null)
+const paramsDialogVisible = ref(false)
 
-const detailParams = computed(() => {
-  const params = detail.value?.params;
-  return params && Object.keys(params).length > 0
-    ? JSON.stringify(params, null, 2)
-    : "";
-});
+/** 常见请求参数 → 中文标签 */
+const PARAM_LABELS: Record<string, string> = {
+  aspectRatio: '宽高比',
+  requestedAspectRatio: '请求宽高比',
+  autoAspectRatioCandidates: '自动宽高比候选',
+  resolution: '分辨率',
+  size: '尺寸',
+  quality: '质量',
+  outputFormat: '输出格式',
+  format: '格式',
+  moderation: '审核级别',
+  moderationLevel: '审核级别',
+  transparentBackground: '透明背景',
+  mode: '模式',
+  resolvedMode: '解析模式',
+  publicModelKey: '模型 Key',
+  model: '模型',
+  seed: '种子',
+  steps: '步数',
+  guidance: '引导强度',
+  strength: '强度',
+  count: '张数',
+  _serviceProvider: '服务商',
+  _providerDisplayName: '服务商名称',
+  _modelDisplayName: '模型名称',
+  _chatProviderDisplayName: '对话服务商',
+  _chatModelDisplayName: '对话模型',
+  _imageProviderDisplayName: '生图服务商',
+  _imageModelDisplayName: '生图模型',
+  _modelConfigId: '模型配置 ID',
+  _providerConfigId: '服务商配置 ID',
+  _providerRouteId: '路由 ID',
+  _providerRouteKey: '路由 Key',
+  _modelTool: '模型工具',
+  _modelFastMode: '快速模式',
+  _modelResolutions: '可用分辨率',
+  _modelAspectRatios: '可用宽高比',
+  _modelAspectRatiosByResolution: '分辨率宽高比',
+  _modelQualities: '可用质量',
+  _modelTransparentBackground: '支持透明背景',
+  _modelOutputFormats: '可用输出格式',
+  _modelModerationLevels: '可用审核级别',
+  _modelMaxReferenceImages: '最大参考图数',
+  _unitPriceCents: '单价（积分）',
+}
 
-const detailInputUrls = computed(() =>
-  (detail.value?.inputKeys ?? []).map(fileUrl),
-);
-const detailOutputUrls = computed(() => detail.value?.outputUrls ?? []);
-const detailMediaMode = ref<"output" | "input">("output");
-const detailMediaIndex = ref(0);
+const PARAM_ORDER = [
+  'aspectRatio',
+  'requestedAspectRatio',
+  'resolution',
+  'size',
+  'quality',
+  'outputFormat',
+  'format',
+  'moderation',
+  'moderationLevel',
+  'transparentBackground',
+  'mode',
+  'resolvedMode',
+  'publicModelKey',
+  'model',
+  'seed',
+  'steps',
+  'guidance',
+  'strength',
+  'count',
+  'autoAspectRatioCandidates',
+]
+
+function formatParamValue(key: string, value: unknown): string {
+  if (value == null || value === '') return '—'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (key === '_unitPriceCents' && typeof value === 'number') {
+    return formatPoints(value)
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return '—'
+    if (value.every((item) => typeof item === 'string' || typeof item === 'number')) {
+      return value.map(String).join('、')
+    }
+    return JSON.stringify(value)
+  }
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function paramLabel(key: string) {
+  return PARAM_LABELS[key] || key
+}
+
+function sortParamKeys(keys: string[]) {
+  const rank = new Map(PARAM_ORDER.map((key, index) => [key, index]))
+  return [...keys].sort((a, b) => {
+    const ai = rank.get(a) ?? 1000
+    const bi = rank.get(b) ?? 1000
+    if (ai !== bi) return ai - bi
+    return a.localeCompare(b)
+  })
+}
+
+const detailParamGroups = computed(() => {
+  const params = detail.value?.params
+  if (!params) return { request: [], system: [] }
+
+  const request: { key: string; label: string; value: string }[] = []
+  const system: { key: string; label: string; value: string }[] = []
+
+  for (const key of sortParamKeys(Object.keys(params))) {
+    const row = {
+      key,
+      label: paramLabel(key),
+      value: formatParamValue(key, params[key]),
+    }
+    if (key.startsWith('_')) system.push(row)
+    else request.push(row)
+  }
+  return { request, system }
+})
+
+const hasDetailParams = computed(
+  () => detailParamGroups.value.request.length + detailParamGroups.value.system.length > 0,
+)
+
+const detailParamsJson = computed(() => {
+  const params = detail.value?.params
+  if (!params || !Object.keys(params).length) return ''
+  return JSON.stringify(params, null, 2)
+})
+
+const detailInputUrls = computed(() => (detail.value?.inputKeys ?? []).map(fileUrl))
+const detailOutputUrls = computed(() => detail.value?.outputUrls ?? [])
+const detailMediaMode = ref<'output' | 'input'>('output')
 const detailMediaUrls = computed(() =>
-  detailMediaMode.value === "output"
-    ? detailOutputUrls.value
-    : detailInputUrls.value,
-);
-const detailActiveMediaUrl = computed(
-  () => detailMediaUrls.value[detailMediaIndex.value] ?? "",
-);
+  detailMediaMode.value === 'output' ? detailOutputUrls.value : detailInputUrls.value,
+)
 
-function setDetailMediaMode(mode: "output" | "input") {
-  detailMediaMode.value = mode;
-  detailMediaIndex.value = 0;
+function setDetailMediaMode(mode: 'output' | 'input') {
+  detailMediaMode.value = mode
 }
 
 function openDetail(task: AdminTask) {
-  detail.value = task;
-  detailMediaMode.value = task.outputUrls?.length ? "output" : "input";
-  detailMediaIndex.value = 0;
-  detailVisible.value = true;
+  detail.value = task
+  detailMediaMode.value = task.outputUrls?.length ? 'output' : 'input'
+  paramsDialogVisible.value = false
+  detailVisible.value = true
 }
 
-const acting = ref(false);
+function openParamsDialog() {
+  if (!hasDetailParams.value) return
+  paramsDialogVisible.value = true
+}
+
+const acting = ref(false)
 
 async function requeue(task: AdminTask) {
   await ElMessageBox.confirm(
     `确认将失败任务 ${task.id} 重新入队？不会重复向用户扣费。`,
-    "重新入队",
+    '重新入队',
     {
-      type: "warning",
-      confirmButtonText: "重新入队",
-      cancelButtonText: "取消",
+      type: 'warning',
+      confirmButtonText: '重新入队',
+      cancelButtonText: '取消',
     },
-  );
-  acting.value = true;
+  )
+  acting.value = true
   try {
     await request(`/api/v1/admin/tasks/${task.id}`, {
-      method: "PATCH",
-      body: { status: "queued" },
-    });
-    ElMessage.success("已重新入队");
-    detailVisible.value = false;
-    refresh();
+      method: 'PATCH',
+      body: { status: 'queued' },
+    })
+    ElMessage.success('已重新入队')
+    detailVisible.value = false
+    refresh()
   } finally {
-    acting.value = false;
+    acting.value = false
   }
 }
 
 async function cancel(task: AdminTask) {
   await ElMessageBox.confirm(
-    task.source === "assistant"
+    task.source === 'assistant'
       ? `确认取消排队中的 AI 助手任务 ${task.id}？`
       : `确认取消排队中任务 ${task.id}？取消后将解冻退还该任务费用。`,
-    "取消任务",
+    '取消任务',
     {
-      type: "warning",
-      confirmButtonText: "取消任务",
-      cancelButtonText: "返回",
+      type: 'warning',
+      confirmButtonText: '取消任务',
+      cancelButtonText: '返回',
     },
-  );
-  acting.value = true;
+  )
+  acting.value = true
   try {
     await request(`/api/v1/admin/tasks/${task.id}`, {
-      method: "PATCH",
-      body: { status: "canceled" },
-    });
+      method: 'PATCH',
+      body: { status: 'canceled' },
+    })
     ElMessage.success(
-      task.source === "assistant" ? "AI 助手任务已取消" : "已取消并解冻费用",
-    );
-    detailVisible.value = false;
-    refresh();
+      task.source === 'assistant' ? 'AI 助手任务已取消' : '已取消并解冻费用',
+    )
+    detailVisible.value = false
+    refresh()
   } finally {
-    acting.value = false;
+    acting.value = false
   }
 }
 
 async function forceFail(task: AdminTask) {
   await ElMessageBox.confirm(
-    task.source === "assistant"
+    task.source === 'assistant'
       ? `确认将运行中的 AI 助手任务 ${task.id} 强制置为失败？仅用于卡死任务。`
       : `确认将运行中任务 ${task.id} 强制置为失败？将解冻并退还该任务冻结的费用（errorCode=admin_force_failed）。仅用于卡死任务，若任务仍在正常执行请勿操作。`,
-    "强制失败",
+    '强制失败',
     {
-      type: "error",
-      confirmButtonText: "强制失败",
-      confirmButtonClass: "el-button--danger",
-      cancelButtonText: "取消",
+      type: 'error',
+      confirmButtonText: '强制失败',
+      confirmButtonClass: 'el-button--danger',
+      cancelButtonText: '取消',
     },
-  );
-  acting.value = true;
+  )
+  acting.value = true
   try {
     await request(`/api/v1/admin/tasks/${task.id}`, {
-      method: "PATCH",
-      body: { status: "failed" },
-    });
-    ElMessage.success("已强制失败并解冻退款");
-    detailVisible.value = false;
-    refresh();
+      method: 'PATCH',
+      body: { status: 'failed' },
+    })
+    ElMessage.success('已强制失败并解冻退款')
+    detailVisible.value = false
+    refresh()
   } finally {
-    acting.value = false;
+    acting.value = false
   }
 }
 </script>
 
 <template>
-  <div class="task-monitor">
-    <section class="task-filter-panel">
-      <div class="task-filter-panel__refresh">
-        <div class="refresh-state">
-          <span :class="{ 'is-live': autoRefresh }" />
-          <small>更新于 {{ lastUpdatedLabel }}</small>
+  <div class="tasks-page">
+    <PageCard
+      title="任务监控"
+      :subtitle="`队列与执行状态 · 今日新增 ${summary.today} · 更新于 ${lastUpdatedLabel}`"
+    >
+      <template #actions>
+        <div class="refresh-actions">
+          <span class="refresh-dot" :class="{ 'is-live': autoRefresh }" />
+          <el-switch
+            v-model="autoRefresh"
+            inline-prompt
+            active-text="自动"
+            inactive-text="手动"
+          />
+          <el-button :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
         </div>
-        <el-switch
-          v-model="autoRefresh"
-          inline-prompt
-          active-text="开"
-          inactive-text="关"
-        />
-        <el-button :icon="Refresh" :loading="loading" @click="refreshNow"
-          >立即刷新</el-button
-        >
-      </div>
-      <div class="task-filter-panel__lead">
-        <el-input
-          v-model="filters.user"
-          :prefix-icon="Search"
-          placeholder="搜索用户邮箱或用户 ID"
-          clearable
-          @keyup.enter="reset"
-          @clear="reset"
-        />
-      </div>
-      <el-select
-        v-model="filters.type"
-        placeholder="全部任务类型"
-        clearable
-        @change="reset"
-      >
-        <el-option
-          v-for="(label, value) in TASK_TYPE_LABELS"
-          :key="value"
-          :label="label"
-          :value="value"
-        />
-      </el-select>
-      <el-input
-        v-model="filters.errorCode"
-        placeholder="搜索错误码"
-        clearable
-        @keyup.enter="reset"
-        @clear="reset"
-      />
-      <el-button type="primary" @click="reset">应用筛选</el-button>
-      <el-button :disabled="!activeFilterCount" @click="clearFilters"
-        >清除条件</el-button
-      >
-    </section>
+      </template>
 
-    <section class="status-overview" aria-label="任务状态汇总">
-      <button
-        v-for="card in statusCards"
-        :key="card.value || 'all'"
-        type="button"
-        class="status-card"
-        :class="[
-          `is-${card.tone}`,
-          { 'is-active': filters.status === card.value },
-        ]"
-        @click="applyStatus(card.value)"
-      >
-        <span class="status-card__dot" />
-        <span class="status-card__copy"
-          ><small>{{ card.label }}</small
-          ><strong>{{ card.count }}</strong
-          ><em>{{ card.hint }}</em></span
-        >
-      </button>
-    </section>
-
-    <section class="task-list-panel">
-      <header class="task-list-panel__head">
-        <div>
-          <strong>{{
-            filters.status ? TASK_STATUS_LABELS[filters.status] : "全部任务"
-          }}</strong>
-          <span
-            >当前页 {{ items.length }} 条<span v-if="activeFilterCount">
-              · {{ activeFilterCount }} 个筛选条件</span
-            ></span
+      <div class="tasks-toolbar">
+        <div class="status-tabs" role="tablist" aria-label="任务状态">
+          <button
+            v-for="tab in statusTabs"
+            :key="tab.value || 'all'"
+            type="button"
+            role="tab"
+            class="status-tab"
+            :class="[
+              { 'is-active': filters.status === tab.value },
+              `is-${tab.tone}`,
+            ]"
+            :aria-selected="filters.status === tab.value"
+            @click="setStatusTab(tab.value)"
           >
+            {{ tab.label }}
+            <em class="tnum">{{ tab.count }}</em>
+          </button>
         </div>
-        <span class="today-badge">今日新增 {{ summary.today }}</span>
-      </header>
+
+        <div class="tasks-toolbar__actions">
+          <el-input
+            v-model="filters.user"
+            class="tasks-search"
+            placeholder="用户邮箱 / ID"
+            clearable
+            :prefix-icon="Search"
+            @keyup.enter="reset"
+            @clear="reset"
+          />
+          <el-select
+            v-model="filters.type"
+            class="tasks-type"
+            placeholder="任务类型"
+            clearable
+            @change="reset"
+          >
+            <el-option
+              v-for="(label, value) in TASK_TYPE_LABELS"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </el-select>
+          <el-input
+            v-model="filters.errorCode"
+            class="tasks-error"
+            placeholder="错误码"
+            clearable
+            @keyup.enter="reset"
+            @clear="reset"
+          />
+          <el-button @click="reset">查询</el-button>
+          <el-button text :disabled="!activeFilterCount && !filters.status" @click="clearFilters">
+            重置
+          </el-button>
+        </div>
+      </div>
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
-      <div class="task-table-shell">
-        <el-table
-          v-loading="loading"
-          :data="items"
-          height="100%"
-          size="small"
-          scrollbar-always-on
-          :row-class-name="taskRowClass"
-          @row-dblclick="openDetail"
-        >
-          <template #empty>
-            <el-empty description="没有符合条件的任务" :image-size="64">
-              <div class="empty-sub">清除部分筛选条件后再试</div>
-            </el-empty>
-          </template>
-          <el-table-column label="图片" width="72" fixed="left" align="center">
-            <template #default="{ row }">
-              <el-image
-                v-if="taskMediaUrls(row as AdminTask).length"
-                :src="taskMediaUrls(row as AdminTask)[0]"
-                :preview-src-list="taskMediaUrls(row as AdminTask)"
-                fit="cover"
-                class="task-table-image"
-                preview-teleported
-                hide-on-click-modal
-                @dblclick.stop
-              />
-              <span v-else class="task-image-empty">—</span>
+      <AdminListShell
+        class="tasks-list-shell"
+        fill
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :page="page"
+        :count="items.length"
+        :total="total"
+        @prev="prev"
+        @next="next"
+      >
+        <div class="tasks-table-shell">
+          <el-table
+            v-loading="loading"
+            class="tasks-table"
+            :data="items"
+            height="100%"
+            size="small"
+            :row-class-name="taskRowClass"
+            @row-click="(row: AdminTask) => openDetail(row)"
+          >
+            <template #empty>
+              <el-empty description="没有符合条件的任务" :image-size="60">
+                <div class="empty-sub">调整筛选条件后重新查询</div>
+              </el-empty>
             </template>
-          </el-table-column>
-          <el-table-column label="任务 ID" width="142" fixed="left">
-            <template #default="{ row }">
-              <div class="task-primary" @click="openDetail(row as AdminTask)">
-                <div class="task-primary__id">
-                  <span class="mono" :title="row.id">{{
-                    compactTaskId(row.id)
-                  }}</span>
-                  <button
-                    type="button"
-                    title="复制任务 ID"
-                    @click.stop="copyTaskId(row.id)"
-                  >
-                    <el-icon><CopyDocument /></el-icon>
-                  </button>
+
+            <el-table-column label="预览" width="72" align="left" header-align="left">
+              <template #default="{ row }">
+                <el-image
+                  v-if="taskMediaUrls(row as AdminTask).length"
+                  :src="taskMediaUrls(row as AdminTask)[0]"
+                  :preview-src-list="taskMediaUrls(row as AdminTask)"
+                  fit="cover"
+                  class="task-thumb"
+                  preview-teleported
+                  hide-on-click-modal
+                  @click.stop
+                >
+                  <template #error>
+                    <div class="media-ph media-ph--sm" title="图片加载失败">
+                      <el-icon><Picture /></el-icon>
+                    </div>
+                  </template>
+                </el-image>
+                <div v-else class="media-ph media-ph--sm is-empty" title="暂无预览">
+                  <el-icon><Picture /></el-icon>
                 </div>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="任务内容" width="240">
-            <template #default="{ row }">
-              <div class="task-prompt-cell">
-                <span :title="taskPrompt(row as AdminTask)">{{
-                  taskPrompt(row as AdminTask)
-                }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="状态" width="84" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="kind-text" :class="`is-status-${row.status}`">
+                  {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="耗时" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="metric metric-time tnum">{{ taskDuration(row as AdminTask) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="积分" width="88" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="metric metric-cost tnum">{{ formatPoints(row.costCents) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="数量" min-width="220" align="left" header-align="left">
+              <template #default="{ row }">
+                <div
+                  class="qty-cell"
+                  :title="`请求 ${taskCount(row as AdminTask)} · 产出 ${taskOutputCount(row as AdminTask)} · 失败 ${taskFailedCount(row as AdminTask)} · 参考图 ${taskInputCount(row as AdminTask)}`"
+                >
+                  <span class="qty-chip">
+                    <small>请求</small>
+                    <em class="metric-request tnum">{{ taskCount(row as AdminTask) }}</em>
+                  </span>
+                  <span class="qty-chip">
+                    <small>产出</small>
+                    <em class="metric-result tnum">{{ taskOutputCount(row as AdminTask) }}</em>
+                  </span>
+                  <span class="qty-chip">
+                    <small>失败</small>
+                    <em
+                      class="metric-fail tnum"
+                      :class="{ 'is-zero': taskFailedCount(row as AdminTask) === 0 }"
+                    >{{ taskFailedCount(row as AdminTask) }}</em>
+                  </span>
+                  <span class="qty-chip" :class="{ 'is-ref': taskInputCount(row as AdminTask) > 0 }">
+                    <small>参考图</small>
+                    <em class="tnum">{{ taskInputCount(row as AdminTask) }}</em>
+                  </span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="任务类型" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-num">{{ taskTypeLabel(row.type) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="服务商" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="provider-text">{{ taskServiceProviderMeta(row as AdminTask).name }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              label="模型 / 端点"
+              min-width="160"
+              align="left"
+              header-align="left"
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                <span class="cell-muted">{{ taskServiceProviderMeta(row as AdminTask).detail }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="任务内容" width="96" align="left" header-align="left">
+              <template #default="{ row }">
                 <button
                   type="button"
-                  title="复制任务内容"
+                  class="task-prompt-btn cell-text"
+                  :title="`点击复制：${taskPrompt(row as AdminTask)}`"
                   @click.stop="copyTaskPrompt(row as AdminTask)"
                 >
-                  <el-icon><CopyDocument /></el-icon>
+                  {{ taskPromptBrief(row as AdminTask) }}
                 </button>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="112">
-            <template #default="{ row }">
-              <span class="task-status" :class="`is-${row.status}`">
-                <i />{{ TASK_STATUS_LABELS[row.status] ?? row.status }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="任务类型" width="118" align="center">
-            <template #default="{ row }">
-              <div class="task-type">
-                <strong>{{ taskTypeLabel(row.type) }}</strong>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="任务来源" width="104" align="center">
-            <template #default="{ row }">
-              <span
-                class="task-source"
-                :class="{ 'is-assistant': row.source === 'assistant' }"
-                >{{ taskSourceLabel(row as AdminTask) }}</span
-              >
-            </template>
-          </el-table-column>
-          <el-table-column label="服务商" width="142" align="center">
-            <template #default="{ row }">
-              <span
-                class="task-provider"
-                :class="`is-${taskServiceProvider(row as AdminTask)}`"
-                :title="`${taskServiceProviderMeta(row as AdminTask).name} · ${taskServiceProviderMeta(row as AdminTask).detail}`"
-              >
-                <i />
-                <span>
-                  <strong>{{
-                    taskServiceProviderMeta(row as AdminTask).name
-                  }}</strong>
-                  <small>{{
-                    taskServiceProviderMeta(row as AdminTask).detail
-                  }}</small>
-                </span>
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="用户" min-width="175">
-            <template #default="{ row }">
-              <span class="task-user" :title="taskUser(row as AdminTask)">{{
-                taskUser(row as AdminTask)
-              }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="结果" width="82" align="center">
-            <template #default="{ row }">
-              <div class="task-numbers">
-                <strong
-                  >{{ taskOutputCount(row as AdminTask) }} /
-                  {{ taskCount(row as AdminTask) }}</strong
-                >
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="积分" width="100" align="center">
-            <template #default="{ row }">
-              <strong class="task-cost"
-                >{{ formatPoints(row.costCents) }} 积分</strong
-              >
-            </template>
-          </el-table-column>
-          <el-table-column label="耗时" width="110" align="center">
-            <template #default="{ row }">
-              <div class="task-time">
-                <strong>{{ taskDuration(row as AdminTask) }}</strong>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="异常" min-width="180">
-            <template #default="{ row }">
-              <div
-                v-if="row.errorCode"
-                class="task-error"
-                :title="row.errorMessage ?? ''"
-              >
-                <strong>{{ row.errorCode }}</strong
-                ><small>{{ row.errorMessage || "点击详情查看错误信息" }}</small>
-              </div>
-              <span v-else class="task-error-empty">—</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
+              </template>
+            </el-table-column>
 
-      <footer class="task-list-panel__footer">
-        <span>双击任务行可快速打开详情</span>
-        <CursorPager
-          :has-prev="hasPrev"
-          :has-next="hasNext"
-          :loading="loading"
-          :page="page"
-          :count="items.length"
-          :total="total"
-          @prev="prev"
-          @next="next"
-        />
-      </footer>
-    </section>
+            <el-table-column
+              label="用户邮箱"
+              min-width="170"
+              align="left"
+              header-align="left"
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                <span class="cell-text">{{ taskUser(row as AdminTask) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="创建" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum" :title="formatTime(row.createdAt)">
+                  {{ formatShortTime(row.createdAt) }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="开始" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum">
+                  {{ row.startedAt ? formatShortTime(row.startedAt) : '—' }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="结束" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum">
+                  {{ row.finishedAt ? formatShortTime(row.finishedAt) : '—' }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="错误码" width="120" align="left" header-align="left" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.errorCode" class="cell-fail">{{ row.errorCode }}</span>
+                <span v-else class="cell-muted">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              label="异常消息"
+              min-width="180"
+              align="left"
+              header-align="left"
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                <span v-if="row.errorMessage" class="cell-muted">{{ row.errorMessage }}</span>
+                <span v-else class="cell-muted">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </AdminListShell>
+    </PageCard>
 
     <el-drawer
       v-model="detailVisible"
-      :with-header="false"
-      size="640px"
+      size="min(640px, 96vw)"
+      append-to-body
+      destroy-on-close
       class="task-detail-drawer"
     >
-      <template v-if="detail">
-        <header class="detail-hero">
-          <div>
-            <span>任务详情</span>
-            <h2>{{ taskTypeLabel(detail.type) }}</h2>
-            <button type="button" @click="copyTaskId(detail.id)">
-              <span class="mono">{{ detail.id }}</span
-              ><el-icon><CopyDocument /></el-icon>
+      <template #header>
+        <div v-if="detail" class="drawer-header">
+          <div class="drawer-heading">
+            <span class="drawer-status" :class="`is-${detail.status}`">
+              {{ TASK_STATUS_LABELS[detail.status] ?? detail.status }}
+            </span>
+            <strong>{{ taskTypeLabel(detail.type) }}</strong>
+            <small>{{ taskServiceProviderMeta(detail).name }} · {{ taskServiceProviderMeta(detail).detail }}</small>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="detail" class="drawer-body">
+        <div class="drawer-toolbar">
+          <div class="drawer-toolbar__user">
+            <span class="drawer-toolbar__value">{{ taskUser(detail) }}</span>
+            <button type="button" class="drawer-id-chip" @click="copyTaskId(detail.id)">
+              <span class="mono">{{ detail.id }}</span>
+              <el-icon><CopyDocument /></el-icon>
             </button>
           </div>
-          <span class="task-status is-large" :class="`is-${detail.status}`"
-            ><i />{{ TASK_STATUS_LABELS[detail.status] ?? detail.status }}</span
-          >
-        </header>
+          <div class="drawer-toolbar__actions">
+            <el-button
+              v-if="detail.status === 'failed'"
+              size="small"
+              type="warning"
+              :loading="acting"
+              @click="requeue(detail)"
+            >
+              重新入队
+            </el-button>
+            <el-button
+              v-if="detail.status === 'queued'"
+              size="small"
+              type="warning"
+              :loading="acting"
+              @click="cancel(detail)"
+            >
+              取消任务
+            </el-button>
+            <el-button
+              v-if="detail.status === 'running'"
+              size="small"
+              type="danger"
+              :loading="acting"
+              @click="forceFail(detail)"
+            >
+              强制失败
+            </el-button>
+          </div>
+        </div>
 
-        <section
-          v-if="detailOutputUrls.length || detailInputUrls.length"
-          class="detail-media-panel"
-        >
-          <header class="detail-media-panel__head">
+        <div class="drawer-stats">
+          <span class="stat-item">
+            <small>产出/请求</small>
+            <em class="tnum">
+              <b class="metric-result">{{ taskOutputCount(detail) }}</b>
+              <i>/</i>
+              <b class="metric-request">{{ taskCount(detail) }}</b>
+            </em>
+          </span>
+          <span class="stat-item">
+            <small>失败</small>
+            <em
+              class="metric-fail tnum"
+              :class="{ 'is-zero': taskFailedCount(detail) === 0 }"
+            >{{ taskFailedCount(detail) }}</em>
+          </span>
+          <span class="stat-item" :class="{ 'is-ref': taskInputCount(detail) > 0 }">
+            <small>参考图</small>
+            <em class="tnum">{{ taskInputCount(detail) }}</em>
+          </span>
+          <span class="stat-item">
+            <small>耗时</small>
+            <em class="metric-time tnum">{{ taskDuration(detail) }}</em>
+          </span>
+          <span class="stat-item">
+            <small>积分</small>
+            <em class="metric-cost tnum">{{ formatPoints(detail.costCents) }}</em>
+          </span>
+        </div>
+
+        <el-alert
+          v-if="detail.errorCode || detail.errorMessage"
+          class="drawer-alert"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="detail.errorCode || '任务异常'"
+          :description="detail.errorMessage || ''"
+        />
+
+        <section class="detail-section">
+          <header class="detail-section__title">
             <div class="detail-media-tabs">
               <button
                 v-if="detailOutputUrls.length"
@@ -741,7 +953,7 @@ async function forceFail(task: AdminTask) {
                 :class="{ 'is-active': detailMediaMode === 'output' }"
                 @click="setDetailMediaMode('output')"
               >
-                生成结果 <span>{{ detailOutputUrls.length }}</span>
+                产出图 <em>{{ detailOutputUrls.length }}</em>
               </button>
               <button
                 v-if="detailInputUrls.length"
@@ -749,945 +961,1140 @@ async function forceFail(task: AdminTask) {
                 :class="{ 'is-active': detailMediaMode === 'input' }"
                 @click="setDetailMediaMode('input')"
               >
-                输入参考 <span>{{ detailInputUrls.length }}</span>
+                参考图 <em>{{ detailInputUrls.length }}</em>
               </button>
+              <span v-if="!detailOutputUrls.length && !detailInputUrls.length" class="cell-muted">
+                暂无图片
+              </span>
             </div>
-            <small>点击大图全屏预览</small>
+            <small v-if="detailMediaUrls.length" class="detail-section__hint">点击查看大图</small>
           </header>
-          <div class="detail-media-stage">
+          <div v-if="detailMediaUrls.length" class="media-grid">
             <el-image
-              v-if="detailActiveMediaUrl"
-              :key="`${detailMediaMode}-${detailMediaIndex}`"
-              :src="detailActiveMediaUrl"
+              v-for="(url, index) in detailMediaUrls"
+              :key="`${detailMediaMode}-${url}-${index}`"
+              :src="url"
               :preview-src-list="detailMediaUrls"
-              :initial-index="detailMediaIndex"
-              fit="contain"
-              class="detail-main-image"
+              :initial-index="index"
+              fit="cover"
+              class="media-grid__item"
               preview-teleported
               hide-on-click-modal
-            />
-            <span class="detail-media-counter"
-              >{{ detailMediaIndex + 1 }} / {{ detailMediaUrls.length }}</span
             >
+              <template #error>
+                <div class="media-ph media-ph--sm">
+                  <el-icon><Picture /></el-icon>
+                </div>
+              </template>
+            </el-image>
           </div>
-          <div v-if="detailMediaUrls.length > 1" class="detail-media-thumbs">
-            <button
-              v-for="(url, index) in detailMediaUrls"
-              :key="`${url}-${index}`"
-              type="button"
-              :class="{ 'is-active': detailMediaIndex === index }"
-              @click="detailMediaIndex = index"
-            >
-              <img
-                :src="url"
-                :alt="`${detailMediaMode === 'output' ? '生成结果' : '输入参考'} ${index + 1}`"
-                loading="lazy"
-              />
-            </button>
+          <div v-else class="media-grid-empty">
+            {{ detail.status === 'failed' ? '任务失败，无产出图' : '对话任务或仍在生成中' }}
           </div>
         </section>
-        <div v-else class="detail-media-empty">
-          <span>此任务没有图片产物</span>
-          <small>{{
-            detail.status === "failed"
-              ? "请查看下方异常信息"
-              : "对话任务或产物仍在处理中"
-          }}</small>
-        </div>
 
-        <el-descriptions :column="2" size="small" border class="detail-meta">
-          <el-descriptions-item label="ID">
-            <span class="mono">{{ shortId(detail.id) }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="耗时">{{
-            taskDuration(detail)
-          }}</el-descriptions-item>
-          <el-descriptions-item label="用户">{{
-            taskUser(detail)
-          }}</el-descriptions-item>
-          <el-descriptions-item label="服务商">
-            {{ taskServiceProviderMeta(detail).name }} ·
-            {{ taskServiceProviderMeta(detail).detail }}
-          </el-descriptions-item>
-          <el-descriptions-item label="积分消耗"
-            >{{ formatPoints(detail.costCents) }} 积分</el-descriptions-item
-          >
-          <el-descriptions-item label="创建">{{
-            formatTime(detail.createdAt)
-          }}</el-descriptions-item>
-          <el-descriptions-item label="开始">{{
-            formatTime(detail.startedAt)
-          }}</el-descriptions-item>
-          <el-descriptions-item label="结束">{{
-            formatTime(detail.finishedAt)
-          }}</el-descriptions-item>
-        </el-descriptions>
+        <section class="detail-section">
+          <header class="detail-section__title">任务信息</header>
+          <dl class="info-rows info-rows--flat">
+            <div class="info-row">
+              <dt>类型</dt>
+              <dd>{{ taskTypeLabel(detail.type) }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>来源</dt>
+              <dd>{{ taskSourceLabel(detail) }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>服务商</dt>
+              <dd>{{ taskServiceProviderMeta(detail).name }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>模型</dt>
+              <dd>{{ taskServiceProviderMeta(detail).detail }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>创建</dt>
+              <dd>{{ formatTime(detail.createdAt) }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>开始</dt>
+              <dd>{{ formatTime(detail.startedAt) }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>结束</dt>
+              <dd>{{ formatTime(detail.finishedAt) }}</dd>
+            </div>
+          </dl>
+        </section>
 
-        <h4>任务内容</h4>
-        <pre class="detail-pre">{{ detail.prompt || "-" }}</pre>
+        <section class="detail-section">
+          <header class="detail-section__title">
+            任务内容
+            <button type="button" class="icon-btn" title="复制" @click="copyTaskPrompt(detail)">
+              <el-icon><CopyDocument /></el-icon>
+            </button>
+          </header>
+          <pre class="detail-pre">{{ detail.prompt || '—' }}</pre>
+        </section>
 
-        <template v-if="detailParams">
-          <h4>请求参数</h4>
-          <pre class="detail-pre mono">{{ detailParams }}</pre>
-        </template>
-
-        <template v-if="detail.errorCode || detail.errorMessage">
-          <h4>异常信息</h4>
-          <el-alert
-            type="error"
-            :closable="false"
-            :title="detail.errorCode ?? '错误'"
-            :description="detail.errorMessage ?? ''"
-          />
-        </template>
-
-        <div class="detail-actions">
-          <el-button
-            v-if="detail.status === 'failed'"
-            type="warning"
-            :loading="acting"
-            @click="requeue(detail)"
-          >
-            重新入队
-          </el-button>
-          <el-button
-            v-if="detail.status === 'queued'"
-            type="warning"
-            :loading="acting"
-            @click="cancel(detail)"
-          >
-            取消任务
-          </el-button>
-          <el-button
-            v-if="detail.status === 'running'"
-            type="danger"
-            :loading="acting"
-            @click="forceFail(detail)"
-          >
-            强制失败
-          </el-button>
-        </div>
-      </template>
+        <section v-if="hasDetailParams" class="detail-section">
+          <header class="detail-section__title">
+            请求参数
+            <button type="button" class="params-open-link" @click="openParamsDialog">
+              结构化查看
+            </button>
+          </header>
+          <pre class="detail-pre mono detail-pre--compact">{{ detailParamsJson }}</pre>
+        </section>
+      </div>
     </el-drawer>
+
+    <AdminDialog
+      v-model="paramsDialogVisible"
+      title="请求参数"
+      subtitle="结构化查看任务入参与系统元数据"
+      :icon="Document"
+      width="680px"
+      footer-hint="只读查看，不会修改任务"
+      confirm-text="关闭"
+      :show-cancel="false"
+      @confirm="paramsDialogVisible = false"
+    >
+      <template v-if="detail" #meta>
+        <span class="admin-dialog__chip">{{ taskTypeLabel(detail.type) }}</span>
+        <code class="admin-dialog__chip is-mono" :title="detail.id">{{ detail.id }}</code>
+      </template>
+
+      <div v-if="detail" class="task-params-panel">
+        <div class="task-params-panel__summary">
+          <div class="task-params-panel__summary-main">
+            <strong>{{ detailParamGroups.request.length }} 项用户参数</strong>
+            <small v-if="detailParamGroups.system.length">
+              另含 {{ detailParamGroups.system.length }} 项系统元数据
+            </small>
+            <small v-else>无系统元数据</small>
+          </div>
+          <span class="task-params-panel__pill">只读</span>
+        </div>
+
+        <section class="task-params-panel__section">
+          <div class="task-params-panel__label">
+            <span>用户参数</span>
+            <em>{{ detailParamGroups.request.length }}</em>
+          </div>
+          <div v-if="detailParamGroups.request.length" class="task-params-panel__table">
+            <div
+              v-for="row in detailParamGroups.request"
+              :key="row.key"
+              class="task-params-panel__row"
+            >
+              <div class="task-params-panel__key">
+                <strong v-if="row.label !== row.key">{{ row.label }}</strong>
+                <code>{{ row.key }}</code>
+              </div>
+              <div class="task-params-panel__value tnum">{{ row.value }}</div>
+            </div>
+          </div>
+          <p v-else class="task-params-panel__empty">无用户侧参数</p>
+        </section>
+
+        <section v-if="detailParamGroups.system.length" class="task-params-panel__section">
+          <div class="task-params-panel__label">
+            <span>系统元数据</span>
+            <em>{{ detailParamGroups.system.length }}</em>
+          </div>
+          <div class="task-params-panel__table">
+            <div
+              v-for="row in detailParamGroups.system"
+              :key="row.key"
+              class="task-params-panel__row"
+            >
+              <div class="task-params-panel__key">
+                <strong v-if="row.label !== row.key">{{ row.label }}</strong>
+                <code>{{ row.key }}</code>
+              </div>
+              <div class="task-params-panel__value tnum">{{ row.value }}</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </AdminDialog>
   </div>
 </template>
 
 <style scoped>
-.task-monitor {
-  display: grid;
+.tasks-page {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 18px 22px 16px;
-  overflow: hidden;
 }
 
-.task-filter-panel__refresh,
-.refresh-state {
+.tasks-page :deep(.page-card) {
   display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tasks-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.refresh-actions {
+  display: inline-flex;
   align-items: center;
-}
-
-.task-filter-panel__refresh {
-  flex: 0 0 auto;
-  gap: 10px;
-  padding-right: 10px;
-  border-right: 1px solid var(--border);
-}
-
-.refresh-state {
   gap: 8px;
-  padding-right: 2px;
 }
 
-.refresh-state > span {
+.refresh-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--ink-3);
 }
 
-.refresh-state > span.is-live {
+.refresh-dot.is-live {
   background: var(--success);
-  box-shadow: 0 0 0 4px var(--success-soft);
-  animation: task-live 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent);
 }
 
-.refresh-state small {
-  font-size: 10px;
-  line-height: 1.25;
-}
-
-.refresh-state small {
-  color: var(--ink-3);
-}
-
-@keyframes task-live {
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.status-overview {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.status-card {
-  position: relative;
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 9px minmax(0, 1fr);
-  align-items: start;
-  gap: 9px;
-  padding: 11px 12px;
-  border: 0;
-  border-right: 1px solid var(--border);
-  color: var(--ink-3);
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
-}
-
-.status-card:last-child {
-  border-right: 0;
-}
-.status-card:hover {
-  background: var(--surface-2);
-}
-.status-card.is-active {
-  color: var(--accent-ink);
-  background: var(--accent-soft);
-}
-
-.status-card__dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.status-card.is-running {
-  color: var(--info);
-}
-.status-card.is-failed {
-  color: var(--danger);
-}
-.status-card.is-succeeded {
-  color: var(--success);
-}
-.status-card.is-queued {
-  color: var(--warning);
-}
-
-.status-card__copy {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 8px;
-}
-
-.status-card__copy small {
-  color: var(--ink-3);
-  font-size: 10px;
-}
-.status-card__copy strong {
-  color: var(--ink);
-  font-size: 19px;
-  line-height: 1.15;
-}
-.status-card__copy em {
-  grid-column: 1 / -1;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 9px;
-  font-style: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-filter-panel {
-  display: grid;
-  grid-template-columns: auto minmax(240px, 1.2fr) minmax(150px, 0.5fr) minmax(
-      170px,
-      0.6fr
-    ) auto auto;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.task-list-panel {
+.tasks-toolbar {
   display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.task-list-panel__head,
-.task-list-panel__footer {
-  display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 14px;
 }
 
-.task-list-panel__head {
-  min-height: 46px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+.status-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
 }
 
-.task-list-panel__head > div {
+.status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.status-tab em {
+  font-style: normal;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-tab.is-active {
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.status-tab.is-active em {
+  color: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.status-tab.is-failed:not(.is-active) em {
+  color: var(--danger);
+}
+
+html.dark .status-tab.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+html.dark .status-tab.is-active em {
+  color: var(--ink-3);
+}
+
+.tasks-toolbar__actions {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
-.task-list-panel__head strong {
-  color: var(--ink);
-  font-size: 14px;
-}
-.task-list-panel__head span {
-  color: var(--ink-3);
-  font-size: 10px;
+
+.tasks-search {
+  width: 200px;
 }
 
-.today-badge {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-3);
+.tasks-type {
+  width: 140px;
 }
 
-.task-table-shell {
+.tasks-error {
+  width: 120px;
+}
+
+.tasks-list-shell {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
-.task-list-panel__footer {
-  min-height: 42px;
-  padding: 4px 10px 4px 12px;
-  border-top: 1px solid var(--border);
+.tasks-list-shell :deep(.admin-list-shell__footer) {
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--surface);
 }
 
-.task-list-panel__footer > span {
-  color: var(--ink-3);
-  font-size: 10px;
-}
-.task-primary {
+.tasks-table-shell {
+  height: 100%;
   min-width: 0;
+  overflow: hidden;
+}
+
+.tasks-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.tasks-table :deep(.el-table__header-wrapper th.el-table__cell),
+.tasks-table :deep(.el-table__body td.el-table__cell),
+.tasks-table :deep(.el-table .cell) {
+  text-align: left !important;
+}
+
+.tasks-table :deep(.el-table .cell) {
+  display: block;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.tasks-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 48px;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tasks-table :deep(.el-table__body .el-table__cell) {
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.tasks-table :deep(.el-table__row td.el-table__cell) {
+  height: 64px;
+}
+
+.tasks-table :deep(.el-table__row) {
   cursor: pointer;
 }
-.task-primary__id {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-2);
+
+.tasks-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--surface-2);
 }
-.task-primary__id button,
-.task-prompt-cell button {
+
+.tasks-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
+  border-bottom-color: transparent;
+}
+
+.tasks-table :deep(.task-row.is-failed > td.el-table__cell) {
+  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+}
+
+.tasks-table :deep(.task-row.is-running > td.el-table__cell) {
+  background: color-mix(in srgb, var(--info) 5%, var(--surface));
+}
+
+.task-thumb {
+  display: block;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.task-thumb :deep(.el-image__wrapper),
+.task-thumb :deep(.el-image__inner),
+.task-thumb :deep(.el-image__error) {
+  width: 100%;
+  height: 100%;
+}
+
+.media-ph {
   display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  color: var(--ink-3);
+  background:
+    radial-gradient(120% 90% at 20% 15%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 55%),
+    linear-gradient(145deg, var(--surface-2), color-mix(in srgb, var(--surface-3) 70%, var(--surface)));
+}
+
+.media-ph--sm {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+.media-ph--sm.is-empty {
+  opacity: 0.72;
+}
+
+.task-prompt-btn {
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--ink-2);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-prompt-btn:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.icon-btn {
+  display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
   width: 22px;
   height: 22px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   color: var(--ink-3);
   background: transparent;
   cursor: pointer;
-  opacity: 0.55;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease;
-}
-.task-primary:hover .task-primary__id button,
-.task-prompt-cell:hover button {
-  opacity: 1;
-}
-.task-primary__id button:hover,
-.task-prompt-cell button:hover {
-  color: var(--accent-ink);
-  background: var(--surface-3);
 }
 
-.task-table-image {
-  display: block;
-  width: 40px;
-  height: 40px;
-  margin: 0 auto;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-3);
-  cursor: zoom-in;
+.icon-btn:hover {
+  color: var(--ink);
+  background: var(--surface-2);
 }
 
-.task-image-empty {
-  display: block;
-  width: 40px;
-  margin: 0 auto;
-  color: var(--ink-3);
-  text-align: center;
-}
-
-.task-cost {
-  display: inline-block;
-  padding: 4px 7px;
-  border-radius: 6px;
-  color: var(--warning);
-  background: var(--warning-soft);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.task-prompt-cell {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 5px;
-}
-
-.task-prompt-cell > span {
-  flex: 1;
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-3);
-  font-size: 11px;
-  font-weight: 600;
-}
-.task-status i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.task-status.is-running {
-  color: var(--info);
-}
-.task-status.is-queued {
-  color: var(--warning);
-}
-.task-status.is-failed {
-  color: var(--danger);
-}
-.task-status.is-succeeded {
-  color: var(--success);
-}
-.task-status.is-large {
-  padding: 6px 9px;
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.task-type,
-.task-numbers,
-.task-time,
+.task-kind,
 .task-error {
   display: grid;
   min-width: 0;
   gap: 2px;
+  line-height: 1.3;
 }
-.task-type strong,
-.task-numbers strong,
-.task-time strong,
-.task-error strong {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+
+.task-kind strong {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
 }
-.task-type small,
-.task-numbers small,
-.task-time small,
+
+.task-kind small,
 .task-error small {
   overflow: hidden;
   color: var(--ink-3);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-error strong {
-  color: var(--danger);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.task-error-empty {
-  color: var(--ink-3);
-}
-.task-user {
-  display: block;
-  overflow: hidden;
-  color: var(--ink-2);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.task-source {
-  display: inline-flex;
-  padding: 4px 7px;
-  border-radius: 6px;
-  color: var(--info);
-  background: var(--info-soft);
-  font-size: 10px;
-  font-weight: 650;
-  white-space: nowrap;
+
+.metric {
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }
-.task-source.is-assistant {
-  color: var(--accent-ink);
-  background: var(--accent-soft);
-}
-.task-provider {
-  display: inline-flex;
-  max-width: 126px;
-  align-items: center;
-  gap: 7px;
-  text-align: left;
-}
-.task-provider > i {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: currentColor;
-}
-.task-provider > span {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-.task-provider strong,
-.task-provider small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-provider strong {
-  color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 650;
-}
-.task-provider small {
-  color: var(--ink-3);
-  font-size: 9px;
-}
-.task-provider.is-c2a {
+
+.metric-time {
   color: var(--info);
 }
-.task-provider.is-sub2api {
-  color: var(--accent);
-}
-.task-provider.is-crun {
+
+.metric-cost {
   color: var(--warning);
 }
-.task-provider.is-local {
-  color: var(--success);
+
+.qty-cell {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+  align-items: baseline;
 }
-:deep(.el-table) {
-  --el-table-row-hover-bg-color: var(--surface-2);
-  height: 100% !important;
+
+.qty-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  white-space: nowrap;
+  line-height: 1.2;
 }
-:deep(.el-table th.el-table__cell) {
-  height: 38px;
+
+.qty-chip small {
   color: var(--ink-3);
-  background: var(--surface-2);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
-:deep(.el-table td.el-table__cell) {
-  height: 52px;
-  padding: 5px 0;
-}
-:deep(.el-table .task-row.is-failed td.el-table__cell) {
-  background: color-mix(in srgb, var(--danger-soft) 28%, var(--surface));
-}
-:deep(.el-table .task-row.is-running td.el-table__cell) {
-  background: color-mix(in srgb, var(--info-soft) 22%, var(--surface));
-}
-:deep(.el-table__inner-wrapper::before) {
-  display: none;
+
+.qty-chip em {
+  font-size: 15px;
+  font-style: normal;
+  font-weight: 750;
+  letter-spacing: -0.02em;
 }
 
-.detail-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin: -20px -20px 16px;
-  padding: 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
+.metric-request {
+  color: var(--ink);
 }
-.detail-hero > div {
+
+.metric-result {
+  color: var(--success);
+}
+
+.metric-fail {
+  color: var(--danger);
+}
+
+.metric-fail.is-zero {
+  color: var(--ink-3);
+  font-weight: 650;
+}
+
+.qty-chip.is-ref small,
+.qty-chip.is-ref em {
+  color: var(--info);
+}
+
+.provider-text {
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.kind-text {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.kind-text.is-status-succeeded {
+  color: var(--success);
+}
+
+.kind-text.is-status-failed {
+  color: var(--danger);
+}
+
+.kind-text.is-status-running,
+.kind-text.is-status-queued {
+  color: var(--info);
+}
+
+.kind-text.is-status-canceled {
+  color: var(--warning);
+}
+
+.cell-text {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.cell-num {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cell-muted {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cell-fail {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.drawer-id {
+  user-select: all;
+  word-break: break-all;
+}
+
+.empty-sub {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.drawer-header {
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.drawer-heading {
   display: grid;
   min-width: 0;
-  gap: 2px;
-}
-.detail-hero > div > span {
-  color: var(--ink-3);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-}
-.detail-hero h2 {
-  margin: 0;
-  font-size: 20px;
-}
-.detail-hero button {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  border: 0;
-  color: var(--ink-3);
-  background: transparent;
-  cursor: pointer;
-}
-.detail-hero button .mono {
-  overflow: hidden;
-  max-width: 360px;
-  text-overflow: ellipsis;
-}
-.detail-media-panel {
-  overflow: hidden;
-  margin-bottom: 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-2);
-  box-shadow: var(--shadow-sm);
+  gap: 4px;
 }
 
-.detail-media-panel__head {
+.drawer-status {
+  justify-self: start;
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.drawer-status.is-failed {
+  color: var(--danger);
+}
+
+.drawer-status.is-running,
+.drawer-status.is-queued {
+  color: var(--info);
+}
+
+.drawer-status.is-canceled {
+  color: var(--warning);
+}
+
+.drawer-heading strong {
+  color: var(--el-text-color-primary);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.drawer-heading small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-body {
   display: flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 12px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+  padding-bottom: 24px;
+}
+
+.drawer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.drawer-toolbar__user {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-toolbar__value {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-id-chip {
+  display: inline-flex;
+  max-width: min(100%, 260px);
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.drawer-id-chip .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-id-chip:hover {
+  color: var(--ink);
+}
+
+.drawer-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.drawer-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.stat-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0 8px;
+  border-right: 1px solid var(--border);
+}
+
+.stat-item:last-child {
+  border-right: 0;
+}
+
+.stat-item small {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stat-item em {
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.stat-item em i {
+  margin: 0 1px;
+  color: var(--ink-3);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.stat-item em b {
+  font-weight: inherit;
+}
+
+.stat-item.is-ref em {
+  color: var(--info);
+}
+
+.drawer-alert {
+  margin: 0;
+}
+
+.info-rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.info-rows--flat {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--surface);
 }
 
-.detail-media-panel__head > small {
-  flex: 0 0 auto;
+.params-open-link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 650;
+  background: transparent;
+  cursor: pointer;
+}
+
+.params-open-link:hover {
+  text-decoration: underline;
+}
+
+.params-empty {
+  margin: 0;
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 12px;
+}
+
+.info-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.info-row dt {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.info-row dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.detail-section {
+  min-width: 0;
+}
+
+.detail-section__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-section__hint {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.detail-pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.detail-pre--compact {
+  max-height: 120px;
+  font-size: 11px;
 }
 
 .detail-media-tabs {
-  display: flex;
-  min-width: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
-  gap: 4px;
 }
 
 .detail-media-tabs button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 8px;
-  color: var(--ink-3);
-  background: transparent;
-  font-size: 11px;
-  font-weight: 650;
-  cursor: pointer;
-  transition:
-    color 0.15s ease,
-    background 0.15s ease;
-}
-
-.detail-media-tabs button:hover {
-  color: var(--ink);
-  background: var(--surface-2);
-}
-.detail-media-tabs button.is-active {
-  color: var(--accent-ink);
-  background: var(--accent-soft);
-}
-.detail-media-tabs button span {
-  min-width: 18px;
-  padding: 1px 5px;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: color-mix(in srgb, currentColor 10%, transparent);
-  font-size: 9px;
-  text-align: center;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.detail-media-stage {
-  position: relative;
-  display: grid;
-  height: clamp(260px, 42vh, 430px);
-  place-items: center;
+.detail-media-tabs button em {
+  font-style: normal;
+  color: var(--ink-3);
+}
+
+.detail-media-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.media-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.media-grid__item {
+  width: 72px;
+  height: 72px;
   overflow: hidden;
-  background:
-    radial-gradient(
-      circle at 50% 24%,
-      color-mix(in srgb, var(--accent) 10%, transparent),
-      transparent 44%
-    ),
-    var(--surface-3);
-}
-
-.detail-media-stage::before {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(
-      45deg,
-      color-mix(in srgb, var(--ink) 3%, transparent) 25%,
-      transparent 25%
-    ),
-    linear-gradient(
-      -45deg,
-      color-mix(in srgb, var(--ink) 3%, transparent) 25%,
-      transparent 25%
-    ),
-    linear-gradient(
-      45deg,
-      transparent 75%,
-      color-mix(in srgb, var(--ink) 3%, transparent) 75%
-    ),
-    linear-gradient(
-      -45deg,
-      transparent 75%,
-      color-mix(in srgb, var(--ink) 3%, transparent) 75%
-    );
-  background-position:
-    0 0,
-    0 8px,
-    8px -8px,
-    -8px 0;
-  background-size: 16px 16px;
-  content: "";
-  opacity: 0.38;
-  pointer-events: none;
-}
-
-.detail-main-image {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
   cursor: zoom-in;
 }
 
-.detail-media-counter {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 2;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, white 18%, transparent);
-  border-radius: 999px;
-  color: white;
-  background: rgb(0 0 0 / 58%);
-  font-size: 9px;
-  line-height: 1;
-  backdrop-filter: blur(8px);
-}
-
-.detail-media-thumbs {
-  display: flex;
-  gap: 7px;
-  overflow-x: auto;
-  padding: 9px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-  scrollbar-width: thin;
-}
-
-.detail-media-thumbs button {
-  flex: 0 0 58px;
-  width: 58px;
-  height: 58px;
-  overflow: hidden;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface-2);
-  cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.15s ease;
-}
-
-.detail-media-thumbs button:hover {
-  border-color: var(--ink-3);
-  transform: translateY(-1px);
-}
-.detail-media-thumbs button.is-active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-.detail-media-thumbs img {
-  display: block;
+.media-grid__item :deep(.el-image__wrapper),
+.media-grid__item :deep(.el-image__error),
+.media-grid__item :deep(.el-image__inner) {
   width: 100%;
   height: 100%;
-  border-radius: 6px;
-  object-fit: cover;
 }
 
-.detail-media-empty {
+.media-grid__item :deep(.media-ph--sm) {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.media-grid-empty {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  background: var(--surface-2);
+}
+
+@media (max-width: 640px) {
+  .info-rows--flat {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-item {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 960px) {
+  .tasks-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tasks-toolbar__actions {
+    width: 100%;
+  }
+
+  .tasks-search,
+  .tasks-type,
+  .tasks-error {
+    flex: 1;
+    width: auto;
+    min-width: 120px;
+  }
+}
+</style>
+
+<style>
+.task-detail-drawer.el-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .el-drawer__header {
+  margin-bottom: 0;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-detail-drawer .el-drawer__close-btn {
+  margin-left: 12px;
+}
+
+.task-detail-drawer .el-drawer__body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 22px 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 参数弹窗内容（外壳见 AdminDialog；teleport 后需非 scoped） */
+.task-params-panel {
   display: grid;
-  min-height: 110px;
-  place-content: center;
-  gap: 4px;
-  margin-bottom: 14px;
+  gap: 16px;
+  padding-bottom: 8px;
+}
+
+.task-params-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.task-params-panel__summary-main {
+  min-width: 0;
+}
+
+.task-params-panel__summary-main strong,
+.task-params-panel__summary-main small {
+  display: block;
+}
+
+.task-params-panel__summary-main strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.task-params-panel__summary-main small {
+  margin-top: 3px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.task-params-panel__pill {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-params-panel__section {
+  display: grid;
+  gap: 8px;
+}
+
+.task-params-panel__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-params-panel__label span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-params-panel__label em {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.task-params-panel__table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.task-params-panel__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 34%) minmax(0, 1fr);
+  gap: 12px 16px;
+  align-items: start;
+  padding: 12px 14px;
+}
+
+.task-params-panel__row + .task-params-panel__row {
+  border-top: 1px solid var(--border);
+}
+
+.task-params-panel__row:nth-child(even) {
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+
+.task-params-panel__key {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.task-params-panel__key strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.task-params-panel__key code {
+  overflow-wrap: anywhere;
+  color: var(--ink-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.task-params-panel__value {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.task-params-panel__empty {
+  margin: 0;
+  padding: 16px;
   border: 1px dashed var(--border);
   border-radius: 12px;
-  color: var(--ink-2);
   background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
   text-align: center;
 }
 
-.detail-media-empty span {
-  font-size: 12px;
-  font-weight: 650;
-}
-.detail-media-empty small {
-  color: var(--ink-3);
-  font-size: 10px;
-}
-.detail-meta {
-  margin-bottom: 14px;
-}
-
-.detail-pre {
-  overflow: auto;
-  max-height: 190px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 12px;
-  margin: 0;
-}
-
-h4 {
-  margin: 14px 0 7px;
-}
-
-.detail-actions {
-  position: sticky;
-  bottom: -20px;
-  z-index: 2;
-  display: flex;
-  gap: 8px;
-  margin: 18px -20px -20px;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  backdrop-filter: blur(12px);
-}
-
-@media (max-width: 1180px) {
-  .status-overview {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .status-card:nth-child(3) {
-    border-right: 0;
-  }
-  .status-card:nth-child(-n + 3) {
-    border-bottom: 1px solid var(--border);
-  }
-  .task-filter-panel {
-    grid-template-columns: auto minmax(220px, 1fr) minmax(150px, 0.5fr) minmax(
-        160px,
-        0.6fr
-      ) auto;
-  }
-  .task-filter-panel > .el-button:last-child {
-    display: none;
-  }
-}
-
-@media (max-width: 760px) {
-  .task-monitor {
-    height: auto;
-    min-height: 100%;
-    grid-template-rows: auto;
-    padding: 12px;
-    overflow: auto;
-  }
-  .task-filter-panel__refresh {
-    width: 100%;
-    grid-column: 1 / -1;
-    padding: 0 0 8px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .refresh-state {
-    margin-right: auto;
-  }
-  .status-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .status-card {
-    border-bottom: 1px solid var(--border);
-  }
-  .status-card:nth-child(2n) {
-    border-right: 0;
-  }
-  .task-filter-panel {
-    grid-template-columns: 1fr 1fr;
-  }
-  .task-filter-panel__lead {
-    grid-column: 1 / -1;
-  }
-  .task-list-panel {
-    min-height: 560px;
-  }
-  .task-list-panel__footer > span {
-    display: none;
-  }
-  .detail-media-panel__head > small {
-    display: none;
-  }
-  .detail-media-stage {
-    height: min(52vh, 380px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .refresh-state > span.is-live {
-    animation: none;
+@media (max-width: 640px) {
+  .task-params-panel__row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }
 </style>

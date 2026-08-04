@@ -22,6 +22,15 @@ export function formatTime(iso: string | null | undefined): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 列表用短时间：`MM-DD HH:mm` */
+export function formatShortTime(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function shortId(id: string | null | undefined): string {
   if (!id) return "-";
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
@@ -65,6 +74,7 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   model_sheet: "超高清模型图",
   game_art: "游戏设计",
   puzzle: "AI拼图",
+  background_remove: "背景移除",
 };
 
 export function taskTypeLabel(type: string): string {
@@ -74,8 +84,8 @@ export function taskTypeLabel(type: string): string {
 export const TASK_STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
   running: "生成中",
-  succeeded: "成功",
-  failed: "失败",
+  succeeded: "已成功",
+  failed: "已失败",
   canceled: "已取消",
 };
 
@@ -98,6 +108,8 @@ export const LEDGER_KIND_LABELS: Record<string, string> = {
   signup_bonus: "注册赠送",
   task_spend: "任务消耗",
   spend: "消耗",
+  freeze: "冻结",
+  release: "解冻",
   task_refund: "任务退款",
   refund: "退款",
 };

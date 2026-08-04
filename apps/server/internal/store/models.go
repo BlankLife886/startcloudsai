@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	TaskTypes          = []string{"t2i", "coloring", "ui_design", "model_sheet", "game_art", "puzzle"}
+	TaskTypes          = []string{"t2i", "coloring", "ui_design", "model_sheet", "game_art", "puzzle", "background_remove"}
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
 	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}

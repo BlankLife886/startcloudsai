@@ -94,6 +94,19 @@ const routes = [
     },
   },
   {
+    path: '/canvas',
+    name: 'canvas-app',
+    component: () => import('../views/CanvasAppView.vue'),
+    meta: {
+      title: '智能画布 - ' + siteName,
+      titleLabel: '智能画布',
+      icon: 'bi-bounding-box-circles',
+      description: '在一张画布中连续完成文本、图像、分镜与视频创作。',
+      requiresAuth: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/ai-wallpaper',
     redirect: '/text-to-image',
   },
@@ -118,6 +131,19 @@ const routes = [
       titleLabel: 'AI 拼图',
       icon: 'bi-puzzle-fill',
       description: '上传图片、选择模板，在线制作照片拼图并导出高清 PNG。',
+    },
+  },
+  {
+    path: '/tools/background-remove',
+    name: 'background-remove',
+    component: () => import('../views/BackgroundRemoveView.vue'),
+    meta: {
+      title: `背景移除 - ${siteName}`,
+      titleLabel: '背景移除',
+      icon: 'bi-person-bounding-box',
+      description: '上传图片并移除背景，导出透明 PNG。',
+      requiresAuth: true,
+      hideSiteFooter: true,
     },
   },
   {

@@ -1,14 +1,15 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { gsap } from 'gsap'
-import { useRouter } from 'vue-router'
 import {
   cancelAssistantRun,
   createAssistantConversation,
+  createAssistantContextBoundary,
   createAssistantRun,
   getAssistantRun,
   deleteAssistantConversation,
   deleteAssistantMessage,
+  deleteAssistantTurn,
   fetchAssistantConfig,
   importAssistantConversations,
   listActiveAssistantRuns,
@@ -49,7 +50,6 @@ import {
 } from '@/features/ai-shared/modelImageCapabilities'
 import '@/features/assistant/styles/assistant-workspace.css'
 
-const router = useRouter()
 const authStore = useAuthStore()
 const appearanceStore = useAppearanceStore()
 const conversations = ref([])
@@ -65,6 +65,7 @@ const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const pendingDeleteId = ref('')
 const selectedImage = ref(null)
+const workspaceRef = ref(null)
 const messageScroller = ref(null)
 const sidebarRef = ref(null)
 const mainRef = ref(null)
@@ -72,6 +73,8 @@ const visibleMessageLimit = ref(24)
 const isLoadingEarlierMessages = ref(false)
 const promptInput = ref(null)
 const composerRoot = ref(null)
+const modelMenuButton = ref(null)
+const modelMenuPosition = ref({ left: 24 })
 const isAtConversationBottom = ref(true)
 const isReturningToBottom = ref(false)
 const stoppingConversationIds = ref(new Set())
@@ -123,6 +126,9 @@ let returnToBottomTimer = null
 let copiedMessageTimer = null
 let navigatorFrame = null
 let markerNavigationToken = 0
+let assistantMotionContext = null
+let assistantMotionMedia = null
+let assistantMotionReady = false
 
 const MESSAGE_BATCH_SIZE = 24
 const composerExtensionsEnabled = false
@@ -272,6 +278,18 @@ const activeRunId = computed(() => activeRunIds.value[activeId.value] || '')
 const activeRunCount = computed(() => Object.keys(activeRunIds.value).length)
 const isGenerating = computed(() => Boolean(activeRunId.value))
 const isStopping = computed(() => stoppingConversationIds.value.has(activeId.value))
+const currentContextMessages = computed(() => {
+  const items = messages.value
+  let boundaryIndex = -1
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind === 'context-divider') {
+      boundaryIndex = index
+      break
+    }
+  }
+  return items.slice(boundaryIndex + 1)
+})
+const contextAlreadyCleared = computed(() => messages.value.at(-1)?.kind === 'context-divider')
 const pendingDeleteHasActiveRun = computed(() => {
   const conversation = pendingDeleteConversation.value
   if (!conversation) return false
@@ -284,7 +302,9 @@ const lastAssistantId = computed(
   () => [...messages.value].reverse().find((message) => message.role === 'assistant')?.id || '',
 )
 const lastUserMessageId = computed(
-  () => [...messages.value].reverse().find((message) => message.role === 'user')?.id || '',
+  () =>
+    [...currentContextMessages.value].reverse().find((message) => message.role === 'user')?.id ||
+    '',
 )
 const canSend = computed(
   () =>
@@ -507,6 +527,125 @@ function hideConversationPeek() {
   conversationPeek.value = null
 }
 
+function conversationRowElement(id) {
+  const root = workspaceRef.value
+  if (!root) return null
+  const targetId = String(id || '')
+  return [...root.querySelectorAll('.conversation-row')].find(
+    (row) => row.dataset.conversationId === targetId,
+  )
+}
+
+function animateConversationRowHover(event, entering) {
+  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (!row || !assistantMotionReady) return
+  const isCollapsed = row.closest('.assistant-workspace')?.classList.contains('is-sidebar-collapsed')
+  const thumb = row.querySelector('.conversation-thumb')
+  const copy = row.querySelector('.conversation-copy')
+  const deleteButton = row.querySelector('.conversation-delete')
+  const targets = [row, thumb, copy, deleteButton].filter(Boolean)
+
+  runAssistantMotion(() => {
+    gsap.killTweensOf(targets)
+    gsap.to(row, {
+      x: entering && !isCollapsed ? 2 : 0,
+      duration: entering ? 0.24 : 0.3,
+      ease: entering ? 'power2.out' : 'power3.out',
+      overwrite: 'auto',
+    })
+    if (thumb) {
+      gsap.to(thumb, {
+        scale: entering ? 1.035 : 1,
+        duration: entering ? 0.28 : 0.34,
+        ease: entering ? 'power2.out' : 'power3.out',
+        overwrite: 'auto',
+      })
+    }
+    if (copy && !isCollapsed) {
+      gsap.to(copy, {
+        x: entering ? 1 : 0,
+        duration: entering ? 0.24 : 0.3,
+        ease: 'power2.out',
+        overwrite: 'auto',
+      })
+    }
+    if (deleteButton && !isCollapsed) {
+      const keepVisible = !entering && row.matches(':focus-within')
+      gsap.to(deleteButton, {
+        autoAlpha: entering || keepVisible ? 1 : 0,
+        scale: entering || keepVisible ? 1 : 0.9,
+        duration: entering ? 0.18 : 0.22,
+        ease: entering ? 'power2.out' : 'power3.out',
+        overwrite: 'auto',
+      })
+    }
+  })
+}
+
+function animateConversationSelection(id, previousId) {
+  if (!assistantMotionReady) return
+  nextTick(() => {
+    const nextRow = conversationRowElement(id)
+    const previousRow = previousId && previousId !== id ? conversationRowElement(previousId) : null
+    if (!nextRow) return
+    const nextThumb = nextRow.querySelector('.conversation-thumb')
+    const nextCopy = nextRow.querySelector('.conversation-copy')
+    const targets = [nextRow, previousRow, nextThumb, nextCopy].filter(Boolean)
+
+    runAssistantMotion(() => {
+      gsap.killTweensOf(targets)
+      if (previousRow) {
+        gsap.to(previousRow, {
+          x: 0,
+          scale: 1,
+          duration: 0.26,
+          ease: 'power3.out',
+          overwrite: 'auto',
+        })
+      }
+      gsap.fromTo(
+        nextRow,
+        { x: previousRow ? 3 : 0, scale: 0.985 },
+        {
+          x: 0,
+          scale: 1,
+          duration: 0.4,
+          ease: 'power3.out',
+          clearProps: 'transform',
+          overwrite: 'auto',
+        },
+      )
+      if (nextThumb) {
+        gsap.fromTo(
+          nextThumb,
+          { scale: 0.94 },
+          {
+            scale: 1,
+            duration: 0.42,
+            ease: 'back.out(1.45)',
+            clearProps: 'transform',
+            overwrite: 'auto',
+          },
+        )
+      }
+      if (nextCopy && !sidebarCollapsed.value) {
+        gsap.fromTo(
+          nextCopy,
+          { x: 4, autoAlpha: 0.78 },
+          {
+            x: 0,
+            autoAlpha: 1,
+            duration: 0.34,
+            ease: 'power3.out',
+            clearProps: 'transform,opacity,visibility',
+            overwrite: 'auto',
+          },
+        )
+      }
+    })
+  })
+}
+
 function conversationPeekLines(conversation) {
   return (conversation.messages || []).slice(-2).map((message) => ({
     role: message.role,
@@ -517,12 +656,16 @@ function conversationPeekLines(conversation) {
 }
 
 function selectConversation(id) {
+  const previousId = activeId.value
   editingMessageId.value = ''
   editingMessageDraft.value = ''
   visibleMessageLimit.value = MESSAGE_BATCH_SIZE
   activeId.value = id
   sidebarOpen.value = false
-  nextTick(scrollToBottom)
+  nextTick(() => {
+    animateConversationSelection(id, previousId)
+    scrollToBottom()
+  })
 }
 
 function requestDeleteConversation(id) {
@@ -659,6 +802,74 @@ function modelDisplayName(model) {
   )
 }
 
+function proposalImageModel(proposal) {
+  return (
+    imageGenerationModels.value.find((item) => item.model === proposal?.model) ||
+    imageGenerationModels.value[0] ||
+    null
+  )
+}
+
+function proposalResolutionOptions(proposal) {
+  const model = proposalImageModel(proposal)
+  const supported = new Set(
+    Array.isArray(model?.resolutions)
+      ? model.resolutions.map((value) => String(value || '').toUpperCase())
+      : [],
+  )
+  const qualities = new Set(model?.qualities || [])
+  return IMAGE_RESOLUTION_OPTIONS.filter(
+    (option) =>
+      (!supported.size || supported.has(option.id)) &&
+      (!qualities.size || qualities.has(option.quality)),
+  )
+}
+
+function proposalRatioOptions(proposal) {
+  const supported = getModelAspectRatiosForResolution(
+    proposalImageModel(proposal),
+    proposal?.resolution,
+  )
+  return GENERATION_RATIOS.filter((option) => supported.includes(option.id))
+}
+
+function normalizeAgentProposalCapabilities(proposal, notifyReferenceTrim = false) {
+  if (!proposal) return
+  const model = proposalImageModel(proposal)
+  if (model) {
+    proposal.model = model.model
+    proposal.modelName = model.label
+  }
+  const resolutions = proposalResolutionOptions(proposal)
+  if (!resolutions.some((option) => option.id === proposal.resolution)) {
+    proposal.resolution = resolutions[0]?.id || '1K'
+  }
+  const resolution = resolutions.find((option) => option.id === proposal.resolution)
+  const qualities = Array.isArray(model?.qualities) ? model.qualities : []
+  if (!qualities.includes(proposal.quality)) {
+    proposal.quality =
+      (resolution?.quality && qualities.includes(resolution.quality) && resolution.quality) ||
+      qualities[0] ||
+      proposal.quality ||
+      'high'
+  }
+  const ratios = proposalRatioOptions(proposal)
+  if (!ratios.some((option) => option.id === proposal.ratio)) {
+    proposal.ratio = ratios[0]?.id || '1:1'
+  }
+  const referenceLimit = Number(model?.maxReferenceImages ?? 4)
+  if (Array.isArray(proposal.referenceImages) && Number.isFinite(referenceLimit)) {
+    const previousCount = proposal.referenceImages.length
+    proposal.referenceImages = proposal.referenceImages.slice(0, Math.max(0, referenceLimit))
+    const removedCount = previousCount - proposal.referenceImages.length
+    if (notifyReferenceTrim && removedCount > 0) {
+      notificationService.warning(
+        `${model?.label || '当前模型'}最多支持 ${Math.max(0, referenceLimit)} 张参考图，已移除 ${removedCount} 张`,
+      )
+    }
+  }
+}
+
 function toggleModelMenu() {
   modelMenuOpen.value = !modelMenuOpen.value
   if (modelMenuOpen.value) modelSearch.value = ''
@@ -674,6 +885,26 @@ function toggleImageModelMenu() {
   const nextValue = !modelMenuOpen.value
   closeComposerPanels()
   modelMenuOpen.value = nextValue
+  if (nextValue) updateModelMenuPosition()
+}
+
+function updateModelMenuPosition() {
+  nextTick(() => {
+    const button = modelMenuButton.value
+    const composer = composerRoot.value
+    if (!button || !composer) return
+    const buttonRect = button.getBoundingClientRect()
+    const composerRect = composer.getBoundingClientRect()
+    const menuWidth = Math.min(410, composerRect.width - 32)
+    const maxLeft = Math.max(16, composerRect.width - menuWidth - 16)
+    modelMenuPosition.value = {
+      left: Math.max(16, Math.min(buttonRect.left - composerRect.left, maxLeft)),
+    }
+  })
+}
+
+function handleViewportResize() {
+  if (modelMenuOpen.value && !preferencesOpen.value) updateModelMenuPosition()
 }
 
 function selectImageResolution(option) {
@@ -825,6 +1056,21 @@ async function deleteMessage(messageId) {
   notificationService.success('内容已删除')
 }
 
+async function withdrawLastTurn(message) {
+  const conversation = activeConversation.value
+  if (!conversation || message?.id !== lastUserMessageId.value || isGenerating.value) return
+  const index = conversation.messages.findIndex((item) => item.id === message.id)
+  if (index < 0) return
+  try {
+    await deleteAssistantTurn(message.id)
+    conversation.messages.splice(index)
+    conversation.updatedAt = new Date().toISOString()
+    notificationService.success('已撤回本轮对话')
+  } catch (error) {
+    notificationService.error(error?.message || '撤回本轮失败')
+  }
+}
+
 function conversationPreviewImage(conversation) {
   for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
     const message = conversation.messages[index]
@@ -954,7 +1200,7 @@ async function scrollToMessage(messageId) {
 
   const scrollerRect = scroller.getBoundingClientRect()
   const targetRect = target.getBoundingClientRect()
-  const targetTop = Math.max(0, scroller.scrollTop + targetRect.top - scrollerRect.top - 76)
+  const targetTop = Math.max(0, scroller.scrollTop + targetRect.top - scrollerRect.top - 32)
   isAtConversationBottom.value = false
 
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -1005,7 +1251,7 @@ function followConversationBottom() {
   if (isAtConversationBottom.value || isReturningToBottom.value) void scrollToBottom()
 }
 
-// 消息入场动画：显式标记“新追加”的消息，用一次性 keyframe 动画进场。
+// 消息入场动画：显式标记“新追加”的消息，交给 GSAP 一次性处理。
 // 不用 TransitionGroup——流式更新的频繁重渲染会不断重启其过渡（实测卡在半透明）。
 const newMessageIds = ref(new Set())
 
@@ -1019,6 +1265,165 @@ function markMessagesNew(...ids) {
     newMessageIds.value = settled
   }, 900)
 }
+
+function runAssistantMotion(callback) {
+  if (!assistantMotionReady || !assistantMotionContext) return
+  assistantMotionContext.add(callback)
+}
+
+function animateNewMessageTurns() {
+  if (!assistantMotionReady || !workspaceRef.value) return
+  const targets = workspaceRef.value.querySelectorAll('.message-turn.is-new')
+  if (!targets.length) return
+  runAssistantMotion(() => {
+    gsap.fromTo(
+      targets,
+      { autoAlpha: 0, y: 12 },
+      {
+        autoAlpha: 1,
+        y: 0,
+        duration: 0.36,
+        ease: 'power3.out',
+        stagger: 0.04,
+        clearProps: 'opacity,visibility,transform',
+        overwrite: 'auto',
+      },
+    )
+  })
+}
+
+function syncGenerationPulse() {
+  if (!workspaceRef.value) return
+  const indicators = workspaceRef.value.querySelectorAll(
+    '.assistant-message-label .message-status-indicator i',
+  )
+  const workingIndicators = workspaceRef.value.querySelectorAll(
+    '.assistant-message-label.is-working .message-status-indicator i',
+  )
+  if (!indicators.length) return
+  runAssistantMotion(() => {
+    gsap.killTweensOf(indicators)
+    if (!assistantMotionReady || !isGenerating.value || !workingIndicators.length) {
+      gsap.set(indicators, { scale: 1, opacity: 1 })
+      return
+    }
+    gsap.to(workingIndicators, {
+      scale: 1.22,
+      opacity: 0.56,
+      duration: 0.72,
+      ease: 'sine.inOut',
+      repeat: -1,
+      yoyo: true,
+      stagger: 0.06,
+      overwrite: 'auto',
+    })
+  })
+}
+
+function animateGeneratedImage(messageId, imageIndex) {
+  if (!assistantMotionReady || !workspaceRef.value) return
+  const key = `${messageId}-${imageIndex}`
+  const figure = [...workspaceRef.value.querySelectorAll('[data-image-key]')].find(
+    (element) => element.dataset.imageKey === key,
+  )
+  if (!figure || figure.dataset.motionShown === 'true') return
+  figure.dataset.motionShown = 'true'
+  runAssistantMotion(() => {
+    gsap.fromTo(
+      figure,
+      { autoAlpha: 0, y: 10, scale: 0.975 },
+      {
+        autoAlpha: 1,
+        y: 0,
+        scale: 1,
+        duration: 0.48,
+        ease: 'power3.out',
+        clearProps: 'opacity,visibility,transform',
+        overwrite: 'auto',
+      },
+    )
+  })
+}
+
+function setupAssistantMotion() {
+  const root = workspaceRef.value
+  if (!root || !root.isConnected) return
+  assistantMotionMedia?.revert()
+  assistantMotionContext?.revert()
+  assistantMotionReady = false
+  assistantMotionContext = gsap.context(() => {}, root)
+  assistantMotionMedia = gsap.matchMedia()
+  assistantMotionMedia.add(
+    {
+      desktop: '(min-width: 901px)',
+      reduceMotion: '(prefers-reduced-motion: reduce)',
+    },
+    ({ conditions }) => {
+      assistantMotionReady = Boolean(conditions.desktop && !conditions.reduceMotion)
+      if (!assistantMotionReady) return undefined
+      root.classList.add('gsap-motion-ready')
+
+      const sidebar = root.querySelector('.assistant-sidebar')
+      const topbar = root.querySelector('.assistant-topbar')
+      const composer = root.querySelector('.composer-zone')
+      const rows = root.querySelectorAll('.conversation-row')
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } })
+      if (sidebar) {
+        intro.fromTo(
+          sidebar,
+          { autoAlpha: 0, x: -14 },
+          { autoAlpha: 1, x: 0, duration: 0.42 },
+        )
+      }
+      if (topbar) {
+        intro.fromTo(
+          topbar,
+          { autoAlpha: 0, y: -8 },
+          { autoAlpha: 1, y: 0, duration: 0.34 },
+          '-=0.2',
+        )
+      }
+      if (rows.length) {
+        intro.fromTo(
+          rows,
+          { autoAlpha: 0, x: -8 },
+          { autoAlpha: 1, x: 0, duration: 0.24, stagger: 0.035 },
+          '-=0.16',
+        )
+      }
+      if (composer) {
+        intro.fromTo(
+          composer,
+          { autoAlpha: 0, y: 12 },
+          { autoAlpha: 1, y: 0, duration: 0.42 },
+          '-=0.2',
+        )
+      }
+      return () => {
+        assistantMotionReady = false
+        root.classList.remove('gsap-motion-ready')
+      }
+    },
+    root,
+  )
+  assistantMotionReady && syncGenerationPulse()
+}
+
+watch(
+  newMessageIds,
+  async () => {
+    if (!assistantMotionReady) return
+    await nextTick()
+    animateNewMessageTurns()
+  },
+  { deep: true, flush: 'post' },
+)
+
+watch(isGenerating, async () => {
+  if (!assistantMotionReady) return
+  await nextTick()
+  syncGenerationPulse()
+})
 
 function imageSkeletonRatio(message) {
   const width = Number(message?.width)
@@ -1048,22 +1453,40 @@ function mergeAssistantStreamImage(message, image) {
 // 生成图加载状态：'' | 'loaded' | 'failed'。
 // 图块固定比例 + 骨架占位，杜绝慢加载时 0 高度弹开的布局抖动。
 const generatedImageStates = ref({})
+const generatedImageReloads = ref({})
+const generatedImageRetryTimers = new Map()
 
 function generatedImageState(messageId, index) {
   return generatedImageStates.value[`${messageId}-${index}`] || ''
 }
 
+function generatedImageUrl(image, messageId, index) {
+  const source = String(image?.dataUrl || '')
+  const reload = generatedImageReloads.value[`${messageId}-${index}`] || 0
+  if (!source || !reload) return source
+  return `${source}${source.includes('?') ? '&' : '?'}reload=${reload}`
+}
+
 function onGeneratedImageLoad(messageId, index) {
+  const key = `${messageId}-${index}`
+  if (generatedImageRetryTimers.has(key)) {
+    window.clearTimeout(generatedImageRetryTimers.get(key))
+    generatedImageRetryTimers.delete(key)
+  }
   generatedImageStates.value = {
     ...generatedImageStates.value,
-    [`${messageId}-${index}`]: 'loaded',
+    [key]: 'loaded',
   }
-  if (freshlyGeneratedIds.has(messageId)) triggerImageBurst(`${messageId}-${index}`)
+  if (freshlyGeneratedIds.has(messageId)) {
+    triggerImageBurst(`${messageId}-${index}`)
+    nextTick(() => animateGeneratedImage(messageId, index))
+  }
   followConversationBottom()
 }
 
 // 揭示粒子迸发：仅本次会话新完成的生成任务触发（浏览历史不触发）
 const freshlyGeneratedIds = new Set()
+const focusedProposalIds = new Set()
 const burstingImages = ref(new Set())
 
 function triggerImageBurst(key) {
@@ -1094,16 +1517,43 @@ function burstParticleStyle(particle, imageIndex) {
 }
 
 function onGeneratedImageError(messageId, index) {
+  const key = `${messageId}-${index}`
+  const attempts = generatedImageReloads.value[key] || 0
+  if (attempts < 2) {
+    generatedImageRetryTimers.set(
+      key,
+      window.setTimeout(
+        () => {
+          generatedImageRetryTimers.delete(key)
+          generatedImageReloads.value = {
+            ...generatedImageReloads.value,
+            [key]: attempts + 1,
+          }
+        },
+        attempts ? 1800 : 700,
+      ),
+    )
+    return
+  }
   generatedImageStates.value = {
     ...generatedImageStates.value,
-    [`${messageId}-${index}`]: 'failed',
+    [key]: 'failed',
   }
 }
 
 function retryGeneratedImage(messageId, index) {
+  const key = `${messageId}-${index}`
+  if (generatedImageRetryTimers.has(key)) {
+    window.clearTimeout(generatedImageRetryTimers.get(key))
+    generatedImageRetryTimers.delete(key)
+  }
   const next = { ...generatedImageStates.value }
-  delete next[`${messageId}-${index}`]
+  delete next[key]
   generatedImageStates.value = next
+  generatedImageReloads.value = {
+    ...generatedImageReloads.value,
+    [key]: (generatedImageReloads.value[key] || 0) + 1,
+  }
 }
 
 function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStream = null } = {}) {
@@ -1113,8 +1563,11 @@ function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStr
   const streamActive = textStream && resolvedMode !== 'image' && !textStream.isSettled()
   const localContent = String(assistantMessage.content || '')
   const localStatusStage = assistantMessage.statusStage
+  const persistedTerminal = Boolean(
+    persisted && ['complete', 'failed'].includes(String(persisted.status || '')),
+  )
   if (streamActive && typeof persisted?.content === 'string') {
-    textStream.push(persisted.content)
+    textStream.push(persisted.content, { replace: persistedTerminal })
   }
   if (persisted) {
     // SSE 增量可能领先于 DB 落盘快照，运行中不让轮询把文本“倒带”
@@ -1129,6 +1582,7 @@ function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStr
     }
   }
   if (run.id) assistantMessage.runId = run.id
+  if (run.mode) assistantMessage.requestedMode = run.mode
   // 终结态以持久化消息的 statusStage(complete/failed)为准，
   // run.stage 是过程态快照，完成后再覆盖会让状态行停在“正在理解图片”
   const runFinished = ['succeeded', 'failed', 'canceled'].includes(run.status)
@@ -1136,8 +1590,7 @@ function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStr
   if (run.resolvedMode) assistantMessage.kind = run.resolvedMode
   // 硬闸：消息行一旦持久化为终态,pending 必为 false——
   // 即使 run 状态快照仍是 running(完成时序竞态),也不允许“已完成还转圈”
-  const messageTerminal =
-    persisted && ['complete', 'failed'].includes(String(persisted.status || ''))
+  const messageTerminal = persistedTerminal
   const successfulCompletion =
     run.status === 'succeeded' || String(persisted?.status || '') === 'complete'
   const deferredCompletion = Boolean(streamActive && successfulCompletion)
@@ -1176,7 +1629,18 @@ function applyAssistantRunUpdate(conversation, assistantMessage, data, { textStr
     }
   }
   conversation.updatedAt = assistantMessage.updatedAt || new Date().toISOString()
-  if (activeId.value === conversation.id) followConversationBottom()
+  if (
+    activeId.value === conversation.id &&
+    assistantMessage.kind === 'proposal' &&
+    assistantMessage.proposal &&
+    !assistantMessage.pending &&
+    !focusedProposalIds.has(assistantMessage.id)
+  ) {
+    focusedProposalIds.add(assistantMessage.id)
+    nextTick(() => scrollToMessage(assistantMessage.id))
+  } else if (activeId.value === conversation.id) {
+    followConversationBottom()
+  }
 }
 
 async function monitorAssistantRun(conversation, assistantMessage, runId, controller) {
@@ -1195,7 +1659,7 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
     const persisted = update?.assistantMessage
     const resolvedMode = run.resolvedMode || persisted?.kind || assistantMessage.kind
     if (resolvedMode !== 'image' && typeof persisted?.content === 'string' && persisted.content) {
-      ensureTextStream().push(persisted.content)
+      ensureTextStream()
     }
     if (resolvedMode === 'image' && textStream && !textStream.isSettled()) {
       textStream.cancel()
@@ -1217,6 +1681,12 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
         assistantMessage.kind = 'chat'
         assistantMessage.routing = false
         assistantMessage.statusStage = event.stage || assistantMessage.statusStage
+      } else if (event?.kind === 'agent') {
+        assistantMessage.routing = false
+        assistantMessage.statusStage = event.stage || assistantMessage.statusStage
+      } else if (event?.kind === 'proposal') {
+        assistantMessage.routing = false
+        assistantMessage.statusStage = event.stage || assistantMessage.statusStage
       }
       if (event?.image) {
         mergeAssistantStreamImage(assistantMessage, event.image)
@@ -1233,8 +1703,10 @@ async function monitorAssistantRun(conversation, assistantMessage, runId, contro
         typeof event?.content === 'string' &&
         event.content.length > 0
       ) {
-        ensureTextStream().push(event.content)
-        if (assistantMessage.kind === 'agent') assistantMessage.kind = 'chat'
+        ensureTextStream().push(event.content, { replace: Boolean(event.done) })
+        if (assistantMessage.kind === 'agent' && event?.kind !== 'proposal') {
+          assistantMessage.kind = 'chat'
+        }
         assistantMessage.routing = false
         assistantMessage.statusStage = event.stage || 'answering'
         followConversationBottom()
@@ -1292,9 +1764,16 @@ async function generateResponse(
   prompt,
   assistantMessage,
   responseMode,
-  { sourceUserMessageId = '' } = {},
+  {
+    sourceUserMessageId = '',
+    referenceContext = null,
+    userMessageContent = '',
+    proposalSourceMessageId = '',
+  } = {},
 ) {
-  const visualContext = resolveVisualContext(conversation, prompt)
+  const visualContext = Array.isArray(referenceContext)
+    ? referenceContext
+    : resolveVisualContext(conversation, prompt)
   // 意图识别完全交给服务端（mode=agent），路由结果通过 run.resolvedMode 回填，
   // 避免客户端正则预猜与服务端结论不一致导致状态标签闪变。
   assistantMessage.kind = responseMode
@@ -1324,6 +1803,7 @@ async function generateResponse(
       {
         conversationId: conversation.id,
         prompt,
+        userMessageContent: userMessageContent || prompt,
         mode: responseMode,
         clientUserMessageId: currentUserMessage?.id || uid(),
         clientAssistantMessageId: assistantMessage.id,
@@ -1340,6 +1820,7 @@ async function generateResponse(
         height: assistantMessage.height,
         quality: assistantMessage.quality || imageQuality.value,
         serviceKey: 'assistant_image',
+        proposalSourceMessageId,
       },
       { signal: controller.signal },
     )
@@ -1376,6 +1857,128 @@ async function generateResponse(
     }
     if (activeId.value === conversation.id) followConversationBottom()
   }
+}
+
+function proposalImageRequest(proposal) {
+  const resolution = IMAGE_RESOLUTION_OPTIONS.find((option) => option.id === proposal.resolution)
+  const longEdge = resolution?.longEdge || 1024
+  const ratio = String(proposal.ratio || 'auto')
+  if (ratio === 'auto') {
+    return { width: longEdge, height: longEdge, requestSize: 'auto' }
+  }
+  const [ratioWidth, ratioHeight] = ratio.split(':').map(Number)
+  if (!ratioWidth || !ratioHeight) {
+    return { width: longEdge, height: longEdge, requestSize: `${longEdge}x${longEdge}` }
+  }
+  const width =
+    ratioWidth >= ratioHeight ? longEdge : Math.round((longEdge * ratioWidth) / ratioHeight)
+  const height =
+    ratioHeight >= ratioWidth ? longEdge : Math.round((longEdge * ratioHeight) / ratioWidth)
+  return { width, height, requestSize: `${width}x${height}` }
+}
+
+function dismissAgentProposal(message) {
+  if (!message?.proposal || message.proposal.submitting) return
+  message.proposal.dismissed = true
+}
+
+function restoreAgentProposal(message) {
+  if (!message?.proposal) return
+  message.proposal.dismissed = false
+  nextTick(() => scrollToBottom({ behavior: 'smooth' }))
+}
+
+function proposalExecuted(message) {
+  return messages.value.some(
+    (item) => item.role === 'user' && item.proposalSourceMessageId === message?.id,
+  )
+}
+
+function sourceProposalForImage(message) {
+  const conversation = activeConversation.value
+  const index = conversation?.messages.findIndex((item) => item.id === message?.id) ?? -1
+  if (index < 1) return null
+  const sourceId = conversation.messages[index - 1]?.proposalSourceMessageId
+  if (!sourceId) return null
+  return conversation.messages.find((item) => item.id === sourceId && item.proposal) || null
+}
+
+function reopenSourceProposal(message) {
+  const proposalMessage = sourceProposalForImage(message)
+  if (!proposalMessage) return
+  proposalMessage.proposal.dismissed = false
+  nextTick(() => scrollToMessage(proposalMessage.id))
+}
+
+async function clearConversationContext() {
+  const conversation = activeConversation.value
+  if (
+    !conversation ||
+    isGenerating.value ||
+    !conversation.messages.length ||
+    contextAlreadyCleared.value
+  )
+    return
+  try {
+    const message = await createAssistantContextBoundary(conversation.id)
+    conversation.messages.push(message)
+    conversation.updatedAt = new Date().toISOString()
+    notificationService.success('已从此处开始新的上下文')
+    nextTick(() => scrollToBottom({ behavior: 'smooth' }))
+  } catch (error) {
+    notificationService.error(error?.message || '清除上文失败')
+  }
+}
+
+async function approveAgentProposal(message) {
+  const proposal = message?.proposal
+  const conversation = activeConversation.value
+  const prompt = String(proposal?.prompt || '').trim()
+  if (!proposal || !conversation || proposal.submitting || isGenerating.value) return
+  if (!prompt) {
+    notificationService.warning('请先填写图片生成提示词')
+    return
+  }
+  if (activeRunCount.value >= 4 && !conversationHasActiveRun(conversation.id)) {
+    notificationService.warning('最多可同时运行 4 个对话任务，请稍后再试')
+    return
+  }
+
+  const request = proposalImageRequest(proposal)
+  const userMessage = {
+    id: uid(),
+    role: 'user',
+    content: '执行这个创作方案',
+    createdAt: new Date().toISOString(),
+    proposalSourceMessageId: message.id,
+    referenceImages: (proposal.referenceImages || []).map((image) => ({ ...image })),
+  }
+  const assistantMessage = createAssistantPlaceholder({
+    prompt,
+    responseMode: 'image',
+    userMessageId: userMessage.id,
+    defaults: {
+      model: proposal.model || imageGenerationModel.value,
+      ratio: proposal.ratio || 'auto',
+      requestRatio: proposal.ratio || 'auto',
+      resolution: proposal.resolution || '1K',
+      count: Number(proposal.count || 1),
+      requestSize: request.requestSize,
+      width: request.width,
+      height: request.height,
+      quality: proposal.quality || 'high',
+    },
+  })
+  proposal.submitting = true
+  proposal.dismissed = false
+  conversation.messages.push(userMessage, assistantMessage)
+  markMessagesNew(userMessage.id, assistantMessage.id)
+  await generateResponse(conversation, prompt, assistantMessage, 'image', {
+    referenceContext: proposal.referenceImages || [],
+    userMessageContent: userMessage.content,
+    proposalSourceMessageId: message.id,
+  })
+  proposal.submitting = false
 }
 
 async function sendMessage() {
@@ -1437,7 +2040,9 @@ async function retryAssistant(message) {
   const index = conversation?.messages.findIndex((item) => item.id === message.id) ?? -1
   const prompt = conversation?.messages[index - 1]?.content?.trim()
   if (!conversation || index < 1 || !prompt) return
-  const responseMode = message.kind || (message.images?.length ? 'image' : 'chat')
+  const responseMode = await resolveAssistantRequestedMode(message)
+  message.model = currentAssistantModel(responseMode, message.model)
+  message.requestedMode = responseMode
   message.content = ''
   message.images = []
   message.feedback = ''
@@ -1446,6 +2051,30 @@ async function retryAssistant(message) {
   await generateResponse(conversation, prompt, message, responseMode, {
     sourceUserMessageId: conversation.messages[index - 1].id,
   })
+}
+
+async function resolveAssistantRequestedMode(message) {
+  if (['agent', 'chat', 'image'].includes(message?.requestedMode)) return message.requestedMode
+  if (message?.runId) {
+    try {
+      const data = await getAssistantRun(message.runId)
+      const requestedMode = data?.run?.mode
+      if (['agent', 'chat', 'image'].includes(requestedMode)) return requestedMode
+    } catch {
+      // Historical runs may have been removed; infer from the rendered result below.
+    }
+  }
+  if (message?.kind === 'proposal') return 'agent'
+  return message?.kind || (message?.images?.length ? 'image' : 'chat')
+}
+
+function currentAssistantModel(responseMode, preferredModel = '') {
+  const models = responseMode === 'image' ? imageGenerationModels.value : conversationModels.value
+  if (models.some((item) => item.model === preferredModel)) return preferredModel
+  if (responseMode === 'image') {
+    return imageGenerationModel.value || models[0]?.model || ''
+  }
+  return conversationModel.value || models[0]?.model || ''
 }
 
 async function stopGeneration(conversationId = activeId.value) {
@@ -1640,10 +2269,10 @@ function handleComposerPaste(event) {
 }
 
 const emptyStateSuggestions = [
-  { icon: 'bi-image', text: '画一张星空下的雪山桌面壁纸' },
-  { icon: 'bi-app', text: '设计一个极简风格的天气 App 图标' },
-  { icon: 'bi-chat-dots', text: '用三句话介绍你能帮我做什么' },
-  { icon: 'bi-pencil', text: '写一段科幻短篇的开头，主角是画师' },
+  { icon: 'bi-stars', text: '画一张星空下的雪山桌面壁纸' },
+  { icon: 'bi-grid-3x3-gap', text: '设计一个极简风格的天气 App 图标' },
+  { icon: 'bi-chat-left-dots', text: '用三句话介绍你能帮我做什么' },
+  { icon: 'bi-feather', text: '写一段科幻短篇的开头，主角是画师' },
 ]
 
 function applySuggestion(text) {
@@ -1730,8 +2359,8 @@ async function submitUserMessageEdit(message) {
   if (!conversation || messageIndex < 0) return
 
   const previousReply = conversation.messages[messageIndex + 1]
-  const responseMode =
-    previousReply?.kind === 'image' || previousReply?.images?.length ? 'image' : 'agent'
+  const responseMode = previousReply ? await resolveAssistantRequestedMode(previousReply) : 'agent'
+  const retryModel = currentAssistantModel(responseMode, previousReply?.model)
   const requestedImage = currentImageRequestSize()
   const requestedImageCount = imageCountFromPrompt(prompt)
   message.content = prompt
@@ -1742,9 +2371,9 @@ async function submitUserMessageEdit(message) {
   const assistantMessage = createAssistantPlaceholder({
     prompt,
     responseMode,
-    previous: previousReply,
+    previous: previousReply ? { ...previousReply, model: retryModel } : null,
     defaults: {
-      model: generationModel.value,
+      model: retryModel,
       ratio: requestedImage.ratioLabel,
       requestRatio: requestedImage.requestRatio,
       resolution: generationResolution.value,
@@ -2099,6 +2728,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('click', handleGlobalClick)
   window.addEventListener('pagehide', handlePageHide)
+  window.addEventListener('resize', handleViewportResize)
   await authStore.initAuth().catch(() => null)
   const workspaceState = loadAssistantWorkspaceState(scope.value)
   await loadServiceConfig()
@@ -2134,8 +2764,16 @@ onMounted(async () => {
     ? workspaceState.activeId
     : listableConversations.value[0]?.id || ''
   hydrated.value = true
+  await nextTick()
+  setupAssistantMotion()
   resizePromptInput()
-  scrollToBottom()
+  const latestMessage = messages.value[messages.value.length - 1]
+  if (latestMessage?.kind === 'proposal' && latestMessage?.proposal) {
+    await nextTick()
+    void scrollToMessage(latestMessage.id)
+  } else {
+    scrollToBottom()
+  }
   // 静默回收历史遗留的空会话（草稿逻辑上线前创建的“新对话”垃圾,列表已不显示）
   void (async () => {
     const empties = conversations.value.filter(
@@ -2163,13 +2801,21 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('click', handleGlobalClick)
   window.removeEventListener('pagehide', handlePageHide)
+  window.removeEventListener('resize', handleViewportResize)
   for (const controller of runControllers.values()) controller.abort()
   runControllers.clear()
   for (const timer of progressTimers.values()) window.clearInterval(timer)
   progressTimers.clear()
   if (copiedMessageTimer) window.clearTimeout(copiedMessageTimer)
   if (navigatorFrame) window.cancelAnimationFrame(navigatorFrame)
+  for (const timer of generatedImageRetryTimers.values()) window.clearTimeout(timer)
+  generatedImageRetryTimers.clear()
   clearReturnToBottomTimer()
+  assistantMotionMedia?.revert()
+  assistantMotionContext?.revert()
+  assistantMotionMedia = null
+  assistantMotionContext = null
+  assistantMotionReady = false
   if (hydrated.value) {
     persistWorkspaceState()
   }
@@ -2178,6 +2824,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
+    ref="workspaceRef"
     class="assistant-workspace"
     :class="{
       'is-dark': appearanceStore.isDark,
@@ -2197,9 +2844,9 @@ onBeforeUnmount(() => {
 
     <aside ref="sidebarRef" class="assistant-sidebar" :class="{ 'is-open': sidebarOpen }">
       <div class="assistant-brand-row">
-        <button class="assistant-brand" type="button" title="返回首页" @click="router.push('/')">
+        <div class="assistant-brand">
           <strong>开启创作</strong>
-        </button>
+        </div>
         <button
           class="icon-button sidebar-close"
           type="button"
@@ -2208,8 +2855,9 @@ onBeforeUnmount(() => {
           @click="toggleSidebar"
         >
           <i
-            class="bi"
-            :class="sidebarCollapsed ? 'bi-layout-sidebar' : 'bi-layout-sidebar-inset'"
+            class="bi bi-chevron-left"
+            :class="{ 'is-collapsed': sidebarCollapsed }"
+            aria-hidden="true"
           ></i>
         </button>
       </div>
@@ -2240,7 +2888,10 @@ onBeforeUnmount(() => {
             v-for="conversation in visibleConversations"
             :key="conversation.id"
             class="conversation-row"
+            :data-conversation-id="conversation.id"
             :class="{ active: conversation.id === activeId }"
+            @mouseenter="animateConversationRowHover($event, true)"
+            @mouseleave="animateConversationRowHover($event, false)"
           >
             <button
               class="conversation-select"
@@ -2303,13 +2954,13 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <main ref="mainRef" class="assistant-main">
+    <main ref="mainRef" class="assistant-main" :class="{ 'is-empty': !messages.length }">
       <div class="assistant-ambient-stage" aria-hidden="true">
         <i class="ambient-blob is-a"></i>
         <i class="ambient-blob is-b"></i>
         <i class="ambient-blob is-c"></i>
       </div>
-      <header class="assistant-topbar">
+      <header v-if="messages.length" class="assistant-topbar">
         <div class="topbar-title">
           <button
             class="icon-button mobile-sidebar-button"
@@ -2329,9 +2980,21 @@ onBeforeUnmount(() => {
         </div>
         <div class="topbar-filters">
           <button
+            v-if="messages.length"
+            type="button"
+            :title="contextAlreadyCleared ? '新的上下文已开始' : '清除上文并保留可见历史'"
+            :aria-label="contextAlreadyCleared ? '新的上下文已开始' : '清除上文并保留可见历史'"
+            :disabled="isGenerating || contextAlreadyCleared"
+            @click="clearConversationContext"
+          >
+            <i class="bi bi-eraser"></i><span>清除上文</span>
+          </button>
+          <button
             type="button"
             :class="{ active: assetLibraryOpen }"
             :aria-pressed="assetLibraryOpen"
+            title="资产库"
+            aria-label="资产库"
             @click.stop="assetLibraryOpen = !assetLibraryOpen"
           >
             <i class="bi bi-archive"></i><span>资产库</span>
@@ -2351,24 +3014,26 @@ onBeforeUnmount(() => {
           <div class="sk-bubble"><i style="width: 74%"></i><i style="width: 40%"></i></div>
         </section>
         <section v-else-if="!messages.length" class="assistant-empty-state" aria-label="空白创作区">
-          <span class="empty-mark"><i class="bi bi-stars"></i></span>
-          <p class="empty-mode-label">
-            <i class="bi" :class="selectedCreation.icon"></i>
-            <template v-if="mode === 'image'">图片生成 · 描述画面并上传参考图</template>
-            <template v-else>Agent 模式 · 自动识别对话与生图</template>
-          </p>
-          <h1>今天想创作什么？</h1>
-          <div class="suggestion-grid">
-            <button
-              v-for="suggestion in emptyStateSuggestions"
-              :key="suggestion.text"
-              type="button"
-              @click="applySuggestion(suggestion.text)"
-            >
-              <i class="bi" :class="suggestion.icon"></i>
-              <span>{{ suggestion.text }}</span>
-              <i class="bi bi-arrow-up-right suggestion-arrow"></i>
-            </button>
+          <div class="assistant-empty-content">
+            <span class="empty-mark"><i class="bi bi-stars"></i></span>
+            <p class="empty-mode-label">
+              <i class="bi" :class="selectedCreation.icon"></i>
+              <template v-if="mode === 'image'">图片生成 · 描述画面并上传参考图</template>
+              <template v-else>Agent 模式 · 自动识别对话与生图</template>
+            </p>
+            <h1>今天想创作什么？</h1>
+            <div class="suggestion-grid">
+              <button
+                v-for="suggestion in emptyStateSuggestions"
+                :key="suggestion.text"
+                type="button"
+                @click="applySuggestion(suggestion.text)"
+              >
+                <i class="bi" :class="suggestion.icon"></i>
+                <span>{{ suggestion.text }}</span>
+                <i class="bi bi-arrow-up-right suggestion-arrow"></i>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -2395,7 +3060,13 @@ onBeforeUnmount(() => {
               <h2 v-if="shouldShowMessageDate(message, originalIndex)" class="message-date-divider">
                 {{ formatMessageDate(message.createdAt) }}
               </h2>
+              <div v-if="message.kind === 'context-divider'" class="assistant-context-divider">
+                <span></span>
+                <p><i class="bi bi-eraser" aria-hidden="true"></i> 已从这里开始新的上下文</p>
+                <span></span>
+              </div>
               <article
+                v-else
                 class="message"
                 :class="`message--${message.role}`"
                 :data-message-id="message.id"
@@ -2472,6 +3143,16 @@ onBeforeUnmount(() => {
                   >
                     <i class="bi bi-pencil"></i>
                   </button>
+                  <button
+                    v-if="message.id === lastUserMessageId"
+                    type="button"
+                    title="撤回本轮"
+                    aria-label="撤回本轮"
+                    :disabled="isGenerating"
+                    @click="withdrawLastTurn(message)"
+                  >
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
                 </div>
                 <div
                   v-if="message.role === 'user' && editingMessageId === message.id"
@@ -2547,7 +3228,13 @@ onBeforeUnmount(() => {
                           "
                         >
                           <img
-                            :src="assistantImageAt(message, slot - 1).dataUrl"
+                            :src="
+                              generatedImageUrl(
+                                assistantImageAt(message, slot - 1),
+                                message.id,
+                                slot - 1,
+                              )
+                            "
                             :alt="
                               assistantImageAt(message, slot - 1).revisedPrompt || 'AI 生成图片'
                             "
@@ -2600,12 +3287,208 @@ onBeforeUnmount(() => {
                         />
                       </button>
                     </div>
+                    <div
+                      v-if="
+                        message.role === 'assistant' &&
+                        message.kind === 'proposal' &&
+                        message.proposal
+                      "
+                      class="agent-proposal"
+                      :class="{ 'is-dismissed': message.proposal.dismissed }"
+                    >
+                      <button
+                        v-if="message.proposal.dismissed"
+                        type="button"
+                        class="agent-proposal-restore"
+                        @click="restoreAgentProposal(message)"
+                      >
+                        <i class="bi bi-magic" aria-hidden="true"></i>
+                        <span>创作方案已收起</span>
+                        <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                      </button>
+                      <template v-else>
+                        <header class="agent-proposal-head">
+                          <span class="agent-proposal-icon" aria-hidden="true">
+                            <i class="bi bi-stars"></i>
+                          </span>
+                          <div>
+                            <strong>{{
+                              message.proposal.action === 'edit' ? '图片编辑方案' : '图片生成方案'
+                            }}</strong>
+                            <small>{{
+                              message.proposal.planningSummary || message.proposal.reason
+                            }}</small>
+                          </div>
+                          <span v-if="proposalExecuted(message)" class="agent-proposal-state"
+                            >已执行</span
+                          >
+                        </header>
+
+                        <p
+                          v-if="
+                            message.proposal.reason &&
+                            message.proposal.reason !== message.proposal.planningSummary
+                          "
+                          class="agent-proposal-reason"
+                        >
+                          <i class="bi bi-signpost-split" aria-hidden="true"></i>
+                          <span>{{ message.proposal.reason }}</span>
+                        </p>
+
+                        <div
+                          v-if="message.proposal.referenceImages?.length"
+                          class="agent-proposal-refs"
+                        >
+                          <button
+                            v-for="(image, imageIndex) in message.proposal.referenceImages"
+                            :key="`${message.id}-proposal-ref-${imageIndex}`"
+                            type="button"
+                            @click="
+                              openImagePreview(image, imageIndex, message.proposal.referenceImages)
+                            "
+                          >
+                            <img
+                              :src="image.dataUrl"
+                              :alt="image.name || `参考图 ${imageIndex + 1}`"
+                            />
+                            <span>图{{ imageIndex + 1 }}</span>
+                          </button>
+                        </div>
+
+                        <label class="agent-proposal-prompt">
+                          <span>生成提示词</span>
+                          <textarea
+                            v-model="message.proposal.prompt"
+                            rows="4"
+                            maxlength="12000"
+                            :disabled="message.proposal.submitting"
+                          ></textarea>
+                        </label>
+
+                        <div class="agent-proposal-params">
+                          <label>
+                            <span>生成模型</span>
+                            <select
+                              v-if="imageGenerationModels.length"
+                              v-model="message.proposal.model"
+                              :disabled="message.proposal.submitting"
+                              @change="normalizeAgentProposalCapabilities(message.proposal, true)"
+                            >
+                              <option
+                                v-for="model in imageGenerationModels"
+                                :key="model.model"
+                                :value="model.model"
+                              >
+                                {{ model.label }}
+                              </option>
+                            </select>
+                            <div
+                              v-else
+                              class="agent-proposal-readonly"
+                              :title="message.proposal.model"
+                            >
+                              {{
+                                message.proposal.modelName || message.proposal.model || '模型不可用'
+                              }}
+                            </div>
+                          </label>
+                          <label>
+                            <span>画面比例</span>
+                            <select
+                              v-model="message.proposal.ratio"
+                              :disabled="message.proposal.submitting"
+                            >
+                              <option
+                                v-for="ratio in proposalRatioOptions(message.proposal)"
+                                :key="ratio.id"
+                                :value="ratio.id"
+                              >
+                                {{ ratio.label }}
+                              </option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>清晰度</span>
+                            <select
+                              v-model="message.proposal.resolution"
+                              :disabled="message.proposal.submitting"
+                              @change="normalizeAgentProposalCapabilities(message.proposal)"
+                            >
+                              <option
+                                v-for="option in proposalResolutionOptions(message.proposal)"
+                                :key="option.id"
+                                :value="option.id"
+                              >
+                                {{ option.label }}
+                              </option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>生成数量</span>
+                            <select
+                              v-model.number="message.proposal.count"
+                              :disabled="message.proposal.submitting"
+                            >
+                              <option v-for="count in imageCounts" :key="count" :value="count">
+                                {{ count }} 张
+                              </option>
+                            </select>
+                          </label>
+                        </div>
+                        <footer class="agent-proposal-actions">
+                          <button
+                            type="button"
+                            class="is-secondary"
+                            :disabled="message.proposal.submitting"
+                            @click="dismissAgentProposal(message)"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            class="is-primary"
+                            :disabled="
+                              message.proposal.submitting ||
+                              isGenerating ||
+                              !message.proposal.prompt.trim()
+                            "
+                            @click="approveAgentProposal(message)"
+                          >
+                            <i
+                              class="bi"
+                              :class="message.proposal.submitting ? 'bi-arrow-repeat' : 'bi-stars'"
+                              aria-hidden="true"
+                            ></i>
+                            <span>{{
+                              message.proposal.submitting
+                                ? '正在提交'
+                                : proposalExecuted(message)
+                                  ? '再生成一组'
+                                  : '开始生成'
+                            }}</span>
+                          </button>
+                        </footer>
+                      </template>
+                    </div>
                     <AssistantMarkdown
-                      v-if="message.role === 'assistant' && message.content"
+                      v-if="
+                        message.role === 'assistant' &&
+                        message.content &&
+                        message.content !== message.error &&
+                        message.kind !== 'proposal'
+                      "
                       :content="message.content"
                       :streaming="message.pending"
                     />
-                    <p v-else-if="message.content">{{ message.content }}</p>
+                    <p
+                      v-else-if="
+                        message.kind !== 'proposal' &&
+                        message.content &&
+                        message.content !== message.error
+                      "
+                    >
+                      {{ message.content }}
+                    </p>
                     <span
                       v-else-if="message.pending && messageStatus(message).tone === 'working'"
                       class="typing-indicator"
@@ -2627,6 +3510,7 @@ onBeforeUnmount(() => {
                       <figure
                         v-for="(image, imageIndex) in message.images"
                         :key="`${message.id}-${imageIndex}`"
+                        :data-image-key="`${message.id}-${imageIndex}`"
                         :class="{
                           'is-loading': !generatedImageState(message.id, imageIndex),
                           'is-failed': generatedImageState(message.id, imageIndex) === 'failed',
@@ -2640,7 +3524,7 @@ onBeforeUnmount(() => {
                           @click="openImagePreview(image, imageIndex, message.images)"
                         >
                           <img
-                            :src="image.dataUrl"
+                            :src="generatedImageUrl(image, message.id, imageIndex)"
                             :alt="image.revisedPrompt || 'AI 生成图片'"
                             loading="lazy"
                             decoding="async"
@@ -2694,6 +3578,15 @@ onBeforeUnmount(() => {
                   v-if="message.role === 'assistant' && !message.pending"
                   class="message-actions"
                 >
+                  <button
+                    v-if="sourceProposalForImage(message)"
+                    class="source-proposal-button"
+                    type="button"
+                    title="回到生成这组图片的方案"
+                    @click="reopenSourceProposal(message)"
+                  >
+                    <i class="bi bi-sliders"></i><span>编辑方案</span>
+                  </button>
                   <button
                     class="regenerate-button"
                     type="button"
@@ -2836,6 +3729,7 @@ onBeforeUnmount(() => {
             <section
               v-if="modelMenuOpen && !preferencesOpen"
               class="composer-popover image-model-menu"
+              :style="{ '--model-menu-left': `${modelMenuPosition.left}px` }"
             >
               <header class="model-menu-head">
                 <p class="popover-eyebrow">
@@ -3220,6 +4114,7 @@ onBeforeUnmount(() => {
               </button>
               <button
                 v-if="mode === 'image'"
+                ref="modelMenuButton"
                 class="composer-tool-button image-model-button"
                 type="button"
                 :class="{ active: modelMenuOpen }"
@@ -3239,6 +4134,7 @@ onBeforeUnmount(() => {
               </button>
               <button
                 v-if="mode !== 'image'"
+                ref="modelMenuButton"
                 class="composer-tool-button image-model-button"
                 type="button"
                 :class="{ active: modelMenuOpen }"

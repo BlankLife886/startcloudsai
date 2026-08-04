@@ -30,7 +30,7 @@
   --pc-glass-border: rgba(255, 255, 255, 0.26);
   --pc-glass-border-soft: rgba(255, 255, 255, 0.12);
   position: relative;
-  width: min(1480px, 100%);
+  width: 100%;
   max-width: none;
   height: 100%;
   min-height: 0;
@@ -40,12 +40,7 @@
   display: flex;
   flex-direction: column;
   color: var(--pc-text);
-  font-family:
-    'SF Pro Display',
-    'Avenir Next',
-    'PingFang SC',
-    'Microsoft YaHei',
-    sans-serif;
+  font-family: 'SF Pro Display', 'Avenir Next', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color-scheme: dark;
   isolation: isolate;
   background: transparent;
@@ -94,7 +89,7 @@
 }
 
 .pp-atmosphere {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
@@ -156,6 +151,8 @@
   overflow: hidden;
   gap: 14px;
   align-items: stretch;
+  width: min(1424px, 100%);
+  margin: 0 auto;
 }
 
 .pp-sidebar {
@@ -1187,27 +1184,97 @@ button.pp-stats__foot {
 }
 
 .pp-ledger-list li {
-  padding: 13px 15px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(96px, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 88px;
+  padding: 14px 16px;
+}
+
+.pp-ledger__icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--pc-line);
+  border-radius: 50%;
+  background: var(--pc-surface-soft);
+  color: var(--pc-muted);
+  font-size: 0.9rem;
+}
+
+.pp-ledger-list li.is-pending .pp-ledger__icon {
+  border-color: color-mix(in srgb, var(--pc-warning) 35%, transparent);
+  background: color-mix(in srgb, var(--pc-warning) 10%, transparent);
+  color: var(--pc-warning);
+}
+
+.pp-ledger-list li.is-settled .pp-ledger__icon,
+.pp-ledger-list li.is-income .pp-ledger__icon {
+  border-color: color-mix(in srgb, var(--pc-success) 35%, transparent);
+  background: color-mix(in srgb, var(--pc-success) 10%, transparent);
+  color: var(--pc-success);
+}
+
+.pp-ledger-list li.is-refund .pp-ledger__icon {
+  border-color: color-mix(in srgb, var(--pc-cyan) 38%, transparent);
+  background: color-mix(in srgb, var(--pc-cyan) 10%, transparent);
+  color: var(--pc-cyan);
+}
+
+.pp-ledger__body {
+  min-width: 0;
 }
 
 .pp-ledger__main {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 8px;
   color: var(--pc-text);
   font-size: 0.75rem;
 }
 
-.pp-ledger__main .is-income {
+.pp-ledger__badge {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--pc-line);
+  border-radius: 999px;
+  color: var(--pc-muted);
+  background: var(--pc-surface-soft);
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.pp-ledger__body p {
+  margin: 5px 0 0;
+  color: var(--pc-muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+.pp-ledger__amount {
+  justify-self: end;
+  color: var(--pc-text);
+  font-size: 0.74rem;
+  text-align: right;
+}
+
+.pp-ledger__amount.is-income {
   color: var(--pc-success);
 }
 
-.pp-ledger__main .is-spend {
+.pp-ledger__amount.is-spend {
   color: var(--pc-danger);
 }
 
-.pp-ledger-list small {
+.pp-ledger__amount.is-neutral {
+  color: var(--pc-muted);
+  font-size: 0.66rem;
+}
+
+.pp-ledger__body small {
   display: block;
   margin-top: 6px;
   color: var(--pc-faint);
@@ -2446,9 +2513,7 @@ button.pp-stats__foot {
   padding: 8px;
   border: 1px solid var(--pc-glass-border);
   border-radius: 999px;
-  background:
-    linear-gradient(180deg, var(--pc-glass-shine), transparent 42%),
-    var(--pc-glass);
+  background: linear-gradient(180deg, var(--pc-glass-shine), transparent 42%), var(--pc-glass);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
     inset 0 -1px 0 rgba(255, 255, 255, 0.06);
@@ -2523,9 +2588,7 @@ button.pp-stats__foot {
 
 .pp-page.is-glass .pp-glass-panel {
   border-color: var(--pc-glass-border);
-  background:
-    linear-gradient(165deg, var(--pc-glass-shine), transparent 38%),
-    var(--pc-glass);
+  background: linear-gradient(165deg, var(--pc-glass-shine), transparent 38%), var(--pc-glass);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   box-shadow:
@@ -2534,9 +2597,7 @@ button.pp-stats__foot {
 }
 
 .pp-page.is-light.is-glass .pp-glass-panel {
-  background:
-    linear-gradient(165deg, rgba(255, 255, 255, 0.55), transparent 42%),
-    var(--pc-glass);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.55), transparent 42%), var(--pc-glass);
 }
 
 .pp-bento {
@@ -2566,8 +2627,7 @@ button.pp-stats__foot {
   background:
     linear-gradient(155deg, var(--pc-glass-shine) 0%, transparent 36%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
-    var(--pc-glass-tint),
-    var(--pc-glass);
+    var(--pc-glass-tint), var(--pc-glass);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.28),
     inset 0 -1px 0 rgba(255, 255, 255, 0.04),
@@ -2594,8 +2654,7 @@ button.pp-stats__foot {
 
 .pp-page.is-light .pp-glass {
   background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.78) 0%, transparent 42%),
-    var(--pc-glass);
+    linear-gradient(155deg, rgba(255, 255, 255, 0.78) 0%, transparent 42%), var(--pc-glass);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
     inset 0 -1px 0 rgba(255, 255, 255, 0.35);
@@ -2922,8 +2981,7 @@ button.pp-stats__foot {
   --hero-shadow-y: 18px;
   --hero-shadow-blur: 16px;
   --hero-glow: 0.14;
-  filter:
-    drop-shadow(0 var(--hero-shadow-y) var(--hero-shadow-blur) rgba(0, 0, 0, 0.34))
+  filter: drop-shadow(0 var(--hero-shadow-y) var(--hero-shadow-blur) rgba(0, 0, 0, 0.34))
     drop-shadow(0 6px 6px rgba(0, 0, 0, 0.2))
     drop-shadow(0 0 18px rgba(var(--pc-accent-rgb), var(--hero-glow)));
 }
@@ -2933,8 +2991,7 @@ button.pp-stats__foot {
   --hero-shadow-y: 14px;
   --hero-shadow-blur: 12px;
   --hero-glow: 0.1;
-  filter:
-    drop-shadow(0 var(--hero-shadow-y) var(--hero-shadow-blur) rgba(15, 23, 42, 0.18))
+  filter: drop-shadow(0 var(--hero-shadow-y) var(--hero-shadow-blur) rgba(15, 23, 42, 0.18))
     drop-shadow(0 4px 6px rgba(37, 99, 235, 0.1));
 }
 
@@ -3300,8 +3357,7 @@ button.pp-stats__foot {
 /* ========== 暗色模式：仪表盘 + 明细页完整适配 ========== */
 .pp-page.is-dark .pp-dock {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 44%),
-    rgba(12, 16, 30, 0.62);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 44%), rgba(12, 16, 30, 0.62);
   border-color: rgba(255, 255, 255, 0.22);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
@@ -3406,8 +3462,7 @@ button.pp-stats__foot {
 .pp-page.is-dark.is-glass .pp-glass-panel {
   border-color: rgba(255, 255, 255, 0.22);
   background:
-    linear-gradient(165deg, rgba(255, 255, 255, 0.12), transparent 40%),
-    rgba(14, 18, 34, 0.58);
+    linear-gradient(165deg, rgba(255, 255, 255, 0.12), transparent 40%), rgba(14, 18, 34, 0.58);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.2),
     inset 0 -1px 0 rgba(255, 255, 255, 0.04);
@@ -3793,5 +3848,76 @@ button.pp-stats__foot {
 
   .pp-bento-dual {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Visual polish only: preserve the existing personal-center layout and card map. */
+.pp-page.is-dark {
+  --pc-glass: rgba(10, 14, 25, 0.78);
+  --pc-glass-tint: rgba(94, 200, 255, 0.035);
+  --pc-glass-border: rgba(255, 255, 255, 0.16);
+  --pc-glass-shine: rgba(255, 255, 255, 0.08);
+}
+
+.pp-page.is-light {
+  --pc-glass: rgba(255, 255, 255, 0.88);
+  --pc-glass-tint: rgba(59, 130, 246, 0.025);
+  --pc-glass-border: rgba(22, 28, 48, 0.12);
+  --pc-glass-shine: rgba(255, 255, 255, 0.68);
+}
+
+.pp-glass,
+.pp-page.is-glass .pp-glass-panel,
+.pp-dock {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+
+.pp-page.is-light .pp-glass,
+.pp-page.is-light.is-glass .pp-glass-panel,
+.pp-page.is-light .pp-dock {
+  box-shadow: 0 10px 28px rgba(37, 57, 94, 0.1);
+}
+
+.pp-dock > button:focus-visible,
+.pp-dock__link:focus-visible,
+.pp-dock__logout:focus-visible,
+.pp-glass-btn:focus-visible,
+.pp-bento-link:focus-visible,
+.pp-bento-foot a:focus-visible,
+.pp-bento-foot button:focus-visible,
+.pp-bento-metrics button:focus-visible,
+.pp-bento-metrics a:focus-visible,
+.pp-bento-pills a:focus-visible {
+  outline: 2px solid var(--pc-cyan);
+  outline-offset: 2px;
+}
+
+.pp-bento-card > header strong {
+  line-height: 1.35;
+}
+
+.pp-bento-card > header small,
+.pp-bento-empty,
+.pp-bento-wallet-meta,
+.pp-bento-swatches span,
+.pp-bento-activity li,
+.pp-bento-sliders span {
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .pp-bento-card {
+    padding: 15px;
+  }
+
+  .pp-bento-card > header strong {
+    font-size: 0.88rem;
+  }
+
+  .pp-bento-wallet-meta,
+  .pp-bento-swatches span,
+  .pp-bento-activity li,
+  .pp-bento-sliders span {
+    font-size: 0.72rem;
   }
 }

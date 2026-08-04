@@ -1,15 +1,15 @@
 <script setup lang="ts">
 /**
- * echarts 按需包装组件：只注册折线/柱状/饼图 + 基础组件 + Canvas 渲染器，
+ * echarts 按需包装组件：只注册折线/柱状/饼/仪表盘 + 基础组件 + Canvas 渲染器，
  * 避免全量引入（`import * as echarts from 'echarts'`）导致包体膨胀。
  */
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { LineChart, BarChart, PieChart } from 'echarts/charts'
+import { LineChart, BarChart, PieChart, GaugeChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { ComposeOption } from 'echarts/core'
-import type { LineSeriesOption, BarSeriesOption, PieSeriesOption } from 'echarts/charts'
+import type { LineSeriesOption, BarSeriesOption, PieSeriesOption, GaugeSeriesOption } from 'echarts/charts'
 import type {
   GridComponentOption,
   TooltipComponentOption,
@@ -21,6 +21,7 @@ echarts.use([
   LineChart,
   BarChart,
   PieChart,
+  GaugeChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -32,6 +33,7 @@ export type EChartOption = ComposeOption<
   | LineSeriesOption
   | BarSeriesOption
   | PieSeriesOption
+  | GaugeSeriesOption
   | GridComponentOption
   | TooltipComponentOption
   | LegendComponentOption
@@ -45,6 +47,7 @@ const props = defineProps<{
 
 const el = ref<HTMLDivElement | null>(null)
 const chart = shallowRef<echarts.ECharts | null>(null)
+let ro: ResizeObserver | null = null
 
 function resize() {
   chart.value?.resize()
@@ -55,6 +58,8 @@ onMounted(() => {
   chart.value = echarts.init(el.value)
   chart.value.setOption(props.option)
   window.addEventListener('resize', resize)
+  ro = new ResizeObserver(() => resize())
+  ro.observe(el.value)
 })
 
 watch(
@@ -68,6 +73,8 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resize)
+  ro?.disconnect()
+  ro = null
   chart.value?.dispose()
   chart.value = null
 })

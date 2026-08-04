@@ -137,9 +137,8 @@ const displayPlans = computed(() => {
   }))
 })
 
-const availableCents = computed(() =>
-  Math.max(0, Number(wallet.value?.balanceCents || 0) - Number(wallet.value?.frozenCents || 0)),
-)
+const availableCents = computed(() => Math.max(0, Number(wallet.value?.balanceCents || 0)))
+const frozenCents = computed(() => Math.max(0, Number(wallet.value?.frozenCents || 0)))
 
 const paymentMethods = [
   { name: '支付宝', icon: 'bi-alipay', note: '尚未接入' },
@@ -210,11 +209,15 @@ function planFeatures(plan) {
   if (plan.preview) return plan.features
   const configured = Array.isArray(plan.features) ? plan.features : []
   const retained = configured.filter((item) => !/余额\s*[\d.]+\s*元|约\s*\d+\s*张/.test(item))
-  const total = Number(plan.grantPoints ?? plan.grantCents ?? 0) + Number(plan.bonusPoints ?? plan.bonusCents ?? 0)
+  const total =
+    Number(plan.grantPoints ?? plan.grantCents ?? 0) +
+    Number(plan.bonusPoints ?? plan.bonusCents ?? 0)
   const pointsFeatures = []
   if (total > 0) pointsFeatures.push(`${formatPoints(total)} 创作额度`)
   if (total > 0 && minimumTaskPrice.value > 0) {
-    pointsFeatures.push(`约可生成 ${Math.floor(total / minimumTaskPrice.value)} 张（按最低积分单价）`)
+    pointsFeatures.push(
+      `约可生成 ${Math.floor(total / minimumTaskPrice.value)} 张（按最低积分单价）`,
+    )
   }
   const items = [...pointsFeatures, ...retained]
   return items.length ? items : ['套餐信息已配置', '支付接入后开放购买', '当前不会创建订单']
@@ -314,11 +317,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    ref="pageRoot"
-    class="pricing-page"
-    :class="{ 'is-light': !appearanceStore.isDark }"
-  >
+  <div ref="pageRoot" class="pricing-page" :class="{ 'is-light': !appearanceStore.isDark }">
     <div class="pricing-shell">
       <header class="pricing-hero" data-reveal>
         <div class="pricing-hero__copy">
@@ -374,6 +373,9 @@ onBeforeUnmount(() => {
           <template v-if="authStore.isAuthenticated">
             <small>当前可用额度</small>
             <strong>{{ formatPoints(availableCents) }}</strong>
+            <span v-if="frozenCents > 0" class="pricing-wallet__frozen">
+              {{ formatPoints(frozenCents) }} 正在任务中冻结
+            </span>
           </template>
           <template v-else>
             <small>登录后查看余额</small>
@@ -619,10 +621,8 @@ onBeforeUnmount(() => {
 .pricing-shell {
   width: min(1120px, calc(100% - 48px));
   margin: 0 auto;
-  padding:
-    calc(var(--app-header-offset, 68px) + 28px)
-    0
-    calc(64px + var(--app-bottom-floating-clearance, 0px));
+  padding: calc(var(--app-header-offset, 68px) + 28px) 0
+    calc(96px + var(--app-bottom-floating-clearance, 0px));
 }
 
 .pricing-hero {
@@ -809,6 +809,16 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.pricing-wallet__frozen {
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, #f59e0b 30%, var(--pp-line));
+  border-radius: 6px;
+  color: #fbbf24;
+  font-size: 11px;
+  background: color-mix(in srgb, #f59e0b 9%, transparent);
+}
+
 .pricing-wallet__login {
   width: fit-content;
   min-height: 38px;
@@ -861,7 +871,7 @@ onBeforeUnmount(() => {
 
 .pricing-plan-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
 }
 
@@ -883,13 +893,12 @@ onBeforeUnmount(() => {
 
 .pricing-plan.is-loading {
   min-height: 320px;
-  background:
-    linear-gradient(
-      100deg,
-      color-mix(in srgb, var(--pp-panel) 90%, transparent) 24%,
-      color-mix(in srgb, var(--pp-panel-2) 90%, transparent) 40%,
-      color-mix(in srgb, var(--pp-panel) 90%, transparent) 56%
-    );
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--pp-panel) 90%, transparent) 24%,
+    color-mix(in srgb, var(--pp-panel-2) 90%, transparent) 40%,
+    color-mix(in srgb, var(--pp-panel) 90%, transparent) 56%
+  );
   background-size: 220% 100%;
   animation: pricing-skeleton 1.3s linear infinite;
 }
@@ -1200,7 +1209,12 @@ onBeforeUnmount(() => {
   cursor: pointer;
   background:
     radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.24), transparent 44%),
-    linear-gradient(108deg, rgba(84, 70, 255, 0.86), rgba(127, 103, 255, 0.72) 54%, rgba(159, 125, 255, 0.78));
+    linear-gradient(
+      108deg,
+      rgba(84, 70, 255, 0.86),
+      rgba(127, 103, 255, 0.72) 54%,
+      rgba(159, 125, 255, 0.78)
+    );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.56),
     0 12px 30px rgba(91, 77, 255, 0.34);
@@ -1217,8 +1231,8 @@ onBeforeUnmount(() => {
 }
 
 .pricing-page [data-reveal] {
-  opacity: 0;
-  transform: translateY(14px);
+  opacity: 1;
+  transform: none;
   transition:
     opacity 420ms var(--pp-ease),
     transform 420ms var(--pp-ease);
@@ -1228,6 +1242,15 @@ onBeforeUnmount(() => {
 .pricing-page [data-reveal].is-in {
   opacity: 1;
   transform: none;
+}
+
+.pricing-tabs__item:focus-visible,
+.pricing-wallet__login:focus-visible,
+.pricing-plan__btn:focus-visible,
+.pricing-faq summary:focus-visible,
+.pricing-cta__btn:focus-visible {
+  outline: 2px solid var(--pp-accent-2);
+  outline-offset: 2px;
 }
 
 @keyframes pricing-skeleton {
@@ -1240,10 +1263,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
-  .pricing-hero,
+  .pricing-hero {
+    grid-template-columns: 1fr;
+  }
+
   .pricing-plan-grid,
   .pricing-pay-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .pricing-section__head {
@@ -1272,7 +1298,35 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .pricing-shell {
     width: calc(100% - 28px);
-    padding-top: calc(var(--app-header-offset, 68px) + 18px);
+    padding: calc(var(--app-header-offset, 68px) + 18px) 0
+      calc(128px + var(--app-bottom-floating-clearance, 0px));
+  }
+
+  .pricing-hero__copy,
+  .pricing-wallet {
+    padding: 20px;
+  }
+
+  .pricing-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    border-radius: 8px;
+    scrollbar-width: none;
+  }
+
+  .pricing-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pricing-tabs__item {
+    flex: 0 0 auto;
+  }
+
+  .pricing-plan-grid,
+  .pricing-pay-grid {
+    grid-template-columns: 1fr;
   }
 
   .pricing-metrics {

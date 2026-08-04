@@ -165,6 +165,29 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
       ...(Array.isArray(input.sourceUrls) ? input.sourceUrls : []),
     ),
     sourceLabel: existingTask?.sourceLabel || '云端任务',
+    localEditSourceTaskId: String(
+      input.localEditSourceTaskId ||
+        job?.params?.localEditSourceTaskId ||
+        existingTask?.localEditSourceTaskId ||
+        '',
+    ).trim(),
+    localEditSourceServerJobId: String(
+      input.localEditSourceServerJobId ||
+        job?.params?.localEditSourceServerJobId ||
+        existingTask?.localEditSourceServerJobId ||
+        '',
+    ).trim(),
+    localEditSourcePrompt: String(
+      input.localEditSourcePrompt ||
+        job?.params?.localEditSourcePrompt ||
+        existingTask?.localEditSourcePrompt ||
+        '',
+    ).trim(),
+    localEditSourcePreview: pickPersistableUrl(
+      input.localEditSourcePreview,
+      job?.params?.localEditSourcePreview,
+      existingTask?.localEditSourcePreview,
+    ),
     userPrompt: String(
       existingTask?.userPrompt ||
         input.userPrompt ||
@@ -193,6 +216,20 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
         : typeof job?.params?.transparentPngEnabled === 'boolean'
           ? job.params.transparentPngEnabled
           : existingTask?.transparentPngEnabled === true,
+    autoBackgroundRemovalEnabled:
+      typeof input.autoBackgroundRemovalEnabled === 'boolean'
+        ? input.autoBackgroundRemovalEnabled
+        : typeof job?.params?.autoBackgroundRemovalEnabled === 'boolean'
+          ? job.params.autoBackgroundRemovalEnabled
+          : existingTask?.autoBackgroundRemovalEnabled === true,
+    autoBackgroundRemovalModelKey: String(
+      input.autoBackgroundRemovalModelKey ||
+        job?.params?.autoBackgroundRemovalModelKey ||
+        existingTask?.autoBackgroundRemovalModelKey ||
+        '',
+    ).trim(),
+    automaticBackgroundRemoval: input._automatic === true,
+    parentTaskId: String(input._parentTaskId || existingTask?.parentTaskId || '').trim(),
     aspectRatio:
       input.aspectRatio || job?.params?.aspectRatio || existingTask?.aspectRatio || '16:9',
     requestedAspectRatio:

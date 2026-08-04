@@ -8,7 +8,7 @@ export async function updateProfile(payload = {}) {
   return apiPatch('/me/profile', payload, { fallbackMessage: '资料保存失败' })
 }
 
-/** 数据总览：钱包 / 任务统计 / 未读通知 / 最近任务。 */
+/** 数据总览：钱包 / 任务、素材、投稿统计 / 未读通知 / 最近任务。 */
 export async function getOverview({ signal } = {}) {
   return apiGet('/me/overview', { signal, fallbackMessage: '总览读取失败' })
 }

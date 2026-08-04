@@ -6,6 +6,7 @@ defineProps({
   required: { type: Number, default: 0 },
   available: { type: Number, default: 0 },
   light: { type: Boolean, default: false },
+  elevated: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close'])
@@ -24,31 +25,33 @@ function goWallet() {
 </script>
 
 <template>
-  <div
-    v-if="show"
-    class="insufficient-credits-layer"
-    :class="{ 'is-light': light }"
-    @click.self="emit('close')"
-  >
-    <section class="insufficient-credits-panel" role="dialog" aria-modal="true">
-      <div class="insufficient-credits-icon">
-        <i class="bi bi-coin"></i>
-      </div>
-      <h3>钱包余额不足</h3>
-      <p v-if="required > 0">
-        本次预计需要 <strong>{{ formatCredits(required) }} 积分</strong>，当前可用
-        <strong>{{ formatCredits(available) }} 积分</strong>。
-      </p>
-      <p v-else>当前钱包余额不足以提交本次任务。</p>
-      <p class="insufficient-credits-hint">
-        请前往 <strong>个人中心</strong> 使用兑换码入账后再试。
-      </p>
-      <div class="insufficient-credits-actions">
-        <button type="button" class="ghost" @click="emit('close')">稍后再说</button>
-        <button type="button" class="primary" @click="goWallet">打开钱包</button>
-      </div>
-    </section>
-  </div>
+  <Teleport to="body">
+    <div
+      v-if="show"
+      class="insufficient-credits-layer"
+      :class="{ 'is-light': light, 'is-elevated': elevated }"
+      @click.self="emit('close')"
+    >
+      <section class="insufficient-credits-panel" role="dialog" aria-modal="true">
+        <div class="insufficient-credits-icon">
+          <i class="bi bi-coin"></i>
+        </div>
+        <h3>钱包余额不足</h3>
+        <p v-if="required > 0">
+          本次预计需要 <strong>{{ formatCredits(required) }} 积分</strong>，当前可用
+          <strong>{{ formatCredits(available) }} 积分</strong>。
+        </p>
+        <p v-else>当前钱包余额不足以提交本次任务。</p>
+        <p class="insufficient-credits-hint">
+          请前往 <strong>个人中心</strong> 使用兑换码入账后再试。
+        </p>
+        <div class="insufficient-credits-actions">
+          <button type="button" class="ghost" @click="emit('close')">稍后再说</button>
+          <button type="button" class="primary" @click="goWallet">打开钱包</button>
+        </div>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -61,6 +64,10 @@ function goWallet() {
   padding: 20px;
   background: rgba(8, 10, 18, 0.62);
   backdrop-filter: blur(4px);
+}
+
+.insufficient-credits-layer.is-elevated {
+  z-index: 10110;
 }
 
 .insufficient-credits-panel {

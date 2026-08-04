@@ -8,7 +8,8 @@
 flowchart LR
   U[用户浏览器] --> G[nginx gateway]
   A[管理员浏览器] --> G
-  G -->|/| W[用户端 Vue SPA]
+  G -->|/ 和 /canvas| W[用户端 Vue SPA]
+  G -->|/canvas-app/| V[React 无限画布 SPA]
   G -->|/admin/| M[管理端 Vue SPA]
   G -->|/api/v1/| S[Go API / Gin]
   S --> P[(PostgreSQL)]
@@ -28,6 +29,7 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 | 组件         | 技术                            | 主要职责                                        |
 | ------------ | ------------------------------- | ----------------------------------------------- |
 | `apps/web`   | Vue 3、Vite、Pinia              | 创作工作台、画廊、兑换码钱包与个人中心          |
+| `apps/canvas-react` | React 19、Zustand、Ant Design | 无限画布、节点编排、素材与 Agent 交互           |
 | `apps/admin` | Vue 3、TypeScript、Element Plus | 用户、任务、社区、内容、安全与系统运营          |
 | API          | Go、Gin、pgx                    | 认证、校验、同步业务事务、R2 文件访问和队列投递 |
 | Worker       | Go、Asynq                       | 图片生成、缩略图处理、超时回收和提示词源同步    |
@@ -35,7 +37,9 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 | Redis        | 7                               | Asynq 队列和调度                                |
 | R2           | S3 API                          | 用户上传、任务产物和提示词封面                  |
 
-前端业务请求只访问同源 `/api/v1`。用户端 Vite 开发服务器默认监听 `3102`，管理端监听 `3200`，两者通过 `/api` 代理规则转发到 `localhost:8000`。
+前端业务请求只访问同源 `/api/v1`。用户端、React 画布和管理端开发服务器分别监听 `3102`、`3104`、`3200`，并通过 `/api` 代理到 `localhost:8000`。生产环境的 `/canvas` 由 Vue 主站提供页面外壳，并同源嵌入 `/canvas-app/canvas` 下的 React SPA；React 仍保持独立构建和部署，嵌入时隐藏自身顶栏。
+
+画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 R2，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 AGPL 许可证及来源信息保存在 `apps/canvas-react/UPSTREAM_LICENSE` 和 `UPSTREAM.md`。
 
 ## 请求与鉴权
 
@@ -81,6 +85,8 @@ sequenceDiagram
 任务状态只允许 `queued -> running -> succeeded|failed`，或 `queued -> canceled`。Worker 进程重启和孤儿任务恢复允许 `running -> queued -> running`，该恢复不释放也不重复冻结金额。所有迁移使用带旧状态条件的 SQL UPDATE。失败和取消会释放冻结额；后台重入队失败任务时重新冻结同额费用。首次队列记录使用业务 task UUID；恢复时生成新的 Asynq 记录 ID，但 payload 与上游 `client_task_id` 始终使用原业务 UUID，既绕开已归档队列记录冲突，也保持上游幂等。
 
 chatgpt2api 的文生图优先调用 `/api/image-tasks/generations`，带参考图的任务优先调用 `/api/image-tasks/edits`，再通过 `/api/image-tasks?ids=...` 轮询。业务 task UUID 同时作为 `client_task_id`，因此提交响应丢失、Worker 重试或进程重启接管都不会重复生成；轮询遇到临时网络错误、408/425/429/5xx 时继续等待，直到任务总超时。一旦已经拿到请求数量的图片就立即回收，即使上游最终状态稍后失败，也会保留已返回的图片。旧版上游仅在异步端点返回 404/405 时回退 `/v1/images/generations` 或 `/v1/images/edits`。客户端会规范化 base URL，避免 `/v1/v1` 和 `/v1/api`。类型差异由 `internal/prompt` 编译成 prompt 和参数；模型默认 `gpt-image-2`，可由 `app_settings.task_models` 按任务类型覆盖。上游 URL、Key、超时也可由后台设置覆盖环境变量，空值/0 时回落到 `C2A_*`；管理 API 对已保存 Key 只返回末四位掩码。
+
+CRUN 背景移除作为 `image_tool/background_remove` 独立执行：任务创建时要求一张本人存储中的输入图并按工具模型价格冻结积分；Worker 生成短时签名地址后调用 `CreateTask`，固定传入后台模型配置中的上游模型名，再复用 CRUN `TaskInfo` 轮询、结果下载、R2 入库、结算、失败重试和退款链路。客户端只能看到公开工具 ID，无法指定 CRUN 地址、密钥或上游模型名。
 
 Worker 下载 chatgpt2api 返回的图片 URL 时限制单张 20 MiB，并再次校验响应大小和图片格式；认证头只发送给配置的 chatgpt2api 同源地址，跨域媒体地址不携带 Key，且所有地址和重定向都经过 SSRF 防护。原图原样写入 `output_keys`，同时生成缩略图写入 `thumbnail_keys`。列表只使用站内缩略图地址，需要预览或下载时才请求站内原图地址；`/api/v1/files` 在鉴权后由 Server 代理读取 R2，避免用户网络无法直连对象存储时出现“任务成功但图片空白”。任务输入最多 4 张，校验归属、去重、单张与累计大小；远程输入和提示词源请求禁止私网、重定向到私网和 HTTPS 降级。
 

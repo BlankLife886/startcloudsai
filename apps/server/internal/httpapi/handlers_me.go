@@ -169,6 +169,16 @@ func (s *Server) overview(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	assetCount, err := store.CountUserAssets(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	submissionsByStatus, err := store.SubmissionCountsByStatus(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 
 	var total int64
 	for _, n := range byStatus {
@@ -186,7 +196,15 @@ func (s *Server) overview(c *gin.Context) {
 			"failed":    byStatus["failed"],
 			"running":   byStatus["running"] + byStatus["queued"],
 		},
-		"taskStatsByType":     byType,
+		"taskStatsByType": byType,
+		"assetCount":      assetCount,
+		"submissionStats": gin.H{
+			"total":    submissionsByStatus["pending"] + submissionsByStatus["approved"] + submissionsByStatus["rejected"] + submissionsByStatus["removed"],
+			"pending":  submissionsByStatus["pending"],
+			"approved": submissionsByStatus["approved"],
+			"rejected": submissionsByStatus["rejected"],
+			"removed":  submissionsByStatus["removed"],
+		},
 		"unreadNotifications": unread,
 		"recentTasks":         recentTasks,
 	})
@@ -226,7 +244,38 @@ func (s *Server) myLedger(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, ledgerDict))
+	taskIDs := make([]uuid.UUID, 0, len(rows))
+	seenTaskIDs := make(map[uuid.UUID]struct{}, len(rows))
+	for _, entry := range rows {
+		if entry.SourceType != "task" || entry.SourceID == nil {
+			continue
+		}
+		rawID := strings.SplitN(*entry.SourceID, "/", 2)[0]
+		taskID, parseErr := uuid.Parse(rawID)
+		if parseErr != nil {
+			continue
+		}
+		if _, exists := seenTaskIDs[taskID]; exists {
+			continue
+		}
+		seenTaskIDs[taskID] = struct{}{}
+		taskIDs = append(taskIDs, taskID)
+	}
+	tasksByID, err := store.GetTasksByIDs(c.Request.Context(), s.St.Pool, taskIDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+		if entry.SourceType != "task" || entry.SourceID == nil {
+			return ledgerDict(entry)
+		}
+		taskID, parseErr := uuid.Parse(strings.SplitN(*entry.SourceID, "/", 2)[0])
+		if parseErr != nil {
+			return ledgerDict(entry)
+		}
+		return ledgerDictWithTask(entry, tasksByID[taskID])
+	}))
 }
 
 func (s *Server) myNotifications(c *gin.Context) {

@@ -1,12 +1,20 @@
 /**
  * AI 任务 API（新契约 /api/v1/tasks*、/api/v1/uploads）。
  *
- * 任务类型：t2i | coloring | ui_design | model_sheet | game_art | puzzle
+ * 任务类型：t2i | coloring | ui_design | model_sheet | game_art | puzzle | background_remove
  * 状态机：queued → running → succeeded | failed | canceled
  */
 import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
 
-export const TASK_TYPES = ['t2i', 'coloring', 'ui_design', 'model_sheet', 'game_art', 'puzzle']
+export const TASK_TYPES = [
+  't2i',
+  'coloring',
+  'ui_design',
+  'model_sheet',
+  'game_art',
+  'puzzle',
+  'background_remove',
+]
 
 export const TASK_TYPE_LABELS = {
   t2i: '文生图',
@@ -15,6 +23,7 @@ export const TASK_TYPE_LABELS = {
   model_sheet: '超高清模型图',
   game_art: '游戏设计',
   puzzle: 'AI 拼图',
+  background_remove: '背景移除',
 }
 
 export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])

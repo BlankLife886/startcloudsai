@@ -136,6 +136,40 @@ func ledgerDict(e *store.LedgerEntry) gin.H {
 	}
 }
 
+func ledgerDictWithTask(e *store.LedgerEntry, task *store.Task) gin.H {
+	d := ledgerDict(e)
+	if task == nil {
+		return d
+	}
+	params := task.Params
+	if params == nil {
+		params = map[string]any{}
+	}
+	displayModel, _ := params["_modelDisplayName"].(string)
+	if strings.TrimSpace(displayModel) == "" {
+		displayModel = task.Model
+	}
+	automatic, _ := params["_automatic"].(bool)
+	settledCost := int64(0)
+	if task.Status == "succeeded" {
+		settledCost = task.CostCents
+		if task.Count > 1 && len(task.OutputKeys) < task.Count {
+			settledCost = task.CostCents / int64(task.Count) * int64(len(task.OutputKeys))
+		}
+	}
+	d["task"] = gin.H{
+		"id":                        task.ID.String(),
+		"type":                      task.Type,
+		"status":                    task.Status,
+		"modelName":                 strings.TrimSpace(displayModel),
+		"count":                     task.Count,
+		"costPoints":                task.CostCents,
+		"settledCostPoints":         settledCost,
+		"automaticBackgroundRemove": automatic,
+	}
+	return d
+}
+
 func planDict(p *store.Plan, includeAdmin bool) gin.H {
 	d := gin.H{
 		"id":               p.ID.String(),

@@ -28,6 +28,8 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
+	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
+		return 5 << 20
 	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
@@ -142,6 +144,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/conversations", s.assistantConversations)
 	api.POST("/assistant/conversations", s.createAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
+	api.POST("/assistant/conversations/:id/context-boundaries", s.createAssistantContextBoundary)
 	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
 	api.POST("/assistant/conversation-imports", s.importAssistantConversations)
 	api.GET("/assistant/runs", s.assistantRuns)
@@ -172,6 +175,13 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/tasks/:id/events", s.taskStream)
 	api.PATCH("/tasks/:id", s.patchTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
+
+	// canvas projects
+	api.GET("/canvas-projects", s.listCanvasProjects)
+	api.POST("/canvas-projects", s.createCanvasProject)
+	api.GET("/canvas-projects/:id", s.getCanvasProject)
+	api.PATCH("/canvas-projects/:id", s.patchCanvasProject)
+	api.DELETE("/canvas-projects/:id", s.deleteCanvasProject)
 
 	// uploads & files
 	api.POST("/uploads", s.upload)

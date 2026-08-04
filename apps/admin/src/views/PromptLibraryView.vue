@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Directive } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElCheckbox, ElMessage, ElMessageBox, type CheckboxValueType } from 'element-plus'
 import {
   CollectionTag,
@@ -9,11 +9,15 @@ import {
   Link,
   Picture,
   Plus,
+  Pointer,
   Rank,
   Refresh,
   Search,
+  Star,
   WarningFilled,
 } from '@element-plus/icons-vue'
+import AdminDialog from '@/components/AdminDialog.vue'
+import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { request, normalizeList, type Page } from '@/request'
 import { TASK_TYPES, taskTypeLabel } from '@/utils'
 import draggable from 'vuedraggable'
@@ -26,6 +30,9 @@ interface PromptItem {
   category: string
   tags: string[]
   coverUrl?: string | null
+  /** 封面像素尺寸（有则用于预留比例，避免加载跳动） */
+  coverWidth?: number | null
+  coverHeight?: number | null
   sort: number
   likeCount: number
   favoriteCount: number
@@ -39,7 +46,8 @@ interface PromptItem {
 interface PromptSource {
   id: string
   name: string
-  sourceUrl: string
+  /** 列表接口字段名为 url；表单提交仍用 sourceUrl */
+  url: string
   format: 'json' | 'markdown' | 'html'
   taskType: string
   defaultTags: string[]
@@ -75,44 +83,40 @@ interface CategoryOption {
  * 保证后台录入与用户端筛选联动；颜色取规范图表色序。
  */
 const CATEGORY_OPTIONS: CategoryOption[] = [
-  { value: 'all', label: '全部内容', icon: '▦', color: '#6366f1' },
+  { value: 'all', label: '全部内容', icon: '▦', color: '#5a8f00' },
   { value: 'portrait', label: '人像人物', icon: '◉', color: '#f472b6' },
   { value: 'photography', label: '摄影写实', icon: '◎', color: '#38bdf8' },
   { value: 'product', label: '产品商业', icon: '◇', color: '#fbbf24' },
   { value: 'illustration', label: '插画动漫', icon: '✦', color: '#a78bfa' },
   { value: 'scene', label: '场景建筑', icon: '△', color: '#34d399' },
-  { value: 'design', label: '视觉设计', icon: '✣', color: '#6366f1' },
+  { value: 'design', label: '视觉设计', icon: '✥', color: '#5a8f00' },
   { value: 'game', label: '游戏美术', icon: '◆', color: '#f87171' },
-  { value: 'typography', label: '文字排版', icon: 'T', color: '#94a3b8' },
-  { value: 'other', label: '其他', icon: '·', color: '#94a3b8' },
+  { value: 'typography', label: '文字排版', icon: 'T', color: '#64748b' },
+  { value: 'other', label: '其他', icon: '·', color: '#64748b' },
 ]
 
 const query = ref('')
 const categoryFilter = ref('all')
 const typeFilter = ref('all')
 const statusFilter = ref('all')
+const sourceFilter = ref('all')
+const orderFilter = ref('manual')
+const tagFilter = ref<string[]>([])
+const availableTags = ref<string[]>([])
 let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
 const items = ref<PromptItem[]>([])
 const promptScopeTotal = ref(0)
+const categoryCounts = ref<Record<string, number>>({})
 const loading = ref(false)
+const loadingMore = ref(false)
 const error = ref<string | null>(null)
 const nextCursor = ref<string | null>(null)
-const currentCursor = ref<string | null>(null)
-const previousPromptCursors = ref<(string | null)[]>([])
-const promptPage = ref(1)
 const promptContentRef = ref<HTMLElement | null>(null)
 let promptRequestVersion = 0
-let coverLoadObserver: IntersectionObserver | null = null
-let bodyResizeObserver: ResizeObserver | null = null
-const coverElements = new Map<HTMLElement, string>()
-const bodyElements = new Map<HTMLElement, string>()
-const visibleCoverIds = reactive(new Set<string>())
-const cardBodyHeights = reactive<Record<string, number>>({})
 const isGridScrolling = ref(false)
 let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
 
-const hasNext = computed(() => nextCursor.value !== null)
-const hasPrev = computed(() => previousPromptCursors.value.length > 0)
+const hasMore = computed(() => nextCursor.value !== null)
 const initialLoading = computed(() => loading.value && items.value.length === 0)
 const refreshing = computed(() => loading.value && items.value.length > 0)
 
@@ -121,63 +125,85 @@ function promptQueryParams(cursor: string | null) {
     type: typeFilter.value === 'all' ? '' : typeFilter.value,
     category: categoryFilter.value === 'all' ? '' : categoryFilter.value,
     status: statusFilter.value === 'all' ? '' : statusFilter.value,
+    source: sourceFilter.value === 'all' ? '' : sourceFilter.value,
+    sort: orderFilter.value === 'manual' ? '' : orderFilter.value,
+    tag: tagFilter.value,
     search: query.value.trim(),
     limit: 24,
     cursor,
   }
 }
 
-async function loadPromptPage(cursor: string | null) {
+async function loadPromptPage(cursor: string | null, mode: 'replace' | 'append' = 'replace') {
   const version = ++promptRequestVersion
+  const append = mode === 'append'
   const hadItems = items.value.length > 0
-  const params = promptQueryParams(cursor)
-  loading.value = true
-  error.value = null
+  if (append) {
+    if (!cursor || loading.value || loadingMore.value) return
+    loadingMore.value = true
+  } else {
+    loading.value = true
+    error.value = null
+  }
   try {
     const page = normalizeList(
       await request<PromptItem[] | Page<PromptItem>>('/api/v1/admin/prompts', {
-        query: params,
+        query: promptQueryParams(cursor),
       }),
     )
     if (version !== promptRequestVersion) return
-    items.value = page.items
-    currentCursor.value = cursor
-    nextCursor.value = page.nextCursor
-    promptScopeTotal.value = page.scopeTotal ?? page.total ?? page.items.length
-    const loadedIds = new Set(page.items.map((item) => item.id))
-    for (const id of selectedIds) {
-      if (!loadedIds.has(id)) selectedIds.delete(id)
+    if (append) {
+      const seen = new Set(items.value.map((item) => item.id))
+      items.value = [
+        ...items.value,
+        ...page.items.filter((item) => !seen.has(item.id)),
+      ]
+    } else {
+      items.value = page.items
+      const loadedIds = new Set(page.items.map((item) => item.id))
+      for (const id of selectedIds) {
+        if (!loadedIds.has(id)) selectedIds.delete(id)
+      }
+      await nextTick()
+      promptContentRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+      scheduleViewportMeasure()
     }
-    await nextTick()
-    promptContentRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+    nextCursor.value = page.nextCursor
+    promptScopeTotal.value = page.scopeTotal ?? page.total ?? items.value.length
+    if (page.categoryCounts && Object.keys(page.categoryCounts).length) {
+      categoryCounts.value = page.categoryCounts
+    } else if (!append) {
+      categoryCounts.value = { all: promptScopeTotal.value }
+    }
+    if (!append) {
+      availableTags.value = Array.isArray(page.tags) ? page.tags : []
+    }
   } catch (cause) {
     if (version !== promptRequestVersion) return
-    if (!hadItems) items.value = []
-    error.value = cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+    if (!append && !hadItems) items.value = []
+    if (!append) {
+      error.value =
+        cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+    } else {
+      ElMessage.error('加载更多失败，请重试')
+    }
   } finally {
-    if (version === promptRequestVersion) loading.value = false
+    if (version !== promptRequestVersion) return
+    if (append) loadingMore.value = false
+    else loading.value = false
+    await nextTick()
+    scheduleViewportMeasure()
   }
 }
 
 function reset() {
-  previousPromptCursors.value = []
-  promptPage.value = 1
-  return loadPromptPage(null)
+  nextCursor.value = null
+  return loadPromptPage(null, 'replace')
 }
 
-async function nextPromptPage() {
-  const cursor = nextCursor.value
-  if (!cursor || loading.value) return
-  previousPromptCursors.value.push(currentCursor.value)
-  promptPage.value += 1
-  await loadPromptPage(cursor)
-}
-
-async function prevPromptPage() {
-  if (!previousPromptCursors.value.length || loading.value) return
-  const cursor = previousPromptCursors.value.pop() ?? null
-  promptPage.value = Math.max(1, promptPage.value - 1)
-  await loadPromptPage(cursor)
+function loadMore() {
+  if (!nextCursor.value || loading.value || loadingMore.value) return
+  return loadPromptPage(nextCursor.value, 'append')
 }
 
 function refresh() {
@@ -185,62 +211,7 @@ function refresh() {
 }
 
 function retry() {
-  return loadPromptPage(currentCursor.value)
-}
-
-function setupCoverObserver() {
-  coverLoadObserver?.disconnect()
-  coverLoadObserver = null
-  if (typeof IntersectionObserver === 'undefined') {
-    for (const id of coverElements.values()) visibleCoverIds.add(id)
-    return
-  }
-  coverLoadObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const id = coverElements.get(entry.target as HTMLElement)
-        if (!id) continue
-        if (entry.isIntersecting) visibleCoverIds.add(id)
-        else visibleCoverIds.delete(id)
-      }
-    },
-    { root: promptContentRef.value, rootMargin: '720px 0px', threshold: 0.001 },
-  )
-  for (const element of coverElements.keys()) coverLoadObserver.observe(element)
-}
-
-const vPromptCoverVisibility: Directive<HTMLElement, string> = {
-  mounted(element, binding) {
-    coverElements.set(element, binding.value)
-    if (coverLoadObserver) coverLoadObserver.observe(element)
-    else visibleCoverIds.add(binding.value)
-  },
-  updated(element, binding) {
-    if (binding.value === binding.oldValue) return
-    if (binding.oldValue) visibleCoverIds.delete(binding.oldValue)
-    coverElements.set(element, binding.value)
-    visibleCoverIds.add(binding.value)
-  },
-  beforeUnmount(element) {
-    const id = coverElements.get(element)
-    coverLoadObserver?.unobserve(element)
-    coverElements.delete(element)
-    if (id) visibleCoverIds.delete(id)
-  },
-}
-
-const vPromptBodySize: Directive<HTMLElement, string> = {
-  mounted(element, binding) {
-    bodyElements.set(element, binding.value)
-    bodyResizeObserver?.observe(element)
-  },
-  updated(element, binding) {
-    bodyElements.set(element, binding.value)
-  },
-  beforeUnmount(element) {
-    bodyResizeObserver?.unobserve(element)
-    bodyElements.delete(element)
-  },
+  return reset()
 }
 
 function onPromptScroll() {
@@ -250,9 +221,53 @@ function onPromptScroll() {
     scrollIdleTimer = null
     isGridScrolling.value = false
   }, 140)
+
+  scheduleViewportMeasure()
+
+  const el = promptContentRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 280) {
+    void loadMore()
+  }
 }
 
 const visibleItems = computed(() => items.value)
+
+const masonryItems = computed(() =>
+  visibleItems.value.map((item, index) => ({
+    key: item.id,
+    item,
+    index,
+    aspect:
+      Number(item.coverWidth) > 0 && Number(item.coverHeight) > 0
+        ? `${item.coverWidth} / ${item.coverHeight}`
+        : '3 / 4',
+    cover: item.coverUrl || '',
+  })),
+)
+
+const {
+  containerRef: masonryRef,
+  visibleItems: visibleMasonryItems,
+  columnCount,
+  totalHeight: masonryHeight,
+  measureFromEvent,
+  scheduleViewportMeasure,
+} = useVirtualMasonryFeed({
+  items: masonryItems,
+  fallbackAspect: 3 / 4,
+  bodyHeight: 104,
+  mediaInset: 8,
+  minColumnWidth: 260,
+  maxColumns: 4,
+  overscan: 960,
+  getAspect: (entry) => entry.aspect,
+  scrollParent: promptContentRef,
+})
+
+function imageLoadingMode(index: number) {
+  return index < Math.max(6, columnCount.value * 2) ? 'eager' : 'lazy'
+}
 
 /* 多选编辑：只操作当前已经加载且可见的提示词，避免误改筛选范围之外的数据。 */
 const selectedIds = reactive(new Set<string>())
@@ -365,27 +380,17 @@ async function applyBatchEdit() {
 
 const updatingItemFields = reactive(new Set<string>())
 
-const headerStatus = computed(() => {
-  if (batchSaving.value) {
-    return { tone: 'is-saving', title: '正在批量更新', detail: `${selectedItems.value.length} 条内容` }
-  }
-  if (selectedItems.value.length) {
-    return { tone: 'is-selecting', title: '多选编辑', detail: `已选 ${selectedItems.value.length} 条` }
-  }
-  if (refreshing.value) {
-    return { tone: 'is-saving', title: categoryMeta(categoryFilter.value).label, detail: '正在更新内容' }
-  }
-  return {
-    tone: '',
-    title: categoryMeta(categoryFilter.value).label,
-    detail: `本页 ${visibleItems.value.length} 条`,
-  }
-})
-
 function categoryOptionsFor(item: PromptItem) {
   const options = CATEGORY_OPTIONS.slice(1)
   if (!item.category || options.some((category) => category.value === item.category)) return options
   return [categoryMeta(item.category), ...options]
+}
+
+function categoryTotal(value: string) {
+  const count = categoryCounts.value[value]
+  if (typeof count === 'number') return count
+  if (value === 'all') return promptScopeTotal.value
+  return 0
 }
 
 async function quickChangeCategory(item: PromptItem, category: string) {
@@ -490,38 +495,7 @@ async function submitQuickSort(position = quickSortPosition.value) {
   }
 }
 
-/* 稳定瀑布流：保持现有多列布局，但图片异步加载后不再跨列搬动卡片。 */
-const gridColumnCount = ref(5)
-const imageRatios = reactive<Record<string, number>>({})
-const gridColumns = computed(() => {
-  const columns = Array.from({ length: gridColumnCount.value }, () => [] as PromptItem[])
-  for (const [index, item] of visibleItems.value.entries()) {
-    columns[index % gridColumnCount.value]?.push(item)
-  }
-  return columns
-})
-
-function updateGridColumnCount() {
-  const width = window.innerWidth
-  gridColumnCount.value = width <= 720 ? 1 : width <= 1100 ? 2 : width <= 1500 ? 3 : 4
-}
-
-function measureCover(item: PromptItem, event: Event) {
-  const image = event.target as HTMLImageElement | null
-  const width = Number(image?.naturalWidth ?? 0)
-  const height = Number(image?.naturalHeight ?? 0)
-  if (width > 0 && height > 0) imageRatios[item.id] = width / height
-}
-
-function coverStyle(item: PromptItem) {
-  const ratio = Math.max(0.38, Math.min(3.2, imageRatios[item.id] ?? 16 / 10))
-  return { aspectRatio: String(ratio) }
-}
-
-function cardBodyPlaceholderStyle(item: PromptItem) {
-  const fallback = item.tags?.length ? 184 : 158
-  return { height: `${Math.max(120, cardBodyHeights[item.id] ?? fallback)}px` }
-}
+/* 瀑布流布局已迁至 useVirtualMasonryFeed（与用户端提示词页同逻辑） */
 
 function categoryMeta(value: string | undefined): CategoryOption {
   const key = value ?? 'other'
@@ -538,6 +512,13 @@ function formatTime(value: string | undefined) {
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+function displayTag(tag: string) {
+  const cleaned = String(tag || '')
+    .replace(/^(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D)+/gu, '')
+    .trim()
+  return cleaned || tag
+}
+
 function scheduleReload() {
   clearSelection()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
@@ -550,14 +531,17 @@ function scheduleReload() {
   )
 }
 
-watch([query, categoryFilter, typeFilter, statusFilter], scheduleReload)
-watch(statusFilter, clearSelection)
+watch([query, categoryFilter, typeFilter, statusFilter, sourceFilter, orderFilter, tagFilter], scheduleReload)
+watch([statusFilter, sourceFilter], clearSelection)
 
 function resetFilters() {
   query.value = ''
   categoryFilter.value = 'all'
   typeFilter.value = 'all'
   statusFilter.value = 'all'
+  sourceFilter.value = 'all'
+  orderFilter.value = 'manual'
+  tagFilter.value = []
 }
 
 /* 大规模排序管理：服务端分页，每次只渲染一小段；跨页移动直接输入目标名次。
@@ -734,6 +718,8 @@ const saving = ref(false)
 const editingId = ref('')
 const pendingImage = ref<File | null>(null)
 const previewUrl = ref('')
+const coverInputRef = ref<HTMLInputElement | null>(null)
+const coverPreviewOpen = ref(false)
 const form = reactive({
   title: '',
   prompt: '',
@@ -783,6 +769,15 @@ function pickImage(event: Event) {
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = URL.createObjectURL(file)
   input.value = ''
+}
+
+function triggerCoverPick() {
+  coverInputRef.value?.click()
+}
+
+function openCoverPreview() {
+  if (!previewUrl.value) return
+  coverPreviewOpen.value = true
 }
 
 async function uploadCover(id: string, file: File) {
@@ -845,6 +840,7 @@ async function save() {
 
 watch(editorOpen, (open) => {
   if (open) return
+  coverPreviewOpen.value = false
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
   pendingImage.value = null
@@ -935,10 +931,19 @@ function intervalLabel(minutes: number | undefined): string {
   return `每 ${value} 分钟`
 }
 
-async function copySourceUrl(source: PromptSource) {
+function sourceUrlOf(source: PromptSource) {
+  return source.url || ''
+}
+
+async function copyPromptText(item: PromptItem) {
+  const text = item.prompt?.trim()
+  if (!text) {
+    ElMessage.warning('该提示词没有可复制的内容')
+    return
+  }
   try {
-    await navigator.clipboard.writeText(source.sourceUrl)
-    ElMessage.success('源地址已复制')
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('提示词已复制')
   } catch {
     ElMessage.warning('复制失败，请手动选择复制')
   }
@@ -1019,7 +1024,7 @@ const sourceForm = reactive({
 function openSourceEditor(source: PromptSource | null = null) {
   editingSourceId.value = source?.id ?? ''
   sourceForm.name = source?.name ?? ''
-  sourceForm.sourceUrl = source?.sourceUrl ?? ''
+  sourceForm.sourceUrl = source ? sourceUrlOf(source) : ''
   sourceForm.format = source?.format ?? 'json'
   sourceForm.taskType = source?.taskType ?? 't2i'
   sourceForm.defaultTagsText = Array.isArray(source?.defaultTags) ? source.defaultTags.join('\n') : ''
@@ -1063,29 +1068,11 @@ async function saveSource() {
 }
 
 onMounted(() => {
-  updateGridColumnCount()
-  window.addEventListener('resize', updateGridColumnCount, { passive: true })
-  if (typeof ResizeObserver !== 'undefined') {
-    bodyResizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const id = bodyElements.get(entry.target as HTMLElement)
-        const height = Math.ceil(entry.contentRect.height)
-        if (id && height > 0) cardBodyHeights[id] = height
-      }
-    })
-  }
-  setupCoverObserver()
   void reset()
   void loadSources(true)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', updateGridColumnCount)
-  coverLoadObserver?.disconnect()
-  bodyResizeObserver?.disconnect()
-  coverElements.clear()
-  bodyElements.clear()
-  visibleCoverIds.clear()
   if (filterReloadTimer) clearTimeout(filterReloadTimer)
   if (sortFilterTimer) clearTimeout(sortFilterTimer)
   if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
@@ -1095,88 +1082,92 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="prompt-library-page">
-    <header class="library-header">
-      <div class="library-header__top">
-        <div class="library-header__copy">
-          <span class="library-eyebrow">PROMPT OPERATIONS</span>
-          <h2>统一提示词库</h2>
-          <p>管理内容分类、投放功能、封面素材与启停排序</p>
-        </div>
-        <div class="library-header__actions">
-          <el-tag type="success" effect="light" round size="small"
-            >当前页 {{ items.length }} / 共 {{ promptScopeTotal }} 条</el-tag
-          >
-          <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
-            <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
-          </el-badge>
-          <el-button
-            :type="selectionMode ? 'primary' : ''"
-            :icon="EditPen"
-            :disabled="batchSaving"
-            @click="toggleSelectionMode"
-          >
-            {{ selectionMode ? '退出多选' : '多选编辑' }}
-          </el-button>
-          <el-button :icon="Rank" @click="openSortDrawer">批量排序</el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
-          <el-button type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
-        </div>
+    <header class="library-toolbar">
+      <div class="library-toolbar__filters">
+        <el-input
+          v-model="query"
+          :prefix-icon="Search"
+          clearable
+          placeholder="搜索名称、提示词或标签"
+          class="prompt-search"
+        />
+        <el-select v-model="typeFilter" class="toolbar-select" aria-label="投放功能">
+          <el-option label="全部功能" value="all" />
+          <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+        </el-select>
+        <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="状态">
+          <el-option label="全部状态" value="all" />
+          <el-option label="已启用" value="enabled" />
+          <el-option label="已停用" value="disabled" />
+          <el-option label="缺少封面" value="missing-cover" />
+        </el-select>
+        <el-select v-model="sourceFilter" class="toolbar-select is-short" aria-label="来源">
+          <el-option label="全部来源" value="all" />
+          <el-option label="远程同步" value="synced" />
+          <el-option label="本地创建" value="local" />
+        </el-select>
+        <el-select v-model="orderFilter" class="toolbar-select is-short" aria-label="排序">
+          <el-option label="手动排序" value="manual" />
+          <el-option label="最新创建" value="latest" />
+          <el-option label="点赞最多" value="likes" />
+          <el-option label="收藏最多" value="favorites" />
+          <el-option label="使用最多" value="usage" />
+          <el-option label="综合热度" value="recommended" />
+        </el-select>
+        <el-select
+          v-model="tagFilter"
+          class="toolbar-select is-tags"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          clearable
+          filterable
+          placeholder="按标签筛选"
+          aria-label="标签"
+        >
+          <el-option v-for="tag in availableTags" :key="tag" :label="displayTag(tag)" :value="tag" />
+        </el-select>
+        <el-button @click="resetFilters">重置</el-button>
       </div>
-
-      <div class="library-header__controls">
-        <div class="prompt-toolbar">
-          <el-input
-            v-model="query"
-            :prefix-icon="Search"
-            clearable
-            placeholder="搜索名称、提示词或标签"
-            class="prompt-search"
-          />
-          <el-select v-model="typeFilter" class="toolbar-select" aria-label="投放功能">
-            <el-option label="全部功能" value="all" />
-            <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
-          </el-select>
-          <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="状态">
-            <el-option label="全部状态" value="all" />
-            <el-option label="已启用" value="enabled" />
-            <el-option label="已停用" value="disabled" />
-            <el-option label="缺少封面" value="missing-cover" />
-          </el-select>
-          <el-button text @click="resetFilters">重置</el-button>
-        </div>
-        <div class="library-event-status" :class="headerStatus.tone" aria-live="polite">
-          <el-icon><component :is="headerStatus.tone === 'is-dragging' ? Rank : CollectionTag" /></el-icon>
-          <span>
-            <strong :title="headerStatus.title">{{ headerStatus.title }}</strong>
-            <small>{{ headerStatus.detail }}</small>
-          </span>
+      <div class="library-toolbar__actions">
+        <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
+          <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
+        </el-badge>
+        <el-button
+          :type="selectionMode ? 'primary' : ''"
+          :icon="EditPen"
+          :disabled="batchSaving"
+          @click="toggleSelectionMode"
+        >
+          {{ selectionMode ? '退出多选' : '多选' }}
+        </el-button>
+        <el-button :icon="Rank" @click="openSortDrawer">排序</el-button>
+        <div class="library-toolbar__buttons">
+          <el-button type="primary" :icon="Plus" @click="openEditor()">新增</el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
         </div>
       </div>
     </header>
 
-    <section class="library-workspace">
-      <div class="items-workspace">
-        <aside class="category-rail">
-          <div class="category-rail__title">
-            <span>内容分类</span>
-            <small>{{ items.length }}</small>
-          </div>
-          <button
-            v-for="category in CATEGORY_OPTIONS"
-            :key="category.value"
-            type="button"
-            :class="{
-              'is-active': categoryFilter === category.value,
-            }"
-            @click="categoryFilter = category.value"
-            :data-prompt-category="category.value"
-          >
-            <i :style="{ '--category-color': category.color }">{{ category.icon }}</i>
-            <span>{{ category.label }}</span>
-          </button>
-        </aside>
+    <section class="items-workspace">
+      <aside class="category-rail" aria-label="内容分类">
+        <button
+          v-for="category in CATEGORY_OPTIONS"
+          :key="category.value"
+          type="button"
+          :class="{
+            'is-active': categoryFilter === category.value,
+          }"
+          @click="categoryFilter = category.value"
+          :data-prompt-category="category.value"
+        >
+          <i :style="{ '--category-color': category.color }">{{ category.icon }}</i>
+          <span>{{ category.label }}</span>
+          <em class="tnum">{{ categoryTotal(category.value) }}</em>
+        </button>
+      </aside>
 
-        <main class="prompt-content">
+      <main class="prompt-content">
           <div ref="promptContentRef" class="prompt-content__scroll" @scroll.passive="onPromptScroll">
           <ListError :error="error" :loading="loading" @retry="retry" />
 
@@ -1240,172 +1231,136 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="prompt-grid" :class="{ 'is-refreshing': refreshing, 'is-scrolling': isGridScrolling }">
-            <template v-if="initialLoading">
-              <div
-                v-for="columnIndex in gridColumnCount"
-                :key="`prompt-skeleton-column-${columnIndex}`"
-                class="prompt-grid__column"
-              >
-                <article
-                  v-for="cardIndex in 3"
-                  :key="`prompt-skeleton-${columnIndex}-${cardIndex}`"
-                  class="prompt-skeleton-card"
-                >
-                  <span class="prompt-skeleton-card__cover" :class="`is-variant-${cardIndex}`" />
-                  <span class="prompt-skeleton-card__line is-title" />
-                  <span class="prompt-skeleton-card__line" />
-                  <span class="prompt-skeleton-card__line is-short" />
-                </article>
-              </div>
-            </template>
+            <div v-if="initialLoading" class="prompt-grid__loading">正在加载提示词…</div>
 
-            <template v-else-if="visibleItems.length">
-              <div
-                v-for="(column, columnIndex) in gridColumns"
-                :key="`prompt-column-${columnIndex}`"
-                class="prompt-grid__column"
+            <div
+              v-else-if="visibleItems.length"
+              ref="masonryRef"
+              class="prompt-masonry"
+              :style="{ height: `${masonryHeight}px` }"
+            >
+              <article
+                v-for="entry in visibleMasonryItems"
+                :key="entry.key"
+                class="prompt-card prompt-masonry__item"
+                :class="{
+                  'is-disabled': !entry.item.active,
+                  'is-selected': selectedIds.has(entry.item.id),
+                  'is-selection-mode': selectionMode,
+                }"
+                :style="{
+                  width: `${entry.width}px`,
+                  height: `${entry.height}px`,
+                  transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
+                }"
               >
-                <article
-                  v-for="item in column"
-                  :key="item.id"
-                  class="prompt-card"
-                  :class="{
-                    'is-disabled': !item.active,
-                    'is-selected': selectedIds.has(item.id),
-                    'is-selection-mode': selectionMode,
-                  }"
+                <div
+                  class="prompt-cover"
+                  :class="{ 'has-image': Boolean(entry.cover) }"
+                  :style="{ height: `${entry.mediaHeight}px` }"
+                  @click="
+                    selectionMode
+                      ? toggleSelected(entry.item.id, !selectedIds.has(entry.item.id))
+                      : openEditor(entry.item)
+                  "
                 >
-                  <div
-                    v-prompt-cover-visibility="item.id"
-                    class="prompt-cover"
-                    :class="{ 'has-image': Boolean(item.coverUrl) }"
-                    :style="item.coverUrl ? coverStyle(item) : undefined"
-                    @click="selectionMode ? toggleSelected(item.id, !selectedIds.has(item.id)) : openEditor(item)"
-                  >
-                    <img
-                      v-if="item.coverUrl && visibleCoverIds.has(item.id)"
-                      :src="item.coverUrl"
-                      :alt="item.title"
-                      loading="eager"
-                      decoding="async"
-                      @load="measureCover(item, $event)"
-                    />
-                    <span v-else-if="item.coverUrl" class="prompt-cover__media-placeholder" aria-hidden="true" />
-                    <div v-else class="prompt-cover__empty">
-                      <el-icon><Picture /></el-icon>
-                      <span>缺少封面</span>
-                      <small>点击编辑上传</small>
-                    </div>
-                    <span class="category-badge" :style="{ '--category-color': categoryMeta(item.category).color }">
-                      {{ categoryMeta(item.category).label }}
-                    </span>
-                    <el-checkbox
-                      v-if="selectionMode"
-                      class="prompt-card__select"
-                      :model-value="selectedIds.has(item.id)"
-                      :aria-label="`选择 ${item.title}`"
-                      @click.stop
-                      @change="toggleSelected(item.id, Boolean($event))"
-                    />
-                    <span v-if="item.sourceId" class="sync-badge" title="来自远程数据源，同步时会自动更新">
-                      <el-icon><Link /></el-icon>
-                      同步
-                    </span>
-                    <span class="prompt-cover__overlay">
-                      <span class="prompt-cover__prompt">{{ item.prompt }}</span>
-                      <span class="prompt-cover__specs">
-                        <span>
-                          <el-icon><CollectionTag /></el-icon>
-                          {{ categoryMeta(item.category).label }}
-                        </span>
-                        <span v-if="item.tags?.length">{{ item.tags.slice(0, 2).join(' · ') }}</span>
-                      </span>
-                    </span>
+                  <img
+                    v-if="entry.cover"
+                    :src="String(entry.cover)"
+                    :alt="entry.item.title"
+                    :loading="imageLoadingMode(entry.index)"
+                    decoding="async"
+                    draggable="false"
+                    :width="Math.max(1, Math.round(entry.width))"
+                    :height="Math.max(1, entry.mediaHeight)"
+                    @load="measureFromEvent(entry.key, $event)"
+                  />
+                  <div v-else class="prompt-cover__empty">
+                    <el-icon><Picture /></el-icon>
+                    <span>缺少封面</span>
                   </div>
+                  <el-checkbox
+                    v-if="selectionMode"
+                    class="prompt-card__select"
+                    :model-value="selectedIds.has(entry.item.id)"
+                    :aria-label="`选择 ${entry.item.title}`"
+                    @click.stop
+                    @change="toggleSelected(entry.item.id, Boolean($event))"
+                  />
+                  <span v-if="entry.item.sourceId" class="sync-badge" title="来自远程数据源，同步时会自动更新">
+                    <el-icon><Link /></el-icon>
+                    同步
+                  </span>
+                  <div v-if="entry.item.tags?.length" class="prompt-cover__tags">
+                    <span v-for="tag in (entry.item.tags ?? []).slice(0, 3)" :key="tag">{{ displayTag(tag) }}</span>
+                  </div>
+                  <span class="prompt-cover__time">{{ formatTime(entry.item.createdAt) }}</span>
+                  <div class="prompt-cover__stats">
+                    <span class="is-like" title="点赞"><el-icon><Star /></el-icon>{{ entry.item.likeCount || 0 }}</span>
+                    <span class="is-favorite" title="收藏"><el-icon><CollectionTag /></el-icon>{{ entry.item.favoriteCount || 0 }}</span>
+                    <span class="is-use" title="使用"><el-icon><Pointer /></el-icon>{{ entry.item.useCount || 0 }}</span>
+                  </div>
+                </div>
 
-                  <div v-if="visibleCoverIds.has(item.id)" v-prompt-body-size="item.id" class="prompt-card__body">
-                    <header>
-                      <div>
-                        <strong :title="item.title">{{ item.title }}</strong>
-                        <small>
-                          {{ categoryMeta(item.category).label }} · 👍 {{ item.likeCount || 0 }} · ❤
-                          {{ item.favoriteCount || 0 }} · 使用 {{ item.useCount || 0 }}
-                        </small>
-                      </div>
-                      <div class="prompt-card__header-actions">
-                        <el-tooltip content="直接调整展示顺序" placement="top">
-                          <button
-                            type="button"
-                            class="prompt-drag-handle prompt-quick-sort-trigger"
-                            :disabled="selectionMode"
-                            aria-label="调整提示词展示顺序"
-                            @click.stop="openQuickSort(item)"
-                          >
-                            <el-icon><Rank /></el-icon>
-                          </button>
-                        </el-tooltip>
-                        <el-switch
-                          :model-value="item.active"
-                          size="small"
-                          @change="toggleItem(item, Boolean($event))"
-                        />
-                      </div>
-                    </header>
-                    <div class="prompt-quick-fields">
-                      <label>
-                        <span>分类</span>
-                        <el-select
-                          :model-value="item.category"
-                          size="small"
-                          :loading="updatingItemFields.has(`${item.id}:category`)"
-                          aria-label="快捷分类"
-                          @change="quickChangeCategory(item, String($event))"
+                <div class="prompt-card__body">
+                  <header>
+                    <strong class="prompt-card__name" :title="entry.item.title">{{ entry.item.title }}</strong>
+                    <div class="prompt-card__header-actions">
+                      <el-tooltip content="复制提示词" placement="top">
+                        <button
+                          type="button"
+                          class="prompt-copy-btn"
+                          aria-label="复制提示词"
+                          @click.stop="copyPromptText(entry.item)"
                         >
-                          <el-option
-                            v-for="category in categoryOptionsFor(item)"
-                            :key="category.value"
-                            :label="category.label"
-                            :value="category.value"
-                          />
-                        </el-select>
-                      </label>
-                      <label>
-                        <span>投放</span>
-                        <el-select
-                          :model-value="item.taskType"
-                          size="small"
-                          :loading="updatingItemFields.has(`${item.id}:taskType`)"
-                          aria-label="快捷投放"
-                          @change="quickChangeTaskType(item, String($event))"
-                        >
-                          <el-option
-                            v-for="type in TASK_TYPES"
-                            :key="type"
-                            :label="taskTypeLabel(type)"
-                            :value="type"
-                          />
-                        </el-select>
-                      </label>
+                          <el-icon><CopyDocument /></el-icon>
+                        </button>
+                      </el-tooltip>
+                      <el-switch
+                        :model-value="entry.item.active"
+                        size="small"
+                        @change="toggleItem(entry.item, Boolean($event))"
+                      />
                     </div>
-                    <div v-if="item.tags?.length" class="page-assignments">
-                      <em v-for="tag in (item.tags ?? []).slice(0, 2)" :key="tag">#{{ tag }}</em>
+                  </header>
+
+                  <div class="prompt-card__toolbar">
+                    <el-select
+                      :model-value="entry.item.category"
+                      size="small"
+                      :loading="updatingItemFields.has(`${entry.item.id}:category`)"
+                      aria-label="快捷分类"
+                      @change="quickChangeCategory(entry.item, String($event))"
+                    >
+                      <el-option
+                        v-for="category in categoryOptionsFor(entry.item)"
+                        :key="category.value"
+                        :label="category.label"
+                        :value="category.value"
+                      />
+                    </el-select>
+                    <el-select
+                      :model-value="entry.item.taskType"
+                      size="small"
+                      :loading="updatingItemFields.has(`${entry.item.id}:taskType`)"
+                      aria-label="快捷投放"
+                      @change="quickChangeTaskType(entry.item, String($event))"
+                    >
+                      <el-option
+                        v-for="type in TASK_TYPES"
+                        :key="type"
+                        :label="taskTypeLabel(type)"
+                        :value="type"
+                      />
+                    </el-select>
+                    <div class="prompt-card__actions">
+                      <el-button link type="primary" @click="openEditor(entry.item)">编辑</el-button>
+                      <el-button link type="danger" @click="remove(entry.item)">删除</el-button>
                     </div>
-                    <footer>
-                      <span>创建于 {{ formatTime(item.createdAt) }}</span>
-                      <div class="prompt-card__actions">
-                        <el-tooltip content="编辑提示词" placement="top">
-                          <el-button circle :icon="EditPen" @click="openEditor(item)" />
-                        </el-tooltip>
-                        <el-tooltip content="删除提示词" placement="top">
-                          <el-button circle type="danger" plain :icon="Delete" @click="remove(item)" />
-                        </el-tooltip>
-                      </div>
-                    </footer>
                   </div>
-                  <div v-else class="prompt-card__body-placeholder" :style="cardBodyPlaceholderStyle(item)" />
-                </article>
-              </div>
-            </template>
+                </div>
+              </article>
+            </div>
 
             <div v-if="!initialLoading && !visibleItems.length" class="library-empty">
               <el-icon><CollectionTag /></el-icon>
@@ -1415,30 +1370,28 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <div
+            v-if="visibleItems.length"
+            class="prompt-load-status"
+            :class="{ 'is-loading': loadingMore }"
+          >
+            <span v-if="loadingMore">正在加载更多…</span>
+            <span v-else-if="!hasMore">已加载全部 {{ items.length }} 条</span>
           </div>
-          <div class="prompt-library-pagination">
-            <CursorPager
-              :has-prev="hasPrev"
-              :has-next="hasNext"
-              :loading="loading"
-              :page="promptPage"
-              :count="items.length"
-              :total="promptScopeTotal"
-              @prev="prevPromptPage"
-              @next="nextPromptPage"
-            />
           </div>
-        </main>
-      </div>
+      </main>
     </section>
 
-    <el-dialog
+    <AdminDialog
       v-model="quickSortOpen"
       title="调整展示顺序"
+      subtitle="输入名次后保存，其他提示词会自动顺延"
+      :icon="Rank"
       width="min(520px, 92vw)"
-      append-to-body
-      align-center
-      class="prompt-quick-sort-dialog"
+      confirm-text="保存位置"
+      :confirm-loading="quickSortSaving"
+      :confirm-disabled="quickSortLoading"
+      @confirm="submitQuickSort()"
     >
       <div v-loading="quickSortLoading" class="prompt-quick-sort-panel">
         <div v-if="quickSortItem" class="prompt-quick-sort-item">
@@ -1470,44 +1423,46 @@ onBeforeUnmount(() => {
             :disabled="quickSortLoading || quickSortSaving"
           />
         </label>
-        <p>无需拖动或翻页，输入名次后保存即可；其他提示词会自动顺延。</p>
       </div>
       <template #footer>
-        <div class="prompt-quick-sort-footer">
-          <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(1)">置顶</el-button>
-          <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(quickSortCount)">置底</el-button>
-          <span />
-          <el-button :disabled="quickSortSaving" @click="quickSortOpen = false">取消</el-button>
-          <el-button
-            type="primary"
-            :loading="quickSortSaving"
-            :disabled="quickSortLoading"
-            @click="submitQuickSort()"
-          >
-            保存位置
-          </el-button>
+        <div class="admin-dialog__footer prompt-quick-sort-footer">
+          <div class="admin-dialog__actions" style="margin-right: auto">
+            <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(1)">置顶</el-button>
+            <el-button :disabled="quickSortLoading || quickSortSaving" @click="submitQuickSort(quickSortCount)">置底</el-button>
+          </div>
+          <div class="admin-dialog__actions">
+            <el-button :disabled="quickSortSaving" @click="quickSortOpen = false">取消</el-button>
+            <el-button
+              type="primary"
+              :loading="quickSortSaving"
+              :disabled="quickSortLoading"
+              @click="submitQuickSort()"
+            >
+              保存位置
+            </el-button>
+          </div>
         </div>
       </template>
-    </el-dialog>
+    </AdminDialog>
 
     <el-drawer
       v-model="sortDrawerOpen"
-      title="提示词排序管理"
       size="min(820px, 98vw)"
       append-to-body
       :before-close="beforeCloseSortDrawer"
-      class="prompt-sort-drawer"
+      class="library-drawer prompt-sort-drawer"
     >
-      <div class="prompt-sort-panel">
-        <header class="prompt-sort-summary">
+      <template #header>
+        <div class="library-drawer__head">
+          <span class="library-drawer__mark"><el-icon><Rank /></el-icon></span>
           <div>
-            <strong>分页定位排序</strong>
-            <span>
-              当前范围 {{ sortScopeTotal }} 条，每页仅渲染 {{ SORT_PAGE_SIZE }} 条
-            </span>
+            <strong>提示词排序</strong>
+            <small>当前范围 {{ sortScopeTotal }} 条 · 每页 {{ SORT_PAGE_SIZE }} 条</small>
           </div>
           <el-button :loading="sortLoading" :icon="Refresh" @click="loadSortItems(false)">重新载入</el-button>
-        </header>
+        </div>
+      </template>
+      <div class="prompt-sort-panel">
 
         <div class="prompt-sort-filters">
           <el-input v-model="sortQuery" clearable :prefix-icon="Search" placeholder="搜索名称或提示词，快速定位目标" />
@@ -1630,28 +1585,20 @@ onBeforeUnmount(() => {
       </div>
     </el-drawer>
 
-    <el-dialog
+    <AdminDialog
       v-model="editorOpen"
+      :title="editingId ? '编辑提示词' : '新增提示词'"
+      subtitle="完善内容与发布设置，保存后立即同步到用户端词库"
+      :icon="EditPen"
       width="min(1280px, 94vw)"
-      align-center
-      append-to-body
-      destroy-on-close
-      class="prompt-editor-dialog prompt-content-editor"
+      nested-scroll
+      confirm-text="保存提示词"
+      :confirm-loading="saving"
+      :footer-hint="pendingImage ? '已选择新封面，保存时一并上传' : ''"
+      @confirm="save"
     >
-      <template #header>
-        <div class="editor-dialog-head">
-          <span class="editor-dialog-head__mark"><el-icon><EditPen /></el-icon></span>
-          <div>
-            <strong>{{ editingId ? '编辑提示词' : '新增提示词' }}</strong>
-            <small>完善内容与发布设置，保存后立即同步到用户端词库</small>
-          </div>
-        </div>
-      </template>
       <el-form label-position="top" class="editor-form editor-form--wide">
         <section class="editor-basics-panel">
-          <div class="editor-section-head">
-            <div><strong>基础信息</strong><span>用于用户端搜索、分类和识别</span></div>
-          </div>
           <div class="editor-meta-grid">
             <el-form-item label="名称"><el-input v-model="form.title" maxlength="80" placeholder="请输入清晰易懂的提示词名称" /></el-form-item>
             <el-form-item label="内容分类">
@@ -1674,102 +1621,118 @@ onBeforeUnmount(() => {
             <el-form-item label="标签" class="editor-tags-field">
               <el-input v-model="form.tagsText" placeholder="用逗号分隔，例如：电影感，人物，霓虹" />
             </el-form-item>
+            <el-form-item label="投放功能" class="editor-task-field">
+              <el-select v-model="form.taskType" placeholder="选择投放功能" style="width: 100%">
+                <el-option
+                  v-for="type in TASK_TYPES"
+                  :key="type"
+                  :label="taskTypeLabel(type)"
+                  :value="type"
+                />
+              </el-select>
+            </el-form-item>
+          </div>
+          <div class="editor-publish-row">
+            <el-form-item class="editor-publish-field">
+              <el-switch v-model="form.active" inline-prompt active-text="开" inactive-text="关" />
+            </el-form-item>
+            <div class="editor-heat-metrics">
+              <label class="editor-heat-metric">
+                <span>点赞</span>
+                <el-input-number v-model="form.likeCount" :min="0" :max="100000000" :controls="false" />
+              </label>
+              <label class="editor-heat-metric">
+                <span>收藏</span>
+                <el-input-number v-model="form.favoriteCount" :min="0" :max="100000000" :controls="false" />
+              </label>
+              <label class="editor-heat-metric">
+                <span>使用</span>
+                <el-input-number v-model="form.useCount" :min="0" :max="100000000" :controls="false" />
+              </label>
+            </div>
           </div>
         </section>
 
         <div class="editor-work-layout">
+          <aside class="editor-options-panel">
+            <section class="editor-setting-card editor-cover-card" :class="{ 'has-image': Boolean(previewUrl) }">
+              <div class="image-picker">
+                <button
+                  v-if="previewUrl"
+                  type="button"
+                  class="image-picker__preview"
+                  aria-label="全屏预览封面"
+                  @click="openCoverPreview"
+                >
+                  <img :src="previewUrl" alt="提示词封面预览" />
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  class="image-picker__empty"
+                  @click="triggerCoverPick"
+                >
+                  <el-icon :size="22"><Picture /></el-icon>
+                  <strong>点击上传封面</strong>
+                  <small>PNG / JPG / WebP · 8MB</small>
+                </button>
+                <button
+                  v-if="previewUrl"
+                  type="button"
+                  class="image-picker__replace"
+                  @click.stop="triggerCoverPick"
+                >
+                  更换图片
+                </button>
+                <input
+                  ref="coverInputRef"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  @change="pickImage"
+                />
+              </div>
+            </section>
+          </aside>
+
           <section class="editor-prompt-panel editor-surface-card">
-            <div class="editor-section-head">
-              <div><strong>提示词内容</strong><span>描述主体、构图、风格与细节要求</span></div>
-              <em>最多 8000 字</em>
-            </div>
             <el-form-item class="prompt-body-field">
               <el-input
                 v-model="form.prompt"
                 type="textarea"
                 maxlength="8000"
                 show-word-limit
-                placeholder="输入完整提示词内容…"
+                placeholder="描述主体、构图、风格与细节要求…"
               />
             </el-form-item>
           </section>
-
-          <aside class="editor-options-panel">
-            <section class="editor-setting-card editor-publish-card">
-              <div class="editor-section-head is-compact">
-                <div><strong>发布设置</strong><span>决定投放位置和用户端可见性</span></div>
-              </div>
-              <el-form-item label="投放功能">
-                <el-select v-model="form.taskType" placeholder="选择投放功能" style="width: 100%">
-                  <el-option
-                    v-for="type in TASK_TYPES"
-                    :key="type"
-                    :label="taskTypeLabel(type)"
-                    :value="type"
-                  />
-                </el-select>
-              </el-form-item>
-              <div class="editor-visibility-row">
-                <span><strong>用户端展示</strong><small>{{ form.active ? '当前用户可以看到并使用' : '仅后台保留，用户端隐藏' }}</small></span>
-                <el-switch v-model="form.active" inline-prompt active-text="开" inactive-text="关" />
-              </div>
-            </section>
-
-            <section class="editor-setting-card editor-cover-card">
-              <div class="editor-section-head is-compact">
-                <div><strong>封面图片</strong><span>建议使用清晰、能代表效果的图片</span></div>
-                <em>PNG / JPG / WebP · 8MB</em>
-              </div>
-              <label class="image-picker">
-                <img v-if="previewUrl" :src="previewUrl" alt="提示词封面预览" />
-                <span v-else>
-                  <el-icon :size="22"><Picture /></el-icon>
-                  <strong>点击上传封面</strong>
-                  <small>PNG / JPG / WebP</small>
-                </span>
-                <em v-if="previewUrl">更换图片</em>
-                <input type="file" accept="image/png,image/jpeg,image/webp" @change="pickImage" />
-              </label>
-            </section>
-
-            <section class="editor-setting-card editor-heat-card">
-              <div class="editor-section-head is-compact">
-                <div><strong>冷启动热度</strong><span>可选；真实用户行为会在此基础上累计</span></div>
-              </div>
-              <div class="editor-heat-fields">
-                <label><span>点赞</span><el-input-number v-model="form.likeCount" :min="0" :max="100000000" controls-position="right" /></label>
-                <label><span>收藏</span><el-input-number v-model="form.favoriteCount" :min="0" :max="100000000" controls-position="right" /></label>
-                <label><span>使用</span><el-input-number v-model="form.useCount" :min="0" :max="100000000" controls-position="right" /></label>
-              </div>
-              <div class="editor-sort-note">
-                <el-icon><Rank /></el-icon>
-                <span>展示顺序请在保存后使用卡片右上角“调序”设置</span>
-              </div>
-            </section>
-          </aside>
         </div>
       </el-form>
-      <template #footer>
-        <div class="editor-dialog-footer">
-          <span>{{ pendingImage ? '已选择新封面，保存时一并上传' : '所有修改将在保存后生效' }}</span>
-          <div>
-            <el-button @click="editorOpen = false">取消</el-button>
-            <el-button type="primary" :loading="saving" @click="save">保存提示词</el-button>
-          </div>
-        </div>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-drawer v-model="sourcesDrawerOpen" title="提示词数据源" size="560px" class="sources-drawer">
-      <div class="sources-panel">
-        <div class="sources-panel__head">
+    <el-image-viewer
+      v-if="coverPreviewOpen && previewUrl"
+      :url-list="[previewUrl]"
+      teleported
+      @close="coverPreviewOpen = false"
+    />
+
+    <el-drawer
+      v-model="sourcesDrawerOpen"
+      size="560px"
+      append-to-body
+      class="library-drawer sources-drawer"
+    >
+      <template #header>
+        <div class="library-drawer__head">
+          <span class="library-drawer__mark"><el-icon><Link /></el-icon></span>
           <div>
-            <strong>外部数据源</strong>
-            <span>同步 JSON / Markdown / HTML 远程源，导入词条自动更新</span>
+            <strong>提示词数据源</strong>
+            <small>同步 JSON / Markdown / HTML 远程源</small>
           </div>
           <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
         </div>
-
+      </template>
+      <div class="sources-panel">
         <div v-loading="sourcesLoading" class="source-list">
           <article
             v-for="source in sources"
@@ -1791,8 +1754,13 @@ onBeforeUnmount(() => {
               />
             </header>
 
-            <button class="source-card__url" type="button" title="点击复制源地址" @click="copySourceUrl(source)">
-              <span>{{ source.sourceUrl }}</span>
+            <button
+              class="source-card__url"
+              type="button"
+              title="点击复制源地址"
+              @click="copySourceUrl(source)"
+            >
+              <span>{{ sourceUrlOf(source) || '未填写源地址' }}</span>
               <el-icon><CopyDocument /></el-icon>
             </button>
 
@@ -1843,20 +1811,16 @@ onBeforeUnmount(() => {
       </div>
     </el-drawer>
 
-    <el-dialog
+    <AdminDialog
       v-model="sourceEditorOpen"
       :title="editingSourceId ? '编辑数据源' : '新建数据源'"
+      subtitle="同步只影响该源导入的词条，不会改动手工创建的提示词"
+      :icon="Link"
       width="560px"
-      destroy-on-close
-      class="prompt-editor-dialog"
+      confirm-text="保存数据源"
+      :confirm-loading="sourceSaving"
+      @confirm="saveSource"
     >
-      <div class="dialog-intro">
-        <span><el-icon :size="18"><Link /></el-icon></span>
-        <div>
-          <strong>提示词数据源</strong>
-          <small>同步只影响该源导入的词条，不会改动手工创建的提示词。</small>
-        </div>
-      </div>
       <el-form label-position="top" class="editor-form">
         <div class="form-grid">
           <el-form-item label="名称"><el-input v-model="sourceForm.name" maxlength="100" /></el-form-item>
@@ -1908,11 +1872,7 @@ onBeforeUnmount(() => {
           </el-form-item>
         </div>
       </el-form>
-      <template #footer>
-        <el-button @click="sourceEditorOpen = false">取消</el-button>
-        <el-button type="primary" :loading="sourceSaving" @click="saveSource">保存数据源</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
@@ -1928,153 +1888,80 @@ onBeforeUnmount(() => {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
-  padding: 24px 28px;
-  background:
-    radial-gradient(circle at 88% 4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
-    var(--bg);
+  padding: 16px 18px;
+  background: var(--bg);
 }
 
-.library-header {
-  position: relative;
-  z-index: 4;
-  display: grid;
-  gap: 11px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.library-header__top {
+.library-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.library-header__copy {
-  display: grid;
-  gap: 2px;
   min-width: 0;
-
-  h2 {
-    margin: 0;
-    color: var(--el-text-color-primary);
-    font-size: 18px;
-    font-weight: 760;
-    line-height: 1.3;
-  }
-
-  p {
-    margin: 0;
-    color: var(--library-muted);
-    font-size: 12px;
-    line-height: 1.45;
-  }
 }
 
-.library-eyebrow {
-  color: var(--library-accent);
-  font-size: 10px;
-  font-weight: 780;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.library-header__actions {
+.library-toolbar__filters {
   display: flex;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-
-.library-header__controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 240px);
-  align-items: center;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--library-border);
-}
-
-.library-event-status {
-  display: grid;
   min-width: 0;
-  min-height: 38px;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 4px 9px;
-  border: 1px solid var(--library-border);
-  border-radius: 9px;
-  background: var(--el-fill-color-lighter);
-  transition:
-    border-color 0.16s ease,
-    background-color 0.16s ease;
+}
 
-  > .el-icon {
-    display: grid;
-    width: 28px;
-    height: 28px;
-    place-items: center;
-    border-radius: 7px;
-    color: var(--accent-ink);
-    background: var(--accent-soft);
+.prompt-search {
+  width: min(260px, 100%);
+  flex: 1 1 180px;
+  max-width: 280px;
+}
+
+.toolbar-select {
+  width: 132px;
+  flex: 0 0 auto;
+
+  &.is-short {
+    width: 118px;
   }
 
-  > span {
-    display: grid;
-    min-width: 0;
-    gap: 1px;
-  }
-
-  strong,
-  small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    color: var(--el-text-color-primary);
-    font-size: 12px;
-  }
-
-  small {
-    color: var(--library-muted);
-    font-size: 10px;
-  }
-
-  &.is-dragging {
-    border-color: color-mix(in srgb, var(--accent) 46%, var(--library-border));
-    background: var(--accent-soft);
-  }
-
-  &.is-selecting {
-    border-color: color-mix(in srgb, var(--accent) 34%, var(--library-border));
-    background: var(--accent-soft);
-  }
-
-  &.is-saving > .el-icon {
-    animation: prompt-status-pulse 0.9s ease-in-out infinite alternate;
+  &.is-tags {
+    width: min(220px, 100%);
+    flex: 1 1 160px;
+    max-width: 260px;
   }
 }
 
-.library-workspace {
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--library-border);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+.library-toolbar__actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.library-toolbar__buttons {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+
+  :deep(.el-button) {
+    margin-left: 0 !important;
+  }
+
+  :deep(.el-button + .el-button) {
+    margin-left: 0 !important;
+  }
 }
 
 .items-workspace {
   display: grid;
   height: 100%;
   min-height: 0;
-  grid-template-columns: 210px minmax(0, 1fr);
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
 }
 
 .category-rail {
@@ -2082,47 +1969,38 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 18px 12px;
-  border-right: 1px solid var(--library-border);
-  background: color-mix(in srgb, var(--el-fill-color-lighter) 65%, transparent);
+  padding: 14px 10px;
+  border: 1px solid var(--library-border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 
   &.is-receiving-drop {
-    background: color-mix(in srgb, var(--accent) 5%, var(--el-fill-color-lighter));
+    background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-2));
 
     > button:not(.is-drop-disabled) {
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--category-color) 24%, transparent);
     }
   }
 
-  &__title {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 12px 13px;
-    color: var(--library-muted);
-    font-size: 12px;
-
-    small {
-      padding: 1px 7px;
-      border-radius: 999px;
-      background: var(--el-fill-color);
-    }
-  }
-
   > button {
     display: grid;
     width: 100%;
-    grid-template-columns: 30px 1fr;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
     margin: 2px 0;
-    padding: 9px 10px;
+    padding: 8px 10px;
     border: 0;
-    border-radius: 9px;
-    color: var(--el-text-color-regular);
+    border-radius: 10px;
+    color: var(--ink-2);
     text-align: left;
     background: transparent;
     cursor: pointer;
-    transition: 0.18s ease;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease,
+      box-shadow 0.15s ease;
 
     i {
       display: grid;
@@ -2132,26 +2010,48 @@ onBeforeUnmount(() => {
       border-radius: 8px;
       color: var(--category-color);
       font-style: normal;
-      background: color-mix(in srgb, var(--category-color) 11%, transparent);
+      background: color-mix(in srgb, var(--category-color) 12%, transparent);
+    }
+
+    > span {
+      min-width: 0;
+      overflow: hidden;
+      font-size: 13px;
+      font-weight: 550;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    > em {
+      color: var(--ink-3);
+      font-size: 11px;
+      font-style: normal;
+      font-weight: 700;
     }
 
     &:hover {
-      background: var(--surface-3);
-      transform: translateX(2px);
+      background: var(--surface-2);
     }
 
     &.is-active {
       color: var(--accent-ink);
-      font-weight: 600;
       background: var(--accent-soft);
+      box-shadow: inset 3px 0 0 var(--accent-ink);
+
+      i {
+        color: var(--accent-ink);
+        background: color-mix(in srgb, var(--accent-ink) 14%, transparent);
+      }
+
+      > em {
+        color: var(--accent-ink);
+      }
     }
 
     &.is-drop-target {
-      border-color: color-mix(in srgb, var(--category-color) 55%, transparent);
-      color: var(--el-text-color-primary);
+      color: var(--ink);
       background: color-mix(in srgb, var(--category-color) 14%, var(--surface));
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--category-color) 44%, transparent);
-      transform: translateX(3px);
     }
 
     &.is-drop-disabled {
@@ -2165,8 +2065,12 @@ onBeforeUnmount(() => {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
+  border: 1px solid var(--library-border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .prompt-content__scroll {
@@ -2177,33 +2081,20 @@ onBeforeUnmount(() => {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--accent) 28%, transparent) transparent;
-  padding: 18px;
+  padding: 14px 14px 12px;
 }
 
-.prompt-library-pagination {
-  padding: 4px 18px;
-  border-top: 1px solid var(--library-border);
-  background: var(--surface-2);
+.prompt-load-status {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  padding: 4px 0 8px;
+  color: var(--library-muted);
+  font-size: 12px;
 }
 
-.prompt-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.prompt-search {
-  flex: 1 1 300px;
-  min-width: 220px;
-}
-
-.toolbar-select {
-  width: 150px;
-
-  &.is-short {
-    width: 128px;
-  }
+.prompt-load-status.is-loading {
+  color: var(--accent-ink);
 }
 
 .prompt-bulk-bar {
@@ -2263,94 +2154,51 @@ onBeforeUnmount(() => {
 
 .prompt-grid {
   position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
   min-height: 320px;
 }
 
-.prompt-grid__column {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 0;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.prompt-skeleton-card {
+.prompt-grid__loading {
   display: grid;
-  gap: 9px;
-  padding: 10px;
-  overflow: hidden;
-  border: 1px solid var(--library-border);
-  border-radius: 16px;
-  background: var(--surface);
+  place-items: center;
+  min-height: 240px;
+  color: var(--library-muted);
+  font-size: 13px;
 }
 
-.prompt-skeleton-card__cover,
-.prompt-skeleton-card__line {
-  display: block;
-  border-radius: 8px;
-  background: linear-gradient(
-    100deg,
-    var(--el-fill-color-light) 20%,
-    var(--el-fill-color) 42%,
-    var(--el-fill-color-light) 64%
-  );
-  background-size: 220% 100%;
-  animation: prompt-skeleton-shimmer 1.35s ease-in-out infinite;
-}
-
-.prompt-skeleton-card__cover {
-  height: 168px;
-
-  &.is-variant-2 {
-    height: 204px;
-  }
-
-  &.is-variant-3 {
-    height: 148px;
-  }
-}
-
-.prompt-skeleton-card__line {
+.prompt-masonry {
+  position: relative;
   width: 100%;
-  height: 9px;
+}
 
-  &.is-title {
-    width: 72%;
-    height: 12px;
-  }
-
-  &.is-short {
-    width: 46%;
-  }
+.prompt-masonry__item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
 }
 
 .prompt-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   min-width: 0;
-  gap: 10px;
-  padding: 10px;
+  gap: 8px;
+  padding: 8px;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--library-border);
-  border-radius: 16px;
+  border-radius: 14px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  content-visibility: auto;
-  contain-intrinsic-size: auto 420px;
+  box-shadow: none;
+  box-sizing: border-box;
   transition:
-    transform 0.22s ease,
-    box-shadow 0.22s ease,
-    border-color 0.22s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease,
     opacity 0.2s ease;
 
   &:hover {
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-    box-shadow: var(--shadow-lg);
-    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--library-border));
+    box-shadow: var(--shadow-sm);
   }
 
   &.is-disabled {
@@ -2365,7 +2213,6 @@ onBeforeUnmount(() => {
     border-color: var(--accent);
     opacity: 0.36;
     box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 20%, transparent);
-    transform: scale(0.975) rotate(-0.4deg);
     user-select: none;
   }
 
@@ -2375,25 +2222,19 @@ onBeforeUnmount(() => {
   }
 
   &.is-selected {
-    border-color: var(--accent);
-    box-shadow:
-      0 0 0 1px var(--accent),
-      0 12px 30px color-mix(in srgb, var(--accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--library-border));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
   }
 }
 
 .prompt-cover {
   position: relative;
   width: 100%;
-  min-height: 164px;
+  min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--el-fill-color-light), var(--el-fill-color));
+  background: var(--surface-2);
   cursor: pointer;
-
-  &.has-image {
-    min-height: 0;
-  }
 
   img {
     position: absolute;
@@ -2401,25 +2242,22 @@ onBeforeUnmount(() => {
     display: block;
     width: 100%;
     height: 100%;
-    min-height: 0;
     object-fit: contain;
-    background: var(--el-fill-color-light);
-    transition:
-      transform 0.35s ease,
-      filter 0.25s ease;
+    background: var(--surface-2);
+    transition: transform 0.35s ease;
   }
 
   &:hover img {
-    filter: brightness(0.82);
-    transform: scale(1.025);
+    transform: scale(1.02);
   }
-}
 
-.prompt-cover__media-placeholder {
-  position: absolute;
-  inset: 0;
-  display: block;
-  background: var(--el-fill-color-light);
+  &:hover {
+    .prompt-cover__tags,
+    .prompt-cover__stats,
+    .prompt-cover__time {
+      opacity: 1;
+    }
+  }
 }
 
 .prompt-grid.is-scrolling {
@@ -2430,57 +2268,29 @@ onBeforeUnmount(() => {
   }
 
   .prompt-cover img {
-    filter: none;
     transform: none;
     transition: none;
-  }
-
-  .category-badge,
-  .prompt-card__select,
-  .prompt-cover__specs span {
-    backdrop-filter: none;
   }
 }
 
 .prompt-cover__empty {
   display: grid;
+  height: 100%;
   min-height: 164px;
   place-items: center;
   align-content: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--library-muted);
-  background-image:
-    linear-gradient(45deg, color-mix(in srgb, var(--accent) 4%, transparent) 25%, transparent 25%),
-    linear-gradient(-45deg, color-mix(in srgb, var(--accent) 4%, transparent) 25%, transparent 25%);
-  background-size: 24px 24px;
+  background: var(--surface-2);
 
   .el-icon {
-    font-size: 28px;
-    color: var(--accent-ink);
+    font-size: 26px;
+    color: var(--ink-3);
   }
 
   span {
-    font-size: 13px;
+    font-size: 12px;
   }
-
-  small {
-    font-size: 11px;
-    opacity: 0.7;
-  }
-}
-
-.category-badge {
-  position: absolute;
-  top: 11px;
-  left: 11px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  color: #fff;
-  font-size: 11px;
-  line-height: 1;
-  background: color-mix(in srgb, var(--category-color) 88%, #111827);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--category-color) 25%, transparent);
-  backdrop-filter: blur(10px);
 }
 
 .prompt-card__select {
@@ -2513,111 +2323,58 @@ onBeforeUnmount(() => {
   top: 48px;
 }
 
-.prompt-cover__overlay {
-  position: absolute;
-  inset: auto 0 0;
-  z-index: 2;
-  display: grid;
-  gap: 7px;
-  padding: 44px 11px 10px;
-  color: #fff;
-  text-align: left;
-  background: linear-gradient(to bottom, transparent, rgb(5 5 10 / 42%) 30%, rgb(5 5 10 / 92%) 100%);
-  pointer-events: none;
-}
-
-.prompt-cover__prompt {
-  display: -webkit-box;
-  overflow: hidden;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.55;
-  text-shadow: 0 1px 8px rgb(0 0 0 / 45%);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.prompt-cover__specs {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  color: rgb(255 255 255 / 78%);
-  font-size: 9px;
-
-  span {
-    display: inline-flex;
-    max-width: 100%;
-    min-height: 22px;
-    align-items: center;
-    gap: 4px;
-    padding: 0 7px;
-    overflow: hidden;
-    border: 1px solid rgb(255 255 255 / 12%);
-    border-radius: 999px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    background: rgb(15 15 22 / 56%);
-    backdrop-filter: blur(10px);
-  }
-
-  .el-icon {
-    font-size: 10px;
-  }
-}
-
 .prompt-card__body {
   display: grid;
-  gap: 9px;
+  gap: 7px;
   min-width: 0;
-  padding: 0 2px 1px;
+  padding: 2px 2px 1px;
 
   header {
     display: flex;
     min-width: 0;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-
-    > div {
-      display: grid;
-      min-width: 0;
-      gap: 3px;
-    }
-
-    strong {
-      overflow: hidden;
-      font-size: 13px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    small {
-      overflow: hidden;
-      color: var(--library-muted);
-      font-size: 10px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-  }
-
-  footer {
-    display: flex;
-    min-height: 30px;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
-    padding-top: 8px;
-    border-top: 1px solid var(--library-border);
+    gap: 8px;
+  }
+}
 
-    > span {
-      overflow: hidden;
-      color: var(--library-muted);
-      font-size: 9px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+.prompt-card__name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-card__header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.prompt-copy-btn {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--library-border);
+  border-radius: 7px;
+  color: var(--library-muted);
+  background: var(--el-fill-color-lighter);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--library-border));
+    color: var(--accent-ink);
+    background: var(--accent-soft);
   }
 }
 
@@ -2629,62 +2386,144 @@ onBeforeUnmount(() => {
 
 .prompt-card__actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 5px;
-
-  .el-button {
-    width: 27px;
-    height: 27px;
-    min-height: 27px;
-    padding: 0;
-  }
+  gap: 0;
 
   .el-button + .el-button {
     margin-left: 0;
   }
-}
 
-.prompt-card__header-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-}
-
-.prompt-quick-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 7px;
-
-  label {
-    display: grid;
-    min-width: 0;
-    gap: 4px;
-
-    > span {
-      color: var(--library-muted);
-      font-size: 9px;
-      font-weight: 650;
-    }
+  :deep(.el-button) {
+    height: 28px;
+    padding: 0 4px;
+    font-size: 12px;
   }
+}
+
+.prompt-card__toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
 
   :deep(.el-select) {
     width: 100%;
+    min-width: 0;
   }
 
   :deep(.el-select__wrapper) {
-    min-height: 28px;
-    padding: 3px 8px;
-    border-radius: 7px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border-radius: 8px;
     box-shadow: 0 0 0 1px var(--library-border) inset;
+    background: var(--surface-2);
   }
 
   :deep(.el-select__selected-item) {
     overflow: hidden;
-    font-size: 10px;
+    font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.prompt-cover__tags {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 72px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+
+  > span {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    padding: 4px 9px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 999px;
+    color: #1c1917;
+    background: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.prompt-cover__time {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1c1917;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.prompt-cover__stats {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: calc(100% - 88px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+
+  > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+
+    .el-icon {
+      font-size: 11px;
+    }
+
+    &.is-like {
+      background: #eab308;
+      color: #422006;
+    }
+
+    &.is-favorite {
+      background: #ef4444;
+    }
+
+    &.is-use {
+      background: #3b82f6;
+    }
+  }
+}
+
+.prompt-card.is-selection-mode .prompt-cover__tags {
+  top: 46px;
 }
 
 .prompt-drag-handle {
@@ -2736,28 +2575,8 @@ onBeforeUnmount(() => {
 
 .page-assignments {
   display: flex;
-  min-height: 23px;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-
-  span,
-  em {
-    padding: 3px 7px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-style: normal;
-  }
-
-  span {
-    color: var(--info);
-    background: var(--info-soft);
-  }
-
-  em {
-    color: var(--accent-ink);
-    background: var(--accent-soft);
-  }
+  gap: 4px;
 }
 
 .prompt-drag-preview {
@@ -2900,14 +2719,107 @@ onBeforeUnmount(() => {
   }
 }
 
+.editor-form--wide {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
 .editor-meta-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.85fr) minmax(320px, 1.1fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(200px, 0.9fr) minmax(220px, 1fr) minmax(140px, 0.7fr);
   gap: 12px;
 
   .el-form-item {
     min-width: 0;
     margin-bottom: 0;
+  }
+}
+
+.editor-publish-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+
+  .el-form-item {
+    min-width: 0;
+    margin-bottom: 0;
+  }
+
+  .el-switch {
+    height: 32px;
+  }
+}
+
+.editor-publish-field :deep(.el-form-item__content) {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+}
+
+.editor-heat-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.editor-heat-metric {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--library-border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: text;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+
+  > span {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-weight: 550;
+    white-space: nowrap;
+  }
+
+  .el-input-number {
+    width: 100%;
+  }
+
+  :deep(.el-input-number .el-input__wrapper) {
+    padding: 0;
+    box-shadow: none !important;
+    background: transparent;
+  }
+
+  :deep(.el-input-number .el-input__inner) {
+    height: 34px;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--library-border));
+    background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface-2));
+  }
+
+  &:focus-within {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--library-border));
+    background: var(--surface);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 70%, transparent);
   }
 }
 
@@ -2924,44 +2836,11 @@ onBeforeUnmount(() => {
   padding: 13px 14px 14px;
 }
 
-.editor-section-head {
-  display: flex;
-  min-width: 0;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.editor-section-head > div {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.editor-section-head strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.editor-section-head span,
-.editor-section-head em {
-  color: var(--ink-3);
-  font-size: 10px;
-  font-style: normal;
-  line-height: 1.4;
-}
-
-.editor-section-head.is-compact {
-  margin-bottom: 10px;
-}
-
 .editor-work-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(340px, 0.72fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
   padding-top: 12px;
 }
 
@@ -2971,17 +2850,31 @@ onBeforeUnmount(() => {
 }
 
 .editor-options-panel {
-  display: grid;
-  gap: 10px;
-
-  > .el-form-item {
-    margin-bottom: 0;
-  }
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  min-height: 100%;
 }
 
 .editor-prompt-panel,
 .editor-setting-card {
   padding: 13px 14px;
+}
+
+.editor-cover-card {
+  display: flex;
+  flex: 0 0 auto;
+  width: 320px;
+  max-width: min(380px, 36vw);
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+
+  &.has-image {
+    width: fit-content;
+  }
 }
 
 .editor-setting-card .el-form-item {
@@ -3000,31 +2893,6 @@ onBeforeUnmount(() => {
   }
 }
 
-.editor-visibility-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 11px;
-  padding-top: 11px;
-  border-top: 1px solid var(--library-border);
-}
-
-.editor-visibility-row > span {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.editor-visibility-row strong {
-  color: var(--ink-2);
-  font-size: 12px;
-}
-
-.editor-visibility-row small {
-  color: var(--ink-3);
-  font-size: 9px;
-}
 
 .editor-options-lower {
   display: grid;
@@ -3085,6 +2953,95 @@ onBeforeUnmount(() => {
   }
 }
 
+.editor-cover-card .image-picker {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  min-height: 0;
+  border: 0;
+  border-radius: 11px;
+  background: var(--surface-2);
+  cursor: default;
+}
+
+.editor-cover-card.has-image .image-picker {
+  display: block;
+  width: fit-content;
+  max-width: min(380px, 36vw);
+  height: auto;
+  aspect-ratio: auto;
+  line-height: 0;
+}
+
+.editor-cover-card .image-picker__preview {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+
+  img {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: min(380px, 36vw);
+    max-height: 320px;
+    object-fit: contain;
+    background: transparent;
+  }
+}
+
+.editor-cover-card .image-picker__empty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--library-muted);
+  background: transparent;
+  cursor: pointer;
+
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 12px;
+  }
+
+  small {
+    font-size: 10px;
+  }
+}
+
+.editor-cover-card .image-picker__replace {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 1;
+  margin: 0;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  font-style: normal;
+  line-height: 1;
+  background: rgb(15 23 42 / 78%);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+
+  &:hover {
+    background: rgb(15 23 42 / 90%);
+    transform: translateY(-1px);
+  }
+}
+
 .image-picker {
   position: relative;
   display: grid;
@@ -3095,7 +3052,6 @@ onBeforeUnmount(() => {
   border: 1px dashed var(--el-border-color);
   border-radius: 12px;
   background: var(--el-fill-color-lighter);
-  cursor: pointer;
 
   img {
     width: 100%;
@@ -3148,18 +3104,19 @@ onBeforeUnmount(() => {
 /* 词库卡片：远程源词条角标（叠在封面图上，跟随主题的 accent 令牌） */
 .sync-badge {
   position: absolute;
-  top: 11px;
-  right: 11px;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 5px 8px;
-  border-radius: 999px;
+  padding: 4px 7px;
+  border-radius: 6px;
   color: var(--accent-ink);
-  font-size: 11px;
-  line-height: 1;
-  background: color-mix(in srgb, var(--accent-soft) 92%, transparent);
-  backdrop-filter: blur(10px);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--accent-soft) 92%, var(--surface));
 
   .el-icon {
     font-size: 10px;
@@ -3271,10 +3228,11 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   padding: 7px 10px;
   border: 0;
   border-radius: 8px;
-  color: var(--library-muted);
+  color: var(--ink-2);
   font-size: 11px;
   text-align: left;
   background: var(--surface-2);
@@ -3282,6 +3240,8 @@ onBeforeUnmount(() => {
   transition: 0.15s ease;
 
   span {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3290,8 +3250,9 @@ onBeforeUnmount(() => {
   .el-icon {
     flex-shrink: 0;
     font-size: 12px;
-    opacity: 0;
-    transition: opacity 0.15s ease;
+    color: var(--ink-3);
+    opacity: 0.55;
+    transition: opacity 0.15s ease, color 0.15s ease;
   }
 
   &:hover {
@@ -3299,6 +3260,7 @@ onBeforeUnmount(() => {
     background: var(--accent-soft);
 
     .el-icon {
+      color: var(--accent-ink);
       opacity: 1;
     }
   }
@@ -3389,16 +3351,18 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1500px) {
-  .library-header__controls {
-    grid-template-columns: minmax(0, 1fr) 210px;
+  .library-toolbar {
+    flex-wrap: wrap;
   }
 
-  .prompt-toolbar {
+  .library-toolbar__filters {
     flex-wrap: wrap;
+    flex-basis: 100%;
   }
 
   .prompt-search {
     flex-basis: 100%;
+    max-width: none;
   }
 }
 
@@ -3416,12 +3380,31 @@ onBeforeUnmount(() => {
   }
 
   .editor-tags-field {
-    grid-column: 1 / -1;
+    grid-column: 1;
+  }
+
+  .editor-task-field {
+    grid-column: 2;
+  }
+
+  .editor-publish-row {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .editor-work-layout {
-    grid-template-columns: minmax(0, 1.25fr) minmax(330px, 0.75fr);
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 12px;
+  }
+
+  .editor-cover-card {
+    width: 260px;
+    max-width: min(300px, 42vw);
+  }
+
+  .editor-cover-card.has-image .image-picker,
+  .editor-cover-card.has-image .image-picker__preview img {
+    max-width: min(300px, 42vw);
+    max-height: 260px;
   }
 
   .editor-options-panel {
@@ -3431,6 +3414,7 @@ onBeforeUnmount(() => {
   .items-workspace {
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .category-rail {
@@ -3438,8 +3422,6 @@ onBeforeUnmount(() => {
     min-height: auto;
     overflow-x: auto;
     overflow-y: hidden;
-    border-right: 0;
-    border-bottom: 1px solid var(--library-border);
 
     > button {
       width: auto;
@@ -3447,9 +3429,6 @@ onBeforeUnmount(() => {
       flex: 0 0 auto;
     }
 
-    &__title {
-      display: none;
-    }
   }
 }
 
@@ -3472,16 +3451,8 @@ onBeforeUnmount(() => {
     padding: 10px;
   }
 
-  .prompt-content {
-    grid-template-rows: minmax(0, 1fr) auto;
-  }
-
   .prompt-content__scroll {
     padding: 12px;
-  }
-
-  .prompt-library-pagination {
-    padding: 6px 12px;
   }
 
   .toolbar-select,
@@ -3489,21 +3460,9 @@ onBeforeUnmount(() => {
     width: calc(50% - 5px);
   }
 
-  .library-header__top {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .library-header__actions {
+  .library-toolbar__actions {
     flex-wrap: wrap;
-  }
-
-  .library-header__controls {
-    grid-template-columns: 1fr;
-  }
-
-  .library-event-status {
-    min-width: 0;
+    width: 100%;
   }
 
   .prompt-bulk-bar {
@@ -3521,13 +3480,16 @@ onBeforeUnmount(() => {
   }
 
   .editor-meta-grid,
+  .editor-publish-row,
+  .editor-heat-metrics,
   .editor-form .form-grid,
   .editor-options-lower,
   .form-settings {
     grid-template-columns: 1fr;
   }
 
-  .editor-tags-field {
+  .editor-tags-field,
+  .editor-task-field {
     grid-column: auto;
   }
 
@@ -3555,6 +3517,67 @@ onBeforeUnmount(() => {
 
 <style lang="scss">
 /* 非 scoped：抽屉面板与 MessageBox 内容渲染在组件作用域之外 */
+.library-drawer.el-drawer {
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.library-drawer .el-drawer__header {
+  margin-bottom: 0;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.library-drawer .el-drawer__body {
+  padding: 16px 18px;
+  background: var(--surface);
+}
+
+.library-drawer.prompt-sort-drawer .el-drawer__body {
+  padding: 0;
+  overflow: hidden;
+}
+
+.library-drawer__head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding-right: 8px;
+}
+
+.library-drawer__mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.library-drawer__head > div {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+.library-drawer__head strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.library-drawer__head small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .sources-drawer {
   max-width: 94vw;
 }
@@ -3667,11 +3690,8 @@ onBeforeUnmount(() => {
   display: flex;
   width: 100%;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-}
-
-.prompt-quick-sort-footer > span {
-  flex: 1;
 }
 
 .prompt-sort-drawer {
@@ -3688,33 +3708,6 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 0;
   flex-direction: column;
-}
-
-.prompt-sort-summary {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.prompt-sort-summary strong,
-.prompt-sort-summary span {
-  display: block;
-}
-
-.prompt-sort-summary strong {
-  color: var(--ink-1);
-  font-size: 14px;
-}
-
-.prompt-sort-summary span {
-  margin-top: 3px;
-  color: var(--ink-3);
-  font-size: 11px;
 }
 
 .prompt-sort-filters {
@@ -4017,39 +4010,6 @@ onBeforeUnmount(() => {
   margin-top: 2px;
   color: var(--ink-3);
   font-size: 10px;
-}
-
-.editor-heat-fields {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.editor-heat-fields label {
-  display: grid;
-  gap: 5px;
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.editor-heat-fields .el-input-number {
-  width: 100%;
-}
-
-.editor-sort-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 9px;
-  padding-top: 9px;
-  border-top: 1px solid var(--library-border);
-  color: var(--ink-3);
-  font-size: 9px;
-}
-
-.editor-sort-note .el-icon {
-  flex: 0 0 auto;
-  color: var(--accent-ink);
 }
 
 .source-delete-confirm p {

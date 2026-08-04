@@ -222,6 +222,33 @@ async function resolveInputKeyForUrl(url) {
   }
 }
 
+/** 使用后台配置的专用图片工具移除背景，费用按工具模型独立结算。 */
+export async function removeImageBackground(sourceUrl, publicModelKey, options = {}) {
+  const inputKey = await resolveInputKeyForUrl(sourceUrl)
+  if (!inputKey) throw createInputImageLostError()
+  const modelKey = String(publicModelKey || '').trim()
+  if (!modelKey) throw new Error('背景移除工具暂不可用')
+  const task = await createTask({
+    type: 'background_remove',
+    prompt: '移除图片背景',
+    params: {
+      publicModelKey: modelKey,
+      sourceUrl: String(sourceUrl || '').trim(),
+      _kind: 'wallpaper-background-remove',
+    },
+    inputKeys: [inputKey],
+    count: 1,
+    idempotencyKey: String(options.idempotencyKey || '').trim() || crypto.randomUUID(),
+  })
+  invalidateStudioCreditSnapshot()
+  const completed = await waitForTask(task.id)
+  return {
+    task: completed,
+    job: taskToLegacyJob(completed),
+    result: legacyResultFromTask(completed),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // task → 旧 job 形状映射
 // ---------------------------------------------------------------------------

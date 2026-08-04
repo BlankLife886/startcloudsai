@@ -5,6 +5,8 @@ const props = defineProps({
   show: { type: Boolean, default: false },
   cost: { type: Object, default: null },
   light: { type: Boolean, default: false },
+  elevated: { type: Boolean, default: false },
+  hidePreference: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
@@ -79,125 +81,130 @@ const breakdownLabel = computed(() => {
 </script>
 
 <template>
-  <div
-    v-if="show"
-    class="ai-cost-confirm-layer"
-    :class="{ 'is-light': light }"
-    @click.self="emit('cancel')"
-  >
-    <section
-      ref="panelRef"
-      class="ai-cost-confirm-panel"
-      :class="{ 'is-credits': isCredits }"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="ai-cost-confirm-title"
-      aria-describedby="ai-cost-confirm-summary"
-      tabindex="-1"
-      @keydown.esc="emit('cancel')"
+  <Teleport to="body">
+    <div
+      v-if="show"
+      class="ai-cost-confirm-layer"
+      :class="{ 'is-light': light, 'is-elevated': elevated }"
+      @click.self="emit('cancel')"
     >
-      <header class="ai-cost-confirm-head">
-        <span class="ai-cost-confirm-icon" aria-hidden="true">
-          <i class="bi" :class="isCredits ? 'bi-coin' : 'bi-cash-coin'"></i>
-        </span>
-        <div>
-          <span class="ai-cost-confirm-eyebrow">{{ featureLabel }}</span>
-          <h5 id="ai-cost-confirm-title">
-            {{ isCredits ? '确认生成费用' : '确认本次 AI 费用' }}
-          </h5>
-        </div>
-        <button
-          type="button"
-          class="ai-cost-confirm-close"
-          aria-label="关闭费用确认"
-          title="关闭"
-          @click="emit('cancel')"
-        >
-          <i class="bi bi-x-lg" aria-hidden="true"></i>
-        </button>
-      </header>
-
-      <p id="ai-cost-confirm-summary" class="ai-cost-confirm-summary">
-        {{
-          isCredits
-            ? '提交后先冻结预计费用，任务完成后按实际生成结果结算。'
-            : '请确认预计调用费用后再提交任务。'
-        }}
-      </p>
-
-      <div class="ai-cost-confirm-total">
-        <span>本次预计</span>
-        <strong>{{ totalLabel }}</strong>
-        <small>{{ breakdownLabel }}</small>
-      </div>
-
-      <div v-if="isCredits" class="ai-cost-confirm-balance">
-        <div>
-          <span>当前可用</span>
-          <strong>{{ creditAvailable == null ? '读取中' : formatPoints(creditAvailable) }}</strong>
-        </div>
-        <i class="bi bi-arrow-right" aria-hidden="true"></i>
-        <div :class="{ danger: creditInsufficient }">
-          <span>支付后余额</span>
-          <strong>
-            {{
-              creditAvailable == null
-                ? '待计算'
-                : creditInsufficient
-                  ? '余额不足'
-                  : formatPoints(creditRemaining)
-            }}
-          </strong>
-        </div>
-      </div>
-
-      <div v-else class="ai-cost-confirm-balance">
-        <div>
-          <span>今日已用</span>
-          <strong>${{ Number(cost?.dayCost || 0).toFixed(4) }}</strong>
-        </div>
-        <i class="bi bi-dot" aria-hidden="true"></i>
-        <div>
-          <span>本月已用</span>
-          <strong>${{ Number(cost?.monthCost || 0).toFixed(4) }}</strong>
-        </div>
-      </div>
-
-      <p v-if="isCredits && !hasServerPricing" class="ai-cost-confirm-warn">
-        <i class="bi bi-info-circle" aria-hidden="true"></i>
-        暂时读取不到单价，本次费用以服务端结算为准。
-      </p>
-      <p v-else-if="isCredits && creditInsufficient" class="ai-cost-confirm-warn is-danger">
-        <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
-        钱包余额不足，请充值后再提交任务。
-      </p>
-
-      <footer class="ai-cost-confirm-footer">
-        <RouterLink
-          class="ai-cost-confirm-preference"
-          :to="{ name: 'profile', query: { tab: 'account' }, hash: '#generation-preferences' }"
-          @click="emit('cancel')"
-        >
-          <i class="bi bi-sliders2" aria-hidden="true"></i>
-          不再每次确认
-        </RouterLink>
-        <div class="ai-cost-confirm-actions">
-          <button type="button" class="ai-cost-confirm-btn ghost" @click="emit('cancel')">
-            取消
-          </button>
+      <section
+        ref="panelRef"
+        class="ai-cost-confirm-panel"
+        :class="{ 'is-credits': isCredits }"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-cost-confirm-title"
+        aria-describedby="ai-cost-confirm-summary"
+        tabindex="-1"
+        @keydown.esc.stop.prevent="emit('cancel')"
+      >
+        <header class="ai-cost-confirm-head">
+          <span class="ai-cost-confirm-icon" aria-hidden="true">
+            <i class="bi" :class="isCredits ? 'bi-coin' : 'bi-cash-coin'"></i>
+          </span>
+          <div>
+            <span class="ai-cost-confirm-eyebrow">{{ featureLabel }}</span>
+            <h5 id="ai-cost-confirm-title">
+              {{ isCredits ? '确认生成费用' : '确认本次 AI 费用' }}
+            </h5>
+          </div>
           <button
             type="button"
-            class="ai-cost-confirm-btn primary"
-            :disabled="confirmDisabled"
-            @click="emit('confirm')"
+            class="ai-cost-confirm-close"
+            aria-label="关闭费用确认"
+            title="关闭"
+            @click.stop="emit('cancel')"
           >
-            {{ isCredits ? '确认并生成' : '继续生成' }}
-            <i class="bi bi-arrow-right" aria-hidden="true"></i>
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
           </button>
+        </header>
+
+        <p id="ai-cost-confirm-summary" class="ai-cost-confirm-summary">
+          {{
+            isCredits
+              ? '提交后先冻结预计费用，任务完成后按实际生成结果结算。'
+              : '请确认预计调用费用后再提交任务。'
+          }}
+        </p>
+
+        <div class="ai-cost-confirm-total">
+          <span>本次预计</span>
+          <strong>{{ totalLabel }}</strong>
+          <small>{{ breakdownLabel }}</small>
         </div>
-      </footer>
-    </section>
-  </div>
+
+        <div v-if="isCredits" class="ai-cost-confirm-balance">
+          <div>
+            <span>当前可用</span>
+            <strong>{{
+              creditAvailable == null ? '读取中' : formatPoints(creditAvailable)
+            }}</strong>
+          </div>
+          <i class="bi bi-arrow-right" aria-hidden="true"></i>
+          <div :class="{ danger: creditInsufficient }">
+            <span>支付后余额</span>
+            <strong>
+              {{
+                creditAvailable == null
+                  ? '待计算'
+                  : creditInsufficient
+                    ? '余额不足'
+                    : formatPoints(creditRemaining)
+              }}
+            </strong>
+          </div>
+        </div>
+
+        <div v-else class="ai-cost-confirm-balance">
+          <div>
+            <span>今日已用</span>
+            <strong>${{ Number(cost?.dayCost || 0).toFixed(4) }}</strong>
+          </div>
+          <i class="bi bi-dot" aria-hidden="true"></i>
+          <div>
+            <span>本月已用</span>
+            <strong>${{ Number(cost?.monthCost || 0).toFixed(4) }}</strong>
+          </div>
+        </div>
+
+        <p v-if="isCredits && !hasServerPricing" class="ai-cost-confirm-warn">
+          <i class="bi bi-info-circle" aria-hidden="true"></i>
+          暂时读取不到单价，本次费用以服务端结算为准。
+        </p>
+        <p v-else-if="isCredits && creditInsufficient" class="ai-cost-confirm-warn is-danger">
+          <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+          钱包余额不足，请充值后再提交任务。
+        </p>
+
+        <footer class="ai-cost-confirm-footer" :class="{ 'is-no-preference': hidePreference }">
+          <RouterLink
+            v-if="!hidePreference"
+            class="ai-cost-confirm-preference"
+            :to="{ name: 'profile', query: { tab: 'account' }, hash: '#generation-preferences' }"
+            @click="emit('cancel')"
+          >
+            <i class="bi bi-sliders2" aria-hidden="true"></i>
+            不再每次确认
+          </RouterLink>
+          <div class="ai-cost-confirm-actions">
+            <button type="button" class="ai-cost-confirm-btn ghost" @click.stop="emit('cancel')">
+              取消
+            </button>
+            <button
+              type="button"
+              class="ai-cost-confirm-btn primary"
+              :disabled="confirmDisabled"
+              @click.stop="emit('confirm')"
+            >
+              {{ isCredits ? '确认并生成' : '继续生成' }}
+              <i class="bi bi-arrow-right" aria-hidden="true"></i>
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -210,6 +217,10 @@ const breakdownLabel = computed(() => {
   padding: 20px;
   background: rgba(5, 6, 9, 0.7);
   backdrop-filter: blur(10px) saturate(0.82);
+}
+
+.ai-cost-confirm-layer.is-elevated {
+  z-index: 10100;
 }
 
 .ai-cost-confirm-panel {
@@ -383,6 +394,10 @@ const breakdownLabel = computed(() => {
   justify-content: space-between;
   gap: 14px;
   margin-top: 20px;
+}
+
+.ai-cost-confirm-footer.is-no-preference {
+  justify-content: flex-end;
 }
 
 .ai-cost-confirm-preference {

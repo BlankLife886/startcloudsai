@@ -28,6 +28,7 @@ function writeStoredScheme(scheme) {
  */
 export const useAppearanceStore = defineStore('appearance', () => {
   const scheme = ref(readStoredScheme())
+  const transitionOrigin = ref(null)
   const isDark = computed(() => scheme.value === 'dark')
 
   function applyToDocument() {
@@ -37,7 +38,8 @@ export const useAppearanceStore = defineStore('appearance', () => {
     document.documentElement.dataset.colorScheme = scheme.value
   }
 
-  function setScheme(next) {
+  function setScheme(next, origin = null) {
+    transitionOrigin.value = origin
     scheme.value = next === 'dark' ? 'dark' : 'light'
     writeStoredScheme(scheme.value)
     applyToDocument()
@@ -51,6 +53,7 @@ export const useAppearanceStore = defineStore('appearance', () => {
 
   return {
     scheme,
+    transitionOrigin,
     isDark,
     setScheme,
     toggle,

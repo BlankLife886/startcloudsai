@@ -17,12 +17,13 @@ export interface CommunityWork {
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CollectionTag, Delete, Plus, Rank, Search, User } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
+import AdminDialog from '@/components/AdminDialog.vue'
+import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { request, normalizeList, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
 import { formatTime } from '@/utils'
 import CommunityWorkCard from './CommunityWorkCard.vue'
 
@@ -50,30 +51,98 @@ interface CommunityAuthor {
   bannedUntil: string | null
 }
 
+/** 优先原图（mediaUrls），封面次之 */
+function workImageUrl(item: Pick<CommunityWork, 'coverUrl' | 'mediaUrls'>): string {
+  return String(item.mediaUrls?.[0] || item.coverUrl || '').trim()
+}
+
 /* ---------- 作品管理 ---------- */
 
 const workQuery = ref('')
 const workFilter = ref('all') // all | featured | 分类 id
 const workOperating = ref('')
 const workOrderSaving = ref(false)
+const sortOpen = ref(false)
+const sortList = ref<CommunityWork[]>([])
 
-const {
-  items: works,
-  loading,
-  error: worksError,
-  total: worksTotal,
-  page: worksPage,
-  hasPrev,
-  hasNext,
-  reset: reloadWorks,
-  next,
-  prev,
-  retry: retryWorks,
-} = usePagedList<CommunityWork>((cursor) =>
-  request<CommunityWork[] | Page<CommunityWork>>('/api/v1/admin/gallery/submissions', {
-    query: { status: 'approved', limit: 100, cursor },
-  }).then(normalizeList),
-)
+const works = ref<CommunityWork[]>([])
+const loading = ref(false)
+const loadingMore = ref(false)
+const worksError = ref<string | null>(null)
+const nextCursor = ref<string | null>(null)
+let worksRequestVersion = 0
+
+const hasMore = computed(() => nextCursor.value !== null)
+const communityFeedRef = ref<HTMLElement | null>(null)
+const isGridScrolling = ref(false)
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadWorksPage(cursor: string | null, mode: 'replace' | 'append' = 'replace') {
+  const version = ++worksRequestVersion
+  const append = mode === 'append'
+  if (append) {
+    if (!cursor || loading.value || loadingMore.value) return
+    loadingMore.value = true
+  } else {
+    loading.value = true
+    worksError.value = null
+  }
+  try {
+    const page = normalizeList(
+      await request<CommunityWork[] | Page<CommunityWork>>('/api/v1/admin/gallery/submissions', {
+        query: { status: 'approved', limit: 24, cursor },
+      }),
+    )
+    if (version !== worksRequestVersion) return
+    if (append) {
+      const seen = new Set(works.value.map((item) => item.id))
+      works.value = [...works.value, ...page.items.filter((item) => !seen.has(item.id))]
+    } else {
+      works.value = page.items
+      await nextTick()
+      communityFeedRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+    }
+    nextCursor.value = page.nextCursor
+  } catch (cause) {
+    if (version !== worksRequestVersion) return
+    if (!append) {
+      works.value = []
+      worksError.value =
+        cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+    } else {
+      ElMessage.error('加载更多失败，请重试')
+    }
+  } finally {
+    if (version !== worksRequestVersion) return
+    if (append) loadingMore.value = false
+    else loading.value = false
+    await nextTick()
+    scheduleViewportMeasure()
+    void fillViewportIfNeeded()
+  }
+}
+
+/** 列表区不足一屏时继续拉取 */
+async function fillViewportIfNeeded() {
+  const el = communityFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollHeight > el.clientHeight + 120) return
+  await loadMoreWorks()
+}
+
+function reloadWorks() {
+  nextCursor.value = null
+  return loadWorksPage(null, 'replace')
+}
+
+function loadMoreWorks() {
+  if (!nextCursor.value || loading.value || loadingMore.value) return
+  return loadWorksPage(nextCursor.value, 'append')
+}
+
+function retryWorks() {
+  return reloadWorks()
+}
 
 const orderedWorks = computed(() =>
   [...works.value].sort((a, b) => {
@@ -84,7 +153,7 @@ const orderedWorks = computed(() =>
   }),
 )
 
-/** 分类/精选/搜索为当前加载范围内筛选。 */
+/** 分类/精选/搜索为当前已加载范围内筛选。 */
 const visibleWorks = computed(() => {
   let list = orderedWorks.value
   if (workFilter.value === 'featured') list = list.filter((item) => item.featured)
@@ -101,22 +170,78 @@ const visibleWorks = computed(() => {
   return list
 })
 
-const workDragList = ref<CommunityWork[]>([])
-const canDragWorks = computed(
-  () => workFilter.value === 'all' && !workQuery.value.trim() && !hasPrev.value && !hasNext.value && !workOrderSaving.value,
+const canSortWorks = computed(
+  () =>
+    workFilter.value === 'all' &&
+    !workQuery.value.trim() &&
+    !hasMore.value &&
+    works.value.length > 0 &&
+    !workOrderSaving.value,
 )
 
-watch(
-  visibleWorks,
-  (list) => {
-    workDragList.value = [...list]
-  },
-  { immediate: true },
+/* 与用户端提示词页同款：最短列瀑布流 + 像素高度占位 + measureFromEvent */
+const masonryItems = computed(() =>
+  visibleWorks.value.map((item, index) => ({
+    key: item.id,
+    item,
+    index,
+    aspect: '3 / 4',
+    cover: workImageUrl(item),
+  })),
 )
+
+const {
+  containerRef: masonryRef,
+  visibleItems: visibleMasonryItems,
+  columnCount,
+  totalHeight: masonryHeight,
+  measureFromEvent,
+  scheduleViewportMeasure,
+} = useVirtualMasonryFeed({
+  items: masonryItems,
+  fallbackAspect: 3 / 4,
+  bodyHeight: 74,
+  mediaInset: 8,
+  minColumnWidth: 168,
+  maxColumns: 6,
+  overscan: 960,
+  getAspect: (entry) => entry.aspect,
+  scrollParent: communityFeedRef,
+})
+
+function imageLoadingMode(index: number) {
+  return index < Math.max(6, columnCount.value * 2) ? 'eager' : 'lazy'
+}
+
+function onCommunityScroll() {
+  if (!isGridScrolling.value) isGridScrolling.value = true
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+  scrollIdleTimer = setTimeout(() => {
+    scrollIdleTimer = null
+    isGridScrolling.value = false
+  }, 140)
+
+  scheduleViewportMeasure()
+
+  const el = communityFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) {
+    void loadMoreWorks()
+  }
+}
+
+function openSortDialog() {
+  if (!canSortWorks.value) {
+    ElMessage.warning(hasMore.value ? '请先滚动加载完全部作品后再排序' : '请清除筛选后再排序')
+    return
+  }
+  sortList.value = [...orderedWorks.value]
+  sortOpen.value = true
+}
 
 async function persistWorkOrder() {
-  if (!canDragWorks.value) return
-  const ordered = [...workDragList.value]
+  if (!canSortWorks.value) return
+  const ordered = [...sortList.value]
   const sortByID = new Map(ordered.map((item, index) => [item.id, (index + 1) * 10]))
   works.value = works.value.map((item) => ({ ...item, sort: sortByID.get(item.id) ?? item.sort }))
   workOrderSaving.value = true
@@ -125,6 +250,7 @@ async function persistWorkOrder() {
       method: 'PATCH',
       body: { ids: ordered.map((item) => item.id) },
     })
+    sortOpen.value = false
     ElMessage.success('作品顺序已更新')
   } catch {
     await reloadWorks()
@@ -172,7 +298,11 @@ const previewUrls = ref<string[]>([])
 const previewVisible = ref(false)
 
 function openPreview(item: CommunityWork) {
-  const list = item.mediaUrls?.length ? item.mediaUrls : item.coverUrl ? [item.coverUrl] : []
+  const list = item.mediaUrls?.length
+    ? item.mediaUrls
+    : item.coverUrl
+      ? [item.coverUrl]
+      : []
   if (!list.length) return
   previewUrls.value = list
   previewVisible.value = true
@@ -550,15 +680,50 @@ onMounted(() => {
   void loadAuthors().catch(() => undefined)
   void loadSettings().catch(() => undefined)
 })
+
+onUnmounted(() => {
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+})
 </script>
 
 <template>
   <div class="community-ops-page">
-    <div class="ops-toolbar-panel">
-      <div class="community-toolbar">
-        <div class="community-toolbar__left">
-          <strong>社区管理</strong>
+    <div class="community-pane">
+      <div class="community-pane__bar">
+        <div class="community-filters">
+          <button
+            type="button"
+            class="community-filter"
+            :class="{ 'is-active': workFilter === 'all' }"
+            @click="workFilter = 'all'"
+          >
+            全部作品
+          </button>
+          <button
+            type="button"
+            class="community-filter"
+            :class="{ 'is-active': workFilter === 'featured' }"
+            @click="workFilter = 'featured'"
+          >
+            ★ 精选
+          </button>
+          <button
+            v-for="category in enabledCategories"
+            :key="category.id"
+            type="button"
+            class="community-filter"
+            :class="{ 'is-active': workFilter === category.id }"
+            @click="workFilter = category.id"
+          >
+            {{ category.name }}
+          </button>
         </div>
+
+        <label class="community-search">
+          <el-icon class="community-search__icon" :size="15"><Search /></el-icon>
+          <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱或标签" />
+        </label>
+
         <div class="community-toolbar__actions">
           <div class="community-setting-pill" :class="{ 'is-on': settings.submissionEnabled }">
             <span>开放投稿</span>
@@ -599,45 +764,16 @@ onMounted(() => {
             <span>创作者</span>
             <em v-if="authors.length">{{ authors.length }}</em>
           </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="community-pane">
-      <div class="community-pane__bar">
-        <div class="community-filters">
           <button
             type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'all' }"
-            @click="workFilter = 'all'"
+            class="community-config-btn"
+            :disabled="!canSortWorks || workOrderSaving"
+            title="调整作品展示顺序"
+            @click="openSortDialog"
           >
-            全部作品
+            <el-icon :size="15"><Rank /></el-icon>
+            <span>排序</span>
           </button>
-          <button
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'featured' }"
-            @click="workFilter = 'featured'"
-          >
-            ★ 精选
-          </button>
-          <button
-            v-for="category in enabledCategories"
-            :key="category.id"
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === category.id }"
-            @click="workFilter = category.id"
-          >
-            {{ category.name }}
-          </button>
-        </div>
-        <div class="community-bar-aside">
-          <label class="community-search">
-            <el-icon class="community-search__icon" :size="15"><Search /></el-icon>
-            <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱或标签" />
-          </label>
         </div>
       </div>
 
@@ -647,8 +783,8 @@ onMounted(() => {
             {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
           </el-checkbox>
           <span v-if="selectedCount">已选 {{ selectedCount }} 个作品</span>
-          <span v-else-if="canDragWorks" class="is-hint">拖动卡片右上角手柄调整展示顺序</span>
-          <span v-else class="is-hint">清除筛选并加载全部作品后可拖动排序</span>
+          <span v-else-if="canSortWorks" class="is-hint">点击「排序」拖动调整展示顺序</span>
+          <span v-else class="is-hint">清除筛选并加载全部作品后可排序</span>
         </div>
         <div v-if="selectedCount" class="community-selection-bar__actions">
           <el-button text @click="clearSelection">取消选择</el-button>
@@ -658,55 +794,56 @@ onMounted(() => {
 
       <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
 
-      <AdminListShell
-        :has-prev="hasPrev"
-        :has-next="hasNext"
-        :loading="loading"
-        :page="worksPage"
-        :count="visibleWorks.length"
-        :total="worksTotal"
-        viewport-height="clamp(420px, calc(100vh - 350px), 720px)"
-        @prev="prev"
-        @next="next"
+      <div
+        ref="communityFeedRef"
+        v-loading="loading && works.length > 0"
+        class="community-feed"
+        :class="{ 'is-scrolling': isGridScrolling }"
+        @scroll.passive="onCommunityScroll"
       >
-      <div v-loading="loading && works.length > 0" class="community-pane__scroll">
-        <div v-if="loading && !works.length" class="community-board" aria-label="正在加载作品">
-          <article v-for="index in 8" :key="`sk-${index}`" class="community-card-skeleton">
-            <div />
-            <footer><span /><small /><em /></footer>
-          </article>
-        </div>
+        <div v-if="loading && !works.length" class="community-grid__loading">正在加载作品…</div>
 
         <el-empty v-else-if="!visibleWorks.length" description="当前筛选下暂无作品" />
 
-        <draggable
+        <div
           v-else
-          v-model="workDragList"
-          class="community-board"
-          item-key="id"
-          handle=".community-card__drag"
-          :animation="180"
-          :disabled="!canDragWorks"
-          ghost-class="is-work-ghost"
-          drag-class="is-work-drag"
-          @end="persistWorkOrder"
+          ref="masonryRef"
+          class="community-masonry"
+          :style="{ height: `${masonryHeight}px` }"
         >
-          <template #item="{ element: item }">
-            <CommunityWorkCard
-              :item="item"
-              :operating="workOperating === item.id"
-              :category-label="categoryLabelOf(item)"
-              :selected="selectedWorkIds.has(item.id)"
-              :draggable="canDragWorks"
-              @edit="openEdit"
-              @feature="toggleFeatured"
-              @preview="openPreview"
-              @select="setWorkSelected"
-            />
-          </template>
-        </draggable>
+          <CommunityWorkCard
+            v-for="entry in visibleMasonryItems"
+            :key="entry.key"
+            :style="{
+              position: 'absolute',
+              top: '0',
+              left: '0',
+              width: `${entry.width}px`,
+              height: `${entry.height}px`,
+              transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
+              willChange: 'transform',
+            }"
+            :item="entry.item"
+            :operating="workOperating === entry.item.id"
+            :category-label="categoryLabelOf(entry.item)"
+            :selected="selectedWorkIds.has(entry.item.id)"
+            :media-height="entry.mediaHeight"
+            :card-width="entry.width"
+            :image-loading="imageLoadingMode(entry.index)"
+            @edit="openEdit"
+            @feature="toggleFeatured"
+            @preview="openPreview"
+            @select="setWorkSelected"
+            @measure="(item, event) => measureFromEvent(item.id, event)"
+          />
+        </div>
+
+        <div v-if="visibleWorks.length" class="community-load-status" :class="{ 'is-loading': loadingMore }">
+          <span v-if="loadingMore">正在加载更多…</span>
+          <span v-else-if="!hasMore">已加载全部 {{ works.length }} 条</span>
+          <span v-else>下拉继续加载</span>
+        </div>
       </div>
-      </AdminListShell>
     </div>
 
     <el-image-viewer
@@ -716,13 +853,47 @@ onMounted(() => {
       @close="previewVisible = false"
     />
 
-    <el-dialog
+    <AdminDialog
+      v-model="sortOpen"
+      title="调整作品顺序"
+      subtitle="拖动缩略图排序，保存后同步到社区展示"
+      :icon="Rank"
+      width="min(520px, 94vw)"
+      nested-scroll
+      confirm-text="保存顺序"
+      :confirm-loading="workOrderSaving"
+      :confirm-disabled="!sortList.length"
+      @confirm="persistWorkOrder"
+    >
+      <draggable
+        v-model="sortList"
+        item-key="id"
+        handle=".community-sort-handle"
+        :animation="180"
+        ghost-class="is-work-ghost"
+        drag-class="is-work-drag"
+        class="community-sort-list"
+      >
+        <template #item="{ element: item, index }">
+          <article class="community-sort-row">
+            <span class="community-sort-index">{{ index + 1 }}</span>
+            <button type="button" class="community-sort-handle community-sort-cover" :aria-label="`拖动第 ${index + 1} 项`">
+              <img v-if="workImageUrl(item)" :src="workImageUrl(item)" :alt="item.title || '作品'" />
+            </button>
+          </article>
+        </template>
+      </draggable>
+    </AdminDialog>
+
+    <AdminDialog
       v-model="categoryOpen"
+      panel-class="community-manage-dialog"
       title="分类管理"
+      subtitle="启停、改名与拖动排序；删除后作品变为未分类"
+      :icon="CollectionTag"
       width="720px"
-      append-to-body
-      destroy-on-close
-      class="community-manage-dialog"
+      hide-footer
+      nested-scroll
     >
       <div class="cm-dialog">
         <div class="cm-toolbar">
@@ -761,7 +932,7 @@ onMounted(() => {
           </el-button>
         </div>
 
-        <p class="cm-tip">点击名称改名；停用后前台不再展示。在「全部」下可拖动手柄排序。删除分类后作品变为未分类。</p>
+        <p class="cm-tip">点击名称改名；停用后前台不再展示。在「全部」下可拖动手柄排序。</p>
 
         <div class="cm-list">
           <el-empty v-if="!categoryDragList.length" description="暂无分类" />
@@ -835,15 +1006,17 @@ onMounted(() => {
           </draggable>
         </div>
       </div>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="categoryEditorOpen"
+      panel-class="community-config-editor-dialog"
       title="新增分类"
+      :icon="Plus"
       width="420px"
-      append-to-body
-      destroy-on-close
-      class="community-config-editor-dialog"
+      confirm-text="添加"
+      :confirm-loading="Boolean(categorySaving)"
+      @confirm="submitCategoryEditor"
     >
       <div class="cm-editor">
         <label>
@@ -855,19 +1028,17 @@ onMounted(() => {
           <el-switch v-model="categoryEditorForm.active" />
         </label>
       </div>
-      <template #footer>
-        <el-button @click="categoryEditorOpen = false">取消</el-button>
-        <el-button type="primary" :loading="Boolean(categorySaving)" @click="submitCategoryEditor">添加</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="authorsOpen"
+      panel-class="community-authors-dialog"
       title="创作者管理"
+      subtitle="查看投稿数据，并解除禁投限制"
+      :icon="User"
       width="880px"
-      append-to-body
-      destroy-on-close
-      class="community-authors-dialog"
+      hide-footer
+      nested-scroll
     >
       <div class="authors-overview">
         <div><strong>{{ authorSummary.creators }}</strong><span>当前创作者</span></div>
@@ -924,15 +1095,18 @@ onMounted(() => {
           </div>
         </article>
       </div>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="batchOpen"
+      panel-class="community-batch-dialog"
       :title="`批量编辑 · ${selectedCount} 个作品`"
+      subtitle="勾选需要更新的字段后应用"
+      :icon="Check"
       width="600px"
-      append-to-body
-      destroy-on-close
-      class="community-batch-dialog"
+      confirm-text="应用更新"
+      :confirm-loading="batchSaving"
+      @confirm="saveBatchEdit"
     >
       <div class="community-batch">
         <div class="community-batch__row">
@@ -979,26 +1153,25 @@ onMounted(() => {
           />
         </div>
       </div>
-      <template #footer>
-        <el-button @click="batchOpen = false">取消</el-button>
-        <el-button type="primary" :loading="batchSaving" @click="saveBatchEdit">应用更新</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="editOpen"
+      panel-class="community-edit-dialog"
       title="作品详情"
-      width="820px"
-      append-to-body
-      destroy-on-close
-      class="community-edit-dialog"
+      subtitle="调整分类、标签与精选状态"
+      width="min(820px, 94vw)"
+      nested-scroll
+      confirm-text="保存"
+      :confirm-loading="editSaving"
+      @confirm="saveCurate"
     >
       <div v-if="editTarget" class="community-edit">
         <div class="community-edit__layout">
           <button type="button" class="community-edit__cover" title="打开全屏预览" @click="openPreview(editTarget)">
             <img
-              v-if="editTarget.coverUrl || editTarget.mediaUrls?.[0]"
-              :src="editTarget.coverUrl ?? editTarget.mediaUrls?.[0]"
+              v-if="workImageUrl(editTarget)"
+              :src="workImageUrl(editTarget)"
               :alt="editTarget.title"
             />
             <span v-else class="community-edit__empty">无图片</span>
@@ -1046,11 +1219,7 @@ onMounted(() => {
           </div>
         </div>
       </div>
-      <template #footer>
-        <el-button @click="editOpen = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveCurate">保存</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
@@ -1059,123 +1228,91 @@ onMounted(() => {
   --community-accent: var(--accent);
   --community-line: var(--border);
 
+  box-sizing: border-box;
   display: grid;
-  gap: 12px;
-  min-width: 0;
-  padding: 24px 28px;
-}
-
-.ops-toolbar-panel {
-  min-height: 52px;
-  padding: 8px 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.community-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.community-toolbar__left {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-
-  > strong {
-    position: relative;
-    padding-left: 10px;
-    color: var(--el-text-color-primary);
-    font-size: 13px;
-    font-weight: 760;
-
-    &::before {
-      position: absolute;
-      top: 50%;
-      left: 0;
-      width: 3px;
-      height: 16px;
-      content: '';
-      background: var(--community-accent);
-      transform: translateY(-50%);
-    }
-  }
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  padding: 16px 18px;
+  background: var(--bg);
 }
 
 .community-toolbar__actions {
   display: flex;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .community-setting-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 4px 10px;
+  gap: 7px;
+  height: 30px;
+  padding: 0 8px 0 10px;
   border: 1px solid var(--community-line);
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--ink-3);
   font-size: 12px;
-  background: var(--surface);
+  background: var(--surface-2);
 
   &.is-on {
-    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+    border-color: color-mix(in srgb, var(--success) 28%, var(--community-line));
     background: var(--success-soft);
     color: var(--success);
   }
 
   &.is-limit :deep(.el-input-number) {
-    width: 64px;
+    width: 56px;
+  }
+
+  &.is-limit :deep(.el-input__inner) {
+    text-align: center;
   }
 }
 
 .community-config-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 12px 0 10px;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px 0 8px;
   border: 1px solid var(--community-line);
-  border-radius: 10px;
-  background: var(--surface);
+  border-radius: 8px;
+  background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 650;
   line-height: 1;
   cursor: pointer;
   transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease,
-    box-shadow 0.16s ease;
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 
   em {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
     border-radius: 999px;
     background: color-mix(in srgb, currentColor 12%, transparent);
     color: inherit;
-    font-size: 11px;
+    font-size: 10px;
     font-style: normal;
     font-weight: 700;
-    line-height: 18px;
+    line-height: 16px;
     text-align: center;
   }
 
   &:hover {
-    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--community-line));
     background: var(--accent-soft);
     color: var(--accent-ink);
-    box-shadow: var(--shadow-sm);
   }
 
   &.is-category {
@@ -1192,6 +1329,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   padding: 12px;
   border: 1px solid var(--community-line);
   border-radius: 16px;
@@ -1204,14 +1344,14 @@ onMounted(() => {
   flex-shrink: 0;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 8px 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--community-line);
 }
 
 .community-filters {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 220px;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
@@ -1246,20 +1386,19 @@ onMounted(() => {
 }
 
 .community-bar-aside {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  margin-left: auto;
+  display: none;
 }
 
 .community-search {
   display: flex;
+  flex: 0 1 240px;
   align-items: center;
-  width: min(320px, 42vw);
-  height: 34px;
-  padding: 3px 3px 3px 10px;
+  width: min(240px, 36vw);
+  min-width: 160px;
+  height: 30px;
+  padding: 2px 2px 2px 8px;
   border: 1px solid var(--community-line);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--surface-2);
   transition:
     border-color 0.16s ease,
@@ -1296,6 +1435,7 @@ onMounted(() => {
 
 .community-selection-bar {
   display: flex;
+  flex-shrink: 0;
   min-height: 38px;
   align-items: center;
   justify-content: space-between;
@@ -1330,64 +1470,93 @@ onMounted(() => {
 }
 
 .community-pane__scroll {
-  flex: 0 1 auto;
-  min-height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.community-board {
+.community-feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px 2px 8px;
+}
+
+.community-feed.is-scrolling :deep(.community-card) {
+  pointer-events: none;
+  box-shadow: none;
+  transition: none;
+}
+
+.community-feed.is-scrolling :deep(.community-cover img) {
+  transform: none;
+  transition: none;
+}
+
+.community-grid__loading {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  align-content: start;
-  grid-auto-rows: 1fr;
+  place-items: center;
+  min-height: 240px;
+  color: var(--ink-3);
+  font-size: 13px;
 }
 
-@media (max-width: 1280px) {
-  .community-board {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+.community-masonry {
+  position: relative;
+  width: 100%;
 }
 
-@media (max-width: 800px) {
-  .community-board {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.community-masonry__item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
 }
 
-.community-board :deep(.community-card) {
-  border-color: var(--community-line);
-  border-radius: 14px;
-  box-shadow: var(--shadow-sm);
+.community-load-status {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  padding: 8px 0 4px;
+  color: var(--ink-3);
+  font-size: 12px;
 }
 
-.community-board :deep(.is-work-ghost) {
-  opacity: 0.35;
-  border-style: dashed;
-}
-
-.community-board :deep(.is-work-drag) {
-  box-shadow: 0 14px 32px rgb(15 23 42 / 18%);
+.community-load-status.is-loading {
+  color: var(--accent-ink);
 }
 
 .community-card-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
   overflow: hidden;
   border: 1px solid var(--community-line);
   border-radius: 14px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
 
   > div {
-    aspect-ratio: 4 / 3;
+    height: 168px;
+    border-radius: 12px;
     background: linear-gradient(90deg, var(--el-fill-color-light), var(--el-fill-color), var(--el-fill-color-light));
     background-size: 200% 100%;
     animation: community-shimmer 1.2s linear infinite;
+
+    &.is-variant-2 {
+      height: 204px;
+    }
+
+    &.is-variant-3 {
+      height: 148px;
+    }
   }
 
   footer {
     display: grid;
-    grid-template-rows: 18px 16px 16px 28px;
+    grid-template-rows: 18px 16px 16px;
     gap: 4px;
-    padding: 8px;
+    padding: 2px;
   }
 
   footer span,
@@ -1412,6 +1581,77 @@ onMounted(() => {
   }
 }
 
+.community-sort-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.community-sort-row {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.community-sort-handle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.community-sort-index {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+.community-sort-cover {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+  }
+}
+
+.is-work-ghost {
+  opacity: 0.35;
+
+  .community-sort-cover {
+    border-style: dashed;
+  }
+}
+
+.is-work-drag {
+  .community-sort-cover {
+    box-shadow: 0 14px 32px rgb(15 23 42 / 18%);
+  }
+}
+
 @keyframes community-shimmer {
   0% {
     background-position: 100% 0;
@@ -1423,13 +1663,24 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .community-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .community-pane {
     padding: 8px;
+  }
+
+  .community-pane__bar {
+    align-items: stretch;
+  }
+
+  .community-toolbar__actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .community-search {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
   }
 
   .community-selection-bar {
@@ -1884,15 +2135,16 @@ onMounted(() => {
     padding: 0;
     overflow: hidden;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 10px;
-    background: var(--el-fill-color-light);
+    border-radius: 12px;
+    background: var(--surface-2);
     cursor: zoom-in;
 
     img {
       display: block;
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      max-height: 420px;
+      object-fit: contain;
     }
   }
 

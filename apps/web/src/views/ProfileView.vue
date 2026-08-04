@@ -127,7 +127,8 @@ const balanceCents = computed(() =>
 const frozenCents = computed(() =>
   Number(wallet.value?.frozenCents ?? overviewWallet.value?.frozenCents ?? 0),
 )
-const availableCents = computed(() => Math.max(0, balanceCents.value - frozenCents.value))
+const availableCents = computed(() => Math.max(0, balanceCents.value))
+const totalCents = computed(() => availableCents.value + Math.max(0, frozenCents.value))
 const pointsDisplay = computed(() => formatPoints(availableCents.value, { withUnit: false }))
 
 const taskStats = computed(() => ({
@@ -143,7 +144,27 @@ const successRate = computed(() => {
   return Math.round((taskStats.value.succeeded / done) * 100)
 })
 
+const materialCount = computed(() => {
+  const count = Number(overview.value?.assetCount)
+  return Number.isFinite(count) ? Math.max(0, count) : materials.value.length
+})
+
 const submissionStats = computed(() => {
+  const serverStats = overview.value?.submissionStats
+  if (serverStats && typeof serverStats === 'object') {
+    const counts = {
+      pending: Number(serverStats.pending || 0),
+      approved: Number(serverStats.approved || 0),
+      rejected: Number(serverStats.rejected || 0),
+      removed: Number(serverStats.removed || 0),
+    }
+    return {
+      ...counts,
+      total: Number(
+        serverStats.total ?? Object.values(counts).reduce((sum, value) => sum + value, 0),
+      ),
+    }
+  }
   const list = submissions.value || []
   const counts = { pending: 0, approved: 0, rejected: 0, removed: 0 }
   for (const item of list) {
@@ -296,7 +317,6 @@ function closeConfirmation(confirmed = false) {
   resolve?.(confirmed)
 }
 
-
 const SUBMISSION_STATUS_LABELS = {
   pending: '审核中',
   approved: '已通过',
@@ -316,9 +336,171 @@ const LEDGER_KIND_LABELS = {
   subscription_grant: '订阅每日发放',
 }
 
-function ledgerKindLabel(kind) {
-  return LEDGER_KIND_LABELS[kind] || kind || '变动'
+const TASK_TYPE_LABELS = {
+  t2i: '文生图',
+  coloring: '插画染色',
+  ui_design: 'UI 设计稿',
+  model_sheet: '模型图生成',
+  game_art: '游戏美术',
+  puzzle: 'AI 拼图',
+  background_remove: '背景移除',
 }
+
+const TASK_STATUS_LABELS = {
+  queued: '排队中',
+  running: '处理中',
+  succeeded: '已完成',
+  failed: '失败',
+  canceled: '已取消',
+}
+
+function ledgerTaskLabel(entry) {
+  const task = entry?.task
+  if (!task) return 'AI 任务'
+  if (task.type === 'background_remove' && task.automaticBackgroundRemove) {
+    return '生成后自动抠图'
+  }
+  return TASK_TYPE_LABELS[task.type] || 'AI 任务'
+}
+
+function ledgerTaskMeta(entry) {
+  const task = entry?.task
+  if (!task) return ''
+  return [
+    String(task.modelName || '').trim(),
+    Number(task.count || 1) > 1 ? `${task.count} 张` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function ledgerPresentation(entry) {
+  const kind = String(entry?.kind || '').toLowerCase()
+  const delta = Number(entry?.deltaCents || 0)
+  const amount = Math.abs(delta)
+  const taskLabel = ledgerTaskLabel(entry)
+  const taskStatus = TASK_STATUS_LABELS[entry?.task?.status] || ''
+  const taskCost = Math.max(0, Number(entry?.task?.costPoints || amount))
+  const taskMeta = ledgerTaskMeta(entry)
+  const balanceLabel = `变动后可用 ${formatPoints(entry?.balanceAfterCents)}`
+
+  if (entry?.task && Array.isArray(entry.relatedEntries)) {
+    const status = String(entry.task.status || '').toLowerCase()
+    if (status === 'succeeded') {
+      const settledCost = Math.max(
+        0,
+        Number(entry.task.settledCostPoints ?? entry.task.costPoints ?? taskCost),
+      )
+      return {
+        icon: 'bi-check2-circle',
+        tone: 'settled',
+        title: taskLabel,
+        badge: '成功',
+        amount: `-${formatPoints(settledCost)}`,
+        amountTone: 'spend',
+        description: `本次实际扣除 ${formatPoints(settledCost)}；费用从提交时的预扣中结算，没有重复扣费。`,
+        meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+      }
+    }
+    if (status === 'failed' || status === 'canceled') {
+      return {
+        icon: 'bi-arrow-counterclockwise',
+        tone: 'refund',
+        title: taskLabel,
+        badge: status === 'canceled' ? '已取消并退款' : '失败已退款',
+        amount: '净支出 0 积分',
+        amountTone: 'income',
+        description: `预扣的 ${formatPoints(taskCost)} 已全部退回，本次没有产生费用。`,
+        meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+      }
+    }
+    return {
+      icon: 'bi-hourglass-split',
+      tone: 'pending',
+      title: taskLabel,
+      badge: taskStatus || '处理中',
+      amount: `冻结 ${formatPoints(taskCost)}`,
+      amountTone: 'neutral',
+      description: `当前暂时冻结 ${formatPoints(taskCost)}；任务成功后结算，失败或取消会自动退回。`,
+      meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+    }
+  }
+
+  if (kind === 'freeze' || kind === 'task_freeze') {
+    return {
+      icon: 'bi-hourglass-split',
+      tone: 'pending',
+      title: `${taskLabel}费用预扣`,
+      badge: taskStatus || '处理中',
+      amount: `-${formatPoints(amount)}`,
+      amountTone: 'spend',
+      description: `提交时暂时冻结 ${formatPoints(amount)}；成功后从这笔预扣结算，失败会自动退回。`,
+      meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+    }
+  }
+  if (kind === 'spend' || kind === 'task_settle') {
+    return {
+      icon: 'bi-check2-circle',
+      tone: 'settled',
+      title: `${taskLabel}已完成`,
+      badge: '已结算',
+      amount: '未再次扣费',
+      amountTone: 'neutral',
+      description: `已从此前预扣的 ${formatPoints(taskCost)} 中结算，本条记录没有再次扣除积分。`,
+      meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+    }
+  }
+  if (kind === 'release' || kind === 'task_release' || kind === 'refund') {
+    return {
+      icon: 'bi-arrow-counterclockwise',
+      tone: 'refund',
+      title: `${taskLabel}费用已退回`,
+      badge: taskStatus || '已退款',
+      amount: `+${formatPoints(amount)}`,
+      amountTone: 'income',
+      description: `任务失败、取消或未完整交付，${formatPoints(amount)} 已退回可用余额。`,
+      meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
+    }
+  }
+
+  const sourceLabels = {
+    order: '套餐入账',
+    redeem_code: '兑换码入账',
+    subscription_daily: '订阅积分发放',
+    signup_bonus: '注册赠送',
+    admin: '人工调整',
+  }
+  const title =
+    sourceLabels[entry?.sourceType] ||
+    LEDGER_KIND_LABELS[kind] ||
+    (delta >= 0 ? '积分入账' : '积分扣减')
+  return {
+    icon: delta >= 0 ? 'bi-plus-circle' : 'bi-dash-circle',
+    tone: delta >= 0 ? 'income' : 'spend',
+    title,
+    badge: delta >= 0 ? '已入账' : '已扣减',
+    amount: `${delta >= 0 ? '+' : '-'}${formatPoints(amount)}`,
+    amountTone: delta >= 0 ? 'income' : 'spend',
+    description: String(entry?.reason || '').trim() || '账户积分发生变动。',
+    meta: balanceLabel,
+  }
+}
+
+const ledgerRows = computed(() => {
+  const grouped = new Map()
+  ledger.value.forEach((entry) => {
+    const taskID = String(entry?.task?.id || '').trim()
+    const key = taskID ? `task:${taskID}` : `entry:${entry.id}`
+    if (!grouped.has(key)) {
+      grouped.set(key, { ...entry, id: key, relatedEntries: [] })
+    }
+    grouped.get(key).relatedEntries.push(entry)
+  })
+  return Array.from(grouped.values()).map((entry) => ({
+    ...entry,
+    presentation: ledgerPresentation(entry),
+  }))
+})
 
 function formatTime(value) {
   if (!value) return '—'
@@ -337,7 +519,10 @@ async function loadOverview() {
 
 let realtimeRefreshTimer = null
 function handleRealtimeTaskUpdate(event) {
-  if (!event?.detail?.task || !['succeeded', 'failed', 'canceled'].includes(event.detail.task.status)) {
+  if (
+    !event?.detail?.task ||
+    !['succeeded', 'failed', 'canceled'].includes(event.detail.task.status)
+  ) {
     return
   }
   if (realtimeRefreshTimer) window.clearTimeout(realtimeRefreshTimer)
@@ -430,6 +615,7 @@ async function onMaterialsSelected(event) {
       completed += 1
     }
     materialsLoaded.value = true
+    await loadOverview()
     notificationService.success(`已添加 ${completed} 项素材`)
   } catch (error) {
     notificationService.error(error?.message || `已添加 ${completed} 项，其余素材上传失败`)
@@ -448,6 +634,7 @@ async function removeMaterial(asset) {
     await deleteUserAsset(asset.id)
     materials.value = materials.value.filter((item) => item.id !== asset.id)
     if (previewMaterial.value?.id === asset.id) previewMaterial.value = null
+    await loadOverview()
     notificationService.success('素材已删除')
   } catch (error) {
     notificationService.error(error?.message || '素材删除失败')
@@ -537,13 +724,7 @@ async function loadNotifications({ append = false } = {}) {
 }
 
 function ensureTabData(tabId) {
-  if (tabId === 'dashboard') {
-    if (!materialsLoaded.value) void loadMaterials()
-    if (!submissionsLoaded.value) void loadSubmissions()
-    if (!walletLoaded.value) void loadWallet()
-    if (!notificationsLoaded.value) void loadNotifications()
-    return
-  }
+  if (tabId === 'dashboard') return
   if (tabId === 'materials' && !materialsLoaded.value) void loadMaterials()
   if (tabId === 'submissions' && !submissionsLoaded.value) void loadSubmissions()
   if (tabId === 'wallet' && !walletLoaded.value) {
@@ -582,9 +763,7 @@ watch(
   },
 )
 
-const overlayOpen = computed(() =>
-  Boolean(previewMaterial.value || confirmDialog.open),
-)
+const overlayOpen = computed(() => Boolean(previewMaterial.value || confirmDialog.open))
 
 watch(
   overlayOpen,
@@ -619,6 +798,7 @@ async function removeSubmission(submission) {
   try {
     await deleteMyGallerySubmission(submission.id)
     submissions.value = submissions.value.filter((item) => item.id !== submission.id)
+    await loadOverview()
     notificationService.success('投稿已删除')
   } catch (error) {
     notificationService.error(error?.message || '删除失败')
@@ -892,7 +1072,7 @@ onBeforeUnmount(() => {
                 <span>积分</span>
               </div>
               <div class="pp-bento-wallet-meta">
-                <span>总余额 {{ formatPoints(balanceCents, { withUnit: false }) }}</span>
+                <span>账户总额 {{ formatPoints(totalCents, { withUnit: false }) }}</span>
                 <span v-if="frozenCents"
                   >冻结 {{ formatPoints(frozenCents, { withUnit: false }) }}</span
                 >
@@ -942,8 +1122,8 @@ onBeforeUnmount(() => {
                 <b :style="{ '--value': `${successRate}%` }"></b>
               </div>
               <div>
-                <span>素材 {{ materials.length }} / 200</span>
-                <b :style="{ '--value': `${Math.min(100, (materials.length / 200) * 100)}%` }"></b>
+                <span>素材 {{ materialCount }} / 200</span>
+                <b :style="{ '--value': `${Math.min(100, (materialCount / 200) * 100)}%` }"></b>
               </div>
             </div>
           </article>
@@ -964,11 +1144,15 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <ul>
-                  <li><em></em><span>成功</span><b>{{ taskStats.succeeded }}</b></li>
+                  <li>
+                    <em></em><span>成功</span><b>{{ taskStats.succeeded }}</b>
+                  </li>
                   <li>
                     <em class="is-run"></em><span>进行中</span><b>{{ taskStats.running }}</b>
                   </li>
-                  <li><em class="is-fail"></em><span>失败</span><b>{{ taskStats.failed }}</b></li>
+                  <li>
+                    <em class="is-fail"></em><span>失败</span><b>{{ taskStats.failed }}</b>
+                  </li>
                 </ul>
               </div>
               <div class="pp-bento-submit-body">
@@ -991,7 +1175,7 @@ onBeforeUnmount(() => {
             </header>
             <div class="pp-bento-metrics">
               <button type="button" @click="switchTab('materials')">
-                <strong>{{ materials.length }}</strong>
+                <strong>{{ materialCount }}</strong>
                 <span>素材</span>
               </button>
               <button type="button" @click="switchTab('notifications')">
@@ -1202,7 +1386,7 @@ onBeforeUnmount(() => {
                 <span class="pp-wallet-hero__label">可用余额</span>
                 <strong class="pp-wallet-hero__amount">{{ formatPoints(availableCents) }}</strong>
                 <div class="pp-wallet-hero__meta">
-                  <span>总余额 {{ formatPoints(balanceCents) }}</span>
+                  <span>账户总额 {{ formatPoints(totalCents) }}</span>
                   <span v-if="frozenCents > 0" class="is-frozen">
                     冻结 {{ formatPoints(frozenCents) }}
                   </span>
@@ -1244,20 +1428,31 @@ onBeforeUnmount(() => {
                 <div v-for="n in 5" :key="n" class="pp-skel-row"></div>
               </div>
 
-              <ul v-else-if="ledger.length" class="pp-ledger-list">
-                <li v-for="entry in ledger" :key="entry.id">
-                  <div class="pp-ledger__main">
-                    <span>{{ ledgerKindLabel(entry.kind) }}</span>
-                    <strong :class="Number(entry.deltaCents) >= 0 ? 'is-income' : 'is-spend'">
-                      {{ Number(entry.deltaCents) >= 0 ? '+' : ''
-                      }}{{ formatPoints(entry.deltaCents) }}
-                    </strong>
+              <ul v-else-if="ledgerRows.length" class="pp-ledger-list">
+                <li
+                  v-for="entry in ledgerRows"
+                  :key="entry.id"
+                  :class="`is-${entry.presentation.tone}`"
+                >
+                  <span class="pp-ledger__icon" aria-hidden="true">
+                    <i class="bi" :class="entry.presentation.icon"></i>
+                  </span>
+                  <div class="pp-ledger__body">
+                    <div class="pp-ledger__main">
+                      <strong>{{ entry.presentation.title }}</strong>
+                      <span class="pp-ledger__badge">{{ entry.presentation.badge }}</span>
+                    </div>
+                    <p>{{ entry.presentation.description }}</p>
+                    <small>
+                      {{ formatTime(entry.createdAt) }}
+                      <template v-if="entry.presentation.meta">
+                        · {{ entry.presentation.meta }}
+                      </template>
+                    </small>
                   </div>
-                  <small>
-                    {{ formatTime(entry.createdAt) }} · 余额
-                    {{ formatPoints(entry.balanceAfterCents) }}
-                    <template v-if="entry.reason"> · {{ entry.reason }}</template>
-                  </small>
+                  <strong class="pp-ledger__amount" :class="`is-${entry.presentation.amountTone}`">
+                    {{ entry.presentation.amount }}
+                  </strong>
                 </li>
               </ul>
 

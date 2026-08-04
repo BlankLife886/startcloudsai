@@ -43,6 +43,21 @@ export async function deleteAssistantMessage(id) {
   })
 }
 
+export async function deleteAssistantTurn(userMessageId) {
+  return apiDelete(`/assistant/messages/${encodeURIComponent(userMessageId)}`, {
+    query: { scope: 'turn' },
+    fallbackMessage: '撤回本轮失败',
+  })
+}
+
+export async function createAssistantContextBoundary(conversationId) {
+  return apiPost(
+    `/assistant/conversations/${encodeURIComponent(conversationId)}/context-boundaries`,
+    {},
+    { fallbackMessage: '清除上文失败' },
+  )
+}
+
 export async function importAssistantConversations(conversations) {
   return apiPost(
     '/assistant/conversation-imports',

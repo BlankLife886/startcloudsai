@@ -114,10 +114,7 @@
 }
 .assistant-workspace .assistant-brand {
   gap: 9px;
-  border: 0;
-  background: transparent;
   padding: 7px;
-  cursor: pointer;
 }
 .assistant-workspace .assistant-brand strong {
   font-size: 16px;
@@ -1313,7 +1310,7 @@
   display: none;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace {
     grid-template-columns: 1fr;
   }
@@ -1499,45 +1496,53 @@
 
 /* Creation workbench layout */
 .assistant-workspace {
-  --assistant-bg: #f6f7f9;
+  --assistant-bg: #f5f2fb;
   --assistant-panel: #ffffff;
-  --assistant-panel-hover: #f3f3f2;
-  --assistant-panel-active: #efefee;
+  --assistant-panel-hover: rgba(124, 92, 255, 0.07);
+  --assistant-panel-active: rgba(124, 92, 255, 0.14);
   --assistant-card: #ffffff;
-  --assistant-text: #20211f;
-  --assistant-text-soft: #4e514d;
-  --assistant-muted: #969b9f;
-  --assistant-border: #e8e9ea;
-  --assistant-border-strong: #dfe1e2;
-  --assistant-accent: #18b6cf;
-  --assistant-accent-ink: #10a4be;
-  --assistant-accent-soft: #e9f9fc;
-  --assistant-ambient:
-    linear-gradient(128deg, rgb(77 204 218 / 9%) 0%, transparent 34%),
-    linear-gradient(214deg, rgb(184 133 210 / 10%) 0%, transparent 38%),
-    linear-gradient(160deg, #f8fafc 0%, #f5f9fa 48%, #faf7fc 100%);
+  --assistant-text: #1a1428;
+  --assistant-text-soft: #4a4260;
+  --assistant-muted: #8b839c;
+  --assistant-border: rgba(88, 60, 140, 0.12);
+  --assistant-border-strong: rgba(88, 60, 140, 0.24);
+  --assistant-accent: #7c5cff;
+  --assistant-accent-ink: #6647e8;
+  --assistant-accent-soft: rgba(124, 92, 255, 0.14);
+  --assistant-success: #1f9d55;
+  --assistant-danger: #d64545;
+  --assistant-danger-soft: rgba(214, 69, 69, 0.1);
+  --assistant-user-bubble: rgba(124, 92, 255, 0.08);
+  --assistant-image-bg: #f0edf8;
+  --assistant-shadow: 0 20px 56px rgba(88, 60, 140, 0.12);
+  --assistant-ambient: #f5f2fb;
+  --assistant-conversation-bg: #ffffff;
   grid-template-columns: 270px minmax(0, 1fr);
   background: var(--assistant-ambient);
 }
 
 .assistant-workspace.is-dark {
-  --assistant-bg: #171918;
-  --assistant-panel: #101210;
-  --assistant-panel-hover: #232623;
-  --assistant-panel-active: #2b2e2b;
-  --assistant-card: #202320;
-  --assistant-text: #f1f2ef;
-  --assistant-text-soft: #c6cac5;
-  --assistant-muted: #8f9690;
-  --assistant-border: #2c302c;
-  --assistant-border-strong: #3c413c;
-  --assistant-accent: #42c7dc;
-  --assistant-accent-ink: #62d2e4;
-  --assistant-accent-soft: #173439;
-  --assistant-ambient:
-    linear-gradient(128deg, rgb(44 180 193 / 9%) 0%, transparent 38%),
-    linear-gradient(216deg, rgb(132 94 167 / 11%) 0%, transparent 42%),
-    linear-gradient(158deg, #121616 0%, #15181b 48%, #1a171e 100%);
+  --assistant-bg: #1b1728;
+  --assistant-panel: #241d35;
+  --assistant-panel-hover: rgba(180, 156, 255, 0.1);
+  --assistant-panel-active: rgba(180, 156, 255, 0.18);
+  --assistant-card: #28203b;
+  --assistant-text: rgba(255, 255, 255, 0.94);
+  --assistant-text-soft: rgba(255, 255, 255, 0.7);
+  --assistant-muted: rgba(255, 255, 255, 0.44);
+  --assistant-border: rgba(180, 160, 255, 0.14);
+  --assistant-border-strong: rgba(180, 160, 255, 0.24);
+  --assistant-accent: #b49cff;
+  --assistant-accent-ink: #d8b4fe;
+  --assistant-accent-soft: rgba(180, 156, 255, 0.18);
+  --assistant-success: #65c98e;
+  --assistant-danger: #ff8b83;
+  --assistant-danger-soft: rgba(214, 69, 69, 0.16);
+  --assistant-user-bubble: rgba(180, 156, 255, 0.12);
+  --assistant-image-bg: #20192f;
+  --assistant-shadow: 0 24px 60px rgba(0, 0, 0, 0.48);
+  --assistant-ambient: #1b1728;
+  --assistant-conversation-bg: linear-gradient(135deg, #1b1728 0%, #2b2240 52%, #191426 100%);
 }
 
 .assistant-workspace.is-sidebar-collapsed {
@@ -1981,7 +1986,7 @@
   top: 20px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace,
   .assistant-workspace.is-sidebar-collapsed {
     grid-template-columns: 1fr;
@@ -2212,15 +2217,27 @@
   animation: assistant-image-develop 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
-.assistant-workspace .generated-images figure:nth-child(2):not(.is-loading) .generated-image-preview img {
+.assistant-workspace
+  .generated-images
+  figure:nth-child(2):not(.is-loading)
+  .generated-image-preview
+  img {
   animation-delay: 90ms;
 }
 
-.assistant-workspace .generated-images figure:nth-child(3):not(.is-loading) .generated-image-preview img {
+.assistant-workspace
+  .generated-images
+  figure:nth-child(3):not(.is-loading)
+  .generated-image-preview
+  img {
   animation-delay: 180ms;
 }
 
-.assistant-workspace .generated-images figure:nth-child(4):not(.is-loading) .generated-image-preview img {
+.assistant-workspace
+  .generated-images
+  figure:nth-child(4):not(.is-loading)
+  .generated-image-preview
+  img {
   animation-delay: 270ms;
 }
 
@@ -3026,7 +3043,7 @@
   background: var(--assistant-panel-active);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .composer-popover {
     right: 8px;
     bottom: 48px;
@@ -3275,7 +3292,7 @@
 }
 
 .assistant-workspace .image-dream-slot::after {
-	display: none;
+  display: none;
 }
 
 @keyframes image-dream-rotate {
@@ -3645,7 +3662,7 @@
   margin-left: 0;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .image-mode-preferences,
   .assistant-workspace .image-model-menu {
     right: 8px;
@@ -4374,7 +4391,7 @@
   transform: translateY(-2px) scale(1.03);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .reference-dock {
     top: 15px;
     left: 10px;
@@ -4452,7 +4469,10 @@
   background: #1b1d21;
 }
 
-.assistant-workspace.is-dark .composer-zone:not(.is-scrolled-away) .reference-dock .composer-attachment {
+.assistant-workspace.is-dark
+  .composer-zone:not(.is-scrolled-away)
+  .reference-dock
+  .composer-attachment {
   border-color: #30343b;
   background: #292c32;
 }
@@ -4596,7 +4616,7 @@
   right: 76px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer {
     min-height: 154px;
     padding: 16px 12px 10px 66px;
@@ -4802,7 +4822,7 @@
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .assistant-sidebar {
     background: color-mix(in srgb, var(--assistant-card) 78%, transparent);
     backdrop-filter: blur(10px) saturate(1.08);
@@ -4862,7 +4882,7 @@
   padding-top: 8px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .message-thread {
     padding-top: 18px;
   }
@@ -5560,7 +5580,9 @@
     inset 0 1px rgb(255 255 255 / 82%);
 }
 
-.assistant-workspace.is-dark .composer-zone:not(.is-scrolled-away) .assistant-composer:focus-within {
+.assistant-workspace.is-dark
+  .composer-zone:not(.is-scrolled-away)
+  .assistant-composer:focus-within {
   background: color-mix(in srgb, var(--assistant-card) 97%, #161815);
   box-shadow:
     0 22px 52px rgb(0 0 0 / 34%),
@@ -5578,7 +5600,10 @@
   line-height: 1.6;
 }
 
-.assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer textarea::placeholder {
+.assistant-workspace
+  .composer-zone:not(.is-scrolled-away)
+  .assistant-composer
+  textarea::placeholder {
   color: color-mix(in srgb, var(--assistant-muted) 76%, transparent);
 }
 
@@ -5684,7 +5709,7 @@
   box-shadow: inset 0 1px rgb(255 255 255 / 22%);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer {
     min-height: 148px;
     padding: 15px 11px 10px 66px;
@@ -5856,7 +5881,7 @@
   }
 }
 
-@media (max-width: 900px) and (prefers-reduced-motion: reduce) {
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
   .assistant-workspace .assistant-sidebar,
   .assistant-workspace .assistant-sidebar.is-open {
     transition: none;
@@ -5938,9 +5963,15 @@
 }
 
 @keyframes send-arm {
-  0% { transform: scale(0.9); }
-  65% { transform: scale(1.03); }
-  100% { transform: scale(1); }
+  0% {
+    transform: scale(0.9);
+  }
+  65% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* Send<->stop glyph morph: glyph remounts when the v-if/v-else branch swaps */
@@ -5953,13 +5984,25 @@
 }
 
 @keyframes composer-glyph-in-up {
-  from { opacity: 0; transform: translateY(6px) scale(0.7); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes composer-glyph-in-spin {
-  from { opacity: 0; transform: rotate(-90deg) scale(0.55); }
-  to { opacity: 1; transform: rotate(0deg) scale(1); }
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+  }
 }
 
 /* While stopping: ambient pulse on the (already circular, scaled) glyph */
@@ -5968,8 +6011,13 @@
 }
 
 @keyframes stop-glyph-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .assistant-workspace .send-button:active:not(:disabled) {
@@ -6138,16 +6186,31 @@
 }
 
 @keyframes draft-over-shake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-3px); }
-  45% { transform: translateX(3px); }
-  70% { transform: translateX(-2px); }
-  85% { transform: translateX(1px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  45% {
+    transform: translateX(3px);
+  }
+  70% {
+    transform: translateX(-2px);
+  }
+  85% {
+    transform: translateX(1px);
+  }
 }
 
 @keyframes draft-over-flash {
-  from { background-color: color-mix(in srgb, var(--assistant-danger) 24%, transparent); }
-  to { background-color: color-mix(in srgb, var(--assistant-danger) 10%, transparent); }
+  from {
+    background-color: color-mix(in srgb, var(--assistant-danger) 24%, transparent);
+  }
+  to {
+    background-color: color-mix(in srgb, var(--assistant-danger) 10%, transparent);
+  }
 }
 
 .assistant-workspace .composer-drop-hint {
@@ -6172,13 +6235,21 @@
 }
 
 @keyframes drop-hint-border {
-  from { border-color: var(--assistant-accent); }
-  to { border-color: color-mix(in srgb, var(--assistant-accent) 55%, var(--assistant-accent-soft)); }
+  from {
+    border-color: var(--assistant-accent);
+  }
+  to {
+    border-color: color-mix(in srgb, var(--assistant-accent) 55%, var(--assistant-accent-soft));
+  }
 }
 
 @keyframes drop-hint-float {
-  from { transform: translateY(-2px); }
-  to { transform: translateY(2px); }
+  from {
+    transform: translateY(-2px);
+  }
+  to {
+    transform: translateY(2px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7068,7 +7139,9 @@
   box-shadow: 0 14px 34px rgb(10 12 14 / 14%);
 }
 
-.assistant-workspace.is-dark .composer-zone:not(.is-scrolled-away) .assistant-composer:focus-within {
+.assistant-workspace.is-dark
+  .composer-zone:not(.is-scrolled-away)
+  .assistant-composer:focus-within {
   box-shadow: 0 16px 38px rgb(0 0 0 / 32%);
 }
 
@@ -7101,9 +7174,7 @@
 
 /* —— 4. 暗背景重做：干净的深色渐晕,氛围光晕大幅收敛 —— */
 .assistant-workspace.is-dark .assistant-main {
-  background:
-    radial-gradient(130% 90% at 74% -12%, rgb(124 92 255 / 4.5%), transparent 56%),
-    linear-gradient(180deg, #0f1114, #0b0d10 62%, #0a0c0e);
+  background: var(--assistant-ambient);
 }
 
 .assistant-workspace.is-dark .ambient-blob {
@@ -7645,6 +7716,431 @@
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--assistant-accent) 55%, transparent);
 }
 
+/* Keep the light workspace genuinely white; the ambient layer carries the old blue tint. */
+.assistant-workspace:not(.is-dark) .assistant-ambient-stage {
+  display: none;
+}
+
+/* Agent image proposal: editable confirmation step before image execution. */
+.assistant-workspace .agent-proposal {
+  width: min(680px, 100%);
+  margin-top: 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--assistant-accent) 28%, var(--assistant-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--assistant-panel) 96%, var(--assistant-accent-soft));
+  box-shadow: 0 14px 36px rgb(24 26 34 / 10%);
+}
+
+.assistant-workspace.is-dark .agent-proposal {
+  background: color-mix(in srgb, var(--assistant-panel) 95%, #151326);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 28%);
+}
+
+.assistant-workspace .agent-proposal:not(.is-dismissed) {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.assistant-workspace .agent-proposal-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+}
+
+.assistant-workspace .agent-proposal-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--assistant-accent-ink);
+  background: color-mix(in srgb, var(--assistant-accent-soft) 86%, transparent);
+}
+
+.assistant-workspace .agent-proposal-head > div {
+  min-width: 0;
+}
+
+.assistant-workspace .agent-proposal-head strong,
+.assistant-workspace .agent-proposal-head small {
+  display: block;
+}
+
+.assistant-workspace .agent-proposal-head strong {
+  color: var(--assistant-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.assistant-workspace .agent-proposal-head small {
+  margin-top: 3px;
+  color: var(--assistant-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-workspace .agent-proposal-state {
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: var(--assistant-accent-ink);
+  font-size: 10px;
+  background: var(--assistant-accent-soft);
+}
+
+.assistant-workspace .agent-proposal-refs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.assistant-workspace .agent-proposal-refs button {
+  position: relative;
+  flex: 0 0 74px;
+  width: 74px;
+  height: 74px;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--assistant-border);
+  border-radius: 7px;
+  background: var(--assistant-panel-active);
+  cursor: pointer;
+}
+
+.assistant-workspace .agent-proposal-refs img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.assistant-workspace .agent-proposal-refs span {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 9px;
+  background: rgb(0 0 0 / 62%);
+}
+
+.assistant-workspace .agent-proposal-prompt {
+  display: grid;
+  gap: 7px;
+}
+
+.assistant-workspace .agent-proposal-prompt > span,
+.assistant-workspace .agent-proposal-params label > span {
+  color: var(--assistant-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.assistant-workspace .agent-proposal-prompt textarea,
+.assistant-workspace .agent-proposal-params select {
+  width: 100%;
+  border: 1px solid var(--assistant-border);
+  border-radius: 7px;
+  color: var(--assistant-text);
+  background: var(--assistant-card);
+  font: inherit;
+}
+
+.assistant-workspace .agent-proposal-prompt textarea {
+  min-height: 104px;
+  max-height: 240px;
+  padding: 11px 12px;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.assistant-workspace .agent-proposal-prompt textarea:focus,
+.assistant-workspace .agent-proposal-params select:focus {
+  border-color: var(--assistant-accent);
+  outline: 2px solid color-mix(in srgb, var(--assistant-accent) 16%, transparent);
+  outline-offset: 1px;
+}
+
+.assistant-workspace .agent-proposal-params {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.assistant-workspace .agent-proposal-params label {
+  display: grid;
+  gap: 6px;
+}
+
+.assistant-workspace .agent-proposal-params select {
+  min-height: 38px;
+  padding: 0 30px 0 10px;
+  font-size: 12px;
+}
+
+.assistant-workspace .agent-proposal-model {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--assistant-muted);
+  font-size: 11px;
+}
+
+.assistant-workspace .agent-proposal-model span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .agent-proposal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.assistant-workspace .agent-proposal-actions button,
+.assistant-workspace .agent-proposal-restore {
+  min-height: 38px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 7px;
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  background: var(--assistant-card);
+  cursor: pointer;
+}
+
+.assistant-workspace .agent-proposal-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 92px;
+  padding: 0 14px;
+}
+
+.assistant-workspace .agent-proposal-actions button.is-primary {
+  min-width: 126px;
+  border-color: transparent;
+  color: #fff;
+  background: var(--assistant-accent);
+}
+
+.assistant-workspace .agent-proposal-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.assistant-workspace .agent-proposal-actions button.is-primary .bi-arrow-repeat {
+  animation: assistant-proposal-spin 0.9s linear infinite;
+}
+
+.assistant-workspace .agent-proposal-restore {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.assistant-workspace .agent-proposal-restore > i:first-child {
+  color: var(--assistant-accent-ink);
+}
+
+@keyframes assistant-proposal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.assistant-workspace .agent-proposal-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--assistant-accent) 18%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--assistant-accent) 6%, transparent);
+  color: color-mix(in srgb, var(--assistant-text) 72%, transparent);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.assistant-workspace .agent-proposal-reason i {
+  flex: none;
+  margin-top: 1px;
+  color: var(--assistant-accent);
+}
+
+.assistant-workspace .assistant-context-divider {
+  display: grid;
+  grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: min(680px, calc(100% - 32px));
+  margin: 18px auto;
+  color: color-mix(in srgb, var(--assistant-text) 45%, transparent);
+}
+
+.assistant-workspace .assistant-context-divider > span {
+  height: 1px;
+  background: color-mix(in srgb, var(--assistant-text) 12%, transparent);
+}
+
+.assistant-workspace .assistant-context-divider p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .assistant-workspace .agent-proposal:not(.is-dismissed) {
+    gap: 12px;
+    padding: 13px;
+  }
+
+  .assistant-workspace .agent-proposal-head {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .assistant-workspace .agent-proposal-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .assistant-workspace .agent-proposal-state {
+    grid-column: 2;
+    width: fit-content;
+  }
+
+  .assistant-workspace .agent-proposal-params {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-workspace .agent-proposal-actions button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .agent-proposal-actions button.is-primary .bi-arrow-repeat {
+    animation: none;
+  }
+}
+
+.assistant-workspace .message-actions > button.source-proposal-button {
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.assistant-workspace .agent-proposal-params > label,
+.assistant-workspace .agent-proposal-params select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.assistant-workspace .agent-proposal-readonly {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 10px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 7px;
+  color: var(--assistant-text-soft);
+  background: var(--assistant-panel-active);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Desktop assistant density pass. Mobile layout is intentionally left untouched. */
+@media (min-width: 768px) {
+  .assistant-workspace .image-model-menu {
+    left: var(--model-menu-left, 24px);
+    transform-origin: bottom left;
+  }
+
+  .assistant-workspace .composer-zone {
+    padding: 14px 18px 10px;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer {
+    min-height: 132px;
+    padding: 14px 14px 10px 76px;
+    border-radius: 20px;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer:focus-within {
+    transform: none;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .assistant-composer textarea {
+    min-height: 58px;
+    max-height: 112px;
+    padding: 4px 8px 7px 0;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .composer-toolbar {
+    min-height: 38px;
+    margin-left: -52px;
+    padding-top: 5px;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .agent-mode-button,
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .composer-tool-button {
+    height: 32px;
+    padding-inline: 10px;
+  }
+
+  .assistant-workspace .composer-zone:not(.is-scrolled-away) .reference-dock {
+    top: 14px;
+    left: 14px;
+    transform: scale(0.84);
+    transform-origin: top left;
+  }
+
+  .assistant-workspace .topbar-filters > button:disabled {
+    color: color-mix(in srgb, var(--assistant-muted) 58%, transparent);
+    background: transparent;
+    cursor: not-allowed;
+    opacity: 0.62;
+    transform: none;
+  }
+
+  .assistant-workspace .message-actions {
+    gap: 3px;
+    opacity: 0.64;
+  }
+
+  .assistant-workspace .message--assistant:hover .message-actions,
+  .assistant-workspace .message-actions:focus-within {
+    opacity: 1;
+  }
+}
+
 /* —— 侧栏骨架行 —— */
 .assistant-workspace .conversation-skeleton {
   display: flex;
@@ -7842,4 +8338,514 @@
 .assistant-workspace.is-sidebar-collapsed .conversation-row.active .conversation-thumb,
 .assistant-workspace.is-sidebar-collapsed.is-dark .conversation-row.active .conversation-thumb {
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--assistant-accent) 55%, transparent);
+}
+
+/* GSAP owns desktop entrance/message motion once the component is ready. */
+.assistant-workspace.gsap-motion-ready .assistant-topbar,
+.assistant-workspace.gsap-motion-ready .assistant-messages,
+.assistant-workspace.gsap-motion-ready .composer-zone,
+.assistant-workspace.gsap-motion-ready .message-turn.is-new {
+  animation: none;
+}
+
+.assistant-workspace .assistant-sidebar {
+  border-right: 0;
+}
+
+/* Sidebar toggle: one centered chevron, rotated for the collapsed state. */
+.assistant-workspace .sidebar-close {
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--assistant-accent) 18%, transparent);
+  border-radius: 8px;
+  color: var(--assistant-accent-ink);
+  background: var(--assistant-accent-soft);
+}
+
+.assistant-workspace .sidebar-close:hover {
+  color: var(--assistant-accent-ink);
+  background: color-mix(in srgb, var(--assistant-accent-soft) 78%, var(--assistant-accent) 18%);
+}
+
+.assistant-workspace .sidebar-close i {
+  display: block;
+  width: 1em;
+  height: 1em;
+  line-height: 1;
+  transform-origin: center;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assistant-workspace .sidebar-close i.is-collapsed {
+  transform: rotate(180deg);
+}
+
+@media (min-width: 768px) {
+  .assistant-workspace.is-sidebar-collapsed .assistant-brand-row {
+    flex-direction: row;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .assistant-workspace.is-sidebar-collapsed .assistant-brand {
+    display: none;
+  }
+
+  .assistant-workspace.is-sidebar-collapsed .sidebar-close {
+    margin-inline: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .sidebar-close i {
+    transition: none;
+  }
+}
+
+.assistant-workspace .assistant-messages {
+  background: var(--assistant-conversation-bg);
+}
+
+.assistant-workspace:not(.is-dark) .assistant-topbar {
+  background: #ffffff;
+  background-image: none;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.assistant-workspace:not(.is-dark),
+.assistant-workspace:not(.is-dark) .assistant-main {
+  background: #ffffff;
+}
+
+/* Composer action: clear disabled state, purple creation-desk primary state. */
+.assistant-workspace .send-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #9b98a8;
+  background: #f0eef5;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.8);
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease;
+}
+
+.assistant-workspace .send-button::before,
+.assistant-workspace .send-button::after {
+  content: none;
+}
+
+.assistant-workspace .send-button:disabled {
+  border-color: #e3deed;
+  color: #a7a3b2;
+  background: #f4f2f8;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.assistant-workspace .send-button:not(:disabled):not(.stop-button) {
+  border-color: transparent;
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--assistant-accent), #a855f7);
+  box-shadow:
+    0 8px 18px color-mix(in srgb, var(--assistant-accent) 28%, transparent),
+    inset 0 1px rgba(255, 255, 255, 0.36);
+}
+
+.assistant-workspace .send-button:not(:disabled):not(.stop-button):hover {
+  border-color: transparent;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6c4df2, #9b45ee);
+  box-shadow:
+    0 11px 24px color-mix(in srgb, var(--assistant-accent) 38%, transparent),
+    inset 0 1px rgba(255, 255, 255, 0.44);
+  transform: translateY(-2px) scale(1.02);
+}
+
+.assistant-workspace .send-button:not(:disabled):not(.stop-button):active {
+  transform: translateY(0) scale(0.96);
+}
+
+.assistant-workspace .send-button .send-glyph {
+  display: grid;
+  place-items: center;
+  transform: none;
+}
+
+.assistant-workspace .send-button:not(:disabled):not(.stop-button):hover .send-glyph {
+  transform: translateY(-1px);
+}
+
+.assistant-workspace .stop-button,
+.assistant-workspace .stop-button:disabled {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--assistant-danger);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--assistant-danger) 24%, transparent);
+}
+
+.assistant-workspace.is-dark .send-button:disabled {
+  border-color: rgba(180, 156, 255, 0.16);
+  color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Keep long conversation titles clear of the hover delete control. */
+.assistant-workspace:not(.is-sidebar-collapsed) .conversation-select {
+  padding-right: 52px;
+}
+
+.assistant-workspace:not(.is-sidebar-collapsed) .conversation-delete {
+  z-index: 2;
+  right: 8px;
+  background: var(--assistant-panel);
+}
+
+.assistant-workspace.is-dark:not(.is-sidebar-collapsed) .conversation-delete {
+  background: color-mix(in srgb, var(--assistant-panel) 92%, transparent);
+}
+
+/* Slightly deepen the selected conversation surface without changing its layout. */
+.assistant-workspace .assistant-sidebar .conversation-row.active {
+  background: color-mix(in srgb, var(--assistant-panel-active) 90%, #000 10%);
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.assistant-workspace .assistant-sidebar .conversation-select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Desktop conversation interactions are driven by GSAP to avoid competing transform transitions. */
+@media (min-width: 768px) {
+  .assistant-workspace.gsap-motion-ready .conversation-row {
+    will-change: transform;
+    transition:
+      background-color 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Borderless list items keep a stable surface without any shadow. */
+  .assistant-workspace.gsap-motion-ready:not(.is-sidebar-collapsed)
+    .assistant-sidebar
+    .conversation-row {
+    box-sizing: border-box;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready:not(.is-sidebar-collapsed)
+    .assistant-sidebar
+    .conversation-row.active {
+    border: 0;
+    box-shadow: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready.is-dark:not(.is-sidebar-collapsed)
+    .assistant-sidebar
+    .conversation-row.active {
+    box-shadow: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready:not(.is-sidebar-collapsed)
+    .assistant-sidebar
+    .conversation-row:hover:not(.active) {
+    box-shadow: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready.is-dark:not(.is-sidebar-collapsed)
+    .assistant-sidebar
+    .conversation-row:hover:not(.active) {
+    box-shadow: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready .conversation-row:hover:not(.active) {
+    transform: none;
+  }
+
+  .assistant-workspace.gsap-motion-ready .conversation-thumb,
+  .assistant-workspace.gsap-motion-ready .conversation-copy {
+    will-change: transform;
+  }
+
+.assistant-workspace.gsap-motion-ready .conversation-delete {
+  will-change: transform, opacity;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+/* Empty creation desk: a soft chromatic wash with a focused, cardless center. */
+.assistant-workspace .assistant-empty-content {
+  display: grid;
+  width: min(820px, 100%);
+  justify-items: center;
+}
+
+@media (min-width: 768px) {
+  .assistant-workspace .assistant-empty-state {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    min-height: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 32px 28px max(250px, calc(12px + 210px + env(safe-area-inset-bottom, 0px)));
+    background: #fff;
+  }
+
+  .assistant-workspace .assistant-empty-content {
+    box-sizing: border-box;
+    display: grid;
+    width: 100%;
+    justify-self: stretch;
+    justify-items: center;
+    position: relative;
+    padding: 48px 56px 54px;
+    z-index: 1;
+  }
+
+  .assistant-workspace .assistant-empty-content > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .assistant-workspace .empty-mark {
+    width: 58px;
+    height: 58px;
+    border-radius: 16px;
+    color: #fff;
+    background: linear-gradient(145deg, #231b38, #100d1d);
+    box-shadow: none;
+    font-size: 24px;
+  }
+
+  .assistant-workspace .empty-mode-label {
+    min-height: 30px;
+    margin: 18px 0 0;
+    padding: 6px 11px;
+    border: 1px solid rgb(124 92 255 / 16%);
+    border-radius: 999px;
+    color: #644ce0;
+    background: rgb(255 255 255 / 58%);
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+
+  .assistant-workspace .assistant-empty-state h1 {
+    margin: 16px 0 34px;
+    color: #1d172b;
+    font-size: clamp(36px, 4.2vw, 50px);
+    font-weight: 720;
+    line-height: 1.12;
+  }
+
+  .assistant-workspace .suggestion-grid {
+    width: min(760px, 100%);
+    gap: 12px;
+  }
+
+  .assistant-workspace .suggestion-grid button {
+    min-height: 62px;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid rgb(91 70 164 / 15%);
+    border-radius: 20px;
+    background: rgb(255 255 255 / 70%);
+    color: #4e4562;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition:
+      border-color 220ms ease,
+      background-color 220ms ease,
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .assistant-workspace .suggestion-grid button:hover {
+    border-color: rgb(103 76 225 / 34%);
+    background: rgb(255 255 255 / 88%);
+    transform: translateY(-2px);
+  }
+
+  .assistant-workspace .suggestion-grid button > i:first-child {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    place-items: center;
+    border-radius: 8px;
+    color: #644ce0;
+    background: rgb(124 92 255 / 11%);
+    font-size: 16px;
+  }
+
+  .assistant-workspace .suggestion-grid span {
+    font-size: 15px;
+    font-weight: 560;
+  }
+
+  .assistant-workspace .suggestion-grid .suggestion-arrow {
+    color: #8f82a8;
+    font-size: 13px;
+  }
+
+  .assistant-workspace.is-dark .assistant-empty-state {
+    background: #1b1728;
+  }
+
+  .assistant-workspace.is-dark .empty-mode-label {
+    border-color: rgb(180 156 255 / 22%);
+    color: #c7b8ff;
+    background: rgb(37 29 53 / 62%);
+  }
+
+  .assistant-workspace.is-dark .assistant-empty-state h1 {
+    color: #f4effc;
+  }
+
+  .assistant-workspace.is-dark .suggestion-grid button {
+    border-color: rgb(180 156 255 / 14%);
+    color: #d9d1e9;
+    background: rgb(37 29 53 / 66%);
+  }
+
+  .assistant-workspace.is-dark .suggestion-grid button:hover {
+    border-color: rgb(180 156 255 / 32%);
+    background: rgb(48 38 69 / 86%);
+  }
+}
+
+}
+
+/* The full-screen empty canvas should end cleanly at the workspace edge. */
+.assistant-workspace .assistant-messages:has(> .assistant-empty-state) {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* 空白新对话：从画布两角露出的彩色羽化半圆。 */
+.assistant-workspace .assistant-empty-state {
+  background-image:
+    radial-gradient(
+      ellipse clamp(520px, 38vw, 820px) clamp(470px, 34vw, 740px) at -54px -58px,
+      rgb(255 74 103 / 46%) 0%,
+      rgb(255 169 64 / 40%) 16%,
+      rgb(255 226 66 / 35%) 31%,
+      rgb(54 220 132 / 31%) 47%,
+      rgb(0 207 255 / 27%) 62%,
+      rgb(87 103 255 / 20%) 77%,
+      rgb(255 255 255 / 0%) 100%
+    ),
+    radial-gradient(
+      ellipse clamp(620px, 44vw, 940px) clamp(560px, 42vw, 900px)
+        at calc(100% + 58px) calc(100% + 62px),
+      rgb(255 74 103 / 44%) 0%,
+      rgb(255 169 64 / 39%) 16%,
+      rgb(255 226 66 / 34%) 31%,
+      rgb(54 220 132 / 30%) 47%,
+      rgb(0 207 255 / 26%) 62%,
+      rgb(87 103 255 / 19%) 77%,
+      rgb(255 255 255 / 0%) 100%
+    );
+  background-repeat: no-repeat;
+}
+
+.assistant-workspace.is-dark .assistant-empty-state {
+  background-image:
+    radial-gradient(
+      ellipse clamp(520px, 38vw, 820px) clamp(470px, 34vw, 740px) at -54px -58px,
+      rgb(255 74 103 / 34%) 0%,
+      rgb(255 169 64 / 30%) 16%,
+      rgb(255 226 66 / 26%) 31%,
+      rgb(54 220 132 / 23%) 47%,
+      rgb(0 207 255 / 21%) 62%,
+      rgb(87 103 255 / 16%) 77%,
+      rgb(27 23 40 / 0%) 100%
+    ),
+    radial-gradient(
+      ellipse clamp(620px, 44vw, 940px) clamp(560px, 42vw, 900px)
+        at calc(100% + 58px) calc(100% + 62px),
+      rgb(255 74 103 / 32%) 0%,
+      rgb(255 169 64 / 29%) 16%,
+      rgb(255 226 66 / 25%) 31%,
+      rgb(54 220 132 / 22%) 47%,
+      rgb(0 207 255 / 20%) 62%,
+      rgb(87 103 255 / 15%) 77%,
+      rgb(27 23 40 / 0%) 100%
+    );
+}
+
+/* 彩色光晕的柔焦层：只模糊角落，不影响中间内容的清晰度。 */
+.assistant-workspace .assistant-empty-state {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.assistant-workspace .assistant-empty-state::before,
+.assistant-workspace .assistant-empty-state::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(46px);
+  opacity: 0.62;
+}
+
+.assistant-workspace .assistant-empty-state::before {
+  top: -24%;
+  left: -22%;
+  width: min(760px, 72vw);
+  height: min(640px, 62vw);
+  background: conic-gradient(
+    from 205deg at 50% 50%,
+    rgb(255 74 103 / 36%) 0deg,
+    rgb(255 169 64 / 34%) 54deg,
+    rgb(255 226 66 / 31%) 108deg,
+    rgb(54 220 132 / 29%) 162deg,
+    rgb(0 207 255 / 33%) 216deg,
+    rgb(87 103 255 / 34%) 270deg,
+    rgb(214 80 255 / 31%) 324deg,
+    rgb(255 74 103 / 36%) 360deg
+  );
+}
+
+.assistant-workspace .assistant-empty-state::after {
+  right: -24%;
+  bottom: -25%;
+  width: min(880px, 78vw);
+  height: min(760px, 70vw);
+  background: conic-gradient(
+    from 24deg at 50% 50%,
+    rgb(255 74 103 / 34%) 0deg,
+    rgb(255 169 64 / 32%) 54deg,
+    rgb(255 226 66 / 29%) 108deg,
+    rgb(54 220 132 / 28%) 162deg,
+    rgb(0 207 255 / 31%) 216deg,
+    rgb(87 103 255 / 32%) 270deg,
+    rgb(214 80 255 / 30%) 324deg,
+    rgb(255 74 103 / 34%) 360deg
+  );
+}
+
+.assistant-workspace .assistant-empty-state .assistant-empty-content {
+  position: relative;
+  z-index: 1;
+}
+
+.assistant-workspace.is-dark .assistant-empty-state::before,
+.assistant-workspace.is-dark .assistant-empty-state::after {
+  opacity: 0.48;
+  filter: blur(54px);
+}
+
+/* 新对话不需要额外顶栏，已有消息时仍保留对话操作栏。 */
+.assistant-workspace .assistant-main.is-empty {
+  grid-template-rows: minmax(0, 1fr);
 }

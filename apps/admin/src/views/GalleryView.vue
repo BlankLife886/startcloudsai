@@ -23,12 +23,13 @@ export interface AdminSubmission {
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, Refresh, CircleCloseFilled, CollectionTag, WarningFilled } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
+import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { formatTime, SUBMISSION_STATUS_LABELS, TASK_TYPES, taskTypeLabel } from '@/utils'
+import AdminDialog from '@/components/AdminDialog.vue'
 import ProgressiveImage from '@/components/ProgressiveImage.vue'
 import ShareReviewCard from './ShareReviewCard.vue'
 
@@ -43,14 +44,88 @@ const statusFilters = [
   { label: '全部', value: '', type: 'info' },
 ] as const
 
-const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
-  usePagedList<AdminSubmission>(
-    (cursor) =>
-      request<AdminSubmission[] | Page<AdminSubmission>>('/api/v1/admin/gallery/submissions', {
-        query: { status: status.value, limit: 12, cursor },
-      }).then(normalizeList),
-    () => status.value,
-  )
+const items = ref<AdminSubmission[]>([])
+const loading = ref(false)
+const loadingMore = ref(false)
+const error = ref<string | null>(null)
+const nextCursor = ref<string | null>(null)
+const total = ref<number | null>(null)
+let requestVersion = 0
+
+const hasMore = computed(() => nextCursor.value !== null)
+const galleryFeedRef = ref<HTMLElement | null>(null)
+const isGridScrolling = ref(false)
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadSubmissionsPage(cursor: string | null, mode: 'replace' | 'append' = 'replace') {
+  const version = ++requestVersion
+  const append = mode === 'append'
+  if (append) {
+    if (!cursor || loading.value || loadingMore.value) return
+    loadingMore.value = true
+  } else {
+    loading.value = true
+    error.value = null
+  }
+  try {
+    const page = normalizeList(
+      await request<AdminSubmission[] | Page<AdminSubmission>>('/api/v1/admin/gallery/submissions', {
+        query: { status: status.value, limit: 24, cursor },
+      }),
+    )
+    if (version !== requestVersion) return
+    if (append) {
+      const seen = new Set(items.value.map((item) => item.id))
+      items.value = [...items.value, ...page.items.filter((item) => !seen.has(item.id))]
+    } else {
+      items.value = page.items
+      await nextTick()
+      galleryFeedRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+    }
+    nextCursor.value = page.nextCursor
+    total.value = page.total ?? page.scopeTotal ?? null
+  } catch (cause) {
+    if (version !== requestVersion) return
+    if (!append) {
+      items.value = []
+      error.value = cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+    } else {
+      ElMessage.error('加载更多失败，请重试')
+    }
+  } finally {
+    if (version !== requestVersion) return
+    if (append) loadingMore.value = false
+    else loading.value = false
+    await nextTick()
+    scheduleViewportMeasure()
+    void fillViewportIfNeeded()
+  }
+}
+
+async function fillViewportIfNeeded() {
+  const el = galleryFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollHeight > el.clientHeight + 120) return
+  await loadMore()
+}
+
+function reset() {
+  nextCursor.value = null
+  return loadSubmissionsPage(null, 'replace')
+}
+
+function loadMore() {
+  if (!nextCursor.value || loading.value || loadingMore.value) return
+  return loadSubmissionsPage(nextCursor.value, 'append')
+}
+
+function retry() {
+  return reset()
+}
+
+function refresh() {
+  return reset()
+}
 
 function setStatusFilter(value: string) {
   if (status.value === value) return
@@ -58,14 +133,65 @@ function setStatusFilter(value: string) {
   void reset()
 }
 
+const masonryItems = computed(() =>
+  items.value.map((item, index) => ({
+    key: item.id,
+    item,
+    index,
+    aspect: '3 / 4',
+  })),
+)
+
+const {
+  containerRef: masonryRef,
+  visibleItems: visibleMasonryItems,
+  columnCount,
+  totalHeight: masonryHeight,
+  measureFromEvent,
+  scheduleViewportMeasure,
+} = useVirtualMasonryFeed({
+  items: masonryItems,
+  fallbackAspect: 3 / 4,
+  bodyHeight: 128,
+  mediaInset: 8,
+  minColumnWidth: 168,
+  maxColumns: 6,
+  overscan: 960,
+  getAspect: (entry) => entry.aspect,
+  scrollParent: galleryFeedRef,
+})
+
+function imageLoadingMode(index: number) {
+  return index < Math.max(6, columnCount.value * 2) ? 'eager' : 'lazy'
+}
+
+function onGalleryScroll() {
+  if (!isGridScrolling.value) isGridScrolling.value = true
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+  scrollIdleTimer = setTimeout(() => {
+    scrollIdleTimer = null
+    isGridScrolling.value = false
+  }, 140)
+
+  scheduleViewportMeasure()
+
+  const el = galleryFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) {
+    void loadMore()
+  }
+}
+
 function userLabel(item: AdminSubmission | null) {
   if (!item) return '未知用户'
-  return (
-    String(item.author?.username || '').trim() ||
-    String(item.userEmail || '').trim() ||
-    String(item.author?.id || '').trim() ||
-    '未知用户'
-  )
+  const username = String(item.author?.username || '').trim()
+  const email = String(item.userEmail || '').trim()
+  const id = String(item.author?.id || '').trim()
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(username)
+  if (username && !isUUID) return username
+  if (email) return email.split('@')[0] || email
+  if (id) return id
+  return '未知用户'
 }
 
 function itemTitle(item: AdminSubmission | null) {
@@ -382,6 +508,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onPreviewKeydown)
   document.body.style.overflow = ''
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
 })
 </script>
 
@@ -405,7 +532,9 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="share-toolbar__aside">
-          <span v-if="items.length" class="share-toolbar__count">本页 {{ items.length }} 条</span>
+          <span v-if="items.length" class="share-toolbar__count">
+            已加载 {{ items.length }} 条{{ total != null ? ` / ${total}` : '' }}
+          </span>
           <el-button :icon="Refresh" :loading="loading" @click="reset">刷新</el-button>
         </div>
       </div>
@@ -413,44 +542,94 @@ onUnmounted(() => {
 
     <ListError :error="error" :loading="loading" @retry="retry" />
 
-    <AdminListShell
-      :has-prev="hasPrev"
-      :has-next="hasNext"
-      :loading="loading"
-      :page="page"
-      :count="items.length"
-      :total="total"
-      viewport-height="clamp(420px, calc(100vh - 285px), 720px)"
-      @prev="prev"
-      @next="next"
+    <div
+      ref="galleryFeedRef"
+      v-loading="loading && items.length > 0"
+      class="share-feed"
+      :class="{ 'is-scrolling': isGridScrolling }"
+      @scroll.passive="onGalleryScroll"
     >
-      <el-empty v-if="!loading && !items.length" description="当前没有待处理的投稿" />
+      <div v-if="loading && !items.length" class="share-feed__loading">正在加载投稿…</div>
 
-      <div v-else-if="loading && !items.length" class="share-board" aria-label="正在加载投稿">
-        <article v-for="index in 8" :key="index" class="share-card-skeleton">
-          <div />
-          <footer><span /><small /><em /></footer>
-        </article>
-      </div>
+      <el-empty v-else-if="!items.length" description="当前没有待处理的投稿" />
 
-      <div v-else v-loading="loading" class="share-board">
+      <div
+        v-else
+        ref="masonryRef"
+        class="share-masonry"
+        :style="{ height: `${masonryHeight}px` }"
+      >
         <ShareReviewCard
-          v-for="item in items"
-          :key="item.id"
-          :item="item"
-          :operating="operatingId === item.id"
+          v-for="entry in visibleMasonryItems"
+          :key="entry.key"
+          :style="{
+            position: 'absolute',
+            top: '0',
+            left: '0',
+            width: `${entry.width}px`,
+            height: `${entry.height}px`,
+            transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
+            willChange: 'transform',
+          }"
+          :item="entry.item"
+          :operating="operatingId === entry.item.id"
+          :media-height="entry.mediaHeight"
+          :card-width="entry.width"
+          :image-loading="imageLoadingMode(entry.index)"
           @preview="openPreview"
           @approve="approve"
           @reject="openReject"
           @violation="openViolation"
           @prompt="openPromptCreator"
+          @measure="(item, event) => measureFromEvent(item.id, event)"
         />
       </div>
-    </AdminListShell>
+
+      <div v-if="items.length" class="share-load-status" :class="{ 'is-loading': loadingMore }">
+        <span v-if="loadingMore">正在加载更多…</span>
+        <span v-else-if="!hasMore">已加载全部 {{ items.length }} 条</span>
+        <span v-else>下拉继续加载</span>
+      </div>
+    </div>
 
     <Teleport to="body">
       <Transition name="share-lightbox" @after-leave="onPreviewAfterLeave">
         <div v-if="previewOpen && previewItem" class="share-lightbox" @click.self="closePreview">
+          <header class="share-lightbox__bar">
+            <div class="share-lightbox__user">
+              <span class="share-lightbox__avatar">{{ previewUserInitial }}</span>
+              <div class="share-lightbox__copy">
+                <div class="share-lightbox__title-row">
+                  <strong>{{ itemTitle(previewItem) }}</strong>
+                  <span class="share-lightbox__status" :class="`is-${previewItem.status || 'unknown'}`">
+                    {{ previewStatusText }}
+                  </span>
+                </div>
+                <small>
+                  {{ previewUserName }} · {{ kindLabel(previewItem) }} · {{ formatTime(previewItem.createdAt) }}
+                </small>
+              </div>
+            </div>
+            <div class="share-lightbox__tools">
+              <div v-if="previewMedias.length > 1" class="share-lightbox__switch" role="tablist" aria-label="媒体切换">
+                <button
+                  v-for="(url, index) in previewMedias"
+                  :key="url"
+                  type="button"
+                  role="tab"
+                  :aria-selected="previewMediaIndex === index"
+                  :class="{ 'is-active': previewMediaIndex === index }"
+                  @click="previewMediaIndex = index"
+                >
+                  图 {{ index + 1 }}
+                </button>
+              </div>
+              <button type="button" class="share-lightbox__close" aria-label="关闭预览" @click="closePreview">
+                <el-icon :size="18"><Close /></el-icon>
+              </button>
+            </div>
+          </header>
+
           <div class="share-lightbox__stage">
             <button type="button" class="share-lightbox__nav is-prev" aria-label="上一张" title="上一张 ←" @click="jumpPreview(-1)">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -493,41 +672,6 @@ onUnmounted(() => {
               </svg>
             </button>
           </div>
-
-          <header class="share-lightbox__bar">
-            <div class="share-lightbox__user">
-              <span class="share-lightbox__avatar">{{ previewUserInitial }}</span>
-              <div class="share-lightbox__copy">
-                <div class="share-lightbox__title-row">
-                  <strong>{{ itemTitle(previewItem) }}</strong>
-                  <span class="share-lightbox__status" :class="`is-${previewItem.status || 'unknown'}`">
-                    {{ previewStatusText }}
-                  </span>
-                </div>
-                <small>
-                  {{ previewUserName }} · {{ kindLabel(previewItem) }} · {{ formatTime(previewItem.createdAt) }}
-                </small>
-              </div>
-            </div>
-            <div class="share-lightbox__tools">
-              <div v-if="previewMedias.length > 1" class="share-lightbox__switch" role="tablist" aria-label="媒体切换">
-                <button
-                  v-for="(url, index) in previewMedias"
-                  :key="url"
-                  type="button"
-                  role="tab"
-                  :aria-selected="previewMediaIndex === index"
-                  :class="{ 'is-active': previewMediaIndex === index }"
-                  @click="previewMediaIndex = index"
-                >
-                  图 {{ index + 1 }}
-                </button>
-              </div>
-              <button type="button" class="share-lightbox__close" aria-label="关闭预览" @click="closePreview">
-                <el-icon :size="18"><Close /></el-icon>
-              </button>
-            </div>
-          </header>
 
           <footer class="share-lightbox__footer">
             <div class="share-lightbox__meta">
@@ -574,20 +718,21 @@ onUnmounted(() => {
       </Transition>
     </Teleport>
 
-    <el-dialog
+    <AdminDialog
       v-model="promptCreatorOpen"
-      title="将审核图片加入提示词库"
+      title="加入提示词库"
+      subtitle="将审核图片复制为提示词封面，不依赖原画廊状态"
+      :icon="CollectionTag"
       width="min(860px, 94vw)"
-      align-center
-      append-to-body
-      destroy-on-close
-      class="gallery-prompt-dialog"
+      nested-scroll
+      confirm-text="加入提示词库"
+      :confirm-loading="promptCreatorSaving"
+      @confirm="createPromptFromSubmission"
     >
       <div class="gallery-prompt-layout">
         <aside class="gallery-prompt-cover">
           <ProgressiveImage v-if="promptCreatorImage" :src="promptCreatorImage" :alt="promptCreatorForm.title" fit="contain" />
           <div v-else><el-icon><CollectionTag /></el-icon><span>暂无图片</span></div>
-          <small>将复制为提示词封面，不依赖原画廊状态</small>
         </aside>
         <el-form label-position="top" class="gallery-prompt-form">
           <el-form-item label="提示词名称">
@@ -616,181 +761,135 @@ onUnmounted(() => {
           </el-form-item>
         </el-form>
       </div>
-      <template #footer>
-        <el-button @click="promptCreatorOpen = false">取消</el-button>
-        <el-button type="primary" :loading="promptCreatorSaving" @click="createPromptFromSubmission">
-          加入提示词库
-        </el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="rejectOpen"
-      align-center
-      append-to-body
-      destroy-on-close
+      title="拒绝投稿"
+      subtitle="拒绝后不会进入社区公开展示，原因将通知作者"
+      :icon="CircleCloseFilled"
       width="480px"
-      class="share-review-dialog is-reject"
+      confirm-text="确认拒绝"
+      confirm-type="danger"
+      :confirm-loading="Boolean(rejectTarget && operatingId === rejectTarget.id)"
+      @confirm="confirmReject"
     >
-      <template #header>
-        <div class="share-review-dialog__header">
-          <span class="share-review-dialog__icon is-reject">
-            <el-icon :size="18"><CircleCloseFilled /></el-icon>
-          </span>
-          <div>
-            <strong>拒绝投稿</strong>
-            <small>拒绝后不会进入社区公开展示，原因将通知作者</small>
+      <div class="share-review-panel">
+        <div v-if="rejectTarget" class="share-review-panel__summary">
+          <div class="share-review-panel__summary-main">
+            <strong :title="itemTitle(rejectTarget)">{{ itemTitle(rejectTarget) }}</strong>
+            <small>{{ userLabel(rejectTarget) }} · {{ kindLabel(rejectTarget) }}</small>
           </div>
+          <span class="share-review-panel__pill is-reject">拒绝</span>
         </div>
-      </template>
 
-      <div v-if="rejectTarget" class="share-review-dialog__summary">
-        <div class="share-review-dialog__summary-main">
-          <strong :title="itemTitle(rejectTarget)">{{ itemTitle(rejectTarget) }}</strong>
-          <small>{{ userLabel(rejectTarget) }} · {{ kindLabel(rejectTarget) }}</small>
+        <div class="share-review-panel__section">
+          <div class="share-review-panel__label">
+            <span>拒绝原因</span>
+            <em>必填，将通知作者</em>
+          </div>
+          <div class="share-review-panel__presets is-reject">
+            <button
+              v-for="reason in rejectReasonPresets"
+              :key="reason"
+              type="button"
+              :class="{ 'is-active': rejectNote.includes(reason) }"
+              @click="applyRejectPreset(reason)"
+            >
+              {{ reason }}
+            </button>
+          </div>
+          <el-input
+            v-model="rejectNote"
+            type="textarea"
+            :rows="4"
+            maxlength="300"
+            show-word-limit
+            resize="none"
+            placeholder="补充说明，例如质量、版权或内容问题…"
+          />
         </div>
-        <span class="share-review-dialog__pill is-reject">拒绝</span>
       </div>
+    </AdminDialog>
 
-      <div class="share-review-dialog__section">
-        <div class="share-review-dialog__label">
-          <span>拒绝原因</span>
-          <em>必填，将通知作者</em>
-        </div>
-        <div class="share-review-dialog__presets is-reject">
-          <button
-            v-for="reason in rejectReasonPresets"
-            :key="reason"
-            type="button"
-            :class="{ 'is-active': rejectNote.includes(reason) }"
-            @click="applyRejectPreset(reason)"
-          >
-            {{ reason }}
-          </button>
-        </div>
-        <el-input
-          v-model="rejectNote"
-          type="textarea"
-          :rows="4"
-          maxlength="300"
-          show-word-limit
-          resize="none"
-          placeholder="补充说明，例如质量、版权或内容问题…"
-        />
-      </div>
-
-      <template #footer>
-        <div class="share-review-dialog__footer">
-          <el-button @click="rejectOpen = false">取消</el-button>
-          <el-button
-            type="danger"
-            :loading="Boolean(rejectTarget && operatingId === rejectTarget.id)"
-            @click="confirmReject"
-          >
-            确认拒绝
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
-
-    <el-dialog
+    <AdminDialog
       v-model="violationOpen"
-      align-center
-      append-to-body
-      destroy-on-close
+      title="违规处理"
+      subtitle="下架作品并可限制该用户继续投稿"
+      :icon="WarningFilled"
       width="520px"
-      class="share-review-dialog is-violate"
+      :confirm-text="violationForm.banDays > 0 ? '下架并禁投' : '确认下架'"
+      confirm-type="danger"
+      :confirm-loading="Boolean(violationTarget && operatingId === violationTarget.id)"
+      @confirm="confirmViolation"
     >
-      <template #header>
-        <div class="share-review-dialog__header">
-          <span class="share-review-dialog__icon is-violate">
-            <el-icon :size="18"><WarningFilled /></el-icon>
-          </span>
-          <div>
-            <strong>违规处理</strong>
-            <small>下架作品并可限制该用户继续投稿</small>
+      <div class="share-review-panel">
+        <div class="share-review-panel__alert">
+          <el-icon :size="16"><WarningFilled /></el-icon>
+          <p>
+            将下架作品并限制
+            <strong>{{ userLabel(violationTarget) }}</strong>
+            投稿，用户会收到违规通知。
+          </p>
+        </div>
+
+        <div v-if="violationTarget" class="share-review-panel__summary">
+          <div class="share-review-panel__summary-main">
+            <strong :title="itemTitle(violationTarget)">{{ itemTitle(violationTarget) }}</strong>
+            <small>{{ userLabel(violationTarget) }} · {{ kindLabel(violationTarget) }}</small>
           </div>
+          <span class="share-review-panel__pill is-violate">违规</span>
         </div>
-      </template>
 
-      <div class="share-review-dialog__alert">
-        <el-icon :size="16"><WarningFilled /></el-icon>
-        <p>
-          将下架「{{ itemTitle(violationTarget) }}」，并限制
-          <strong>{{ userLabel(violationTarget) }}</strong>
-          投稿。用户将收到违规通知。
-        </p>
+        <div class="share-review-panel__section">
+          <div class="share-review-panel__label">
+            <span>禁投天数</span>
+            <em>0–365 天，0 表示只下架不禁投</em>
+          </div>
+          <div class="share-review-panel__presets is-violate">
+            <button
+              v-for="days in banDayPresets"
+              :key="days"
+              type="button"
+              :class="{ 'is-active': violationForm.banDays === days }"
+              @click="violationForm.banDays = days"
+            >
+              {{ days === 0 ? '仅下架' : `${days} 天` }}
+            </button>
+          </div>
+          <el-input-number
+            v-model="violationForm.banDays"
+            :min="0"
+            :max="365"
+            :step="1"
+            controls-position="right"
+            style="width: 100%"
+          />
+        </div>
+
+        <div class="share-review-panel__section">
+          <div class="share-review-panel__label">
+            <span>违规原因</span>
+            <em>将记录到处理结果并通知用户</em>
+          </div>
+          <el-input
+            v-model="violationForm.reason"
+            type="textarea"
+            :rows="3"
+            maxlength="300"
+            show-word-limit
+            resize="none"
+            placeholder="说明违规原因，便于运营追溯"
+          />
+        </div>
+
+        <div class="share-review-panel__section">
+          <el-checkbox v-model="violationForm.deleteMedia">
+            同时删除媒体文件（不可恢复）
+          </el-checkbox>
+        </div>
       </div>
-
-      <div v-if="violationTarget" class="share-review-dialog__summary">
-        <div class="share-review-dialog__summary-main">
-          <strong :title="itemTitle(violationTarget)">{{ itemTitle(violationTarget) }}</strong>
-          <small>{{ userLabel(violationTarget) }} · {{ kindLabel(violationTarget) }}</small>
-        </div>
-        <span class="share-review-dialog__pill is-violate">违规</span>
-      </div>
-
-      <div class="share-review-dialog__section">
-        <div class="share-review-dialog__label">
-          <span>禁投天数</span>
-          <em>0 - 365 天，0 表示只下架不禁投</em>
-        </div>
-        <div class="share-review-dialog__presets is-violate">
-          <button
-            v-for="days in banDayPresets"
-            :key="days"
-            type="button"
-            :class="{ 'is-active': violationForm.banDays === days }"
-            @click="violationForm.banDays = days"
-          >
-            {{ days === 0 ? '仅下架' : `${days} 天` }}
-          </button>
-        </div>
-        <el-input-number
-          v-model="violationForm.banDays"
-          :min="0"
-          :max="365"
-          :step="1"
-          controls-position="right"
-          style="width: 100%"
-        />
-      </div>
-
-      <div class="share-review-dialog__section">
-        <div class="share-review-dialog__label">
-          <span>违规原因</span>
-          <em>将记录到处理结果并通知用户</em>
-        </div>
-        <el-input
-          v-model="violationForm.reason"
-          type="textarea"
-          :rows="4"
-          maxlength="300"
-          show-word-limit
-          resize="none"
-          placeholder="说明违规原因，便于运营追溯"
-        />
-      </div>
-
-      <div class="share-review-dialog__section">
-        <el-checkbox v-model="violationForm.deleteMedia">
-          同时删除媒体文件（不可恢复）
-        </el-checkbox>
-      </div>
-
-      <template #footer>
-        <div class="share-review-dialog__footer">
-          <el-button @click="violationOpen = false">取消</el-button>
-          <el-button
-            type="danger"
-            :loading="Boolean(violationTarget && operatingId === violationTarget.id)"
-            @click="confirmViolation"
-          >
-            {{ violationForm.banDays > 0 ? '下架并禁投' : '确认下架' }}
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
@@ -799,13 +898,19 @@ onUnmounted(() => {
   --community-accent: var(--accent);
   --community-line: var(--border);
 
+  box-sizing: border-box;
   display: grid;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
-  min-width: 0;
-  padding: 24px 28px;
+  overflow: hidden;
+  padding: 16px 18px;
+  background: var(--bg);
 }
 
 .ops-toolbar-panel {
+  flex-shrink: 0;
   min-height: 52px;
   padding: 8px 10px;
   border: 1px solid var(--community-line);
@@ -902,68 +1007,53 @@ onUnmounted(() => {
   }
 }
 
-.share-board {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  grid-auto-rows: 1fr;
-  align-items: stretch;
-  gap: 12px;
-  min-width: 0;
-}
-
-.share-card-skeleton {
-  min-height: 360px;
-  overflow: hidden;
+.share-feed {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px 2px 8px;
   border: 1px solid var(--community-line);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  content-visibility: auto;
-  contain-intrinsic-size: 360px;
-
-  > div {
-    aspect-ratio: 16 / 10;
-    background: linear-gradient(
-      105deg,
-      var(--el-fill-color-light) 22%,
-      var(--el-fill-color) 42%,
-      var(--el-fill-color-light) 62%
-    );
-    background-size: 220% 100%;
-    animation: share-skeleton 1.2s linear infinite;
-  }
-
-  footer {
-    padding: 14px;
-    display: grid;
-    gap: 10px;
-  }
-
-  footer span,
-  footer small,
-  footer em {
-    display: block;
-    height: 10px;
-    border-radius: 999px;
-    background: var(--el-fill-color);
-  }
-
-  footer small {
-    width: 68%;
-  }
-
-  footer em {
-    width: 42%;
-    height: 22px;
-    border-radius: 8px;
-    font-style: normal;
-  }
 }
 
-@keyframes share-skeleton {
-  to {
-    background-position: -220% 0;
-  }
+.share-feed.is-scrolling :deep(.share-card) {
+  pointer-events: none;
+  box-shadow: none;
+  transition: none;
+}
+
+.share-feed.is-scrolling :deep(.share-card__pane img) {
+  transform: none;
+  transition: none;
+}
+
+.share-feed__loading {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.share-masonry {
+  position: relative;
+  width: 100%;
+}
+
+.share-load-status {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  padding: 8px 0 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.share-load-status.is-loading {
+  color: var(--accent-ink);
 }
 
 @media (max-width: 760px) {
@@ -980,16 +1070,6 @@ onUnmounted(() => {
   .share-toolbar__aside {
     justify-content: space-between;
   }
-
-  .share-board {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 480px) {
-  .share-board {
-    grid-template-columns: 1fr;
-  }
 }
 </style>
 
@@ -999,19 +1079,12 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 4000;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100dvh;
+  min-height: 0;
   color: #fff;
   background: #05070c;
-
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    pointer-events: none;
-    background:
-      radial-gradient(circle at 50% 45%, transparent 42%, rgb(0 0 0 / 42%) 100%),
-      linear-gradient(180deg, rgb(0 0 0 / 38%) 0%, transparent 18%, transparent 78%, rgb(0 0 0 / 48%) 100%);
-  }
 }
 
 .share-lightbox-enter-active {
@@ -1114,27 +1187,26 @@ onUnmounted(() => {
 
 .share-lightbox__bar,
 .share-lightbox__footer {
-  position: absolute;
-  left: 0;
-  right: 0;
   z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 22px 28px;
-  background: linear-gradient(180deg, rgb(5 7 12 / 78%) 0%, rgb(5 7 12 / 28%) 62%, transparent 100%);
+  min-width: 0;
+  margin: 0;
+  padding: 12px 18px;
   border: 0;
+  background: rgb(12 14 20 / 92%);
+  box-shadow: none;
+  backdrop-filter: blur(14px);
 }
 
 .share-lightbox__bar {
-  top: 0;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
 }
 
 .share-lightbox__footer {
-  bottom: 0;
-  padding: 28px 22px 18px;
-  background: linear-gradient(0deg, rgb(5 7 12 / 82%) 0%, rgb(5 7 12 / 28%) 62%, transparent 100%);
+  border-top: 1px solid rgb(255 255 255 / 8%);
 }
 
 .share-lightbox__user {
@@ -1177,7 +1249,7 @@ onUnmounted(() => {
 .share-lightbox__status {
   flex: 0 0 auto;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: 6px;
   background: rgb(255 255 255 / 12%);
   color: #fff;
   font-size: 11px;
@@ -1250,11 +1322,11 @@ onUnmounted(() => {
 .share-lightbox__close {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 50%;
-  background: rgb(255 255 255 / 8%);
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 10%);
   color: #fff;
   cursor: pointer;
   transition:
@@ -1268,12 +1340,12 @@ onUnmounted(() => {
 }
 
 .share-lightbox__stage {
-  position: absolute;
-  inset: 0;
+  position: relative;
   z-index: 2;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  background: #0b0d12;
 }
 
 .share-lightbox__viewport {
@@ -1296,14 +1368,26 @@ onUnmounted(() => {
 .share-lightbox__image {
   display: block;
   box-sizing: border-box;
-  width: 100vw;
-  height: 100vh;
-  max-width: 100vw;
-  max-height: 100vh;
-  object-fit: contain;
-  object-position: center;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  background: transparent !important;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.share-lightbox__image.progressive-image,
+.share-lightbox__image .progressive-image,
+.share-lightbox .progressive-image.share-lightbox__image {
+  background: transparent !important;
+}
+
+.share-lightbox__image img,
+.share-lightbox .share-lightbox__image img {
+  object-fit: contain;
+  object-position: center;
+  background: transparent;
 }
 
 .share-lightbox__empty {
@@ -1486,218 +1570,156 @@ onUnmounted(() => {
   }
 }
 
-/* 审核对话框（拒绝 / 违规） */
-.share-review-dialog {
+/* 审核对话框（拒绝 / 违规）——样式挂在弹窗内容根节点，不依赖 teleport 外层 class */
+.share-review-panel {
   --community-dialog-line: var(--border);
+  display: grid;
+  gap: 14px;
+}
 
-  .share-review-dialog__header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-    padding-right: 8px;
+.share-review-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--community-dialog-line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+}
 
-    strong,
-    small {
-      display: block;
-    }
+.share-review-panel__summary-main {
+  min-width: 0;
+  flex: 1 1 auto;
 
-    strong {
-      color: var(--el-text-color-primary);
-      font-size: 15px;
-      font-weight: 740;
-      line-height: 1.3;
-    }
-
-    small {
-      margin-top: 2px;
-      color: var(--el-text-color-secondary);
-      font-size: 12px;
-      line-height: 1.35;
-    }
+  strong,
+  small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .share-review-dialog__icon {
-    display: grid;
-    flex: 0 0 auto;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-
-    &.is-reject {
-      background: var(--el-color-danger-light-9);
-      color: var(--el-color-danger);
-    }
-
-    &.is-violate {
-      background: var(--el-color-warning-light-9);
-      color: var(--el-color-warning);
-    }
-  }
-
-  .share-review-dialog__summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
-    padding: 12px 14px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 12px;
-    background: var(--surface-2);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .share-review-dialog__summary-main {
-    min-width: 0;
-
-    strong,
-    small {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    strong {
-      color: var(--el-text-color-primary);
-      font-size: 14px;
-      font-weight: 700;
-    }
-
-    small {
-      margin-top: 3px;
-      color: var(--el-text-color-secondary);
-      font-size: 12px;
-    }
-  }
-
-  .share-review-dialog__pill {
-    flex: 0 0 auto;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 11px;
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 14px;
     font-weight: 700;
-
-    &.is-reject {
-      background: var(--danger-soft);
-      color: var(--danger);
-    }
-
-    &.is-violate {
-      background: var(--warning-soft);
-      color: var(--warning);
-    }
   }
 
-  .share-review-dialog__alert {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    margin-bottom: 14px;
-    padding: 12px 14px;
-    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-    border-radius: 12px;
-    background: var(--danger-soft);
-    color: var(--danger);
-
-    .el-icon {
-      flex: 0 0 auto;
-      margin-top: 1px;
-    }
-
-    p {
-      margin: 0;
-      font-size: 13px;
-      line-height: 1.55;
-    }
-
-    strong {
-      font-weight: 740;
-    }
-  }
-
-  .share-review-dialog__section {
-    display: grid;
-    gap: 8px;
-
-    + .share-review-dialog__section {
-      margin-top: 16px;
-    }
-  }
-
-  .share-review-dialog__label {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-
-    span {
-      color: var(--el-text-color-primary);
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    em {
-      color: var(--el-text-color-secondary);
-      font-size: 12px;
-      font-style: normal;
-    }
-  }
-
-  .share-review-dialog__presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-
-    button {
-      min-height: 28px;
-      padding: 0 10px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: var(--surface);
-      color: var(--ink-2);
-      font-size: 12px;
-      font-weight: 650;
-      cursor: pointer;
-      transition:
-        border-color 0.15s ease,
-        color 0.15s ease,
-        background-color 0.15s ease,
-        transform 0.15s ease;
-
-      &:hover {
-        transform: translateY(-1px);
-        border-color: var(--el-color-primary-light-5);
-        color: var(--el-color-primary);
-      }
-    }
-
-    &.is-reject button.is-active {
-      border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-      background: var(--danger-soft);
-      color: var(--danger);
-    }
-
-    &.is-violate button.is-active {
-      border-color: color-mix(in srgb, var(--warning) 40%, transparent);
-      background: var(--warning-soft);
-      color: var(--warning);
-    }
-  }
-
-  .share-review-dialog__footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    width: 100%;
+  small {
+    margin-top: 3px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
   }
 }
 
-.gallery-prompt-dialog {
-  .el-dialog__body {
-    padding-top: 8px;
+.share-review-panel__pill {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-reject {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  &.is-violate {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+}
+
+.share-review-panel__alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: 12px;
+  background: var(--danger-soft);
+  color: var(--danger);
+
+  .el-icon {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  strong {
+    font-weight: 740;
+  }
+}
+
+.share-review-panel__section {
+  display: grid;
+  gap: 8px;
+}
+
+.share-review-panel__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+
+  span {
+    color: var(--el-text-color-primary);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  em {
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    font-style: normal;
+  }
+}
+
+.share-review-panel__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      color 0.15s ease,
+      background-color 0.15s ease,
+      transform 0.15s ease;
+
+    &:hover {
+      transform: translateY(-1px);
+      border-color: var(--el-color-primary-light-5);
+      color: var(--el-color-primary);
+    }
+  }
+
+  &.is-reject button.is-active {
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  &.is-violate button.is-active {
+    border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+    background: var(--warning-soft);
+    color: var(--warning);
   }
 }
 

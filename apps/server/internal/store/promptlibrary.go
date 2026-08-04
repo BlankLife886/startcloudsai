@@ -55,7 +55,9 @@ type PromptFilter struct {
 	TaskType      string
 	Category      string
 	Search        string
+	Tags          []string
 	Status        string
+	Source        string // synced | local
 	Order         string
 	ActiveOnly    bool
 	FavoritedBy   uuid.UUID
@@ -81,7 +83,16 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 	}
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
-		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d OR category ILIKE $%d OR tags::text ILIKE $%d)`, len(args), len(args), len(args), len(args))
+	}
+	if len(f.Tags) > 0 {
+		args = append(args, f.Tags)
+		sql += fmt.Sprintf(` AND tags ?| $%d::text[]`, len(args))
+	}
+	if f.Source == "synced" {
+		sql += ` AND source_id <> ''`
+	} else if f.Source == "local" {
+		sql += ` AND source_id = ''`
 	}
 	if f.FavoritedBy != uuid.Nil {
 		args = append(args, f.FavoritedBy)
@@ -99,6 +110,31 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 		sql += fmt.Sprintf(` AND created_at < $%d`, len(args))
 	}
 	return sql, args
+}
+
+// ListPromptTags returns all tags in the filtered public scope, independent of
+// the current category so clients can keep a stable filter navigation.
+func ListPromptTags(ctx context.Context, q Q, f PromptFilter) ([]string, error) {
+	f.Category = ""
+	sql, args := appendPromptFilter(`SELECT DISTINCT tag
+		FROM prompt_library CROSS JOIN LATERAL jsonb_array_elements_text(tags) AS tag WHERE true`, nil, f)
+	sql += ` ORDER BY tag ASC`
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tags := make([]string, 0)
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, rows.Err()
 }
 
 // ListPromptEntries 提示词分页（limit+1 行）。
@@ -212,7 +248,16 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 	}
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
-		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d OR category ILIKE $%d OR tags::text ILIKE $%d)`, len(args), len(args), len(args), len(args))
+	}
+	if len(f.Tags) > 0 {
+		args = append(args, f.Tags)
+		sql += fmt.Sprintf(` AND tags ?| $%d::text[]`, len(args))
+	}
+	if f.Source == "synced" {
+		sql += ` AND source_id <> ''`
+	} else if f.Source == "local" {
+		sql += ` AND source_id = ''`
 	}
 	if f.FavoritedBy != uuid.Nil {
 		args = append(args, f.FavoritedBy)

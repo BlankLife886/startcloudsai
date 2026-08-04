@@ -44,18 +44,20 @@ function normalizePromptItem(raw = {}) {
 export async function listPrompts({
   type = '',
   category = '',
+  search = '',
+  tags = [],
   scope = '',
   sort = 'recommended',
   cursor = '',
   limit = 24,
   signal,
 } = {}) {
-  const cacheKey = [type, category, scope, sort, cursor, limit].join('|')
+  const cacheKey = [type, category, search, tags.join(','), scope, sort, cursor, limit].join('|')
   const hit = cache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit.data
 
   const data = await apiGet('/prompts', {
-    query: { type, category, scope, sort, cursor, limit },
+    query: { type, category, search, tag: tags, scope, sort, cursor, limit },
     signal,
     fallbackMessage: '提示词库读取失败',
   })
@@ -70,6 +72,8 @@ export async function listPrompts({
             Object.entries(data.categoryCounts).map(([key, count]) => [key, Number(count) || 0]),
           )
         : {},
+    tags: Array.isArray(data?.tags) ? data.tags.map(String).filter(Boolean) : [],
+    total: Math.max(0, Number(data?.total) || 0),
   }
   cache.set(cacheKey, {
     expiresAt: Date.now() + (scope === 'today' ? 30_000 : CACHE_TTL_MS),

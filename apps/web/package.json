@@ -51,7 +51,6 @@
     "eslint-plugin-vue": "^10.9.1",
     "globals": "^17.4.0",
     "prettier": "3.5.3",
-    "rollup": "^4.60.2",
     "tailwindcss": "^4.2.4",
     "typescript": "^5.9.3",
     "vite": "^6.2.4",

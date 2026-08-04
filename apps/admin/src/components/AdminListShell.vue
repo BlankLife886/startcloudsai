@@ -7,7 +7,10 @@ withDefaults(
     page?: number
     count?: number
     total?: number | null
+    /** 视口固定高度；与 fill 互斥 */
     viewportHeight?: string
+    /** 填满父级剩余高度（抽屉内列表用） */
+    fill?: boolean
   }>(),
   {
     loading: false,
@@ -15,6 +18,7 @@ withDefaults(
     count: 0,
     total: null,
     viewportHeight: 'clamp(360px, calc(100vh - 300px), 680px)',
+    fill: false,
   },
 )
 
@@ -27,7 +31,8 @@ defineEmits<{
 <template>
   <section
     class="admin-list-shell"
-    :style="{ '--admin-list-height': viewportHeight }"
+    :class="{ 'is-fill': fill }"
+    :style="fill ? undefined : { '--admin-list-height': viewportHeight }"
   >
     <div class="admin-list-shell__viewport">
       <slot />
@@ -55,6 +60,11 @@ defineEmits<{
   grid-template-rows: var(--admin-list-height) auto;
   border-top: 1px solid var(--border);
 }
+.admin-list-shell.is-fill {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
 .admin-list-shell__viewport {
   min-width: 0;
   min-height: 0;
@@ -79,7 +89,7 @@ defineEmits<{
   width: 100%;
 }
 @media (max-width: 720px) {
-  .admin-list-shell {
+  .admin-list-shell:not(.is-fill) {
     grid-template-rows: minmax(360px, 62vh) auto;
   }
   .admin-list-shell__footer {

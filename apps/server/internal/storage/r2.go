@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,6 +19,11 @@ import (
 	"github.com/aws/smithy-go"
 
 	appconfig "github.com/BlankLife886/startcloudsai/server/internal/config"
+)
+
+const (
+	objectReadAttempts       = 3
+	objectReadAttemptTimeout = 7 * time.Second
 )
 
 func IsNotFound(err error) bool {
@@ -72,6 +79,30 @@ func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (s *Storage) GetBytesLimit(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < objectReadAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, objectReadAttemptTimeout)
+		data, err := s.getBytesLimitOnce(attemptCtx, key, maxBytes)
+		cancel()
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !transientObjectReadError(err) || attempt == objectReadAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Storage) getBytesLimitOnce(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -85,6 +116,28 @@ func (s *Storage) GetBytesLimit(ctx context.Context, key string, maxBytes int64)
 		return nil, fmt.Errorf("object exceeds %d byte limit", maxBytes)
 	}
 	return data, err
+}
+
+func transientObjectReadError(err error) bool {
+	if err == nil || IsNotFound(err) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		status := statusErr.HTTPStatusCode()
+		return status == 429 || status >= 500
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "tls handshake timeout") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "unexpected eof")
 }
 
 func (s *Storage) ObjectSize(ctx context.Context, key string) (int64, error) {

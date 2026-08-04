@@ -102,6 +102,26 @@ html.color-scheme-dark .main-content.main--search-gallery {
   overflow-x: clip;
 }
 
+.main-content.main--canvas-app {
+  --canvas-app-surface: oklch(1 0 0);
+  padding: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface);
+}
+
+html.color-scheme-dark .main-content.main--canvas-app {
+  --canvas-app-surface: oklch(0.145 0 0);
+}
+
+.app-container > .main-content.main--canvas-app > .canvas-app-view {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
 /* 默认页面：根背景延伸到透明 Header 后方，根内容从 Header 下沿开始。 */
 .app-container > .main-content:not(.main--no-header) > * {
   box-sizing: border-box;
@@ -1133,4 +1153,9 @@ html.settings-no-blur .app-bottom-floating-dock-inner {
   html.color-scheme-dark .app-bottom-floating-dock-inner {
     box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.4);
   }
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
 }

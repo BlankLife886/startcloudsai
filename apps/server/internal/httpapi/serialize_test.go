@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -54,5 +56,37 @@ func TestUserDictIncludesProfileDetails(t *testing.T) {
 	}
 	if dict["requireCostConfirm"] != true {
 		t.Fatalf("requireCostConfirm = %v, want true", dict["requireCostConfirm"])
+	}
+}
+
+func TestLedgerDictWithTaskIncludesUserFacingTaskDetails(t *testing.T) {
+	taskID := uuid.New()
+	entry := &store.LedgerEntry{
+		ID:                uuid.New(),
+		Kind:              "freeze",
+		DeltaCents:        -10,
+		BalanceAfterCents: 90,
+		SourceType:        "task",
+		CreatedAt:         time.Now(),
+	}
+	task := &store.Task{
+		ID:        taskID,
+		Type:      "background_remove",
+		Status:    "succeeded",
+		Model:     "internal-upstream-name",
+		Count:     1,
+		CostCents: 10,
+		Params: map[string]any{
+			"_modelDisplayName": "背景移除",
+			"_automatic":        true,
+		},
+	}
+	dict := ledgerDictWithTask(entry, task)
+	taskDict, ok := dict["task"].(gin.H)
+	if !ok {
+		t.Fatalf("task details missing: %#v", dict)
+	}
+	if taskDict["modelName"] != "背景移除" || taskDict["automaticBackgroundRemove"] != true || taskDict["settledCostPoints"] != int64(10) {
+		t.Fatalf("unexpected task details: %#v", taskDict)
 	}
 }

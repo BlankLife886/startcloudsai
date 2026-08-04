@@ -48,6 +48,35 @@ func TestFallbackAssistantIntent(t *testing.T) {
 	}
 }
 
+func TestFastAssistantIntent(t *testing.T) {
+	cases := []struct {
+		name                  string
+		prompt                string
+		hasReference          bool
+		lastAssistantWasImage bool
+		want                  string
+		certain               bool
+	}{
+		{"明确生成请求", "生成三张复古卧室人像", false, false, "image", true},
+		{"参考图编辑", "把背景换成夜景", true, false, "image", true},
+		{"图片理解", "识别一下图片里的文字", true, false, "chat", true},
+		{"延续上一张", "再来一张", false, true, "image", true},
+		{"模糊对话交给模型", "谈谈你的想法", false, false, "", false},
+		{"明确拒绝生成", "不要生成图片，只分析一下思路", false, false, "chat", true},
+		{"拒绝编辑参考图", "不要修改图片，帮我描述一下", true, false, "chat", true},
+		{"否定后仍有新的生成要求", "不要生成旧方案，生成一张新的海报", false, false, "image", true},
+		{"英文拒绝生成", "don't generate an image, just explain", false, false, "chat", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, certain := fastAssistantIntent(tc.prompt, tc.hasReference, tc.lastAssistantWasImage)
+			if got != tc.want || certain != tc.certain {
+				t.Fatalf("fastAssistantIntent() = (%q, %v), want (%q, %v)", got, certain, tc.want, tc.certain)
+			}
+		})
+	}
+}
+
 func TestParseAssistantIntentReply(t *testing.T) {
 	cases := []struct {
 		name  string

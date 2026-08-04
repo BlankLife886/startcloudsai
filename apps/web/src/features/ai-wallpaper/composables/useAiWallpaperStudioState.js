@@ -88,9 +88,7 @@ export function useAiWallpaperStudioState() {
     persistStudioDraft: (...args) => persistStudioDraft(...args),
     outputType,
     privacyMode,
-    maxReferenceImages: computed(
-      () => models.currentPublicModel.value?.maxReferenceImages ?? 4,
-    ),
+    maxReferenceImages: computed(() => models.currentPublicModel.value?.maxReferenceImages ?? 4),
   })
 
   previewBridge.sourcePreview = inputs.sourcePreview
@@ -113,6 +111,39 @@ export function useAiWallpaperStudioState() {
     if (outputType.value === 'video' && !models.videoDispatchModel.value) return false
     return canUseServerAi.value && !!inputs.prompt.value.trim()
   })
+  const backgroundRemovalModels = computed(() => {
+    const models = runtimeConfigStore.getFeaturePayload('ai.imageTools')?.backgroundRemovalModels
+    return Array.isArray(models) ? models.filter((model) => model?.id) : []
+  })
+  const backgroundRemovalModel = computed(
+    () =>
+      backgroundRemovalModels.value.find((model) => model.default === true) ||
+      backgroundRemovalModels.value[0] ||
+      null,
+  )
+  const autoBackgroundRemovalEnabled = ref(false)
+  const backgroundRemovalUnitPrice = computed(() =>
+    Math.max(0, Number(backgroundRemovalModel.value?.pricePoints || 0)),
+  )
+
+  function includeAutomaticBackgroundRemovalCost(snapshot, count) {
+    const units = Math.max(1, Number(count || 1))
+    if (
+      outputType.value !== 'image' ||
+      autoBackgroundRemovalEnabled.value !== true ||
+      !backgroundRemovalModel.value?.id
+    ) {
+      return snapshot
+    }
+    const backgroundTotal = backgroundRemovalUnitPrice.value * units
+    return {
+      ...snapshot,
+      unitCost: Math.max(0, Number(snapshot?.unitCost || 0)) + backgroundTotal,
+      unitCostPerUnit:
+        Math.max(0, Number(snapshot?.unitCostPerUnit || 0)) + backgroundRemovalUnitPrice.value,
+      featureLabel: '文生图（含自动背景移除）',
+    }
+  }
 
   async function ensureWallpaperBudgetAvailable(model, count = 1, options = {}) {
     const snapshot = studioBudgetGuard.getCostSnapshot(model, count)
@@ -140,6 +171,8 @@ export function useAiWallpaperStudioState() {
     promptPolishEnabled: inputs.promptPolishEnabled,
     autoTranslateEnabled: inputs.autoTranslateEnabled,
     transparentPngEnabled: inputs.transparentPngEnabled,
+    autoBackgroundRemovalEnabled,
+    backgroundRemovalModel,
     sourcePreview: inputs.sourcePreview,
     sourceRemoteUrl: inputs.sourceRemoteUrl,
     selectedFile: inputs.selectedFile,
@@ -236,12 +269,16 @@ export function useAiWallpaperStudioState() {
       Number.isFinite(selectedUnitPrice) &&
       selectedUnitPrice >= 0
     ) {
-      const total = selectedUnitPrice * count
+      const total =
+        selectedUnitPrice * count +
+        (autoBackgroundRemovalEnabled.value ? backgroundRemovalUnitPrice.value * count : 0)
       if (total === 0) return '免费'
       return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(total)} 积分`
     }
     if (generationUnitPriceCents.value != null) {
-      const total = Math.max(0, Number(generationUnitPriceCents.value)) * count
+      const total =
+        Math.max(0, Number(generationUnitPriceCents.value)) * count +
+        (autoBackgroundRemovalEnabled.value ? backgroundRemovalUnitPrice.value * count : 0)
       if (total === 0) return '免费'
       return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(total)} 积分`
     }
@@ -250,7 +287,10 @@ export function useAiWallpaperStudioState() {
         ? models.videoDispatchModel.value
         : models.imageDispatchModel.value
     if (!dispatchModel) return ''
-    const snapshot = studioBudgetGuard.getCostSnapshot(dispatchModel, count)
+    const snapshot = includeAutomaticBackgroundRemovalCost(
+      studioBudgetGuard.getCostSnapshot(dispatchModel, count),
+      count,
+    )
     const total = Math.max(0, Number(snapshot?.unitCost || 0))
     if (!total) return ''
     if (snapshot?.billingMode === 'credits') {
@@ -258,6 +298,47 @@ export function useAiWallpaperStudioState() {
     }
     return `$${total.toFixed(4)}`
   })
+
+  const localMaskEditCostLabel = computed(() => {
+    const dispatchModel = String(models.imageDispatchModel.value || '').trim()
+    if (!dispatchModel) return ''
+    const snapshot = studioBudgetGuard.getCostSnapshot(dispatchModel, 1)
+    const amount = Math.max(0, Number(snapshot?.unitCost || 0))
+    if (snapshot?.billingMode === 'credits') {
+      if (amount === 0) return '免费'
+      return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(amount)} 积分`
+    }
+    return amount > 0 ? `$${amount.toFixed(4)}` : '按实际用量结算'
+  })
+
+  async function getLocalMaskEditCostSnapshot() {
+    const dispatchModel = String(models.imageDispatchModel.value || '').trim()
+    if (!dispatchModel) throw new Error('请先选择支持局部编辑的图片模型')
+    void runtimeConfigStore.refreshRuntimeConfigInBackground()
+    const costSnapshot = await enrichStudioCreditCostSnapshot({
+      ...studioBudgetGuard.getCostSnapshot(dispatchModel, 1),
+      featureLabel: '图片局部编辑',
+    })
+    try {
+      if (costSnapshot.billingMode === 'credits') {
+        const required = Math.max(
+          0,
+          Number(costSnapshot.totalPriceCents ?? costSnapshot.unitCost ?? 0),
+        )
+        await creditsPrompt.ensureCreditsAvailable(required, {
+          available: costSnapshot.creditAvailable,
+        })
+      } else {
+        await ensureWallpaperBudgetAvailable(dispatchModel, 1, {
+          creditAvailable: costSnapshot.creditAvailable,
+        })
+      }
+    } catch (error) {
+      if (creditsPrompt.handleCreditError(error)) return null
+      throw error
+    }
+    return costSnapshot
+  }
 
   async function loadGenerationUnitPrice() {
     const unitPriceCents = await getFeatureUnitPriceCents('wallpaper')
@@ -300,20 +381,54 @@ export function useAiWallpaperStudioState() {
       regenerateTaskId,
       count: outputType.value === 'image' ? count : 1,
       skipClientBudgetCheck: true,
+      autoBackgroundRemovalEnabled:
+        outputType.value === 'image' &&
+        autoBackgroundRemovalEnabled.value === true &&
+        Boolean(backgroundRemovalModel.value?.id),
+      autoBackgroundRemovalModelKey:
+        outputType.value === 'image' && autoBackgroundRemovalEnabled.value === true
+          ? String(backgroundRemovalModel.value?.id || '').trim()
+          : '',
     }
     if (authStore.user?.requireCostConfirm === false) {
+      if (createOptions.autoBackgroundRemovalEnabled) {
+        const uncheckedSnapshot = await enrichStudioCreditCostSnapshot(
+          includeAutomaticBackgroundRemovalCost(
+            studioBudgetGuard.getCostSnapshot(dispatchModel, count),
+            count,
+          ),
+        )
+        try {
+          await creditsPrompt.ensureCreditsAvailable(uncheckedSnapshot.unitCost, {
+            available: uncheckedSnapshot.creditAvailable,
+          })
+        } catch (error) {
+          if (creditsPrompt.handleCreditError(error)) return
+          notificationService.error(error?.message || '预算不足')
+          return
+        }
+      }
       pendingCreateOptions.value = null
       await dispatchCreateOrRegenerate(createOptions)
       return
     }
 
     const costSnapshot = await enrichStudioCreditCostSnapshot(
-      studioBudgetGuard.getCostSnapshot(dispatchModel, count),
+      includeAutomaticBackgroundRemovalCost(
+        studioBudgetGuard.getCostSnapshot(dispatchModel, count),
+        count,
+      ),
     )
     try {
-      await ensureWallpaperBudgetAvailable(dispatchModel, count, {
-        creditAvailable: costSnapshot.creditAvailable,
-      })
+      if (costSnapshot.billingMode === 'credits') {
+        await creditsPrompt.ensureCreditsAvailable(costSnapshot.unitCost, {
+          available: costSnapshot.creditAvailable,
+        })
+      } else {
+        await ensureWallpaperBudgetAvailable(dispatchModel, count, {
+          creditAvailable: costSnapshot.creditAvailable,
+        })
+      }
     } catch (error) {
       if (creditsPrompt.handleCreditError(error)) return
       notificationService.error(error?.message || '预算不足')
@@ -358,6 +473,7 @@ export function useAiWallpaperStudioState() {
         promptPolishEnabled: inputs.promptPolishEnabled.value,
         autoTranslateEnabled: inputs.autoTranslateEnabled.value,
         transparentPngEnabled: inputs.transparentPngEnabled.value,
+        autoBackgroundRemovalEnabled: autoBackgroundRemovalEnabled.value,
         negativePrompt: inputs.negativePrompt.value,
         aspectRatio: inputs.aspectRatio.value,
         imageCount: inputs.imageCount.value,
@@ -403,6 +519,9 @@ export function useAiWallpaperStudioState() {
       }
       if (typeof draft.transparentPngEnabled === 'boolean') {
         inputs.transparentPngEnabled.value = draft.transparentPngEnabled
+      }
+      if (typeof draft.autoBackgroundRemovalEnabled === 'boolean') {
+        autoBackgroundRemovalEnabled.value = draft.autoBackgroundRemovalEnabled
       }
       if (typeof draft.negativePrompt === 'string')
         inputs.negativePrompt.value = draft.negativePrompt
@@ -589,6 +708,7 @@ export function useAiWallpaperStudioState() {
       inputs.promptPolishEnabled,
       inputs.autoTranslateEnabled,
       inputs.transparentPngEnabled,
+      autoBackgroundRemovalEnabled,
       inputs.negativePrompt,
       inputs.aspectRatio,
       inputs.imageCount,
@@ -661,6 +781,7 @@ export function useAiWallpaperStudioState() {
     promptPolishEnabled: inputs.promptPolishEnabled,
     autoTranslateEnabled: inputs.autoTranslateEnabled,
     transparentPngEnabled: inputs.transparentPngEnabled,
+    autoBackgroundRemovalEnabled,
     negativePrompt: inputs.negativePrompt,
     aspectRatio: inputs.aspectRatio,
     imageCount: inputs.imageCount,
@@ -671,6 +792,7 @@ export function useAiWallpaperStudioState() {
     maxReferenceImages: inputs.maxReferenceImages,
     outputSizeLabel: inputs.outputSizeLabel,
     generationCostLabel,
+    localMaskEditCostLabel,
     duration: inputs.duration,
     creativity: inputs.creativity,
     styleStrength: inputs.styleStrength,
@@ -711,10 +833,13 @@ export function useAiWallpaperStudioState() {
     isRunning: tasks.isRunning,
     isPageLoading,
     requestCreateTask,
+    getLocalMaskEditCostSnapshot,
     activeOutputs: tasks.activeOutputs,
     latestOutput: tasks.latestOutput,
     sourcePreview: inputs.sourcePreview,
     canCreateTask,
+    backgroundRemovalModels,
+    backgroundRemovalModel,
     activePublicModelOptions: models.activePublicModelOptions,
     selectedPublicModel: models.selectedPublicModel,
     currentPublicModel: models.currentPublicModel,
@@ -771,6 +896,7 @@ export function useAiWallpaperStudioState() {
     clearFailedAndPausedTasks: tasks.clearFailedAndPausedTasks,
     isAuthenticated: computed(() => Boolean(authStore.isAuthenticated)),
     loadMoreServerJobs: tasks.loadMoreServerJobs,
+    refreshServerAiJobs: tasks.refreshServerAiJobs,
     serverJobsHasMore: tasks.serverJobsHasMore,
     serverJobsLoadingMore: tasks.serverJobsLoadingMore,
     viewTask: tasks.viewTask,

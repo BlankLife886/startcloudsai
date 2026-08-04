@@ -43,10 +43,10 @@ const (
 	typeSyncPromptSources    = "cron:sync_prompt_sources"
 	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
 
-	zombieRunningMinutes = 30
-	taskCompletionLease  = 5 * time.Minute
-	staleQueuedMinutes   = 10
-	maxNetworkRecoveries = 3
+	zombieRunningMinutes  = 30
+	taskCompletionLease   = 5 * time.Minute
+	staleQueuedMinutes    = 10
+	maxTaskFailureRetries = 100
 )
 
 type Worker struct {
@@ -182,7 +182,25 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		if runtimeErr != nil {
 			return nil, "", runtimeErr
 		}
-		candidates = modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
+		balanceAcrossProviders, settingErr := settings.GetBool(ctx, w.St.Pool, "cross_provider_same_model_balancing_enabled")
+		if settingErr != nil {
+			return nil, "", settingErr
+		}
+		unitPrice, hasUnitPrice := taskParamInt64(queued.Params, "_unitPriceCents")
+		if balanceAcrossProviders && hasUnitPrice {
+			candidates = modelconfig.ExecutionCandidatesRouteAcrossProviders(cfg, providerID, modelID, routeID, unitPrice)
+			compatible := candidates[:0]
+			for _, candidate := range candidates {
+				isBoundModel := candidate.Provider.ID == providerID && candidate.Model.ID == modelID
+				isCompatibleTool := candidate.Model.Kind == modelconfig.ModelKindImageTool && candidate.Model.Tool == taskParamString(queued.Params, "_modelTool")
+				if isBoundModel || isCompatibleTool || taskflow.ValidateModelImageCapabilities(candidate.Model, queued.Params, len(queued.InputKeys)) == nil {
+					compatible = append(compatible, candidate)
+				}
+			}
+			candidates = compatible
+		} else {
+			candidates = modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
+		}
 		if len(candidates) == 0 {
 			return nil, "", errors.New("任务绑定的模型没有可用服务商")
 		}
@@ -633,6 +651,32 @@ func (w *Worker) createCRUNImageTasks(ctx context.Context, task *store.Task, cli
 	return taskIDs, nil
 }
 
+func (w *Worker) createCRUNBackgroundRemovalTask(ctx context.Context, task *store.Task, client *crun.Client) (string, error) {
+	existing := taskParamStrings(task.Params, "_crunTaskIds")
+	if len(existing) > 0 && strings.TrimSpace(existing[0]) != "" {
+		return strings.TrimSpace(existing[0]), nil
+	}
+	if len(task.InputKeys) != 1 {
+		return "", errors.New("background removal requires exactly one input image")
+	}
+	imageURL, err := w.Storage.PresignGet(ctx, task.InputKeys[0])
+	if err != nil {
+		return "", err
+	}
+	taskID, err := client.CreateBackgroundRemovalTask(ctx, imageURL)
+	if err != nil {
+		return "", err
+	}
+	if err := store.SetTaskCRUNTaskIDs(ctx, w.St.Pool, task.ID, []string{taskID}); err != nil {
+		return "", err
+	}
+	if task.Params == nil {
+		task.Params = map[string]any{}
+	}
+	task.Params["_crunTaskIds"] = []string{taskID}
+	return taskID, nil
+}
+
 func (w *Worker) callCRUN(ctx context.Context, task *store.Task, onImage imageReadyFunc) ([]string, error) {
 	client, err := w.crunClient(ctx)
 	if err != nil {
@@ -700,6 +744,15 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 		if err != nil {
 			return nil, err
 		}
+		if selection.Model.Kind == modelconfig.ModelKindImageTool {
+			if selection.Model.Tool != modelconfig.ImageToolBackgroundRemove {
+				return nil, errors.New("不支持的图片工具")
+			}
+			if _, err := w.createCRUNBackgroundRemovalTask(ctx, task, client); err != nil {
+				return nil, err
+			}
+			return nil, &asyncImagePendingError{}
+		}
 		if _, err := w.createCRUNImageTasks(ctx, task, client); err != nil {
 			return nil, err
 		}
@@ -763,6 +816,26 @@ func taskParamString(params map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+func taskParamInt64(params map[string]any, key string) (int64, bool) {
+	if params == nil {
+		return 0, false
+	}
+	switch value := params[key].(type) {
+	case int:
+		return int64(value), value >= 0
+	case int64:
+		return value, value >= 0
+	case float64:
+		converted := int64(value)
+		return converted, value >= 0 && float64(converted) == value
+	case json.Number:
+		converted, err := value.Int64()
+		return converted, err == nil && converted >= 0
+	default:
+		return 0, false
+	}
 }
 
 func taskParamBool(params map[string]any, keys ...string) bool {
@@ -887,6 +960,45 @@ func sanitizeUpstreamMessage(msg string) string {
 	return cleaned
 }
 
+func (w *Worker) taskFailureRetryCount(ctx context.Context) int {
+	count, err := settings.GetInt(ctx, w.St.Pool, "task_failure_retry_count")
+	if err != nil {
+		log.Printf("read task failure retry count failed, retries disabled: %v", err)
+		return 0
+	}
+	if count <= 0 {
+		return 0
+	}
+	if count > maxTaskFailureRetries {
+		return maxTaskFailureRetries
+	}
+	return int(count)
+}
+
+func (w *Worker) scheduleTaskRetry(ctx context.Context, task *store.Task) (bool, error) {
+	if task == nil || task.Attempt >= w.taskFailureRetryCount(ctx) {
+		return false, nil
+	}
+	if err := store.BumpTaskAttempt(ctx, w.St.Pool, task.ID); err != nil {
+		return false, err
+	}
+	task.Attempt++
+	w.recordFailedTaskProvider(ctx, task)
+	requeued, err := store.RequeueRunningTask(ctx, w.St.Pool, task.ID)
+	if err != nil || !requeued {
+		return false, err
+	}
+	delay := time.Duration(task.Attempt*15) * time.Second
+	if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, task.ID.String(), delay); err != nil {
+		// The task remains queued so the stale-queue reaper can recover it.
+		log.Printf("task %s retry enqueue failed; stale queue reaper will retry: %v", task.ID, err)
+	} else {
+		log.Printf("task %s retry scheduled attempt=%d delay=%s", task.ID, task.Attempt, delay)
+	}
+	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "queued", Status: "queued"})
+	return true, nil
+}
+
 func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	var payload taskflow.RunTaskPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
@@ -957,16 +1069,6 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	upstreamStartedAt := time.Now()
 	imagesB64, callErr := w.callUpstream(ctx, task, provider, model, collector.persist)
 	var netErr *c2a.NetworkError
-	if callErr != nil && isRetryableTaskError(callErr) {
-		// 连接/超时类错误重试一次（attempt+1 落库）
-		log.Printf("task %s network error, retrying once: %v", taskID, callErr)
-		if berr := store.BumpTaskAttempt(ctx, w.St.Pool, taskID); berr != nil {
-			log.Printf("task %s bump attempt failed: %v", taskID, berr)
-		} else {
-			task.Attempt++
-		}
-		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
-	}
 	var pendingErr *asyncImagePendingError
 	if errors.As(callErr, &pendingErr) {
 		delay := 2*time.Second + time.Duration(taskID[0]%3)*time.Second
@@ -1017,31 +1119,16 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
 	}
 	configuredProvider := taskParamString(task.Params, "_providerConfigId") != ""
-	recoveryLimit := maxNetworkRecoveries
-	if configuredProvider {
-		recoveryLimit = w.configuredTaskRecoveryLimit(ctx, task)
-	}
 	if callErr != nil && isRetryableTaskError(callErr) && len(outputKeys) == 0 &&
-		(configuredProvider || provider == "c2a" || provider == "crun") && task.Attempt < recoveryLimit {
+		(configuredProvider || provider == "c2a" || provider == "crun") {
 		recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelRecovery()
-		if configuredProvider {
-			w.recordFailedTaskProvider(recoveryCtx, task)
-		}
-		requeued, requeueErr := store.RequeueRunningTask(recoveryCtx, w.St.Pool, taskID)
-		if requeueErr == nil && requeued {
-			delay := time.Duration(task.Attempt*15) * time.Second
-			enqueueErr := w.Queue.EnqueueRunTaskRecoveryIn(recoveryCtx, taskID.String(), delay)
-			if enqueueErr != nil {
-				log.Printf("task %s network recovery enqueue failed; stale queue reaper will retry: %v", taskID, enqueueErr)
-			} else {
-				log.Printf("task %s network recovery scheduled attempt=%d delay=%s", taskID, task.Attempt, delay)
-			}
-			w.publishTaskEvent(recoveryCtx, task, taskstream.Event{Stage: "queued", Status: "queued"})
+		retried, retryErr := w.scheduleTaskRetry(recoveryCtx, task)
+		if retried {
 			return nil
 		}
-		if requeueErr != nil {
-			log.Printf("task %s network recovery state update failed: %v", taskID, requeueErr)
+		if retryErr != nil {
+			log.Printf("task %s retry scheduling failed: %v", taskID, retryErr)
 		}
 	}
 
@@ -1064,6 +1151,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			if succeeded != nil {
 				// M4：通知在主事务提交后尽力而为
 				taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
+				w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
 			}
 			w.publishTaskEvent(ctx, task, taskstream.Event{
 				Stage: "complete", Status: "succeeded", ImageCount: len(outputKeys), Done: true,
@@ -1257,7 +1345,14 @@ func providerTimeoutSecs(provider *modelconfig.Provider) int {
 
 func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider, claimID string) {
 	if imagePollExpired(task, providerTimeoutSecs(provider)) {
-		_ = w.markFailedClaimed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试", claimID)
+		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+		retried, err := w.scheduleTaskRetry(ctx, task)
+		if err != nil {
+			log.Printf("task %s timeout retry scheduling failed: %v", task.ID, err)
+		}
+		if !retried {
+			_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试")
+		}
 		return
 	}
 	_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
@@ -1269,16 +1364,12 @@ func (w *Worker) requeueUnavailableProviderTasks(ctx context.Context, providerID
 		return err
 	}
 	for _, task := range tasks {
-		w.recordFailedTaskProvider(ctx, task)
-		if err := store.BumpTaskAttempt(ctx, w.St.Pool, task.ID); err != nil {
-			log.Printf("task %s provider failover attempt update failed: %v", task.ID, err)
+		retried, retryErr := w.scheduleTaskRetry(ctx, task)
+		if retryErr != nil {
+			log.Printf("task %s provider failover scheduling failed: %v", task.ID, retryErr)
 		}
-		requeued, err := store.RequeueRunningTask(ctx, w.St.Pool, task.ID)
-		if err != nil || !requeued {
-			continue
-		}
-		if err := w.Queue.EnqueueRunTaskRecovery(ctx, task.ID.String()); err != nil {
-			log.Printf("task %s provider failover enqueue failed: %v", task.ID, err)
+		if !retried {
+			_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "任务绑定的服务商当前不可用")
 		}
 	}
 	return nil
@@ -1307,18 +1398,6 @@ func (w *Worker) recordFailedTaskProvider(ctx context.Context, task *store.Task)
 		task.Params = map[string]any{}
 	}
 	task.Params["_failedProviderConfigIds"] = failed
-}
-
-func (w *Worker) configuredTaskRecoveryLimit(ctx context.Context, task *store.Task) int {
-	cfg, err := w.runtimeModelConfig(ctx)
-	if err != nil {
-		return maxNetworkRecoveries
-	}
-	candidates := modelconfig.ExecutionCandidatesRoute(
-		cfg, taskParamString(task.Params, "_providerConfigId"), taskParamString(task.Params, "_modelConfigId"),
-		taskParamString(task.Params, "_providerRouteId"),
-	)
-	return min(max(len(candidates)*2, maxNetworkRecoveries), 1000)
 }
 
 func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, images []string, claimID string) error {
@@ -1358,11 +1437,63 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 	}
 	if succeeded != nil {
 		taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
+		w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
 	}
 	w.publishTaskEvent(ctx, task, taskstream.Event{
 		Stage: "complete", Status: "succeeded", ImageCount: len(outputKeys), Done: true,
 	})
 	return nil
+}
+
+func automaticBackgroundRemovalModel(task *store.Task) string {
+	if task == nil || task.Type != "t2i" || !taskParamBool(task.Params, "autoBackgroundRemovalEnabled") {
+		return ""
+	}
+	return taskParamString(task.Params, "autoBackgroundRemovalModelKey")
+}
+
+// enqueueAutomaticBackgroundRemoval creates children only after the parent image task has
+// committed as succeeded. The deterministic key makes completion replays harmless.
+func (w *Worker) enqueueAutomaticBackgroundRemoval(ctx context.Context, parent *store.Task, outputKeys []string) {
+	modelKey := automaticBackgroundRemovalModel(parent)
+	if modelKey == "" || len(outputKeys) == 0 {
+		return
+	}
+	for index, outputKey := range outputKeys {
+		if strings.TrimSpace(outputKey) == "" {
+			continue
+		}
+		idempotencyKey := fmt.Sprintf("background-remove:%s:%d", parent.ID, index)
+		child, created, err := taskflow.CreateTask(ctx, w.St, parent.UserID, taskflow.CreateInput{
+			Type:   "background_remove",
+			Prompt: "移除图片背景",
+			Params: map[string]any{
+				"publicModelKey":     modelKey,
+				"_kind":              "wallpaper-background-remove",
+				"_parentTaskId":      parent.ID.String(),
+				"_parentOutputIndex": index,
+				"_automatic":         true,
+			},
+			InputKeys:      []string{outputKey},
+			Count:          1,
+			IdempotencyKey: &idempotencyKey,
+		})
+		if err != nil {
+			log.Printf("task %s automatic background removal %d creation failed: %v", parent.ID, index, err)
+			continue
+		}
+		if !created && child.Status != "queued" {
+			continue
+		}
+		if err := w.Queue.EnqueueRunTask(ctx, child.ID.String()); err != nil {
+			log.Printf("task %s automatic background removal %d enqueue failed: %v", parent.ID, index, err)
+			if created {
+				if _, failErr := taskflow.FailQueuedEnqueue(ctx, w.St, child.ID); failErr != nil {
+					log.Printf("task %s automatic background removal enqueue compensation failed: %v", child.ID, failErr)
+				}
+			}
+		}
+	}
 }
 
 func imagePollExpired(task *store.Task, timeoutSecs int) bool {

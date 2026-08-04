@@ -149,6 +149,44 @@ func TestCreateTaskUsesUserSelectedPublicModel(t *testing.T) {
 	}
 }
 
+func TestCreateBackgroundRemovalTaskUsesToolPrice(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "crun", Name: "CRUN", Adapter: modelconfig.AdapterCRUN,
+		BaseURL: "https://api.crun.ai", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "remove-bg", Name: "背景移除", ProviderID: "crun",
+		UpstreamModel: "image-background-remove", Kind: modelconfig.ModelKindImageTool,
+		Tool: modelconfig.ImageToolBackgroundRemove, PriceCents: 7,
+		Public: true, Default: true, Enabled: true,
+	}}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "background_remove", Prompt: "移除图片背景", Count: 1,
+		Params:    map[string]any{"publicModelKey": "remove-bg"},
+		InputKeys: []string{"uploads/" + user.ID.String() + "/source.png"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Model != "image-background-remove" || task.CostCents != 7 || task.Params["_modelTool"] != modelconfig.ImageToolBackgroundRemove {
+		t.Fatalf("background removal task model=%q cost=%d params=%#v", task.Model, task.CostCents, task.Params)
+	}
+	wallet := getWallet(t, st, user.ID)
+	if wallet.BalanceCents != 93 || wallet.FrozenCents != 7 {
+		t.Fatalf("wallet = (%d, %d), want (93, 7)", wallet.BalanceCents, wallet.FrozenCents)
+	}
+	_, _, err = taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "background_remove", Prompt: "移除图片背景", Count: 1,
+	})
+	mustAppErr(t, err, "validation_error")
+}
+
 func TestCreateTaskSnapshotsConfiguredImageService(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)

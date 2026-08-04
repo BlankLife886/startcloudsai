@@ -1,17 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search, Wallet } from '@element-plus/icons-vue'
+import AdminDialog from '@/components/AdminDialog.vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
   formatPoints,
+  formatShortTime,
   formatTime,
   ledgerKindLabel,
-  shortId,
   TASK_STATUS_LABELS,
-  TASK_STATUS_TAG,
   taskTypeLabel,
 } from '@/utils'
+
+interface UserUsage {
+  tasksTotal: number
+  tasksSucceeded: number
+  tasksFailed: number
+  tasksRunning: number
+  tasksCanceled: number
+  submissions: number
+  assets: number
+  orders: number
+}
 
 interface AdminUser {
   id: string
@@ -28,14 +40,50 @@ interface AdminUser {
   /** 兼容旧版接口。 */
   balanceCents?: number
   createdAt: string
+  usage?: UserUsage
 }
 
 function displayName(user: AdminUser | null | undefined) {
   return String(user?.username || user?.email || '未知用户').trim()
 }
 
+/** 列表展示：前 2 + … + 后 2；过短时原样返回 */
+function maskedDisplayName(user: AdminUser | null | undefined) {
+  const name = displayName(user)
+  if (name.length <= 4) return name
+  return `${name.slice(0, 2)}...${name.slice(-2)}`
+}
+
 function avatarInitial(user: AdminUser | null | undefined) {
   return displayName(user).slice(0, 1).toUpperCase() || '?'
+}
+
+function usageOf(user: AdminUser | null | undefined): UserUsage {
+  return {
+    tasksTotal: user?.usage?.tasksTotal ?? 0,
+    tasksSucceeded: user?.usage?.tasksSucceeded ?? 0,
+    tasksFailed: user?.usage?.tasksFailed ?? 0,
+    tasksRunning: user?.usage?.tasksRunning ?? 0,
+    tasksCanceled: user?.usage?.tasksCanceled ?? 0,
+    submissions: user?.usage?.submissions ?? 0,
+    assets: user?.usage?.assets ?? 0,
+    orders: user?.usage?.orders ?? 0,
+  }
+}
+
+/** 头像加载失败时回退到首字母占位 */
+const brokenAvatars = ref(new Set<string>())
+
+function avatarBroken(id: string) {
+  if (brokenAvatars.value.has(id)) return
+  const next = new Set(brokenAvatars.value)
+  next.add(id)
+  brokenAvatars.value = next
+}
+
+function showAvatar(user: AdminUser | null | undefined) {
+  const url = String(user?.avatarUrl || '').trim()
+  return Boolean(url && user?.id && !brokenAvatars.value.has(user.id))
 }
 
 function walletOf(user: AdminUser | null | undefined) {
@@ -63,6 +111,12 @@ function websiteHref(value: string | null | undefined) {
 
 const filters = reactive({ search: '', status: '' })
 
+const statusTabs = [
+  { label: '全部', value: '' },
+  { label: '正常', value: 'active' },
+  { label: '已封禁', value: 'banned' },
+] as const
+
 const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
   usePagedList<AdminUser>(
     (cursor) =>
@@ -71,6 +125,18 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev,
       }),
     () => filters,
   )
+
+function setStatusTab(value: string) {
+  if (filters.status === value) return
+  filters.status = value
+  reset()
+}
+
+function clearFilters() {
+  filters.search = ''
+  filters.status = ''
+  reset()
+}
 
 onMounted(reset)
 
@@ -243,27 +309,41 @@ const taskSuccessRate = computed(() => {
 <template>
   <div class="page">
     <PageCard title="用户管理" subtitle="查看账号资料、资金状态、使用情况与安全信息">
-      <div class="filter-bar">
-        <el-input
-          v-model="filters.search"
-          placeholder="搜索邮箱 / 用户名"
-          size="small"
-          clearable
-          style="width: 240px"
-          @keyup.enter="reset"
-          @clear="reset"
-        />
-        <el-select v-model="filters.status" placeholder="状态" size="small" clearable style="width: 120px" @change="reset">
-          <el-option label="正常" value="active" />
-          <el-option label="已封禁" value="banned" />
-        </el-select>
-        <el-button type="primary" size="small" @click="reset">查询</el-button>
-        <el-button size="small" @click="filters.search = ''; filters.status = ''; reset()">重置</el-button>
+      <div class="users-toolbar">
+        <div class="status-tabs" role="tablist" aria-label="账号状态">
+          <button
+            v-for="tab in statusTabs"
+            :key="tab.label"
+            type="button"
+            role="tab"
+            class="status-tab"
+            :class="{ 'is-active': filters.status === tab.value }"
+            :aria-selected="filters.status === tab.value"
+            @click="setStatusTab(tab.value)"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+
+        <div class="users-toolbar__actions">
+          <el-input
+            v-model="filters.search"
+            class="users-search"
+            placeholder="搜索邮箱 / 用户名"
+            clearable
+            :prefix-icon="Search"
+            @keyup.enter="reset"
+            @clear="reset"
+          />
+          <el-button @click="reset">查询</el-button>
+          <el-button text @click="clearFilters">重置</el-button>
+        </div>
       </div>
 
       <ListError :error="error" :loading="loading" @retry="retry" />
 
       <AdminListShell
+        class="users-list-shell"
         :has-prev="hasPrev"
         :has-next="hasNext"
         :loading="loading"
@@ -273,92 +353,157 @@ const taskSuccessRate = computed(() => {
         @prev="prev"
         @next="next"
       >
-      <el-table
-        v-loading="loading"
-        :data="items"
-        height="100%"
-        size="small"
-        row-class-name="row-clickable"
-        @row-click="(row: AdminUser) => openDrawer(row)"
-      >
-        <template #empty>
-          <el-empty description="暂无用户" :image-size="60">
-            <div class="empty-sub">调整筛选条件后重新查询</div>
-          </el-empty>
-        </template>
-        <el-table-column label="用户" min-width="270">
-          <template #default="{ row }">
-            <button type="button" class="user-cell" @click.stop="openDrawer(row as AdminUser)">
-              <span class="user-avatar">
-                <img v-if="row.avatarUrl" :src="row.avatarUrl" :alt="displayName(row as AdminUser)" />
-                <template v-else>{{ avatarInitial(row as AdminUser) }}</template>
-              </span>
-              <span class="user-cell__copy">
-                <strong>{{ displayName(row as AdminUser) }}</strong>
-                <small>{{ row.email }}</small>
-                <code :title="row.id">{{ shortId(row.id) }}</code>
-              </span>
-            </button>
-          </template>
-        </el-table-column>
-        <el-table-column label="资料" min-width="135">
-          <template #default="{ row }">
-            <div class="profile-state">
-              <strong>{{ row.location || '未填写地区' }}</strong>
-              <span>资料完整度 {{ profileCompleteness(row as AdminUser) }}%</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="账号状态" width="120">
-          <template #default="{ row }">
-            <div class="status-stack">
-              <el-tag :type="row.status === 'banned' ? 'danger' : 'success'" size="small">
-                {{ row.status === 'banned' ? '已封禁' : '正常' }}
-              </el-tag>
-              <el-tag v-if="isSubmissionBanned(row as AdminUser)" type="warning" size="small" effect="plain">
-                禁止投稿
-              </el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="积分余额" width="135" align="right" class-name="col-num">
-          <template #default="{ row }">
-            <div class="money-cell">
-              <strong>{{ formatPoints(walletOf(row as AdminUser).balanceCents) }}</strong>
-              <small>冻结 {{ formatPoints(walletOf(row as AdminUser).frozenCents) }}</small>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="最近活动" min-width="165">
-          <template #default="{ row }">
-            <div class="activity-cell">
-              <strong>{{ row.lastLoginAt ? formatTime(row.lastLoginAt) : '从未登录' }}</strong>
-              <small>注册 {{ formatTime(row.createdAt) }}</small>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" @click.stop="openAdjust(row as AdminUser)">调整余额</el-button>
-            <el-button
-              size="small"
-              :type="row.status === 'banned' ? 'success' : 'danger'"
-              plain
-              @click.stop="toggleBan(row as AdminUser)"
-            >
-              {{ row.status === 'banned' ? '解封' : '封禁' }}
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+        <div class="users-table-shell">
+          <el-table
+            v-loading="loading"
+            class="users-table"
+            :data="items"
+            height="100%"
+            size="small"
+            row-class-name="row-clickable"
+            @row-click="(row: AdminUser) => openDrawer(row)"
+          >
+            <template #empty>
+              <el-empty description="暂无用户" :image-size="60">
+                <div class="empty-sub">调整筛选条件后重新查询</div>
+              </el-empty>
+            </template>
+
+            <el-table-column label="用户" min-width="150" align="left" header-align="left">
+              <template #default="{ row }">
+                <button
+                  type="button"
+                  class="user-cell"
+                  :title="displayName(row as AdminUser)"
+                  @click.stop="openDrawer(row as AdminUser)"
+                >
+                  <span class="user-avatar" :class="{ 'has-image': showAvatar(row as AdminUser) }">
+                    <img
+                      v-if="showAvatar(row as AdminUser)"
+                      :src="row.avatarUrl!"
+                      alt=""
+                      @error="avatarBroken(row.id)"
+                    />
+                    <template v-else>{{ avatarInitial(row as AdminUser) }}</template>
+                  </span>
+                  <span class="user-meta">
+                    <span
+                      class="user-status"
+                      :class="
+                        row.status === 'banned'
+                          ? 'is-danger'
+                          : isSubmissionBanned(row as AdminUser)
+                            ? 'is-warning'
+                            : 'is-success'
+                      "
+                    >
+                      {{
+                        row.status === 'banned'
+                          ? '已封禁'
+                          : isSubmissionBanned(row as AdminUser)
+                            ? '禁投稿'
+                            : '正常'
+                      }}
+                    </span>
+                    <span class="user-name">{{ maskedDisplayName(row as AdminUser) }}</span>
+                  </span>
+                </button>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="邮箱" min-width="180" align="left" header-align="left" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="cell-text">{{ row.email }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="余额/冻结" width="120" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="pair-cell tnum">
+                  <em class="cell-num">{{ formatPoints(walletOf(row as AdminUser).balanceCents) }}</em>
+                  <span class="pair-sep">/</span>
+                  <em class="cell-frozen">{{ formatPoints(walletOf(row as AdminUser).frozenCents) }}</em>
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="任务总数" width="88" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-num tnum">{{ usageOf(row as AdminUser).tasksTotal }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="成功/失败" width="100" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="pair-cell tnum">
+                  <em class="cell-ok">{{ usageOf(row as AdminUser).tasksSucceeded }}</em>
+                  <span class="pair-sep">/</span>
+                  <em class="cell-fail">{{ usageOf(row as AdminUser).tasksFailed }}</em>
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="进行中" width="72" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).tasksRunning }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="已取消" width="72" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).tasksCanceled }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="投稿" width="64" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).submissions }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="素材" width="64" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).assets }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="订单" width="64" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).orders }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="最近登录" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum">{{ row.lastLoginAt ? formatShortTime(row.lastLoginAt) : '从未登录' }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="注册时间" width="110" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum">{{ formatShortTime(row.createdAt) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </AdminListShell>
     </PageCard>
 
     <!-- 调整余额 -->
-    <el-dialog v-model="adjustVisible" title="调整积分" width="440px">
-      <p v-if="adjustTarget" class="text-muted" style="margin-top: 0">
-        用户：{{ adjustTarget.email }}（当前余额 {{ formatPoints(walletOf(adjustTarget).balanceCents) }} 积分）
-      </p>
+    <AdminDialog
+      v-model="adjustVisible"
+      title="调整积分"
+      :subtitle="
+        adjustTarget
+          ? `${adjustTarget.email} · 当前余额 ${formatPoints(walletOf(adjustTarget).balanceCents)} 积分`
+          : '正数入账、负数扣减，记入钱包账本'
+      "
+      :icon="Wallet"
+      width="440px"
+      confirm-text="确认调整"
+      :confirm-loading="adjustSubmitting"
+      @confirm="submitAdjust"
+    >
       <el-form label-width="90px">
         <el-form-item label="积分" required>
           <el-input-number
@@ -377,38 +522,58 @@ const taskSuccessRate = computed(() => {
           <el-input v-model="adjustForm.reason" type="textarea" :rows="2" placeholder="必填，例如：活动补偿" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="adjustVisible = false">取消</el-button>
-        <el-button type="primary" :loading="adjustSubmitting" @click="submitAdjust">确认调整</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
     <!-- 用户详情抽屉 -->
-    <el-drawer v-model="drawerVisible" size="min(760px, 96vw)" class="user-detail-drawer">
+    <el-drawer
+      v-model="drawerVisible"
+      size="min(1040px, 96vw)"
+      append-to-body
+      destroy-on-close
+      class="user-detail-drawer"
+    >
       <template #header>
         <div v-if="drawerUserInfo" class="drawer-header">
-          <span class="drawer-avatar">
-            <img v-if="drawerUserInfo.avatarUrl" :src="drawerUserInfo.avatarUrl" :alt="displayName(drawerUserInfo)" />
+          <span class="drawer-avatar" :class="{ 'has-image': showAvatar(drawerUserInfo) }">
+            <img
+              v-if="showAvatar(drawerUserInfo)"
+              :src="drawerUserInfo.avatarUrl!"
+              alt=""
+              @error="avatarBroken(drawerUserInfo.id)"
+            />
             <template v-else>{{ avatarInitial(drawerUserInfo) }}</template>
           </span>
           <span class="drawer-heading">
+            <span
+              class="drawer-status"
+              :class="
+                drawerUserInfo.status === 'banned'
+                  ? 'is-danger'
+                  : isSubmissionBanned(drawerUserInfo)
+                    ? 'is-warning'
+                    : 'is-success'
+              "
+            >
+              {{
+                drawerUserInfo.status === 'banned'
+                  ? '已封禁'
+                  : isSubmissionBanned(drawerUserInfo)
+                    ? '禁投稿'
+                    : '正常'
+              }}
+            </span>
             <strong>{{ displayName(drawerUserInfo) }}</strong>
             <small>{{ drawerUserInfo.email }}</small>
-          </span>
-          <span class="drawer-statuses">
-            <el-tag :type="drawerUserInfo.status === 'banned' ? 'danger' : 'success'" size="small">
-              {{ drawerUserInfo.status === 'banned' ? '已封禁' : '正常' }}
-            </el-tag>
-            <el-tag v-if="isSubmissionBanned(drawerUserInfo)" type="warning" size="small" effect="plain">
-              禁止投稿
-            </el-tag>
           </span>
         </div>
       </template>
 
-      <template v-if="drawerUser">
+      <div v-if="drawerUser" class="drawer-body">
         <div class="drawer-actions">
-          <span>用户 ID：<code :title="drawerUser.id">{{ shortId(drawerUser.id) }}</code></span>
+          <span class="drawer-actions__id">
+            用户 ID：
+            <code class="mono" :title="drawerUser.id">{{ drawerUser.id }}</code>
+          </span>
           <el-button size="small" @click="openAdjust(drawerUser)">调整余额</el-button>
           <el-button
             size="small"
@@ -421,7 +586,7 @@ const taskSuccessRate = computed(() => {
         </div>
 
         <el-tabs v-model="activeTab" class="user-detail-tabs">
-          <el-tab-pane label="资料概览" name="overview">
+          <el-tab-pane label="资料概览" name="overview" class="overview-tab">
             <div v-loading="overviewLoading" class="overview-panel">
               <template v-if="overview">
                 <section class="detail-section profile-overview">
@@ -473,17 +638,17 @@ const taskSuccessRate = computed(() => {
                   <div class="wallet-overview">
                     <div>
                       <small>可用余额</small>
-                      <strong>{{ formatPoints(drawerWallet.balanceCents) }}</strong>
+                      <strong class="tnum">{{ formatPoints(drawerWallet.balanceCents) }}</strong>
                       <span>积分</span>
                     </div>
                     <div>
                       <small>冻结积分</small>
-                      <strong>{{ formatPoints(drawerWallet.frozenCents) }}</strong>
+                      <strong class="tnum is-frozen">{{ formatPoints(drawerWallet.frozenCents) }}</strong>
                       <span>积分</span>
                     </div>
                     <div>
                       <small>资金合计</small>
-                      <strong>{{ formatPoints(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
+                      <strong class="tnum">{{ formatPoints(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
                       <span>积分</span>
                     </div>
                   </div>
@@ -493,39 +658,39 @@ const taskSuccessRate = computed(() => {
                   <header class="detail-section__title">使用情况</header>
                   <div class="count-cards">
                     <div class="count-card is-emphasis">
-                      <div class="count-value">{{ overview.counts.tasksTotal }}</div>
+                      <div class="count-value tnum">{{ overview.counts.tasksTotal }}</div>
                       <div class="count-label">任务总数</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ taskSuccessRate }}%</div>
+                      <div class="count-value tnum">{{ taskSuccessRate }}%</div>
                       <div class="count-label">任务成功率</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.tasksSucceeded }}</div>
+                      <div class="count-value tnum">{{ overview.counts.tasksSucceeded }}</div>
                       <div class="count-label">成功任务</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.tasksFailed }}</div>
+                      <div class="count-value tnum">{{ overview.counts.tasksFailed }}</div>
                       <div class="count-label">失败任务</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.tasksRunning }}</div>
+                      <div class="count-value tnum">{{ overview.counts.tasksRunning }}</div>
                       <div class="count-label">运行中</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.tasksCanceled }}</div>
+                      <div class="count-value tnum">{{ overview.counts.tasksCanceled }}</div>
                       <div class="count-label">已取消</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.submissions }}</div>
+                      <div class="count-value tnum">{{ overview.counts.submissions }}</div>
                       <div class="count-label">投稿</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.assets }}</div>
+                      <div class="count-value tnum">{{ overview.counts.assets }}</div>
                       <div class="count-label">素材</div>
                     </div>
                     <div class="count-card">
-                      <div class="count-value">{{ overview.counts.orders }}</div>
+                      <div class="count-value tnum">{{ overview.counts.orders }}</div>
                       <div class="count-label">订单记录</div>
                     </div>
                   </div>
@@ -548,111 +713,147 @@ const taskSuccessRate = computed(() => {
                   </el-descriptions>
                 </section>
               </template>
+              <el-empty v-else-if="!overviewLoading" description="暂无概览数据" :image-size="56" />
             </div>
           </el-tab-pane>
 
-          <el-tab-pane label="账本" name="ledger">
+          <el-tab-pane label="账本" name="ledger" class="drawer-list-tab">
             <AdminListShell
+              class="drawer-list-shell users-list-shell"
+              fill
               :has-prev="ledgerList.hasPrev.value"
               :has-next="ledgerList.hasNext.value"
               :loading="ledgerList.loading.value"
               :page="ledgerList.page.value"
               :count="ledgerList.items.value.length"
               :total="ledgerList.total.value"
-              viewport-height="360px"
               @prev="ledgerList.prev"
               @next="ledgerList.next"
             >
-            <el-table v-loading="ledgerList.loading.value" :data="ledgerList.items.value" height="100%" size="small">
-              <template #empty>
-                <el-empty description="暂无流水" :image-size="60" />
-              </template>
-              <el-table-column label="时间" width="150">
-                <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-              </el-table-column>
-              <el-table-column label="类型" width="100">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.deltaCents >= 0 ? 'success' : 'warning'">
-                    {{ ledgerKindLabel(row.kind) }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="积分变动" width="100" align="right">
-                <template #default="{ row }">
-                  <span :class="row.deltaCents >= 0 ? 'delta-pos' : 'delta-neg'">
-                    {{ row.deltaCents >= 0 ? '+' : '' }}{{ formatPoints(row.deltaCents) }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column label="积分余额" width="100" align="right">
-                <template #default="{ row }">{{ formatPoints(row.balanceAfterCents) }}</template>
-              </el-table-column>
-              <el-table-column label="原因" min-width="140">
-                <template #default="{ row }">
-                  <div class="ledger-reason">
-                    <span>{{ row.reason || '-' }}</span>
-                    <small v-if="row.sourceType" :title="row.sourceId || ''">
-                      {{ row.sourceType }}<template v-if="row.sourceId"> · {{ shortId(row.sourceId) }}</template>
-                    </small>
-                  </div>
-                </template>
-              </el-table-column>
-            </el-table>
+              <div class="users-table-shell">
+                <el-table
+                  v-loading="ledgerList.loading.value"
+                  class="users-table"
+                  :data="ledgerList.items.value"
+                  height="100%"
+                  size="small"
+                >
+                  <template #empty>
+                    <el-empty description="暂无流水" :image-size="60" />
+                  </template>
+                  <el-table-column label="时间" width="110" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-text tnum">{{ formatShortTime(row.createdAt) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="类型" width="88" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span
+                        class="kind-text"
+                        :class="row.deltaCents >= 0 ? 'is-pos' : 'is-neg'"
+                      >
+                        {{ ledgerKindLabel(row.kind) }}
+                      </span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="积分变动" width="96" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span
+                        class="cell-num tnum"
+                        :class="row.deltaCents >= 0 ? 'cell-ok' : 'cell-fail'"
+                      >
+                        {{ row.deltaCents >= 0 ? '+' : '' }}{{ formatPoints(row.deltaCents) }}
+                      </span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="积分余额" width="96" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-num tnum">{{ formatPoints(row.balanceAfterCents) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="原因" min-width="220" align="left" header-align="left" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <div class="ledger-reason">
+                        <span class="cell-text">{{ row.reason || '-' }}</span>
+                        <small v-if="row.sourceType" class="drawer-id" :title="row.sourceId || ''">
+                          {{ row.sourceType }}<template v-if="row.sourceId"> · {{ row.sourceId }}</template>
+                        </small>
+                      </div>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
             </AdminListShell>
           </el-tab-pane>
 
-          <el-tab-pane label="任务" name="tasks">
+          <el-tab-pane label="任务" name="tasks" class="drawer-list-tab">
             <AdminListShell
+              class="drawer-list-shell users-list-shell"
+              fill
               :has-prev="taskList.hasPrev.value"
               :has-next="taskList.hasNext.value"
               :loading="taskList.loading.value"
               :page="taskList.page.value"
               :count="taskList.items.value.length"
               :total="taskList.total.value"
-              viewport-height="360px"
               @prev="taskList.prev"
               @next="taskList.next"
             >
-            <el-table v-loading="taskList.loading.value" :data="taskList.items.value" height="100%" size="small">
-              <template #empty>
-                <el-empty description="暂无任务" :image-size="60" />
-              </template>
-              <el-table-column label="任务ID" width="100">
-                <template #default="{ row }">
-                  <span class="mono" :title="row.id">{{ shortId(row.id) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="类型 / 模型" min-width="145">
-                <template #default="{ row }">
-                  <div class="task-kind">
-                    <strong>{{ taskTypeLabel(row.type) }}</strong>
-                    <small :title="row.model || ''">{{ row.model || '未记录模型' }}</small>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="105">
-                <template #default="{ row }">
-                  <div class="task-status">
-                    <el-tag :type="TASK_STATUS_TAG[row.status] ?? 'info'" size="small">
-                      {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
-                    </el-tag>
-                    <small v-if="row.attempt">尝试 {{ row.attempt }} 次</small>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="积分消耗" width="100" align="right">
-                <template #default="{ row }">{{ formatPoints(row.costCents) }}</template>
-              </el-table-column>
-              <el-table-column label="时间" width="150">
-                <template #default="{ row }">
-                  <span :title="row.errorMessage || ''">{{ formatTime(row.createdAt) }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
+              <div class="users-table-shell">
+                <el-table
+                  v-loading="taskList.loading.value"
+                  class="users-table"
+                  :data="taskList.items.value"
+                  height="100%"
+                  size="small"
+                >
+                  <template #empty>
+                    <el-empty description="暂无任务" :image-size="60" />
+                  </template>
+                  <el-table-column label="任务 ID" min-width="240" align="left" header-align="left" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <span class="mono cell-text drawer-id" :title="row.id">{{ row.id }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="类型 / 模型" min-width="150" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <div class="task-kind">
+                        <strong>{{ taskTypeLabel(row.type) }}</strong>
+                        <small :title="row.model || ''">{{ row.model || '未记录模型' }}</small>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="100" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <div class="task-status">
+                        <span
+                          class="kind-text"
+                          :class="`is-status-${row.status}`"
+                        >
+                          {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+                        </span>
+                        <small v-if="row.attempt">尝试 {{ row.attempt }} 次</small>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="积分消耗" width="96" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-num tnum">{{ formatPoints(row.costCents) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="时间" width="110" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-text tnum" :title="row.errorMessage || formatTime(row.createdAt)">
+                        {{ formatShortTime(row.createdAt) }}
+                      </span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
             </AdminListShell>
           </el-tab-pane>
         </el-tabs>
-      </template>
+      </div>
     </el-drawer>
 
   </div>
@@ -663,11 +864,154 @@ const taskSuccessRate = computed(() => {
   cursor: pointer;
 }
 
-.filter-bar {
+.users-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.status-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.status-tab {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.status-tab.is-active {
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+html.dark .status-tab.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.users-toolbar__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.users-search {
+  width: min(280px, 70vw);
+}
+
+.users-search :deep(.el-input__wrapper) {
+  min-height: 36px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+
+.users-list-shell {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.users-list-shell :deep(.admin-list-shell__footer) {
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--surface);
+}
+
+.users-list-shell :deep(.cursor-pager__meta strong) {
+  color: var(--ink);
+}
+
+.users-table-shell {
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.users-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.users-table :deep(.el-table__header-wrapper th.el-table__cell),
+.users-table :deep(.el-table__body td.el-table__cell),
+.users-table :deep(.el-table .cell) {
+  text-align: left !important;
+}
+
+.users-table :deep(.el-table .cell) {
+  display: block;
+  justify-content: flex-start;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.users-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 48px;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.users-table :deep(.el-table__body .el-table__cell) {
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.users-table :deep(.el-table__row td.el-table__cell) {
+  height: 56px;
+}
+
+.users-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--surface-2);
+}
+
+.users-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
+  border-bottom-color: transparent;
+}
+
+.ledger-reason,
+.task-kind,
+.task-status {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.task-kind small,
+.ledger-reason span,
+.ledger-reason small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-cell {
@@ -690,16 +1034,24 @@ const taskSuccessRate = computed(() => {
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
-  border-radius: 50%;
-  color: #fff;
+  border-radius: 10px;
+  color: var(--accent-on);
   font-weight: 700;
-  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  background: linear-gradient(145deg, var(--accent), var(--accent-hover));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-on) 8%, transparent);
 }
 
 .user-avatar {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   font-size: 12px;
+  letter-spacing: -0.02em;
+}
+
+.user-avatar.has-image,
+.drawer-avatar.has-image {
+  box-shadow: 0 0 0 1px var(--border);
+  background: var(--surface-2);
 }
 
 .user-avatar img,
@@ -710,77 +1062,159 @@ const taskSuccessRate = computed(() => {
   object-fit: cover;
 }
 
-.user-cell__copy,
-.profile-state,
-.money-cell,
-.activity-cell,
-.ledger-reason,
-.task-kind,
-.task-status {
+.user-meta {
   display: grid;
   min-width: 0;
   gap: 2px;
+  text-align: left;
 }
 
-.user-cell__copy strong,
-.user-cell__copy small,
-.user-cell__copy code,
-.profile-state strong,
-.activity-cell strong,
-.activity-cell small,
-.task-kind small,
-.ledger-reason span,
-.ledger-reason small {
+.user-status,
+.user-name,
+.cell-text,
+.cell-num,
+.cell-muted {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.user-cell__copy strong {
-  color: var(--el-text-color-primary);
-  font-size: 13px;
+.user-status {
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
 }
 
-.user-cell__copy small,
-.profile-state span,
-.money-cell small,
-.activity-cell small,
+.user-status.is-success {
+  color: var(--success);
+}
+
+.user-status.is-danger {
+  color: var(--danger);
+}
+
+.user-status.is-warning {
+  color: var(--warning);
+}
+
+.user-name {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.cell-text {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.cell-num {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cell-muted {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pair-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.pair-cell em {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.pair-sep {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.cell-frozen {
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.cell-ok {
+  color: var(--success);
+  font-size: 12px;
+}
+
+.cell-fail {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.kind-text {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.kind-text.is-pos,
+.kind-text.is-status-succeeded {
+  color: var(--success);
+}
+
+.kind-text.is-neg,
+.kind-text.is-status-failed {
+  color: var(--danger);
+}
+
+.kind-text.is-status-running,
+.kind-text.is-status-queued {
+  color: var(--info);
+}
+
+.kind-text.is-status-canceled {
+  color: var(--warning);
+}
+
 .ledger-reason small,
 .task-kind small,
 .task-status small {
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 11px;
 }
 
-.user-cell__copy code {
-  color: var(--ink-3);
-  font-size: 9px;
-}
-
-.profile-state strong,
-.activity-cell strong,
-.money-cell strong,
 .task-kind strong {
-  color: var(--el-text-color-primary);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
 }
 
-.status-stack {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
+@media (max-width: 900px) {
+  .users-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
 
-.money-cell {
-  justify-items: end;
+  .users-toolbar__actions {
+    width: 100%;
+  }
+
+  .users-search {
+    flex: 1;
+    width: auto;
+  }
 }
 
 .drawer-header {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
-  padding-right: 12px;
+  gap: 12px;
+  width: 100%;
+  padding-right: 8px;
 }
 
 .drawer-avatar {
@@ -796,6 +1230,23 @@ const taskSuccessRate = computed(() => {
   gap: 2px;
 }
 
+.drawer-status {
+  justify-self: start;
+  margin-bottom: 1px;
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.drawer-status.is-warning {
+  color: var(--warning);
+}
+
+.drawer-status.is-danger {
+  color: var(--danger);
+}
+
 .drawer-heading strong,
 .drawer-heading small {
   overflow: hidden;
@@ -806,6 +1257,7 @@ const taskSuccessRate = computed(() => {
 .drawer-heading strong {
   color: var(--el-text-color-primary);
   font-size: 15px;
+  font-weight: 600;
 }
 
 .drawer-heading small {
@@ -813,10 +1265,11 @@ const taskSuccessRate = computed(() => {
   font-size: 11px;
 }
 
-.drawer-statuses {
+.drawer-body {
   display: flex;
-  flex: 0 0 auto;
-  gap: 5px;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .drawer-actions {
@@ -840,13 +1293,33 @@ const taskSuccessRate = computed(() => {
   font-size: 11px;
 }
 
+.drawer-actions__id {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.drawer-actions__id code,
+.drawer-id {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  word-break: break-all;
+  user-select: all;
+}
+
 .drawer-actions code {
   color: var(--ink-2);
 }
 
 .overview-panel {
-  min-height: 260px;
-  padding-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  padding-bottom: 24px;
 }
 
 .detail-section {
@@ -924,6 +1397,10 @@ const taskSuccessRate = computed(() => {
   text-overflow: ellipsis;
 }
 
+.wallet-overview strong.is-frozen {
+  color: var(--warning);
+}
+
 .wallet-overview span {
   color: var(--ink-3);
   font-size: 10px;
@@ -931,16 +1408,16 @@ const taskSuccessRate = computed(() => {
 
 .count-cards {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
 .count-card {
   min-width: 0;
-  padding: 9px 8px;
+  padding: 10px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  text-align: center;
+  text-align: left;
   background: var(--surface-2);
 }
 
@@ -976,20 +1453,22 @@ const taskSuccessRate = computed(() => {
   line-height: 1.3;
 }
 
-.delta-pos {
-  color: var(--success);
-}
-
-.delta-neg {
-  color: var(--warning);
+:deep(.user-detail-tabs) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 :deep(.user-detail-tabs .el-tabs__header) {
   margin-bottom: 14px;
+  flex-shrink: 0;
 }
 
-:deep(.user-detail-drawer .el-drawer__body) {
-  padding-top: 8px;
+:deep(.user-detail-tabs .el-tabs__content),
+:deep(.user-detail-tabs .el-tab-pane) {
+  flex: 1;
+  min-height: 0;
 }
 
 :deep(.detail-section .el-descriptions__label) {
@@ -1026,12 +1505,114 @@ const taskSuccessRate = computed(() => {
   }
 
   .count-cards {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .drawer-statuses {
-    display: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
+</style>
+
+<!-- append-to-body 后抽屉挂到 body，需非 scoped 才能控滚动 -->
+<style>
+.user-detail-drawer.el-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.user-detail-drawer .el-drawer__header {
+  margin-bottom: 0;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.user-detail-drawer .el-drawer__close-btn {
+  margin-left: 12px;
+}
+
+.user-detail-drawer .el-drawer__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px 0 0;
+}
+
+.user-detail-drawer .drawer-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.user-detail-drawer .drawer-actions {
+  margin: 0 20px 12px;
+}
+
+.user-detail-drawer .user-detail-tabs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.user-detail-drawer .user-detail-tabs > .el-tabs__header {
+  flex-shrink: 0;
+  margin: 0 20px;
+}
+
+.user-detail-drawer .user-detail-tabs > .el-tabs__content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.user-detail-drawer .user-detail-tabs .el-tab-pane {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.user-detail-drawer .user-detail-tabs .el-tab-pane.overview-tab {
+  overflow: auto;
+  padding: 14px 20px 24px;
+}
+
+.user-detail-drawer .user-detail-tabs .el-tab-pane.drawer-list-tab {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.user-detail-drawer .drawer-list-shell {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  border-top: 1px solid var(--border);
+}
+
+.user-detail-drawer .drawer-list-shell .admin-list-shell__viewport {
+  scrollbar-gutter: auto;
+}
+
+.user-detail-drawer .drawer-list-shell .admin-list-shell__footer {
+  flex-shrink: 0;
+  min-height: 56px;
+  padding: 8px 20px;
+  background: var(--surface);
+}
 </style>

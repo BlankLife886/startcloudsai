@@ -3,6 +3,15 @@ import preserve4kUpscalePrompt from './preserve-4k-upscale/SKILL.md?raw'
 /** Built-in skills use UI metadata plus either a client or server prompt contract. */
 export const BUILTIN_WALLPAPER_SKILLS = [
   {
+    id: 'solid-background-for-removal',
+    name: '纯色抠图背景',
+    icon: 'bi-square-fill',
+    description: '为自动抠图生成边缘清晰的纯色背景',
+    prompt:
+      'Force the generated image to use one completely flat, uniform, opaque solid-color background chosen for strong contrast with the main subject. The solid color must fill the entire canvas edge to edge. Keep the subject fully visible with a clean, crisp silhouette and clear separation from the background. Do not generate scenery, environmental objects, gradients, textures, patterns, bokeh, atmospheric effects, horizon lines, floor-wall seams, background shadows, reflections, transparent backgrounds, or colors near the subject edges that blend into the subject.',
+    builtin: true,
+  },
+  {
     id: 'female-portrait-director',
     name: '人像导演',
     icon: 'bi-person-bounding-box',

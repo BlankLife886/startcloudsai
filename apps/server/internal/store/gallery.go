@@ -69,6 +69,28 @@ func CountSubmissionsByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, 
 	return n, err
 }
 
+// SubmissionCountsByStatus aggregates all of a user's submissions, independent
+// of the paginated list used by the profile detail tab.
+func SubmissionCountsByStatus(ctx context.Context, q Q, userID uuid.UUID) (map[string]int64, error) {
+	rows, err := q.Query(ctx,
+		`SELECT status, count(*) FROM gallery_submissions WHERE user_id = $1 GROUP BY status`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int64)
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
+}
+
 // CountSubmissionsByUserSince 用户自 since 起创建的投稿数（每日限额用）。
 func CountSubmissionsByUserSince(ctx context.Context, q Q, userID uuid.UUID, since time.Time) (int64, error) {
 	var n int64

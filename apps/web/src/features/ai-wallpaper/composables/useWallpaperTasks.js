@@ -20,10 +20,6 @@ import {
   shouldKeepExistingTaskSnapshot,
 } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
 import { resolveServerJobsPagination } from '@/features/ai-wallpaper/domain/historyPagination'
-import {
-  pickMaskEditUpstreamSize,
-  prepareMaskEditCrop,
-} from '@/features/ai-wallpaper/domain/maskEditCrop'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
 import { getModelAutoAspectRatioCandidates } from '@/features/ai-shared/modelImageCapabilities'
 import {
@@ -69,6 +65,8 @@ export function useWallpaperTasks(deps = {}) {
     promptPolishEnabled = ref(false),
     autoTranslateEnabled = ref(false),
     transparentPngEnabled = ref(false),
+    autoBackgroundRemovalEnabled = ref(false),
+    backgroundRemovalModel = ref(null),
     sourcePreview: _sourcePreview = ref(''),
     sourceRemoteUrl = ref(''),
     selectedFile: _selectedFile = ref(null),
@@ -543,6 +541,17 @@ export function useWallpaperTasks(deps = {}) {
       customSkills: _customSkills.value,
     })
     const skillPrompt = buildWallpaperSkillPrompt(activeSkills)
+    const autoRemoveEnabled =
+      outputType.value === 'image' &&
+      (typeof overrides.autoBackgroundRemovalEnabled === 'boolean'
+        ? overrides.autoBackgroundRemovalEnabled
+        : autoBackgroundRemovalEnabled.value === true) &&
+      Boolean(overrides.autoBackgroundRemovalModelKey || backgroundRemovalModel.value?.id)
+    const autoRemoveModelKey = autoRemoveEnabled
+      ? String(
+          overrides.autoBackgroundRemovalModelKey || backgroundRemovalModel.value?.id || '',
+        ).trim()
+      : ''
     localTaskSequence += 1
     const taskId = overrides.id || `${now}-${localTaskSequence}`
     sessionTaskIds.add(String(taskId))
@@ -573,6 +582,8 @@ export function useWallpaperTasks(deps = {}) {
       promptPolishEnabled: promptPolishEnabled.value,
       autoTranslateEnabled: autoTranslateEnabled.value,
       transparentPngEnabled: outputType.value === 'image' && transparentPngEnabled.value,
+      autoBackgroundRemovalEnabled: autoRemoveEnabled,
+      autoBackgroundRemovalModelKey: autoRemoveModelKey,
       aspectRatio: requestedAspectRatio,
       requestedAspectRatio,
       autoAspectRatioCandidates,
@@ -613,7 +624,12 @@ export function useWallpaperTasks(deps = {}) {
     }
   }
 
-  async function createTask({ skipClientBudgetCheck = false, count: countOverride } = {}) {
+  async function createTask({
+    skipClientBudgetCheck = false,
+    count: countOverride,
+    autoBackgroundRemovalEnabled: autoRemoveOverride,
+    autoBackgroundRemovalModelKey: autoRemoveModelOverride,
+  } = {}) {
     if (!canCreateTask.value) return
     if (autoSaveConfig.value) saveStudioConfig()
     const requestedCount =
@@ -630,6 +646,12 @@ export function useWallpaperTasks(deps = {}) {
         batchCreatedAt,
         // One local child equals one server job and one upstream request.
         count: 1,
+        ...(typeof autoRemoveOverride === 'boolean'
+          ? { autoBackgroundRemovalEnabled: autoRemoveOverride }
+          : {}),
+        ...(autoRemoveModelOverride
+          ? { autoBackgroundRemovalModelKey: autoRemoveModelOverride }
+          : {}),
       }),
     )
     tasks.value = [...batchTasks, ...tasks.value]
@@ -817,6 +839,7 @@ export function useWallpaperTasks(deps = {}) {
   async function createMaskedEditTask({
     sourceTask,
     sourceUrl,
+    sourceBlob: preparedSourceBlob,
     maskFile,
     prompt: editPrompt,
   } = {}) {
@@ -828,7 +851,10 @@ export function useWallpaperTasks(deps = {}) {
     if (!String(imageDispatchModel.value || '').trim())
       throw new Error('请先选择支持局部编辑的图片模型')
 
-    const sourceBlob = await fetchAuthenticatedMediaBlob(normalizedSourceUrl, { cache: 'no-store' })
+    const sourceBlob =
+      preparedSourceBlob instanceof Blob && preparedSourceBlob.size
+        ? preparedSourceBlob
+        : await fetchAuthenticatedMediaBlob(normalizedSourceUrl, { cache: 'no-store' })
     const sourceExtension = /png/i.test(sourceBlob.type)
       ? 'png'
       : /webp/i.test(sourceBlob.type)
@@ -839,13 +865,11 @@ export function useWallpaperTasks(deps = {}) {
       `local-edit-source-${Date.now()}.${sourceExtension}`,
       { type: sourceBlob.type || 'image/jpeg' },
     )
-    // crop-and-stitch：只把蒙版外扩后的局部裁剪送上游编辑，
-    // 服务端用整图 + 裁剪蒙版把结果羽化贴回，未选区域保持逐像素不变。
-    const { rect, cropFile, cropMaskFile } = await prepareMaskEditCrop({ sourceBlob, maskFile })
-    const [uploadedBaseUrl, uploadedCropUrl, maskUrl] = await Promise.all([
+    // Keep the same contract as the smart canvas editor: full source image plus
+    // a full-size white/transparent mask. The model sees the complete composition.
+    const [uploadedBaseUrl, maskUrl] = await Promise.all([
       uploadAiInputFile(sourceFile),
-      uploadAiInputFile(cropFile),
-      uploadAiInputFile(cropMaskFile),
+      uploadAiInputFile(maskFile),
     ])
 
     const task = createTaskRecord({ count: 1 })
@@ -860,7 +884,7 @@ export function useWallpaperTasks(deps = {}) {
       kind: 'wallpaper-image-mask-edit',
       type: 'image',
       sourceMode: 'mask-edit',
-      sourceRemoteUrl: uploadedCropUrl,
+      sourceRemoteUrl: uploadedBaseUrl,
       sourcePreview: normalizedSourceUrl,
       sourceFile: null,
       styleReferenceFiles: [],
@@ -869,11 +893,15 @@ export function useWallpaperTasks(deps = {}) {
       sourceLabel: '局部蒙版编辑',
       maskUrl,
       maskBaseUrl: uploadedBaseUrl,
-      maskRect: `${rect.x},${rect.y},${rect.width},${rect.height}`,
-      maskUpstreamSize: pickMaskEditUpstreamSize(rect),
+      maskRect: '',
+      maskUpstreamSize: outputSize,
       maskSourceUrl: normalizedSourceUrl,
+      localEditSourceTaskId: String(sourceTask.id || sourceTask.serverJobId || ''),
+      localEditSourceServerJobId: String(sourceTask.serverJobId || ''),
+      localEditSourcePrompt: String(sourceTask.userPrompt || sourceTask.prompt || '').trim(),
+      localEditSourcePreview: normalizedSourceUrl,
       userPrompt: normalizedPrompt,
-      prompt: `${normalizedPrompt}\n\n输入图是原作品中截取的局部画面。只按上述要求修改目标内容，其余画面保持与输入图完全一致：相同构图、光线、色彩、材质与纹理，不要改变图像比例。`,
+      prompt: `这是严格局部编辑任务。只在蒙版透明区域内执行用户要求，并把改动限制在完成该要求所需的最小范围。蒙版外区域不得重绘、调色、美化或改变视觉观感。除非用户明确要求改变，否则必须保持原图的整体风格、色彩体系、白平衡、曝光、光影、构图、人物身份、材质和纹理完全一致，不得给整张图套用新风格或统一调整色调。用户要求：${normalizedPrompt}`,
       promptPolishEnabled: false,
       autoTranslateEnabled: false,
       aspectRatio: sourceTask.aspectRatio || task.aspectRatio,
@@ -896,8 +924,15 @@ export function useWallpaperTasks(deps = {}) {
     canvasMode.value = 'result'
     resetCanvasView({ keepFit: true })
     persistTasks({ immediate: true })
-    await runServerTask(task.id, { preparedSourceUrls: [uploadedCropUrl] })
-    return task
+    await runServerTask(task.id, { preparedSourceUrls: [uploadedBaseUrl] })
+    const submittedTask = tasks.value.find((item) => item.id === task.id)
+    if (
+      !submittedTask?.serverJobId ||
+      String(submittedTask.status || '').toLowerCase() === 'failed'
+    ) {
+      throw new Error(submittedTask?.error || '局部编辑任务提交失败')
+    }
+    return submittedTask
   }
 
   function resolveTaskLocalUpscaleScale(task, { manual = false } = {}) {
@@ -1222,11 +1257,17 @@ export function useWallpaperTasks(deps = {}) {
           batchCreatedAt: task.batchCreatedAt || task.createdAt || '',
           duration: task.duration,
           sourceMode: task.sourceMode || 'text',
+          localEditSourceTaskId: task.localEditSourceTaskId || '',
+          localEditSourceServerJobId: task.localEditSourceServerJobId || '',
+          localEditSourcePrompt: task.localEditSourcePrompt || '',
+          localEditSourcePreview: task.localEditSourcePreview || '',
           userPrompt: task.userPrompt || '',
           promptPolishEnabled: task.promptPolishEnabled === true,
           autoTranslateEnabled: task.autoTranslateEnabled === true,
           transparentPngEnabled: task.transparentPngEnabled === true,
           transparentBackground: task.transparentPngEnabled === true,
+          autoBackgroundRemovalEnabled: task.autoBackgroundRemovalEnabled === true,
+          autoBackgroundRemovalModelKey: task.autoBackgroundRemovalModelKey || '',
           ...(task.outputFormat ? { outputFormat: task.outputFormat } : {}),
           ...(task.moderationLevel ? { moderationLevel: task.moderationLevel } : {}),
           upscaleOutputFormat: task.upscaleOutputFormat || 'auto',
@@ -1252,6 +1293,10 @@ export function useWallpaperTasks(deps = {}) {
           batchCreatedAt: task.batchCreatedAt || task.createdAt || '',
           duration: task.duration,
           sourceMode: task.sourceMode || 'text',
+          localEditSourceTaskId: task.localEditSourceTaskId || '',
+          localEditSourceServerJobId: task.localEditSourceServerJobId || '',
+          localEditSourcePrompt: task.localEditSourcePrompt || '',
+          localEditSourcePreview: task.localEditSourcePreview || '',
           sourceUrl,
           sourceUrls,
           maskUrl: task.maskUrl || '',
@@ -1262,6 +1307,8 @@ export function useWallpaperTasks(deps = {}) {
           autoTranslateEnabled: task.autoTranslateEnabled === true,
           transparentPngEnabled: task.transparentPngEnabled === true,
           transparentBackground: task.transparentPngEnabled === true,
+          autoBackgroundRemovalEnabled: task.autoBackgroundRemovalEnabled === true,
+          autoBackgroundRemovalModelKey: task.autoBackgroundRemovalModelKey || '',
           ...(task.outputFormat ? { outputFormat: task.outputFormat } : {}),
           ...(task.moderationLevel ? { moderationLevel: task.moderationLevel } : {}),
           upscaleOutputFormat: task.upscaleOutputFormat || 'auto',
@@ -1883,6 +1930,22 @@ export function useWallpaperTasks(deps = {}) {
       if (disposed) return false
       tasks.value = mergedTasks
       taskMutationVersion += 1
+      const activeParent = mergedTasks.find((task) => task.id === activeTaskId.value)
+      const completedAutomaticChild = activeParent?.serverJobId
+        ? mergedTasks.find(
+            (task) =>
+              task.automaticBackgroundRemoval === true &&
+              task.parentTaskId === activeParent.serverJobId &&
+              ['completed', 'done'].includes(String(task.status || '').toLowerCase()) &&
+              Array.isArray(task.outputs) &&
+              task.outputs.length > 0,
+          )
+        : null
+      if (completedAutomaticChild) {
+        activeTaskId.value = completedAutomaticChild.id
+        selectedOutputIndex.value = 0
+        canvasMode.value = 'result'
+      }
       persistTasks({ immediate: true })
       const hydrationRequests = mergedTasks.map(async (task) => {
         const job = task.serverJobId

@@ -99,6 +99,79 @@ func TestRuntimeConfigExposesOnlyPublicModelMapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigSeparatesBackgroundRemovalTools(t *testing.T) {
+	st := testdb.Setup(t)
+	discount := int64(6)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "crun-secret-route", Name: "CRUN Internal", Adapter: "crun",
+		BaseURL: "https://secret-tool.example.com", APIKey: "secret-tool-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "background-removal", Name: "背景移除", ProviderID: "crun-secret-route",
+		UpstreamModel: "image-background-remove", Kind: modelconfig.ModelKindImageTool,
+		Tool: modelconfig.ImageToolBackgroundRemove, PriceCents: 9, DiscountPriceCents: &discount,
+		Public: true, Enabled: true, Default: true,
+	}}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
+	(&Server{St: st}).runtimeConfig(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Features map[string]struct {
+				Enabled bool `json:"enabled"`
+				Config  struct {
+					BackgroundRemovalModels []struct {
+						ID                  string `json:"id"`
+						Tool                string `json:"tool"`
+						PricePoints         int64  `json:"pricePoints"`
+						StandardPricePoints int64  `json:"standardPricePoints"`
+						DiscountPricePoints *int64 `json:"discountPricePoints"`
+					} `json:"backgroundRemovalModels"`
+					PublicModels []struct {
+						ID string `json:"id"`
+					} `json:"publicModels"`
+				} `json:"config"`
+			} `json:"features"`
+			AIModelCatalog struct {
+				PublicModels []struct {
+					ID string `json:"id"`
+				} `json:"publicModels"`
+			} `json:"aiModelCatalog"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	feature := response.Data.Features["ai.imageTools"]
+	if !feature.Enabled || len(feature.Config.BackgroundRemovalModels) != 1 {
+		t.Fatalf("image tools feature = %#v", feature)
+	}
+	tool := feature.Config.BackgroundRemovalModels[0]
+	if tool.ID != "background-removal" || tool.Tool != modelconfig.ImageToolBackgroundRemove ||
+		tool.PricePoints != 6 || tool.StandardPricePoints != 9 || tool.DiscountPricePoints == nil || *tool.DiscountPricePoints != 6 {
+		t.Fatalf("background removal model = %#v", tool)
+	}
+	for _, model := range response.Data.AIModelCatalog.PublicModels {
+		if model.ID == tool.ID {
+			t.Fatalf("image tool leaked into generation models: %#v", response.Data.AIModelCatalog.PublicModels)
+		}
+	}
+	body := recorder.Body.String()
+	for _, secret := range []string{"secret-tool-key", "secret-tool.example.com", "image-background-remove", "crun-secret-route", "CRUN Internal"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("runtime config leaked %q: %s", secret, body)
+		}
+	}
+}
+
 func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	st := testdb.Setup(t)
 	cfg := modelconfig.Empty()

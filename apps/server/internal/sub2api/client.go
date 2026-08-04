@@ -16,7 +16,11 @@ import (
 	"time"
 )
 
-const maxImageResponseBytes = 32 << 20
+const (
+	maxImageResponseBytes = 32 << 20
+	chatStreamAttempts    = 2
+	chatStreamRetryDelay  = 200 * time.Millisecond
+)
 
 type Client struct {
 	baseURL      string
@@ -31,6 +35,23 @@ type Message struct {
 	Role            string   `json:"role"`
 	Content         string   `json:"content"`
 	ReferenceImages []string `json:"referenceImages,omitempty"`
+}
+
+type FunctionTool struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+type ToolCall struct {
+	Name      string
+	Arguments string
+}
+
+type AgentChatResult struct {
+	Text      string
+	Reasoning string
+	ToolCall  *ToolCall
 }
 
 type Image struct {
@@ -184,15 +205,38 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message) (*http.Resp
 // ChatTextWithImages consumes the streaming API server-side. The callback is
 // used by durable assistant jobs to checkpoint partial output in PostgreSQL.
 func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+		text, receivedOutput, err := c.chatTextWithImages(ctx, messages, imageURLs, onText)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+			return text, err
+		}
+		timer := time.NewTimer(chatStreamRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return text, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return "", lastErr
+}
+
+func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, bool, error) {
 	resp, err := c.ChatStreamWithImages(ctx, messages, imageURLs)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2<<20)
 	fullText := ""
+	receivedOutput := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -207,48 +251,291 @@ func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, ima
 			continue
 		}
 		if message := streamError(payload); message != "" {
-			return fullText, errors.New(message)
+			return fullText, receivedOutput, errors.New(message)
 		}
-		delta := streamDelta(payload)
-		if delta == "" {
-			continue
+		changed := false
+		for _, fragment := range streamTextFragments(payload) {
+			receivedOutput = true
+			before := fullText
+			if fragment.replace {
+				fullText = fragment.value
+			} else {
+				fullText += fragment.value
+			}
+			changed = changed || fullText != before
 		}
-		fullText += delta
-		if onText != nil {
+		if changed && onText != nil {
 			if err := onText(fullText); err != nil {
-				return fullText, err
+				return fullText, receivedOutput, err
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fullText, err
+		return fullText, receivedOutput, err
 	}
-	return fullText, nil
+	return fullText, receivedOutput, nil
 }
 
-func streamDelta(payload map[string]any) string {
-	if value, ok := payload["delta"].(string); ok {
-		return value
+// ChatAgentWithImages performs one streamed chat-completions request that can
+// either answer normally or return a structured function call. Text and
+// reasoning snapshots are delivered while the tool arguments are still being
+// assembled, so callers do not need a separate intent-classification request.
+func (c *Client) ChatAgentWithImages(
+	ctx context.Context,
+	messages []Message,
+	imageURLs []string,
+	tool FunctionTool,
+	forceTool bool,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, error) {
+	payload := map[string]any{
+		"model":    c.chatModel,
+		"messages": chatPayloadMessages(messages, imageURLs),
+		"stream":   true,
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters,
+			},
+		}},
+		"tool_choice": "auto",
 	}
-	if value, ok := payload["output_text"].(string); ok {
-		return value
+	if forceTool {
+		payload["tool_choice"] = map[string]any{
+			"type": "function", "function": map[string]any{"name": tool.Name},
+		}
+	}
+	var lastErr error
+	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+		result, receivedOutput, err := c.chatAgentWithPayload(ctx, payload, onUpdate)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+			return result, err
+		}
+		timer := time.NewTimer(chatStreamRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return AgentChatResult{}, lastErr
+}
+
+func (c *Client) chatAgentWithPayload(
+	ctx context.Context,
+	payload map[string]any,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, bool, error) {
+	resp, err := c.chatStreamWithPayload(ctx, payload)
+	if err != nil {
+		return AgentChatResult{}, false, err
+	}
+	defer resp.Body.Close()
+
+	result := AgentChatResult{}
+	receivedOutput := false
+	toolNames := map[int]string{}
+	toolArguments := map[int]string{}
+	minToolIndex := -1
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if raw == "" || raw == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			continue
+		}
+		if message := streamError(event); message != "" {
+			return result, receivedOutput, errors.New(message)
+		}
+		changed := false
+		for _, fragment := range streamTextFragments(event) {
+			before := result.Text
+			if fragment.replace {
+				result.Text = fragment.value
+			} else {
+				result.Text += fragment.value
+			}
+			changed = changed || result.Text != before
+			receivedOutput = true
+		}
+		for _, fragment := range streamReasoningFragments(event) {
+			before := result.Reasoning
+			if fragment.replace {
+				result.Reasoning = fragment.value
+			} else {
+				result.Reasoning += fragment.value
+			}
+			changed = changed || result.Reasoning != before
+			receivedOutput = true
+		}
+		for _, fragment := range streamToolCallFragments(event) {
+			receivedOutput = true
+			if minToolIndex < 0 || fragment.index < minToolIndex {
+				minToolIndex = fragment.index
+			}
+			if fragment.name != "" {
+				toolNames[fragment.index] = fragment.name
+			}
+			if fragment.replace {
+				toolArguments[fragment.index] = fragment.arguments
+			} else {
+				toolArguments[fragment.index] += fragment.arguments
+			}
+		}
+		if changed && onUpdate != nil {
+			if err := onUpdate(result.Text, result.Reasoning); err != nil {
+				return result, receivedOutput, err
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return result, receivedOutput, err
+	}
+	if minToolIndex >= 0 {
+		result.ToolCall = &ToolCall{Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
+	}
+	return result, receivedOutput, nil
+}
+
+type streamStringFragment struct {
+	value   string
+	replace bool
+}
+
+func streamTextFragments(payload map[string]any) []streamStringFragment {
+	fragments := make([]streamStringFragment, 0, 2)
+	for _, field := range []string{"delta", "output_text"} {
+		if value, ok := payload[field].(string); ok && value != "" {
+			return append(fragments, streamStringFragment{value: value})
+		}
 	}
 	choices, _ := payload["choices"].([]any)
 	if len(choices) == 0 {
-		return ""
+		return fragments
 	}
 	choice, _ := choices[0].(map[string]any)
 	if delta, ok := choice["delta"].(map[string]any); ok {
-		if content, ok := delta["content"].(string); ok {
-			return content
+		if value, ok := delta["content"].(string); ok && value != "" {
+			fragments = append(fragments, streamStringFragment{value: value})
 		}
 	}
 	if message, ok := choice["message"].(map[string]any); ok {
-		if content, ok := message["content"].(string); ok {
-			return content
+		if value, ok := message["content"].(string); ok {
+			fragments = append(fragments, streamStringFragment{value: value, replace: true})
 		}
 	}
-	return ""
+	return fragments
+}
+
+func streamReasoningFragments(payload map[string]any) []streamStringFragment {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	fragments := make([]streamStringFragment, 0, 2)
+	for _, containerName := range []string{"delta", "message"} {
+		container, _ := choice[containerName].(map[string]any)
+		for _, field := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
+			if value, ok := container[field].(string); ok && value != "" {
+				fragments = append(fragments, streamStringFragment{
+					value: value, replace: containerName == "message",
+				})
+				break
+			}
+		}
+	}
+	return fragments
+}
+
+func transientChatError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return upstream.Status == http.StatusTooManyRequests || upstream.Status >= http.StatusInternalServerError
+	}
+	var netErr interface {
+		Timeout() bool
+		Temporary() bool
+	}
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "timeout") ||
+		strings.Contains(message, "temporarily unavailable") ||
+		strings.Contains(message, "service unavailable") ||
+		strings.Contains(message, "overloaded") ||
+		strings.Contains(message, "rate limit") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "unexpected eof")
+}
+
+type toolCallFragment struct {
+	index     int
+	name      string
+	arguments string
+	replace   bool
+}
+
+func streamToolCallFragments(payload map[string]any) []toolCallFragment {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	fragments := make([]toolCallFragment, 0, 1)
+	for _, containerName := range []string{"delta", "message"} {
+		container, _ := choice[containerName].(map[string]any)
+		if legacy, ok := container["function_call"].(map[string]any); ok {
+			name, _ := legacy["name"].(string)
+			arguments, _ := legacy["arguments"].(string)
+			if name != "" || arguments != "" {
+				fragments = append(fragments, toolCallFragment{
+					index: 0, name: name, arguments: arguments, replace: containerName == "message",
+				})
+			}
+		}
+		calls, _ := container["tool_calls"].([]any)
+		for _, rawCall := range calls {
+			call, _ := rawCall.(map[string]any)
+			function, _ := call["function"].(map[string]any)
+			index := 0
+			switch value := call["index"].(type) {
+			case float64:
+				index = int(value)
+			case int:
+				index = value
+			}
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			if name == "" && arguments == "" {
+				continue
+			}
+			fragments = append(fragments, toolCallFragment{
+				index: index, name: name, arguments: arguments, replace: containerName == "message",
+			})
+		}
+	}
+	return fragments
 }
 
 func streamError(payload map[string]any) string {
@@ -276,6 +563,12 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
+	return c.chatStreamWithPayload(ctx, map[string]any{
+		"model": c.chatModel, "messages": chatPayloadMessages(messages, imageURLs), "stream": true,
+	})
+}
+
+func chatPayloadMessages(messages []Message, imageURLs []string) []any {
 	payloadMessages := make([]any, len(messages))
 	lastUserIndex := -1
 	for index := len(messages) - 1; index >= 0; index-- {
@@ -307,9 +600,14 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 		}
 		payloadMessages[index] = map[string]any{"role": message.Role, "content": content}
 	}
-	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", map[string]any{
-		"model": c.chatModel, "messages": payloadMessages, "stream": true,
-	})
+	return payloadMessages
+}
+
+func (c *Client) chatStreamWithPayload(ctx context.Context, payload map[string]any) (*http.Response, error) {
+	if !c.Configured() {
+		return nil, errors.New("Sub2API API key is not configured")
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", payload)
 	if err != nil {
 		return nil, err
 	}

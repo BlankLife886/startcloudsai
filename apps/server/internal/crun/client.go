@@ -197,6 +197,27 @@ func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageR
 	return data.TaskID, nil
 }
 
+func (c *Client) CreateBackgroundRemovalTask(ctx context.Context, imageURL string) (string, error) {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", errors.New("CRUN background removal image URL is empty")
+	}
+	var data struct {
+		TaskID string `json:"task_id"`
+	}
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/client/job/CreateTask", map[string]any{
+		"model": c.model,
+		"input": map[string]any{"img_urls": []string{imageURL}},
+	}, &data)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(data.TaskID) == "" {
+		return "", errors.New("CRUN returned an empty background removal task id")
+	}
+	return data.TaskID, nil
+}
+
 func (c *Client) CreateImageTasks(
 	ctx context.Context,
 	request OpenAIImageRequest,

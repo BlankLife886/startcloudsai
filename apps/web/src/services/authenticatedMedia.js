@@ -172,26 +172,17 @@ function isObjectUrlInUse(objectUrl = '') {
 function deleteMediaCacheEntry(key, entry = mediaCache.get(key)) {
   if (!entry || entry.promise) return false
   if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl)
-  mediaCacheBytes = Math.max(
-    0,
-    mediaCacheBytes - Number(entry.displayBytes || entry.bytes || 0),
-  )
+  mediaCacheBytes = Math.max(0, mediaCacheBytes - Number(entry.displayBytes || entry.bytes || 0))
   mediaCache.delete(key)
   return true
 }
 
 function trimMediaCache(protectedKey = '') {
-  if (
-    mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES &&
-    mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES
-  ) {
+  if (mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES && mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES) {
     return
   }
   for (const [key, entry] of mediaCache) {
-    if (
-      mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES &&
-      mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES
-    ) {
+    if (mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES && mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES) {
       break
     }
     if (entry?.promise || !entry?.objectUrl) continue
@@ -285,6 +276,7 @@ export async function resolveAuthenticatedMediaUrl(value = '', options = {}) {
       mediaCacheBytes += displayBlob.size
       touchMediaCache(cacheKey, {
         objectUrl,
+        blob: displayBlob,
         maxDimension,
         bytes: blob.size,
         displayBytes: displayBlob.size,
@@ -310,8 +302,7 @@ export function getAuthenticatedMediaMetadata(value = '', options = {}) {
   if (!url || !isAuthenticatedAiMediaUrl(url)) return null
   const maxDimension = normalizedMaxDimension(options)
   const entry =
-    mediaCache.get(mediaCacheKey(url, { maxDimension })) ||
-    findReusableThumbnail(url, maxDimension)
+    mediaCache.get(mediaCacheKey(url, { maxDimension })) || findReusableThumbnail(url, maxDimension)
   if (!entry?.objectUrl) return null
   return {
     bytes: Math.max(0, Number(entry.bytes || 0)),
@@ -321,6 +312,14 @@ export function getAuthenticatedMediaMetadata(value = '', options = {}) {
     displayWidth: Math.max(0, Number(entry.displayWidth || 0)),
     displayHeight: Math.max(0, Number(entry.displayHeight || 0)),
   }
+}
+
+export function getCachedAuthenticatedMediaBlob(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return null
+  const maxDimension = normalizedMaxDimension(options)
+  const entry = mediaCache.get(mediaCacheKey(url, { maxDimension }))
+  return entry?.blob instanceof Blob && entry.blob.size ? entry.blob : null
 }
 
 export async function downloadAuthenticatedMedia(value = '', filename = 'ai-image.png') {

@@ -45,7 +45,7 @@ export class ApiError extends Error {
   }
 }
 
-type Query = Record<string, string | number | boolean | null | undefined>
+type Query = Record<string, string | number | boolean | string[] | null | undefined>
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
@@ -62,7 +62,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (query) {
     const qs = new URLSearchParams()
     for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined && value !== null && value !== '') qs.set(key, String(value))
+      if (value === undefined || value === null || value === '') continue
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item !== undefined && item !== null && item !== '') qs.append(key, String(item))
+        }
+        continue
+      }
+      qs.set(key, String(value))
     }
     const str = qs.toString()
     if (str) url += (url.includes('?') ? '&' : '?') + str
@@ -126,11 +133,20 @@ export interface Page<T> {
   nextCursor: string | null
 	total?: number
 	scopeTotal?: number
+	categoryCounts?: Record<string, number>
+	tags?: string[]
 }
 
 /** 兼容"数组 / 分页对象"两种列表返回 */
 export function normalizeList<T>(
-	data: T[] | { items: T[]; nextCursor?: string | null; total?: number; scopeTotal?: number },
+	data: T[] | {
+		items: T[]
+		nextCursor?: string | null
+		total?: number
+		scopeTotal?: number
+		categoryCounts?: Record<string, number>
+		tags?: string[]
+	},
 ): Page<T> {
   if (Array.isArray(data)) return { items: data, nextCursor: null }
 	return {
@@ -138,5 +154,7 @@ export function normalizeList<T>(
 		nextCursor: data.nextCursor ?? null,
 		total: data.total,
 		scopeTotal: data.scopeTotal,
+		categoryCounts: data.categoryCounts,
+		tags: data.tags,
 	}
 }

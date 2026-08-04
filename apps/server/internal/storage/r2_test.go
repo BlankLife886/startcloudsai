@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/aws/smithy-go"
@@ -32,5 +34,28 @@ func TestIsNotFound(t *testing.T) {
 	}
 	if IsNotFound(errors.New("plain error")) {
 		t.Fatal("plain errors must not map to not found")
+	}
+}
+
+func TestTransientObjectReadError(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		io.EOF,
+		io.ErrUnexpectedEOF,
+		statusError(503),
+		errors.New("remote error: tls handshake timeout"),
+	} {
+		if !transientObjectReadError(err) {
+			t.Fatalf("expected transient error: %v", err)
+		}
+	}
+	for _, err := range []error{
+		context.Canceled,
+		statusError(404),
+		errors.New("access denied"),
+	} {
+		if transientObjectReadError(err) {
+			t.Fatalf("expected permanent error: %v", err)
+		}
 	}
 }

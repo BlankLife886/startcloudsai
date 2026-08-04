@@ -30,6 +30,59 @@ func TestSelectExecutionCandidateUsesCapacityWeightedLoad(t *testing.T) {
 	}
 }
 
+func TestAutomaticBackgroundRemovalModelRequiresImageParentConfiguration(t *testing.T) {
+	modelKey := "background-tool"
+	tests := []struct {
+		name string
+		task *store.Task
+		want string
+	}{
+		{name: "configured t2i", task: &store.Task{Type: "t2i", Params: map[string]any{
+			"autoBackgroundRemovalEnabled":  true,
+			"autoBackgroundRemovalModelKey": modelKey,
+		}}, want: modelKey},
+		{name: "disabled", task: &store.Task{Type: "t2i", Params: map[string]any{
+			"autoBackgroundRemovalEnabled":  false,
+			"autoBackgroundRemovalModelKey": modelKey,
+		}}},
+		{name: "background child", task: &store.Task{Type: "background_remove", Params: map[string]any{
+			"autoBackgroundRemovalEnabled":  true,
+			"autoBackgroundRemovalModelKey": modelKey,
+		}}},
+		{name: "missing model", task: &store.Task{Type: "t2i", Params: map[string]any{
+			"autoBackgroundRemovalEnabled": true,
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := automaticBackgroundRemovalModel(tt.task); got != tt.want {
+				t.Fatalf("model = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTaskFailureRetryCountDefaultsToZeroAndClamps(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	w := &Worker{St: st}
+	if got := w.taskFailureRetryCount(ctx); got != 0 {
+		t.Fatalf("default retry count = %d, want 0", got)
+	}
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`7`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.taskFailureRetryCount(ctx); got != 7 {
+		t.Fatalf("configured retry count = %d, want 7", got)
+	}
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`1000`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.taskFailureRetryCount(ctx); got != maxTaskFailureRetries {
+		t.Fatalf("clamped retry count = %d, want %d", got, maxTaskFailureRetries)
+	}
+}
+
 func TestSelectExecutionCandidateAvoidsFailedProvider(t *testing.T) {
 	candidates := []modelconfig.Selection{
 		{Provider: modelconfig.Provider{ID: "failed", MaxConcurrency: 100}},
@@ -158,6 +211,67 @@ func TestClaimTaskDistributesAcrossBaseURLRoutes(t *testing.T) {
 	claimed, reason, err := w.claimTask(ctx, ids[3])
 	if err != nil || claimed != nil || reason != "provider_execution_limit" {
 		t.Fatalf("full routes task=%#v reason=%q err=%v", claimed, reason, err)
+	}
+}
+
+func TestClaimTaskBalancesSameNameAndPriceAcrossProviders(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	const masterKey = "worker-cross-provider-test-key"
+	encrypted, err := settings.EncryptSecret("route-secret", masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := modelconfig.Config{
+		Version: modelconfig.Version,
+		Providers: []modelconfig.Provider{
+			{ID: "provider-a", Name: "Provider A", Adapter: modelconfig.AdapterOpenAI, Enabled: true, Routes: []modelconfig.ProviderRoute{{ID: "route-a", Name: "A", BaseURL: "https://a.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true}}},
+			{ID: "provider-b", Name: "Provider B", Adapter: modelconfig.AdapterOpenAI, Enabled: true, Routes: []modelconfig.ProviderRoute{{ID: "route-b", Name: "B", BaseURL: "https://b.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true}}},
+		},
+		Models: []modelconfig.Model{
+			{ID: "model-a", Name: "Shared Image", ProviderID: "provider-a", UpstreamModel: "upstream-a", Kind: modelconfig.ModelKindImage, PriceCents: 12, Qualities: []string{"high"}, Public: true, Default: true, Enabled: true},
+			{ID: "model-b", Name: "Shared Image", ProviderID: "provider-b", UpstreamModel: "upstream-b", Kind: modelconfig.ModelKindImage, PriceCents: 12, Qualities: []string{"high"}, Public: true, Enabled: true},
+		},
+	}
+	if err := modelconfig.Save(ctx, st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"global_max_concurrent_tasks":                 "100",
+		"user_max_concurrent_tasks":                   "100",
+		"cross_provider_same_model_balancing_enabled": "true",
+	} {
+		if err := settings.Set(ctx, st.Pool, key, json.RawMessage(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("cross-provider-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uuid.UUID, 2)
+	for index := range ids {
+		params := `{"_providerConfigId":"provider-a","_providerRouteId":"route-a","_modelConfigId":"model-a","_serviceProvider":"openai","_unitPriceCents":12,"quality":"high"}`
+		if err := st.Pool.QueryRow(ctx,
+			`INSERT INTO tasks (user_id, type, model, prompt, params, status, cost_cents) VALUES ($1, 't2i', 'upstream-a', 'test', $2, 'queued', 12) RETURNING id`,
+			user.ID, params).Scan(&ids[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppSecret: masterKey}}
+	first, reason, err := w.claimTask(ctx, ids[0])
+	if err != nil || reason != "" || first == nil || taskParamString(first.Params, "_providerConfigId") != "provider-a" {
+		t.Fatalf("first claim task=%#v reason=%q err=%v", first, reason, err)
+	}
+	second, reason, err := w.claimTask(ctx, ids[1])
+	if err != nil || reason != "" || second == nil {
+		t.Fatalf("second claim task=%#v reason=%q err=%v", second, reason, err)
+	}
+	if taskParamString(second.Params, "_providerConfigId") != "provider-b" || taskParamString(second.Params, "_modelConfigId") != "model-b" || second.Model != "upstream-b" {
+		t.Fatalf("second execution route provider=%q modelID=%q upstream=%q", taskParamString(second.Params, "_providerConfigId"), taskParamString(second.Params, "_modelConfigId"), second.Model)
+	}
+	if second.CostCents != 12 {
+		t.Fatalf("second task cost = %d, want frozen cost 12", second.CostCents)
 	}
 }
 

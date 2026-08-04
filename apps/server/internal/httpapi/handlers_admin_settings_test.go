@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -38,6 +40,46 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 	}
 	if out["workerConcurrencyCeiling"] != int64(32) || out["effectiveGlobalConcurrency"] != int64(2000) {
 		t.Fatalf("concurrency settings = ceiling %#v effective %#v", out["workerConcurrencyCeiling"], out["effectiveGlobalConcurrency"])
+	}
+	retries, ok := out["taskFailureRetryCount"].(json.RawMessage)
+	if !ok || string(retries) != "0" {
+		t.Fatalf("taskFailureRetryCount = %#v, want 0", out["taskFailureRetryCount"])
+	}
+	balancing, ok := out["crossProviderSameModelBalancingEnabled"].(json.RawMessage)
+	if !ok || string(balancing) != "false" {
+		t.Fatalf("crossProviderSameModelBalancingEnabled = %#v, want false", out["crossProviderSameModelBalancingEnabled"])
+	}
+}
+
+func TestAdminPutSettingsValidatesTaskFailureRetryCount(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	for _, body := range []string{`{"taskFailureRetryCount":-1}`, `{"taskFailureRetryCount":101}`} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422", body, recorder.Code)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(`{"taskFailureRetryCount":7,"crossProviderSameModelBalancingEnabled":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid retry count status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	got, err := settings.GetInt(context.Background(), st.Pool, "task_failure_retry_count")
+	if err != nil || got != 7 {
+		t.Fatalf("stored retry count = %d err=%v, want 7", got, err)
+	}
+	balancingEnabled, err := settings.GetBool(context.Background(), st.Pool, "cross_provider_same_model_balancing_enabled")
+	if err != nil || !balancingEnabled {
+		t.Fatalf("stored cross-provider balancing = %v err=%v, want true", balancingEnabled, err)
 	}
 }
 

@@ -48,6 +48,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	}
 	allModels := modelconfig.PublicModels(cfg, "")
 	allImageModels := make([]gin.H, 0)
+	backgroundRemovalModels := make([]gin.H, 0)
 	catalogModels := make([]gin.H, 0, len(allModels))
 	providerModels := make(map[string][]gin.H)
 	imageItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
@@ -66,8 +67,24 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
 		}
 	}
+	toolItem := func(selection modelconfig.Selection) gin.H {
+		model := selection.Model
+		price := modelconfig.EffectivePrice(model)
+		return gin.H{
+			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"description": model.Description, "tool": model.Tool,
+			"pricePoints": price, "standardPricePoints": model.PriceCents,
+			"discountPricePoints": model.DiscountPriceCents, "default": model.Default,
+		}
+	}
 	for _, selection := range allModels {
 		model := selection.Model
+		if model.Kind == modelconfig.ModelKindImageTool {
+			if model.Tool == modelconfig.ImageToolBackgroundRemove {
+				backgroundRemovalModels = append(backgroundRemovalModels, toolItem(selection))
+			}
+			continue
+		}
 		capabilities := []string{"text.chat", "text.analysis", "image.understand"}
 		if model.Kind == modelconfig.ModelKindImage {
 			capabilities = []string{"textToImage", "imageToImage", "image.generate", "image.edit"}
@@ -77,7 +94,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"id": model.ID, "label": model.Name, "name": model.Name,
 			"provider": selection.Provider.ID, "providerId": selection.Provider.ID,
 			"providerName": selection.Provider.Name,
-			"kind":         model.Kind, "description": model.Description, "capabilities": capabilities,
+			"kind":         model.Kind, "tool": model.Tool, "description": model.Description, "capabilities": capabilities,
 			"adapterReady": true, "default": model.Default, "fastMode": model.FastMode,
 			"resolutions": model.Resolutions, "aspectRatios": model.AspectRatios,
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
@@ -86,7 +103,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"pricing": gin.H{
 				"points": price, "cents": price, "standardPoints": model.PriceCents,
 				"discountPoints": model.DiscountPriceCents,
-				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind == modelconfig.ModelKindImage],
+				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind != modelconfig.ModelKindChat],
 			},
 		}
 		catalogModels = append(catalogModels, item)
@@ -114,6 +131,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		return items
 	}
 	features := gin.H{
+		"ai.imageTools":           gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
 		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},

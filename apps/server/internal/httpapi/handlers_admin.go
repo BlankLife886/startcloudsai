@@ -128,8 +128,25 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	usage, err := store.UsageSummariesByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ok(c, buildPage(rows, limit, func(u *store.User) gin.H {
-		return adminUserDict(u, wallets[u.ID])
+		d := adminUserDict(u, wallets[u.ID])
+		summary := usage[u.ID]
+		d["usage"] = gin.H{
+			"tasksTotal":     summary.TasksTotal,
+			"tasksSucceeded": summary.TasksSucceeded,
+			"tasksFailed":    summary.TasksFailed,
+			"tasksRunning":   summary.TasksRunning,
+			"tasksCanceled":  summary.TasksCanceled,
+			"submissions":    summary.Submissions,
+			"assets":         summary.Assets,
+			"orders":         summary.Orders,
+		}
+		return d
 	}))
 }
 
@@ -1394,31 +1411,33 @@ func (s *Server) adminDeleteChangelog(c *gin.Context, _ *store.User) {
 // ---------- settings ----------
 
 var settingsCamel = map[string]string{
-	"task_prices":                 "taskPrices",
-	"user_max_running_tasks":      "userMaxRunningTasks",
-	"user_max_concurrent_tasks":   "userMaxConcurrentTasks",
-	"global_max_concurrent_tasks": "globalMaxConcurrentTasks",
-	"global_max_active_tasks":     "globalMaxActiveTasks",
-	"signup_bonus_cents":          "signupBonusCents",
-	"registration_enabled":        "registrationEnabled",
-	"task_models":                 "taskModels",
-	"image_service_routes":        "imageServiceRoutes",
-	"free_daily_cents":            "freeDailyCents",
-	"submission_enabled":          "submissionEnabled",
-	"auto_approve":                "autoApprove",
-	"daily_limit":                 "dailyLimit",
-	"c2a_base_url":                "c2aBaseUrl",
-	"c2a_api_key":                 "c2aApiKey",
-	"c2a_timeout_secs":            "c2aTimeoutSecs",
-	"sub2api_base_url":            "sub2apiBaseUrl",
-	"sub2api_api_key":             "sub2apiApiKey",
-	"sub2api_chat_model":          "sub2apiChatModel",
-	"sub2api_chat_models":         "sub2apiChatModels",
-	"sub2api_image_model":         "sub2apiImageModel",
-	"sub2api_timeout_secs":        "sub2apiTimeoutSecs",
-	"crun_base_url":               "crunBaseUrl",
-	"crun_api_key":                "crunApiKey",
-	"crun_timeout_secs":           "crunTimeoutSecs",
+	"task_prices":                                 "taskPrices",
+	"user_max_running_tasks":                      "userMaxRunningTasks",
+	"user_max_concurrent_tasks":                   "userMaxConcurrentTasks",
+	"global_max_concurrent_tasks":                 "globalMaxConcurrentTasks",
+	"global_max_active_tasks":                     "globalMaxActiveTasks",
+	"task_failure_retry_count":                    "taskFailureRetryCount",
+	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
+	"signup_bonus_cents":                          "signupBonusCents",
+	"registration_enabled":                        "registrationEnabled",
+	"task_models":                                 "taskModels",
+	"image_service_routes":                        "imageServiceRoutes",
+	"free_daily_cents":                            "freeDailyCents",
+	"submission_enabled":                          "submissionEnabled",
+	"auto_approve":                                "autoApprove",
+	"daily_limit":                                 "dailyLimit",
+	"c2a_base_url":                                "c2aBaseUrl",
+	"c2a_api_key":                                 "c2aApiKey",
+	"c2a_timeout_secs":                            "c2aTimeoutSecs",
+	"sub2api_base_url":                            "sub2apiBaseUrl",
+	"sub2api_api_key":                             "sub2apiApiKey",
+	"sub2api_chat_model":                          "sub2apiChatModel",
+	"sub2api_chat_models":                         "sub2apiChatModels",
+	"sub2api_image_model":                         "sub2apiImageModel",
+	"sub2api_timeout_secs":                        "sub2apiTimeoutSecs",
+	"crun_base_url":                               "crunBaseUrl",
+	"crun_api_key":                                "crunApiKey",
+	"crun_timeout_secs":                           "crunTimeoutSecs",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1561,13 +1580,19 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "globalMaxActiveTasks: 须在 10-10000000 之间", 422))
 				return
 			}
+		case "task_failure_retry_count":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 100 {
+				fail(c, apperr.E("validation_error", "taskFailureRetryCount: 须在 0-100 之间", 422))
+				return
+			}
 		case "signup_bonus_cents", "free_daily_cents", "daily_limit":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
 				fail(c, apperr.E("validation_error", camel+": 须为非负整数", 422))
 				return
 			}
-		case "registration_enabled", "submission_enabled", "auto_approve":
+		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))

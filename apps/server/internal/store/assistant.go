@@ -144,6 +144,13 @@ func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, mess
 	return err
 }
 
+func DeleteAssistantMessagesFrom(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
+	_, err := q.Exec(ctx, `DELETE FROM assistant_messages WHERE conversation_id = $1 AND
+		created_at >= (SELECT created_at FROM assistant_messages WHERE id = $2 AND conversation_id = $1)`,
+		conversationID, messageID)
+	return err
+}
+
 func UpdateAssistantUserMessage(ctx context.Context, q Q, id uuid.UUID, content string, metadata map[string]any) error {
 	_, err := q.Exec(ctx, `UPDATE assistant_messages SET content = $2, metadata = $3, updated_at = now()
 		WHERE id = $1 AND role = 'user'`, id, content, metadata)

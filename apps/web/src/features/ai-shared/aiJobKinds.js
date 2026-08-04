@@ -11,6 +11,7 @@ const WALLPAPER_KINDS = new Set([
   'wallpaper-image-edit',
   'wallpaper-image-mask-edit',
   'wallpaper-image-upscale',
+  'wallpaper-background-remove',
   'wallpaper-video-generation',
   'wallpaper-video-edit',
 ])

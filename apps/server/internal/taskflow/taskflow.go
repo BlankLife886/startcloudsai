@@ -86,6 +86,10 @@ func validateModelImageCapabilities(model modelconfig.Model, params map[string]a
 	return nil
 }
 
+func ValidateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
+	return validateModelImageCapabilities(model, params, referenceCount)
+}
+
 type CreateInput struct {
 	Type           string
 	Prompt         string
@@ -102,6 +106,10 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	}
 	if in.Count < 1 || in.Count > 4 {
 		return nil, false, apperr.E("validation_error", "count 须在 1-4 之间", 422)
+	}
+	isBackgroundRemove := in.Type == "background_remove"
+	if isBackgroundRemove && (in.Count != 1 || len(in.InputKeys) != 1) {
+		return nil, false, apperr.E("validation_error", "背景移除任务必须且只能包含 1 张输入图片", 422)
 	}
 
 	var task *store.Task
@@ -158,15 +166,18 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err != nil {
 			return err
 		}
-		provider, err := settings.ImageServiceProvider(ctx, tx, in.Type)
-		if err != nil {
-			return err
-		}
+		provider := ""
 		model := ""
-		if provider == "c2a" {
-			model, err = settings.TaskModel(ctx, tx, in.Type)
+		if !isBackgroundRemove {
+			provider, err = settings.ImageServiceProvider(ctx, tx, in.Type)
 			if err != nil {
 				return err
+			}
+			if provider == "c2a" {
+				model, err = settings.TaskModel(ctx, tx, in.Type)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		params := make(map[string]any, len(in.Params)+1)
@@ -191,7 +202,11 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		workspace, workspaceMapped := modelconfig.WorkspaceForTaskType(in.Type)
 		var selection *modelconfig.Selection
 		var configured bool
-		if workspaceMapped {
+		if isBackgroundRemove {
+			selection, configured = modelconfig.SelectPublicImageTool(
+				modelCfg, modelconfig.ImageToolBackgroundRemove, requestedModelID,
+			)
+		} else if workspaceMapped {
 			selection, configured = modelconfig.SelectPublicForWorkspace(
 				modelCfg, workspace, modelconfig.ModelKindImage, requestedModelID,
 			)
@@ -199,50 +214,52 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			selection, configured = modelconfig.SelectPublic(modelCfg, modelconfig.ModelKindImage, requestedModelID)
 		}
 		if configured {
-			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
-				return err
-			}
-			if quality := stringParam(params, "quality"); quality != "" {
-				switch quality {
-				case "standard":
-					quality = "medium"
-				case "hd":
-					quality = "high"
+			if !isBackgroundRemove {
+				if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
+					return err
 				}
-				params["quality"] = quality
-			}
-			if format := stringParam(params, "outputFormat"); format != "" {
-				if format == "jpg" {
-					format = "jpeg"
+				if quality := stringParam(params, "quality"); quality != "" {
+					switch quality {
+					case "standard":
+						quality = "medium"
+					case "hd":
+						quality = "high"
+					}
+					params["quality"] = quality
 				}
-				params["outputFormat"] = format
-			}
-			requestedResolution := ""
-			for _, key := range []string{"resolutionScale", "resolution"} {
-				if value, ok := in.Params[key].(string); ok && strings.TrimSpace(value) != "" {
-					requestedResolution = strings.ToUpper(strings.TrimSpace(value))
-					break
+				if format := stringParam(params, "outputFormat"); format != "" {
+					if format == "jpg" {
+						format = "jpeg"
+					}
+					params["outputFormat"] = format
 				}
-			}
-			if requestedResolution != "" && len(selection.Model.Resolutions) > 0 {
-				supported := false
-				for _, resolution := range selection.Model.Resolutions {
-					if strings.EqualFold(resolution, requestedResolution) {
-						supported = true
+				requestedResolution := ""
+				for _, key := range []string{"resolutionScale", "resolution"} {
+					if value, ok := in.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+						requestedResolution = strings.ToUpper(strings.TrimSpace(value))
 						break
 					}
 				}
-				if !supported {
-					return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
+				if requestedResolution != "" && len(selection.Model.Resolutions) > 0 {
+					supported := false
+					for _, resolution := range selection.Model.Resolutions {
+						if strings.EqualFold(resolution, requestedResolution) {
+							supported = true
+							break
+						}
+					}
+					if !supported {
+						return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
+					}
 				}
-			}
-			requestedAspectRatio := stringParam(in.Params, "aspectRatio")
-			if requestedAspectRatio == "auto" {
-				params["requestedAspectRatio"] = "auto"
-				params["aspectRatio"] = "auto"
-				params["autoAspectRatioCandidates"] = modelconfig.AutoAspectRatioCandidates(
-					selection.Model, requestedResolution,
-				)
+				requestedAspectRatio := stringParam(in.Params, "aspectRatio")
+				if requestedAspectRatio == "auto" {
+					params["requestedAspectRatio"] = "auto"
+					params["aspectRatio"] = "auto"
+					params["autoAspectRatioCandidates"] = modelconfig.AutoAspectRatioCandidates(
+						selection.Model, requestedResolution,
+					)
+				}
 			}
 			provider = selection.Provider.Adapter
 			model = selection.Model.UpstreamModel
@@ -254,6 +271,7 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_providerRouteKey"] = modelconfig.ExecutionRouteKey(selection.Provider)
 			params["_providerDisplayName"] = selection.Provider.Name
 			params["_modelDisplayName"] = selection.Model.Name
+			params["_modelTool"] = selection.Model.Tool
 			params["_modelFastMode"] = selection.Model.FastMode
 			params["_modelResolutions"] = selection.Model.Resolutions
 			params["_modelAspectRatios"] = selection.Model.AspectRatios
@@ -264,6 +282,8 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_modelModerationLevels"] = selection.Model.ModerationLevels
 			params["_modelMaxReferenceImages"] = selection.Model.MaxReferenceImages
 			params["_unitPriceCents"] = unitPrice
+		} else if isBackgroundRemove {
+			return apperr.E("validation_error", "背景移除工具尚未配置或未开放", 422)
 		} else if (workspaceMapped && modelconfig.HasWorkspaceBinding(modelCfg, workspace)) ||
 			modelconfig.HasPublicKind(modelCfg, modelconfig.ModelKindImage) || requestedModelID != "" {
 			return apperr.E("validation_error", "所选图片模型未分配给当前页面，请刷新模型列表后重试", 422)

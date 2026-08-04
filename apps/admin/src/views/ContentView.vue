@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import AdminDialog from "@/components/AdminDialog.vue";
 import { normalizeList, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
 import { formatTime } from "@/utils";
@@ -446,25 +447,13 @@ onMounted(() => {
           subtitle="配置用户端公告的内容、展示形式、频率与有效期"
         >
           <template #actions>
-            <el-button type="primary" size="small" @click="openAnnCreate"
-              >发布公告</el-button
-            >
+            <el-button type="primary" @click="openAnnCreate">发布公告</el-button>
           </template>
-          <el-alert
-            v-if="annError"
-            class="content-load-error"
-            type="error"
-            :title="annError"
-            show-icon
-            :closable="false"
-          >
-            <template #default>
-              <el-button size="small" @click="loadAnnouncements"
-                >重新加载</el-button
-              >
-            </template>
-          </el-alert>
+
+          <ListError :error="annError || null" :loading="annLoading" @retry="loadAnnouncements" />
+
           <AdminListShell
+            class="content-list-shell"
             :has-prev="announcementPagination.hasPrev.value"
             :has-next="announcementPagination.hasNext.value"
             :loading="annLoading"
@@ -474,71 +463,63 @@ onMounted(() => {
             @prev="announcementPagination.prev"
             @next="announcementPagination.next"
           >
-          <el-table v-loading="annLoading" :data="announcementPagination.items.value" height="100%" size="small">
-            <template #empty>
-              <el-empty description="暂无公告" :image-size="60">
-                <div class="empty-sub">
-                  点击右上角「发布公告」创建第一条公告
-                </div>
-              </el-empty>
-            </template>
-            <el-table-column prop="title" label="标题" min-width="190" />
-            <el-table-column
-              prop="body"
-              label="内容"
-              min-width="240"
-              show-overflow-tooltip
-            />
-            <el-table-column label="展示方式" width="120">
-              <template #default="{ row }">
-                {{
-                  PLACEMENT_LABELS[
-                    announcementConfigOf(row as Announcement).placement
-                  ]
-                }}
-              </template>
-            </el-table-column>
-            <el-table-column label="展示频率" width="150">
-              <template #default="{ row }">
-                {{
-                  FREQUENCY_LABELS[
-                    announcementConfigOf(row as Announcement).frequency
-                  ]
-                }}
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag
-                  :type="announcementState(row as Announcement).type"
-                  size="small"
-                >
-                  {{ announcementState(row as Announcement).label }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="创建时间" width="170">
-              <template #default="{ row }">{{
-                formatTime(row.createdAt)
-              }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  size="small"
-                  @click="openAnnEdit(row as Announcement)"
-                  >编辑</el-button
-                >
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="removeAnn(row as Announcement)"
-                  >删除</el-button
-                >
-              </template>
-            </el-table-column>
-          </el-table>
+            <div class="content-table-shell">
+              <el-table
+                v-loading="annLoading"
+                class="content-table"
+                :data="announcementPagination.items.value"
+                height="100%"
+                size="small"
+              >
+                <template #empty>
+                  <el-empty description="暂无公告" :image-size="60">
+                    <div class="empty-sub">点击右上角「发布公告」创建第一条公告</div>
+                  </el-empty>
+                </template>
+                <el-table-column label="标题" min-width="190" align="left" header-align="left" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="cell-text">{{ row.title }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="内容" min-width="240" align="left" header-align="left" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="cell-muted">{{ row.body }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="展示方式" width="120" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-text">{{
+                      PLACEMENT_LABELS[announcementConfigOf(row as Announcement).placement]
+                    }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="展示频率" width="150" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-text">{{
+                      FREQUENCY_LABELS[announcementConfigOf(row as Announcement).frequency]
+                    }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="90" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <el-tag :type="announcementState(row as Announcement).type" size="small">
+                      {{ announcementState(row as Announcement).label }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="创建时间" width="170" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-text tnum">{{ formatTime(row.createdAt) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="140" fixed="right" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <el-button size="small" @click="openAnnEdit(row as Announcement)">编辑</el-button>
+                    <el-button size="small" type="danger" plain @click="removeAnn(row as Announcement)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
           </AdminListShell>
         </PageCard>
       </el-tab-pane>
@@ -546,25 +527,13 @@ onMounted(() => {
       <el-tab-pane label="更新说明" name="changelog">
         <PageCard title="更新说明" subtitle="用户端「更新说明」页的版本条目">
           <template #actions>
-            <el-button type="primary" size="small" @click="openLogCreate"
-              >新增条目</el-button
-            >
+            <el-button type="primary" @click="openLogCreate">新增条目</el-button>
           </template>
-          <el-alert
-            v-if="logError"
-            class="content-load-error"
-            type="error"
-            :title="logError"
-            show-icon
-            :closable="false"
-          >
-            <template #default>
-              <el-button size="small" @click="loadChangelog"
-                >重新加载</el-button
-              >
-            </template>
-          </el-alert>
+
+          <ListError :error="logError || null" :loading="logLoading" @retry="loadChangelog" />
+
           <AdminListShell
+            class="content-list-shell"
             :has-prev="changelogPagination.hasPrev.value"
             :has-next="changelogPagination.hasNext.value"
             :loading="logLoading"
@@ -574,79 +543,77 @@ onMounted(() => {
             @prev="changelogPagination.prev"
             @next="changelogPagination.next"
           >
-          <el-table v-loading="logLoading" :data="changelogPagination.items.value" height="100%" size="small">
-            <template #empty>
-              <el-empty description="暂无更新说明" :image-size="60">
-                <div class="empty-sub">
-                  点击右上角「新增条目」发布第一条更新说明
-                </div>
-              </el-empty>
-            </template>
-            <el-table-column prop="version" label="版本" width="100" />
-            <el-table-column prop="date" label="日期" width="120" />
-            <el-table-column label="类型" width="100">
-              <template #default="{ row }">
-                <el-tag
-                  :type="row.tag === 'feature' ? 'primary' : 'success'"
-                  size="small"
-                >
-                  {{ TAG_LABELS[row.tag] ?? row.tag }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="title" label="标题" min-width="160" />
-            <el-table-column
-              prop="summary"
-              label="摘要"
-              min-width="220"
-              show-overflow-tooltip
-            />
-            <el-table-column
-              label="条目数"
-              width="80"
-              align="right"
-              class-name="col-num"
-            >
-              <template #default="{ row }">{{
-                row.items?.length ?? 0
-              }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  size="small"
-                  @click="openLogEdit(row as ChangelogEntry)"
-                  >编辑</el-button
-                >
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="removeLog(row as ChangelogEntry)"
-                  >删除</el-button
-                >
-              </template>
-            </el-table-column>
-          </el-table>
+            <div class="content-table-shell">
+              <el-table
+                v-loading="logLoading"
+                class="content-table"
+                :data="changelogPagination.items.value"
+                height="100%"
+                size="small"
+              >
+                <template #empty>
+                  <el-empty description="暂无更新说明" :image-size="60">
+                    <div class="empty-sub">点击右上角「新增条目」发布第一条更新说明</div>
+                  </el-empty>
+                </template>
+                <el-table-column label="版本" width="100" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-num">{{ row.version }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="日期" width="120" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-text tnum">{{ row.date }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="类型" width="100" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <el-tag :type="row.tag === 'feature' ? 'primary' : 'success'" size="small">
+                      {{ TAG_LABELS[row.tag] ?? row.tag }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="标题" min-width="160" align="left" header-align="left" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="cell-text">{{ row.title }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="摘要" min-width="220" align="left" header-align="left" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="cell-muted">{{ row.summary }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="条目数" width="88" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <span class="cell-num tnum">{{ row.items?.length ?? 0 }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="140" fixed="right" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <el-button size="small" @click="openLogEdit(row as ChangelogEntry)">编辑</el-button>
+                    <el-button size="small" type="danger" plain @click="removeLog(row as ChangelogEntry)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
           </AdminListShell>
         </PageCard>
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog
+    <AdminDialog
       v-model="annDialogVisible"
-      class="announcement-config-dialog"
       :title="annEditingId ? '编辑公告配置' : '发布公告'"
+      subtitle="左侧编辑，右侧实时预览用户端效果"
       width="min(1060px, calc(100vw - 32px))"
-      top="5vh"
+      nested-scroll
+      confirm-text="保存"
+      :confirm-loading="annSubmitting"
+      @confirm="submitAnn"
     >
       <div class="announcement-editor">
         <el-form class="announcement-editor__form" label-position="top">
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>公告内容</strong>
-              <span>用户首先看到的信息</span>
-            </div>
             <el-form-item label="标题" required>
               <el-input
                 v-model="annForm.title"
@@ -668,10 +635,6 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>展示样式</strong>
-              <span>视觉会实时同步到右侧预览</span>
-            </div>
             <div class="announcement-editor__row">
               <el-form-item label="展示位置">
                 <el-radio-group v-model="annForm.placement">
@@ -728,10 +691,6 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>交互与频率</strong>
-              <span>控制按钮、关闭方式和重复展示</span>
-            </div>
             <div class="announcement-editor__row">
               <el-form-item label="行动按钮文案">
                 <el-input
@@ -797,10 +756,6 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>发布排期</strong>
-              <span>留空时间表示立即开始或长期有效</span>
-            </div>
             <div class="announcement-editor__row">
               <el-form-item label="开始时间">
                 <el-date-picker
@@ -875,18 +830,15 @@ onMounted(() => {
           </div>
         </aside>
       </div>
-      <template #footer>
-        <el-button @click="annDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="annSubmitting" @click="submitAnn"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="logDialogVisible"
       :title="logEditingId ? '编辑更新说明' : '新增更新说明'"
       width="560px"
+      confirm-text="保存"
+      :confirm-loading="logSubmitting"
+      @confirm="submitLog"
     >
       <el-form label-width="80px">
         <el-form-item label="版本号" required>
@@ -924,29 +876,107 @@ onMounted(() => {
           />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="logDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="logSubmitting" @click="submitLog"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
 <style scoped>
-.content-load-error {
-  margin-bottom: 12px;
+.page :deep(.el-tabs__header) {
+  margin-bottom: 14px;
 }
 
-:deep(.announcement-config-dialog .el-dialog__body) {
-  padding: 0;
+.content-list-shell {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.content-list-shell :deep(.admin-list-shell__footer) {
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--surface);
+}
+
+.content-list-shell :deep(.cursor-pager__meta strong) {
+  color: var(--ink);
+}
+
+.content-table-shell {
+  height: 100%;
+  min-width: 0;
   overflow: hidden;
 }
 
-:deep(.announcement-config-dialog .el-dialog__footer) {
-  border-top: 1px solid var(--border);
-  padding: 14px 20px;
+.content-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.content-table :deep(.el-table__header-wrapper th.el-table__cell),
+.content-table :deep(.el-table__body td.el-table__cell),
+.content-table :deep(.el-table .cell) {
+  text-align: left !important;
+}
+
+.content-table :deep(.el-table .cell) {
+  display: block;
+  justify-content: flex-start;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.content-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 48px;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.content-table :deep(.el-table__body .el-table__cell) {
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.content-table :deep(.el-table__row td.el-table__cell) {
+  height: 56px;
+}
+
+.content-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--surface-2);
+}
+
+.content-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
+  border-bottom-color: transparent;
+}
+
+.cell-text,
+.cell-num,
+.cell-muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-text {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.cell-num {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cell-muted {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .announcement-editor {
@@ -963,9 +993,13 @@ onMounted(() => {
 }
 
 .announcement-editor__section {
-  padding: 0 0 20px;
-  margin: 0 0 20px;
-  border-bottom: 1px solid var(--border);
+  padding: 0 0 16px;
+  margin: 0 0 8px;
+}
+
+.announcement-editor__section:not(:last-child) {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  margin-bottom: 16px;
 }
 
 .announcement-editor__section:last-child {
@@ -973,19 +1007,6 @@ onMounted(() => {
   border-bottom: 0;
 }
 
-.announcement-editor__heading {
-  display: grid;
-  gap: 3px;
-  margin-bottom: 16px;
-}
-
-.announcement-editor__heading strong {
-  color: var(--ink-1);
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.announcement-editor__heading span,
 .announcement-publish-switch span {
   color: var(--ink-3);
   font-size: 12px;
@@ -1033,13 +1054,10 @@ onMounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  padding: 16px;
   color: rgba(255, 255, 255, 0.94);
-  background-color: #09090c;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background: var(--surface-2);
+  border-left: 1px solid var(--border);
 }
 
 .announcement-preview-stage__meta {
@@ -1047,21 +1065,24 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+  color: var(--ink-2);
 }
 
 .announcement-preview-stage__meta span {
+  color: var(--ink);
   font-size: 13px;
   font-weight: 650;
 }
 
 .announcement-preview-stage__meta em {
-  padding: 4px 8px;
-  border: 1px solid rgba(139, 123, 255, 0.36);
-  border-radius: 999px;
-  color: #b8adff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
   font-size: 11px;
   font-style: normal;
+  font-weight: 650;
 }
 
 .announcement-preview-canvas {
@@ -1069,11 +1090,15 @@ onMounted(() => {
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 22px;
+  padding: 16px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 18px;
-  background: rgba(18, 18, 24, 0.84);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    #0c0c10;
+  background-size: 24px 24px, 24px 24px, auto;
 }
 
 .announcement-preview {
