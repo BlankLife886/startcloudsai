@@ -135,6 +135,7 @@ export function loadImageSize(src) {
 
 const KIND_TYPE_RULES = [
   [/^illustration-coloring/, 'coloring'],
+  [/^ui-design-ecommerce/, 'ecommerce_design'],
   [/^ui-design/, 'ui_design'],
   [/^ultra-reference/, 'model_sheet'],
   [/^game-art/, 'game_art'],
@@ -156,6 +157,7 @@ const DEFAULT_KIND_BY_TYPE = {
   t2i: 'wallpaper-image-generation',
   coloring: 'illustration-coloring',
   ui_design: 'ui-design-generation',
+  ecommerce_design: 'ui-design-ecommerce-detail-generation',
   model_sheet: 'ultra-reference-generation',
   game_art: 'game-art-generation',
   puzzle: 'puzzle-generation',

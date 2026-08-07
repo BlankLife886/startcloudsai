@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
@@ -120,7 +121,13 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 		}
 	}
 	message := sanitizeUpstreamMessage(err.Error())
-	_, _ = store.FailAssistantRun(context.Background(), w.St.Pool, runID, "assistant_run_failed", message)
+	failed, failErr := assistantbilling.Fail(context.Background(), w.St, runID, "assistant_run_failed", message)
+	if failErr != nil {
+		return failErr
+	}
+	if !failed {
+		return nil
+	}
 	failedContent := ""
 	if partial, partialErr := store.GetAssistantMessage(context.Background(), w.St.Pool, run.AssistantMessageID); partialErr == nil && partial != nil && strings.TrimSpace(partial.Content) != "" {
 		if strings.TrimSpace(partial.Content) != strings.TrimSpace(message) {
@@ -733,11 +740,17 @@ func (w *Worker) executeAssistantAgent(
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 			return err
 		}
-		_, err = store.CompleteAssistantRun(ctx, w.St.Pool, run.ID, "proposal")
+		completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "proposal")
+		if err != nil {
+			return err
+		}
+		if !completed {
+			return context.Canceled
+		}
 		assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
 			Content: content, Kind: "proposal", Stage: "complete", Done: true, Status: "succeeded",
 		})
-		return err
+		return nil
 	}
 
 	text := strings.TrimSpace(result.Text)
@@ -751,11 +764,17 @@ func (w *Worker) executeAssistantAgent(
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, "chat", "complete", metadata); err != nil {
 		return err
 	}
-	_, err = store.CompleteAssistantRun(ctx, w.St.Pool, run.ID, "chat")
+	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "chat")
+	if err != nil {
+		return err
+	}
+	if !completed {
+		return context.Canceled
+	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
 		Content: text, Kind: "chat", Stage: "complete", Done: true, Status: "succeeded",
 	})
-	return err
+	return nil
 }
 
 func (w *Worker) executeAssistantProposal(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string, history []*store.AssistantMessage) error {
@@ -806,10 +825,16 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 		return err
 	}
-	_, err = store.CompleteAssistantRun(ctx, w.St.Pool, run.ID, "proposal")
+	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "proposal")
+	if err != nil {
+		return err
+	}
+	if !completed {
+		return context.Canceled
+	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 		assistantstream.Event{Kind: "proposal", Done: true, Status: "succeeded"})
-	return err
+	return nil
 }
 
 func defaultAssistantProposal(run *store.AssistantRun) assistantImageProposal {
@@ -1289,10 +1314,16 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		assistantMessageMetadata(run, nil, "complete", "")); err != nil {
 		return err
 	}
-	_, err = store.CompleteAssistantRun(ctx, w.St.Pool, run.ID, "chat")
+	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "chat")
+	if err != nil {
+		return err
+	}
+	if !completed {
+		return context.Canceled
+	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 		assistantstream.Event{Content: text, Kind: "chat", Done: true, Status: "succeeded"})
-	return err
+	return nil
 }
 
 func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.AssistantRun, index, count int, data []byte, revisedPrompt string) (map[string]any, error) {
@@ -1325,10 +1356,16 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 		assistantMessageMetadata(run, stored, "complete", "")); err != nil {
 		return err
 	}
-	_, err := store.CompleteAssistantRun(ctx, w.St.Pool, run.ID, "image")
+	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "image")
+	if err != nil {
+		return err
+	}
+	if !completed {
+		return context.Canceled
+	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 		assistantstream.Event{Kind: "image", Done: true, Status: "succeeded", ImageTotal: expected})
-	return err
+	return nil
 }
 
 func (w *Worker) executeAssistantImageC2A(ctx context.Context, run *store.AssistantRun, references []string, serviceKey string) error {

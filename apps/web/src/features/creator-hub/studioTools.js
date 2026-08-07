@@ -1,3 +1,9 @@
+import { ECOMMERCE_MODES } from '@/features/ecommerce/ecommerceTools'
+
+const ECOMMERCE_STUDIO_HIGHLIGHTS = ['shoot', 'listing', 'tryon']
+  .map((modeId) => ECOMMERCE_MODES.find((mode) => mode.id === modeId)?.shortLabel)
+  .filter(Boolean)
+
 /** 创作台工具目录 — 对齐大厂「创作入口」卡片墙 */
 export const STUDIO_TOOLS = [
   {
@@ -48,6 +54,19 @@ export const STUDIO_TOOLS = [
     taskType: 'ui_design',
   },
   {
+    id: 'ecommerce',
+    to: '/ecommerce-design',
+    label: 'AI 电商设计',
+    tagline: '商拍 · 套图 · 详情页 · 人像穿戴',
+    icon: 'bi-bag-check-fill',
+    cover: '/ecommerce/ecommerce-menu-preview-v1.webp',
+    tone: 'lime',
+    badge: `${ECOMMERCE_MODES.length} 项工具`,
+    highlights: ECOMMERCE_STUDIO_HIGHLIGHTS,
+    feature: 'ai.ecommerceDesign',
+    taskType: 'ecommerce_design',
+  },
+  {
     id: 'model',
     to: '/model-sheet',
     label: '超高清模型图',
@@ -89,22 +108,10 @@ export const PROMPT_TASK_TYPES = [
   { id: 't2i', label: '文生图', to: '/text-to-image' },
   { id: 'coloring', label: '插画染色', to: '/ai-illustration-coloring' },
   { id: 'ui_design', label: 'UI 设计稿', to: '/design-workshop' },
+  { id: 'ecommerce_design', label: 'AI 电商设计', to: '/ecommerce-design' },
   { id: 'model_sheet', label: '模型图', to: '/model-sheet' },
   { id: 'game_art', label: '游戏设计', to: '/game-art' },
   { id: 'assistant', label: 'AI 助手', to: '/assistant' },
-]
-
-export const PROMPT_CATEGORIES = [
-  { id: 'all', label: '全部' },
-  { id: 'today', label: '今日最新', scope: 'today' },
-  { id: 'favorites', label: '我的收藏', scope: 'favorites' },
-  { id: 'portrait', label: '人像' },
-  { id: 'photography', label: '摄影' },
-  { id: 'anime', label: '二次元' },
-  { id: 'scifi', label: '科幻' },
-  { id: 'nature', label: '自然' },
-  { id: 'design', label: '设计' },
-  { id: 'other', label: '其他' },
 ]
 
 export const PENDING_PROMPT_KEY = 'starclouds:pending-prompt'
@@ -129,14 +136,15 @@ export function studioRouteForTaskType(taskType = '') {
   return hit?.to || '/text-to-image'
 }
 
-export function stashPendingPrompt({ prompt = '', taskType = 't2i' } = {}) {
+export function stashPendingPrompt({ prompt = '', taskType = 't2i', config: launchConfig = {} } = {}) {
   const storage = pendingStorage()
   if (!storage) return
   const text = String(prompt || '').trim()
-  if (!text) return
+  const config = normalizePendingLaunchConfig(launchConfig)
+  if (!text && !Object.keys(config).length) return
   storage.setItem(
     PENDING_PROMPT_KEY,
-    JSON.stringify({ prompt: text, taskType: taskType || 't2i', at: Date.now() }),
+    JSON.stringify({ version: 2, prompt: text, taskType: taskType || 't2i', config, at: Date.now() }),
   )
 }
 
@@ -151,7 +159,8 @@ export function takePendingPrompt(expectedType = '') {
     if (!raw) return null
     const data = JSON.parse(raw)
     const prompt = String(data?.prompt || '').trim()
-    if (!prompt) return null
+    const config = normalizePendingLaunchConfig(data?.config)
+    if (!prompt && !Object.keys(config).length) return null
     const expected = Array.isArray(expectedType)
       ? expectedType.map(String).filter(Boolean)
       : expectedType
@@ -171,9 +180,53 @@ export function takePendingPrompt(expectedType = '') {
     } catch {
       // ignore
     }
-    return { prompt, taskType: data?.taskType || 't2i' }
+    return { prompt, taskType: data?.taskType || 't2i', config }
   } catch {
     storage.removeItem(PENDING_PROMPT_KEY)
     return null
   }
+}
+
+function normalizePendingLaunchConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const allowedKeys = [
+    'skill',
+    'skillPrompt',
+    'materialPrompt',
+    'ratio',
+    'resolution',
+    'quality',
+    'count',
+    'model',
+    'material',
+    'device',
+  ]
+  const normalized = {}
+  for (const key of allowedKeys) {
+    const raw = value[key]
+    if (raw === null || raw === undefined || raw === '') continue
+    if (key === 'count' || key === 'resolution') {
+      const numeric = Number(raw)
+      normalized[key] = Number.isFinite(numeric) && String(raw).trim() !== '' ? numeric : String(raw)
+      continue
+    }
+    normalized[key] = String(raw).slice(
+      0,
+      key === 'skillPrompt' || key === 'materialPrompt' ? 4000 : 160,
+    )
+  }
+  return normalized
+}
+
+export function composePendingLaunchPrompt(pending, maxLength = 0) {
+  if (!pending || typeof pending !== 'object') return ''
+  const parts = [pending.prompt, pending.config?.skillPrompt, pending.config?.materialPrompt]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  const unique = parts.filter((value, index) => {
+    if (parts.indexOf(value) !== index) return false
+    return !parts.some((other, otherIndex) => otherIndex < index && other.includes(value))
+  })
+  const text = unique.join('\n')
+  return maxLength > 0 ? text.slice(0, maxLength) : text
 }

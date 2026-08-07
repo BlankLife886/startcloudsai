@@ -97,9 +97,7 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		filter.FavoritedBy = user.ID
 	}
 	if scope == "today" {
-		from, before := promptTodayRange(time.Now())
-		filter.CreatedFrom = &from
-		filter.CreatedBefore = &before
+		filter.NewOnly = true
 	}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
@@ -343,6 +341,10 @@ func (s *Server) adminCreatePrompt(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	if err := validatePromptCategoryReference(c.Request.Context(), s.St.Pool, body.Category); err != nil {
+		fail(c, err)
+		return
+	}
 	sortVal := 0
 	if body.Sort != nil {
 		sortVal = *body.Sort
@@ -425,6 +427,10 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 	body.Prompt = strings.TrimSpace(body.Prompt)
 	body.TaskType = strings.TrimSpace(body.TaskType)
 	if err := validatePromptFields(body.Title, body.Prompt, body.TaskType, body.Category, body.Tags); err != nil {
+		fail(c, err)
+		return
+	}
+	if err := validatePromptCategoryReference(c.Request.Context(), s.St.Pool, body.Category); err != nil {
 		fail(c, err)
 		return
 	}
@@ -692,6 +698,10 @@ func (s *Server) adminPatchPrompt(c *gin.Context, _ *store.User) {
 		entry.Active = body.Active.Value
 	}
 	if err := validatePromptFields(entry.Title, entry.Prompt, entry.TaskType, entry.Category, entry.Tags); err != nil {
+		fail(c, err)
+		return
+	}
+	if err := validatePromptCategoryReference(ctx, s.St.Pool, entry.Category); err != nil {
 		fail(c, err)
 		return
 	}

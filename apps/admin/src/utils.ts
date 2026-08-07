@@ -41,6 +41,7 @@ export const TASK_TYPES = [
   "t2i",
   "coloring",
   "ui_design",
+  "ecommerce_design",
   "model_sheet",
   "game_art",
   "puzzle",
@@ -50,6 +51,7 @@ export const IMAGE_SERVICE_ROUTES = [
   { key: "t2i", label: "文生图", detail: "文字生成与参考图编辑" },
   { key: "coloring", label: "插画染色", detail: "线稿与配色参考图" },
   { key: "ui_design", label: "UI 设计稿", detail: "整张设计稿生成" },
+  { key: "ecommerce_design", label: "AI 电商设计", detail: "商品图、详情页与营销视觉" },
   {
     key: "ui_design_asset",
     label: "UI 素材重建",
@@ -71,6 +73,7 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   t2i: "文生图",
   coloring: "插画染色",
   ui_design: "UI设计稿",
+  ecommerce_design: "AI电商设计",
   model_sheet: "超高清模型图",
   game_art: "游戏设计",
   puzzle: "AI拼图",

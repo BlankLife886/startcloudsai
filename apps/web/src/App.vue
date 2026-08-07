@@ -13,6 +13,7 @@ import { navigationTarget } from './router'
 import NotificationContainer from './components/common/NotificationContainer.vue'
 import ClientLocaleBridge from './components/common/ClientLocaleBridge.vue'
 import ProfileOnboardingDialog from './components/auth/ProfileOnboardingDialog.vue'
+import AuthRequiredDialog from './components/auth/AuthRequiredDialog.vue'
 import FooterComponent from './components/layout/FooterComponent.vue'
 import NavBar from './components/layout/NavBar.vue'
 import { useAuthStore } from './stores/auth'
@@ -48,6 +49,7 @@ const isStudioConsoleRoute = computed(() =>
     'design-workshop',
     'model-sheet',
     'game-art',
+    'ecommerce-design',
   ].includes(String(route.name || '')),
 )
 const showAppChrome = computed(() => !route.meta?.immersive)
@@ -279,6 +281,7 @@ function scrollToTop() {
 
     <!-- 全局通知容器 -->
     <NotificationContainer />
+    <AuthRequiredDialog />
     <ProfileOnboardingDialog />
     <ClientLocaleBridge />
     <AnnouncementCenter v-if="showAppChrome" />

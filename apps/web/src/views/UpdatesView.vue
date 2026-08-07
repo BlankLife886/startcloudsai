@@ -9,9 +9,11 @@ import { useUpdatesPageMotion } from '@/features/updates/composables/useUpdatesP
 import { fetchRuntimeAnnouncements } from '@/services/announcements'
 import { getRemoteChangelog } from '@/services/metaApi'
 import { useAppearanceStore } from '@/stores/appearance'
+import { useLocaleStore } from '@/stores/locale'
 import '@/features/updates/styles/updates-page.css'
 
 const appearanceStore = useAppearanceStore()
+const localeStore = useLocaleStore()
 const pageRoot = ref(null)
 const timelineRef = ref(null)
 const pageReady = ref(false)
@@ -166,11 +168,15 @@ function stripHtml(value) {
     .trim()
 }
 
+function dateLocale() {
+  return localeStore.locale === 'en' ? 'en-US' : localeStore.locale
+}
+
 function formatDate(value) {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isFinite(date.getTime())
-    ? date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
+    ? date.toLocaleDateString(dateLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
     : value
 }
 
@@ -178,7 +184,7 @@ function formatMonthLabel(value) {
   if (!value) return '更早的更新'
   const date = new Date(value)
   if (!Number.isFinite(date.getTime())) return '更早的更新'
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })
+  return date.toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long' })
 }
 
 function tagMeta(tag) {
@@ -217,7 +223,9 @@ function scrollToTimeline() {
           <span class="updates-copy__eyebrow">StarCloudIsAI · Updates</span>
           <h1>
             <span class="updates-copy__title">更新说明</span>
-            <span class="updates-copy__seal" aria-hidden="true">更</span>
+            <span class="updates-copy__seal" aria-hidden="true">{{
+              localeStore.locale === 'en' ? 'U' : '更'
+            }}</span>
           </h1>
           <p class="updates-copy__lead">
             每一版可见的变化，都在这里立档。新功能、体验打磨与平台公告，按时间展陈。

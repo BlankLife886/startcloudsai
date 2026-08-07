@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { useAuthStore } from '@/stores/auth'
@@ -22,6 +22,10 @@ import {
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
 } from '@/features/ai-shared/modelImageCapabilities'
+import {
+  mapConsistencyReferenceRoles,
+  orderConsistencyReferences,
+} from './referenceConsistency'
 
 const ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'waiting_provider'])
 const OUTPUT_GROUP_LIMIT = 4
@@ -70,6 +74,19 @@ export function useCreativeImageJob(options = {}) {
   let controller = new AbortController()
   let cancelRequested = false
   const activeJobIds = new Set()
+
+  async function requestJobCancellations(jobIds) {
+    const uniqueIds = Array.from(new Set(jobIds)).filter(Boolean)
+    const results = await Promise.allSettled(uniqueIds.map((jobId) => cancelServerAiJob(jobId)))
+    const cancelled = []
+    const continuing = []
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value?.cancelled) cancelled.push(uniqueIds[index])
+      else continuing.push(uniqueIds[index])
+    })
+    return { cancelled, continuing }
+  }
+
   const featureKey = String(options.featureKey || 'ai.optimize')
   const preferOriginalOutputs = options.preferOriginalOutputs === true
   const initialHistoryLimit = Math.max(1, Math.min(Number(options.initialHistoryLimit) || 12, 100))
@@ -77,6 +94,7 @@ export function useCreativeImageJob(options = {}) {
   // 服务端任务单价（积分/张），null 表示读取失败（提交按钮附近显示「以服务端结算为准」）
   const unitPriceCents = ref(null)
   const jobKindPrefix = String(options.jobKindPrefix || 'image')
+  const filterHistoryByKind = options.filterHistoryByKind === true
   // 可选的子类型集合（如游戏工作台的 character/prop…），任务 kind 会带上子类型，
   // 让历史记录能按子类型归类展示。
   const kindVariants = Array.isArray(options.kindVariants)
@@ -415,6 +433,19 @@ export function useCreativeImageJob(options = {}) {
     return selected
   })
 
+  watch(
+    models,
+    (available) => {
+      if (!available.length) {
+        modelId.value = ''
+        return
+      }
+      if (available.some((item) => item.id === modelId.value)) return
+      modelId.value = available.find((item) => item.default)?.id || available[0].id
+    },
+    { immediate: true },
+  )
+
   async function initialize() {
     void getFeatureUnitPriceCents(featureKey)
       .then((value) => {
@@ -493,6 +524,20 @@ export function useCreativeImageJob(options = {}) {
     const sourceList = Array.isArray(source) ? source.filter(Boolean) : source ? [source] : []
     const sourceUrl = sourceList[0] || ''
     const maskUrl = String(input.maskUrl || '').trim()
+    const actualReferenceRoles = mapConsistencyReferenceRoles({
+      roles: input.referenceRoles,
+      referenceCount: sourceList.length,
+      essentialIdentityCount: input.essentialReferenceCount,
+      seriesAnchorApplied: input.seriesAnchorApplied === true,
+    })
+    const promptWithReferenceRoles = [
+      String(input.prompt || '').trim(),
+      actualReferenceRoles.length
+        ? `本次参考图角色映射：${actualReferenceRoles.map((role, index) => `第 ${index + 1} 张=${role}`).join('；')}。严格按角色使用，不得交换身份与风格来源。`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
     const modelSettings = coerceImageModelSettings(model, {
       aspectRatio: input.aspectRatio,
       quality: input.quality,
@@ -518,9 +563,23 @@ export function useCreativeImageJob(options = {}) {
       ...(modelSettings.outputFormat ? { outputFormat: modelSettings.outputFormat } : {}),
       ...(modelSettings.moderationLevel ? { moderationLevel: modelSettings.moderationLevel } : {}),
       quality: modelSettings.quality,
+      inputFidelity: String(input.inputFidelity || ''),
       ...(input.platform ? { platform: String(input.platform) } : {}),
       iterationMode: input.iterationMode === true,
       parentOutputUrl: String(input.parentOutputUrl || ''),
+      consistencyStrategy: String(input.consistencyStrategy || ''),
+      consistencyProfile: String(input.consistencyProfile || ''),
+      referenceRoles: actualReferenceRoles,
+      essentialReferenceCount: Math.max(0, Number(input.essentialReferenceCount) || 0),
+      actualReferenceCount: sourceList.length,
+      referenceCapacity: modelSettings.maxReferenceImages,
+      consistencyDegraded:
+        Math.max(0, Number(input.essentialReferenceCount) || 0) > sourceList.length ||
+        (String(input.consistencyStrategy || '').includes('sequential-anchor') &&
+          Math.max(0, Number(input.batchIndex) || 0) > 0 &&
+          input.seriesAnchorApplied !== true),
+      seriesAnchorApplied: input.seriesAnchorApplied === true,
+      preserveSourceCanvas: input.preserveSourceCanvas === true,
       viewId: String(input.viewId || ''),
       viewLabel: String(input.viewLabel || ''),
       outputMode: String(input.outputMode || ''),
@@ -535,7 +594,7 @@ export function useCreativeImageJob(options = {}) {
       // 每个任务一个幂等键，经适配层映射为服务端 idempotencyKey
       clientRequestId: crypto.randomUUID(),
       inputKeys: sourceKeys,
-      prompt: String(input.prompt || '').trim(),
+      prompt: promptWithReferenceRoles,
       input: {
         source: options.source || 'creative-studio',
         ...shared,
@@ -556,9 +615,17 @@ export function useCreativeImageJob(options = {}) {
     const signal = runContext?.controller?.signal || controller.signal
     jobIds.add(jobId)
     if (runContext?.cancelRequested) {
-      await cancelServerAiJob(jobId).catch(() => undefined)
-      jobIds.delete(jobId)
-      throw new DOMException('任务已取消', 'AbortError')
+      try {
+        const canceled = await cancelServerAiJob(jobId)
+        if (canceled?.cancelled) {
+          jobIds.delete(jobId)
+          throw new DOMException('排队任务已取消', 'AbortError')
+        }
+      } catch (caught) {
+        if (caught?.name === 'AbortError') throw caught
+        // 已经开始执行的任务不可取消，继续监控并交付结果。
+        runContext.continuingJobIds?.add(jobId)
+      }
     }
     let completed
     const streamedOutputs = new Set()
@@ -624,16 +691,26 @@ export function useCreativeImageJob(options = {}) {
 
   // 支持多参考图：files + sourceUrls 全部归一成上游可访问的 URL 列表。
   async function resolveSourceList(input = {}, model = selectedModel.value) {
-    const list = []
+    const uploadedFiles = []
     const files = Array.isArray(input.files)
       ? input.files.filter(Boolean)
       : input.file
         ? [input.file]
         : []
-    if (files.length) {
+    const sourceBackedFiles = files
+      .map((file) => String(file?.sourceUrl || '').trim())
+      .filter(Boolean)
+    const localFiles = files.filter((file) => !String(file?.sourceUrl || '').trim())
+    if (localFiles.length) {
       status.value = '正在上传参考图...'
-      list.push(
-        ...(await Promise.all(files.map((file) => uploadAiInputFile(file, { featureKey })))),
+      uploadedFiles.push(
+        ...(await Promise.all(localFiles.map((file) => uploadAiInputFile(file, { featureKey })))),
+      )
+    }
+    if (sourceBackedFiles.length) {
+      status.value = '正在准备参考图...'
+      uploadedFiles.push(
+        ...(await Promise.all(sourceBackedFiles.map((url) => rehostInternalUrl(url)))),
       )
     }
     const urls = Array.isArray(input.sourceUrls)
@@ -642,8 +719,30 @@ export function useCreativeImageJob(options = {}) {
         ? [input.sourceUrl]
         : []
     const resolvedUrls = await Promise.all(urls.map((url) => rehostInternalUrl(url)))
-    list.push(...resolvedUrls.filter(Boolean))
+    const externalSources = resolvedUrls.filter(Boolean)
     const limit = normalizeImageModelCapabilities(model || {}).maxReferenceImages
+    const policy = input.referencePolicy || {}
+    if (policy.strategy === 'anchor-first') {
+      return orderConsistencyReferences({
+        identitySources: uploadedFiles,
+        anchorSources: externalSources,
+        limit,
+        essentialIdentityCount: policy.essentialIdentityCount,
+        strategy: 'anchor-first',
+      })
+    }
+    if (policy.strategy === 'identity-first') {
+      return orderConsistencyReferences({
+        identitySources: uploadedFiles,
+        anchorSources: externalSources,
+        limit,
+        essentialIdentityCount: policy.essentialIdentityCount,
+        strategy: 'identity-first',
+      })
+    }
+    const list = input.prioritizeSourceUrls
+      ? [...externalSources, ...uploadedFiles]
+      : [...uploadedFiles, ...externalSources]
     return Array.from(new Set(list)).slice(0, limit)
   }
 
@@ -795,6 +894,7 @@ export function useCreativeImageJob(options = {}) {
       controller: new AbortController(),
       jobIds: new Set(),
       cancelRequested: false,
+      continuingJobIds: new Set(),
     }
     generationRunContexts.set(taskId, runContext)
     generationTasks.value = [
@@ -837,6 +937,8 @@ export function useCreativeImageJob(options = {}) {
           file: batchOptions.file,
           sourceUrls: batchOptions.sourceUrls,
           sourceUrl: batchOptions.sourceUrl,
+          prioritizeSourceUrls: batchOptions.prioritizeSourceUrls === true,
+          referencePolicy: batchOptions.referencePolicy,
         },
         model,
       )
@@ -848,13 +950,17 @@ export function useCreativeImageJob(options = {}) {
           items: inputs.map((item) => ({ ...item })),
         })
       }
-      // 无参考图时可选用第一张成功结果作为后续视图的参考，
-      // 保证同批多视图输出的是同一个主体。
+      // 多视图任务可把第一张成功结果作为后续视图的系列锚点。
+      // chainFirstOutputAsSource 保持原有的无参考图链式行为；chainReferenceOutput
+      // 会同时保留原始参考图，用于电商套图锁定商品身份与视觉系统。
       const chainFirstOutput = batchOptions.chainFirstOutputAsSource === true && !sourceList.length
+      const chainReferenceOutput = batchOptions.chainReferenceOutput === true
       let effectiveSourceList = sourceList
-      const concurrency = chainFirstOutput
-        ? 1
-        : Math.max(1, Math.min(Number(batchOptions.concurrency) || inputs.length, 4))
+      let seriesAnchorSource = ''
+      const concurrency =
+        chainFirstOutput || chainReferenceOutput
+          ? 1
+          : Math.max(1, Math.min(Number(batchOptions.concurrency) || inputs.length, 4))
       const worker = async () => {
         while (cursor < inputs.length && !runContext.cancelRequested) {
           const index = cursor
@@ -866,7 +972,12 @@ export function useCreativeImageJob(options = {}) {
               `正在生成 ${item.viewLabel || `第 ${index + 1} 张`} · ${completedCount}/${inputs.length}`,
             )
             const result = await runImageJob(
-              item,
+              {
+                ...item,
+                seriesAnchorApplied: Boolean(
+                  seriesAnchorSource && effectiveSourceList.includes(seriesAnchorSource),
+                ),
+              },
               model,
               effectiveSourceList,
               updateTaskStatus,
@@ -895,6 +1006,26 @@ export function useCreativeImageJob(options = {}) {
                 },
                 model,
               ).catch(() => [])
+            }
+            if (chainReferenceOutput && index === 0 && sourceList.length && result.outputs[0]) {
+              const anchorSources = await resolveSourceList(
+                { sourceUrl: result.outputs[0] },
+                model,
+              ).catch(() => [])
+              seriesAnchorSource = anchorSources[0] || ''
+              const maxReferences = Math.max(
+                1,
+                Number(normalizeImageModelCapabilities(model || {}).maxReferenceImages) || 1,
+              )
+              effectiveSourceList = orderConsistencyReferences({
+                identitySources: sourceList,
+                anchorSources,
+                limit: maxReferences,
+                essentialIdentityCount: batchOptions.essentialReferenceCount,
+                strategy: 'identity-first',
+              })
+              const retryContext = batchRetryContexts.get(groupId)
+              if (retryContext) retryContext.sourceList = [...effectiveSourceList]
             }
           } catch (caught) {
             const message = sanitizeCreativeError(caught?.message || '生成失败')
@@ -930,8 +1061,8 @@ export function useCreativeImageJob(options = {}) {
           state: 'cancelled',
           progress: cancelledProgress,
           status: completedItems.length
-            ? `已取消，保留 ${completedItems.length} 张已完成图片`
-            : '任务已取消',
+            ? `已停止后续任务，保留 ${completedItems.length} 张已完成图片`
+            : '排队任务已取消，费用已退回',
           finishedAt: new Date().toISOString(),
         })
         error.value = ''
@@ -1170,6 +1301,7 @@ export function useCreativeImageJob(options = {}) {
         controller: new AbortController(),
         jobIds: new Set(jobIds),
         cancelRequested: false,
+        continuingJobIds: new Set(),
       })
     }
     syncGenerationState()
@@ -1552,7 +1684,19 @@ export function useCreativeImageJob(options = {}) {
     responses.forEach((response, index) => {
       const entry = entries[index]
       if (!entry) return
-      if (Array.isArray(response?.jobs)) jobs.push(...response.jobs)
+      if (Array.isArray(response?.jobs)) {
+        const allowedKinds = new Set(
+          String(entry.kind || '')
+            .split(',')
+            .map((kind) => kind.trim())
+            .filter(Boolean),
+        )
+        jobs.push(
+          ...response.jobs.filter(
+            (job) => !filterHistoryByKind || allowedKinds.has(String(job?.kind || '').trim()),
+          ),
+        )
+      }
       const nextCursor = String(response?.pagination?.nextCursor || '')
       const more = response?.pagination?.hasMore === true && Boolean(nextCursor)
       historyCursors[entry.key] = more ? nextCursor : ''
@@ -1743,22 +1887,30 @@ export function useCreativeImageJob(options = {}) {
       runContext.cancelRequested = true
       patchGenerationTask(targetTask.id, {
         state: 'cancelling',
-        status: '正在取消任务…',
+        status: '正在确认可取消的排队任务…',
       })
       const jobIds = [...runContext.jobIds]
-      runContext.controller.abort()
-      await Promise.allSettled(jobIds.map((jobId) => cancelServerAiJob(jobId)))
+      const result = await requestJobCancellations(jobIds)
+      result.continuing.forEach((jobId) => runContext.continuingJobIds.add(jobId))
+      patchGenerationTask(targetTask.id, {
+        status: result.continuing.length
+          ? `已停止提交后续任务；${result.continuing.length} 个已开始任务继续完成`
+          : result.cancelled.length
+            ? '排队任务已取消，费用将自动退回'
+            : '已停止提交后续任务',
+      })
       return
     }
     if (!running.value || cancelling.value) return
     cancelling.value = true
     cancelRequested = true
-    status.value = '正在取消任务…'
+    status.value = '正在确认可取消的排队任务…'
     const jobIds = [...activeJobIds]
-    controller.abort()
-    controller = new AbortController()
     try {
-      await Promise.allSettled(jobIds.map((jobId) => cancelServerAiJob(jobId)))
+      const result = await requestJobCancellations(jobIds)
+      status.value = result.continuing.length
+        ? `已开始的 ${result.continuing.length} 个任务会继续完成，不再提交后续任务`
+        : '排队任务已取消，费用将自动退回'
     } finally {
       cancelling.value = false
     }

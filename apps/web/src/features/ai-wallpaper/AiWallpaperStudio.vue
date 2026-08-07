@@ -18,14 +18,18 @@ import {
   T2I_COUNT_OPTIONS,
   T2I_MODERATION_OPTIONS,
   T2I_OUTPUT_FORMAT_OPTIONS,
-  T2I_PROMPT_LIBRARY,
   T2I_QUALITY_OPTIONS,
   T2I_RESOLUTION_OPTIONS,
 } from './composables/wallpaperStudioConstants'
 import notificationService from '@/services/notification'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
-import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
+import {
+  listPromptCategories,
+  listPromptLibrary,
+  recordPromptEngagement,
+} from '@/services/promptLibrary'
 import { getAuthenticatedMediaMetadata } from '@/services/authenticatedMedia'
+import { consumeLocalEditHandoff } from '@/services/localEditHandoff'
 import {
   normalizeVisibleDisplayPositions,
   uniqueTaskOutputs,
@@ -327,26 +331,19 @@ const assetsHasMore = ref(false)
 const failedAssetIds = ref({})
 const PROMPT_CATEGORY_STORAGE_KEY = 'ai-wallpaper-prompt-category-v1'
 const storedPromptCategory = getScopedLocalItem(PROMPT_CATEGORY_STORAGE_KEY)
-const VALID_PROMPT_CATEGORIES = new Set([
-  'today',
-  'my-favorites',
-  'portrait',
-  'photography',
-  'product',
-  'illustration',
-  'scene',
-  'design',
-  'game',
-  'typography',
-  'other',
-  'all',
-])
+const PROMPT_CATEGORY_PRIMARY = [
+  { value: 'today', label: '24小时最新' },
+  { value: 'my-favorites', label: '我的收藏' },
+  { value: 'all', label: '全部' },
+]
+const PROMPT_SCOPE_CATEGORY_KEYS = new Set(PROMPT_CATEGORY_PRIMARY.map((item) => item.value))
+const managedPromptCategories = ref([])
 const promptCategoryFilter = ref(
   storedPromptCategory === 'latest'
     ? 'today'
-    : VALID_PROMPT_CATEGORIES.has(storedPromptCategory)
+    : PROMPT_SCOPE_CATEGORY_KEYS.has(storedPromptCategory)
       ? storedPromptCategory
-      : 'today',
+      : 'all',
 )
 const promptSort = ref('recommended')
 const promptViewportRef = ref(null)
@@ -355,24 +352,6 @@ const assetSentinelRef = ref(null)
 let promptLoadObserver = null
 let assetLoadObserver = null
 let promptLibraryRequestId = 0
-
-const PROMPT_CATEGORY_PRIMARY = [
-  { value: 'today', label: '今日最新' },
-  { value: 'my-favorites', label: '我的收藏' },
-  { value: 'all', label: '全部' },
-]
-const PROMPT_CATEGORY_MORE = [
-  { value: 'portrait', label: '人像人物' },
-  { value: 'photography', label: '摄影写实' },
-  { value: 'product', label: '产品商业' },
-  { value: 'illustration', label: '插画动漫' },
-  { value: 'scene', label: '场景建筑' },
-  { value: 'design', label: '视觉设计' },
-  { value: 'game', label: '游戏美术' },
-  { value: 'typography', label: '文字排版' },
-  { value: 'other', label: '其他' },
-]
-const PROMPT_CATEGORY_META = [...PROMPT_CATEGORY_PRIMARY, ...PROMPT_CATEGORY_MORE]
 
 const LIGHTBOX_MIN_ZOOM = 0.5
 const LIGHTBOX_MAX_ZOOM = 5
@@ -490,21 +469,49 @@ const historyReachedPastToday = computed(() => {
 })
 const assetCount = computed(() => Math.max(assetsTotal.value, myAssets.value.length))
 const promptCategoryPrimaryOptions = PROMPT_CATEGORY_PRIMARY
-const promptCategoryMoreOptions = PROMPT_CATEGORY_MORE
+const promptCategoryMoreOptions = computed(() => managedPromptCategories.value)
+const promptCategoryMeta = computed(() => [
+  ...PROMPT_CATEGORY_PRIMARY,
+  ...managedPromptCategories.value,
+])
 const promptCategoryMoreOpen = ref(false)
 const promptCategoryMoreActive = computed(() =>
-  promptCategoryMoreOptions.some((item) => item.value === promptCategoryFilter.value),
+  promptCategoryMoreOptions.value.some((item) => item.value === promptCategoryFilter.value),
 )
 const promptCategoryMoreLabel = computed(() => {
   if (!promptCategoryMoreActive.value) return '更多'
   return (
-    promptCategoryMoreOptions.find((item) => item.value === promptCategoryFilter.value)?.label ||
-    '更多'
+    promptCategoryMoreOptions.value.find((item) => item.value === promptCategoryFilter.value)
+      ?.label || '更多'
   )
 })
+
+async function loadPromptCategoryOptions() {
+  try {
+    const items = await listPromptCategories({ type: 't2i' })
+    managedPromptCategories.value = items
+      .filter((item) => !PROMPT_SCOPE_CATEGORY_KEYS.has(item.key))
+      .map((item) => ({
+        value: item.key,
+        label: item.label,
+        count: item.count,
+      }))
+    const preferred = storedPromptCategory === 'latest' ? 'today' : storedPromptCategory
+    const validKeys = new Set([
+      ...PROMPT_SCOPE_CATEGORY_KEYS,
+      ...managedPromptCategories.value.map((item) => item.value),
+    ])
+    const nextCategory = validKeys.has(preferred) ? preferred : 'all'
+    if (promptCategoryFilter.value === nextCategory) return false
+    promptCategoryFilter.value = nextCategory
+    return true
+  } catch {
+    return false
+  }
+}
 const filteredPromptLibrary = computed(() => managedPromptLibrary.value)
 const promptLibraryEmptyTitle = computed(() => {
-  if (promptCategoryFilter.value === 'today') return '今日暂无新增提示词'
+  if (promptCategoryFilter.value === 'today') return '最近24小时暂无新增提示词'
   if (promptCategoryFilter.value === 'my-favorites') return '还没有收藏提示词'
   return '该分类暂时没有提示词'
 })
@@ -1182,15 +1189,13 @@ const historyMasonryColumns = computed(() =>
 )
 
 function normalizePromptCategory(value) {
-  const key = String(value || 'other')
-    .trim()
-    .toLowerCase()
-  return PROMPT_CATEGORY_META.some((item) => item.value === key) ? key : 'other'
+  const key = String(value || 'other').trim()
+  return promptCategoryMeta.value.some((item) => item.value === key) ? key : 'other'
 }
 
 function promptCategoryLabel(value) {
   const key = normalizePromptCategory(value)
-  return PROMPT_CATEGORY_META.find((item) => item.value === key)?.label || '其他'
+  return promptCategoryMeta.value.find((item) => item.value === key)?.label || '其他'
 }
 
 function selectPromptCategory(value) {
@@ -1317,7 +1322,6 @@ async function loadManagedPromptLibrary({ reset = false } = {}) {
             ? 'today'
             : '',
       sort: requestSort,
-      fallbackItems: T2I_PROMPT_LIBRARY,
     })
     if (requestId !== promptLibraryRequestId) return
     const incoming = Array.isArray(response?.items) ? response.items : []
@@ -1481,6 +1485,28 @@ function retryAssetImage(asset) {
   failedAssetIds.value = next
 }
 
+async function openHistoryLocalEditHandoff() {
+  const handoff = consumeLocalEditHandoff()
+  if (!handoff) return
+  const sourceUrl = String(handoff.sourceUrl || '').trim()
+  const source = handoff.task || {}
+  if (!sourceUrl) return
+  const serverJobId = String(source.serverJobId || source.id || '').replace(/^server-/, '')
+  const sourceTask = {
+    ...source,
+    id: String(source.id || `server-${serverJobId}`),
+    serverJobId,
+    status: 'succeeded',
+    outputs: [sourceUrl],
+    originalOutputs: [sourceUrl],
+    thumbnailOutputs: source.thumbnailUrls || [],
+    userPrompt: String(source.params?.userPrompt || source.userPrompt || source.prompt || '').trim(),
+  }
+  applyLightboxContent(sourceTask, 0, sourceUrl)
+  await nextTick()
+  openLocalMaskEditor()
+}
+
 onMounted(() => {
   inputMode.value = 'text'
   outputType.value = 'image'
@@ -1493,8 +1519,10 @@ onMounted(() => {
     historyResizeObserver.observe(historyViewportRef.value)
   }
   onHistoryViewportResize()
-  loadManagedPromptLibrary({ reset: true })
-  void activateMainTab(mainTab.value)
+  void loadPromptCategoryOptions().then((changed) => {
+    if (!changed) void loadManagedPromptLibrary({ reset: true })
+  })
+  void activateMainTab(mainTab.value).then(openHistoryLocalEditHandoff)
 })
 
 onUnmounted(() => {
@@ -4083,44 +4111,43 @@ function setMainTab(tab) {
               >
                 {{ category.label }}
               </button>
-              <div class="t2i-library-more">
-                <button
-                  type="button"
-                  class="t2i-library-more-trigger"
-                  :class="{
-                    'is-active': promptCategoryMoreActive,
-                    'is-open': promptCategoryMoreOpen,
-                  }"
-                  :aria-expanded="promptCategoryMoreOpen"
-                  aria-haspopup="listbox"
-                  @click.stop="togglePromptCategoryMore"
-                >
-                  <span>{{ promptCategoryMoreLabel }}</span>
-                  <i class="bi bi-chevron-down" aria-hidden="true"></i>
-                </button>
-                <Transition name="t2i-library-more">
-                  <div
-                    v-if="promptCategoryMoreOpen"
-                    class="t2i-library-more-menu"
-                    role="listbox"
-                    aria-label="更多分类"
-                    @click.stop
-                  >
-                    <button
-                      v-for="category in promptCategoryMoreOptions"
-                      :key="category.value"
-                      type="button"
-                      role="option"
-                      :aria-selected="promptCategoryFilter === category.value"
-                      :class="{ 'is-active': promptCategoryFilter === category.value }"
-                      @click="selectPromptCategory(category.value)"
-                    >
-                      {{ category.label }}
-                    </button>
-                  </div>
-                </Transition>
-              </div>
             </nav>
+            <div class="t2i-library-more" @click.stop>
+              <button
+                type="button"
+                class="t2i-library-more-trigger"
+                :class="{
+                  'is-active': promptCategoryMoreActive,
+                  'is-open': promptCategoryMoreOpen,
+                }"
+                :aria-expanded="promptCategoryMoreOpen"
+                aria-haspopup="listbox"
+                @click="togglePromptCategoryMore"
+              >
+                <span>{{ promptCategoryMoreLabel }}</span>
+                <i class="bi bi-chevron-down" aria-hidden="true"></i>
+              </button>
+              <Transition name="t2i-library-more">
+                <div
+                  v-if="promptCategoryMoreOpen"
+                  class="t2i-library-more-menu"
+                  role="listbox"
+                  aria-label="更多分类"
+                >
+                  <button
+                    v-for="category in promptCategoryMoreOptions"
+                    :key="category.value"
+                    type="button"
+                    role="option"
+                    :aria-selected="promptCategoryFilter === category.value"
+                    :class="{ 'is-active': promptCategoryFilter === category.value }"
+                    @click="selectPromptCategory(category.value)"
+                  >
+                    {{ category.label }}
+                  </button>
+                </div>
+              </Transition>
+            </div>
             <label v-if="promptCategoryFilter !== 'today'" class="t2i-library-sort">
               <i class="bi bi-sort-down" aria-hidden="true"></i>
               <select v-model="promptSort" aria-label="提示词排序">

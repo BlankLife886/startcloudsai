@@ -12,7 +12,8 @@ import (
 const assistantConversationCols = `id, user_id, title, created_at, updated_at`
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
 const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id, mode, resolved_mode,
-	status, stage, prompt, params, error_code, error_message, started_at, finished_at, created_at`
+	status, stage, prompt, params, reserved_cents, cost_cents, billing_generation,
+	error_code, error_message, started_at, finished_at, created_at`
 
 func scanAssistantConversation(row pgx.Row) (*AssistantConversation, error) {
 	var item AssistantConversation
@@ -35,7 +36,8 @@ func scanAssistantRun(row pgx.Row) (*AssistantRun, error) {
 	var item AssistantRun
 	if err := row.Scan(&item.ID, &item.UserID, &item.ConversationID, &item.UserMessageID,
 		&item.AssistantMessageID, &item.Mode, &item.ResolvedMode, &item.Status, &item.Stage,
-		&item.Prompt, &item.Params, &item.ErrorCode, &item.ErrorMessage, &item.StartedAt,
+		&item.Prompt, &item.Params, &item.ReservedCents, &item.CostCents, &item.BillingGeneration,
+		&item.ErrorCode, &item.ErrorMessage, &item.StartedAt,
 		&item.FinishedAt, &item.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -169,9 +171,9 @@ func InsertAssistantRun(ctx context.Context, q Q, item AssistantRun) (*Assistant
 	}
 	return scanAssistantRun(q.QueryRow(ctx,
 		`INSERT INTO assistant_runs (id, user_id, conversation_id, user_message_id, assistant_message_id,
-		 mode, prompt, params) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING `+assistantRunCols,
+			 mode, prompt, params, reserved_cents) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+assistantRunCols,
 		item.ID, item.UserID, item.ConversationID, item.UserMessageID, item.AssistantMessageID,
-		item.Mode, item.Prompt, item.Params))
+		item.Mode, item.Prompt, item.Params, item.ReservedCents))
 }
 
 func GetUserAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
@@ -181,6 +183,18 @@ func GetUserAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (*Assis
 
 func GetAssistantRun(ctx context.Context, q Q, id uuid.UUID) (*AssistantRun, error) {
 	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs WHERE id = $1`, id))
+	return nilOnNoRows(item, err)
+}
+
+func GetUserAssistantRunForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
+	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
+		FROM assistant_runs WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID))
+	return nilOnNoRows(item, err)
+}
+
+func GetAssistantRunForUpdate(ctx context.Context, q Q, id uuid.UUID) (*AssistantRun, error) {
+	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
+		FROM assistant_runs WHERE id = $1 FOR UPDATE`, id))
 	return nilOnNoRows(item, err)
 }
 
@@ -220,10 +234,10 @@ func SetAssistantRunStage(ctx context.Context, q Q, id uuid.UUID, resolvedMode, 
 	return err
 }
 
-func CompleteAssistantRun(ctx context.Context, q Q, id uuid.UUID, resolvedMode string) (bool, error) {
+func CompleteAssistantRun(ctx context.Context, q Q, id uuid.UUID, resolvedMode string, costCents int64) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'succeeded', resolved_mode = $2,
-		stage = 'complete', finished_at = now(), error_code = NULL, error_message = NULL
-		WHERE id = $1 AND status = 'running'`, id, resolvedMode)
+		stage = 'complete', cost_cents = $3, finished_at = now(), error_code = NULL, error_message = NULL
+		WHERE id = $1 AND status = 'running' AND $3 >= 0 AND $3 <= reserved_cents`, id, resolvedMode, costCents)
 	return tag.RowsAffected() > 0, err
 }
 
@@ -242,6 +256,7 @@ func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, e
 
 func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
+		cost_cents = 0, billing_generation = billing_generation + 1,
 		error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
 		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
 		WHERE id = $1 AND status = 'failed'`, id)

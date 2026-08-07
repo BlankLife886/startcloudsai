@@ -4,6 +4,8 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Bell,
+  Box,
+  Calendar,
   ChatDotRound,
   CollectionTag,
   Document,
@@ -16,10 +18,10 @@ import {
   Moon,
   Odometer,
   Picture,
-  Setting,
   Sunny,
   SwitchButton,
   Ticket,
+  Star,
   User,
 } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -32,8 +34,7 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const sidebarCollapsed = ref(
-  window.localStorage.getItem("startclouds-admin:sidebar-collapsed") ===
-    "true",
+  window.localStorage.getItem("startclouds-admin:sidebar-collapsed") === "true",
 );
 
 const layoutRef = ref<HTMLElement | null>(null);
@@ -67,30 +68,33 @@ const NAV_GROUPS = [
     title: "业务",
     items: [
       { path: "/users", label: "用户管理", icon: User },
-      { path: "/tasks", label: "任务监控", icon: Monitor },
+      { path: "/tasks", label: "任务与调度", icon: Monitor },
       { path: "/model-config", label: "模型配置", icon: MagicStick },
     ],
   },
   {
-    title: "社区运营",
+    title: "内容运营",
     items: [
+      { path: "/content", label: "内容管理", icon: Document },
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
       { path: "/community", label: "社区管理", icon: ChatDotRound },
       { path: "/gallery", label: "投稿审核", icon: Picture },
+      { path: "/feedback", label: "用户反馈", icon: ChatDotRound },
     ],
   },
   {
-    title: "资金",
+    title: "活动与增长",
     items: [
+      { path: "/trial-applications", label: "体验活动", icon: Star },
+      { path: "/checkin-activity", label: "签到活动", icon: Calendar },
+    ],
+  },
+  {
+    title: "交易与审计",
+    items: [
+      { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },
-    ],
-  },
-  {
-    title: "系统",
-    items: [
-      { path: "/content", label: "内容管理", icon: Document },
-      { path: "/settings", label: "系统设置", icon: Setting },
     ],
   },
 ];
@@ -109,6 +113,8 @@ const pendingSubmissions = ref(0);
 /** 待审数超出单页时展示 N+ */
 const pendingHasMore = ref(false);
 const runningTasks = ref(0);
+const pendingTrialApplications = ref(0);
+const pendingFeedback = ref(0);
 
 async function loadTodoCounts() {
   try {
@@ -131,12 +137,41 @@ async function loadTodoCounts() {
     // 静默：徽标缺失不影响使用
   }
   try {
-    const stats = await request<{ runningTasks?: number }>("/api/v1/admin/statistics", {
-      silent: true,
-    });
+    const stats = await request<{ runningTasks?: number }>(
+      "/api/v1/admin/statistics",
+      {
+        silent: true,
+      },
+    );
     runningTasks.value = stats.runningTasks ?? 0;
   } catch {
     // 静默
+  }
+  try {
+    const data = await request<{
+      items: unknown[];
+      nextCursor: string | null;
+      total?: number;
+    }>("/api/v1/admin/trial-access-applications", {
+      query: { status: "pending", limit: 1 },
+      silent: true,
+    });
+    pendingTrialApplications.value = data.total ?? data.items?.length ?? 0;
+  } catch {
+    // 静默：体验申请徽标缺失不影响使用
+  }
+  try {
+    const data = await request<{
+      items: unknown[];
+      nextCursor: string | null;
+      total?: number;
+    }>("/api/v1/admin/feedback", {
+      query: { status: "open", limit: 1 },
+      silent: true,
+    });
+    pendingFeedback.value = data.total ?? data.items?.length ?? 0;
+  } catch {
+    // 静默：反馈徽标缺失不影响使用
   }
 }
 
@@ -157,6 +192,24 @@ const notifyItems = computed(() =>
       tone: "warning",
       icon: Picture,
       to: "/gallery",
+    },
+    {
+      key: "trial",
+      label: "体验资格待审核",
+      count: pendingTrialApplications.value,
+      countText: String(pendingTrialApplications.value),
+      tone: "warning",
+      icon: Star,
+      to: "/trial-applications",
+    },
+    {
+      key: "feedback",
+      label: "用户反馈待处理",
+      count: pendingFeedback.value,
+      countText: String(pendingFeedback.value),
+      tone: "warning",
+      icon: ChatDotRound,
+      to: "/feedback",
     },
     {
       key: "running",
@@ -286,10 +339,25 @@ async function submitPassword() {
                 </span>
                 <span class="nav-item__label">{{ item.label }}</span>
                 <em
-                  v-if="item.path === '/gallery' && pendingBadgeText"
+                  v-if="
+                    (item.path === '/gallery' && pendingBadgeText) ||
+                    (item.path === '/trial-applications' &&
+                      pendingTrialApplications > 0) ||
+                    (item.path === '/feedback' && pendingFeedback > 0)
+                  "
                   class="nav-badge tnum"
                 >
-                  {{ pendingBadgeText }}
+                  {{
+                    item.path === "/trial-applications"
+                      ? pendingTrialApplications > 99
+                        ? "99+"
+                        : pendingTrialApplications
+					  : item.path === "/feedback"
+                        ? pendingFeedback > 99
+                          ? "99+"
+                          : pendingFeedback
+                        : pendingBadgeText
+                  }}
                 </em>
               </router-link>
             </div>
@@ -356,11 +424,7 @@ async function submitPassword() {
             </div>
           </el-popover>
 
-          <div
-            class="theme-switch"
-            role="group"
-            aria-label="主题切换"
-          >
+          <div class="theme-switch" role="group" aria-label="主题切换">
             <button
               type="button"
               class="theme-switch__btn"
@@ -783,8 +847,6 @@ async function submitPassword() {
   margin: 0;
   padding: 0;
 }
-
-
 
 @media (prefers-reduced-motion: reduce) {
   .aside {

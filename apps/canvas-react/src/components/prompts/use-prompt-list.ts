@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
-import { ALL_PROMPTS_OPTION, fetchPrompts } from "@/services/api/prompts";
+import { ALL_PROMPTS_OPTION, fetchPromptCategories, fetchPrompts } from "@/services/api/prompts";
 
 export const PROMPT_PAGE_SIZE = 20;
 
@@ -18,12 +18,22 @@ export function usePromptList({ keyword, tags, category, enabled = true }: { key
         getNextPageParam: (lastPage) => lastPage.nextCursor,
         enabled,
     });
+    const categoryQuery = useQuery({
+        queryKey: ["prompt-categories"],
+        queryFn: () => fetchPromptCategories(),
+        enabled,
+        staleTime: 60_000,
+    });
     const firstPage = query.data?.pages[0];
+    const categories = useMemo(() => {
+        const configured = categoryQuery.data?.length ? categoryQuery.data : (firstPage?.categories || []).map((value) => ({ value, label: value }));
+        return [{ value: ALL_PROMPTS_OPTION, label: ALL_PROMPTS_OPTION }, ...configured];
+    }, [categoryQuery.data, firstPage?.categories]);
     return {
         query,
         items: useMemo(() => query.data?.pages.flatMap((page) => page.items) || [], [query.data?.pages]),
         tags: useMemo(() => [ALL_PROMPTS_OPTION, ...(firstPage?.tags || [])], [firstPage?.tags]),
-        categories: useMemo(() => [ALL_PROMPTS_OPTION, ...(firstPage?.categories || [])], [firstPage?.categories]),
+        categories,
         total: firstPage?.total || 0,
     };
 }

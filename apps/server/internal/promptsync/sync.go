@@ -142,32 +142,18 @@ func (e *Engine) SyncDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		token := uuid.NewString()
-		acquired, err := store.AcquirePromptSourceLock(ctx, e.St.Pool, id, token, lockTTL, true)
-		if err != nil {
-			return err
-		}
-		if !acquired {
-			continue
-		}
-		source, err := store.GetPromptSource(ctx, e.St.Pool, id)
-		if err != nil || source == nil {
-			e.releaseLock(id, token)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		result, err := e.runSync(ctx, source)
-		e.releaseLock(id, token)
-		if err != nil {
-			log.Printf("prompt source %s sync failed: %v", id, err)
-			continue
-		}
-		log.Printf("prompt source %s synced: imported=%d updated=%d unchanged=%d failed=%d duration=%dms",
-			id, result.Imported, result.Updated, result.Unchanged, result.Failed, result.DurationMs)
+	if len(ids) == 0 {
+		return nil
 	}
+	result, err := e.CreateImportBatch(ctx, ids, "rules")
+	if errors.Is(err, ErrImportBatchPending) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	log.Printf("prompt source batch %s staged for review: sources=%d fetched=%d duplicates=%d failed_sources=%d",
+		result.BatchID, result.SourceCount, result.FetchedCount, result.DuplicateCount, result.FailedSourceCount)
 	return nil
 }
 

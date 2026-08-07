@@ -21,14 +21,14 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import router from './router'
 import { setUnauthorizedHandler } from './services/apiClient'
-import { createLoginRedirectQuery } from './services/authRedirect'
+import { requestAuthentication } from './services/authGate'
 import notificationService from './services/notification'
 import { useAppearanceStore } from './stores/appearance'
 import { useAuthStore } from './stores/auth'
 import { useLocaleStore } from './stores/locale'
 
 /**
- * 401（auth_required）全局处理：仅当此前是已登录态才清会话并跳登录，
+ * 401（auth_required）全局处理：仅当此前是已登录态才清会话并展示登录提示，
  * 画廊等公开页的匿名 401 不会误触发。
  */
 function registerUnauthorizedHandler() {
@@ -39,12 +39,11 @@ function registerUnauthorizedHandler() {
     notificationService.warning('登录已过期，请重新登录')
     const current = router.currentRoute.value
     if (current.name === 'auth') return
-    router
-      .push({
-        path: '/auth',
-        query: { mode: 'login', ...createLoginRedirectQuery(current.fullPath) },
-      })
-      .catch(() => {})
+    requestAuthentication({
+      target: current.fullPath,
+      pageTitle:
+        current.meta?.titleLabel || String(current.meta?.title || '').split(' - ')[0] || '当前页面',
+    })
   })
 }
 

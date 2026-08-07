@@ -34,6 +34,10 @@
   overflow: hidden;
 }
 
+.collage-mobile-nav {
+  display: none;
+}
+
 /* ── 顶栏 ── */
 .collage-topbar {
   flex-shrink: 0;
@@ -95,6 +99,12 @@
   font-size: 0.7rem;
   font-weight: 760;
   white-space: nowrap;
+}
+
+.collage-top-status span.is-free {
+  border-color: rgba(52, 211, 153, 0.26);
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.08);
 }
 
 .collage-brand strong {
@@ -490,6 +500,39 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+}
+
+.collage-material-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.collage-material-actions button {
+  min-height: 34px;
+  border: 1px solid var(--collage-border);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.04);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.collage-material-actions button:hover:not(:disabled) {
+  border-color: rgba(34, 211, 238, 0.34);
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.collage-material-actions button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 
 .collage-upload-item {
@@ -978,7 +1021,7 @@
 
 .collage-ratio-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 5px;
 }
 
@@ -1245,6 +1288,879 @@
 
   .collage-topbar .collage-top-btn {
     padding: 0 10px;
+  }
+}
+
+/* 浅色主题使用真实浅色编辑器表面，而不是暗色画布硬嵌入站点。 */
+html:not(.color-scheme-dark) .collage-studio-page {
+  --collage-panel: #f8f9fb;
+  --collage-panel-2: #ffffff;
+  --collage-panel-3: #eef1f5;
+  --collage-border: rgba(20, 24, 33, 0.11);
+  --collage-text-dim: #6f7582;
+  --collage-accent-soft: rgba(109, 92, 255, 0.1);
+  color: #191c23;
+  color-scheme: light;
+  background: #edf0f4;
+}
+
+html:not(.color-scheme-dark) .main-content.main--studio-console > .collage-studio-page .collage-topbar,
+html:not(.color-scheme-dark) .collage-topbar {
+  border-color: var(--collage-border);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 1px 0 rgba(17, 20, 28, 0.04);
+}
+
+html:not(.color-scheme-dark) .collage-brand strong,
+html:not(.color-scheme-dark) .collage-template-card,
+html:not(.color-scheme-dark) .collage-top-btn,
+html:not(.color-scheme-dark) .collage-history-btns button,
+html:not(.color-scheme-dark) .collage-search,
+html:not(.color-scheme-dark) .collage-ratio-grid button,
+html:not(.color-scheme-dark) .collage-quick-actions button,
+html:not(.color-scheme-dark) .collage-material-actions button,
+html:not(.color-scheme-dark) .collage-zoom-btn {
+  color: #292d36;
+}
+
+html:not(.color-scheme-dark) .collage-brand small,
+html:not(.color-scheme-dark) .collage-top-status span,
+html:not(.color-scheme-dark) .collage-template-card small,
+html:not(.color-scheme-dark) .collage-field-note,
+html:not(.color-scheme-dark) .collage-side-empty,
+html:not(.color-scheme-dark) .collage-upload-zone small {
+  color: #7a808d;
+}
+
+html:not(.color-scheme-dark) .collage-top-status span,
+html:not(.color-scheme-dark) .collage-history-btns button,
+html:not(.color-scheme-dark) .collage-top-btn,
+html:not(.color-scheme-dark) .collage-category-pills button,
+html:not(.color-scheme-dark) .collage-ratio-grid button,
+html:not(.color-scheme-dark) .collage-quick-actions button,
+html:not(.color-scheme-dark) .collage-material-actions button,
+html:not(.color-scheme-dark) .collage-zoom-btn {
+  border-color: var(--collage-border);
+  background: #ffffff;
+}
+
+html:not(.color-scheme-dark) .collage-top-status span.is-free {
+  border-color: rgba(16, 145, 88, 0.24);
+  color: #087a48;
+  background: #edf9f3;
+}
+
+html:not(.color-scheme-dark) .collage-sidebar,
+html:not(.color-scheme-dark) .collage-inspector {
+  background: var(--collage-panel);
+  box-shadow: none;
+}
+
+html:not(.color-scheme-dark) .collage-side-tabs,
+html:not(.color-scheme-dark) .collage-stage-toolbar {
+  background: #f8f9fb;
+}
+
+html:not(.color-scheme-dark) .collage-side-tabs button,
+html:not(.color-scheme-dark) .collage-inspector-tabs button {
+  color: #717784;
+}
+
+html:not(.color-scheme-dark) .collage-side-tabs button.active,
+html:not(.color-scheme-dark) .collage-inspector-tabs button.active {
+  color: #282c35;
+  background: #ffffff;
+  box-shadow: 0 -1px 0 var(--collage-border) inset;
+}
+
+html:not(.color-scheme-dark) .collage-side-body,
+html:not(.color-scheme-dark) .collage-inspector-body {
+  background: #ffffff;
+}
+
+html:not(.color-scheme-dark) .collage-search {
+  border-color: var(--collage-border);
+  background: #f7f8fa;
+}
+
+html:not(.color-scheme-dark) .collage-search::placeholder {
+  color: #9aa0ab;
+}
+
+html:not(.color-scheme-dark) .collage-category-pills button {
+  color: #686e7b;
+}
+
+html:not(.color-scheme-dark) .collage-category-pills button.active,
+html:not(.color-scheme-dark) .collage-ratio-grid button.active {
+  border-color: rgba(109, 92, 255, 0.32);
+  color: #5548db;
+  background: rgba(109, 92, 255, 0.08);
+}
+
+html:not(.color-scheme-dark) .collage-template-card {
+  border-color: var(--collage-border);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+html:not(.color-scheme-dark) .collage-template-card:hover {
+  border-color: rgba(109, 92, 255, 0.24);
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(27, 31, 43, 0.07);
+}
+
+html:not(.color-scheme-dark) .collage-template-card.active {
+  border-color: rgba(109, 92, 255, 0.55);
+  background: #f1efff;
+  box-shadow: 0 0 0 1px rgba(109, 92, 255, 0.08);
+}
+
+html:not(.color-scheme-dark) .collage-upload-zone {
+  border-color: rgba(109, 92, 255, 0.28);
+  color: #686e7b;
+  background: #f7f6ff;
+}
+
+html:not(.color-scheme-dark) .collage-upload-zone i {
+  color: #6958eb;
+}
+
+html:not(.color-scheme-dark) .collage-hero-hint {
+  color: #564aa8;
+  background: #f3f1ff;
+}
+
+html:not(.color-scheme-dark) .collage-stage-wrap {
+  background: #e8ebf0;
+}
+
+html:not(.color-scheme-dark) .collage-stage-chip {
+  border-color: var(--collage-border);
+  color: #565c68;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+html:not(.color-scheme-dark) .collage-fill-progress {
+  background: rgba(30, 34, 43, 0.1);
+}
+
+html:not(.color-scheme-dark) .collage-stage {
+  background:
+    linear-gradient(rgba(36, 41, 52, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(36, 41, 52, 0.055) 1px, transparent 1px),
+    #e7eaef;
+  background-size: 28px 28px;
+}
+
+html:not(.color-scheme-dark) .collage-board {
+  box-shadow:
+    0 26px 60px rgba(38, 42, 54, 0.2),
+    0 0 0 1px rgba(26, 30, 39, 0.08);
+}
+
+html:not(.color-scheme-dark) .collage-stage-footer {
+  border-color: var(--collage-border);
+  background: #f8f9fb;
+  color: #686e7a;
+}
+
+html:not(.color-scheme-dark) .collage-field {
+  border-color: var(--collage-border);
+  border-radius: 8px;
+  background: #f8f9fb;
+}
+
+html:not(.color-scheme-dark) .collage-field > span {
+  color: #656b78;
+}
+
+html:not(.color-scheme-dark) .collage-field-row output {
+  color: #5a4ddd;
+}
+
+html:not(.color-scheme-dark) .collage-bg-custom {
+  color: #646a76;
+  background: #eef1f5;
+}
+
+html:not(.color-scheme-dark) .collage-switch {
+  background: #c9cdd5;
+}
+
+html:not(.color-scheme-dark) .collage-switch.on {
+  background: var(--collage-accent);
+}
+
+html:not(.color-scheme-dark) .collage-filter-grid button {
+  background: #eef1f5;
+}
+
+html:not(.color-scheme-dark) .collage-filter-grid em,
+html:not(.color-scheme-dark) .collage-quick-actions button,
+html:not(.color-scheme-dark) .collage-material-actions button {
+  color: #555b67;
+}
+
+html:not(.color-scheme-dark) .collage-cell-indicator {
+  border-color: var(--collage-border);
+  background: #f3f1ff;
+}
+
+html:not(.color-scheme-dark) .collage-export-menu {
+  border-color: var(--collage-border);
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(24, 28, 38, 0.16);
+}
+
+html:not(.color-scheme-dark) .collage-export-menu button {
+  border-color: var(--collage-border);
+  color: #555b67;
+  background: #f7f8fa;
+}
+
+html.color-scheme-dark .collage-studio-page {
+  --collage-panel: #151518;
+  --collage-panel-2: #1b1b1f;
+  --collage-panel-3: #242429;
+  background: #0e0e11;
+}
+
+html.color-scheme-dark .main-content.main--studio-console > .collage-studio-page .collage-topbar {
+  background: #141417;
+}
+
+/* 参考工具目录的视觉语言：平面分组、紧凑横向条目、低圆角。 */
+.collage-studio-page {
+  --collage-accent: #6d5cf5;
+  --collage-accent-2: #28a786;
+  --collage-accent-soft: rgba(109, 92, 245, 0.12);
+  background: #0f1013;
+}
+
+.collage-topbar {
+  min-height: 58px;
+  padding-inline: 16px;
+  background: #15161a;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.collage-brand-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  background: var(--collage-accent);
+  box-shadow: none;
+}
+
+.collage-brand strong,
+.collage-panel-intro strong,
+.collage-section-label strong {
+  letter-spacing: 0;
+}
+
+.collage-top-status span {
+  min-height: 26px;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.collage-history-btns button,
+.collage-top-btn,
+.collage-export-group .collage-top-btn.primary,
+.collage-export-caret {
+  border-radius: 7px;
+}
+
+.collage-history-btns button,
+.collage-top-btn {
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+.collage-top-btn.primary {
+  background: var(--collage-accent);
+  box-shadow: none;
+}
+
+.collage-export-group .collage-top-btn.primary {
+  border-radius: 7px 0 0 7px;
+}
+
+.collage-export-caret {
+  border-radius: 0 7px 7px 0 !important;
+}
+
+.collage-workspace {
+  grid-template-columns: 310px minmax(0, 1fr) 296px;
+}
+
+.collage-sidebar,
+.collage-inspector {
+  box-shadow: none;
+}
+
+.collage-side-tabs,
+.collage-inspector-tabs {
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--collage-border);
+}
+
+.collage-side-tabs button,
+.collage-inspector-tabs button {
+  min-height: 34px;
+  border-radius: 6px;
+}
+
+.collage-side-tabs button.active,
+.collage-inspector-tabs button.active {
+  color: #fff;
+  background: var(--collage-accent-soft);
+  box-shadow: none;
+}
+
+.collage-side-body,
+.collage-inspector-body {
+  padding: 14px;
+}
+
+.collage-panel-intro {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+
+.collage-panel-intro__icon {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 0.9rem;
+}
+
+.collage-panel-intro__icon.is-blue {
+  color: #8095ff;
+  background: rgba(109, 92, 245, 0.14);
+}
+
+.collage-panel-intro__icon.is-green {
+  color: #52c9a9;
+  background: rgba(40, 167, 134, 0.14);
+}
+
+.collage-panel-intro > div {
+  min-width: 0;
+}
+
+.collage-panel-intro strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.82rem;
+  font-weight: 760;
+}
+
+.collage-panel-intro p {
+  margin: 0;
+  color: var(--collage-text-dim);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.collage-inspector-intro {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--collage-border);
+}
+
+.collage-search {
+  min-height: 34px;
+  border-radius: 6px;
+}
+
+.collage-category-pills {
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.collage-category-pills button {
+  min-height: 26px;
+  padding-inline: 9px;
+  border-radius: 5px;
+}
+
+.collage-category-pills button.active {
+  background: var(--collage-accent-soft);
+}
+
+.collage-template-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.collage-template-card {
+  min-height: 62px;
+  padding: 7px 9px;
+  border-color: transparent;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  transform: none;
+}
+
+.collage-template-card:hover {
+  transform: none;
+}
+
+.collage-template-card.active {
+  border-color: rgba(109, 92, 245, 0.5);
+  background: rgba(109, 92, 245, 0.12);
+  box-shadow: none;
+}
+
+.collage-template-preview {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  margin: 0;
+  border-radius: 6px;
+  background: rgba(109, 92, 245, 0.12);
+}
+
+.collage-template-card:nth-child(even) .collage-template-preview {
+  background: rgba(40, 167, 134, 0.13);
+}
+
+.collage-template-preview span {
+  border-color: rgba(109, 92, 245, 0.48);
+  background: rgba(109, 92, 245, 0.2);
+}
+
+.collage-template-card:nth-child(even) .collage-template-preview span {
+  border-color: rgba(40, 167, 134, 0.5);
+  background: rgba(40, 167, 134, 0.2);
+}
+
+.collage-template-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.collage-template-card em {
+  margin-bottom: 3px;
+  font-size: 0.76rem;
+}
+
+.collage-template-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collage-template-arrow {
+  flex: 0 0 auto;
+  color: var(--collage-text-dim);
+  font-size: 0.7rem;
+}
+
+.collage-upload-zone {
+  min-height: 104px;
+  border-width: 1px;
+  border-radius: 8px;
+  background: rgba(109, 92, 245, 0.07);
+}
+
+.collage-hero-hint {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(109, 92, 245, 0.1);
+}
+
+.collage-material-actions button,
+.collage-quick-actions button,
+.collage-ratio-grid button,
+.collage-zoom-btn {
+  border-radius: 6px;
+}
+
+.collage-stage-wrap,
+.collage-stage {
+  background-color: #101216;
+}
+
+.collage-stage-toolbar {
+  justify-content: flex-start;
+  min-height: 40px;
+}
+
+.collage-stage-chip {
+  padding: 3px 8px;
+  border-radius: 5px;
+}
+
+.collage-fill-progress span {
+  background: var(--collage-accent);
+}
+
+.collage-section-label {
+  margin: 16px 0 4px;
+}
+
+.collage-section-label strong {
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 760;
+}
+
+.collage-section-label span {
+  display: block;
+  margin-top: 2px;
+  color: var(--collage-text-dim);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.collage-field {
+  margin: 0;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--collage-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.collage-field > span {
+  margin-bottom: 8px;
+  letter-spacing: 0;
+}
+
+.collage-ratio-grid button,
+.collage-quick-actions button {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.collage-cell-indicator {
+  margin-bottom: 12px;
+  border-radius: 7px;
+  background: rgba(109, 92, 245, 0.1);
+}
+
+.collage-filter-grid button {
+  border-radius: 7px;
+}
+
+html:not(.color-scheme-dark) .collage-studio-page {
+  --collage-accent: #6557e8;
+  --collage-accent-2: #159779;
+  --collage-accent-soft: rgba(101, 87, 232, 0.09);
+  background: #eef0f3;
+}
+
+html:not(.color-scheme-dark) .collage-topbar {
+  background: #ffffff;
+}
+
+html:not(.color-scheme-dark) .collage-side-tabs,
+html:not(.color-scheme-dark) .collage-inspector-tabs,
+html:not(.color-scheme-dark) .collage-stage-toolbar,
+html:not(.color-scheme-dark) .collage-stage-footer {
+  background: #fafbfc;
+}
+
+html:not(.color-scheme-dark) .collage-side-tabs button.active,
+html:not(.color-scheme-dark) .collage-inspector-tabs button.active {
+  color: #4e43c8;
+  background: var(--collage-accent-soft);
+  box-shadow: none;
+}
+
+html:not(.color-scheme-dark) .collage-template-card {
+  border-color: transparent;
+  background: #f5f6f8;
+}
+
+html:not(.color-scheme-dark) .collage-template-card:hover {
+  border-color: #e0e3e9;
+  background: #f0f2f5;
+  box-shadow: none;
+}
+
+html:not(.color-scheme-dark) .collage-template-card.active {
+  border-color: rgba(101, 87, 232, 0.42);
+  background: #f0eeff;
+  box-shadow: none;
+}
+
+html:not(.color-scheme-dark) .collage-template-preview {
+  background: #e9edff;
+}
+
+html:not(.color-scheme-dark) .collage-template-card:nth-child(even) .collage-template-preview {
+  background: #e3f5f0;
+}
+
+html:not(.color-scheme-dark) .collage-panel-intro__icon.is-blue {
+  color: #526bd7;
+  background: #eaf0ff;
+}
+
+html:not(.color-scheme-dark) .collage-panel-intro__icon.is-green {
+  color: #187f6a;
+  background: #e4f5f0;
+}
+
+html:not(.color-scheme-dark) .collage-upload-zone {
+  background: #f5f3ff;
+}
+
+html:not(.color-scheme-dark) .collage-field {
+  border-color: #e8eaee;
+  background: transparent;
+}
+
+html:not(.color-scheme-dark) .collage-ratio-grid button,
+html:not(.color-scheme-dark) .collage-quick-actions button {
+  background: #f4f5f7;
+}
+
+html:not(.color-scheme-dark) .collage-stage-wrap {
+  background: #eceef2;
+}
+
+html:not(.color-scheme-dark) .collage-stage {
+  background-color: #e8eaee;
+}
+
+@media (max-width: 1180px) {
+  .collage-workspace {
+    grid-template-columns: 260px minmax(0, 1fr) 250px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .collage-workspace {
+    grid-template-columns: 230px minmax(0, 1fr) 230px;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .collage-sidebar {
+    grid-row: auto;
+  }
+
+  .collage-inspector {
+    grid-column: auto;
+    grid-row: auto;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--collage-border);
+  }
+}
+
+@media (max-width: 900px) {
+  .main-content.main--studio-console > .collage-studio-page .collage-topbar {
+    min-height: calc(52px + var(--app-header-offset, 56px));
+    padding: var(--app-header-offset, 56px) 8px 0;
+  }
+
+  .collage-topbar {
+    gap: 6px;
+  }
+
+  .collage-topbar-left,
+  .collage-topbar-right {
+    gap: 4px;
+  }
+
+  .collage-brand {
+    gap: 6px;
+  }
+
+  .collage-brand-badge {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+  }
+
+  .collage-brand strong {
+    font-size: 0.76rem;
+    white-space: nowrap;
+  }
+
+  .collage-brand small,
+  .collage-top-status {
+    display: none;
+  }
+
+  .collage-history-btns {
+    gap: 2px;
+    margin-left: 2px;
+    padding-left: 6px;
+  }
+
+  .collage-history-btns button,
+  .collage-top-btn {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    min-height: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .collage-topbar-right > .collage-top-btn:not(.collage-add-btn) {
+    display: none;
+  }
+
+  .collage-export-caret {
+    min-width: 26px;
+    width: 26px;
+    padding: 0;
+  }
+
+  .collage-mobile-nav {
+    flex: 0 0 44px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-bottom: 1px solid var(--collage-border);
+    background: var(--collage-panel);
+  }
+
+  .collage-mobile-nav button {
+    position: relative;
+    border: 0;
+    background: transparent;
+    color: var(--collage-text-dim);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .collage-mobile-nav button i {
+    margin-right: 5px;
+  }
+
+  .collage-mobile-nav button.active {
+    color: var(--collage-accent);
+    background: var(--collage-accent-soft);
+  }
+
+  .collage-mobile-nav button.active::after {
+    content: '';
+    position: absolute;
+    right: 24%;
+    bottom: 0;
+    left: 24%;
+    height: 2px;
+    background: var(--collage-accent);
+  }
+
+  .collage-workspace {
+    position: relative;
+    display: block;
+    min-height: 0;
+  }
+
+  .collage-workspace > .collage-sidebar,
+  .collage-workspace > .collage-stage-wrap,
+  .collage-workspace > .collage-inspector {
+    position: absolute;
+    inset: 0;
+    display: none;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    border: 0;
+  }
+
+  .collage-workspace > .is-mobile-active {
+    display: flex;
+  }
+
+  .collage-side-tabs button {
+    font-size: 0.78rem;
+    gap: 5px;
+  }
+
+  .collage-side-tabs button i {
+    font-size: 0.88rem;
+  }
+
+  .collage-side-tabs button em {
+    position: static;
+    font-size: 0.58rem;
+  }
+
+  .collage-template-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .collage-template-preview {
+    width: 48px;
+    height: 48px;
+  }
+
+  .collage-stage-toolbar {
+    min-height: 38px;
+    padding: 0 8px;
+  }
+
+  .collage-stage-chip {
+    padding-inline: 8px;
+  }
+
+  .collage-fill-progress {
+    max-width: none;
+  }
+
+  .collage-stage-sizer {
+    padding: 12px;
+  }
+
+  .collage-stage-footer {
+    min-height: 40px;
+  }
+
+  .collage-inspector {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .collage-inspector-body,
+  .collage-side-body {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .collage-brand > div {
+    display: none;
+  }
+
+  .collage-history-btns {
+    border-left: 0;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .collage-topbar-right {
+    margin-left: auto;
+  }
+
+  .collage-export-menu {
+    position: fixed;
+    top: auto;
+    right: 10px;
+    bottom: 12px;
+    left: 10px;
+    width: auto;
   }
 }
 

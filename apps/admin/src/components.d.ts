@@ -38,6 +38,7 @@ declare module 'vue' {
     ElInput: typeof import('element-plus/es')['ElInput']
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
+    ElPagination: typeof import('element-plus/es')['ElPagination']
     ElPopover: typeof import('element-plus/es')['ElPopover']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
@@ -55,9 +56,13 @@ declare module 'vue' {
     ListError: typeof import('./components/ListError.vue')['default']
     PageCard: typeof import('./components/PageCard.vue')['default']
     ProgressiveImage: typeof import('./components/ProgressiveImage.vue')['default']
+    PromptCategoryManager: typeof import('./components/PromptCategoryManager.vue')['default']
+    RegistrationSettingsDialog: typeof import('./components/settings/RegistrationSettingsDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StatCard: typeof import('./components/StatCard.vue')['default']
+    TaskRuntimeSettingsDialog: typeof import('./components/settings/TaskRuntimeSettingsDialog.vue')['default']
+    TrialCampaignSettingsDialog: typeof import('./components/settings/TrialCampaignSettingsDialog.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

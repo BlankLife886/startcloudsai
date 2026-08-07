@@ -10,13 +10,13 @@ import (
 )
 
 const promptCols = `id, title, prompt, task_type, category, tags, cover_key, cover_width, cover_height, gallery_submission_id,
-	sort, like_count, favorite_count, use_count, active, created_at`
+	sort, like_count, favorite_count, use_count, active, asset_origin, asset_verified, asset_verified_at, asset_note, created_at`
 
 func scanPromptEntry(row pgx.Row) (*PromptEntry, error) {
 	var p PromptEntry
 	err := row.Scan(&p.ID, &p.Title, &p.Prompt, &p.TaskType, &p.Category, &p.Tags,
 		&p.CoverKey, &p.CoverWidth, &p.CoverHeight, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
-		&p.UseCount, &p.Active, &p.CreatedAt)
+		&p.UseCount, &p.Active, &p.AssetOrigin, &p.AssetVerified, &p.AssetVerifiedAt, &p.AssetNote, &p.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +32,11 @@ func InsertPromptEntry(ctx context.Context, q Q, p *PromptEntry) (*PromptEntry, 
 	}
 	return scanPromptEntry(q.QueryRow(ctx,
 		`INSERT INTO prompt_library (id, title, prompt, task_type, category, tags, gallery_submission_id,
-			sort, like_count, favorite_count, use_count, active)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING `+promptCols,
+			sort, like_count, favorite_count, use_count, active, new_until, content_fingerprint)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+			now() + interval '24 hours', $13) RETURNING `+promptCols,
 		p.ID, p.Title, p.Prompt, p.TaskType, p.Category, p.Tags, p.GallerySubmissionID,
-		p.Sort, p.LikeCount, p.FavoriteCount, p.UseCount, p.Active))
+		p.Sort, p.LikeCount, p.FavoriteCount, p.UseCount, p.Active, PromptContentFingerprint(p.Prompt)))
 }
 
 func GetPromptEntry(ctx context.Context, q Q, id uuid.UUID) (*PromptEntry, error) {
@@ -61,12 +62,15 @@ type PromptFilter struct {
 	Order         string
 	ActiveOnly    bool
 	FavoritedBy   uuid.UUID
+	NewOnly       bool
 	CreatedFrom   *time.Time
 	CreatedBefore *time.Time
 }
 
 func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) {
-	if f.ActiveOnly || f.Status == "enabled" {
+	if f.ActiveOnly {
+		sql += ` AND active`
+	} else if f.Status == "enabled" {
 		sql += ` AND active`
 	} else if f.Status == "disabled" {
 		sql += ` AND NOT active`
@@ -100,6 +104,9 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 			SELECT 1 FROM prompt_user_engagement pue
 			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
 		)`, len(args))
+	}
+	if f.NewOnly {
+		sql += ` AND new_until > now()`
 	}
 	if f.CreatedFrom != nil {
 		args = append(args, *f.CreatedFrom)
@@ -235,7 +242,9 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 	sql := `SELECT COALESCE(NULLIF(category, ''), 'other'), count(*)
 		FROM prompt_library WHERE true`
 	args := []any{}
-	if f.ActiveOnly || f.Status == "enabled" {
+	if f.ActiveOnly {
+		sql += ` AND active`
+	} else if f.Status == "enabled" {
 		sql += ` AND active`
 	} else if f.Status == "disabled" {
 		sql += ` AND NOT active`
@@ -265,6 +274,9 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 			SELECT 1 FROM prompt_user_engagement pue
 			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
 		)`, len(args))
+	}
+	if f.NewOnly {
+		sql += ` AND new_until > now()`
 	}
 	if f.CreatedFrom != nil {
 		args = append(args, *f.CreatedFrom)
@@ -301,9 +313,9 @@ func UpdatePromptEntry(ctx context.Context, q Q, p *PromptEntry) error {
 	_, err := q.Exec(ctx,
 		`UPDATE prompt_library SET title = $2, prompt = $3, task_type = $4, category = $5,
 			tags = $6, sort = $7, like_count = $8, favorite_count = $9, use_count = $10,
-			active = $11 WHERE id = $1`,
+			active = $11, content_fingerprint = $12 WHERE id = $1`,
 		p.ID, p.Title, p.Prompt, p.TaskType, p.Category, p.Tags, p.Sort,
-		p.LikeCount, p.FavoriteCount, p.UseCount, p.Active)
+		p.LikeCount, p.FavoriteCount, p.UseCount, p.Active, PromptContentFingerprint(p.Prompt))
 	return err
 }
 
@@ -412,7 +424,9 @@ func MovePromptEntry(ctx context.Context, q Q, id uuid.UUID, position int, f Pro
 func UpdatePromptCover(ctx context.Context, q Q, id uuid.UUID, coverKey string, width, height int) error {
 	_, err := q.Exec(ctx, `UPDATE prompt_library
 		SET cover_key = $2, cover_width = NULLIF($3, 0), cover_height = NULLIF($4, 0),
-			cover_metadata_checked_at = now()
+			cover_metadata_checked_at = now(), asset_origin = 'owned_storage',
+			asset_verified = true, asset_verified_at = now(),
+			asset_note = '本站后台上传文件，系统自动验证存储来源'
 		WHERE id = $1`, id, coverKey, width, height)
 	return err
 }

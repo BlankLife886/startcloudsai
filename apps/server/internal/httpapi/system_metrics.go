@@ -211,6 +211,7 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	queue := s.Queue.Metrics()
 	pressure, pressureErr := store.GetTaskPressure(c.Request.Context(), s.St.Pool)
 	globalLimit, globalLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_tasks")
+	globalImageLimit, globalImageLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_images")
 	globalConcurrency, globalConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_concurrent_tasks")
 	userConcurrency, userConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "user_max_concurrent_tasks")
 	workerCeiling := int64(s.workerConcurrencyCeiling())
@@ -242,7 +243,7 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 			"acquireDurationMs":       roundMetric(float64(pool.AcquireDuration())/float64(time.Millisecond), 2),
 		},
 		"queue":        queue,
-		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
+		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalImageLimit, globalImageLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
 		"providers":    providerCapacity,
 		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
@@ -278,12 +279,18 @@ func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
 	return out
 }
 
-func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error, workerCeiling int64) gin.H {
+func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error,
+	globalLimit int64, globalLimitErr error, globalImageLimit int64, globalImageLimitErr error,
+	globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error,
+	workerCeiling int64) gin.H {
 	out := gin.H{
 		"queued":                     pressure.Queued,
 		"running":                    pressure.Running,
 		"active":                     pressure.Queued + pressure.Running,
+		"activeImageUnits":           pressure.ActiveUnits,
 		"globalLimit":                globalLimit,
+		"globalImageLimit":           globalImageLimit,
+		"imageUtilizationPercent":    roundMetric(percentOf64(pressure.ActiveUnits, globalImageLimit), 2),
 		"userConcurrencyLimit":       userConcurrency,
 		"globalConcurrencyLimit":     globalConcurrency,
 		"workerConcurrencyCeiling":   workerCeiling,
@@ -295,7 +302,7 @@ func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureEr
 	} else {
 		out["oldestQueuedSeconds"] = int64(0)
 	}
-	if pressureErr != nil || globalLimitErr != nil || globalConcurrencyErr != nil || userConcurrencyErr != nil {
+	if pressureErr != nil || globalLimitErr != nil || globalImageLimitErr != nil || globalConcurrencyErr != nil || userConcurrencyErr != nil {
 		out["error"] = "task_pressure_unavailable"
 	}
 	return out

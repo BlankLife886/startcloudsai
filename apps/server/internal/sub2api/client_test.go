@@ -482,7 +482,8 @@ func TestGenerateImageUsesEditsForReferenceImages(t *testing.T) {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		var body struct {
-			Images []map[string]string `json:"images"`
+			Images        []map[string]string `json:"images"`
+			InputFidelity string              `json:"input_fidelity"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -490,13 +491,19 @@ func TestGenerateImageUsesEditsForReferenceImages(t *testing.T) {
 		if len(body.Images) != 1 || body.Images[0]["image_url"] != reference {
 			t.Fatalf("images = %#v", body.Images)
 		}
+		if body.InputFidelity != "high" {
+			t.Fatalf("input_fidelity = %q", body.InputFidelity)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data":[{"b64_json":"ZWRpdGVk"}]}`)
 	}))
 	defer server.Close()
 
 	client, _ := New(server.URL, "test-key", "gpt-test", "gpt-image-2", 30)
-	images, err := client.GenerateImage(context.Background(), "translate text", "1024x1024", "high", 1, []string{reference})
+	images, err := client.GenerateImageProgressiveWithOptions(
+		context.Background(), "translate text", "1024x1024", "high", 1,
+		[]string{reference}, ImageOptions{InputFidelity: "high"}, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

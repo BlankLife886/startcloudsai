@@ -8,6 +8,7 @@ import {
   waitForAssistantRun,
 } from '@/services/assistantApi'
 import { withTransparentPngInstruction } from '@/features/ai-shared/transparentPng'
+import { stabilizeAnalysisNodes } from '@/features/design-workshop/analysisNodeGeometry'
 
 export const ACTIVE_DESIGN_ANALYSIS_KEY = 'ui-design-active-analysis-v1'
 export const ACTIVE_DESIGN_ANALYSIS_VERSION = 3
@@ -234,9 +235,8 @@ function parseDesignDocument(text, fallbackViewport) {
   }
   const viewport = targetViewport(fallbackViewport)
   const reportedViewport = sourceViewport(parsed?.viewport, viewport)
-  const nodes = projectNodes(
-    Array.isArray(parsed?.nodes) ? parsed.nodes : [],
-    reportedViewport,
+  const nodes = stabilizeAnalysisNodes(
+    projectNodes(Array.isArray(parsed?.nodes) ? parsed.nodes : [], reportedViewport, viewport),
     viewport,
   )
   if (!nodes.length) throw new Error('AI 没有生成有效的设计图层')
@@ -269,6 +269,13 @@ function mergePartialDesignDocument(base, refinement) {
     tokens: refinement.tokens || base.tokens,
     partial: true,
   }
+}
+
+function resolveRefinedDesignDocument(base, refinement) {
+  // A complete calibration pass is authoritative. Keeping draft-only nodes here can resurrect
+  // regions that the vision model deliberately removed or moved during pixel-level validation.
+  if (!refinement.partial) return refinement
+  return mergePartialDesignDocument(base, refinement)
 }
 
 function referenceDescriptor(source, name = '当前 UI 设计成稿') {
@@ -368,7 +375,7 @@ ${
   }
 6. frame 用于页面区域、侧栏、卡片等容器；子节点填写 parentId，但仍使用相对整张画布的绝对坐标。
 7. 按钮或输入框的容器与其文案合并为一个节点，不再叠加同文案 text；但其中独立可见的图标、头像、徽标、开关滑块、下拉箭头必须各自建立子节点并填写 parentId。
-8. 必须逐层扫描所有非文字视觉层：页面背景、区域容器、卡片、媒体框、按钮、输入框、选择器、标签、徽章、开关、单选/复选控件、图标、头像、Logo、插画、照片、图表、进度条、滚动条、边框、分割线和有明确边界的装饰形状。即使尺寸很小也不能遗漏。
+8. 必须逐层扫描所有非文字视觉层：页面背景、区域容器、卡片、媒体框、按钮、输入框、选择器、标签、徽章、开关、单选/复选控件、图标、头像、Logo、插画、照片、图表、进度条、滚动条、边框、分割线和有明确边界的装饰形状。即使尺寸很小也不能遗漏。每一个可点击按钮都必须有独立节点，包括纯图标按钮、工具栏按钮、分页按钮、轮播箭头、菜单触发器、标签页和分段控件；不得只识别按钮文字或只识别外层工具栏。
 9. 父子关系必须与视觉嵌套一致。父节点和子节点都使用整张画布绝对坐标；同一个视觉层只出现一次，不用重复的大框模拟细节。
 10. 每个节点都要填写 category、description 和 confidence；category 只允许 layout、component、content、icon、image。`
 }
@@ -385,10 +392,12 @@ function refinementPrompt(viewport) {
 6. 检查前后景绘制顺序和 parentId，避免大面积 frame 遮挡内容。
 7. 不得重新设计、改主题或添加原稿中不存在的模块。
 8. 不要根据常见 UI 模板推测布局；只根据原稿实际像素位置校准。按钮、图标、头像、图表、图片和卡片都必须使用紧边界，不能用大框粗略包围。
-9. 逐个审计按钮内部图标、下拉箭头、开关滑块、单选/复选标记、徽章、Logo 子形状、进度条、分割线、边框与装饰形状。这些叶子层必须拥有独立节点和正确 parentId，不能因为已有父容器而省略。
+9. 逐个审计所有按钮以及按钮内部图标、下拉箭头、开关滑块、单选/复选标记、徽章、Logo 子形状、进度条、分割线、边框与装饰形状。初轮已经识别的可见按钮、卡片和模块不得在本轮遗漏；纯图标按钮、工具栏按钮、分页按钮、菜单触发器和分段控件必须各自保留独立节点。这些叶子层必须拥有独立节点和正确 parentId，不能因为已有父容器而省略。
 10. 节点数量由原稿复杂度决定，不得为了缩短响应而合并不同视觉层或停止扫描。
 11. 每个区域都要填写 category、description 和 confidence；category 只允许 layout、component、content、icon、image。
 12. 保持紧凑定位协议：每个 node 只输出 id、name、type、parentId、x、y、width、height、text、category、description、confidence；tokens 返回三个空数组；禁止输出任何样式字段或美化缩进。
+13. 对每个 button、input、text 节点执行“文字—边界”核验：name 和 text 必须来自该 bounding box 内真实可见的文字；如果框内文字与节点名称不一致，必须移动边界或修正名称，禁止把相邻菜单项的名称配给当前坐标。
+14. 输出前按 y、x 顺序复查同一菜单或列表中的连续项目，确认名称顺序、垂直顺序和坐标顺序完全一致；不得将上一项或下一项的语义错位套用。
 
 只返回完整 JSON，不要 Markdown、说明、评分或差异报告。键顺序与上一轮完全一致。`
 }
@@ -434,6 +443,7 @@ async function monitorDesignPass({ runId, phase, signal, onStage, onStream }) {
 async function executeDesignPass({
   conversationId,
   prompt,
+  model,
   references,
   phase,
   signal,
@@ -446,11 +456,13 @@ async function executeDesignPass({
       conversationId,
       prompt,
       mode: 'chat',
+      model,
       clientUserMessageId: uid('user'),
       clientAssistantMessageId: uid('assistant'),
       referenceImages: references,
       count: 1,
       quality: 'high',
+      serviceKey: 'ui_design_analysis',
     },
     { signal },
   )
@@ -462,6 +474,7 @@ async function executeDesignPass({
 
 export async function generateAiDesignDocument({
   prompt,
+  model,
   viewport,
   referenceImage,
   resumeSession,
@@ -472,6 +485,7 @@ export async function generateAiDesignDocument({
   onStream,
   shouldPreserveSession,
 }) {
+  const requestedModel = String(resumeSession?.model || model || '').trim()
   const resumedConversationId = String(resumeSession?.conversationId || '').trim()
   let conversation = resumedConversationId ? { id: resumedConversationId } : null
   let runId = String(resumeSession?.runId || '').trim()
@@ -484,7 +498,12 @@ export async function generateAiDesignDocument({
       conversation = await createAssistantConversation(
         referenceImage ? '设计稿元素分析' : 'AI 设计稿生成',
       )
-      onSession?.({ conversationId: conversation.id, runId: '', phase: 'draft' })
+      onSession?.({
+        conversationId: conversation.id,
+        runId: '',
+        phase: 'draft',
+        model: requestedModel,
+      })
     }
     const reference = referenceDescriptor(referenceImage)
     const references = reference ? [reference] : []
@@ -510,7 +529,13 @@ export async function generateAiDesignDocument({
 
     if (runId) {
       onRun?.(runId)
-      onSession?.({ conversationId: conversation.id, runId, phase, draftContent })
+      onSession?.({
+        conversationId: conversation.id,
+        runId,
+        phase,
+        draftContent,
+        model: requestedModel,
+      })
       try {
         const resumedContent = await monitorDesignPass({
           runId,
@@ -530,6 +555,7 @@ export async function generateAiDesignDocument({
       draftContent = await executeDesignPass({
         conversationId: conversation.id,
         prompt: designPrompt({ prompt, viewport, hasReference: Boolean(reference) }),
+        model: requestedModel,
         references,
         phase,
         signal,
@@ -537,7 +563,12 @@ export async function generateAiDesignDocument({
         onRun(value) {
           runId = value
           onRun?.(value)
-          onSession?.({ conversationId: conversation.id, runId, phase: 'draft' })
+          onSession?.({
+            conversationId: conversation.id,
+            runId,
+            phase: 'draft',
+            model: requestedModel,
+          })
         },
         onStream,
       })
@@ -549,6 +580,7 @@ export async function generateAiDesignDocument({
         finalContent = await executeDesignPass({
           conversationId: conversation.id,
           prompt: refinementPrompt(viewport),
+          model: requestedModel,
           references,
           phase: 'refine',
           signal,
@@ -561,6 +593,7 @@ export async function generateAiDesignDocument({
               runId,
               phase: 'refine',
               draftContent,
+              model: requestedModel,
             })
           },
           onStream,
@@ -575,9 +608,9 @@ export async function generateAiDesignDocument({
     workflowTerminal = true
     try {
       const finalDocument = parseDesignDocument(finalContent, viewport)
-      if (finalDocument.partial && finalContent !== draftContent) {
+      if (finalContent !== draftContent) {
         try {
-          return mergePartialDesignDocument(
+          return resolveRefinedDesignDocument(
             parseDesignDocument(draftContent, viewport),
             finalDocument,
           )
@@ -609,7 +642,7 @@ function unwrapCodeBlock(content) {
   const value = String(content || '').trim()
   return (
     value
-      .match(/```(?:vue|html|css|javascript|typescript|svg|xml)?\s*([\s\S]*?)```/i)?.[1]
+      .match(/```(?:vue|html|css|javascript|typescript)?\s*([\s\S]*?)```/i)?.[1]
       ?.trim() || value
   )
 }
@@ -663,69 +696,6 @@ export async function generateDesignRegionCode({
       },
       onStream(contentValue) {
         onStream?.(unwrapCodeBlock(contentValue))
-      },
-    })
-    onStage?.('complete')
-    return unwrapCodeBlock(content)
-  } finally {
-    if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
-    if (conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
-    }
-  }
-}
-
-function regionSvgPrompt({ viewport, region }) {
-  return `你是专业 UI 图标与矢量资产设计师。第一张参考图是完整 UI 设计稿，第二张参考图只是目标区域的定位预览。请把指定区域重建为真正的可编辑 SVG，而不是把截图嵌入 SVG。
-
-整张原图尺寸：${viewport.width}×${viewport.height}
-目标区域：x=${Math.round(region.x)}, y=${Math.round(region.y)}, width=${Math.round(region.width)}, height=${Math.round(region.height)}
-区域名称：${region.name}
-区域类型：${region.type}
-区域说明：${region.description || region.name}
-
-要求：
-1. 根元素必须是 <svg>，viewBox 使用 "0 0 ${Math.round(region.width)} ${Math.round(region.height)}"。
-2. 只使用 path、rect、circle、ellipse、line、polyline、polygon、g、defs、linearGradient、radialGradient、stop 等原生矢量元素。
-3. 禁止使用 image、foreignObject、script、base64、blob URL、外部链接或任何位图嵌入。
-4. 保持目标区域的形状、比例、描边、颜色、圆角和层级；周围页面背景不属于目标时不得画入。
-5. 文本如果是图标不可分割的一部分，可转换为 path；否则不要猜造文字轮廓。
-6. 输出完整 SVG 源码，不要解释、Markdown 标题或使用说明。`
-}
-
-export async function generateDesignRegionSvg({
-  referenceImage,
-  regionReferenceDataUrl,
-  viewport,
-  region,
-  signal,
-  onStage,
-  onRun,
-  onStream,
-}) {
-  let conversation = null
-  let runId = ''
-  try {
-    onStage?.('preparing')
-    conversation = await createAssistantConversation(`重建 SVG · ${region.name}`)
-    const references = [
-      referenceDescriptor(referenceImage),
-      referenceDescriptor(regionReferenceDataUrl),
-    ].filter(Boolean)
-    if (!references.length) throw new Error('缺少设计图参考，无法重建 SVG')
-    const content = await executeDesignPass({
-      conversationId: conversation.id,
-      prompt: regionSvgPrompt({ viewport, region }),
-      references,
-      phase: 'draft',
-      signal,
-      onStage,
-      onRun(value) {
-        runId = value
-        onRun?.(value)
-      },
-      onStream(value) {
-        onStream?.(unwrapCodeBlock(value))
       },
     })
     onStage?.('complete')
@@ -906,20 +876,21 @@ function websiteRestorationPrompt({ name, viewport, nodes, assets }) {
     approvedAssetId: node.approvedAssetId || '',
   }))
   let referenceNumber = 1
-  const compactAssets = assets.map((asset) => {
-    if (asset.format === 'png') referenceNumber += 1
-    return {
-      id: asset.id,
-      sourceRegionId: asset.sourceRegionId,
-      name: asset.name,
-      format: asset.format,
-      url: asset.url || '',
-      svgSource: asset.svgSource || '',
-      description: asset.description || '',
-      naturalBounds: asset.naturalBounds,
-      referenceNumber: asset.format === 'png' ? referenceNumber : null,
-    }
-  })
+  const compactAssets = assets
+    .filter((asset) => asset.format === 'png')
+    .map((asset) => {
+      referenceNumber += 1
+      return {
+        id: asset.id,
+        sourceRegionId: asset.sourceRegionId,
+        name: asset.name,
+        format: asset.format,
+        url: asset.url || '',
+        description: asset.description || '',
+        naturalBounds: asset.naturalBounds,
+        referenceNumber,
+      }
+    })
   return `你是资深 Figma 转前端工程师。第一张参考图是要还原的完整 UI 设计稿；后续参考图是用户逐个确认过的 PNG 素材。请结合精确图层坐标和已确认素材，生成一份可直接运行的完整 HTML 文档。
 
 设计稿名称：${name}
@@ -930,7 +901,7 @@ function websiteRestorationPrompt({ name, viewport, nodes, assets }) {
 要求：
 1. 还原整张设计稿的 DOM 层级、布局、尺寸、间距、颜色、圆角、边框、阴影和文字层级；默认视口下与参考图一致，同时提供合理的窄屏响应。
 2. 不得把第一张完整设计稿作为 img、背景图、canvas 像素或任何截图覆盖层；页面必须由真实 HTML/CSS 和已确认素材构成。
-3. approvedAssetId 对应的素材必须放入该图层。PNG 使用素材记录中的 url；SVG 使用 svgSource 原样内联，禁止用占位图替换已经确认的素材。
+3. approvedAssetId 对应的 PNG 素材必须放入该图层，使用素材记录中的 url，禁止用占位图替换已经确认的素材。
 4. referenceNumber 表示该 PNG 在参考图列表中的序号，仅用于理解视觉，不要写进页面。
 5. confirmed=true 的坐标是用户校准后的原图像素，优先级高于视觉估算；其他坐标是 AI 候选，需结合完整参考图校准。
 6. 图标如无已确认素材，可使用 CSS 或 Bootstrap Icons；不得生成 base64 假素材。交互控件需要有自然 hover/focus/active 状态。

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +41,36 @@ type Storage struct {
 	presigner     *s3.PresignClient
 	bucket        string
 	presignExpiry time.Duration
+}
+
+type limitedReadCloser struct {
+	reader io.Reader
+	close  func() error
+}
+
+func (r *limitedReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
+func (r *limitedReadCloser) Close() error               { return r.close() }
+
+func ValidateConfig(cfg *appconfig.Config) error {
+	if cfg == nil {
+		return errors.New("对象存储配置不能为空")
+	}
+	missing := make([]string, 0, 4)
+	for name, value := range map[string]string{
+		"R2_ENDPOINT":          cfg.R2Endpoint,
+		"R2_ACCESS_KEY_ID":     cfg.R2AccessKeyID,
+		"R2_SECRET_ACCESS_KEY": cfg.R2SecretAccessKey,
+		"R2_BUCKET":            cfg.R2Bucket,
+	} {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("对象存储配置不完整，缺少 %s", strings.Join(missing, "、"))
+	}
+	return nil
 }
 
 func New(cfg *appconfig.Config) (*Storage, error) {
@@ -76,6 +107,35 @@ func (s *Storage) UploadBytes(ctx context.Context, key string, data []byte, cont
 
 func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
 	return s.GetBytesLimit(ctx, key, 32<<20)
+}
+
+// OpenObject streams an object without buffering its contents in the API
+// process. The size check is enforced from the object metadata when available;
+// the reader is still capped for providers that omit Content-Length.
+func (s *Storage) OpenObject(ctx context.Context, key string, maxBytes int64) (io.ReadCloser, int64, string, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if out.ContentLength != nil && *out.ContentLength > maxBytes {
+		_ = out.Body.Close()
+		return nil, 0, "", fmt.Errorf("object exceeds %d byte limit", maxBytes)
+	}
+	length := int64(-1)
+	if out.ContentLength != nil {
+		length = *out.ContentLength
+	}
+	contentType := ""
+	if out.ContentType != nil {
+		contentType = *out.ContentType
+	}
+	return &limitedReadCloser{
+		reader: io.LimitReader(out.Body, maxBytes+1),
+		close:  out.Body.Close,
+	}, length, contentType, nil
 }
 
 func (s *Storage) GetBytesLimit(ctx context.Context, key string, maxBytes int64) ([]byte, error) {

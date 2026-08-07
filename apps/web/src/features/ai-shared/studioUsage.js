@@ -13,6 +13,7 @@ export const STUDIO_FEATURE_META = {
   preview: { label: 'AI 优化', shortLabel: 'AI 优化' },
   'ai.illustrationColoring': { label: '插画染色', shortLabel: '插画染色' },
   'ai.uiDesign': { label: 'UI 设计稿', shortLabel: 'UI 设计' },
+  'ai.ecommerceDesign': { label: 'AI 电商设计', shortLabel: '电商设计' },
   'ai.ultraModelSheet': { label: '超高清模型图', shortLabel: '模型图' },
   'ai.gameDesign': { label: '游戏设计', shortLabel: '游戏设计' },
   'ai.puzzle': { label: 'AI 拼图', shortLabel: 'AI 拼图' },
@@ -58,6 +59,7 @@ export function inferStudioFeatureFromUsageRow(row = {}) {
     .trim()
     .toLowerCase()
   if (resourceType.includes('wallpaper')) return 'ai.wallpaperGeneration'
+  if (resourceType.includes('ui-design-ecommerce')) return 'ai.ecommerceDesign'
   if (resourceType.includes('ui-design')) return 'ai.uiDesign'
   if (resourceType.includes('ultra-reference')) return 'ai.ultraModelSheet'
   if (resourceType.includes('game-art')) return 'ai.gameDesign'
@@ -133,10 +135,7 @@ export async function fetchStudioCreditAccountSnapshot({ maxAgeMs = CREDIT_SNAPS
     try {
       const { getWallet } = await import('@/services/meApi')
       const wallet = await getWallet()
-      const creditAvailable = Math.max(
-        0,
-        Number(wallet?.balanceCents || 0) - Number(wallet?.frozenCents || 0),
-      )
+      const creditAvailable = Math.max(0, Number(wallet?.balanceCents || 0))
       const data = {
         creditAvailable,
         dayCost: 0,

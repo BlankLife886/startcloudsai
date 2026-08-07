@@ -18,6 +18,8 @@ export function buildVirtualMasonryLayout(
     gap = 14,
     minColumnWidth = 220,
     maxColumns = 4,
+    fixedColumns = 0,
+    fixedMinColumnWidth = 132,
     bodyHeight = 178,
     fallbackAspect = 3 / 4,
     getAspect = (entry) => entry?.aspect,
@@ -26,10 +28,15 @@ export function buildVirtualMasonryLayout(
   const width = Math.max(0, Number(containerWidth) || 0)
   if (!width) return { columns: 1, columnWidth: 0, height: 0, positions: [] }
 
-  const columns = Math.max(
+  const requestedColumns = Math.max(0, Math.round(Number(fixedColumns) || 0))
+  const responsiveMaximum = Math.max(
     1,
-    Math.min(maxColumns, Math.floor((width + gap) / (minColumnWidth + gap)) || 1),
+    Math.floor((width + gap) / ((requestedColumns ? fixedMinColumnWidth : minColumnWidth) + gap)) ||
+      1,
   )
+  const columns = requestedColumns
+    ? Math.max(1, Math.min(requestedColumns, maxColumns, responsiveMaximum))
+    : Math.max(1, Math.min(maxColumns, responsiveMaximum))
   const columnWidth = (width - gap * (columns - 1)) / columns
   const heights = Array.from({ length: columns }, () => 0)
   const positions = (Array.isArray(items) ? items : []).map((item, index) => {
@@ -73,6 +80,8 @@ export function useVirtualMasonryFeed({
   gap = 14,
   minColumnWidth = 220,
   maxColumns = 4,
+  fixedColumns = 0,
+  fixedMinColumnWidth = 132,
   bodyHeight = 178,
   overscan = 900,
   fallbackAspect = 3 / 4,
@@ -99,6 +108,9 @@ export function useVirtualMasonryFeed({
       gap,
       minColumnWidth,
       maxColumns,
+      fixedColumns:
+        typeof fixedColumns === 'function' ? fixedColumns() : fixedColumns?.value ?? fixedColumns,
+      fixedMinColumnWidth,
       bodyHeight,
       fallbackAspect,
       getAspect: (entry) =>

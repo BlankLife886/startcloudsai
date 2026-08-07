@@ -84,10 +84,22 @@ const studioEntries = [
     cover: '/sucai/ultra-model-sheet-board-1785420340076.webp',
   },
   {
+    id: 'ecommerce-design',
+    to: '/ecommerce-design',
+    icon: 'bi bi-bag-check-fill',
+    index: '06',
+    title: 'AI 电商设计',
+    english: 'Commerce design',
+    description: '上传商品图，一次生成适配平台规范的主图、详情与营销视觉。',
+    tone: 'yellow',
+    taskType: 'ecommerce_design',
+    cover: '',
+  },
+  {
     id: 'game-art',
     to: '/game-art',
     icon: 'bi bi-controller',
-    index: '06',
+    index: '07',
     title: '游戏设计',
     english: 'Game art',
     description: '从角色、场景、道具到图标，组织完整游戏资产流程。',
@@ -287,7 +299,15 @@ onMounted(() => {
   <div ref="homeRoot" class="commercial-home">
     <section class="commercial-hero" aria-labelledby="commercial-home-title">
       <GradientBlindsHero
-        :gradient-colors="['#ff003c', '#ff7a00', '#ffd400', '#2aff6a', '#00d4ff', '#3b5bff', '#b347ff']"
+        :gradient-colors="[
+          '#ff003c',
+          '#ff7a00',
+          '#ffd400',
+          '#2aff6a',
+          '#00d4ff',
+          '#3b5bff',
+          '#b347ff',
+        ]"
         :angle="20"
         :noise="0.5"
         :blind-count="16"
@@ -329,9 +349,18 @@ onMounted(() => {
           </div>
 
           <dl data-commercial-hero="proof" class="commercial-hero__proof">
-            <div><dt>多模型</dt><dd>按任务选择</dd></div>
-            <div><dt>2K / 4K</dt><dd>支持高清输出</dd></div>
-            <div><dt>持续回传</dt><dd>任务状态可见</dd></div>
+            <div>
+              <dt>多模型</dt>
+              <dd>按任务选择</dd>
+            </div>
+            <div>
+              <dt>2K / 4K</dt>
+              <dd>支持高清输出</dd>
+            </div>
+            <div>
+              <dt>持续回传</dt>
+              <dd>任务状态可见</dd>
+            </div>
           </dl>
         </div>
 
@@ -369,14 +398,16 @@ onMounted(() => {
               :key="`${char}-${index}`"
               data-commercial-float-char
               aria-hidden="true"
-            >{{ char === ' ' ? ' ' : char }}</span>
+              >{{ char === ' ' ? ' ' : char }}</span
+            >
           </h2>
           <p data-commercial-narrative class="commercial-intro__narrative">
             <span
               v-for="(word, index) in narrativeWords"
               :key="`${word}-${index}`"
               data-commercial-word
-            >{{ word }}</span>
+              >{{ word }}</span
+            >
           </p>
         </div>
 

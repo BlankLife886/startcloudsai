@@ -22,6 +22,16 @@ import { taskCoverUrl, taskOriginalUrl, taskThumbnailUrl } from '@/features/crea
 import { taskAspectCss } from '@/features/creator-hub/useMasonryFeed'
 import { useVirtualMasonryFeed } from '@/features/creator-hub/useVirtualMasonryFeed'
 import DeleteHistoryConfirmDialog from '@/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue'
+import SharePublishDialog from '@/features/share/components/SharePublishDialog.vue'
+import {
+  downloadAuthenticatedMedia,
+} from '@/services/authenticatedMedia'
+import { submitShareItem } from '@/services/shareGallery'
+import {
+  downloadHistoryImagesAsZip,
+  readHistoryImageMetadata,
+} from '@/services/historyMediaTools'
+import { stashLocalEditHandoff } from '@/services/localEditHandoff'
 import { setBodyScrollLock } from '@/utils/bodyScrollLock'
 import '@/features/creator-hub/creator-hub.css'
 
@@ -32,11 +42,14 @@ const appearanceStore = useAppearanceStore()
 
 const HISTORY_PREVIEW_SCROLL_LOCK = 'creation-history-preview'
 const HISTORY_CONFIRM_SCROLL_LOCK = 'creation-history-confirm'
+const HISTORY_LAYOUT_KEY = 'creation-history-layout-v2'
 
 const tasks = ref([])
 const loading = ref(false)
 const loadingMore = ref(false)
 const bulkBusy = ref(false)
+const batchDownloadBusy = ref(false)
+const batchProgress = ref(null)
 const cursor = ref(null)
 const search = ref('')
 const typeFilter = ref('')
@@ -50,6 +63,15 @@ const statusMenuOpen = ref(false)
 const statusMenuRef = ref(null)
 const previewPanelRef = ref(null)
 const previewLayerRef = ref(null)
+const layoutMode = ref(localStorage.getItem(HISTORY_LAYOUT_KEY)?.startsWith('table') ? 'table' : 'grid')
+const storedColumns = Number(localStorage.getItem(HISTORY_LAYOUT_KEY)?.split(':')[1])
+const gridColumns = ref([3, 4, 6, 8].includes(storedColumns) ? storedColumns : 4)
+const mediaMetadata = ref({})
+const mediaMetadataLoading = ref(new Set())
+const actionBusyIds = ref(new Set())
+const publishOpen = ref(false)
+const publishTarget = ref(null)
+const publishBusy = ref(false)
 const taskSubscriptions = new Map()
 let loadObserver = null
 let confirmAction = null
@@ -183,6 +205,10 @@ function isDeletable(task) {
   return DELETABLE_STATUSES.has(String(task?.status || '').toLowerCase())
 }
 
+function isDownloadable(task) {
+  return Boolean(taskOriginalUrl(task))
+}
+
 const visibleTasks = computed(() => {
   const q = search.value.trim().toLowerCase()
   return tasks.value
@@ -200,6 +226,15 @@ const visibleTasks = computed(() => {
 })
 
 const selectedCount = computed(() => selectedIds.value.size)
+const selectedDownloadTasks = computed(() =>
+  visibleTasks.value.filter(
+    (task) => selectedIds.value.has(String(task.id)) && isDownloadable(task),
+  ),
+)
+const publishDialogTitle = computed(() => {
+  const prompt = taskPrompt(publishTarget.value).replace(/\s+/g, ' ').trim()
+  return prompt ? prompt.slice(0, 120) : `${TASK_TYPE_LABELS[publishTarget.value?.type] || 'AI'} 创作`
+})
 
 const previewIndex = computed(() => {
   if (!preview.value?.id) return -1
@@ -232,15 +267,83 @@ const {
 } = useVirtualMasonryFeed({
   items: masonryItems,
   fallbackAspect: 3 / 4,
-  bodyHeight: 178,
+  bodyHeight: 206,
   minColumnWidth: 260,
   maxColumns: 12,
+  fixedColumns: gridColumns,
   overscan: 960,
   getAspect: (entry) => entry.aspect,
 })
 
 function imageLoadingMode(index) {
   return index < Math.max(6, columnCount.value * 2) ? 'eager' : 'lazy'
+}
+
+function setBusyForTask(id, busy) {
+  const next = new Set(actionBusyIds.value)
+  if (busy) next.add(String(id))
+  else next.delete(String(id))
+  actionBusyIds.value = next
+}
+
+function metadataFor(task) {
+  return mediaMetadata.value[String(task?.id || '')] || null
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0)
+  if (!bytes) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
+  return `${(bytes / 1024 ** 2).toFixed(bytes < 10 * 1024 ** 2 ? 1 : 0)} MB`
+}
+
+function metadataLabel(task) {
+  if (!taskOriginalUrl(task)) return '无原图信息'
+  const meta = metadataFor(task)
+  if (!meta) {
+    return mediaMetadataLoading.value.has(String(task?.id || '')) ? '读取原图信息…' : '原图信息待读取'
+  }
+  if (meta.error) return '原图信息不可用'
+  return `${meta.width}×${meta.height} · ${formatBytes(meta.bytes)} · ${meta.transparent ? '透明图' : '不透明'}`
+}
+
+async function ensureMediaMetadata(task) {
+  const id = String(task?.id || '')
+  const url = taskOriginalUrl(task)
+  if (!id || !url || mediaMetadata.value[id] || mediaMetadataLoading.value.has(id)) return
+  mediaMetadataLoading.value = new Set([...mediaMetadataLoading.value, id])
+  try {
+    const metadata = await readHistoryImageMetadata(url)
+    mediaMetadata.value = { ...mediaMetadata.value, [id]: metadata }
+  } catch (error) {
+    mediaMetadata.value = {
+      ...mediaMetadata.value,
+      [id]: { error: error?.message || '读取失败' },
+    }
+  } finally {
+    const next = new Set(mediaMetadataLoading.value)
+    next.delete(id)
+    mediaMetadataLoading.value = next
+  }
+}
+
+function onHistoryImageLoad(task, item, event) {
+  if (item?.key) measureFromEvent(item.key, event)
+  void ensureMediaMetadata(task)
+}
+
+function setLayout(mode, columns = gridColumns.value) {
+  layoutMode.value = mode === 'table' ? 'table' : 'grid'
+  if ([3, 4, 6, 8].includes(Number(columns))) gridColumns.value = Number(columns)
+  localStorage.setItem(
+    HISTORY_LAYOUT_KEY,
+    layoutMode.value === 'table' ? `table:${gridColumns.value}` : `grid:${gridColumns.value}`,
+  )
+  if (layoutMode.value === 'table') {
+    visibleTasks.value.slice(0, 24).forEach((task) => void ensureMediaMetadata(task))
+  }
+  void nextTick(scheduleViewportMeasure)
 }
 
 function disconnectLoadObserver() {
@@ -324,13 +427,13 @@ function toggleSelect(id) {
 
 function selectAllVisible() {
   selectedIds.value = new Set(
-    visibleTasks.value.filter((task) => isDeletable(task)).map((task) => String(task.id)),
+    visibleTasks.value.filter((task) => isDownloadable(task)).map((task) => String(task.id)),
   )
 }
 
 function onCardActivate(task) {
   if (selectMode.value) {
-    if (isDeletable(task)) toggleSelect(task.id)
+    if (isDownloadable(task)) toggleSelect(task.id)
     return
   }
   openPreview(task)
@@ -343,6 +446,7 @@ function openPreview(task) {
   }
   stopPreviewInertiaGuard()
   preview.value = task
+  void ensureMediaMetadata(task)
   // 不用 freezeViewport，避免解锁时 scrollTo 回跳造成“自动滚动”
   setBodyScrollLock(HISTORY_PREVIEW_SCROLL_LOCK, true, { freezeViewport: false })
   // 打开期间拦截页面滚动，但允许弹窗内部滚动
@@ -357,6 +461,7 @@ function showPreviewAt(index) {
   const task = visibleTasks.value[index]
   if (!task) return
   preview.value = task
+  void ensureMediaMetadata(task)
   nextTick(() => {
     const media = previewPanelRef.value?.querySelector?.('.ch-preview__media')
     const mid = previewPanelRef.value?.querySelector?.('.ch-preview__mid')
@@ -386,6 +491,130 @@ async function copyPreviewPrompt() {
     notificationService.success('提示词已复制')
   } catch {
     notificationService.error('复制失败，请手动选择文本')
+  }
+}
+
+function downloadFilename(task) {
+  const type = TASK_TYPE_LABELS[task?.type] || 'AI作品'
+  const date = String(task?.createdAt || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+  return `${type}-${date}-${String(task?.id || '').slice(0, 8) || 'original'}`
+}
+
+async function downloadTask(task) {
+  const url = taskOriginalUrl(task)
+  if (!url) {
+    notificationService.info('当前记录没有可下载的原图')
+    return
+  }
+  const id = String(task?.id || '')
+  if (actionBusyIds.value.has(id)) return
+  setBusyForTask(id, true)
+  try {
+    await downloadAuthenticatedMedia(url, downloadFilename(task))
+    notificationService.success('原图已开始下载')
+  } catch (error) {
+    notificationService.error(error?.message || '原图下载失败')
+  } finally {
+    setBusyForTask(id, false)
+  }
+}
+
+async function downloadSelected() {
+  if (batchDownloadBusy.value) return
+  const selected = selectedDownloadTasks.value
+  if (!selected.length) {
+    notificationService.info('请先选择要下载的图片')
+    return
+  }
+  batchDownloadBusy.value = true
+  batchProgress.value = { phase: 'fetching', completed: 0, total: selected.length }
+  try {
+    const result = await downloadHistoryImagesAsZip(
+      selected.map((task) => ({
+        url: taskOriginalUrl(task),
+        filename: downloadFilename(task),
+      })),
+      { onProgress: (progress) => (batchProgress.value = progress) },
+    )
+    notificationService.success(`已打包 ${result.count} 张原图`)
+  } catch (error) {
+    notificationService.error(error?.message || '批量打包下载失败')
+  } finally {
+    batchDownloadBusy.value = false
+    window.setTimeout(() => {
+      batchProgress.value = null
+    }, 1200)
+  }
+}
+
+function batchProgressLabel() {
+  const progress = batchProgress.value
+  if (!progress) return '打包下载'
+  if (progress.phase === 'packing') return '正在打包…'
+  if (progress.phase === 'done') return '下载已就绪'
+  return `读取原图 ${progress.completed}/${progress.total}`
+}
+
+function openPublish(task) {
+  if (!taskCoverUrl(task) || String(task?.status || '').toLowerCase() !== 'succeeded') {
+    notificationService.info('图片生成完成后才能发布')
+    return
+  }
+  if (task?.shareSubmitted) {
+    notificationService.info('该作品已经提交发布审核')
+    return
+  }
+  publishTarget.value = task
+  publishOpen.value = true
+}
+
+function closePublish() {
+  if (publishBusy.value) return
+  publishOpen.value = false
+  publishTarget.value = null
+}
+
+async function submitPublish(options = {}) {
+  const task = publishTarget.value
+  if (!task?.id || publishBusy.value) return
+  publishBusy.value = true
+  try {
+    const response = await submitShareItem({
+      jobId: String(task.id).replace(/^server-/, ''),
+      title: options.title || publishDialogTitle.value,
+      categoryId: options.categoryId || '',
+    })
+    const shareSubmissionStatus = String(response?.item?.status || 'pending').toLowerCase()
+    tasks.value = tasks.value.map((item) =>
+      item.id === task.id ? { ...item, shareSubmitted: true, shareSubmissionStatus } : item,
+    )
+    if (preview.value?.id === task.id) {
+      preview.value = { ...preview.value, shareSubmitted: true, shareSubmissionStatus }
+    }
+    notificationService.success(
+      shareSubmissionStatus === 'approved' ? '作品已经发布' : '作品已提交发布审核',
+    )
+    publishOpen.value = false
+    publishTarget.value = null
+  } catch (error) {
+    notificationService.error(error?.message || '作品发布失败')
+  } finally {
+    publishBusy.value = false
+  }
+}
+
+function openLocalEdit(task) {
+  const sourceUrl = taskOriginalUrl(task)
+  if (!sourceUrl) {
+    notificationService.info('当前记录没有可编辑的原图')
+    return
+  }
+  try {
+    stashLocalEditHandoff({ task, sourceUrl })
+    if (preview.value) closePreview()
+    router.push({ name: 'text-to-image', query: { localEdit: 'history' } })
+  } catch (error) {
+    notificationService.error(error?.message || '无法打开局部编辑')
   }
 }
 
@@ -854,6 +1083,15 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                   type="button"
+                  class="ch-chip is-download"
+                  :disabled="batchDownloadBusy || !selectedDownloadTasks.length"
+                  @click="downloadSelected"
+                >
+                  <i class="bi bi-file-earmark-zip" aria-hidden="true"></i>
+                  {{ batchProgressLabel() }}
+                </button>
+                <button
+                  type="button"
                   class="ch-chip is-danger"
                   :disabled="bulkBusy || !selectedCount"
                   @click="deleteSelected"
@@ -876,6 +1114,29 @@ onBeforeUnmount(() => {
                 @click="clearAllTasks"
               >
                 清空全部
+              </button>
+            </div>
+            <div class="ch-layout-switch" aria-label="历史记录布局">
+              <span>布局</span>
+              <button
+                v-for="columns in [3, 4, 6, 8]"
+                :key="columns"
+                type="button"
+                :class="{ 'is-active': layoutMode === 'grid' && gridColumns === columns }"
+                :aria-label="`${columns} 列布局`"
+                :title="`${columns} 列布局`"
+                @click="setLayout('grid', columns)"
+              >
+                {{ columns }}
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': layoutMode === 'table' }"
+                aria-label="表格布局"
+                title="表格布局"
+                @click="setLayout('table')"
+              >
+                <i class="bi bi-table" aria-hidden="true"></i>
               </button>
             </div>
           </div>
@@ -903,25 +1164,27 @@ onBeforeUnmount(() => {
             <router-link class="ch-btn is-primary" to="/studio">打开创作台</router-link>
           </div>
 
-          <div
-            v-else
-            ref="historyMasonryRef"
-            class="ch-history-masonry"
-            :style="{ height: `${historyMasonryHeight}px` }"
-          >
-            <article
-              v-for="item in visibleMasonryItems"
-              :key="item.key"
-              class="ch-card ch-history-masonry__item"
-              :class="{ 'is-selected': item.selected, 'is-selecting': selectMode }"
-              :style="{
-                width: `${item.width}px`,
-                height: `${item.height}px`,
-                transform: `translate3d(${item.left}px, ${item.top}px, 0)`,
-              }"
+          <template v-else>
+            <div
+              v-if="layoutMode === 'grid'"
+              ref="historyMasonryRef"
+              class="ch-history-masonry"
+              :class="{ 'is-dense': gridColumns >= 6 }"
+              :style="{ height: `${historyMasonryHeight}px` }"
             >
+              <article
+                v-for="item in visibleMasonryItems"
+                :key="item.key"
+                class="ch-card ch-history-masonry__item"
+                :class="{ 'is-selected': item.selected, 'is-selecting': selectMode }"
+                :style="{
+                  width: `${item.width}px`,
+                  height: `${item.height}px`,
+                  transform: `translate3d(${item.left}px, ${item.top}px, 0)`,
+                }"
+              >
                 <button
-                  v-if="selectMode && isDeletable(item.task)"
+                  v-if="selectMode && isDownloadable(item.task)"
                   type="button"
                   class="ch-card__check"
                   :aria-pressed="item.selected"
@@ -950,7 +1213,7 @@ onBeforeUnmount(() => {
                     root-margin="240px 0px"
                     :retry-count="2"
                     :max-dimension="failedThumbIds.has(item.key) ? 0 : 720"
-                    @load="measureFromEvent(item.key, $event)"
+                    @load="onHistoryImageLoad(item.task, item, $event)"
                     @error="onCoverError(item.task)"
                   />
                   <div v-else class="ch-card__placeholder">
@@ -972,7 +1235,7 @@ onBeforeUnmount(() => {
                     }}
                   </div>
                 </button>
-                  <div class="ch-card__body">
+                <div class="ch-card__body">
                   <div class="ch-card__meta">
                     <span class="ch-pill">{{ TASK_TYPE_LABELS[item.task.type] || '创作' }}</span>
                     <span class="ch-pill is-status" :data-status="item.task.status">
@@ -982,30 +1245,119 @@ onBeforeUnmount(() => {
                   <p class="ch-card__prompt" :title="item.task.cleanPrompt" data-no-translate>
                     {{ item.task.cleanPrompt }}
                   </p>
-                  <span class="ch-pill">
-                    {{ formatTime(item.task.createdAt) }} · {{ formatPoints(item.task.costCents) }}
+                  <span class="ch-card__file-meta" :title="metadataLabel(item.task)">
+                    <i class="bi bi-bounding-box" aria-hidden="true"></i>
+                    {{ metadataLabel(item.task) }}
                   </span>
-                  <div class="ch-card__actions">
+                  <div class="ch-card__actions is-icon-row" aria-label="作品操作">
+                    <button
+                      type="button"
+                      title="下载原图"
+                      aria-label="下载原图"
+                      :disabled="!isDownloadable(item.task) || actionBusyIds.has(String(item.task.id))"
+                      @click="downloadTask(item.task)"
+                    ><i class="bi bi-download" aria-hidden="true"></i></button>
+                    <button
+                      type="button"
+                      title="发布到社区"
+                      aria-label="发布到社区"
+                      :disabled="item.task.status !== 'succeeded'"
+                      @click="openPublish(item.task)"
+                    ><i class="bi bi-send" aria-hidden="true"></i></button>
+                    <button
+                      type="button"
+                      title="局部编辑"
+                      aria-label="局部编辑"
+                      :disabled="!isDownloadable(item.task)"
+                      @click="openLocalEdit(item.task)"
+                    ><i class="bi bi-brush" aria-hidden="true"></i></button>
                     <button
                       v-if="item.task.cleanPrompt && item.task.cleanPrompt !== '未填写提示词'"
                       type="button"
-                      class="is-primary"
+                      title="再做一张"
+                      aria-label="再做一张"
                       @click="recreate(item.task)"
-                    >
-                      再做一张
-                    </button>
+                    ><i class="bi bi-arrow-repeat" aria-hidden="true"></i></button>
                     <button
                       v-if="!selectMode"
                       type="button"
+                      title="删除"
+                      aria-label="删除"
                       :disabled="!isDeletable(item.task)"
                       @click="removeTask(item.task)"
-                    >
-                      删除
-                    </button>
+                    ><i class="bi bi-trash3" aria-hidden="true"></i></button>
                   </div>
                 </div>
-            </article>
-          </div>
+              </article>
+            </div>
+
+            <div v-else class="ch-history-table-wrap">
+              <table class="ch-history-table">
+                <thead>
+                  <tr>
+                    <th v-if="selectMode" aria-label="选择"></th>
+                    <th>作品</th>
+                    <th>提示词</th>
+                    <th>尺寸</th>
+                    <th>大小</th>
+                    <th>透明</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th class="is-actions">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="task in visibleTasks"
+                    :key="task.id"
+                    :class="{ 'is-selected': isSelected(task.id) }"
+                  >
+                    <td v-if="selectMode" class="is-check">
+                      <button
+                        type="button"
+                        :disabled="!isDownloadable(task)"
+                        :aria-pressed="isSelected(task.id)"
+                        :aria-label="isSelected(task.id) ? '取消选择' : '选择'"
+                        @click="toggleSelect(task.id)"
+                      ><i class="bi" :class="isSelected(task.id) ? 'bi-check-circle-fill' : 'bi-circle'"></i></button>
+                    </td>
+                    <td>
+                      <button class="ch-table-preview" type="button" @click="onCardActivate(task)">
+                        <AuthenticatedImage
+                          v-if="coverSrc(task)"
+                          :src="coverSrc(task)"
+                          :alt="task.cleanPrompt"
+                          loading="lazy"
+                          :max-dimension="240"
+                          @load="ensureMediaMetadata(task)"
+                        />
+                        <span>{{ TASK_TYPE_LABELS[task.type] || '创作' }}</span>
+                      </button>
+                    </td>
+                    <td class="is-prompt" :title="task.cleanPrompt" data-no-translate>{{ task.cleanPrompt }}</td>
+                    <td>{{ !isDownloadable(task) ? '—' : metadataFor(task)?.width ? `${metadataFor(task).width}×${metadataFor(task).height}` : metadataFor(task)?.error ? '不可用' : '读取中…' }}</td>
+                    <td>{{ metadataFor(task)?.bytes ? formatBytes(metadataFor(task).bytes) : '—' }}</td>
+                    <td>
+                      <span v-if="metadataFor(task) && !metadataFor(task).error" class="ch-transparency" :class="{ 'is-transparent': metadataFor(task).transparent }">
+                        {{ metadataFor(task).transparent ? '是' : '否' }}
+                      </span>
+                      <span v-else>—</span>
+                    </td>
+                    <td><span class="ch-pill is-status" :data-status="task.status">{{ STATUS_LABELS[task.status] || task.status }}</span></td>
+                    <td>{{ formatTime(task.createdAt) }}</td>
+                    <td class="is-actions">
+                      <div class="ch-table-actions">
+                        <button type="button" title="下载原图" :disabled="!isDownloadable(task) || actionBusyIds.has(String(task.id))" @click="downloadTask(task)"><i class="bi bi-download"></i></button>
+                        <button type="button" title="发布" :disabled="task.status !== 'succeeded'" @click="openPublish(task)"><i class="bi bi-send"></i></button>
+                        <button type="button" title="局部编辑" :disabled="!isDownloadable(task)" @click="openLocalEdit(task)"><i class="bi bi-brush"></i></button>
+                        <button type="button" title="删除" :disabled="!isDeletable(task)" @click="removeTask(task)"><i class="bi bi-trash3"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
 
           <div
             v-if="cursor || loadingMore"
@@ -1080,6 +1432,11 @@ onBeforeUnmount(() => {
               <p class="ch-preview__prompt" data-no-translate>
                 {{ taskPrompt(preview) || '未填写提示词' }}
               </p>
+              <dl class="ch-preview__specs">
+                <div><dt>尺寸</dt><dd>{{ metadataFor(preview)?.width ? `${metadataFor(preview).width}×${metadataFor(preview).height}` : '读取中…' }}</dd></div>
+                <div><dt>原图大小</dt><dd>{{ metadataFor(preview)?.bytes ? formatBytes(metadataFor(preview).bytes) : '—' }}</dd></div>
+                <div><dt>透明背景</dt><dd>{{ metadataFor(preview) && !metadataFor(preview).error ? (metadataFor(preview).transparent ? '是' : '否') : '—' }}</dd></div>
+              </dl>
             </div>
 
             <div class="ch-preview__bottom">
@@ -1093,12 +1450,13 @@ onBeforeUnmount(() => {
                   复制提示词
                 </button>
                 <button
-                  v-if="taskPrompt(preview)"
                   type="button"
-                  @click="recreate(preview)"
+                  @click="downloadTask(preview)"
                 >
-                  再做一张
+                  下载原图
                 </button>
+                <button type="button" :disabled="preview.status !== 'succeeded'" @click="openPublish(preview)">发布</button>
+                <button type="button" :disabled="!isDownloadable(preview)" @click="openLocalEdit(preview)">局部编辑</button>
                 <button type="button" @click="closePreview">关闭</button>
               </div>
             </div>
@@ -1106,6 +1464,16 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Teleport>
+
+    <SharePublishDialog
+      :open="publishOpen"
+      :title="publishDialogTitle"
+      :style-label="TASK_TYPE_LABELS[publishTarget?.type] || 'AI 创作'"
+      :submitting="publishBusy"
+      :light="!appearanceStore.isDark"
+      @close="closePublish"
+      @submit="submitPublish"
+    />
 
     <DeleteHistoryConfirmDialog
       :open="confirmDialog.open"

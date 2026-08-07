@@ -11,6 +11,7 @@ const props = defineProps({
   zoom: { type: Number, default: 1 },
   nodes: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' },
+  hoveredId: { type: String, default: '' },
   drawMode: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
 })
@@ -18,7 +19,7 @@ const props = defineProps({
 const emit = defineEmits(['select', 'hover', 'update-bounds', 'create-region', 'draw-complete'])
 
 const host = ref(null)
-const hoveredId = ref('')
+const canvasHoveredId = ref('')
 let app = null
 let drawingRect = null
 let syncingFromProps = false
@@ -26,11 +27,12 @@ let syncFrame = 0
 const regionRects = new Map()
 
 const viewport = computed(() => ({ width: props.width, height: props.height }))
-const uiScale = computed(() => 1 / Math.max(0.1, props.zoom))
+const uiScale = computed(() => 1 / Math.max(0.04, props.zoom))
 const overlayStyle = computed(() => ({ '--overlay-ui-scale': uiScale.value }))
-const hoveredNode = computed(
-  () => props.nodes.find((node) => !node.hidden && node.id === hoveredId.value) || null,
-)
+const hoveredNode = computed(() => {
+  const id = props.hoveredId || canvasHoveredId.value
+  return props.nodes.find((node) => !node.hidden && node.id === id) || null
+})
 const hoverLabelStyle = computed(() => {
   const node = hoveredNode.value
   if (!node || node.id === props.selectedId || props.drawMode) return { display: 'none' }
@@ -58,10 +60,15 @@ function regionStyle(node) {
     height: node.height,
     fill: 'rgba(91, 140, 255, 0.001)',
     hitFill: 'all',
-    stroke: 'rgba(91, 140, 255, 0)',
-    strokeWidth: 1,
+    stroke: node.id === props.hoveredId ? '#7aa2ff' : 'rgba(91, 140, 255, 0)',
+    strokeWidth: node.id === props.hoveredId ? 1.5 * uiScale.value : 1,
     // Small leaf layers must stay above their enclosing frames for pointer hit-testing.
-    zIndex: node.id === props.selectedId ? 1000000 : areaPriority + leafPriority,
+    zIndex:
+      node.id === props.selectedId
+        ? 1000000
+        : node.id === props.hoveredId
+          ? 900000
+          : areaPriority + leafPriority,
     editable: true,
     editConfig: {
       rotateable: false,
@@ -219,8 +226,8 @@ function createApp() {
   })
   app.editor.on(EditorEvent.HOVER, (event) => {
     const target = Array.isArray(event.value) ? event.value[0] : event.value
-    hoveredId.value = target?.regionId || ''
-    emit('hover', hoveredId.value)
+    canvasHoveredId.value = target?.regionId || ''
+    emit('hover', canvasHoveredId.value)
   })
   app.editor.on(EditorMoveEvent.MOVE, scheduleBoundsSync)
   app.editor.on(EditorScaleEvent.SCALE, scheduleBoundsSync)
@@ -235,6 +242,7 @@ onMounted(() => void nextTick(createApp))
 
 watch(() => props.nodes, syncNodes, { deep: true })
 watch(() => props.selectedId, syncNodes)
+watch(() => props.hoveredId, syncNodes)
 watch(() => [props.drawMode, props.disabled], updateMode)
 watch(() => props.zoom, updateEditorScale)
 watch(

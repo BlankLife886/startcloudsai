@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -72,8 +76,12 @@ func (s *Server) upload(c *gin.Context) {
 			fail(c, apperr.E("upload_too_large", "文件不能超过 15MB", 413))
 			return
 		}
-		if rerr != nil {
+		if errors.Is(rerr, io.EOF) {
 			break
+		}
+		if rerr != nil {
+			fail(c, rerr)
+			return
 		}
 	}
 	if len(data) == 0 {
@@ -187,7 +195,7 @@ func (s *Server) getFile(c *gin.Context) {
 	// 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
 	// 空白的情况。服务端本身已经能访问 R2（上传也走同一连接），因此在完成
 	// 权限校验后由服务端读取并返回，交付链路会更稳定。
-	data, err := s.Storage.GetBytesLimit(ctx, key, 32<<20)
+	body, contentLength, contentType, err := s.Storage.OpenObject(ctx, key, 32<<20)
 	if err != nil {
 		if storagepkg.IsNotFound(err) {
 			fail(c, apperr.E("not_found", "文件不存在", 404))
@@ -196,15 +204,14 @@ func (s *Server) getFile(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if len(data) == 0 {
-		fail(c, apperr.E("not_found", "文件不存在", 404))
-		return
+	defer body.Close()
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(key))
 	}
-	contentType := http.DetectContentType(data)
-	if strings.HasSuffix(strings.ToLower(key), ".webp") {
-		contentType = "image/webp"
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
 	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Data(http.StatusOK, contentType, data)
+	c.DataFromReader(http.StatusOK, contentLength, contentType, body, nil)
 }

@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
-import { T2I_PROMPT_LIBRARY } from '@/features/ai-wallpaper/composables/wallpaperStudioConstants'
+import {
+  listPromptCategories,
+  listPromptLibrary,
+  recordPromptEngagement,
+} from '@/services/promptLibrary'
 import notificationService from '@/services/notification'
 import {
-  PROMPT_CATEGORIES,
   PROMPT_TASK_TYPES,
   stashPendingPrompt,
   studioRouteForTaskType,
@@ -36,12 +38,33 @@ let loadObserver = null
 let previewUnlockTimer = 0
 let previewInertiaGuardCleanup = null
 
+const PROMPT_SCOPE_CATEGORIES = [
+  { id: 'all', label: '全部' },
+  { id: 'today', label: '今日最新', scope: 'today' },
+  { id: 'favorites', label: '我的收藏', scope: 'favorites' },
+]
+const promptCategories = ref([])
 const categoryMeta = computed(() =>
-  PROMPT_CATEGORIES.filter((item) => {
+  [...PROMPT_SCOPE_CATEGORIES, ...promptCategories.value].filter((item) => {
     if (item.scope === 'favorites' && !authStore.isAuthenticated) return false
     return true
   }),
 )
+
+async function loadPromptCategoryOptions() {
+  try {
+    const items = await listPromptCategories({ type: activeType.value })
+    const scopeKeys = new Set(PROMPT_SCOPE_CATEGORIES.map((item) => item.id))
+    promptCategories.value = items
+      .filter((item) => !scopeKeys.has(item.key))
+      .map((item) => ({ id: item.key, label: item.label }))
+    if (!categoryMeta.value.some((item) => item.id === activeCategory.value)) {
+      activeCategory.value = 'all'
+    }
+  } catch {
+    promptCategories.value = []
+  }
+}
 
 const activeTypeLabel = computed(
   () => PROMPT_TASK_TYPES.find((item) => item.id === activeType.value)?.label || '文生图',
@@ -108,7 +131,7 @@ function imageFetchPriority(index) {
 }
 
 function activeScope() {
-  const hit = PROMPT_CATEGORIES.find((item) => item.id === activeCategory.value)
+  const hit = PROMPT_SCOPE_CATEGORIES.find((item) => item.id === activeCategory.value)
   return hit?.scope || ''
 }
 
@@ -203,7 +226,6 @@ async function loadPrompts({ reset = true } = {}) {
       pageSize: 24,
       category: categoryParam(),
       scope: activeScope(),
-      fallbackItems: activeType.value === 't2i' ? T2I_PROMPT_LIBRARY : [],
     })
     if (id !== requestId) return
     items.value = reset ? response.items || [] : [...items.value, ...(response.items || [])]
@@ -227,6 +249,7 @@ function setType(type) {
   if (activeType.value === type) return
   activeType.value = type
   activeCategory.value = 'all'
+  void loadPromptCategoryOptions()
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
 }
 
@@ -374,6 +397,7 @@ watch(preview, (value) => {
 
 onMounted(() => {
   document.documentElement.classList.add('creator-hub-sticky-page')
+  void loadPromptCategoryOptions()
   void loadPrompts({ reset: true })
 })
 

@@ -206,7 +206,7 @@ export function messageDateKey(message) {
 export function formatMessageDate(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
 }
 
 export function formatTime(value) {
@@ -216,5 +216,5 @@ export function formatTime(value) {
   if (date.toDateString() === today.toDateString()) {
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
-  return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+  return `${date.getMonth() + 1}/${date.getDate()}`
 }

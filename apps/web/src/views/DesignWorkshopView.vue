@@ -2,7 +2,7 @@
 // UI 设计稿工作台 · 沉浸版
 // 布局语言：无边框、填充式控件，层级靠底色深浅与间距；左栏固定节奏直排参数，
 // 右侧为无框画布，操作与元信息浮于画布之上；环境光随品牌主色变化。
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import WallevenImagePreview from '@/components/common/WallevenImagePreview.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
@@ -15,19 +15,32 @@ import {
   ACTIVE_DESIGN_ANALYSIS_VERSION,
 } from '@/features/design-workshop/aiDesignDocument'
 import { downloadAuthenticatedMedia } from '@/services/authenticatedMedia'
+import { fetchAssistantConfig } from '@/services/assistantApi'
 import {
   getScopedLocalItem,
   removeScopedLocalItem,
   setScopedLocalItem,
 } from '@/services/scopedLocalStorage'
 import { readImageFile } from '@/features/design-workshop/imageWorkshop'
-import { takePendingPrompt } from '@/features/creator-hub/studioTools'
+import {
+  DESIGN_QUALITY_REVIEW_MODES,
+  auditAiDesignQuality,
+  auditAiDesignRegion,
+  buildDesignQualityRules,
+  buildQualityIterationPrompt,
+} from '@/features/design-workshop/designQualityProfile'
+import { composePendingLaunchPrompt, takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { useAppearanceStore } from '@/stores/appearance'
+import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 
 const appearanceStore = useAppearanceStore()
+const runtimeConfigStore = useRuntimeConfigStore()
 
 const SETTINGS_KEY = 'ui-design-workshop-v2'
+const DESIGN_SPEC_VERSION = 2
 const EDITABLE_HISTORY_KEY = 'ui-editable-document-history-v1'
+const ANALYSIS_MODEL_KEY = 'ui-design-analysis-model-v1'
+const QUALITY_AUDIT_HISTORY_KEY = 'ui-design-quality-audits-v4'
 const ACTIVE_ANALYSIS_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 function readStoredActiveAnalysisSession() {
@@ -69,71 +82,243 @@ const PAGE_TYPE_OPTIONS = [
   {
     id: 'landing',
     label: '落地页',
+    icon: 'bi-window-stack',
+    description: '品牌表达与转化路径',
     prompt: '产品落地页：首屏 Hero、卖点分区、客户证言、定价表与页脚',
   },
   {
     id: 'dashboard',
     label: '仪表盘',
+    icon: 'bi-speedometer2',
+    description: '指标监控与数据概览',
     prompt: '数据仪表盘：侧边导航、KPI 指标卡、趋势图表与明细数据表格',
   },
   {
     id: 'ecommerce',
     label: '电商页面',
+    icon: 'bi-bag',
+    description: '商品展示与购买转化',
     prompt: '电商页面：商品主图、价格与规格选择、购买按钮、评价与推荐位',
   },
-  { id: 'feed', label: '信息流', prompt: '信息流页面：顶部导航、内容卡片流、互动按钮与底部标签栏' },
-  { id: 'auth', label: '登录注册', prompt: '登录/注册页：品牌展示区、表单、第三方登录与协议说明' },
+  {
+    id: 'feed',
+    label: '信息流',
+    icon: 'bi-view-list',
+    description: '内容发现与持续浏览',
+    prompt: '信息流页面：顶部导航、内容卡片流、互动按钮与底部标签栏',
+  },
+  {
+    id: 'auth',
+    label: '登录注册',
+    icon: 'bi-person-lock',
+    description: '账号验证与身份进入',
+    prompt: '登录/注册页：品牌展示区、表单、第三方登录与协议说明',
+  },
   {
     id: 'settings',
     label: '设置页',
+    icon: 'bi-sliders2',
+    description: '偏好配置与账户管理',
     prompt: '设置页面：分组设置列表、开关与输入控件、账号与危险操作区',
   },
-  { id: 'profile', label: '个人中心', prompt: '个人中心页：头像资料卡、数据统计、功能入口列表' },
-  { id: 'chat', label: '聊天对话', prompt: '即时通讯界面：会话列表、消息气泡、输入框与工具栏' },
-  { id: 'onboarding', label: '引导页', prompt: '新用户引导页：主题插画、步骤指示器、行动按钮' },
-  { id: 'custom', label: '自定义', prompt: '' },
+  {
+    id: 'profile',
+    label: '个人中心',
+    icon: 'bi-person-circle',
+    description: '资料、数据与个人入口',
+    prompt: '个人中心页：头像资料卡、数据统计、功能入口列表',
+  },
+  {
+    id: 'chat',
+    label: '聊天对话',
+    icon: 'bi-chat-dots',
+    description: '会话协作与即时沟通',
+    prompt: '即时通讯界面：会话列表、消息气泡、输入框与工具栏',
+  },
+  {
+    id: 'onboarding',
+    label: '引导页',
+    icon: 'bi-signpost-split',
+    description: '新用户认知与步骤引导',
+    prompt: '新用户引导页：主题插画、步骤指示器、行动按钮',
+  },
+  {
+    id: 'workspace',
+    label: '工作台',
+    icon: 'bi-columns-gap',
+    description: '多任务生产与快捷操作',
+    prompt: '业务工作台：全局导航、快捷操作区、待办任务、最近项目与动态记录',
+  },
+  {
+    id: 'crm',
+    label: '客户管理',
+    icon: 'bi-person-lines-fill',
+    description: '线索、客户与跟进流程',
+    prompt: 'CRM 客户管理页：客户列表、阶段漏斗、负责人、跟进记录与批量操作',
+  },
+  {
+    id: 'analytics',
+    label: '数据分析',
+    icon: 'bi-graph-up-arrow',
+    description: '多维筛选与趋势洞察',
+    prompt: '数据分析页：时间与维度筛选、核心趋势图、对比指标、明细表和洞察摘要',
+  },
+  {
+    id: 'admin',
+    label: '管理后台',
+    icon: 'bi-layout-sidebar-inset',
+    description: '高密度运营与权限操作',
+    prompt: '管理后台：稳定侧边导航、筛选工具栏、数据表格、状态标签与批量操作',
+  },
+  {
+    id: 'finance',
+    label: '金融账务',
+    icon: 'bi-wallet2',
+    description: '资产、账单与交易明细',
+    prompt: '金融账务页：资产概览、收支趋势、账户卡片、交易流水与风险提示',
+  },
+  {
+    id: 'education',
+    label: '在线教育',
+    icon: 'bi-mortarboard',
+    description: '课程学习与进度管理',
+    prompt: '在线教育页：课程目录、学习进度、视频区域、章节任务、笔记与讨论区',
+  },
+  {
+    id: 'healthcare',
+    label: '医疗健康',
+    icon: 'bi-heart-pulse',
+    description: '健康数据与服务预约',
+    prompt: '医疗健康页：健康概览、指标趋势、服务入口、预约信息与风险提醒',
+  },
+  {
+    id: 'booking',
+    label: '预订服务',
+    icon: 'bi-calendar2-check',
+    description: '时间、资源与订单确认',
+    prompt: '预订服务页：搜索条件、日期与时段选择、资源列表、价格明细和订单确认',
+  },
+  {
+    id: 'media',
+    label: '媒体播放',
+    icon: 'bi-play-btn',
+    description: '影音浏览与播放控制',
+    prompt: '媒体播放页：内容主视觉、播放器、频道分类、推荐列表、收藏与播放队列',
+  },
+  {
+    id: 'portfolio',
+    label: '作品集',
+    icon: 'bi-grid-1x2',
+    description: '项目展示与个人表达',
+    prompt: '作品集页面：个人或团队介绍、精选项目、案例详情入口、能力标签与联系方式',
+  },
+  {
+    id: 'custom',
+    label: '自定义',
+    icon: 'bi-pencil-square',
+    description: '自由定义页面信息结构',
+    prompt: '',
+  },
 ]
 
 const STYLE_OPTIONS = [
-  { id: 'minimal', label: '极简留白', prompt: '极简主义：大量留白、克制配色、精致排版' },
-  { id: 'glass', label: '玻璃拟态', prompt: '玻璃拟态：半透明磨砂卡片、柔和渐变背景、细腻高光' },
-  { id: 'darkpro', label: '深色专业', prompt: '深色专业：深灰背景、高对比信息层级、克制的强调色' },
-  { id: 'vibrant', label: '多彩活力', prompt: '多彩活力：明快渐变、大圆角、活泼插画点缀' },
-  { id: 'corporate', label: '商务企业', prompt: '商务企业：稳重蓝灰配色、清晰栅格、正式可信' },
-  { id: 'neubrutal', label: '新粗野', prompt: '新粗野主义：粗描边、硬阴影、高饱和撞色色块' },
+  {
+    id: 'minimal',
+    label: '极简留白',
+    icon: 'bi-layout-text-sidebar-reverse',
+    description: '克制、清晰、重视内容',
+    preview: ['#f7f7f8', '#18181b', '#e4e4e7'],
+    prompt: '极简主义：大量留白、克制配色、精致排版',
+  },
+  {
+    id: 'glass',
+    label: '玻璃拟态',
+    icon: 'bi-layers',
+    description: '半透明层次与柔和光感',
+    preview: ['#1d1830', '#9f8cff', '#493d68'],
+    prompt: '玻璃拟态：半透明磨砂卡片、柔和渐变背景、细腻高光',
+  },
+  {
+    id: 'darkpro',
+    label: '深色专业',
+    icon: 'bi-moon-stars',
+    description: '高对比、沉稳、专业工具感',
+    preview: ['#111318', '#e5e7eb', '#343946'],
+    prompt: '深色专业：深灰背景、高对比信息层级、克制的强调色',
+  },
+  {
+    id: 'vibrant',
+    label: '多彩活力',
+    icon: 'bi-palette',
+    description: '明快色彩与活泼节奏',
+    preview: ['#ff5a67', '#6558f5', '#ffc857'],
+    prompt: '多彩活力：明快配色、大圆角、活泼插画点缀',
+  },
+  {
+    id: 'corporate',
+    label: '商务企业',
+    icon: 'bi-buildings',
+    description: '稳重、可信、结构严谨',
+    preview: ['#16324f', '#2f81f7', '#dbe8f5'],
+    prompt: '商务企业：稳重蓝灰配色、清晰栅格、正式可信',
+  },
+  {
+    id: 'neubrutal',
+    label: '新粗野',
+    icon: 'bi-bounding-box',
+    description: '硬边界、强对比、个性直接',
+    preview: ['#f8ef52', '#ff6b6b', '#111111'],
+    prompt: '新粗野主义：粗描边、硬阴影、高饱和撞色色块',
+  },
+  {
+    id: 'editorial',
+    label: '杂志编辑',
+    icon: 'bi-newspaper',
+    description: '大标题、强节奏、内容叙事',
+    preview: ['#f3f0ea', '#171717', '#b5342b'],
+    prompt: '杂志编辑风格：鲜明版式节奏、精致大标题、图文比例讲究且内容导向明确',
+  },
+  {
+    id: 'luxury',
+    label: '高端奢华',
+    icon: 'bi-gem',
+    description: '精致、稀缺、克制质感',
+    preview: ['#171512', '#d8c28f', '#f4f0e8'],
+    prompt: '高端奢华风格：精致材质感、克制高光、宽松排版和高品质视觉细节',
+  },
+  {
+    id: 'friendly',
+    label: '亲和圆润',
+    icon: 'bi-emoji-smile',
+    description: '柔和、易用、具有温度',
+    preview: ['#fff7ed', '#34a37b', '#ff8a65'],
+    prompt: '亲和圆润风格：柔和形态、自然配色、清晰反馈，友好但不过度幼态',
+  },
+  {
+    id: 'futuristic',
+    label: '未来科技',
+    icon: 'bi-cpu',
+    description: '精密、前沿、数字空间感',
+    preview: ['#080b12', '#31e6c2', '#5965ff'],
+    prompt: '未来科技风格：精密网格、冷色高亮、数据化细节和克制的数字空间感',
+  },
+  {
+    id: 'organic',
+    label: '自然有机',
+    icon: 'bi-flower1',
+    description: '自然色彩与柔和秩序',
+    preview: ['#edf3ea', '#3f7552', '#d59b67'],
+    prompt: '自然有机风格：自然色彩、柔和边缘、舒缓层级与真实材质图片',
+  },
+  {
+    id: 'monochrome',
+    label: '黑白单色',
+    icon: 'bi-circle-half',
+    description: '纯粹、高级、强调排版',
+    preview: ['#ffffff', '#111111', '#a1a1aa'],
+    prompt: '黑白单色风格：主要使用黑白灰，通过字号、字重、留白和边界建立层级',
+  },
 ]
-
-const PAGE_TYPE_SELECT_OPTIONS = PAGE_TYPE_OPTIONS.map((item) => ({
-  value: item.id,
-  label: item.label,
-  icon:
-    {
-      landing: 'bi-window-stack',
-      dashboard: 'bi-speedometer2',
-      ecommerce: 'bi-bag',
-      feed: 'bi-view-list',
-      auth: 'bi-person-lock',
-      settings: 'bi-sliders2',
-      profile: 'bi-person-circle',
-      chat: 'bi-chat-dots',
-      onboarding: 'bi-signpost-split',
-      custom: 'bi-pencil-square',
-    }[item.id] || 'bi-layout-text-window',
-}))
-
-const STYLE_SELECT_OPTIONS = STYLE_OPTIONS.map((item) => ({
-  value: item.id,
-  label: item.label,
-  icon:
-    {
-      minimal: 'bi-layout-text-sidebar-reverse',
-      glass: 'bi-layers',
-      darkpro: 'bi-moon-stars',
-      vibrant: 'bi-palette',
-      corporate: 'bi-buildings',
-      neubrutal: 'bi-bounding-box',
-    }[item.id] || 'bi-palette',
-}))
 
 const AUDIENCE_OPTIONS = [
   { id: 'consumer', label: '大众用户', prompt: '面向大众消费者，认知负担低，核心操作直观' },
@@ -189,39 +374,67 @@ const RESPONSIVE_OPTIONS = [
 ]
 
 const COMPONENT_STATE_OPTIONS = [
+  {
+    id: 'interaction',
+    label: '交互',
+    prompt: '按钮、链接和输入控件具有 hover、focus、pressed 状态',
+  },
   { id: 'loading', label: '加载', prompt: '关键内容具有骨架屏或局部加载反馈' },
   { id: 'empty', label: '空状态', prompt: '核心列表或画布具有明确但克制的空状态' },
   { id: 'error', label: '错误', prompt: '表单与异步操作具有就近错误反馈和恢复入口' },
   { id: 'disabled', label: '禁用', prompt: '不可用操作具有清楚的禁用状态且不与可点击状态混淆' },
+  { id: 'success', label: '成功', prompt: '提交与保存操作具有明确、短暂且不打断流程的成功反馈' },
 ]
+
+function toSelectOptions(options, icon) {
+  return options.map((item) => ({ value: item.id, label: item.label, icon }))
+}
+
+const AUDIENCE_SELECT_OPTIONS = toSelectOptions(AUDIENCE_OPTIONS, 'bi-people')
+const GOAL_SELECT_OPTIONS = toSelectOptions(GOAL_OPTIONS, 'bi-bullseye')
+const NAVIGATION_SELECT_OPTIONS = toSelectOptions(NAVIGATION_OPTIONS, 'bi-diagram-3')
+const DENSITY_SELECT_OPTIONS = toSelectOptions(DENSITY_OPTIONS, 'bi-distribute-vertical')
+const TYPOGRAPHY_SELECT_OPTIONS = toSelectOptions(TYPOGRAPHY_OPTIONS, 'bi-fonts')
+const RADIUS_SELECT_OPTIONS = toSelectOptions(RADIUS_OPTIONS, 'bi-bounding-box-circles')
+const RESPONSIVE_SELECT_OPTIONS = toSelectOptions(RESPONSIVE_OPTIONS, 'bi-arrows-angle-expand')
 
 const BRAND_COLOR_OPTIONS = [
-  { value: '#6d5cff', label: '星云紫', swatch: '#6d5cff' },
-  { value: '#2f81f7', label: '科技蓝', swatch: '#2f81f7' },
-  { value: '#12b76a', label: '活力绿', swatch: '#12b76a' },
-  { value: '#f79009', label: '暖阳橙', swatch: '#f79009' },
-  { value: '#f04438', label: '珊瑚红', swatch: '#f04438' },
-  { value: '#d444f1', label: '霓虹紫', swatch: '#d444f1' },
-  { value: '#0e9384', label: '青碧绿', swatch: '#0e9384' },
-  { value: '#334155', label: '石墨蓝', swatch: '#334155' },
-]
-
-const BRIEF_EXAMPLES = [
-  {
-    label: '健身打卡 App',
-    text: '一款年轻人用的健身打卡 App，首页展示今日训练计划、连续打卡天数、卡路里环形进度和好友动态',
-  },
-  {
-    label: 'SaaS 官网',
-    text: '一个面向中小团队的项目协作 SaaS 产品官网，突出任务看板、自动化流程和团队协作三个卖点',
-  },
-  {
-    label: '咖啡外卖小程序',
-    text: '精品咖啡外卖点单页面，展示招牌饮品、规格选择（杯型/温度/糖度）、优惠券入口和购物车',
-  },
+  { value: '#6d5cff', label: '星云紫', swatch: '#6d5cff', description: '创意与智能产品' },
+  { value: '#2f81f7', label: '科技蓝', swatch: '#2f81f7', description: '科技与效率工具' },
+  { value: '#12b76a', label: '活力绿', swatch: '#12b76a', description: '增长与健康服务' },
+  { value: '#f79009', label: '暖阳橙', swatch: '#f79009', description: '消费与生活方式' },
+  { value: '#f04438', label: '珊瑚红', swatch: '#f04438', description: '行动与重要提醒' },
+  { value: '#d444f1', label: '霓虹紫', swatch: '#d444f1', description: '潮流与娱乐平台' },
+  { value: '#0e9384', label: '青碧绿', swatch: '#0e9384', description: '专业与可持续' },
+  { value: '#334155', label: '石墨蓝', swatch: '#334155', description: '企业与数据产品' },
+  { value: '#e5484d', label: '朱砂红', swatch: '#e5484d', description: '品牌与内容传播' },
+  { value: '#7c3aed', label: '电光紫', swatch: '#7c3aed', description: '数字内容与社区' },
+  { value: '#0891b2', label: '湖水青', swatch: '#0891b2', description: '服务与信息平台' },
+  { value: '#18181b', label: '经典黑', swatch: '#18181b', description: '高端与极简品牌' },
 ]
 
 const COUNT_OPTIONS = [1, 2, 3, 4]
+const QUALITY_DIMENSION_LABELS = {
+  hierarchy: '层级',
+  layout: '布局',
+  typography: '文字',
+  color: '配色',
+  components: '组件',
+  product: '业务',
+}
+
+function qualityAuditKey(output, mode = 'balanced') {
+  return output ? `${mode}::${output}` : ''
+}
+
+function readStoredQualityAudits() {
+  try {
+    const stored = JSON.parse(getScopedLocalItem(QUALITY_AUDIT_HISTORY_KEY) || '{}')
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
+  } catch {
+    return {}
+  }
+}
 
 const {
   creditsPrompt,
@@ -260,10 +473,84 @@ const modelSelectOptions = computed(() =>
     discountPricePoints: model.discountPricePoints,
   })),
 )
+const analysisModels = ref([])
+const analysisModelId = ref(getScopedLocalItem(ANALYSIS_MODEL_KEY) || '')
+const analysisModelsLoading = ref(false)
+const analysisModelError = ref('')
+const analysisModelOptions = computed(() =>
+  analysisModels.value.map((model) => ({
+    value: model.model,
+    label: model.label,
+    icon: 'bi-eye',
+    description: model.description,
+    pricePoints: model.pricePoints,
+    standardPricePoints: model.standardPricePoints,
+    discountPricePoints: model.discountPricePoints,
+  })),
+)
+
+async function loadAnalysisModels() {
+  analysisModelsLoading.value = true
+  analysisModelError.value = ''
+  try {
+    await runtimeConfigStore.loadRuntimeConfig({ force: true })
+    const featureConfig = runtimeConfigStore.getFeaturePayload('ai.uiDesign') || {}
+    const hasWorkspaceModels =
+      Array.isArray(featureConfig.analysisModels) && featureConfig.analysisModels.length > 0
+    const assistantConfig = hasWorkspaceModels ? null : await fetchAssistantConfig()
+    const configuredModels = hasWorkspaceModels
+      ? featureConfig.analysisModels
+      : assistantConfig?.conversationModels
+    const options = Array.isArray(configuredModels)
+      ? configuredModels
+          .map((item) => ({
+            label: String(item?.label || item?.name || item?.model || item?.id || '').trim(),
+            model: String(item?.model || item?.id || item?.publicModelKey || '').trim(),
+            description: String(item?.description || item?.provider || '对话与图片理解模型'),
+            default: item?.default === true,
+            pricePoints: item?.pricePoints,
+            standardPricePoints: item?.standardPricePoints,
+            discountPricePoints: item?.discountPricePoints,
+          }))
+          .filter((item) => item.label && item.model)
+      : []
+    if (!options.length && !hasWorkspaceModels && assistantConfig?.chatModel) {
+      options.push({
+        label: String(assistantConfig.chatModel),
+        model: String(assistantConfig.chatModel),
+        description: '后台默认分析模型',
+        default: true,
+      })
+    }
+    analysisModels.value = options
+    if (!options.length) {
+      analysisModelError.value = '后台尚未为 UI 设计稿分配元素分析模型'
+    }
+    const resumedModel = String(editableResumeSession.value?.model || '').trim()
+    analysisModelId.value =
+      options.find((item) => item.model === resumedModel)?.model ||
+      options.find((item) => item.model === analysisModelId.value)?.model ||
+      options.find((item) => item.default)?.model ||
+      options[0]?.model ||
+      ''
+  } catch (caught) {
+    analysisModelError.value = caught?.message || '分析模型加载失败'
+  } finally {
+    analysisModelsLoading.value = false
+  }
+}
 
 const studioRoot = ref(null)
+const artboardRef = ref(null)
+const qualityTrigger = ref(null)
+const qualityDialogRef = ref(null)
+const qualityCloseButton = ref(null)
 const fileInput = ref(null)
 const briefField = ref(null)
+const pageTypePickerTrigger = ref(null)
+const stylePickerTrigger = ref(null)
+const brandPickerTrigger = ref(null)
+const specificationTrigger = ref(null)
 const brief = ref('')
 const iterationBrief = ref('')
 const deviceId = ref('web')
@@ -287,17 +574,125 @@ const iterationSource = ref('')
 const localError = ref('')
 const mediaError = ref('')
 const promptPreviewOpen = ref(false)
+const pageTypePickerOpen = ref(false)
+const pageTypePickerStyle = ref({})
+const activeConfigPanel = ref('')
+const configPickerStyle = ref({})
+const qualityAuditOpen = ref(false)
+const qualityAuditing = ref(false)
+const qualityAudit = ref(null)
+const qualityAuditError = ref('')
+const qualityAuditsByOutput = ref(readStoredQualityAudits())
+const qualityReviewMode = ref('balanced')
+const selectedQualityIssueIds = ref([])
+const activeQualityIssueId = ref('')
+const regionSelectionMode = ref(false)
+const regionSelection = ref(null)
+const regionPreview = ref('')
+const regionReview = ref(null)
+const regionReviewLoading = ref(false)
+const regionReviewError = ref('')
 const fullscreenOpen = ref(false)
 const editableCanvasOpen = ref(false)
 const editableGenerationNonce = ref(0)
 const editableDocumentId = ref('')
 const editableResumeSession = ref(readStoredActiveAnalysisSession())
+const editableSeedFindings = ref(null)
 const tabletPane = ref('controls')
 const historyMode = ref('images')
+const expandedVersionFamilyId = ref('')
 const editableHistory = ref([])
+let qualityAuditController = null
+let regionReviewController = null
+let regionSelectionStart = null
+let suppressArtboardClick = false
 
 function hasOption(options, id) {
   return options.some((item) => item.id === id)
+}
+
+function openPageTypePicker() {
+  const trigger = pageTypePickerTrigger.value
+  if (!trigger || typeof window === 'undefined') return
+  const rect = trigger.getBoundingClientRect()
+  const viewportPadding = 12
+  const gap = 12
+  const width = Math.min(620, window.innerWidth - viewportPadding * 2)
+  const maxHeight = Math.min(640, window.innerHeight - viewportPadding * 2)
+  const preferredLeft = rect.right + gap
+  const left =
+    preferredLeft + width <= window.innerWidth - viewportPadding
+      ? preferredLeft
+      : Math.max(viewportPadding, window.innerWidth - width - viewportPadding)
+  const top = Math.min(
+    Math.max(viewportPadding, rect.top - 8),
+    Math.max(viewportPadding, window.innerHeight - maxHeight - viewportPadding),
+  )
+  pageTypePickerStyle.value = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.round(maxHeight)}px`,
+  }
+  activeConfigPanel.value = ''
+  pageTypePickerOpen.value = true
+}
+
+function closePageTypePicker({ restoreFocus = true } = {}) {
+  pageTypePickerOpen.value = false
+  if (restoreFocus) nextTick(() => pageTypePickerTrigger.value?.focus())
+}
+
+function selectPageType(id) {
+  pageTypeId.value = id
+  closePageTypePicker()
+}
+
+function openConfigPicker(type, trigger) {
+  if (!trigger || typeof window === 'undefined') return
+  const rect = trigger.getBoundingClientRect()
+  const viewportPadding = 12
+  const width = Math.min(type === 'specification' ? 680 : 600, window.innerWidth - 24)
+  const maxHeight = Math.min(660, window.innerHeight - 24)
+  const preferredLeft = rect.right + 12
+  const left =
+    preferredLeft + width <= window.innerWidth - viewportPadding
+      ? preferredLeft
+      : Math.max(viewportPadding, window.innerWidth - width - viewportPadding)
+  const top = Math.min(
+    Math.max(viewportPadding, rect.top - 8),
+    Math.max(viewportPadding, window.innerHeight - maxHeight - viewportPadding),
+  )
+  configPickerStyle.value = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.round(maxHeight)}px`,
+  }
+  pageTypePickerOpen.value = false
+  activeConfigPanel.value = type
+}
+
+function closeConfigPicker({ restoreFocus = true } = {}) {
+  const panel = activeConfigPanel.value
+  activeConfigPanel.value = ''
+  if (!restoreFocus) return
+  const trigger = {
+    style: stylePickerTrigger,
+    brand: brandPickerTrigger,
+    specification: specificationTrigger,
+  }[panel]
+  nextTick(() => trigger?.value?.focus())
+}
+
+function selectStyle(id) {
+  styleId.value = id
+  closeConfigPicker()
+}
+
+function selectBrandColor(value) {
+  brandColor.value = value
+  closeConfigPicker()
 }
 
 try {
@@ -320,9 +715,13 @@ try {
     if (hasOption(RADIUS_OPTIONS, saved.radiusId)) radiusId.value = saved.radiusId
     if (hasOption(RESPONSIVE_OPTIONS, saved.responsiveId)) responsiveId.value = saved.responsiveId
     if (Array.isArray(saved.componentStates)) {
-      componentStates.value = saved.componentStates.filter((id) =>
+      const restoredStates = saved.componentStates.filter((id) =>
         COMPONENT_STATE_OPTIONS.some((item) => item.id === id),
       )
+      if (Number(saved.designSpecVersion || 0) < DESIGN_SPEC_VERSION) {
+        restoredStates.push('interaction', 'success')
+      }
+      componentStates.value = [...new Set(restoredStates)]
     }
     if (COUNT_OPTIONS.includes(saved.imageCount)) imageCount.value = saved.imageCount
   }
@@ -467,6 +866,114 @@ const versionMetaByOutput = computed(() => {
 const activeVersionLabel = computed(
   () => versionMetaByOutput.value[activeOutput.value]?.label || '',
 )
+const versionFamilies = computed(() => {
+  const groups = versionGroups.value
+  const byId = new Map(groups.map((group) => [group.id, group]))
+  const childrenByParent = new Map()
+  groups.forEach((group) => {
+    if (!group.parentId || !byId.has(group.parentId)) return
+    childrenByParent.set(group.parentId, [
+      ...(childrenByParent.get(group.parentId) || []),
+      group,
+    ])
+  })
+  const collectGroups = (group, lineage = new Set()) => {
+    if (lineage.has(group.id)) return []
+    const nextLineage = new Set(lineage).add(group.id)
+    const children = [...(childrenByParent.get(group.id) || [])].reverse()
+    return [group, ...children.flatMap((child) => collectGroups(child, nextLineage))]
+  }
+  return groups
+    .filter((group) => !group.parentId || !byId.has(group.parentId))
+    .reverse()
+    .map((root) => {
+      const familyGroups = collectGroups(root)
+      return {
+        id: root.id,
+        label: versionMetaByOutput.value[root.outputs[0]]?.version || 'V?',
+        cover: root.outputs[0] || '',
+        groups: familyGroups,
+        outputs: familyGroups.flatMap((group) => group.outputs),
+        iterationCount: Math.max(0, familyGroups.length - 1),
+      }
+    })
+})
+function toggleVersionFamily(family) {
+  expandedVersionFamilyId.value = expandedVersionFamilyId.value === family.id ? '' : family.id
+  if (expandedVersionFamilyId.value && family.cover) selectOutput(family.cover)
+}
+const activeQualityAuditKey = computed(() =>
+  qualityAuditKey(activeOutput.value, qualityReviewMode.value),
+)
+const activeStoredQualityAudit = computed(
+  () => qualityAuditsByOutput.value[activeQualityAuditKey.value] || null,
+)
+const qualityParentAudit = computed(() => {
+  const parent = outputParents.value[activeOutput.value]
+  return parent
+    ? qualityAuditsByOutput.value[qualityAuditKey(parent, qualityReviewMode.value)] || null
+    : null
+})
+const qualityScoreDelta = computed(() => {
+  if (!qualityAudit.value || !qualityParentAudit.value) return null
+  return qualityAudit.value.score - qualityParentAudit.value.score
+})
+const selectedQualityIssueCount = computed(() => selectedQualityIssueIds.value.length)
+const qualityMarkedIssues = computed(() =>
+  qualityAudit.value?.grounded === true && qualityAudit.value?.output === activeOutput.value
+    ? qualityAudit.value.issues.filter((issue) => issue.region)
+    : [],
+)
+const activeQualityIssue = computed(
+  () =>
+    qualityMarkedIssues.value.find((issue) => issue.id === activeQualityIssueId.value) ||
+    qualityMarkedIssues.value[0] ||
+    null,
+)
+const currentQualityReviewMode = computed(
+  () =>
+    DESIGN_QUALITY_REVIEW_MODES.find((item) => item.id === qualityReviewMode.value) ||
+    DESIGN_QUALITY_REVIEW_MODES[0],
+)
+function qualityDimensionDelta(dimension) {
+  const previous = qualityParentAudit.value?.dimensions?.find((item) => item.id === dimension.id)
+  return previous ? dimension.score - previous.score : null
+}
+
+function normalizedRegionStyle(region) {
+  if (!region) return {}
+  return {
+    left: `${region.x * 100}%`,
+    top: `${region.y * 100}%`,
+    width: `${region.width * 100}%`,
+    height: `${region.height * 100}%`,
+  }
+}
+
+function qualityAssetPreviewStyle(asset) {
+  const region = asset?.region
+  if (!region || !activeOutput.value) return {}
+  const horizontal = region.x / Math.max(0.001, 1 - region.width)
+  const vertical = region.y / Math.max(0.001, 1 - region.height)
+  return {
+    backgroundImage: `url("${String(activeOutput.value).replaceAll('"', '\\"')}")`,
+    backgroundSize: `${100 / region.width}% ${100 / region.height}%`,
+    backgroundPosition: `${Math.max(0, Math.min(1, horizontal)) * 100}% ${Math.max(0, Math.min(1, vertical)) * 100}%`,
+  }
+}
+const designMetrics = computed(() => {
+  const isTablet = deviceId.value === 'tablet'
+  const controlHeight = { compact: 32, balanced: 36, comfortable: 40 }[densityId.value] || 36
+  return {
+    columns: isTablet ? 8 : 12,
+    margin: isTablet ? 32 : 80,
+    gutter: 24,
+    spacing: '4 / 8',
+    controlHeight,
+    typeScale: '12 / 14 / 16 / 20 / 24 / 32',
+    radius: radiusOption.value.label.replace(/^[^\d]*/, ''),
+  }
+})
 // 环境光随品牌主色变化：只做低透明度的氛围渲染，控件仍使用固定强调色。
 const ambientStyle = computed(() => ({ '--dws-brand': brandColor.value }))
 
@@ -507,10 +1014,16 @@ const assembledPrompt = computed(() => {
   lines.push(`导航与布局：${navigationOption.value.prompt}。${densityOption.value.prompt}。`)
   lines.push(`视觉风格：${styleOption.value.prompt}。`)
   lines.push(
-    `配色：主色 ${brandColor.value}，${colorScheme.value === 'dark' ? '深色' : '浅色'}模式，配套完整的中性色阶。`,
+    `配色规范：品牌主色 ${brandColor.value}，${colorScheme.value === 'dark' ? '深色' : '浅色'}模式；建立 primary、surface、background、text、border、success、warning、error 语义色角色和完整中性色阶。同一语义只使用一种颜色，正文与背景对比度至少达到 WCAG AA。`,
   )
   lines.push(
-    `设计系统：${typographyOption.value.prompt}。${radiusOption.value.prompt}。采用 8pt 间距体系，统一按钮、输入框、卡片、菜单和反馈组件规范。`,
+    `栅格与间距：基准画布采用 ${designMetrics.value.columns} 列栅格，左右安全边距 ${designMetrics.value.margin}px，列间距 ${designMetrics.value.gutter}px；以 4px 为最小单位、8px 为主要步进，只使用 4/8/12/16/24/32/40/48/64px 间距。所有边缘、基线和组件严格对齐，禁止随意留白。`,
+  )
+  lines.push(
+    `字体规范：${typographyOption.value.prompt}。使用 ${designMetrics.value.typeScale}px 字号阶梯，正文至少 14px，辅助文字至少 12px；标题、正文、标签分别限定字重和行高，单一层级保持一致，不使用模糊或无法辨认的伪文字。`,
+  )
+  lines.push(
+    `组件规范：${radiusOption.value.prompt}。按钮、输入框、下拉框统一为 ${designMetrics.value.controlHeight}px 高；图标采用 16/20/24px 尺寸；同类按钮保持相同内边距、圆角和图标位置。卡片只用于独立内容单元，不嵌套卡片。`,
   )
   const selectedStates = COMPONENT_STATE_OPTIONS.filter((item) =>
     componentStates.value.includes(item.id),
@@ -520,7 +1033,18 @@ const assembledPrompt = computed(() => {
   }
   lines.push(`响应式策略：${responsiveOption.value.prompt}。`)
   lines.push(
-    '交付标准：真实产品级布局，完整页面（含导航和内容区），清晰的字体层级与 8pt 间距体系，组件风格统一，界面文案使用简洁中文，细节可直接用于开发交付。',
+    buildDesignQualityRules({
+      pageType: pageTypeId.value,
+      style: styleId.value,
+      density: densityId.value,
+      colorScheme: colorScheme.value,
+    }),
+  )
+  lines.push(
+    '响应式断点：1440px 保持完整栅格，1024px 收紧边距并重排次要区域，768px 以下转为单列；导航、表格、工具栏和表单必须说明折叠、换行或横向滚动策略，核心操作始终可见。只输出当前所选设备的一张完整主界面，不要把多个断点拼在同一张图中。',
+  )
+  lines.push(
+    '交付检查：真实产品级完整页面，组件按原子、组合、模块、模板层级复用；明确正常、悬停、聚焦、按下、加载、空、错误、禁用和成功状态；内容不得溢出、遮挡、截断关键操作或出现错位，细节可直接用于开发交付。',
   )
   lines.push(
     '文字要求：只使用需求中明确出现或与产品直接相关的简短文案，逐字清晰准确；使用现代无衬线字体，中文接近 Noto Sans SC，英文与数字接近 Inter，不要乱码、伪文字、额外标签或随机字母。',
@@ -537,6 +1061,16 @@ const artboardStyle = computed(() => {
   return {
     aspectRatio: `${width} / ${height}`,
     width: `min(100%, calc((100vh - var(--app-header-offset, 64px) - 220px) * ${ratio}))`,
+  }
+})
+const regionSelectionStyle = computed(() => {
+  const region = regionSelection.value
+  if (!region) return {}
+  return {
+    left: `${region.x * 100}%`,
+    top: `${region.y * 100}%`,
+    width: `${region.width * 100}%`,
+    height: `${region.height * 100}%`,
   }
 })
 
@@ -564,14 +1098,61 @@ function restoreActiveAnalysisSession() {
 }
 
 onMounted(async () => {
-  await initialize()
+  window.addEventListener('keydown', handleGlobalKeydown)
+  await Promise.all([initialize(), loadAnalysisModels()])
   restoreActiveAnalysisSession()
   const pending = takePendingPrompt('ui_design')
-  if (pending?.prompt) brief.value = pending.prompt
+  if (pending) {
+    const launchConfig = pending.config || {}
+    const launchPrompt = composePendingLaunchPrompt(pending, 1000)
+    if (launchPrompt) brief.value = launchPrompt
+    if (hasOption(PAGE_TYPE_OPTIONS, launchConfig.skill)) pageTypeId.value = launchConfig.skill
+    if (hasOption(DEVICE_OPTIONS, launchConfig.device)) deviceId.value = launchConfig.device
+    if (COUNT_OPTIONS.includes(Number(launchConfig.count))) {
+      imageCount.value = Number(launchConfig.count)
+    }
+    if (launchConfig.model && models.value.some((model) => model.id === launchConfig.model)) {
+      modelId.value = launchConfig.model
+    }
+  }
 })
 
 watch(activeOutput, (value) => {
+  regionReviewController?.abort()
+  regionReviewController = null
+  regionReviewLoading.value = false
   if (value) tabletPane.value = 'canvas'
+  qualityAudit.value =
+    qualityAuditsByOutput.value[qualityAuditKey(value, qualityReviewMode.value)] || null
+  selectedQualityIssueIds.value = qualityAudit.value?.issues.map((issue) => issue.id) || []
+  activeQualityIssueId.value = qualityAudit.value?.issues.find((issue) => issue.region)?.id || ''
+  qualityAuditError.value = ''
+  regionSelectionMode.value = false
+  regionSelection.value = null
+  regionPreview.value = ''
+  regionReview.value = null
+  regionReviewError.value = ''
+})
+
+watch(
+  qualityAuditsByOutput,
+  (value) => {
+    const entries = Object.entries(value)
+      .sort(([, a], [, b]) => String(b?.auditedAt || '').localeCompare(String(a?.auditedAt || '')))
+      .slice(0, 36)
+    setScopedLocalItem(QUALITY_AUDIT_HISTORY_KEY, JSON.stringify(Object.fromEntries(entries)))
+  },
+  { deep: true },
+)
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  qualityAuditController?.abort()
+  regionReviewController?.abort()
+})
+
+watch(analysisModelId, (value) => {
+  if (value) setScopedLocalItem(ANALYSIS_MODEL_KEY, value)
 })
 
 watch(
@@ -597,6 +1178,7 @@ watch(
     setScopedLocalItem(
       SETTINGS_KEY,
       JSON.stringify({
+        designSpecVersion: DESIGN_SPEC_VERSION,
         brief: brief.value,
         deviceId: deviceId.value,
         pageTypeId: pageTypeId.value,
@@ -618,11 +1200,6 @@ watch(
   },
   { deep: true },
 )
-
-function applyBriefExample(text) {
-  brief.value = text
-  localError.value = ''
-}
 
 async function chooseFile(event) {
   const file = event.target.files?.[0]
@@ -687,6 +1264,7 @@ async function generate() {
 
 function openEditableCanvas() {
   localError.value = ''
+  editableSeedFindings.value = null
   if (hasActiveAnalysis.value) {
     activeOutput.value = editableResumeSession.value.referenceImage
     editableDocumentId.value = ''
@@ -702,8 +1280,27 @@ function openEditableCanvas() {
   }
   editableResumeSession.value = null
   editableDocumentId.value = ''
-  editableGenerationNonce.value += 1
   editableCanvasOpen.value = true
+}
+
+function openQualityAssetExtraction() {
+  const assets = qualityAudit.value?.developerAssets || []
+  if (!activeOutput.value || qualityAudit.value?.grounded !== true || !assets.length) return
+  editableResumeSession.value = null
+  editableDocumentId.value = ''
+  editableSeedFindings.value = {
+    id: `${qualityAudit.value.reviewMode || 'balanced'}-${qualityAudit.value.auditedAt || Date.now()}`,
+    issues: qualityAudit.value.issues.filter((issue) => issue.region),
+    assets,
+  }
+  qualityAuditOpen.value = false
+  tabletPane.value = 'canvas'
+  nextTick(() => {
+    editableCanvasOpen.value = true
+    nextTick(() => {
+      editableGenerationNonce.value += 1
+    })
+  })
 }
 
 async function downloadActive() {
@@ -716,10 +1313,345 @@ async function downloadActive() {
   }
 }
 
+function toggleRegionSelection() {
+  if (!activeOutput.value || running.value) return
+  qualityAuditOpen.value = false
+  regionSelectionMode.value = !regionSelectionMode.value
+  regionReviewError.value = ''
+  if (regionSelectionMode.value) regionSelection.value = null
+}
+
+function closeQualityAudit({ restoreFocus = true } = {}) {
+  qualityAuditOpen.value = false
+  if (restoreFocus) nextTick(() => qualityTrigger.value?.focus())
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key !== 'Escape') return
+  if (qualityAuditOpen.value) {
+    event.preventDefault()
+    closeQualityAudit()
+    return
+  }
+  if (regionSelectionMode.value) {
+    event.preventDefault()
+    regionSelectionStart = null
+    regionSelectionMode.value = false
+    regionSelection.value = null
+    regionReviewError.value = ''
+  }
+}
+
+function trapQualityFocus(event) {
+  if (event.key !== 'Tab') return
+  const controls = [...(qualityDialogRef.value?.querySelectorAll('button:not(:disabled)') || [])]
+  if (!controls.length) return
+  const first = controls[0]
+  const last = controls[controls.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function handleArtboardClick() {
+  if (suppressArtboardClick) {
+    suppressArtboardClick = false
+    return
+  }
+  if (!regionSelectionMode.value) openActivePreview()
+}
+
+function regionPoint(event, element) {
+  const rect = element.getBoundingClientRect()
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
+  }
+}
+
+function beginRegionSelection(event) {
+  if (!regionSelectionMode.value) return
+  regionReviewError.value = ''
+  const point = regionPoint(event, event.currentTarget)
+  regionSelectionStart = point
+  regionSelection.value = { x: point.x, y: point.y, width: 0, height: 0 }
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+}
+
+function cancelRegionSelectionPointer() {
+  if (!regionSelectionStart) return
+  regionSelectionStart = null
+  regionSelection.value = null
+  regionReviewError.value = '框选已取消，请重新拖拽选择区域'
+}
+
+function moveRegionSelection(event) {
+  if (!regionSelectionStart) return
+  const point = regionPoint(event, event.currentTarget)
+  regionSelection.value = {
+    x: Math.min(regionSelectionStart.x, point.x),
+    y: Math.min(regionSelectionStart.y, point.y),
+    width: Math.abs(point.x - regionSelectionStart.x),
+    height: Math.abs(point.y - regionSelectionStart.y),
+  }
+}
+
+async function captureSelectedRegion(region) {
+  const image = artboardRef.value?.querySelector('img')
+  if (!image) throw new Error('当前设计稿还没有加载完成')
+  if (!image.complete) await image.decode()
+  const sourceWidth = image.naturalWidth || image.width
+  const sourceHeight = image.naturalHeight || image.height
+  const sourceX = Math.round(region.x * sourceWidth)
+  const sourceY = Math.round(region.y * sourceHeight)
+  const cropWidth = Math.max(1, Math.round(region.width * sourceWidth))
+  const cropHeight = Math.max(1, Math.round(region.height * sourceHeight))
+  const scale = Math.min(1, 1200 / Math.max(cropWidth, cropHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(cropWidth * scale))
+  canvas.height = Math.max(1, Math.round(cropHeight * scale))
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('浏览器无法创建区域预览')
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  )
+  return canvas.toDataURL('image/png')
+}
+
+async function finishRegionSelection(event) {
+  if (!regionSelectionStart) return
+  event.currentTarget.releasePointerCapture?.(event.pointerId)
+  regionSelectionStart = null
+  const region = regionSelection.value
+  if (!region || region.width < 0.04 || region.height < 0.04) {
+    regionSelection.value = null
+    regionReviewError.value = '框选范围太小，请拖出一个完整的界面区域'
+    return
+  }
+  regionSelectionMode.value = false
+  suppressArtboardClick = true
+  await runRegionQualityAudit(region)
+}
+
+async function runRegionQualityAudit(region = regionSelection.value) {
+  if (!activeOutput.value || !region || regionReviewLoading.value) return
+  const reviewedOutput = activeOutput.value
+  qualityAuditOpen.value = true
+  nextTick(() => qualityCloseButton.value?.focus())
+  regionReviewLoading.value = true
+  regionReviewError.value = ''
+  regionReview.value = null
+  regionReviewController?.abort()
+  const controller = new AbortController()
+  regionReviewController = controller
+  try {
+    const regionImage = await captureSelectedRegion(region)
+    regionPreview.value = regionImage
+    const analyze = (model) =>
+      auditAiDesignRegion({
+        image: reviewedOutput,
+        regionImage,
+        region,
+        model,
+        productPrompt: brief.value.trim(),
+        signal: controller.signal,
+      })
+    try {
+      const result = await analyze(analysisModelId.value)
+      if (activeOutput.value === reviewedOutput && regionReviewController === controller) {
+        regionReview.value = result
+      }
+    } catch (caught) {
+      if (!String(caught?.message || '').includes('所选模型不可用')) throw caught
+      await loadAnalysisModels()
+      const result = await analyze('')
+      if (activeOutput.value === reviewedOutput && regionReviewController === controller) {
+        regionReview.value = result
+      }
+    }
+  } catch (caught) {
+    if (
+      caught?.name !== 'AbortError' &&
+      activeOutput.value === reviewedOutput &&
+      regionReviewController === controller
+    ) {
+      regionReviewError.value = caught?.message || '框选区域分析失败'
+    }
+  } finally {
+    if (regionReviewController === controller) {
+      regionReviewLoading.value = false
+      regionReviewController = null
+    }
+  }
+}
+
+function applyRegionReview() {
+  const prompt = regionReview.value?.iterationPrompt?.trim()
+  if (!activeOutput.value || !prompt) return
+  iterationSource.value = activeOutput.value
+  iterationBrief.value = prompt
+  inputFile.value = null
+  sourcePreview.value = ''
+  if (fileInput.value) fileInput.value.value = ''
+  qualityAuditOpen.value = false
+  tabletPane.value = 'controls'
+  nextTick(() => briefField.value?.focus())
+}
+
+function clearRegionSelection() {
+  regionReviewController?.abort()
+  regionReviewController = null
+  regionReviewLoading.value = false
+  regionSelectionMode.value = false
+  regionSelection.value = null
+  regionPreview.value = ''
+  regionReview.value = null
+  regionReviewError.value = ''
+}
+
+function openQualityAudit() {
+  qualityAuditOpen.value = true
+  nextTick(() => qualityCloseButton.value?.focus())
+  if (activeStoredQualityAudit.value) {
+    qualityAudit.value = activeStoredQualityAudit.value
+    selectedQualityIssueIds.value = qualityAudit.value.issues.map((issue) => issue.id)
+    activeQualityIssueId.value = qualityAudit.value.issues.find((issue) => issue.region)?.id || ''
+    return
+  }
+  runQualityAudit()
+}
+
+function selectQualityReviewMode(mode) {
+  if (!DESIGN_QUALITY_REVIEW_MODES.some((item) => item.id === mode)) return
+  qualityReviewMode.value = mode
+  qualityAudit.value =
+    qualityAuditsByOutput.value[qualityAuditKey(activeOutput.value, mode)] || null
+  selectedQualityIssueIds.value = qualityAudit.value?.issues.map((issue) => issue.id) || []
+  activeQualityIssueId.value = qualityAudit.value?.issues.find((issue) => issue.region)?.id || ''
+  qualityAuditError.value = ''
+}
+
+function selectQualityIssues(mode) {
+  const issues = qualityAudit.value?.issues || []
+  selectedQualityIssueIds.value = issues
+    .filter((issue) => mode === 'all' || ['critical', 'major'].includes(issue.severity))
+    .map((issue) => issue.id)
+}
+
+function toggleQualityIssue(id) {
+  selectedQualityIssueIds.value = selectedQualityIssueIds.value.includes(id)
+    ? selectedQualityIssueIds.value.filter((item) => item !== id)
+    : [...selectedQualityIssueIds.value, id]
+}
+
+function activateQualityIssue(id) {
+  if (!qualityAudit.value?.issues.some((issue) => issue.id === id && issue.region)) return
+  activeQualityIssueId.value = id
+}
+
+function openLocatedQualityIssue(id) {
+  activateQualityIssue(id)
+  qualityAuditOpen.value = true
+}
+
+async function runQualityAudit() {
+  if (!activeOutput.value || qualityAuditing.value) return
+  const auditedOutput = activeOutput.value
+  const auditedMode = qualityReviewMode.value
+  const parentOutput = outputParents.value[auditedOutput]
+  const auditedBaseline = parentOutput
+    ? qualityAuditsByOutput.value[qualityAuditKey(parentOutput, auditedMode)] || null
+    : null
+  qualityAuditOpen.value = true
+  qualityAuditError.value = ''
+  qualityAuditing.value = true
+  qualityAuditController?.abort()
+  qualityAuditController = new AbortController()
+  try {
+    const audit = (model) =>
+      auditAiDesignQuality({
+        image: activeOutput.value,
+        model,
+        productPrompt: brief.value.trim(),
+        pageType: pageType.value.label,
+        style: styleOption.value.label,
+        density: densityOption.value.label,
+        colorScheme: colorScheme.value === 'dark' ? '深色' : '浅色',
+        reviewMode: auditedMode,
+        baseline: auditedBaseline,
+        signal: qualityAuditController.signal,
+      })
+    let result
+    try {
+      result = await audit(analysisModelId.value)
+    } catch (caught) {
+      if (!String(caught?.message || '').includes('所选模型不可用')) throw caught
+      await loadAnalysisModels()
+      result = await audit('')
+    }
+    const snapshot = {
+      ...result,
+      output: auditedOutput,
+      version: versionMetaByOutput.value[auditedOutput]?.label || '',
+      reviewMode: auditedMode,
+      auditedAt: new Date().toISOString(),
+    }
+    const snapshotKey = qualityAuditKey(auditedOutput, auditedMode)
+    qualityAuditsByOutput.value = { ...qualityAuditsByOutput.value, [snapshotKey]: snapshot }
+    if (activeOutput.value === auditedOutput && qualityReviewMode.value === auditedMode) {
+      qualityAudit.value = snapshot
+      selectedQualityIssueIds.value = snapshot.issues.map((issue) => issue.id)
+      activeQualityIssueId.value = snapshot.issues.find((issue) => issue.region)?.id || ''
+    }
+  } catch (caught) {
+    if (caught?.name !== 'AbortError') {
+      qualityAuditError.value = caught?.message || '品质检查失败'
+    }
+  } finally {
+    qualityAuditing.value = false
+    qualityAuditController = null
+  }
+}
+
+function applyQualityAuditFixes() {
+  const prompt = buildQualityIterationPrompt(
+    qualityAudit.value,
+    selectedQualityIssueIds.value,
+  ).trim()
+  if (!activeOutput.value || !prompt) return
+  iterationSource.value = activeOutput.value
+  iterationBrief.value = prompt
+  inputFile.value = null
+  sourcePreview.value = ''
+  if (fileInput.value) fileInput.value.value = ''
+  qualityAuditOpen.value = false
+  tabletPane.value = 'controls'
+  nextTick(() => briefField.value?.focus())
+}
+
 function selectOutput(output, openPreview = false) {
   activeOutput.value = output
   tabletPane.value = 'canvas'
   mediaError.value = ''
+  qualityAudit.value =
+    qualityAuditsByOutput.value[qualityAuditKey(output, qualityReviewMode.value)] || null
+  selectedQualityIssueIds.value = qualityAudit.value?.issues.map((issue) => issue.id) || []
+  activeQualityIssueId.value = qualityAudit.value?.issues.find((issue) => issue.region)?.id || ''
+  qualityAuditError.value = ''
   if (openPreview) fullscreenOpen.value = true
 }
 
@@ -776,6 +1708,7 @@ function formatEditableHistoryDate(value) {
       'is-light': !appearanceStore.isDark,
     }"
     :style="ambientStyle"
+    @keydown.esc="pageTypePickerOpen ? closePageTypePicker() : closeConfigPicker()"
   >
     <div class="dws-shell">
       <nav class="dws-tablet-tabs" aria-label="平板工作区视图">
@@ -819,16 +1752,43 @@ function formatEditableHistoryDate(value) {
           </div>
         </section>
 
+        <section class="dws-block dws-reference-block">
+          <span class="dws-label">参考界面（可选）</span>
+          <div v-if="iterationSource" class="dws-reference is-iteration">
+            <AuthenticatedImage :src="iterationSource" alt="迭代基准版本" :max-dimension="240" />
+            <div>
+              <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
+              <span>仅修改明确描述的内容，其余保持不变</span>
+            </div>
+            <button type="button" aria-label="取消迭代" @click="clearReference">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div v-else-if="sourcePreview" class="dws-reference">
+            <img :src="sourcePreview" alt="参考界面预览" loading="eager" decoding="async" />
+            <div>
+              <strong data-no-translate>{{ inputFile?.name }}</strong>
+              <span>将基于此界面重新设计</span>
+            </div>
+            <button type="button" aria-label="移除参考图" @click="clearReference">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </div>
+          <button v-else type="button" class="dws-upload" @click="fileInput?.click()">
+            <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
+            <span>导入界面截图或线框图重绘</span>
+          </button>
+          <input ref="fileInput" hidden type="file" accept="image/*" @change="chooseFile" />
+        </section>
+
         <section class="dws-block">
-          <label class="dws-label" for="dws-brief">
-            {{ isIteration ? '本次迭代要求' : '产品与页面描述' }}
-          </label>
           <textarea
             id="dws-brief"
             ref="briefField"
             v-model="briefInput"
             rows="4"
             maxlength="1000"
+            :aria-label="isIteration ? '本次迭代要求' : '产品与页面描述'"
             :placeholder="
               isIteration
                 ? '只描述需要修改的部分，例如：仅将主按钮改为蓝色，其余布局和文字保持不变'
@@ -837,16 +1797,6 @@ function formatEditableHistoryDate(value) {
                   : '这是一个什么产品？页面上要有什么内容？'
             "
           ></textarea>
-          <div v-if="!isIteration" class="dws-examples" role="group" aria-label="灵感示例">
-            <button
-              v-for="example in BRIEF_EXAMPLES"
-              :key="example.label"
-              type="button"
-              @click="applyBriefExample(example.text)"
-            >
-              {{ example.label }}
-            </button>
-          </div>
         </section>
 
         <section class="dws-block">
@@ -870,33 +1820,39 @@ function formatEditableHistoryDate(value) {
         <section class="dws-block dws-quick-settings">
           <div class="dws-select-field">
             <span class="dws-label">页面类型</span>
-            <AspectRatioSelect
-              v-model="pageTypeId"
-              class="dws-control-select"
-              :options="PAGE_TYPE_SELECT_OPTIONS"
-              :show-ratio-icons="false"
-              use-option-label
-              compact-text
-              compact-menu
-              glass-menu
-              menu-placement="auto"
+            <button
+              ref="pageTypePickerTrigger"
+              type="button"
+              class="dws-page-type-trigger"
+              aria-haspopup="dialog"
+              :aria-expanded="pageTypePickerOpen"
               aria-label="页面类型"
-            />
+              @click="pageTypePickerOpen ? closePageTypePicker() : openPageTypePicker()"
+            >
+              <i class="bi" :class="pageType.icon" aria-hidden="true"></i>
+              <span>{{ pageType.label }}</span>
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
           </div>
           <div class="dws-select-field">
             <span class="dws-label">视觉风格</span>
-            <AspectRatioSelect
-              v-model="styleId"
-              class="dws-control-select"
-              :options="STYLE_SELECT_OPTIONS"
-              :show-ratio-icons="false"
-              use-option-label
-              compact-text
-              compact-menu
-              glass-menu
-              menu-placement="auto"
+            <button
+              ref="stylePickerTrigger"
+              type="button"
+              class="dws-page-type-trigger"
+              aria-haspopup="dialog"
+              :aria-expanded="activeConfigPanel === 'style'"
               aria-label="视觉风格"
-            />
+              @click="
+                activeConfigPanel === 'style'
+                  ? closeConfigPicker()
+                  : openConfigPicker('style', stylePickerTrigger)
+              "
+            >
+              <i class="bi" :class="styleOption.icon" aria-hidden="true"></i>
+              <span>{{ styleOption.label }}</span>
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
           </div>
           <input
             v-if="pageTypeId === 'custom'"
@@ -912,19 +1868,25 @@ function formatEditableHistoryDate(value) {
         <section class="dws-block dws-color-row">
           <div class="dws-color-brand dws-select-field">
             <span class="dws-label">品牌主色</span>
-            <AspectRatioSelect
-              v-model="brandColor"
-              class="dws-control-select dws-brand-select"
-              :options="BRAND_COLOR_OPTIONS"
-              :show-ratio-icons="false"
-              use-option-label
-              compact-text
-              compact-menu
-              glass-menu
-              :max-visible-options="3"
-              menu-placement="auto"
+            <button
+              ref="brandPickerTrigger"
+              type="button"
+              class="dws-page-type-trigger dws-brand-trigger"
+              aria-haspopup="dialog"
+              :aria-expanded="activeConfigPanel === 'brand'"
               aria-label="品牌主色"
-            />
+              @click="
+                activeConfigPanel === 'brand'
+                  ? closeConfigPicker()
+                  : openConfigPicker('brand', brandPickerTrigger)
+              "
+            >
+              <i class="dws-brand-dot" :style="{ background: brandColor }" aria-hidden="true"></i>
+              <span>{{
+                BRAND_COLOR_OPTIONS.find((item) => item.value === brandColor)?.label
+              }}</span>
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
           </div>
           <div class="dws-color-scheme">
             <span class="dws-label">明暗模式</span>
@@ -949,38 +1911,29 @@ function formatEditableHistoryDate(value) {
           </div>
         </section>
 
-        <section class="dws-block">
-          <span class="dws-label">参考界面（可选）</span>
-          <div v-if="iterationSource" class="dws-reference is-iteration">
-            <AuthenticatedImage :src="iterationSource" alt="迭代基准版本" :max-dimension="240" />
-            <div>
-              <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
-              <span>仅修改明确描述的内容，其余保持不变</span>
-            </div>
-            <button type="button" aria-label="取消迭代" @click="clearReference">
-              <i class="bi bi-x-lg" aria-hidden="true"></i>
-            </button>
-          </div>
-          <div v-else-if="sourcePreview" class="dws-reference">
-            <img
-              :src="sourcePreview"
-              alt="参考界面预览"
-              loading="eager"
-              decoding="async"
-            />
-            <div>
-              <strong data-no-translate>{{ inputFile?.name }}</strong>
-              <span>将基于此界面重新设计</span>
-            </div>
-            <button type="button" aria-label="移除参考图" @click="clearReference">
-              <i class="bi bi-x-lg" aria-hidden="true"></i>
-            </button>
-          </div>
-          <button v-else type="button" class="dws-upload" @click="fileInput?.click()">
-            <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
-            <span>导入界面截图或线框图重绘</span>
+        <section class="dws-block dws-specification">
+          <button
+            ref="specificationTrigger"
+            type="button"
+            class="dws-specification-toggle"
+            aria-haspopup="dialog"
+            :aria-expanded="activeConfigPanel === 'specification'"
+            @click="
+              activeConfigPanel === 'specification'
+                ? closeConfigPicker()
+                : openConfigPicker('specification', specificationTrigger)
+            "
+          >
+            <span>
+              <i class="bi bi-grid-3x3-gap" aria-hidden="true"></i>
+              <strong>设计规范</strong>
+              <small
+                >8pt · {{ designMetrics.columns }} 列 · {{ designMetrics.controlHeight }}px
+                控件</small
+              >
+            </span>
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
           </button>
-          <input ref="fileInput" hidden type="file" accept="image/*" @change="chooseFile" />
         </section>
 
         <section class="dws-block dws-count-wrap">
@@ -1048,7 +2001,35 @@ function formatEditableHistoryDate(value) {
           <em v-if="activeVersionLabel">{{ activeVersionLabel }}</em>
         </div>
 
+        <div class="dws-stage-spec" data-no-translate aria-hidden="true">
+          <span><i class="bi bi-grid-3x3-gap"></i>{{ designMetrics.columns }} COL</span>
+          <span>{{ designMetrics.spacing }} PT</span>
+          <span>{{ designMetrics.controlHeight }} PX</span>
+          <span>{{ radiusOption.label }}</span>
+        </div>
+
         <div class="dws-stage-actions">
+          <button
+            ref="qualityTrigger"
+            type="button"
+            class="is-quality"
+            :disabled="!activeOutput || running || qualityAuditing"
+            title="检查层级、布局、文字和组件一致性"
+            @click="openQualityAudit"
+          >
+            <i
+              class="bi"
+              :class="qualityAuditing ? 'bi-arrow-repeat spin' : 'bi-patch-check'"
+              aria-hidden="true"
+            ></i>
+            <span>{{
+              qualityAuditing
+                ? '检查中'
+                : activeStoredQualityAudit
+                  ? `${activeStoredQualityAudit.score} 分`
+                  : '品质检查'
+            }}</span>
+          </button>
           <button
             type="button"
             class="is-editor"
@@ -1065,19 +2046,22 @@ function formatEditableHistoryDate(value) {
           </button>
           <button
             type="button"
+            class="is-region"
+            :class="{ 'is-on': regionSelectionMode }"
+            :disabled="!activeOutput || running || regionReviewLoading"
+            title="在设计稿上框选区域并获取优化说明"
+            @click="toggleRegionSelection"
+          >
+            <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+            <span>{{ regionSelectionMode ? '拖拽框选' : '框选优化' }}</span>
+          </button>
+          <button
+            type="button"
             :disabled="!activeOutput || running"
             title="以当前版本为基础继续修改"
             @click="iterateFromActive"
           >
             <i class="bi bi-arrow-repeat" aria-hidden="true"></i><span>迭代此版本</span>
-          </button>
-          <button
-            type="button"
-            :disabled="!activeOutput"
-            title="查看大图"
-            @click="fullscreenOpen = true"
-          >
-            <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i><span>大图</span>
           </button>
           <button
             type="button"
@@ -1091,15 +2075,19 @@ function formatEditableHistoryDate(value) {
 
         <div class="dws-canvas">
           <div
+            ref="artboardRef"
             class="dws-artboard"
-            :class="{ 'is-previewable': activeOutput && !running }"
+            :class="{
+              'is-previewable': activeOutput && !running && !regionSelectionMode,
+              'is-region-selecting': regionSelectionMode,
+            }"
             :style="artboardStyle"
             :role="activeOutput && !running ? 'button' : undefined"
             :tabindex="activeOutput && !running ? 0 : undefined"
             :aria-label="activeOutput && !running ? '查看当前设计稿大图' : undefined"
-            @click="openActivePreview"
-            @keydown.enter.prevent="openActivePreview"
-            @keydown.space.prevent="openActivePreview"
+            @click="handleArtboardClick"
+            @keydown.enter.prevent="!regionSelectionMode && openActivePreview()"
+            @keydown.space.prevent="!regionSelectionMode && openActivePreview()"
           >
             <AuthenticatedImage
               v-if="activeOutput"
@@ -1125,12 +2113,70 @@ function formatEditableHistoryDate(value) {
               <strong>画布等待第一稿</strong>
               <span>{{ device.label }} · {{ device.ratio }} · {{ pageType.label }}</span>
             </div>
+            <div
+              v-if="activeOutput && (regionSelectionMode || regionSelection)"
+              class="dws-region-layer"
+              :class="{ 'is-drawing': regionSelectionMode }"
+              @pointerdown.prevent="beginRegionSelection"
+              @pointermove.prevent="moveRegionSelection"
+              @pointerup.prevent="finishRegionSelection"
+              @pointercancel="cancelRegionSelectionPointer"
+            >
+              <span
+                v-if="regionSelectionMode"
+                class="dws-region-hint"
+                :class="{ 'is-error': regionReviewError }"
+                role="status"
+              >
+                <i
+                  class="bi"
+                  :class="regionReviewError ? 'bi-exclamation-circle' : 'bi-bounding-box-circles'"
+                  aria-hidden="true"
+                ></i
+                >{{ regionReviewError || '拖拽框选需要优化的区域' }}
+              </span>
+              <div v-if="regionSelection" class="dws-region-box" :style="regionSelectionStyle">
+                <i></i><i></i><i></i><i></i>
+                <button
+                  v-if="!regionSelectionMode"
+                  type="button"
+                  aria-label="清除框选区域"
+                  @pointerdown.stop
+                  @click.stop="clearRegionSelection"
+                >
+                  <i class="bi bi-x" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+            <div
+              v-if="qualityMarkedIssues.length && !regionSelectionMode && !running"
+              class="dws-quality-marks"
+              aria-label="品质问题定位"
+            >
+              <button
+                v-for="(issue, index) in qualityMarkedIssues"
+                :key="issue.id"
+                type="button"
+                :class="[
+                  `is-${issue.severity}`,
+                  { 'is-active': activeQualityIssue?.id === issue.id },
+                ]"
+                :style="normalizedRegionStyle(issue.region)"
+                :aria-label="`定位问题 ${index + 1}：${issue.title}`"
+                @click.stop="openLocatedQualityIssue(issue.id)"
+              >
+                <b>{{ index + 1 }}</b
+                ><span>{{ issue.title }}</span>
+              </button>
+            </div>
             <div v-if="running" class="dws-running" aria-live="polite">
               <span class="dws-running-scan" aria-hidden="true"></span>
               <i class="bi bi-stars" aria-hidden="true"></i>
-              <strong>{{ cancelling ? '正在停止生成任务' : status || '正在生成设计稿…' }}</strong>
+              <strong>{{ status || (cancelling ? '正在停止后续生成' : '正在生成设计稿…') }}</strong>
               <span>{{
-                cancelling ? '正在同步云端任务状态' : '正在组织布局、组件与视觉层级'
+                cancelling
+                  ? '排队任务会取消并退款，已开始任务继续完成'
+                  : '正在组织布局、组件与视觉层级'
               }}</span>
               <button
                 type="button"
@@ -1144,7 +2190,7 @@ function formatEditableHistoryDate(value) {
                   :class="cancelling ? 'bi-arrow-repeat spin' : 'bi-stop-fill'"
                   aria-hidden="true"
                 ></i>
-                {{ cancelling ? '正在停止' : '停止生成' }}
+                {{ cancelling ? '正在确认' : '停止后续生成' }}
               </button>
             </div>
           </div>
@@ -1157,78 +2203,778 @@ function formatEditableHistoryDate(value) {
           class="dws-versions-wrap"
           aria-label="历史记录"
         >
-          <div class="dws-history-tabs" role="tablist" aria-label="历史记录类型">
-            <button
-              type="button"
-              role="tab"
-              :class="{ 'is-on': historyMode === 'images' }"
-              :aria-selected="historyMode === 'images'"
-              @click="historyMode = 'images'"
-            >
-              版本 <em>{{ versionGroups.length }}</em>
-            </button>
-            <button
-              v-if="editableHistory.length"
-              type="button"
-              role="tab"
-              :class="{ 'is-on': historyMode === 'editable' }"
-              :aria-selected="historyMode === 'editable'"
-              @click="historyMode = 'editable'"
-            >
-              分析记录 <em>{{ editableHistory.length }}</em>
-            </button>
+          <div class="dws-history-toolbar">
+            <div class="dws-history-heading">
+              <span>
+                <i class="bi bi-clock-history" aria-hidden="true"></i>
+                <strong>设计历史</strong>
+              </span>
+              <small>
+                {{ historyMode === 'images' ? '按版本展开迭代链' : '分析完成后自动更新' }}
+              </small>
+            </div>
+            <div class="dws-history-tabs" role="tablist" aria-label="设计历史分类">
+              <button
+                type="button"
+                role="tab"
+                :class="{ 'is-on': historyMode === 'images' }"
+                :aria-selected="historyMode === 'images'"
+                aria-controls="dws-generated-history"
+                @click="historyMode = 'images'"
+              >
+                <i class="bi bi-images" aria-hidden="true"></i>
+                <strong>版本</strong>
+                <em>{{ versionFamilies.length }}</em>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :class="{ 'is-on': historyMode === 'editable' }"
+                :aria-selected="historyMode === 'editable'"
+                aria-controls="dws-analysis-history"
+                @click="historyMode = 'editable'"
+              >
+                <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+                <strong>元素分析</strong>
+                <em>{{ editableHistory.length }}</em>
+              </button>
+            </div>
           </div>
-          <div v-if="historyMode === 'images'" class="dws-versions" role="tabpanel">
-            <button
-              v-for="output in outputs"
-              :key="output"
-              type="button"
-              :class="{ 'is-on': activeOutput === output }"
-              :aria-pressed="activeOutput === output"
-              :title="`切换到 ${versionMetaByOutput[output]?.label || '历史版本'}`"
-              @click="selectOutput(output)"
-            >
-              <AuthenticatedImage :src="output" alt="" :max-dimension="320" />
-              <em data-no-translate>{{ versionMetaByOutput[output]?.label }}</em>
-            </button>
+          <div
+            v-if="historyMode === 'images'"
+            id="dws-generated-history"
+            class="dws-version-history"
+            role="tabpanel"
+          >
+            <div class="dws-version-families" aria-label="版本列表">
+              <div
+                v-for="family in versionFamilies"
+                :key="family.id"
+                class="dws-version-family"
+              >
+                <button
+                  type="button"
+                  :class="{ 'is-on': expandedVersionFamilyId === family.id }"
+                  :aria-expanded="expandedVersionFamilyId === family.id"
+                  @click="toggleVersionFamily(family)"
+                >
+                  <span class="dws-family-thumb">
+                    <AuthenticatedImage :src="family.cover" alt="" :max-dimension="320" />
+                  </span>
+                  <span class="dws-family-meta">
+                    <strong data-no-translate>{{ family.label }}</strong>
+                    <small>{{ family.iterationCount }} 次迭代 · {{ family.outputs.length }} 张</small>
+                  </span>
+                  <i
+                    class="bi"
+                    :class="
+                      expandedVersionFamilyId === family.id
+                        ? 'bi-chevron-left'
+                        : 'bi-chevron-right'
+                    "
+                    aria-hidden="true"
+                  ></i>
+                </button>
+                <div
+                  v-if="expandedVersionFamilyId === family.id"
+                  class="dws-inline-iterations"
+                  :aria-label="`${family.label} 的全部迭代`"
+                >
+                  <i class="bi bi-arrow-right-short" aria-hidden="true"></i>
+                  <button
+                    v-for="output in family.outputs"
+                    :key="output"
+                    type="button"
+                    :class="{ 'is-on': activeOutput === output }"
+                    :aria-pressed="activeOutput === output"
+                    :title="`切换到 ${versionMetaByOutput[output]?.label || '历史版本'}`"
+                    @click="selectOutput(output)"
+                  >
+                    <AuthenticatedImage :src="output" alt="" :max-dimension="240" />
+                    <em data-no-translate>{{ versionMetaByOutput[output]?.label }}</em>
+                  </button>
+                </div>
+              </div>
+            </div>
             <span
-              v-if="historyLoading && !outputs.length"
+              v-if="historyLoading && !versionFamilies.length"
               class="dws-versions-skeleton"
               aria-hidden="true"
             >
               <i></i><i></i><i></i>
             </span>
           </div>
-          <div v-else class="dws-editable-history" role="tabpanel">
-            <button
-              v-for="entry in editableHistory"
-              :key="entry.id"
-              type="button"
-              :title="`打开分析 ${entry.name || '设计稿元素分析'}`"
-              @click="openEditableHistory(entry)"
-            >
-              <span class="dws-editable-thumb">
-                <AuthenticatedImage
-                  v-if="entry.referenceImage"
-                  :src="entry.referenceImage"
-                  alt=""
-                  :max-dimension="320"
-                />
-                <i v-else class="bi bi-bezier2" aria-hidden="true"></i>
+          <div
+            v-else
+            id="dws-analysis-history"
+            class="dws-editable-history"
+            role="tabpanel"
+          >
+            <template v-if="editableHistory.length">
+              <button
+                v-for="entry in editableHistory"
+                :key="entry.id"
+                type="button"
+                :title="`打开分析 ${entry.name || '设计稿元素分析'}`"
+                @click="openEditableHistory(entry)"
+              >
+                <span class="dws-editable-thumb">
+                  <AuthenticatedImage
+                    v-if="entry.referenceImage"
+                    :src="entry.referenceImage"
+                    alt=""
+                    :max-dimension="320"
+                  />
+                  <i v-else class="bi bi-bezier2" aria-hidden="true"></i>
+                </span>
+                <span class="dws-editable-meta">
+                  <strong>{{ entry.name || '设计稿元素分析' }}</strong>
+                  <small>
+                    {{ entry.nodeCount || 0 }} 个图层 ·
+                    {{ formatEditableHistoryDate(entry.updatedAt) }}
+                  </small>
+                </span>
+                <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
+              </button>
+            </template>
+            <div v-else class="dws-analysis-history-empty">
+              <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+              <span>
+                <strong>暂无元素分析记录</strong>
+                <small>完成一次元素分析后，此处会立即更新</small>
               </span>
-              <span class="dws-editable-meta">
-                <strong>{{ entry.name || '设计稿元素分析' }}</strong>
-                <small>
-                  {{ entry.nodeCount || 0 }} 个图层 ·
-                  {{ formatEditableHistoryDate(entry.updatedAt) }}
-                </small>
-              </span>
-              <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
-            </button>
+            </div>
           </div>
         </footer>
       </section>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="pageTypePickerOpen"
+        class="dws-page-type-scrim"
+        @mousedown.self="closePageTypePicker()"
+      >
+        <section
+          class="dws-page-type-picker"
+          :class="{ 'is-light': !appearanceStore.isDark }"
+          :style="pageTypePickerStyle"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="dws-page-type-title"
+        >
+          <header class="dws-page-type-header">
+            <span>
+              <small>PAGE ARCHETYPE</small>
+              <strong id="dws-page-type-title">选择页面类型</strong>
+            </span>
+            <em>20 种结构</em>
+            <button type="button" aria-label="关闭页面类型选择" @click="closePageTypePicker()">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </header>
+
+          <div class="dws-page-type-grid">
+            <button
+              v-for="item in PAGE_TYPE_OPTIONS"
+              :key="item.id"
+              type="button"
+              :class="{ 'is-on': pageTypeId === item.id }"
+              :aria-pressed="pageTypeId === item.id"
+              @click="selectPageType(item.id)"
+            >
+              <span class="dws-page-type-icon">
+                <i class="bi" :class="item.icon" aria-hidden="true"></i>
+              </span>
+              <span class="dws-page-type-copy">
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.description }}</small>
+                <em>{{ item.prompt || '根据业务自由组合导航、内容和操作区域' }}</em>
+              </span>
+              <i
+                class="bi"
+                :class="pageTypeId === item.id ? 'bi-check-circle-fill' : 'bi-arrow-up-right'"
+                aria-hidden="true"
+              ></i>
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="activeConfigPanel" class="dws-config-scrim" @mousedown.self="closeConfigPicker()">
+        <section
+          class="dws-config-picker"
+          :class="[`is-${activeConfigPanel}`, { 'is-light': !appearanceStore.isDark }]"
+          :style="configPickerStyle"
+          role="dialog"
+          aria-modal="false"
+          :aria-labelledby="`dws-${activeConfigPanel}-title`"
+        >
+          <header class="dws-config-header">
+            <span>
+              <small>{{
+                activeConfigPanel === 'style'
+                  ? 'VISUAL LANGUAGE'
+                  : activeConfigPanel === 'brand'
+                    ? 'COLOR SYSTEM'
+                    : 'DESIGN SYSTEM'
+              }}</small>
+              <strong :id="`dws-${activeConfigPanel}-title`">
+                {{
+                  activeConfigPanel === 'style'
+                    ? '选择视觉风格'
+                    : activeConfigPanel === 'brand'
+                      ? '选择品牌主色'
+                      : '配置设计规范'
+                }}
+              </strong>
+            </span>
+            <em v-if="activeConfigPanel === 'style'">12 种风格</em>
+            <em v-else-if="activeConfigPanel === 'brand'">12 套色板</em>
+            <em v-else>{{ designMetrics.columns }} 列 · 8pt</em>
+            <button
+              type="button"
+              :aria-label="`关闭${activeConfigPanel === 'style' ? '视觉风格' : activeConfigPanel === 'brand' ? '品牌主色' : '设计规范'}选择`"
+              @click="closeConfigPicker()"
+            >
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </header>
+
+          <div v-if="activeConfigPanel === 'style'" class="dws-style-grid">
+            <button
+              v-for="item in STYLE_OPTIONS"
+              :key="item.id"
+              type="button"
+              :class="{ 'is-on': styleId === item.id }"
+              :aria-pressed="styleId === item.id"
+              @click="selectStyle(item.id)"
+            >
+              <span class="dws-style-preview">
+                <i v-for="color in item.preview" :key="color" :style="{ background: color }"></i>
+              </span>
+              <span class="dws-style-copy">
+                <i class="bi" :class="item.icon" aria-hidden="true"></i>
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.description }}</small>
+              </span>
+              <i
+                class="bi"
+                :class="styleId === item.id ? 'bi-check-circle-fill' : 'bi-arrow-up-right'"
+                aria-hidden="true"
+              ></i>
+            </button>
+          </div>
+
+          <div v-else-if="activeConfigPanel === 'brand'" class="dws-brand-grid">
+            <button
+              v-for="item in BRAND_COLOR_OPTIONS"
+              :key="item.value"
+              type="button"
+              :class="{ 'is-on': brandColor === item.value }"
+              :style="{ '--picker-brand': item.value }"
+              :aria-pressed="brandColor === item.value"
+              @click="selectBrandColor(item.value)"
+            >
+              <span class="dws-brand-swatch" :style="{ background: item.value }"></span>
+              <span>
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.description }}</small>
+                <em data-no-translate>{{ item.value }}</em>
+              </span>
+              <span class="dws-brand-tones" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              <i
+                class="bi"
+                :class="brandColor === item.value ? 'bi-check-circle-fill' : 'bi-arrow-up-right'"
+                aria-hidden="true"
+              ></i>
+            </button>
+          </div>
+
+          <div v-else class="dws-spec-editor">
+            <div class="dws-spec-overview">
+              <span
+                ><i class="bi bi-grid-3x3-gap"></i><b>{{ designMetrics.columns }} 列</b
+                ><small>{{ designMetrics.margin }}px 边距</small></span
+              >
+              <span
+                ><i class="bi bi-distribute-vertical"></i><b>4 / 8pt</b
+                ><small>{{ designMetrics.gutter }}px 列距</small></span
+              >
+              <span
+                ><i class="bi bi-input-cursor-text"></i><b>{{ designMetrics.controlHeight }}px</b
+                ><small>控件高度</small></span
+              >
+              <span
+                ><i class="bi bi-bounding-box-circles"></i><b>{{ designMetrics.radius }}</b
+                ><small>组件圆角</small></span
+              >
+            </div>
+
+            <div class="dws-spec-grid">
+              <div class="dws-select-field">
+                <span class="dws-label">目标用户</span
+                ><AspectRatioSelect
+                  v-model="audienceId"
+                  class="dws-control-select"
+                  :options="AUDIENCE_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="目标用户"
+                />
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">核心目标</span
+                ><AspectRatioSelect
+                  v-model="goalId"
+                  class="dws-control-select"
+                  :options="GOAL_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="核心目标"
+                />
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">导航结构</span
+                ><AspectRatioSelect
+                  v-model="navigationId"
+                  class="dws-control-select"
+                  :options="NAVIGATION_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="导航结构"
+                />
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">信息密度</span
+                ><AspectRatioSelect
+                  v-model="densityId"
+                  class="dws-control-select"
+                  :options="DENSITY_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="信息密度"
+                />
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">字体气质</span
+                ><AspectRatioSelect
+                  v-model="typographyId"
+                  class="dws-control-select"
+                  :options="TYPOGRAPHY_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="字体气质"
+                />
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">组件圆角</span
+                ><AspectRatioSelect
+                  v-model="radiusId"
+                  class="dws-control-select"
+                  :options="RADIUS_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="组件圆角"
+                />
+              </div>
+              <div class="dws-select-field is-wide">
+                <span class="dws-label">响应式策略</span
+                ><AspectRatioSelect
+                  v-model="responsiveId"
+                  class="dws-control-select"
+                  :options="RESPONSIVE_SELECT_OPTIONS"
+                  :show-ratio-icons="false"
+                  use-option-label
+                  compact-text
+                  compact-menu
+                  glass-menu
+                  menu-placement="auto"
+                  aria-label="响应式策略"
+                />
+              </div>
+            </div>
+
+            <div class="dws-state-field">
+              <span class="dws-label">必须覆盖的组件状态</span>
+              <div class="dws-state-options" role="group" aria-label="必须覆盖的组件状态">
+                <button
+                  v-for="item in COMPONENT_STATE_OPTIONS"
+                  :key="item.id"
+                  type="button"
+                  :class="{ 'is-on': componentStates.includes(item.id) }"
+                  :aria-pressed="componentStates.includes(item.id)"
+                  @click="
+                    componentStates = componentStates.includes(item.id)
+                      ? componentStates.filter((id) => id !== item.id)
+                      : [...componentStates, item.id]
+                  "
+                >
+                  <i
+                    class="bi"
+                    :class="componentStates.includes(item.id) ? 'bi-check2' : 'bi-plus'"
+                    aria-hidden="true"
+                  ></i
+                  >{{ item.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="qualityAuditOpen" class="dws-quality-layer" @mousedown.self="closeQualityAudit()">
+        <section
+          ref="qualityDialogRef"
+          class="dws-quality-dialog"
+          :class="{ 'is-light': !appearanceStore.isDark }"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dws-quality-title"
+          @keydown="trapQualityFocus"
+        >
+          <header class="dws-quality-header">
+            <span>
+              <small>DESIGN QUALITY · V3</small>
+              <strong id="dws-quality-title">设计品质检查</strong>
+            </span>
+            <em>{{ qualityAudit?.version || '视觉模型评审' }}</em>
+            <button
+              v-if="qualityAudit && !qualityAuditing"
+              type="button"
+              class="is-refresh"
+              title="重新检查当前版本"
+              aria-label="重新检查当前版本"
+              @click="runQualityAudit"
+            >
+              <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            </button>
+            <button
+              ref="qualityCloseButton"
+              type="button"
+              aria-label="关闭品质检查"
+              @click="closeQualityAudit()"
+            >
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </header>
+
+          <nav class="dws-quality-modes" aria-label="品质检查视角">
+            <button
+              v-for="mode in DESIGN_QUALITY_REVIEW_MODES"
+              :key="mode.id"
+              type="button"
+              :disabled="qualityAuditing"
+              :class="{ 'is-on': qualityReviewMode === mode.id }"
+              :aria-pressed="qualityReviewMode === mode.id"
+              @click="selectQualityReviewMode(mode.id)"
+            >
+              <i class="bi" :class="mode.icon" aria-hidden="true"></i>
+              <span>{{ mode.label }}</span>
+              <em
+                v-if="qualityAuditsByOutput[qualityAuditKey(activeOutput, mode.id)]"
+                data-no-translate
+              >
+                {{ qualityAuditsByOutput[qualityAuditKey(activeOutput, mode.id)].score }}
+              </em>
+            </button>
+          </nav>
+
+          <div v-if="qualityAuditing" class="dws-quality-loading" aria-live="polite">
+            <span class="dws-quality-orbit"><i></i><i></i><i></i></span>
+            <strong>正在检查设计品质</strong>
+            <p>分析信息层级、栅格、文字、配色、组件一致性与业务完整度</p>
+            <div aria-hidden="true"><i></i><i></i><i></i></div>
+          </div>
+
+          <div v-else-if="qualityAuditError" class="dws-quality-error" role="alert">
+            <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+            <strong>检查没有完成</strong>
+            <p>{{ qualityAuditError }}</p>
+            <button type="button" @click="runQualityAudit">
+              <i class="bi bi-arrow-repeat" aria-hidden="true"></i>重新检查
+            </button>
+          </div>
+
+          <div
+            v-else-if="
+              !qualityAudit && !(regionSelection || regionReviewLoading || regionReviewError)
+            "
+            class="dws-quality-empty"
+          >
+            <i class="bi bi-clipboard2-pulse" aria-hidden="true"></i>
+            <strong>这个视角还没有检查记录</strong>
+            <p>
+              {{
+                DESIGN_QUALITY_REVIEW_MODES.find((item) => item.id === qualityReviewMode)?.prompt
+              }}
+            </p>
+            <button type="button" @click="runQualityAudit">
+              <i class="bi bi-stars" aria-hidden="true"></i>开始检查
+            </button>
+          </div>
+
+          <div
+            v-else-if="qualityAudit || regionSelection || regionReviewLoading || regionReviewError"
+            class="dws-quality-result"
+          >
+            <section v-if="!qualityAudit" class="dws-quality-inline-empty">
+              <span>
+                <i class="bi bi-clipboard2-pulse" aria-hidden="true"></i>
+                <b>当前视角尚未检查</b>
+                <small>{{ currentQualityReviewMode.label }}</small>
+              </span>
+              <button type="button" @click="runQualityAudit">开始检查</button>
+            </section>
+            <section v-if="qualityAudit" class="dws-quality-summary">
+              <div
+                class="dws-quality-score"
+                :style="{ '--quality-score': `${qualityAudit.score * 3.6}deg` }"
+                :aria-label="`品质评分 ${qualityAudit.score} 分`"
+              >
+                <span
+                  ><b>{{ qualityAudit.score }}</b
+                  ><small>/ 100</small></span
+                >
+              </div>
+              <div>
+                <small>总体结论</small>
+                <strong>{{ qualityAudit.verdict }}</strong>
+                <p>
+                  基于当前页面目标和所选视觉规范评估
+                  <b
+                    v-if="qualityScoreDelta !== null"
+                    :class="qualityScoreDelta >= 0 ? 'is-up' : 'is-down'"
+                  >
+                    {{ qualityScoreDelta >= 0 ? '+' : '' }}{{ qualityScoreDelta }} 分
+                  </b>
+                </p>
+              </div>
+            </section>
+
+            <section
+              v-if="qualityParentAudit && qualityScoreDelta !== null"
+              class="dws-quality-comparison"
+            >
+              <span :class="qualityScoreDelta >= 0 ? 'is-up' : 'is-down'">
+                <i
+                  class="bi"
+                  :class="qualityScoreDelta >= 0 ? 'bi-graph-up-arrow' : 'bi-graph-down-arrow'"
+                  aria-hidden="true"
+                ></i>
+                <b>{{ qualityScoreDelta >= 0 ? '+' : '' }}{{ qualityScoreDelta }}</b>
+              </span>
+              <div>
+                <strong>相对父版本</strong>
+                <p>{{ qualityAudit.comparison?.summary || '已按同一评分口径完成版本对比。' }}</p>
+              </div>
+              <ul v-if="qualityAudit.comparison">
+                <li>已解决 {{ qualityAudit.comparison.resolvedIssueIds.length }}</li>
+                <li>仍存在 {{ qualityAudit.comparison.persistentIssueIds.length }}</li>
+                <li>新增 {{ qualityAudit.comparison.newIssueCount }}</li>
+              </ul>
+            </section>
+
+            <section
+              v-if="regionSelection || regionReviewLoading || regionReviewError"
+              class="dws-region-review"
+            >
+              <header>
+                <span>
+                  <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+                  <strong>框选区域优化</strong>
+                </span>
+                <button type="button" aria-label="清除框选区域" @click="clearRegionSelection">
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </header>
+              <div class="dws-region-review-body">
+                <figure>
+                  <img v-if="regionPreview" :src="regionPreview" alt="框选区域预览" />
+                  <span v-else><i class="bi bi-image" aria-hidden="true"></i></span>
+                </figure>
+                <div v-if="regionReviewLoading" class="dws-region-review-loading">
+                  <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
+                  <strong>正在理解框选区域</strong>
+                  <p>结合完整页面判断区域职责、视觉问题和修改边界</p>
+                </div>
+                <div v-else-if="regionReviewError" class="dws-region-review-error">
+                  <strong>{{ regionReviewError }}</strong>
+                  <button type="button" @click="runRegionQualityAudit()">重新分析</button>
+                </div>
+                <div v-else-if="regionReview" class="dws-region-review-copy">
+                  <small>{{ regionReview.location }}</small>
+                  <strong>{{ regionReview.title }}</strong>
+                  <p>{{ regionReview.summary }}</p>
+                  <ul>
+                    <li v-for="item in regionReview.suggestions" :key="item">{{ item }}</li>
+                  </ul>
+                  <button
+                    type="button"
+                    :disabled="!regionReview.iterationPrompt"
+                    @click="applyRegionReview"
+                  >
+                    仅优化此区域<i class="bi bi-arrow-right" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section v-if="qualityAudit?.dimensions?.length" class="dws-quality-dimensions">
+              <article v-for="dimension in qualityAudit.dimensions" :key="dimension.id">
+                <span
+                  ><b>{{ dimension.label }}</b
+                  ><em>{{ dimension.score }}</em
+                  ><u
+                    v-if="qualityDimensionDelta(dimension) !== null"
+                    :class="qualityDimensionDelta(dimension) >= 0 ? 'is-up' : 'is-down'"
+                    >{{ qualityDimensionDelta(dimension) >= 0 ? '+' : ''
+                    }}{{ qualityDimensionDelta(dimension) }}</u
+                  ></span
+                >
+                <i><u :style="{ width: `${dimension.score}%` }"></u></i>
+                <small>{{ dimension.note }}</small>
+              </article>
+            </section>
+
+            <section v-if="qualityAudit?.strengths.length" class="dws-quality-strengths">
+              <h3><i class="bi bi-check2-circle" aria-hidden="true"></i>做得好的地方</h3>
+              <ul>
+                <li v-for="item in qualityAudit.strengths" :key="item">{{ item }}</li>
+              </ul>
+            </section>
+
+            <section
+              v-if="qualityAudit?.grounded && qualityAudit?.developerAssets?.length"
+              class="dws-quality-assets"
+            >
+              <header>
+                <span>
+                  <i class="bi bi-box-seam" aria-hidden="true"></i>
+                  <strong>开发素材候选</strong>
+                  <small>{{ qualityAudit.developerAssets.length }} 个</small>
+                </span>
+                <button type="button" @click="openQualityAssetExtraction">
+                  提取素材<i class="bi bi-arrow-up-right" aria-hidden="true"></i>
+                </button>
+              </header>
+              <div>
+                <article v-for="asset in qualityAudit.developerAssets" :key="asset.id">
+                  <span
+                    class="dws-quality-asset-thumb"
+                    :style="qualityAssetPreviewStyle(asset)"
+                  ></span>
+                  <div>
+                    <strong>{{ asset.name }}</strong>
+                    <small>{{ asset.type }} · {{ asset.suggestedFormat.toUpperCase() }}</small>
+                    <p>{{ asset.reason }}</p>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section v-if="qualityAudit" class="dws-quality-issues">
+              <header>
+                <h3><i class="bi bi-list-check" aria-hidden="true"></i>需要调整</h3>
+                <div>
+                  <button type="button" @click="selectQualityIssues('major')">仅主要</button>
+                  <button type="button" @click="selectQualityIssues('all')">全部</button>
+                  <span>{{ selectedQualityIssueCount }}/{{ qualityAudit.issues.length }} 项</span>
+                </div>
+              </header>
+              <div v-if="qualityAudit.issues.length">
+                <article
+                  v-for="(issue, index) in qualityAudit.issues"
+                  :key="`${issue.title}-${index}`"
+                  :class="{
+                    'is-selected': selectedQualityIssueIds.includes(issue.id),
+                    'is-located': activeQualityIssue?.id === issue.id,
+                  }"
+                  @click="activateQualityIssue(issue.id)"
+                >
+                  <button
+                    type="button"
+                    class="dws-quality-check"
+                    :aria-label="`${selectedQualityIssueIds.includes(issue.id) ? '取消' : '选择'}修复：${issue.title}`"
+                    :aria-pressed="selectedQualityIssueIds.includes(issue.id)"
+                    @click.stop="toggleQualityIssue(issue.id)"
+                  >
+                    <i
+                      class="bi"
+                      :class="selectedQualityIssueIds.includes(issue.id) ? 'bi-check2' : 'bi-plus'"
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                  <span :class="`is-${issue.severity}`">
+                    {{
+                      issue.severity === 'critical'
+                        ? '严重'
+                        : issue.severity === 'major'
+                          ? '主要'
+                          : '细节'
+                    }}
+                  </span>
+                  <div>
+                    <strong
+                      >{{ issue.title }}<em>{{ QUALITY_DIMENSION_LABELS[issue.dimension] }}</em
+                      ><i v-if="issue.region" class="bi bi-crosshair" aria-hidden="true"></i
+                    ></strong>
+                    <p>{{ issue.evidence }}</p>
+                    <small
+                      ><i class="bi bi-arrow-return-right" aria-hidden="true"></i
+                      >{{ issue.fix }}</small
+                    >
+                  </div>
+                </article>
+              </div>
+              <p v-else class="dws-quality-clear">没有发现需要优先处理的问题。</p>
+            </section>
+          </div>
+
+          <footer v-if="qualityAudit && !qualityAuditing" class="dws-quality-footer">
+            <span
+              ><i class="bi bi-stars" aria-hidden="true"></i>已选择
+              {{ selectedQualityIssueCount }} 项，未选择区域保持不变</span
+            >
+            <button
+              type="button"
+              :disabled="!selectedQualityIssueCount"
+              @click="applyQualityAuditFixes"
+            >
+              定向迭代<i class="bi bi-arrow-right" aria-hidden="true"></i>
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
 
     <WallevenImagePreview
       :open="fullscreenOpen"
@@ -1252,8 +2998,13 @@ function formatEditableHistoryDate(value) {
       :reference-image="editableResumeSession?.referenceImage || activeOutput"
       :document-id="editableDocumentId"
       :resume-session="editableResumeSession"
+      :seed-findings="editableSeedFindings"
       :viewport="editableViewport"
       :generation-nonce="editableGenerationNonce"
+      v-model:analysis-model="analysisModelId"
+      :analysis-models="analysisModelOptions"
+      :analysis-models-loading="analysisModelsLoading"
+      :analysis-model-error="analysisModelError"
       @close="editableCanvasOpen = false"
       @document-saved="handleEditableDocumentSaved"
       @analysis-session="handleAnalysisSession"
@@ -1379,6 +3130,10 @@ function formatEditableHistoryDate(value) {
   margin-top: 0;
 }
 
+.dws-reference-block {
+  margin-top: 0;
+}
+
 .dws-label {
   display: block;
   margin-bottom: 8px;
@@ -1476,31 +3231,6 @@ function formatEditableHistoryDate(value) {
   color: var(--dws-faint);
 }
 
-.dws-examples {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.dws-examples button {
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dws-faint);
-  font-size: 0.7rem;
-  cursor: pointer;
-  transition:
-    color 0.15s ease,
-    background 0.15s ease;
-}
-
-.dws-examples button:hover {
-  background: var(--dws-fill);
-  color: #cdc5ff;
-}
-
 .dws-custom-structure {
   margin-top: 8px;
   padding: 10px 12px;
@@ -1545,6 +3275,1595 @@ function formatEditableHistoryDate(value) {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--dws-accent) 52%, transparent);
 }
 
+.dws-page-type-trigger {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 12px;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dws-page-type-trigger:hover,
+.dws-page-type-trigger[aria-expanded='true'] {
+  background: var(--dws-fill-hover);
+}
+
+.dws-page-type-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--dws-accent) 58%, transparent);
+  outline-offset: 2px;
+}
+
+.dws-page-type-trigger > i:first-child {
+  color: #a99cff;
+}
+
+.dws-page-type-trigger span {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-page-type-trigger .bi-chevron-right {
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+  transition: transform 0.18s ease;
+}
+
+.dws-page-type-trigger[aria-expanded='true'] .bi-chevron-right {
+  transform: rotate(180deg);
+}
+
+.dws-page-type-scrim {
+  position: fixed;
+  z-index: 2100;
+  inset: 0;
+  background: transparent;
+}
+
+.dws-page-type-picker {
+  --picker-bg: rgba(16, 17, 24, 0.98);
+  --picker-ink: rgba(255, 255, 255, 0.94);
+  --picker-muted: rgba(255, 255, 255, 0.55);
+  --picker-faint: rgba(255, 255, 255, 0.34);
+  --picker-fill: rgba(255, 255, 255, 0.045);
+  --picker-border: rgba(255, 255, 255, 0.075);
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--picker-border);
+  border-radius: 14px;
+  background: var(--picker-bg);
+  color: var(--picker-ink);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: blur(24px) saturate(130%);
+  animation: dws-page-type-enter 0.18s ease-out both;
+}
+
+.dws-page-type-header {
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-height: 68px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid var(--picker-border);
+  background: color-mix(in srgb, var(--picker-bg) 94%, transparent);
+}
+
+.dws-page-type-header > span {
+  display: grid;
+  gap: 4px;
+}
+
+.dws-page-type-header small {
+  color: #a99cff;
+  font: 700 0.56rem/1 monospace;
+}
+
+.dws-page-type-header strong {
+  font-size: 0.93rem;
+}
+
+.dws-page-type-header > em {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(109, 92, 255, 0.14);
+  color: #bdb3ff;
+  font: 600 0.62rem/1 monospace;
+  font-style: normal;
+}
+
+.dws-page-type-header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--picker-fill);
+  color: var(--picker-muted);
+  cursor: pointer;
+}
+
+.dws-page-type-header > button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--picker-ink);
+}
+
+.dws-page-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(109, 92, 255, 0.42) transparent;
+}
+
+.dws-page-type-grid > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  min-height: 116px;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--picker-fill);
+  color: var(--picker-ink);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+
+.dws-page-type-grid > button:hover {
+  border-color: rgba(138, 114, 255, 0.34);
+  background: rgba(109, 92, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.dws-page-type-grid > button.is-on {
+  border-color: rgba(138, 114, 255, 0.56);
+  background: rgba(109, 92, 255, 0.16);
+}
+
+.dws-page-type-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(109, 92, 255, 0.14);
+  color: #bdb3ff;
+  font-size: 0.86rem;
+}
+
+.dws-page-type-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dws-page-type-copy strong {
+  padding-right: 14px;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.dws-page-type-copy small {
+  overflow: hidden;
+  color: var(--picker-muted);
+  font-size: 0.62rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-page-type-copy em {
+  display: -webkit-box;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--picker-faint);
+  font-size: 0.58rem;
+  font-style: normal;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.dws-page-type-grid > button > .bi:last-child {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  color: var(--picker-faint);
+  font-size: 0.65rem;
+}
+
+.dws-page-type-grid > button.is-on > .bi:last-child {
+  color: #a99cff;
+}
+
+.dws-page-type-picker.is-light {
+  --picker-bg: rgba(255, 255, 255, 0.98);
+  --picker-ink: rgba(27, 29, 42, 0.96);
+  --picker-muted: rgba(43, 45, 60, 0.64);
+  --picker-faint: rgba(47, 49, 65, 0.45);
+  --picker-fill: rgba(34, 36, 50, 0.045);
+  --picker-border: rgba(35, 37, 52, 0.1);
+  box-shadow: 0 28px 80px rgba(48, 44, 78, 0.18);
+}
+
+.dws-page-type-picker.is-light .dws-page-type-header small,
+.dws-page-type-picker.is-light .dws-page-type-header > em,
+.dws-page-type-picker.is-light .dws-page-type-icon,
+.dws-page-type-picker.is-light .dws-page-type-grid > button.is-on > .bi:last-child {
+  color: #6250e8;
+}
+
+.dws-brand-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.dws-brand-trigger > i:first-child {
+  color: transparent;
+}
+
+.dws-config-scrim {
+  position: fixed;
+  z-index: 2110;
+  inset: 0;
+  background: transparent;
+}
+
+.dws-config-picker {
+  --dws-ink: rgba(255, 255, 255, 0.94);
+  --dws-muted: rgba(255, 255, 255, 0.58);
+  --dws-faint: rgba(255, 255, 255, 0.36);
+  --dws-fill: rgba(255, 255, 255, 0.05);
+  --dws-fill-hover: rgba(255, 255, 255, 0.09);
+  --dws-fill-deep: rgba(255, 255, 255, 0.03);
+  --dws-accent: #6d5cff;
+  --dws-accent-soft: rgba(109, 92, 255, 0.18);
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(16, 17, 24, 0.98);
+  color: var(--dws-ink);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: blur(24px) saturate(130%);
+  animation: dws-page-type-enter 0.18s ease-out both;
+}
+
+.dws-config-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-height: 68px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dws-config-header > span {
+  display: grid;
+  gap: 4px;
+}
+
+.dws-config-header small {
+  color: #a99cff;
+  font: 700 0.56rem/1 monospace;
+}
+
+.dws-config-header strong {
+  font-size: 0.93rem;
+}
+
+.dws-config-header > em {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--dws-accent-soft);
+  color: #bdb3ff;
+  font: 600 0.62rem/1 monospace;
+  font-style: normal;
+}
+
+.dws-config-header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-fill);
+  color: var(--dws-muted);
+  cursor: pointer;
+}
+
+.dws-config-header > button:hover {
+  background: var(--dws-fill-hover);
+  color: var(--dws-ink);
+}
+
+.dws-style-grid,
+.dws-brand-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(109, 92, 255, 0.42) transparent;
+}
+
+.dws-style-grid > button {
+  position: relative;
+  min-width: 0;
+  padding: 0 0 11px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dws-style-grid > button:hover,
+.dws-style-grid > button.is-on,
+.dws-brand-grid > button:hover,
+.dws-brand-grid > button.is-on {
+  border-color: rgba(138, 114, 255, 0.5);
+  background: rgba(109, 92, 255, 0.11);
+}
+
+.dws-style-preview {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 0.7fr;
+  height: 64px;
+  margin-bottom: 10px;
+}
+
+.dws-style-preview i {
+  display: block;
+}
+
+.dws-style-copy {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 4px 7px;
+  padding: 0 10px;
+}
+
+.dws-style-copy > i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+}
+
+.dws-style-copy strong {
+  padding-right: 12px;
+  font-size: 0.73rem;
+}
+
+.dws-style-copy small {
+  overflow: hidden;
+  color: var(--dws-faint);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-style-grid > button > .bi:last-child,
+.dws-brand-grid > button > .bi:last-child {
+  position: absolute;
+  right: 9px;
+  bottom: 11px;
+  color: var(--dws-faint);
+  font-size: 0.64rem;
+}
+
+.dws-style-grid > button.is-on > .bi:last-child,
+.dws-brand-grid > button.is-on > .bi:last-child {
+  color: #a99cff;
+}
+
+.dws-brand-grid > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 104px;
+  padding: 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dws-brand-swatch {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.dws-brand-grid > button > span:nth-child(2) {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dws-brand-grid strong {
+  font-size: 0.73rem;
+}
+
+.dws-brand-grid small {
+  overflow: hidden;
+  color: var(--dws-faint);
+  font-size: 0.59rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-brand-grid em {
+  color: var(--dws-muted);
+  font: 600 0.56rem/1 monospace;
+  font-style: normal;
+}
+
+.dws-brand-tones {
+  position: absolute;
+  right: 11px;
+  bottom: 10px;
+  left: 11px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.dws-brand-tones i:nth-child(1) {
+  background: color-mix(in srgb, var(--picker-brand) 18%, white);
+}
+
+.dws-brand-tones i:nth-child(2) {
+  background: color-mix(in srgb, var(--picker-brand) 55%, white);
+}
+
+.dws-brand-tones i:nth-child(3) {
+  background: var(--picker-brand);
+}
+
+.dws-brand-tones i:nth-child(4) {
+  background: color-mix(in srgb, var(--picker-brand) 72%, black);
+}
+
+.dws-spec-editor {
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dws-spec-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 16px;
+}
+
+.dws-spec-overview > span {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 9px;
+  background: var(--dws-fill);
+}
+
+.dws-spec-overview i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+}
+
+.dws-spec-overview b {
+  font-size: 0.68rem;
+}
+
+.dws-spec-overview small {
+  color: var(--dws-faint);
+  font-size: 0.56rem;
+}
+
+.dws-config-picker .dws-spec-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 10px;
+  padding-top: 14px;
+}
+
+.dws-config-picker .dws-spec-grid .is-wide {
+  grid-column: span 3;
+}
+
+.dws-config-picker .dws-state-options {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.dws-config-picker.is-light {
+  --dws-ink: rgba(27, 29, 42, 0.96);
+  --dws-muted: rgba(43, 45, 60, 0.66);
+  --dws-faint: rgba(47, 49, 65, 0.45);
+  --dws-fill: rgba(34, 36, 50, 0.05);
+  --dws-fill-hover: rgba(34, 36, 50, 0.09);
+  --dws-fill-deep: rgba(34, 36, 50, 0.03);
+  --dws-accent: #6250e8;
+  --dws-accent-soft: rgba(98, 80, 232, 0.12);
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 28px 80px rgba(48, 44, 78, 0.18);
+}
+
+.dws-config-picker.is-light .dws-config-header {
+  border-color: rgba(35, 37, 52, 0.09);
+}
+
+.dws-config-picker.is-light .dws-config-header small,
+.dws-config-picker.is-light .dws-config-header > em,
+.dws-config-picker.is-light .dws-style-copy > i,
+.dws-config-picker.is-light .dws-spec-overview i {
+  color: #6250e8;
+}
+
+.dws-quality-layer {
+  position: fixed;
+  z-index: 2200;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(6, 7, 11, 0.66);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.dws-quality-dialog {
+  --quality-bg: #111319;
+  --quality-ink: rgba(255, 255, 255, 0.94);
+  --quality-muted: rgba(255, 255, 255, 0.58);
+  --quality-faint: rgba(255, 255, 255, 0.36);
+  --quality-fill: rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: min(780px, calc(100dvh - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  background: var(--quality-bg);
+  color: var(--quality-ink);
+  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.54);
+  animation: dws-quality-enter 0.22s ease-out both;
+}
+
+.dws-quality-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px 34px;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-height: 70px;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dws-quality-header > span {
+  display: grid;
+  gap: 4px;
+}
+
+.dws-quality-header small {
+  color: #72d5b1;
+  font: 700 0.56rem/1 monospace;
+}
+
+.dws-quality-header strong {
+  font-size: 0.96rem;
+}
+
+.dws-quality-header > em {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(18, 183, 106, 0.12);
+  color: #91dfc3;
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.dws-quality-header > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--quality-fill);
+  color: var(--quality-muted);
+  cursor: pointer;
+}
+
+.dws-quality-header > button.is-refresh {
+  color: #91dfc3;
+}
+
+.dws-quality-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  flex: none;
+  padding: 6px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dws-quality-modes button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--quality-faint);
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.dws-quality-modes button.is-on {
+  background: var(--quality-fill);
+  color: var(--quality-ink);
+}
+
+.dws-quality-modes button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.dws-quality-modes button > i {
+  color: #72d5b1;
+}
+
+.dws-quality-modes button > em {
+  min-width: 23px;
+  padding: 3px 5px;
+  border-radius: 5px;
+  background: rgba(18, 183, 106, 0.12);
+  color: #72d5b1;
+  font: 700 0.54rem/1 monospace;
+  font-style: normal;
+}
+
+.dws-quality-loading,
+.dws-quality-error,
+.dws-quality-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  min-height: 390px;
+  padding: 40px;
+  place-content: center;
+  text-align: center;
+}
+
+.dws-quality-loading > strong,
+.dws-quality-error > strong,
+.dws-quality-empty > strong {
+  font-size: 0.9rem;
+}
+
+.dws-quality-loading > p,
+.dws-quality-error > p,
+.dws-quality-empty > p {
+  max-width: 440px;
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.dws-quality-orbit {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(114, 213, 177, 0.22);
+  border-radius: 50%;
+  animation: dws-spin 3s linear infinite;
+}
+
+.dws-quality-orbit i {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72d5b1;
+}
+
+.dws-quality-orbit i:nth-child(1) {
+  top: -4px;
+  left: 23px;
+}
+
+.dws-quality-orbit i:nth-child(2) {
+  right: 2px;
+  bottom: 7px;
+  opacity: 0.65;
+}
+
+.dws-quality-orbit i:nth-child(3) {
+  bottom: 7px;
+  left: 2px;
+  opacity: 0.35;
+}
+
+.dws-quality-loading > div {
+  display: grid;
+  gap: 7px;
+  width: min(360px, 80vw);
+  margin-top: 18px;
+}
+
+.dws-quality-loading > div i {
+  height: 7px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(114, 213, 177, 0.15),
+    rgba(255, 255, 255, 0.04)
+  );
+  background-size: 200% 100%;
+  animation: dws-quality-scan 1.6s ease-in-out infinite;
+}
+
+.dws-quality-loading > div i:nth-child(2) {
+  width: 76%;
+}
+
+.dws-quality-loading > div i:nth-child(3) {
+  width: 56%;
+}
+
+.dws-quality-error > i {
+  color: #ffb36b;
+  font-size: 1.8rem;
+}
+
+.dws-quality-empty > i {
+  color: #72d5b1;
+  font-size: 1.8rem;
+}
+
+.dws-quality-error > button,
+.dws-quality-empty > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  margin-top: 10px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(109, 92, 255, 0.18);
+  color: #c7beff;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.dws-quality-result {
+  padding: 18px 20px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(114, 213, 177, 0.32) transparent;
+}
+
+.dws-quality-inline-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--quality-fill);
+}
+
+.dws-quality-inline-empty > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dws-quality-inline-empty i {
+  color: #72d5b1;
+}
+
+.dws-quality-inline-empty b {
+  font-size: 0.64rem;
+}
+
+.dws-quality-inline-empty small {
+  color: var(--quality-faint);
+  font-size: 0.57rem;
+}
+
+.dws-quality-inline-empty > button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(109, 92, 255, 0.18);
+  color: #c7beff;
+  font-size: 0.6rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dws-quality-summary {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dws-quality-score {
+  display: grid;
+  width: 88px;
+  height: 88px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(#55c99f var(--quality-score), rgba(255, 255, 255, 0.06) 0);
+}
+
+.dws-quality-score::before {
+  content: '';
+  grid-area: 1 / 1;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--quality-bg);
+}
+
+.dws-quality-score > span {
+  z-index: 1;
+  grid-area: 1 / 1;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
+.dws-quality-score b {
+  font: 800 1.38rem/1 monospace;
+}
+
+.dws-quality-score small {
+  color: var(--quality-faint);
+  font: 600 0.54rem/1 monospace;
+}
+
+.dws-quality-summary > div:last-child {
+  display: grid;
+  gap: 7px;
+}
+
+.dws-quality-summary > div:last-child small {
+  color: #72d5b1;
+  font-size: 0.6rem;
+}
+
+.dws-quality-summary > div:last-child strong {
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.dws-quality-summary p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.64rem;
+}
+
+.dws-quality-summary p b {
+  padding: 3px 6px;
+  border-radius: 5px;
+  font: 700 0.58rem/1 monospace;
+}
+
+.dws-quality-summary p b.is-up {
+  background: rgba(18, 183, 106, 0.13);
+  color: #72d5b1;
+}
+
+.dws-quality-summary p b.is-down {
+  background: rgba(240, 68, 56, 0.13);
+  color: #ff9d95;
+}
+
+.dws-quality-comparison {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid rgba(114, 213, 177, 0.14);
+  border-radius: 8px;
+  background: rgba(114, 213, 177, 0.045);
+}
+
+.dws-quality-comparison > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 0.76rem/1 monospace;
+}
+
+.dws-quality-comparison > span.is-up {
+  color: #72d5b1;
+}
+
+.dws-quality-comparison > span.is-down {
+  color: #ff9d95;
+}
+
+.dws-quality-comparison > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dws-quality-comparison strong {
+  font-size: 0.63rem;
+}
+
+.dws-quality-comparison p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-quality-comparison ul {
+  display: flex;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dws-quality-comparison li {
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: var(--quality-fill);
+  color: var(--quality-muted);
+  font-size: 0.54rem;
+  white-space: nowrap;
+}
+
+.dws-region-review {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(114, 213, 177, 0.17);
+  border-radius: 9px;
+  background: rgba(114, 213, 177, 0.035);
+}
+
+.dws-region-review > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dws-region-review > header > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.68rem;
+}
+
+.dws-region-review > header > span i {
+  color: #72d5b1;
+}
+
+.dws-region-review > header > button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--quality-fill);
+  color: var(--quality-faint);
+  cursor: pointer;
+}
+
+.dws-region-review-body {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px;
+}
+
+.dws-region-review figure {
+  display: grid;
+  min-height: 118px;
+  margin: 0;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(8, 10, 14, 0.72);
+}
+
+.dws-region-review figure img {
+  width: 100%;
+  height: 100%;
+  max-height: 150px;
+  object-fit: contain;
+}
+
+.dws-region-review figure > span {
+  color: var(--quality-faint);
+  font-size: 1.2rem;
+}
+
+.dws-region-review-loading,
+.dws-region-review-error,
+.dws-region-review-copy {
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dws-region-review-loading > i {
+  color: #72d5b1;
+}
+
+.dws-region-review-loading strong,
+.dws-region-review-error strong,
+.dws-region-review-copy > strong {
+  font-size: 0.72rem;
+}
+
+.dws-region-review-loading p,
+.dws-region-review-copy p {
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+
+.dws-region-review-copy > small {
+  overflow: hidden;
+  color: #72d5b1;
+  font-size: 0.55rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-region-review-copy ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--quality-muted);
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.dws-region-review-copy > button,
+.dws-region-review-error > button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: #5a4bd4;
+  color: #fff;
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+
+.dws-quality-dimensions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dws-quality-dimensions article {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--quality-fill);
+}
+
+.dws-quality-dimensions article > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dws-quality-dimensions b {
+  font-size: 0.63rem;
+}
+
+.dws-quality-dimensions em {
+  color: #72d5b1;
+  font: 700 0.63rem/1 monospace;
+  font-style: normal;
+}
+
+.dws-quality-dimensions article > span > u {
+  margin-left: auto;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font: 700 0.51rem/1 monospace;
+  text-decoration: none;
+}
+
+.dws-quality-dimensions article > span > u.is-up {
+  background: rgba(18, 183, 106, 0.12);
+  color: #72d5b1;
+}
+
+.dws-quality-dimensions article > span > u.is-down {
+  background: rgba(240, 68, 56, 0.12);
+  color: #ff9d95;
+}
+
+.dws-quality-dimensions article > i {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.dws-quality-dimensions article > i u {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #55c99f;
+  text-decoration: none;
+}
+
+.dws-quality-dimensions small {
+  overflow: hidden;
+  color: var(--quality-faint);
+  font-size: 0.56rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-quality-strengths,
+.dws-quality-assets,
+.dws-quality-issues {
+  margin-top: 20px;
+}
+
+.dws-quality-assets > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.dws-quality-assets > header > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.74rem;
+}
+
+.dws-quality-assets > header > span i {
+  color: #a99cff;
+}
+
+.dws-quality-assets > header small {
+  color: var(--quality-faint);
+  font: 600 0.57rem/1 monospace;
+}
+
+.dws-quality-assets > header button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(109, 92, 255, 0.14);
+  color: #bdb3ff;
+  font-size: 0.6rem;
+  cursor: pointer;
+}
+
+.dws-quality-assets > header button i {
+  margin-left: 5px;
+}
+
+.dws-quality-assets > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dws-quality-assets article {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+  padding: 7px;
+  border-radius: 7px;
+  background: var(--quality-fill);
+}
+
+.dws-quality-asset-thumb {
+  min-height: 58px;
+  border-radius: 5px;
+  background-color: rgba(0, 0, 0, 0.22);
+  background-repeat: no-repeat;
+}
+
+.dws-quality-assets article > div {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dws-quality-assets article strong {
+  overflow: hidden;
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-quality-assets article small {
+  color: #a99cff;
+  font: 600 0.52rem/1.2 monospace;
+}
+
+.dws-quality-assets article p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.55rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.dws-quality-strengths h3,
+.dws-quality-issues h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+.dws-quality-strengths h3 i {
+  color: #72d5b1;
+}
+
+.dws-quality-strengths ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 20px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dws-quality-strengths li {
+  position: relative;
+  padding-left: 13px;
+  color: var(--quality-muted);
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.dws-quality-strengths li::before {
+  content: '';
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #55c99f;
+}
+
+.dws-quality-issues > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.dws-quality-issues > header > div {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dws-quality-issues > header button {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--quality-fill);
+  color: var(--quality-muted);
+  font-size: 0.58rem;
+  cursor: pointer;
+}
+
+.dws-quality-issues > header span {
+  margin-left: 3px;
+  color: var(--quality-faint);
+  font: 600 0.58rem/1 monospace;
+}
+
+.dws-quality-issues article {
+  display: grid;
+  grid-template-columns: 28px 42px minmax(0, 1fr);
+  gap: 10px;
+  margin: 0 -8px;
+  padding: 13px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
+  transition: background-color 0.15s ease;
+}
+
+.dws-quality-issues article.is-selected {
+  background: rgba(114, 213, 177, 0.045);
+}
+
+.dws-quality-issues article.is-located {
+  box-shadow: inset 3px 0 #6d5cff;
+}
+
+.dws-quality-issues article:has(.bi-crosshair) {
+  cursor: pointer;
+}
+
+.dws-quality-check {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--quality-faint);
+  cursor: pointer;
+}
+
+.dws-quality-check[aria-pressed='true'] {
+  border-color: rgba(114, 213, 177, 0.38);
+  background: rgba(18, 183, 106, 0.14);
+  color: #91dfc3;
+}
+
+.dws-quality-issues article > span {
+  align-self: start;
+  padding: 4px 0;
+  border-radius: 5px;
+  color: #ffd1a8;
+  font-size: 0.56rem;
+  text-align: center;
+}
+
+.dws-quality-issues article > span.is-critical {
+  background: rgba(240, 68, 56, 0.15);
+  color: #ff9d95;
+}
+
+.dws-quality-issues article > span.is-major {
+  background: rgba(247, 144, 9, 0.14);
+  color: #ffc178;
+}
+
+.dws-quality-issues article > span.is-minor {
+  background: rgba(47, 129, 247, 0.13);
+  color: #91c0ff;
+}
+
+.dws-quality-issues article > div {
+  display: grid;
+  gap: 5px;
+}
+
+.dws-quality-issues article strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.7rem;
+}
+
+.dws-quality-issues article strong em {
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: var(--quality-fill);
+  color: var(--quality-faint);
+  font-size: 0.53rem;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.dws-quality-issues article strong > i {
+  margin-left: auto;
+  color: #a99cff;
+  font-size: 0.67rem;
+}
+
+.dws-quality-issues article p,
+.dws-quality-issues article small {
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.63rem;
+  line-height: 1.5;
+}
+
+.dws-quality-issues article small {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--quality-muted);
+}
+
+.dws-quality-clear {
+  margin: 14px 0 0;
+  color: var(--quality-muted);
+  font-size: 0.68rem;
+}
+
+.dws-quality-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: none;
+  min-height: 64px;
+  padding: 0 16px 0 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dws-quality-footer > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--quality-faint);
+  font-size: 0.61rem;
+}
+
+.dws-quality-footer > span i {
+  color: #72d5b1;
+}
+
+.dws-quality-footer > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: #5a4bd4;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-quality-footer > button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.dws-quality-dialog.is-light {
+  --quality-bg: #ffffff;
+  --quality-ink: rgba(27, 29, 42, 0.96);
+  --quality-muted: rgba(43, 45, 60, 0.66);
+  --quality-faint: rgba(47, 49, 65, 0.45);
+  --quality-fill: rgba(34, 36, 50, 0.055);
+  border-color: rgba(35, 37, 52, 0.1);
+  box-shadow: 0 32px 90px rgba(48, 44, 78, 0.2);
+}
+
+.dws-quality-dialog.is-light .dws-quality-header,
+.dws-quality-dialog.is-light .dws-quality-modes,
+.dws-quality-dialog.is-light .dws-quality-summary,
+.dws-quality-dialog.is-light .dws-quality-footer,
+.dws-quality-dialog.is-light .dws-quality-issues article {
+  border-color: rgba(35, 37, 52, 0.08);
+}
+
+@keyframes dws-quality-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+@keyframes dws-quality-scan {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes dws-page-type-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.985);
+  }
+}
+
 .dws-quick-settings .dws-custom-structure {
   grid-column: 1 / -1;
   margin-top: 0;
@@ -1553,7 +4872,7 @@ function formatEditableHistoryDate(value) {
 /* 选择类：等宽格子，选中为实色强调 */
 .dws-devices {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 5px;
   padding: 4px;
   border-radius: calc(var(--dws-radius) + 3px);
@@ -1653,6 +4972,134 @@ function formatEditableHistoryDate(value) {
 .dws-scheme button.is-on {
   background: var(--dws-accent);
   color: #fff;
+}
+
+/* 设计规范：参数可编辑，令牌摘要可快速核对 */
+.dws-specification {
+  overflow: visible;
+  border-radius: 13px;
+  background: var(--dws-fill-deep);
+}
+
+.dws-specification-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--dws-ink);
+  cursor: pointer;
+}
+
+.dws-specification-toggle > span {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  text-align: left;
+}
+
+.dws-specification-toggle > span > i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+}
+
+.dws-specification-toggle strong {
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.dws-specification-toggle small {
+  margin-top: 2px;
+  color: var(--dws-faint);
+  font: 600 0.58rem/1.25 monospace;
+}
+
+.dws-specification-toggle > .bi-chevron-down {
+  color: var(--dws-faint);
+  font-size: 0.66rem;
+  transition: transform 0.2s ease;
+}
+
+.dws-specification.is-open .dws-specification-toggle > .bi-chevron-down {
+  transform: rotate(180deg);
+}
+
+.dws-specification-body {
+  padding: 4px 10px 10px;
+}
+
+.dws-spec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.dws-spec-grid .is-wide {
+  grid-column: 1 / -1;
+}
+
+.dws-state-field {
+  margin-top: 12px;
+}
+
+.dws-state-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.dws-state-options button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-fill);
+  color: var(--dws-faint);
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.dws-state-options button.is-on {
+  background: var(--dws-accent-soft);
+  color: #c9c1ff;
+}
+
+.dws-token-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.dws-token-strip span {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 7px 2px;
+  background: var(--dws-fill-deep);
+  color: var(--dws-faint);
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+
+.dws-token-strip b {
+  color: var(--dws-muted);
+  font: 700 0.63rem/1 monospace;
 }
 
 /* 参考界面 */
@@ -1960,6 +5407,28 @@ function formatEditableHistoryDate(value) {
   font: 700 0.64rem/1.3 monospace;
 }
 
+.dws-stage-spec {
+  position: absolute;
+  top: 55px;
+  left: 20px;
+  z-index: 4;
+  display: flex;
+  gap: 5px;
+  color: var(--dws-faint);
+  font: 600 0.56rem/1 monospace;
+}
+
+.dws-stage-spec span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(12, 12, 19, 0.48);
+  backdrop-filter: blur(8px);
+}
+
 .dws-stage-actions {
   position: absolute;
   top: 16px;
@@ -1997,6 +5466,20 @@ function formatEditableHistoryDate(value) {
 .dws-stage-actions button.is-editor {
   background: var(--dws-accent-soft);
   color: #d4ceff;
+}
+
+.dws-stage-actions button.is-quality {
+  color: #8fd9c0;
+}
+
+.dws-stage-actions button.is-quality:hover:not(:disabled) {
+  background: rgba(18, 183, 106, 0.14);
+  color: #b4f0db;
+}
+
+.dws-stage-actions button.is-region.is-on {
+  background: rgba(18, 183, 106, 0.16);
+  color: #a7ead2;
 }
 
 .dws-stage-actions button.is-editor:hover:not(:disabled) {
@@ -2074,6 +5557,13 @@ function formatEditableHistoryDate(value) {
     0 12px 38px color-mix(in srgb, var(--dws-brand) 20%, transparent);
 }
 
+.dws-artboard.is-region-selecting {
+  cursor: crosshair;
+  box-shadow:
+    0 0 0 2px rgba(114, 213, 177, 0.7),
+    0 36px 100px rgba(0, 0, 0, 0.62);
+}
+
 .dws-artboard :deep(.authenticated-image) {
   position: absolute;
   inset: 0;
@@ -2081,6 +5571,175 @@ function formatEditableHistoryDate(value) {
   height: 100%;
   object-fit: contain;
   background: #0d0d12;
+}
+
+.dws-region-layer {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  pointer-events: none;
+}
+
+.dws-region-layer.is-drawing {
+  pointer-events: auto;
+  background: rgba(7, 9, 13, 0.16);
+  touch-action: none;
+  user-select: none;
+}
+
+.dws-region-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(114, 213, 177, 0.32);
+  border-radius: 7px;
+  background: rgba(10, 13, 18, 0.82);
+  color: #b8f0dc;
+  font-size: 0.65rem;
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+}
+
+.dws-region-hint.is-error {
+  border-color: rgba(240, 68, 56, 0.48);
+  background: rgba(48, 19, 22, 0.9);
+  color: #ffb0aa;
+}
+
+.dws-region-box {
+  position: absolute;
+  border: 2px solid #72d5b1;
+  background: rgba(114, 213, 177, 0.08);
+  box-shadow: 0 0 0 9999px rgba(5, 7, 10, 0.34);
+}
+
+.dws-region-box > i {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #effff9;
+  border-radius: 2px;
+  background: #2eae81;
+}
+
+.dws-region-box > i:nth-child(1) {
+  top: -5px;
+  left: -5px;
+}
+
+.dws-region-box > i:nth-child(2) {
+  top: -5px;
+  right: -5px;
+}
+
+.dws-region-box > i:nth-child(3) {
+  right: -5px;
+  bottom: -5px;
+}
+
+.dws-region-box > i:nth-child(4) {
+  bottom: -5px;
+  left: -5px;
+}
+
+.dws-region-box > button {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: #151820;
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.dws-quality-marks {
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  pointer-events: none;
+}
+
+.dws-quality-marks > button {
+  position: absolute;
+  min-width: 12px;
+  min-height: 12px;
+  padding: 0;
+  border: 1.5px solid #f79009;
+  border-radius: 4px;
+  background: rgba(247, 144, 9, 0.08);
+  box-shadow: 0 0 0 1px rgba(10, 10, 16, 0.45);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.dws-quality-marks > button.is-critical {
+  border-color: #f04438;
+  background: rgba(240, 68, 56, 0.1);
+}
+
+.dws-quality-marks > button.is-minor {
+  border-color: #2f81f7;
+  background: rgba(47, 129, 247, 0.08);
+}
+
+.dws-quality-marks > button.is-active {
+  border-width: 2px;
+  background: rgba(109, 92, 255, 0.12);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.92),
+    0 0 0 5px rgba(109, 92, 255, 0.72),
+    0 12px 32px rgba(0, 0, 0, 0.34);
+}
+
+.dws-quality-marks b {
+  position: absolute;
+  top: -11px;
+  left: -11px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #151820;
+  font: 700 0.56rem/1 monospace;
+}
+
+.dws-quality-marks span {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 0;
+  display: none;
+  width: max-content;
+  max-width: 210px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: rgba(16, 17, 24, 0.94);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  font-size: 0.58rem;
+  line-height: 1.35;
+}
+
+.dws-quality-marks > button:hover span,
+.dws-quality-marks > button.is-active span {
+  display: block;
 }
 
 .dws-empty {
@@ -2283,102 +5942,272 @@ function formatEditableHistoryDate(value) {
   margin: 0 20px 8px;
 }
 
-/* 历史：悬浮胶片条，无分隔线 */
+/* 历史：版本族与迭代胶片 */
 .dws-versions-wrap {
   position: relative;
   z-index: 4;
   flex: 0 0 auto;
-  padding: 4px 0 14px;
+  width: min(860px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 8px 0 14px;
+  border-top: 1px solid color-mix(in srgb, var(--dws-ink) 8%, transparent);
+}
+
+.dws-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+  margin-bottom: 6px;
+}
+
+.dws-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dws-muted);
+}
+
+.dws-history-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dws-history-heading i {
+  color: var(--dws-accent);
+  font-size: 0.72rem;
+}
+
+.dws-history-heading strong {
+  color: var(--dws-ink);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.dws-history-heading small {
+  color: var(--dws-faint);
+  font-size: 0.58rem;
 }
 
 .dws-history-tabs {
   display: flex;
-  justify-content: center;
+  flex: none;
   gap: 2px;
-  margin-bottom: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 78%, transparent);
 }
 
 .dws-history-tabs button {
-  display: flex;
+  display: inline-grid;
+  grid-template-columns: 16px auto auto;
   align-items: center;
-  gap: 5px;
-  min-height: 26px;
-  padding: 0 9px;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--dws-faint);
-  font-size: 0.66rem;
   cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 
-.dws-history-tabs button:hover,
-.dws-history-tabs button.is-on {
+.dws-history-tabs button:hover:not(:disabled) {
   background: var(--dws-fill);
   color: var(--dws-ink);
 }
 
-.dws-history-tabs em {
-  color: #a99cff;
-  font: 700 0.58rem/1 monospace;
+.dws-history-tabs button.is-on {
+  background: color-mix(in srgb, var(--dws-accent) 14%, var(--dws-fill));
+  color: var(--dws-ink);
 }
 
-.dws-versions {
+.dws-history-tabs button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.dws-history-tabs button > i {
+  color: currentColor;
+  font-size: 0.62rem;
+}
+
+.dws-history-tabs button.is-on > i {
+  color: var(--dws-accent);
+}
+
+.dws-history-tabs strong {
+  color: inherit;
+  font-size: 0.6rem;
+  font-weight: 650;
+}
+
+.dws-history-tabs em {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
+  color: #a99cff;
+  font: 700 0.52rem/1 monospace;
+}
+
+.dws-version-history {
+  display: grid;
+  gap: 6px;
+}
+
+.dws-version-families {
   display: flex;
   justify-content: safe center;
-  gap: 9px;
-  padding: 4px 20px;
+  gap: 6px;
+  padding: 2px 0 4px;
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-  mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
 }
 
-.dws-versions button {
+.dws-version-family {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.dws-version-family > button {
+  display: grid;
+  grid-template-columns: 54px minmax(86px, 1fr) 14px;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 188px;
+  height: 48px;
+  padding: 4px 7px 4px 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 74%, transparent);
+  color: var(--dws-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.dws-version-family > button:hover,
+.dws-version-family > button.is-on {
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+}
+
+.dws-version-family > button.is-on {
+  border-color: color-mix(in srgb, var(--dws-accent) 46%, transparent);
+}
+
+.dws-family-thumb {
+  width: 54px;
+  height: 40px;
+  border-radius: 6px;
+  background: #111119;
+  overflow: hidden;
+}
+
+.dws-family-thumb :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dws-family-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dws-family-meta strong {
+  color: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.dws-family-meta small {
+  overflow: hidden;
+  color: var(--dws-faint);
+  font-size: 0.54rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-version-family > button > i {
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+}
+
+.dws-inline-iterations {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dws-inline-iterations > i {
+  color: var(--dws-faint);
+  font-size: 0.72rem;
+}
+
+.dws-inline-iterations button {
   position: relative;
   flex: none;
-  width: 104px;
-  height: 66px;
+  width: 66px;
+  height: 44px;
   padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: 7px;
   background: #101016;
   cursor: pointer;
   overflow: hidden;
-  opacity: 0.62;
+  opacity: 0.66;
   transition:
     opacity 0.18s ease,
     transform 0.18s ease,
     box-shadow 0.18s ease;
 }
 
-.dws-versions button:hover {
+.dws-inline-iterations button:hover {
   opacity: 1;
-  transform: translateY(-3px);
+  transform: translateY(-1px);
 }
 
-.dws-versions button.is-on {
+.dws-inline-iterations button.is-on {
   opacity: 1;
   box-shadow:
     0 0 0 2px var(--dws-accent),
-    0 8px 22px rgba(109, 92, 255, 0.3);
+    0 5px 14px rgba(109, 92, 255, 0.26);
 }
 
-.dws-versions :deep(.authenticated-image) {
+.dws-inline-iterations :deep(.authenticated-image) {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.dws-versions em {
+.dws-inline-iterations em {
   position: absolute;
-  left: 6px;
-  bottom: 6px;
-  padding: 2px 6px;
-  border-radius: 6px;
+  left: 4px;
+  bottom: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
   background: rgba(9, 9, 13, 0.78);
   color: #cdc5ff;
-  font: 700 0.6rem/1.4 monospace;
+  font: 700 0.52rem/1.2 monospace;
 }
 
 .dws-versions-skeleton {
@@ -2483,6 +6312,45 @@ function formatEditableHistoryDate(value) {
   font-size: 0.68rem;
 }
 
+.dws-analysis-history-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(360px, calc(100% - 40px));
+  min-height: 58px;
+  padding: 8px 12px;
+  border: 1px dashed color-mix(in srgb, var(--dws-ink) 14%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--dws-fill) 58%, transparent);
+  color: var(--dws-faint);
+}
+
+.dws-analysis-history-empty > i {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, transparent);
+  color: var(--dws-accent);
+}
+
+.dws-analysis-history-empty > span {
+  display: grid;
+  gap: 3px;
+}
+
+.dws-analysis-history-empty strong {
+  color: var(--dws-ink);
+  font-size: 0.64rem;
+  font-weight: 650;
+}
+
+.dws-analysis-history-empty small {
+  font-size: 0.56rem;
+}
+
 @keyframes dws-shimmer {
   to {
     background-position: -120% 0;
@@ -2492,15 +6360,24 @@ function formatEditableHistoryDate(value) {
 /* ————— 焦点可见性 ————— */
 .dws-devices button:focus-visible,
 .dws-scheme button:focus-visible,
+.dws-specification-toggle:focus-visible,
+.dws-state-options button:focus-visible,
 .dws-count button:focus-visible,
-.dws-examples button:focus-visible,
 .dws-upload:focus-visible,
 .dws-generate:focus-visible,
 .dws-stage-actions button:focus-visible,
 .dws-artboard.is-previewable:focus-visible,
 .dws-history-tabs button:focus-visible,
+.dws-version-families button:focus-visible,
 .dws-editable-history button:focus-visible,
-.dws-versions button:focus-visible {
+.dws-inline-iterations button:focus-visible,
+.dws-quality-header button:focus-visible,
+.dws-quality-modes button:focus-visible,
+.dws-quality-issues button:focus-visible,
+.dws-quality-footer button:focus-visible,
+.dws-quality-inline-empty button:focus-visible,
+.dws-region-review button:focus-visible,
+.dws-region-box button:focus-visible {
   outline: 2px solid var(--dws-accent-2);
   outline-offset: 2px;
 }
@@ -2538,24 +6415,30 @@ function formatEditableHistoryDate(value) {
 @media (prefers-reduced-motion: reduce) {
   .dws,
   .dws-stage-ambient,
-  .dws-artboard {
+  .dws-artboard,
+  .dws-page-type-picker,
+  .dws-config-picker,
+  .dws-quality-dialog {
     transition: none;
+    animation: none;
   }
 
   .dws-running-scan,
   .dws-running i,
   .dws-empty-sketch span,
-  .dws-versions-skeleton i {
+  .dws-versions-skeleton i,
+  .dws-quality-orbit,
+  .dws-quality-loading > div i {
     animation: none;
   }
 
-  .dws-versions button:hover {
+  .dws-inline-iterations button:hover {
     transform: none;
   }
 }
 
 /* ————— 响应式 ————— */
-@media (min-width: 768px) and (max-width: 1080px) {
+@media (max-width: 1080px) {
   .dws {
     height: calc(100dvh - var(--app-header-offset, 64px));
     min-height: 0;
@@ -2671,7 +6554,203 @@ function formatEditableHistoryDate(value) {
   }
 }
 
+@media (max-width: 767px) {
+  .dws-history-tabs {
+    padding: 3px;
+  }
 
+  .dws-history-tabs button {
+    width: auto;
+  }
+
+  .dws-quality-layer {
+    padding: 10px;
+  }
+
+  .dws-quality-dialog {
+    max-height: calc(100dvh - 20px);
+  }
+
+  .dws-quality-strengths ul {
+    grid-template-columns: 1fr;
+  }
+
+  .dws-quality-dimensions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dws-quality-comparison {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+
+  .dws-quality-comparison ul {
+    grid-column: 1 / -1;
+  }
+
+  .dws-region-review-body {
+    grid-template-columns: 1fr;
+  }
+
+  .dws-region-review figure {
+    max-height: 170px;
+  }
+
+  .dws-quality-footer {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .dws-quality-footer > button {
+    justify-content: center;
+  }
+
+  .dws-page-type-grid,
+  .dws-style-grid,
+  .dws-brand-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dws-config-picker .dws-spec-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dws-config-picker .dws-spec-grid .is-wide {
+    grid-column: span 2;
+  }
+
+  .dws-spec-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dws-config-picker .dws-state-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dws-tablet-tabs {
+    padding-inline: 10px;
+  }
+
+  .dws-panel {
+    padding-inline: 12px;
+  }
+
+  .dws-generate-dock {
+    margin-inline: -12px;
+    padding-inline: 12px;
+  }
+
+  .dws-stage-meta {
+    left: 12px;
+  }
+
+  .dws-stage-actions {
+    right: 12px;
+  }
+
+  .dws-stage-spec {
+    display: none;
+  }
+
+  .dws-canvas {
+    padding: 62px 12px 12px;
+  }
+
+  .dws-empty-sketch {
+    width: min(72%, 300px);
+  }
+}
+
+@media (max-width: 420px) {
+  .dws-history-heading small {
+    display: none;
+  }
+
+  .dws-quality-header {
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
+  }
+
+  .dws-quality-header > em {
+    display: none;
+  }
+
+  .dws-quality-result {
+    padding-inline: 14px;
+  }
+
+  .dws-quality-summary {
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .dws-quality-score {
+    width: 74px;
+    height: 74px;
+  }
+
+  .dws-quality-score::before {
+    width: 60px;
+    height: 60px;
+  }
+
+  .dws-quality-dimensions {
+    grid-template-columns: 1fr;
+  }
+
+  .dws-quality-modes {
+    padding-inline: 12px;
+  }
+
+  .dws-quality-modes button {
+    gap: 5px;
+  }
+
+  .dws-quality-modes button > i {
+    display: none;
+  }
+
+  .dws-quality-issues > header {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .dws-page-type-header,
+  .dws-config-header {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .dws-page-type-header > em,
+  .dws-config-header > em {
+    display: none;
+  }
+
+  .dws-page-type-grid,
+  .dws-style-grid,
+  .dws-brand-grid,
+  .dws-config-picker .dws-spec-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dws-config-picker .dws-spec-grid .is-wide {
+    grid-column: auto;
+  }
+
+  .dws-page-type-grid > button {
+    min-height: 104px;
+  }
+
+  .dws-stage-meta span {
+    display: none;
+  }
+
+  .dws-spec-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dws-spec-grid .is-wide {
+    grid-column: auto;
+  }
+}
 
 /* Light appearance */
 .dws.is-light {
@@ -2726,7 +6805,6 @@ function formatEditableHistoryDate(value) {
   color: var(--dws-ink);
 }
 
-.dws.is-light .dws-examples button:hover,
 .dws.is-light .dws-upload:hover,
 .dws.is-light .dws-empty-editor,
 .dws.is-light .dws-reference.is-iteration {
@@ -2758,7 +6836,8 @@ function formatEditableHistoryDate(value) {
 }
 
 .dws.is-light .dws-stage-meta,
-.dws.is-light .dws-stage-actions {
+.dws.is-light .dws-stage-actions,
+.dws.is-light .dws-stage-spec span {
   background: rgba(255, 255, 255, 0.84);
   box-shadow: 0 8px 24px rgba(48, 44, 78, 0.09);
 }
@@ -2819,12 +6898,12 @@ function formatEditableHistoryDate(value) {
   background: color-mix(in srgb, var(--dws-brand) 18%, rgba(35, 37, 52, 0.05));
 }
 
-.dws.is-light .dws-versions,
+.dws.is-light .dws-version-families,
 .dws.is-light .dws-editable-history {
   scrollbar-color: rgba(98, 80, 232, 0.3) transparent;
 }
 
-.dws.is-light .dws-versions button,
+.dws.is-light .dws-inline-iterations button,
 .dws.is-light .dws-editable-history > button {
   border-color: rgba(35, 37, 52, 0.09);
   background: #ffffff;
@@ -2842,7 +6921,7 @@ function formatEditableHistoryDate(value) {
   background-size: 220% 100%;
 }
 
-@media (min-width: 768px) and (max-width: 1080px) {
+@media (max-width: 1080px) {
   .dws.is-light .dws-tablet-tabs,
   .dws.is-light .dws-panel {
     border-color: rgba(35, 37, 52, 0.09);

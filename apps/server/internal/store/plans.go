@@ -7,12 +7,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const planCols = `id, code, name, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, sort, created_at`
+const planCols = `id, code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort, created_at, updated_at`
 
 func scanPlan(row pgx.Row) (*Plan, error) {
 	var p Plan
-	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.Kind, &p.PriceCents, &p.GrantCents, &p.BonusCents,
-		&p.DurationDays, &p.DailyGrantCents, &p.Features, &p.Active, &p.Sort, &p.CreatedAt)
+	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.Description, &p.Badge, &p.Kind, &p.PriceCents, &p.GrantCents, &p.BonusCents,
+		&p.DurationDays, &p.DailyGrantCents, &p.Features, &p.Active, &p.Recommended, &p.Sort, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -42,19 +42,64 @@ func InsertPlan(ctx context.Context, q Q, p *Plan) (*Plan, error) {
 		p.Kind = "topup"
 	}
 	return scanPlan(q.QueryRow(ctx,
-		`INSERT INTO plans (code, name, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, sort)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING `+planCols,
-		p.Code, p.Name, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents, p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Sort))
+		`INSERT INTO plans (code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+planCols,
+		p.Code, p.Name, p.Description, p.Badge, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
+		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort))
 }
 
 // UpdatePlan 全量回写（调用方先取出并修改字段）。
 func UpdatePlan(ctx context.Context, q Q, p *Plan) error {
 	_, err := q.Exec(ctx,
-		`UPDATE plans SET code = $2, name = $3, kind = $4, price_cents = $5, grant_cents = $6, bonus_cents = $7,
-		 duration_days = $8, daily_grant_cents = $9, features = $10, active = $11, sort = $12 WHERE id = $1`,
-		p.ID, p.Code, p.Name, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
-		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Sort)
+		`UPDATE plans SET code = $2, name = $3, description = $4, badge = $5, kind = $6, price_cents = $7,
+		 grant_cents = $8, bonus_cents = $9, duration_days = $10, daily_grant_cents = $11, features = $12,
+		 active = $13, recommended = $14, sort = $15, updated_at = now() WHERE id = $1`,
+		p.ID, p.Code, p.Name, p.Description, p.Badge, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
+		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort)
 	return err
+}
+
+func ClearRecommendedPlans(ctx context.Context, q Q, exceptID uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE plans SET recommended = false, updated_at = now() WHERE recommended = true AND id <> $1`, exceptID)
+	return err
+}
+
+func ListPlanUsage(ctx context.Context, q Q) (map[uuid.UUID]PlanUsage, error) {
+	rows, err := q.Query(ctx, `SELECT p.id, count(DISTINCT o.id), count(DISTINCT s.id)
+		FROM plans p
+		LEFT JOIN orders o ON o.plan_id = p.id
+		LEFT JOIN subscriptions s ON s.plan_id = p.id
+		GROUP BY p.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]PlanUsage)
+	for rows.Next() {
+		var id uuid.UUID
+		var usage PlanUsage
+		if err := rows.Scan(&id, &usage.OrderCount, &usage.SubscriptionCount); err != nil {
+			return nil, err
+		}
+		out[id] = usage
+	}
+	return out, rows.Err()
+}
+
+func GetPlanUsage(ctx context.Context, q Q, id uuid.UUID) (PlanUsage, error) {
+	var usage PlanUsage
+	err := q.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM orders WHERE plan_id = $1),
+		(SELECT count(*) FROM subscriptions WHERE plan_id = $1)`, id).
+		Scan(&usage.OrderCount, &usage.SubscriptionCount)
+	return usage, err
+}
+
+func DeletePlan(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
+	tag, err := q.Exec(ctx, `DELETE FROM plans WHERE id = $1
+		AND NOT EXISTS (SELECT 1 FROM orders WHERE plan_id = $1)
+		AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE plan_id = $1)`, id)
+	return tag.RowsAffected() > 0, err
 }
 
 func ListPlans(ctx context.Context, q Q, activeOnly bool) ([]*Plan, error) {
@@ -62,7 +107,7 @@ func ListPlans(ctx context.Context, q Q, activeOnly bool) ([]*Plan, error) {
 	if activeOnly {
 		sql += ` WHERE active = true`
 	}
-	sql += ` ORDER BY sort, created_at`
+	sql += ` ORDER BY recommended DESC, sort, created_at, id`
 	rows, err := q.Query(ctx, sql)
 	if err != nil {
 		return nil, err

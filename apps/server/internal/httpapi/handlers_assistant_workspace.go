@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
@@ -132,7 +133,7 @@ func (s *Server) deleteAssistantConversation(c *gin.Context) {
 			if !cancelActive {
 				return apperr.E("assistant_conversation_busy", "该对话仍有任务正在运行，请先停止任务", 409)
 			}
-			canceled, err := store.CancelAssistantRun(c.Request.Context(), tx, user.ID, run.ID)
+			_, canceled, err := assistantbilling.CancelUserTx(c.Request.Context(), tx, user.ID, run.ID)
 			if err != nil {
 				return err
 			}
@@ -375,7 +376,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	body.ServiceKey = strings.TrimSpace(body.ServiceKey)
-	if body.ServiceKey != "" && body.ServiceKey != "assistant_image" && body.ServiceKey != "ui_design_asset" {
+	if body.ServiceKey != "" && body.ServiceKey != "assistant_image" &&
+		body.ServiceKey != "ui_design_analysis" && body.ServiceKey != "ui_design_asset" {
 		fail(c, apperr.E("validation_error", "serviceKey: 不支持的服务路由", 422))
 		return
 	}
@@ -383,7 +385,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		body.ServiceKey = "assistant_image"
 	}
 	workspace := modelconfig.WorkspaceAssistant
-	if body.ServiceKey == "ui_design_asset" {
+	if body.ServiceKey == "ui_design_analysis" || body.ServiceKey == "ui_design_asset" {
 		workspace = modelconfig.WorkspaceUIDesign
 	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
@@ -398,7 +400,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	allowModelFallback := body.Mode == "agent" || strings.TrimSpace(body.SourceUserMessageID) != "" ||
 		strings.TrimSpace(body.ProposalSourceMessageID) != ""
-	selectedModel, modelConfigured := selectAssistantRunModel(
+	selectedModel, modelConfigured := selectAssistantServiceModel(
 		modelCfg, workspace, requestedKind, body.Model, allowModelFallback,
 	)
 	if modelConfigured {
@@ -600,6 +602,23 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_chatModelDisplayName"] = chatSelection.Model.Name
 		params["_modelDisplayName"] = chatSelection.Model.Name
 	}
+	chatCostCents := int64(0)
+	if chatSelection != nil {
+		chatCostCents = modelconfig.EffectivePrice(chatSelection.Model)
+	}
+	imageCostCents := int64(0)
+	if imageSelection != nil {
+		imageCostCents = modelconfig.EffectivePrice(imageSelection.Model) * int64(body.Count)
+	}
+	reservedCents := chatCostCents
+	if body.Mode == "image" {
+		reservedCents = imageCostCents
+	} else if body.Mode == "agent" && imageCostCents > reservedCents {
+		reservedCents = imageCostCents
+	}
+	params["_chatCostCents"] = chatCostCents
+	params["_imageCostCents"] = imageCostCents
+	params["_reservedCostCents"] = reservedCents
 	var userMessage, assistantMessage *store.AssistantMessage
 	var run *store.AssistantRun
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
@@ -668,9 +687,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		run, insertErr = store.InsertAssistantRun(c.Request.Context(), tx, store.AssistantRun{
 			ID: runID, UserID: user.ID, ConversationID: conversationID, UserMessageID: userMessageID,
 			AssistantMessageID: assistantMessageID, Mode: body.Mode, Prompt: body.Prompt, Params: params,
+			ReservedCents: reservedCents,
 		})
 		if insertErr != nil {
 			return insertErr
+		}
+		if err := assistantbilling.Reserve(c.Request.Context(), tx, run); err != nil {
+			return err
 		}
 		var title *string
 		if conversation.Title == "新对话" {
@@ -685,7 +708,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if err := s.Queue.EnqueueAssistantRun(c.Request.Context(), run.ID.String()); err != nil {
 		message := "任务入队失败，请稍后重试"
-		_, _ = store.FailAssistantRun(c.Request.Context(), s.St.Pool, run.ID, "queue_error", message)
+		if _, failErr := assistantbilling.Fail(c.Request.Context(), s.St, run.ID, "queue_error", message); failErr != nil {
+			fail(c, failErr)
+			return
+		}
 		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, assistantMessage.ID, "", body.Mode, "failed",
 			map[string]any{"runId": run.ID.String(), "pending": false, "statusStage": "failed", "error": message})
 		fail(c, apperr.E("queue_error", message, 503))
@@ -713,6 +739,16 @@ func selectAssistantRunModel(cfg modelconfig.Config, workspace, kind, requestedM
 		return selection, configured
 	}
 	return modelconfig.SelectPublicForWorkspace(cfg, workspace, kind, "")
+}
+
+func selectAssistantServiceModel(cfg modelconfig.Config, workspace, kind, requestedModelID string, allowFallback bool) (*modelconfig.Selection, bool) {
+	selection, configured := selectAssistantRunModel(cfg, workspace, kind, requestedModelID, allowFallback)
+	if configured || workspace != modelconfig.WorkspaceUIDesign || kind != modelconfig.ModelKindChat {
+		return selection, configured
+	}
+	// Runtime config exposes the assistant chat assignment when UI design has
+	// no saved analysis model, so accept the same fallback here.
+	return selectAssistantRunModel(cfg, modelconfig.WorkspaceAssistant, kind, requestedModelID, allowFallback)
 }
 
 func (s *Server) assistantRuns(c *gin.Context) {
@@ -781,7 +817,7 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		}
 		return
 	}
-	canceled, err := store.CancelAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
+	run, canceled, err := assistantbilling.CancelUser(c.Request.Context(), s.St, user.ID, id)
 	if err != nil {
 		fail(c, err)
 		return
@@ -859,7 +895,9 @@ func assistantRunDict(item *store.AssistantRun) gin.H {
 	return gin.H{"id": item.ID.String(), "conversationId": item.ConversationID.String(),
 		"userMessageId": item.UserMessageID.String(), "assistantMessageId": item.AssistantMessageID.String(),
 		"mode": item.Mode, "resolvedMode": item.ResolvedMode, "status": item.Status, "stage": item.Stage,
-		"errorCode": item.ErrorCode, "errorMessage": item.ErrorMessage, "createdAt": isoValue(item.CreatedAt),
+		"reservedCents": item.ReservedCents, "costCents": item.CostCents,
+		"billingGeneration": item.BillingGeneration,
+		"errorCode":         item.ErrorCode, "errorMessage": item.ErrorMessage, "createdAt": isoValue(item.CreatedAt),
 		"startedAt": iso(item.StartedAt), "finishedAt": iso(item.FinishedAt)}
 }
 

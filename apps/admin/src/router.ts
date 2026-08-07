@@ -42,9 +42,29 @@ const router = createRouter({
           meta: { title: "兑换码" },
         },
         {
+          path: "plans",
+          component: () => import("@/views/PlansView.vue"),
+          meta: { title: "套餐管理" },
+        },
+        {
+          path: "trial-applications",
+          component: () => import("@/views/TrialApplicationsView.vue"),
+          meta: { title: "体验活动" },
+        },
+        {
+          path: "checkin-activity",
+          component: () => import("@/views/CheckinSettingsView.vue"),
+          meta: { title: "签到活动" },
+        },
+        {
+          path: "feedback",
+          component: () => import("@/views/FeedbackView.vue"),
+          meta: { title: "用户反馈" },
+        },
+        {
           path: "tasks",
           component: () => import("@/views/TasksView.vue"),
-          meta: { title: "任务监控" },
+          meta: { title: "任务与调度" },
         },
         {
           path: "model-config",
@@ -78,8 +98,7 @@ const router = createRouter({
         },
         {
           path: "settings",
-          component: () => import("@/views/SettingsView.vue"),
-          meta: { title: "系统设置" },
+          redirect: "/",
         },
       ],
     },

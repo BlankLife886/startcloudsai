@@ -7,7 +7,10 @@ import { useWallpaperInputs } from '@/features/ai-wallpaper/composables/useWallp
 import { useWallpaperModels } from '@/features/ai-wallpaper/composables/useWallpaperModels'
 import { useWallpaperTasks } from '@/features/ai-wallpaper/composables/useWallpaperTasks'
 import { WALLPAPER_INSPECTOR_TABS } from '@/features/ai-wallpaper/composables/wallpaperStudioConstants'
-import { takePendingPrompt } from '@/features/creator-hub/studioTools'
+import {
+  composePendingLaunchPrompt,
+  takePendingPrompt,
+} from '@/features/creator-hub/studioTools'
 import { getDisplayImageUrl } from '@/services/aiWallpaper'
 import { resolveAiFeatureRuntimeConfig } from '@/config/aiFeatureSettings'
 import notificationService from '@/services/notification'
@@ -602,9 +605,9 @@ export function useAiWallpaperStudioState() {
     // 历史任务仅登录用户可恢复，游客不允许保留历史记录 ——
     models.loadCapabilityKit()
     restoreStudioDraft()
-    const pendingPrompt = takePendingPrompt('t2i')
-    if (pendingPrompt?.prompt) {
-      inputs.prompt.value = pendingPrompt.prompt
+    const pendingLaunch = takePendingPrompt('t2i')
+    if (pendingLaunch) {
+      inputs.prompt.value = composePendingLaunchPrompt(pendingLaunch)
     }
     inputs.inputMode.value = 'text'
     outputType.value = 'image'
@@ -613,6 +616,27 @@ export function useAiWallpaperStudioState() {
         runtimeConfigStore.loadRuntimeConfig({ force: true }).catch(() => {}),
         authStore.initAuth().catch(() => null),
       ])
+      const launchConfig = pendingLaunch?.config || {}
+      if (
+        launchConfig.model &&
+        models.activePublicModelOptions.value.some((item) => item.id === launchConfig.model)
+      ) {
+        models.selectedPublicModel.value = launchConfig.model
+      }
+      if (launchConfig.skill === 'none') {
+        models.selectedSkillIds.value = []
+      } else if (
+        launchConfig.skill &&
+        models.skillOptions.value.some((item) => item.id === launchConfig.skill)
+      ) {
+        models.selectedSkillIds.value = [launchConfig.skill]
+      }
+      if (launchConfig.ratio) inputs.aspectRatio.value = launchConfig.ratio
+      if (launchConfig.resolution) inputs.resolutionScale.value = launchConfig.resolution
+      if (launchConfig.quality) inputs.imageQuality.value = launchConfig.quality
+      if ([1, 2, 3, 4].includes(Number(launchConfig.count))) {
+        inputs.imageCount.value = Number(launchConfig.count)
+      }
       const earlyJobsSync = authStore.isAuthenticated
         ? tasks.refreshServerAiJobs().catch(() => false)
         : Promise.resolve(false)
@@ -819,7 +843,6 @@ export function useAiWallpaperStudioState() {
     resultRevealing: canvas.resultRevealing,
     clearResultReveal: canvas.clearResultReveal,
     promptPresets: inputs.promptPresets,
-    promptLibrary: inputs.promptLibrary,
     skillOptions: models.skillOptions,
     customSkills: models.customSkills,
     mcpOptions: models.mcpOptions,

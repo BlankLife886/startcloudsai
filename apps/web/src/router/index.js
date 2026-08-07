@@ -2,11 +2,9 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { reactive } from 'vue'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { useAuthStore } from '@/stores/auth'
-import {
-  DEFAULT_AUTH_REDIRECT,
-  createAuthRedirectLocation,
-  createLoginRedirectQuery,
-} from '@/services/authRedirect'
+import { requestAuthentication } from '@/services/authGate'
+import { DEFAULT_AUTH_REDIRECT, createAuthRedirectLocation } from '@/services/authRedirect'
+import { getTrialAccessApplication, getTrialAccessCampaign } from '@/services/trialAccessApi'
 
 if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
   window.history.scrollRestoration = 'manual'
@@ -59,6 +57,7 @@ const routes = [
       titleLabel: '历史记录',
       icon: 'bi-clock-history',
       description: '查看各工作台的生成历史，支持筛选、复用提示词与管理产物。',
+      requiresAuth: true,
       hideSiteFooter: true,
     },
   },
@@ -80,6 +79,8 @@ const routes = [
     meta: {
       title: `文生图 - ${siteName}`,
       description: '用文字生成图片，也支持参考图与图生图。',
+      requiresAuth: true,
+      trialFeatureKey: 'text_to_image',
     },
   },
   {
@@ -107,6 +108,20 @@ const routes = [
     },
   },
   {
+    path: '/ecommerce-design',
+    name: 'ecommerce-design',
+    component: () => import('../views/EcommerceDesignView.vue'),
+    meta: {
+      title: `AI 电商设计 - ${siteName}`,
+      titleLabel: 'AI 电商设计',
+      icon: 'bi-bag-check-fill',
+      description: '上传商品图，一次生成适配不同平台、市场与语言的电商详情视觉。',
+      requiresAuth: true,
+      trialFeatureKey: 'ecommerce_design',
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/ai-wallpaper',
     redirect: '/text-to-image',
   },
@@ -119,6 +134,8 @@ const routes = [
       titleLabel: '插画染色',
       icon: 'bi-brush-fill',
       description: '上传线稿插画，由 AI 智能上色并导出高清结果。',
+      requiresAuth: true,
+      trialFeatureKey: 'illustration_coloring',
       hideSiteFooter: true,
     },
   },
@@ -143,6 +160,7 @@ const routes = [
       icon: 'bi-person-bounding-box',
       description: '上传图片并移除背景，导出透明 PNG。',
       requiresAuth: true,
+      trialFeatureKey: 'background_remove',
       hideSiteFooter: true,
     },
   },
@@ -155,6 +173,8 @@ const routes = [
       titleLabel: '设计稿',
       icon: 'bi-bezier2',
       description: '生成前端 UI 设计稿，并在本地完成透明背景 PNG 与真实 SVG 路径转换。',
+      requiresAuth: true,
+      trialFeatureKey: 'ui_design',
       hideSiteFooter: true,
     },
   },
@@ -167,6 +187,8 @@ const routes = [
       titleLabel: '模型图',
       icon: 'bi-person-bounding-box',
       description: '把人物或物体转换为可用于后续建模的超高清多视角模型参考图。',
+      requiresAuth: true,
+      trialFeatureKey: 'model_sheet',
       hideSiteFooter: true,
     },
   },
@@ -179,6 +201,8 @@ const routes = [
       titleLabel: '游戏设计',
       icon: 'bi-controller',
       description: '生成角色、场景、道具、游戏 UI、图标与贴图等高清游戏生产素材。',
+      requiresAuth: true,
+      trialFeatureKey: 'game_art',
       hideSiteFooter: true,
     },
   },
@@ -205,6 +229,106 @@ const routes = [
     },
   },
   {
+    path: '/feedback',
+    name: 'feedback',
+    component: () => import('../views/FeedbackView.vue'),
+    meta: {
+      title: `问题反馈 - ${siteName}`,
+      titleLabel: '问题反馈',
+      icon: 'bi-chat-square-text',
+      description: '提交产品问题与建议，并查看反馈处理进度。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/check-in',
+    name: 'check-in',
+    component: () => import('../views/CheckinView.vue'),
+    meta: {
+      title: `每日签到 - ${siteName}`,
+      titleLabel: '每日签到',
+      icon: 'bi-calendar-check',
+      description: '每日签到领取创作积分，连续签到可获得更高奖励。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/incentive-plans',
+    name: 'incentive-plans',
+    component: () => import('../views/CreatorIncentivesView.vue'),
+    meta: {
+      title: `创作激励 - ${siteName}`,
+      titleLabel: '创作激励',
+      icon: 'bi-gift',
+      description: '查看账户权益、活动进度、服务保障与创作奖励。',
+      requiresAuth: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/incentive-plans/group',
+    name: 'friend-group',
+    component: () => import('../views/FriendGroupView.vue'),
+    meta: {
+      title: `好友拼团 - ${siteName}`,
+      titleLabel: '好友拼团',
+      description: '邀请好友一起参与拼团，成团后共同获得创作积分。',
+      requiresAuth: true,
+      immersive: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/incentive-plans/membership',
+    name: 'membership-plan',
+    component: () => import('../views/MembershipPlanView.vue'),
+    meta: {
+      title: `会员计划 - ${siteName}`,
+      titleLabel: '会员计划',
+      description: '对比会员计划、体验资格与企业合作方案。',
+      requiresAuth: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/incentive-plans/failure',
+    name: 'failure-compensation',
+    component: () => import('../views/FailureCompensationView.vue'),
+    meta: {
+      title: `失败补偿 - ${siteName}`,
+      titleLabel: '失败补偿',
+      description: '查看失败任务费用释放、额外补偿与每日补偿状态。',
+      requiresAuth: true,
+      immersive: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/incentive-plans/suggestion',
+    name: 'suggestion-adoption',
+    component: () => import('../views/SuggestionAdoptionView.vue'),
+    meta: {
+      title: `建议采纳 - ${siteName}`,
+      titleLabel: '建议采纳',
+      description: '提交真实、具体且可执行的产品建议，并查看采纳与奖励规则。',
+      requiresAuth: true,
+      immersive: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/incentive-plans/:program',
+    name: 'incentive-plan-detail',
+    component: () => import('../views/CreatorIncentiveDetailView.vue'),
+    meta: {
+      title: `创作激励 - ${siteName}`,
+      titleLabel: '创作激励',
+      description: '查看激励计划详情、账户进度与参与方式。',
+      requiresAuth: true,
+      hideSiteFooter: true,
+    },
+  },
+  {
     path: '/app-space',
     name: 'app-space',
     component: () => import('../views/AppSpaceView.vue'),
@@ -221,7 +345,67 @@ const routes = [
     component: () => import('../views/ProfileView.vue'),
     meta: {
       title: `个人中心 - ${siteName}`,
-      description: '查看账号信息、钱包余额、创作任务与画廊投稿。',
+      description: '查看账号总览、创作数据与快捷入口。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/submissions',
+    name: 'submissions',
+    component: () => import('../views/SubmissionsView.vue'),
+    meta: {
+      title: `我的投稿 - ${siteName}`,
+      titleLabel: '我的投稿',
+      icon: 'bi-send-check',
+      description: '查看画廊投稿与审核进度。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/wallet',
+    name: 'wallet',
+    component: () => import('../views/WalletView.vue'),
+    meta: {
+      title: `钱包 - ${siteName}`,
+      titleLabel: '钱包',
+      icon: 'bi-wallet2',
+      description: '管理余额、兑换码和资金明细。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/account',
+    name: 'account',
+    component: () => import('../views/AccountSettingsView.vue'),
+    meta: {
+      title: `账号设置 - ${siteName}`,
+      titleLabel: '账号设置',
+      icon: 'bi-person-gear',
+      description: '管理公开资料、创作偏好和账号安全。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/notifications',
+    name: 'notifications',
+    component: () => import('../views/NotificationsView.vue'),
+    meta: {
+      title: `通知 - ${siteName}`,
+      titleLabel: '通知',
+      icon: 'bi-bell',
+      description: '查看账号、任务与审核相关的站内通知。',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/materials',
+    name: 'materials',
+    component: () => import('../views/MaterialsLibraryView.vue'),
+    meta: {
+      title: `素材库 - ${siteName}`,
+      titleLabel: '素材库',
+      icon: 'bi-collection',
+      description: '上传并整理可重复使用的个人视觉素材。',
       requiresAuth: true,
     },
   },
@@ -379,15 +563,62 @@ router.beforeEach(async (to, from, next) => {
 
   if (to.meta?.requiresAuth) {
     if (!authStore.isAuthenticated) {
-      next({
-        name: 'auth',
-        query: {
-          ...createLoginRedirectQuery(to.fullPath),
-          mode: 'login',
-        },
-        replace: true,
+      requestAuthentication({
+        target: to.fullPath,
+        pageTitle: to.meta?.titleLabel || String(to.meta?.title || '').split(' - ')[0] || '此页面',
       })
+      navigationTarget.name = null
+      navigationTarget.path = ''
+      if (from.matched?.length) next(false)
+      else next({ name: 'home', replace: true })
       return
+    }
+  }
+
+  if (to.meta?.trialFeatureKey && authStore.isAuthenticated) {
+    try {
+      const [campaign, application] = await Promise.all([
+        getTrialAccessCampaign(),
+        getTrialAccessApplication(),
+      ])
+      const campaignFeatures = Array.isArray(campaign?.features)
+        ? campaign.features
+        : campaign?.feature
+          ? [campaign.feature]
+          : []
+      const applicationFeatureKeys = Array.isArray(application?.featureKeys)
+        ? application.featureKeys
+        : application?.featureKey
+          ? [application.featureKey]
+          : []
+      const applicationFeatures = Array.isArray(application?.features)
+        ? application.features
+        : application?.feature
+          ? [application.feature]
+          : []
+      const campaignFeature = campaignFeatures.find(
+        (feature) => feature?.key === to.meta.trialFeatureKey,
+      )
+      const entitlementMatches =
+        applicationFeatureKeys.includes(to.meta.trialFeatureKey) &&
+        applicationFeatures.some(
+          (feature) =>
+            feature?.key === to.meta.trialFeatureKey && feature?.entitlementActive === true,
+        )
+      if (campaign?.accessMode === 'restricted' && campaignFeature && !entitlementMatches) {
+        next({
+          name: 'access-limited',
+          query: {
+            reason: `「${campaignFeature?.label || '该功能'}」正在内测，请先申请并通过体验资格审核`,
+            type: 'trial',
+          },
+          replace: true,
+        })
+        return
+      }
+    } catch {
+      // The route check is an experience guard. Task submission remains the
+      // authoritative server-side permission boundary.
     }
   }
 

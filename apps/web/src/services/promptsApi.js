@@ -9,6 +9,7 @@ import { apiGet, apiPost } from './apiClient'
 
 const CACHE_TTL_MS = 5 * 60 * 1000
 const cache = new Map()
+const categoryCache = new Map()
 
 function normalizePromptItem(raw = {}) {
   return {
@@ -82,6 +83,29 @@ export async function listPrompts({
   return result
 }
 
+export async function listPromptCategories({ type = '', signal } = {}) {
+  const cacheKey = String(type || '')
+  const hit = categoryCache.get(cacheKey)
+  if (hit && hit.expiresAt > Date.now()) return hit.items
+
+  const data = await apiGet('/prompts/categories', {
+    query: { type },
+    signal,
+    fallbackMessage: '提示词分类读取失败',
+  })
+  const items = (Array.isArray(data?.items) ? data.items : [])
+    .map((item) => ({
+      id: String(item?.id || ''),
+      key: String(item?.key || '').trim(),
+      label: String(item?.label || '').trim(),
+      sort: Number(item?.sort) || 0,
+      count: Math.max(0, Number(item?.count) || 0),
+    }))
+    .filter((item) => item.key && item.label)
+  categoryCache.set(cacheKey, { expiresAt: Date.now() + 60_000, items })
+  return items
+}
+
 export async function recordPromptEngagement(id, action, active = true) {
   const data = await apiPost(`/prompts/${encodeURIComponent(String(id))}/engagements`, {
     action,
@@ -94,4 +118,5 @@ export async function recordPromptEngagement(id, action, active = true) {
 /** 清空词库缓存（当前仅供调试/测试使用）。 */
 export function clearPromptsCache() {
   cache.clear()
+  categoryCache.clear()
 }

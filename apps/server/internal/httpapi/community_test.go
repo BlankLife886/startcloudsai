@@ -416,7 +416,7 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update profile: %v", err)
 	}
-	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "测试素材", "assets/a.png", "assets/a.jpg", "image/png", 128); err != nil {
+	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "测试素材", "assets/a.png", "assets/a.jpg", "image/png", 128, nil); err != nil {
 		t.Fatalf("insert asset: %v", err)
 	}
 	env.newSucceededTask(t, user.ID)
@@ -596,6 +596,99 @@ func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
 	second, _ := store.GetSubmission(context.Background(), env.st.Pool, uuid.MustParse(ids[0]))
 	if first.Sort != 10 || second.Sort != 20 {
 		t.Fatalf("sorts = %d, %d; want 10, 20", first.Sort, second.Sort)
+	}
+}
+
+func TestPromptCategoryCRUDAndDeleteReassignsPrompts(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	findCategory := func(items []any, key string) map[string]any {
+		t.Helper()
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			if item["key"] == key {
+				return item
+			}
+		}
+		return nil
+	}
+
+	w := env.do(t, http.MethodGet, "/api/v1/admin/prompt-categories", nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list prompt categories: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	builtinItems, _ := data["items"].([]any)
+	other := findCategory(builtinItems, "other")
+	if other == nil || other["builtin"] != true {
+		t.Fatalf("other category = %#v, want builtin category", other)
+	}
+
+	w = env.do(t, http.MethodPost, "/api/v1/admin/prompt-categories", gin.H{
+		"key": "concept-art", "label": "概念艺术", "active": true,
+	}, adminToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	created, _ := decode(t, w)
+	categoryID, _ := created["id"].(string)
+	if categoryID == "" || created["key"] != "concept-art" {
+		t.Fatalf("created category = %#v", created)
+	}
+
+	w = env.do(t, http.MethodGet, "/api/v1/prompts/categories?type=t2i", nil, "")
+	publicData, _ := decode(t, w)
+	publicItems, _ := publicData["items"].([]any)
+	if findCategory(publicItems, "concept-art") == nil {
+		t.Fatalf("public categories = %#v, want concept-art", publicItems)
+	}
+
+	w = env.do(t, http.MethodPatch, "/api/v1/admin/prompt-categories/"+categoryID, gin.H{
+		"label": "概念设计", "active": false,
+	}, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	patched, _ := decode(t, w)
+	if patched["label"] != "概念设计" || patched["active"] != false {
+		t.Fatalf("patched category = %#v", patched)
+	}
+	w = env.do(t, http.MethodGet, "/api/v1/prompts/categories?type=t2i", nil, "")
+	publicData, _ = decode(t, w)
+	publicItems, _ = publicData["items"].([]any)
+	if findCategory(publicItems, "concept-art") != nil {
+		t.Fatalf("inactive category is still public: %#v", publicItems)
+	}
+
+	w = env.do(t, http.MethodPost, "/api/v1/admin/prompts", gin.H{
+		"title": "分类删除迁移测试", "prompt": "concept art prompt", "taskType": "t2i",
+		"category": "concept-art", "active": true,
+	}, adminToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create prompt in custom category: status %d body %s", w.Code, w.Body.String())
+	}
+	promptData, _ := decode(t, w)
+	promptID, err := uuid.Parse(promptData["id"].(string))
+	if err != nil {
+		t.Fatalf("parse prompt id: %v", err)
+	}
+
+	w = env.do(t, http.MethodDelete, "/api/v1/admin/prompt-categories/"+categoryID, nil, adminToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	entry, err := store.GetPromptEntry(context.Background(), env.st.Pool, promptID)
+	if err != nil {
+		t.Fatalf("get reassigned prompt: %v", err)
+	}
+	if entry == nil || entry.Category == nil || *entry.Category != "other" {
+		t.Fatalf("prompt category = %#v, want other", entry)
+	}
+
+	w = env.do(t, http.MethodDelete, "/api/v1/admin/prompt-categories/"+other["id"].(string), nil, adminToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete builtin category: status %d body %s, want 409", w.Code, w.Body.String())
 	}
 }
 

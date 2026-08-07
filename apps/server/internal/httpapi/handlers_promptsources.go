@@ -236,17 +236,20 @@ func (s *Server) adminDeletePromptSource(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminSyncPromptSource(c *gin.Context, _ *store.User) {
-	result, err := s.PromptSync.SyncSource(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		if errors.Is(err, promptsync.ErrSyncBusy) {
-			fail(c, apperr.E("rate_limited", "该源正在同步中，请稍后再试", 429))
-			return
-		}
-		fail(c, apperr.E("internal_error", "同步失败："+err.Error(), 500))
+	if source, err := store.GetPromptSource(c.Request.Context(), s.St.Pool, c.Param("id")); err != nil {
+		fail(c, err)
+		return
+	} else if source == nil {
+		fail(c, apperr.E("not_found", "数据源不存在", 404))
 		return
 	}
-	if result == nil {
-		fail(c, apperr.E("not_found", "数据源不存在", 404))
+	result, err := s.PromptSync.CreateImportBatch(c.Request.Context(), []string{c.Param("id")}, "rules")
+	if errors.Is(err, promptsync.ErrImportBatchPending) {
+		fail(c, apperr.E("conflict", err.Error(), 409))
+		return
+	}
+	if err != nil {
+		fail(c, apperr.E("internal_error", "获取失败："+err.Error(), 500))
 		return
 	}
 	respondCreated(c, result)

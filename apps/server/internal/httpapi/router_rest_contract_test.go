@@ -27,8 +27,19 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"PATCH /api/v1/canvas-projects/:id",
 		"DELETE /api/v1/canvas-projects/:id",
 		"GET /api/v1/gallery/submissions",
+		"GET /api/v1/prompts/categories",
+		"GET /api/v1/admin/prompt-categories",
+		"POST /api/v1/admin/prompt-categories",
+		"PATCH /api/v1/admin/prompt-categories/:id",
+		"DELETE /api/v1/admin/prompt-categories/:id",
+		"GET /api/v1/admin/prompt-import-batches",
+		"POST /api/v1/admin/prompt-import-batches",
+		"POST /api/v1/admin/prompt-import-batches/upload",
+		"PUT /api/v1/admin/prompt-import-batches/:id/items/:itemId/cover",
+		"POST /api/v1/admin/prompt-import-batches/:id/publish",
 		"GET /api/v1/admin/prompts",
 		"POST /api/v1/admin/prompts",
+		"GET /api/v1/admin/prompts/export",
 		"PATCH /api/v1/admin/tasks/:id",
 		"GET /api/v1/admin/system/metrics",
 	}
@@ -44,6 +55,8 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"POST /api/v1/tasks/:id/cancel",
 		"POST /api/v1/admin/tasks/:id/requeue",
 		"GET /api/v1/admin/prompt-library",
+		"GET /api/v1/admin/prompts/asset-audit",
+		"PATCH /api/v1/admin/prompts/:id/asset",
 		"GET /api/v1/gallery",
 	}
 	for _, route := range removed {

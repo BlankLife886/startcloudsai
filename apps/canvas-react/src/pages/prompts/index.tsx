@@ -8,7 +8,7 @@ import { PromptDetailDialog } from "./components/prompt-detail-dialog";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { cn } from "@/lib/utils";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { ALL_PROMPTS_OPTION, type Prompt } from "@/services/api/prompts";
+import { ALL_PROMPTS_OPTION, type Prompt, type PromptCategoryOption } from "@/services/api/prompts";
 
 export default function PromptsPage() {
     const { message } = App.useApp();
@@ -100,14 +100,14 @@ export default function PromptsPage() {
     );
 }
 
-function PromptFilter({ label, options, selected, onChange }: { label: string; options: string[]; selected: string; onChange: (value: string) => void }) {
+function PromptFilter({ label, options, selected, onChange }: { label: string; options: PromptCategoryOption[]; selected: string; onChange: (value: string) => void }) {
     return (
         <div>
             <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">{label}</div>
             <div className="flex flex-wrap gap-1.5">
                 {options.map((option) => (
-                    <Tag.CheckableTag key={option} checked={selected === option} className={cn("prompt-filter-tag", selected === option && "is-active")} onChange={() => onChange(option)}>
-                        {option}
+                    <Tag.CheckableTag key={option.value} checked={selected === option.value} className={cn("prompt-filter-tag", selected === option.value && "is-active")} onChange={() => onChange(option.value)}>
+                        {option.label}
                     </Tag.CheckableTag>
                 ))}
             </div>

@@ -272,6 +272,32 @@ func TestSelectAssistantRunModelFallsBackForHistoricalRetry(t *testing.T) {
 	}
 }
 
+func TestUIDesignAnalysisCanUseAssistantChatFallback(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "assistant-chat", Name: "Assistant Chat", ProviderID: "provider", UpstreamModel: "chat-current",
+		Kind: modelconfig.ModelKindChat, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs:        []string{"assistant-chat"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "assistant-chat"},
+		},
+		modelconfig.WorkspaceUIDesign: {ModelIDs: []string{}},
+	}
+
+	selection, ok := selectAssistantServiceModel(
+		cfg, modelconfig.WorkspaceUIDesign, modelconfig.ModelKindChat, "assistant-chat", false,
+	)
+	if !ok || selection == nil || selection.Model.ID != "assistant-chat" {
+		t.Fatalf("assistant chat fallback = %#v, %v", selection, ok)
+	}
+}
+
 func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
@@ -361,7 +387,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if err := store.SetAssistantRunStage(ctx, env.st.Pool, run.ID, "chat", "answering"); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat")
+	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat", 0)
 	if err != nil || !completed {
 		t.Fatalf("complete = %v, err = %v", completed, err)
 	}

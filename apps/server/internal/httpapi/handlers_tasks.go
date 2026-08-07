@@ -168,13 +168,10 @@ func (s *Server) createTask(c *gin.Context) {
 	}
 	if created {
 		if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
-			// C1 补偿：入队失败立即 queued→failed + 解冻，返回 500 让用户重试
-			log.Printf("task %s enqueue failed, compensating: %v", task.ID, err)
-			if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
-				log.Printf("task %s enqueue compensation failed (queued reaper will pick up): %v", task.ID, cerr)
-			}
-			fail(c, apperr.E("enqueue_failed", "任务入队失败，费用已退回，请重试", 500))
-			return
+			// PostgreSQL queued row is the durable source of truth. A transient Redis
+			// outage must not turn accepted work into a terminal failure; the queued
+			// recovery scan will enqueue it after Redis becomes available again.
+			log.Printf("task %s enqueue deferred; durable queued recovery will retry: %v", task.ID, err)
 		}
 	} else if task.Status == "queued" {
 		// 幂等重试命中已有 queued 任务：补一次入队（Asynq 同 task_id 重复入队无害）
@@ -362,6 +359,12 @@ func (s *Server) deleteTask(c *gin.Context) {
 	ctx := c.Request.Context()
 	keys := append([]string(nil), task.OutputKeys...)
 	keys = append(keys, task.ThumbnailKeys...)
+	if len(keys) > 0 {
+		if err := s.Storage.DeleteKeys(ctx, keys); err != nil {
+			fail(c, err)
+			return
+		}
+	}
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		if terr := store.DeleteSubmissionByTaskID(ctx, tx, task.ID); terr != nil {
 			return terr
@@ -371,11 +374,6 @@ func (s *Server) deleteTask(c *gin.Context) {
 	if err != nil {
 		fail(c, err)
 		return
-	}
-	if len(keys) > 0 {
-		if err := s.Storage.DeleteKeys(ctx, keys); err != nil {
-			log.Printf("failed to delete R2 keys for task %s: %v", task.ID, err)
-		}
 	}
 	respondNoContent(c)
 }

@@ -33,6 +33,10 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/prompt-import-batches/") && strings.HasSuffix(path, "/cover"):
+		return promptCoverMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/prompt-import-batches/upload":
+		return promptTransferMaxBytes + (1 << 20)
 	default:
 		return limit
 	}
@@ -135,6 +139,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/auth/session", s.verifyEmailCode)
 	api.GET("/auth/session", s.authMe)
 	api.DELETE("/auth/session", s.logout)
+	api.GET("/trial-access-campaign", s.trialAccessCampaign)
 
 	// assistant workspace (Sub2API server-side bridge)
 	api.GET("/assistant/config", s.assistantConfig)
@@ -157,8 +162,12 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/wallet", s.myWallet)
+	api.GET("/me/subscription", s.mySubscription)
 	api.GET("/me/wallet/entries", s.myLedger)
 	api.POST("/me/wallet/redemptions", s.redeemCode)
+	api.GET("/me/trial-access-application", s.myTrialAccessApplication)
+	api.POST("/me/trial-access-applications", s.submitTrialAccessApplication)
+	api.POST("/me/trial-access-application/reward", s.redeemTrialAccessReward)
 	api.GET("/me/notifications", s.myNotifications)
 	api.PATCH("/me/notifications", s.markNotificationsRead)
 	api.GET("/me/tasks/events", s.userTaskStream)
@@ -166,7 +175,19 @@ func (s *Server) Router() *gin.Engine {
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
 	api.GET("/me/assets", s.myAssets)
 	api.POST("/me/assets", s.createUserAsset)
+	api.PATCH("/me/assets/:id", s.updateUserAsset)
 	api.DELETE("/me/assets/:id", s.deleteUserAsset)
+	api.GET("/me/asset-groups", s.myAssetGroups)
+	api.POST("/me/asset-groups", s.createUserAssetGroup)
+	api.PATCH("/me/asset-groups/:id", s.updateUserAssetGroup)
+	api.DELETE("/me/asset-groups/:id", s.deleteUserAssetGroup)
+	api.GET("/me/feedback", s.myFeedback)
+	api.POST("/me/feedback", s.submitUserFeedback)
+	api.GET("/me/checkin", s.myCheckinState)
+	api.POST("/me/checkin", s.claimDailyCheckin)
+	api.GET("/me/growth", s.myGrowthPrograms)
+	api.POST("/me/growth/groups", s.createGrowthGroup)
+	api.POST("/me/growth/groups/join", s.joinGrowthGroup)
 
 	// tasks
 	api.POST("/tasks", s.createTask)
@@ -193,6 +214,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/gallery/submissions", s.submitGallery)
 
 	// prompts（提示词库，公开）
+	api.GET("/prompts/categories", s.publicPromptCategories)
 	api.GET("/prompts", s.publicPrompts)
 	api.POST("/prompts/:id/engagements", s.promptEngagement)
 
@@ -223,6 +245,10 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
 	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
+	admin.GET("/plans", s.adminOnly(s.adminListPlans))
+	admin.POST("/plans", s.adminOnly(s.adminCreatePlan))
+	admin.PATCH("/plans/:id", s.adminOnly(s.adminPatchPlan))
+	admin.DELETE("/plans/:id", s.adminOnly(s.adminDeletePlan))
 	admin.GET("/tasks", s.adminOnly(s.adminListTasks))
 	admin.PATCH("/tasks/:id", s.adminOnly(s.adminPatchTask))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
@@ -230,6 +256,17 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/redemption-codes", s.adminOnly(s.adminListRedemptionCodes))
 	admin.PATCH("/redemption-codes/:id", s.adminOnly(s.adminDisableRedemptionCode))
 	admin.GET("/redemption-code-batches", s.adminOnly(s.adminRedemptionBatches))
+	admin.GET("/trial-access-applications", s.adminOnly(s.adminTrialAccessApplications))
+	admin.PATCH("/trial-access-applications/:id", s.adminOnly(s.adminReviewTrialAccessApplication))
+	admin.POST("/trial-access-applications/:id/reward-reissues", s.adminOnly(s.adminReissueTrialAccessReward))
+	admin.GET("/trial-campaigns", s.adminOnly(s.adminTrialCampaigns))
+	admin.POST("/trial-campaigns", s.adminOnly(s.adminCreateTrialCampaign))
+	admin.PATCH("/trial-campaigns/:id", s.adminOnly(s.adminUpdateTrialCampaign))
+	admin.DELETE("/trial-campaigns/:id", s.adminOnly(s.adminDeleteTrialCampaign))
+	admin.POST("/trial-campaigns/:id/activation", s.adminOnly(s.adminActivateTrialCampaign))
+	admin.POST("/trial-campaigns/:id/closure", s.adminOnly(s.adminCloseTrialCampaign))
+	admin.GET("/feedback", s.adminOnly(s.adminFeedback))
+	admin.PATCH("/feedback/:id", s.adminOnly(s.adminReviewFeedback))
 	admin.GET("/gallery/submissions", s.adminOnly(s.adminSubmissions))
 	admin.POST("/gallery/submissions/:id/reviews", s.adminOnly(s.adminReviewSubmission))
 	admin.PUT("/gallery/submissions/:id/curation", s.adminOnly(s.adminCurateSubmission))
@@ -244,7 +281,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/gallery/settings", s.adminOnly(s.adminGetGallerySettings))
 	admin.PUT("/gallery/settings", s.adminOnly(s.adminPutGallerySettings))
 	admin.GET("/gallery/authors", s.adminOnly(s.adminGalleryAuthors))
+	admin.GET("/prompt-categories", s.adminOnly(s.adminPromptCategories))
+	admin.POST("/prompt-categories", s.adminOnly(s.adminCreatePromptCategory))
+	admin.PATCH("/prompt-categories/:id", s.adminOnly(s.adminPatchPromptCategory))
+	admin.DELETE("/prompt-categories/:id", s.adminOnly(s.adminDeletePromptCategory))
 	admin.GET("/prompts", s.adminOnly(s.adminListPrompts))
+	admin.GET("/prompts/export", s.adminOnly(s.adminExportPrompts))
 	admin.POST("/prompts", s.adminOnly(s.adminCreatePrompt))
 	admin.PATCH("/prompts/order", s.adminOnly(s.adminReorderPrompts))
 	admin.GET("/prompts/:id/position", s.adminOnly(s.adminPromptPosition))
@@ -258,6 +300,17 @@ func (s *Server) Router() *gin.Engine {
 	admin.PATCH("/prompt-sources/:id", s.adminOnly(s.adminPatchPromptSource))
 	admin.DELETE("/prompt-sources/:id", s.adminOnly(s.adminDeletePromptSource))
 	admin.POST("/prompt-sources/:id/synchronizations", s.adminOnly(s.adminSyncPromptSource))
+	admin.GET("/prompt-import-batches", s.adminOnly(s.adminListPromptImportBatches))
+	admin.POST("/prompt-import-batches", s.adminOnly(s.adminCreatePromptImportBatch))
+	admin.POST("/prompt-import-batches/upload", s.adminOnly(s.adminUploadPromptImport))
+	admin.GET("/prompt-import-batches/:id", s.adminOnly(s.adminGetPromptImportBatch))
+	admin.GET("/prompt-import-batches/:id/items", s.adminOnly(s.adminListPromptImportItems))
+	admin.GET("/prompt-import-batches/:id/items/:itemId/cover", s.adminOnly(s.adminPromptImportItemCover))
+	admin.PUT("/prompt-import-batches/:id/items/:itemId/cover", s.adminOnly(s.adminUploadPromptImportItemCover))
+	admin.PATCH("/prompt-import-batches/:id/items/:itemId", s.adminOnly(s.adminPatchPromptImportItem))
+	admin.POST("/prompt-import-batches/:id/analyze", s.adminOnly(s.adminAnalyzePromptImportBatch))
+	admin.POST("/prompt-import-batches/:id/bulk-review", s.adminOnly(s.adminBulkReviewPromptImportBatch))
+	admin.POST("/prompt-import-batches/:id/publish", s.adminOnly(s.adminPublishPromptImportBatch))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
@@ -292,7 +345,7 @@ func (s *Server) originGuard(c *gin.Context) {
 				}
 			}
 			if !allowed {
-				c.AbortWithStatusJSON(403, gin.H{"success": false, "code": "admin_required", "error": "Origin 不在白名单内"})
+				c.AbortWithStatusJSON(403, gin.H{"success": false, "code": "origin_not_allowed", "error": "当前访问地址不在服务端允许列表"})
 				return
 			}
 		}

@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
+import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
@@ -326,6 +327,7 @@ const taskSuccessRate = computed(() => {
         </div>
 
         <div class="users-toolbar__actions">
+          <RegistrationSettingsDialog />
           <el-input
             v-model="filters.search"
             class="users-search"

@@ -1,109 +1,265 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Check, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { request } from '@/request'
-import { normalizePoints } from '@/utils'
+import { computed, onMounted, reactive, ref } from "vue";
+import { Check, Delete, Plus, Refresh } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
+import { request } from "@/request";
+import { normalizePoints } from "@/utils";
 
 interface AdminSettings {
-  userMaxRunningTasks?: number
-  userMaxConcurrentTasks?: number
-  globalMaxConcurrentTasks?: number
-  globalMaxActiveTasks?: number
-  taskFailureRetryCount?: number
-  crossProviderSameModelBalancingEnabled?: boolean
-  workerConcurrencyCeiling?: number
-  effectiveGlobalConcurrency?: number
-  registrationEnabled?: boolean
-  signupBonusCents?: number
+  userMaxRunningTasks?: number;
+  userMaxRunningImages?: number;
+  userMaxConcurrentTasks?: number;
+  globalMaxConcurrentTasks?: number;
+  globalMaxActiveTasks?: number;
+  globalMaxActiveImages?: number;
+  taskFailureRetryCount?: number;
+  crossProviderSameModelBalancingEnabled?: boolean;
+  workerConcurrencyCeiling?: number;
+  effectiveGlobalConcurrency?: number;
+  registrationEnabled?: boolean;
+  signupBonusCents?: number;
+  checkinEnabled?: boolean;
+  checkinCampaignTitle?: string;
+  checkinRewards?: number[];
+  growthGroupEnabled?: boolean;
+  growthGroupCampaignKey?: string;
+  growthGroupTargetMembers?: number;
+  growthGroupRewardCents?: number;
+  growthGroupDurationHours?: number;
+  growthFailureBonusEnabled?: boolean;
+  growthFailureBonusCents?: number;
+  growthFailureBonusDailyLimit?: number;
+  growthUsageRewardsEnabled?: boolean;
+  growthUsageMilestones?: GrowthMilestone[];
+  suggestionRewardMaxCents?: number;
 }
 
-const loading = ref(false)
-const saving = ref(false)
-const savedSignature = ref('')
-const workerConcurrencyCeiling = ref(1)
+interface GrowthMilestone {
+  units: number;
+  rewardCents: number;
+}
+
+const loading = ref(false);
+const saving = ref(false);
+const savedSignature = ref("");
+const workerConcurrencyCeiling = ref(1);
 
 const form = reactive({
   userMaxRunningTasks: 100,
-  userMaxConcurrentTasks: 2,
-  globalMaxConcurrentTasks: 4,
-  globalMaxActiveTasks: 2000,
-  taskFailureRetryCount: 0,
+  userMaxRunningImages: 400,
+  userMaxConcurrentTasks: 20,
+  globalMaxConcurrentTasks: 2000,
+  globalMaxActiveTasks: 12000,
+  globalMaxActiveImages: 12000,
+  taskFailureRetryCount: 2,
   crossProviderSameModelBalancingEnabled: false,
   registrationEnabled: true,
   signupBonusPoints: 0,
-})
+  checkinEnabled: true,
+  checkinCampaignTitle: "连续签到领创作积分",
+  checkinRewards: [10, 15, 20, 25, 30, 40, 80],
+  growthGroupEnabled: true,
+  growthGroupCampaignKey: "launch-2026",
+  growthGroupTargetMembers: 3,
+  growthGroupRewardPoints: 30,
+  growthGroupDurationHours: 48,
+  growthFailureBonusEnabled: true,
+  growthFailureBonusPoints: 3,
+  growthFailureBonusDailyLimit: 3,
+  growthUsageRewardsEnabled: true,
+  growthUsageMilestones: [
+    { units: 10, rewardCents: 20 },
+    { units: 30, rewardCents: 50 },
+    { units: 100, rewardCents: 150 },
+  ] as GrowthMilestone[],
+  suggestionRewardMaxPoints: 5000,
+});
 
 const settingsSignature = () =>
   JSON.stringify({
     userMaxRunningTasks: form.userMaxRunningTasks,
+    userMaxRunningImages: form.userMaxRunningImages,
     userMaxConcurrentTasks: form.userMaxConcurrentTasks,
     globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
+    globalMaxActiveImages: form.globalMaxActiveImages,
     taskFailureRetryCount: form.taskFailureRetryCount,
-    crossProviderSameModelBalancingEnabled: form.crossProviderSameModelBalancingEnabled,
+    crossProviderSameModelBalancingEnabled:
+      form.crossProviderSameModelBalancingEnabled,
     registrationEnabled: form.registrationEnabled,
     signupBonusPoints: form.signupBonusPoints,
-  })
+    checkinEnabled: form.checkinEnabled,
+    checkinCampaignTitle: form.checkinCampaignTitle,
+    checkinRewards: form.checkinRewards,
+    growthGroupEnabled: form.growthGroupEnabled,
+    growthGroupCampaignKey: form.growthGroupCampaignKey,
+    growthGroupTargetMembers: form.growthGroupTargetMembers,
+    growthGroupRewardPoints: form.growthGroupRewardPoints,
+    growthGroupDurationHours: form.growthGroupDurationHours,
+    growthFailureBonusEnabled: form.growthFailureBonusEnabled,
+    growthFailureBonusPoints: form.growthFailureBonusPoints,
+    growthFailureBonusDailyLimit: form.growthFailureBonusDailyLimit,
+    growthUsageRewardsEnabled: form.growthUsageRewardsEnabled,
+    growthUsageMilestones: form.growthUsageMilestones,
+    suggestionRewardMaxPoints: form.suggestionRewardMaxPoints,
+  });
 
 const isDirty = computed(
   () =>
     !loading.value &&
-    savedSignature.value !== '' &&
+    savedSignature.value !== "" &&
     settingsSignature() !== savedSignature.value,
-)
+);
 const effectiveGlobalConcurrency = computed(() =>
   Math.min(form.globalMaxConcurrentTasks, workerConcurrencyCeiling.value),
-)
+);
+const checkinWeekTotal = computed(() =>
+  form.checkinRewards.reduce((sum, reward) => sum + normalizePoints(reward), 0),
+);
+const usageRewardTotal = computed(() =>
+  form.growthUsageMilestones.reduce(
+    (sum, milestone) => sum + normalizePoints(milestone.rewardCents),
+    0,
+  ),
+);
+
+function addUsageMilestone() {
+  if (form.growthUsageMilestones.length >= 12) {
+    ElMessage.warning("最多配置 12 个里程碑");
+    return;
+  }
+  const last = form.growthUsageMilestones.at(-1);
+  form.growthUsageMilestones.push({
+    units: last ? last.units + 10 : 10,
+    rewardCents: last ? last.rewardCents + 20 : 20,
+  });
+}
+
+function removeUsageMilestone(index: number) {
+  if (form.growthUsageMilestones.length <= 1) {
+    ElMessage.warning("至少保留 1 个里程碑");
+    return;
+  }
+  form.growthUsageMilestones.splice(index, 1);
+}
 
 function hydrate(settings: AdminSettings) {
-  form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100
-  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 2
-  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks ?? 4
-  form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 2000
-  form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 0
+  form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
+  form.userMaxRunningImages = settings.userMaxRunningImages ?? 400;
+  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 20;
+  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks ?? 2000;
+  form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 12000;
+  form.globalMaxActiveImages = settings.globalMaxActiveImages ?? 12000;
+  form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2;
   form.crossProviderSameModelBalancingEnabled =
-    settings.crossProviderSameModelBalancingEnabled ?? false
-  workerConcurrencyCeiling.value = Math.max(1, settings.workerConcurrencyCeiling ?? 1)
-  form.registrationEnabled = settings.registrationEnabled ?? true
-  form.signupBonusPoints = normalizePoints(settings.signupBonusCents)
-  savedSignature.value = settingsSignature()
+    settings.crossProviderSameModelBalancingEnabled ?? false;
+  workerConcurrencyCeiling.value = Math.max(
+    1,
+    settings.workerConcurrencyCeiling ?? 1,
+  );
+  form.registrationEnabled = settings.registrationEnabled ?? true;
+  form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
+  form.checkinEnabled = settings.checkinEnabled ?? true;
+  form.checkinCampaignTitle =
+    settings.checkinCampaignTitle || "连续签到领创作积分";
+  form.checkinRewards =
+    Array.isArray(settings.checkinRewards) &&
+    settings.checkinRewards.length === 7
+      ? settings.checkinRewards.map(normalizePoints)
+      : [10, 15, 20, 25, 30, 40, 80];
+  form.growthGroupEnabled = settings.growthGroupEnabled ?? true;
+  form.growthGroupCampaignKey =
+    settings.growthGroupCampaignKey || "launch-2026";
+  form.growthGroupTargetMembers = settings.growthGroupTargetMembers ?? 3;
+  form.growthGroupRewardPoints = normalizePoints(
+    settings.growthGroupRewardCents ?? 30,
+  );
+  form.growthGroupDurationHours = settings.growthGroupDurationHours ?? 48;
+  form.growthFailureBonusEnabled = settings.growthFailureBonusEnabled ?? true;
+  form.growthFailureBonusPoints = normalizePoints(
+    settings.growthFailureBonusCents ?? 3,
+  );
+  form.growthFailureBonusDailyLimit =
+    settings.growthFailureBonusDailyLimit ?? 3;
+  form.growthUsageRewardsEnabled = settings.growthUsageRewardsEnabled ?? true;
+  form.growthUsageMilestones =
+    Array.isArray(settings.growthUsageMilestones) &&
+    settings.growthUsageMilestones.length > 0
+      ? settings.growthUsageMilestones.map((milestone) => ({
+          units: normalizePoints(milestone.units),
+          rewardCents: normalizePoints(milestone.rewardCents),
+        }))
+      : [
+          { units: 10, rewardCents: 20 },
+          { units: 30, rewardCents: 50 },
+          { units: 100, rewardCents: 150 },
+        ];
+  form.suggestionRewardMaxPoints = normalizePoints(
+    settings.suggestionRewardMaxCents ?? 5000,
+  );
+  savedSignature.value = settingsSignature();
 }
 
 async function load() {
-  loading.value = true
+  loading.value = true;
   try {
-    hydrate(await request<AdminSettings>('/api/v1/admin/settings'))
+    hydrate(await request<AdminSettings>("/api/v1/admin/settings"));
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function save() {
-  saving.value = true
+  saving.value = true;
   try {
     hydrate(
-      await request<AdminSettings>('/api/v1/admin/settings', {
-        method: 'PUT',
+      await request<AdminSettings>("/api/v1/admin/settings", {
+        method: "PUT",
         body: {
           userMaxRunningTasks: form.userMaxRunningTasks,
+          userMaxRunningImages: form.userMaxRunningImages,
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
+          globalMaxActiveImages: form.globalMaxActiveImages,
           taskFailureRetryCount: form.taskFailureRetryCount,
-          crossProviderSameModelBalancingEnabled: form.crossProviderSameModelBalancingEnabled,
+          crossProviderSameModelBalancingEnabled:
+            form.crossProviderSameModelBalancingEnabled,
           registrationEnabled: form.registrationEnabled,
           signupBonusCents: normalizePoints(form.signupBonusPoints),
+          checkinEnabled: form.checkinEnabled,
+          checkinCampaignTitle: form.checkinCampaignTitle.trim(),
+          checkinRewards: form.checkinRewards.map(normalizePoints),
+          growthGroupEnabled: form.growthGroupEnabled,
+          growthGroupCampaignKey: form.growthGroupCampaignKey.trim(),
+          growthGroupTargetMembers: form.growthGroupTargetMembers,
+          growthGroupRewardCents: normalizePoints(form.growthGroupRewardPoints),
+          growthGroupDurationHours: form.growthGroupDurationHours,
+          growthFailureBonusEnabled: form.growthFailureBonusEnabled,
+          growthFailureBonusCents: normalizePoints(
+            form.growthFailureBonusPoints,
+          ),
+          growthFailureBonusDailyLimit: form.growthFailureBonusDailyLimit,
+          growthUsageRewardsEnabled: form.growthUsageRewardsEnabled,
+          growthUsageMilestones: form.growthUsageMilestones
+            .map((milestone) => ({
+              units: normalizePoints(milestone.units),
+              rewardCents: normalizePoints(milestone.rewardCents),
+            }))
+            .sort((a, b) => a.units - b.units),
+          suggestionRewardMaxCents: normalizePoints(
+            form.suggestionRewardMaxPoints,
+          ),
         },
       }),
-    )
-    ElMessage.success('系统设置已生效')
+    );
+    ElMessage.success("系统设置已生效");
   } finally {
-    saving.value = false
+    saving.value = false;
   }
 }
 
-onMounted(load)
+onMounted(load);
 </script>
 
 <template>
@@ -111,7 +267,7 @@ onMounted(load)
     <PageCard>
       <div class="settings-toolbar">
         <div class="save-state" :class="{ 'is-dirty': isDirty }">
-          <i />{{ isDirty ? '有未保存变更' : '配置已同步' }}
+          <i />{{ isDirty ? "有未保存变更" : "配置已同步" }}
         </div>
         <div class="settings-toolbar__actions">
           <el-button :icon="Refresh" @click="load">刷新</el-button>
@@ -158,6 +314,281 @@ onMounted(load)
               </div>
               <small>新账号首次获得的积分</small>
             </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <header class="settings-group__head">
+            <strong>增长与商业模式</strong>
+            <span>拼团、合作申请和用户激励规则</span>
+          </header>
+
+          <div class="settings-grid settings-grid--pair">
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>开放好友拼团</strong>
+                <el-switch v-model="form.growthGroupEnabled" />
+              </div>
+              <small>用户可创建或加入当期拼团，满员后自动发放奖励</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>拼团活动批次</strong>
+                <el-input
+                  v-model="form.growthGroupCampaignKey"
+                  maxlength="64"
+                  placeholder="launch-2026"
+                />
+              </div>
+              <small>更换批次会开启新一期活动，历史拼团仍保留</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>成团人数</strong>
+                <el-input-number
+                  v-model="form.growthGroupTargetMembers"
+                  class="settings-stepper"
+                  :min="2"
+                  :max="10"
+                  :precision="0"
+                />
+              </div>
+              <small>每个拼团达到该人数后立即结算</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>每人拼团奖励</strong>
+                <div class="points-input">
+                  <el-input-number
+                    v-model="form.growthGroupRewardPoints"
+                    class="settings-stepper"
+                    :min="0"
+                    :max="1000000"
+                    :precision="0"
+                  />
+                  <b>积分</b>
+                </div>
+              </div>
+              <small>仅满员时发放，每个成员同一拼团只到账一次</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>拼团有效期</strong>
+                <div class="points-input">
+                  <el-input-number
+                    v-model="form.growthGroupDurationHours"
+                    class="settings-stepper"
+                    :min="1"
+                    :max="720"
+                    :precision="0"
+                  />
+                  <b>小时</b>
+                </div>
+              </div>
+              <small>超时未满员的拼团不能继续加入</small>
+            </label>
+
+          </div>
+
+          <div class="growth-subsection">
+            <header>
+              <div>
+                <strong>自动激励</strong>
+                <small>失败补偿和建议采纳奖励均通过积分账本发放</small>
+              </div>
+            </header>
+            <div class="settings-grid settings-grid--pair">
+              <label class="setting-tile">
+                <div class="setting-tile__top">
+                  <strong>失败额外补偿</strong>
+                  <el-switch v-model="form.growthFailureBonusEnabled" />
+                </div>
+                <small>任务费用仍全额退回，开启后再发放额外安抚积分</small>
+              </label>
+
+              <label class="setting-tile">
+                <div class="setting-tile__top">
+                  <strong>单次补偿</strong>
+                  <div class="points-input">
+                    <el-input-number
+                      v-model="form.growthFailureBonusPoints"
+                      class="settings-stepper"
+                      :min="0"
+                      :max="1000000"
+                      :precision="0"
+                    />
+                    <b>积分</b>
+                  </div>
+                </div>
+                <small>只对真实上游失败生效，管理员强制终止不奖励</small>
+              </label>
+
+              <label class="setting-tile">
+                <div class="setting-tile__top">
+                  <strong>每日补偿次数</strong>
+                  <el-input-number
+                    v-model="form.growthFailureBonusDailyLimit"
+                    class="settings-stepper"
+                    :min="0"
+                    :max="100"
+                    :precision="0"
+                  />
+                </div>
+                <small>按用户限制，0 表示当天不发额外补偿</small>
+              </label>
+
+              <label class="setting-tile">
+                <div class="setting-tile__top">
+                  <strong>建议采纳上限</strong>
+                  <div class="points-input">
+                    <el-input-number
+                      v-model="form.suggestionRewardMaxPoints"
+                      class="settings-stepper"
+                      :min="0"
+                      :max="1000000"
+                      :step="100"
+                      :precision="0"
+                    />
+                    <b>积分</b>
+                  </div>
+                </div>
+                <small>后台采纳产品建议时可发放的单次最高奖励</small>
+              </label>
+            </div>
+          </div>
+
+          <div class="growth-subsection">
+            <header>
+              <div>
+                <strong>越用越多里程碑</strong>
+                <small>按自然月累计成功交付图片数，达标自动发放</small>
+              </div>
+              <div class="growth-subsection__actions">
+                <span
+                  >总奖励
+                  {{ usageRewardTotal.toLocaleString("zh-CN") }} 积分</span
+                >
+                <el-tooltip content="添加里程碑" placement="top">
+                  <el-button
+                    circle
+                    :icon="Plus"
+                    :disabled="form.growthUsageMilestones.length >= 12"
+                    aria-label="添加里程碑"
+                    @click="addUsageMilestone"
+                  />
+                </el-tooltip>
+              </div>
+            </header>
+            <label class="growth-reward-toggle">
+              <span>
+                <strong>启用用量奖励</strong>
+                <small>关闭后保留历史到账记录，不再产生新奖励</small>
+              </span>
+              <el-switch v-model="form.growthUsageRewardsEnabled" />
+            </label>
+            <div class="growth-milestones">
+              <div
+                v-for="(milestone, index) in form.growthUsageMilestones"
+                :key="index"
+                class="growth-milestone"
+              >
+                <span class="growth-milestone__index">{{ index + 1 }}</span>
+                <label>
+                  <span>累计交付</span>
+                  <el-input-number
+                    v-model="milestone.units"
+                    :min="1"
+                    :max="1000000"
+                    :precision="0"
+                    controls-position="right"
+                  />
+                  <small>张</small>
+                </label>
+                <label>
+                  <span>奖励</span>
+                  <el-input-number
+                    v-model="milestone.rewardCents"
+                    :min="1"
+                    :max="1000000"
+                    :precision="0"
+                    controls-position="right"
+                  />
+                  <small>积分</small>
+                </label>
+                <el-tooltip content="删除里程碑" placement="top">
+                  <el-button
+                    circle
+                    text
+                    type="danger"
+                    :icon="Delete"
+                    :disabled="form.growthUsageMilestones.length <= 1"
+                    aria-label="删除里程碑"
+                    @click="removeUsageMilestone(index)"
+                  />
+                </el-tooltip>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <header class="settings-group__head">
+            <strong>签到活动</strong>
+            <span>连续签到奖励与用户回访激励</span>
+          </header>
+          <div class="settings-grid settings-grid--pair">
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>开放签到活动</strong>
+                <el-switch v-model="form.checkinEnabled" />
+              </div>
+              <small>关闭后保留历史记录，但用户无法领取新的签到奖励</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top setting-tile__top--stack">
+                <strong>活动标题</strong>
+                <el-input
+                  v-model="form.checkinCampaignTitle"
+                  maxlength="40"
+                  placeholder="连续签到领创作积分"
+                />
+              </div>
+              <small>显示在用户签到页的主活动标题</small>
+            </label>
+          </div>
+
+          <div class="checkin-reward-card">
+            <div class="checkin-reward-card__head">
+              <div>
+                <strong>7 天循环奖励</strong>
+                <small
+                  >连续第 7 天建议设置高额里程碑奖励，之后从第 1 天循环</small
+                >
+              </div>
+              <span
+                >每周期共
+                {{ checkinWeekTotal.toLocaleString("zh-CN") }} 积分</span
+              >
+            </div>
+            <div class="checkin-reward-grid">
+              <label v-for="(_, index) in form.checkinRewards" :key="index">
+                <span>第 {{ index + 1 }} 天</span>
+                <el-input-number
+                  v-model="form.checkinRewards[index]"
+                  :min="0"
+                  :max="1000000"
+                  :step="index === 6 ? 10 : 5"
+                  :precision="0"
+                  controls-position="right"
+                />
+                <small>{{ index === 6 ? "里程碑" : "积分" }}</small>
+              </label>
+            </div>
           </div>
         </section>
 
@@ -213,6 +644,20 @@ onMounted(load)
 
             <label class="setting-tile">
               <div class="setting-tile__top">
+                <strong>全站图片容量</strong>
+                <el-input-number
+                  v-model="form.globalMaxActiveImages"
+                  class="settings-stepper"
+                  :min="10"
+                  :max="10000000"
+                  :step="100"
+                />
+              </div>
+              <small>按任务 count 累计的排队与运行图片单位上限</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
                 <strong>单用户待处理任务</strong>
                 <el-input-number
                   v-model="form.userMaxRunningTasks"
@@ -222,6 +667,20 @@ onMounted(load)
                 />
               </div>
               <small>运行中与排队中的任务总量上限</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>单用户图片容量</strong>
+                <el-input-number
+                  v-model="form.userMaxRunningImages"
+                  class="settings-stepper"
+                  :min="1"
+                  :max="100000"
+                  :step="10"
+                />
+              </div>
+              <small>单个账号排队与运行中的图片单位上限</small>
             </label>
           </div>
         </section>
@@ -244,15 +703,21 @@ onMounted(load)
                   :precision="0"
                 />
               </div>
-              <small>连接、超时或临时上游错误的额外尝试次数；0 表示不重试</small>
+              <small
+                >连接、超时或临时上游错误的额外尝试次数；0 表示不重试</small
+              >
             </label>
 
             <label class="setting-tile">
               <div class="setting-tile__top">
                 <strong>同名模型跨服务商泄压</strong>
-                <el-switch v-model="form.crossProviderSameModelBalancingEnabled" />
+                <el-switch
+                  v-model="form.crossProviderSameModelBalancingEnabled"
+                />
               </div>
-              <small>仅同类型、同名称、同积分且参数兼容的模型参与容量调度</small>
+              <small
+                >仅同类型、同名称、同积分且参数兼容的模型参与容量调度</small
+              >
             </label>
           </div>
         </section>
@@ -379,6 +844,244 @@ onMounted(load)
   min-width: 0;
 }
 
+.setting-tile__top--stack {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.growth-subsection {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.growth-subsection > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.growth-subsection > header strong,
+.growth-subsection > header small {
+  display: block;
+}
+
+.growth-subsection > header strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.growth-subsection > header small,
+.growth-reward-toggle small {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.growth-subsection__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.growth-subsection__actions > span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.growth-reward-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.growth-reward-toggle strong,
+.growth-reward-toggle small {
+  display: block;
+}
+
+.growth-reward-toggle strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.growth-milestones {
+  display: grid;
+  gap: 8px;
+}
+
+.growth-milestone {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.growth-milestone__index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.growth-milestone > label {
+  display: grid;
+  grid-template-columns: 58px minmax(110px, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.growth-milestone > label > span,
+.growth-milestone > label > small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.growth-milestone :deep(.el-input-number) {
+  width: 100%;
+}
+
+.checkin-reward-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 6px);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-soft) 58%, var(--surface)),
+    var(--surface)
+  );
+  box-shadow: var(--shadow-sm);
+}
+
+.checkin-reward-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.checkin-reward-card__head strong,
+.checkin-reward-card__head small {
+  display: block;
+}
+
+.checkin-reward-card__head strong {
+  font-size: 13px;
+}
+
+.checkin-reward-card__head small {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.checkin-reward-card__head > span {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.checkin-reward-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.checkin-reward-grid > label {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.checkin-reward-grid > label > span,
+.checkin-reward-grid > label > small {
+  text-align: center;
+  font-size: 10px;
+}
+
+.checkin-reward-grid > label > span {
+  color: var(--ink-2);
+  font-weight: 700;
+}
+
+.checkin-reward-grid > label > small {
+  color: var(--ink-3);
+}
+
+.checkin-reward-grid :deep(.el-input-number) {
+  width: 100%;
+}
+
+@media (max-width: 1180px) {
+  .checkin-reward-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .checkin-reward-card__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .checkin-reward-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid,
+  .settings-grid--pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .growth-subsection > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .growth-milestone {
+    grid-template-columns: 28px minmax(0, 1fr) 32px;
+  }
+
+  .growth-milestone > label {
+    grid-column: 2;
+  }
+
+  .growth-milestone > :deep(.el-button) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
 .setting-tile__top strong {
   min-width: 0;
   color: var(--ink);
@@ -457,9 +1160,7 @@ onMounted(load)
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-feature-settings: 'tnum' 1;
+  font-feature-settings: "tnum" 1;
   text-align: center;
 }
-
-
 </style>

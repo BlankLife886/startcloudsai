@@ -153,9 +153,7 @@ export function useCollageEditor() {
         cell.src === removed.src ? createCellState() : cell,
       )
     }
-    if (removed?.src?.startsWith('blob:')) {
-      URL.revokeObjectURL(removed.src)
-    }
+    // Blob URLs stay alive until the studio unmounts so undo can restore a removed image.
   }
 
   function collectImageSources() {

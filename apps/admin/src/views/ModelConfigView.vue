@@ -19,7 +19,13 @@ type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
 type ImageTool = "background_remove";
 type WorkspaceKey =
-  "assistant" | "t2i" | "coloring" | "ui_design" | "model_sheet" | "game_art";
+  | "assistant"
+  | "t2i"
+  | "coloring"
+  | "ui_design"
+  | "ecommerce_design"
+  | "model_sheet"
+  | "game_art";
 
 interface ModelProvider {
   id: string;
@@ -226,7 +232,13 @@ const workspaceMeta: Array<{
   {
     key: "ui_design",
     name: "UI 设计稿",
-    detail: "设计稿生成与局部素材重建",
+    detail: "设计稿生成、元素分析与局部素材重建",
+    kinds: ["image", "chat"],
+  },
+  {
+    key: "ecommerce_design",
+    name: "AI 电商设计",
+    detail: "商品套图、详情页、模特与图片处理",
     kinds: ["image"],
   },
   {
@@ -502,7 +514,11 @@ function workspaceDefaultSummary(workspace: (typeof workspaceMeta)[number]) {
       const id = binding.defaultModelIds[kind];
       if (!id) return "";
       const model = config.models.find((item) => item.id === id);
-      return model ? `${kindName(kind)}默认：${model.name}` : "";
+      const label =
+        workspace.key === "ui_design" && kind === "chat"
+          ? "元素分析模型"
+          : `${kindName(kind)}默认`;
+      return model ? `${label}：${model.name}` : "";
     })
     .filter(Boolean);
   return labels.length ? labels.join(" · ") : `已分配 ${binding.modelIds.length} 个模型`;
@@ -640,6 +656,14 @@ function discountOffLabel(model: ModelItem) {
 
 function kindName(value: unknown) {
   return kindMeta[String(value) as ModelKind]?.name || "未知类型";
+}
+
+function workspaceDefaultLabel(
+  workspace: (typeof workspaceMeta)[number],
+  kind: ModelKind,
+) {
+  if (workspace.key === "ui_design" && kind === "chat") return "元素分析模型";
+  return `默认${kindName(kind)}`;
 }
 
 function modelWorkspaceNames(modelId: string) {
@@ -1704,7 +1728,7 @@ onBeforeUnmount(() => {
                 :key="kind"
                 class="assignment-default"
               >
-                <span>默认{{ kindName(kind) }}</span>
+                <span>{{ workspaceDefaultLabel(activeWorkspace, kind) }}</span>
                 <el-select
                   v-model="
                     config.workspaces[activeWorkspace.key].defaultModelIds[kind]

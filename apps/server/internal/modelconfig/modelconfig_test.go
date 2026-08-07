@@ -84,6 +84,15 @@ func TestValidateWorkspaceAssignmentKinds(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("assistant mixed model assignment should be valid: %v", err)
 	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceUIDesign: {
+			ModelIDs:        []string{"image-fast", "chat"},
+			DefaultModelIDs: map[string]string{ModelKindImage: "image-fast", ModelKindChat: "chat"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("UI design image and analysis model assignment should be valid: %v", err)
+	}
 }
 
 func TestLegacyProviderMigratesToSingleKeyAdapter(t *testing.T) {
@@ -426,5 +435,15 @@ func TestOverlayPricesUsesWorkspaceModels(t *testing.T) {
 	}
 	if ranges["t2i"] != (PriceRange{MinCents: 20, MaxCents: 20}) {
 		t.Fatalf("workspace range = %#v", ranges["t2i"])
+	}
+}
+
+func TestEcommerceTaskUsesIndependentWorkspace(t *testing.T) {
+	workspace, ok := WorkspaceForTaskType("ecommerce_design")
+	if !ok || workspace != WorkspaceEcommerce {
+		t.Fatalf("workspace = %q, ok = %v", workspace, ok)
+	}
+	if !ValidWorkspace(WorkspaceEcommerce) {
+		t.Fatalf("ecommerce workspace must be a valid admin workspace")
 	}
 }

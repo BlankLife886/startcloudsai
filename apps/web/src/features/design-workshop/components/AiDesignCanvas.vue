@@ -11,7 +11,13 @@ import {
 } from 'vue'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import { uploadAiTempBlob } from '@/features/ai-shared/aiImageIO'
+import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSelect.vue'
 import { cancelAssistantRun } from '@/services/assistantApi'
+import { removeImageBackground, uploadAiInputFile } from '@/services/aiWallpaper'
+import { createUserAsset } from '@/services/meApi'
+import { uploadFile } from '@/services/tasksApi'
+import notificationService from '@/services/notification'
+import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import {
   getScopedLocalItem,
   removeScopedLocalItem,
@@ -25,14 +31,9 @@ import {
   generateDesignAssetDescription,
   generateDesignRegionCode,
   generateDesignRegionImage,
-  generateDesignRegionSvg,
   generateDesignWebsite,
 } from '@/features/design-workshop/aiDesignDocument'
-import {
-  hasTransparency,
-  sanitizeGeneratedSvg,
-  svgBlob,
-} from '@/features/design-workshop/regionAssetExtraction'
+import { hasTransparency } from '@/features/design-workshop/regionAssetExtraction'
 import {
   attachNaturalBounds,
   fitAnalysisViewport,
@@ -40,6 +41,8 @@ import {
   projectBounds,
   referenceNeedsRasterization,
 } from '@/features/design-workshop/regionGeometry'
+import { spatialAssetAffinity } from '@/features/design-workshop/analysisNodeGeometry'
+import { calibrateRegionByType } from '@/features/design-workshop/pixelRegionCalibration'
 
 const PreciseRegionOverlay = defineAsyncComponent(() => import('./PreciseRegionOverlay.vue'))
 
@@ -50,16 +53,34 @@ const props = defineProps({
   documentId: { type: String, default: '' },
   resumeSession: { type: Object, default: null },
   generationNonce: { type: Number, default: 0 },
+  analysisModel: { type: String, default: '' },
+  analysisModels: { type: Array, default: () => [] },
+  analysisModelsLoading: { type: Boolean, default: false },
+  analysisModelError: { type: String, default: '' },
+  seedFindings: { type: Object, default: null },
   viewport: {
     type: Object,
     default: () => ({ width: 1440, height: 900, background: '#ffffff' }),
   },
 })
 
-const emit = defineEmits(['close', 'document-saved', 'analysis-session'])
+const emit = defineEmits(['close', 'document-saved', 'analysis-session', 'update:analysisModel'])
 
-const CACHE_VERSION = 7
+const runtimeConfigStore = useRuntimeConfigStore()
+const CACHE_VERSION = 18
 const HISTORY_KEY = 'ui-editable-document-history-v1'
+const MIN_CANVAS_ZOOM = 0.04
+
+function normalizeRasterFormat(value) {
+  const format = String(value || '').trim().toLowerCase()
+  return format === 'webp' ? 'webp' : 'png'
+}
+
+function rasterAssets(assets) {
+  return Array.isArray(assets)
+    ? assets.filter((asset) => ['png', 'webp'].includes(String(asset?.format).toLowerCase()))
+    : []
+}
 
 const root = ref(null)
 const canvasViewport = ref(null)
@@ -72,8 +93,10 @@ const documentViewport = ref({ ...props.viewport })
 const sourceViewport = ref({ ...props.viewport })
 const selectedId = ref('')
 const hoveredId = ref('')
+const collapsedLayerIds = ref(new Set())
 const showLayerPanel = ref(true)
 const selectedPreviewUrl = ref('')
+const hoveredPreviewUrl = ref('')
 const regionCode = ref('')
 const regionCodeError = ref('')
 const regionCodeFramework = ref('vue')
@@ -81,10 +104,8 @@ const generatingRegionCode = ref(false)
 const regionCodeStage = ref('')
 const generatedAssetUrl = ref('')
 const generatedAssetStatus = ref('')
-const generatedSvg = ref('')
-const generatedSvgUrl = ref('')
 const generatingAsset = ref(false)
-const vectorizingSvg = ref(false)
+const removingAssetBackground = ref(false)
 const assetStage = ref('')
 const assetError = ref('')
 const generatedAssetTransparent = ref(false)
@@ -125,6 +146,8 @@ let websiteController = null
 let websiteRunId = ''
 let generatedAssetBlob = null
 let selectedPreviewBlob = null
+let hoveredPreviewTimer = null
+let hoveredPreviewSequence = 0
 let previewSequence = 0
 let selectedPreviewTimer = null
 let referenceBlobKey = ''
@@ -141,10 +164,8 @@ let dragState = null
 let resizeState = null
 let previousBodyOverflow = ''
 let resizeObserver = null
-let suppressCanvasFit = false
-let preserveZoomFrame = 0
-let preserveZoomTimer = null
-let preservedCanvasZoom = 0
+let canvasRefitFrame = 0
+let canvasRefitTimer = null
 let historyTimer = null
 let copyFeedbackTimer = null
 let historyReady = false
@@ -185,24 +206,72 @@ const stageLabel = computed(() => {
   }
   return STAGE_LABELS[stage.value] || 'AI 正在处理设计文档'
 })
-const generationKey = computed(() => `${props.prompt}\n@reference:${props.referenceImage}`)
+const effectiveAnalysisModel = computed(() =>
+  String(props.resumeSession?.model || props.analysisModel || '').trim(),
+)
+const analysisActionLabel = computed(() =>
+  props.referenceImage && !nodes.value.length ? '开始分析' : '重新分析',
+)
+const analysisActionTitle = computed(() => {
+  if (!props.referenceImage) return '重新设计'
+  if (props.analysisModelsLoading) return '正在加载元素分析模型'
+  if (!effectiveAnalysisModel.value) return props.analysisModelError || '请先选择元素分析模型'
+  return nodes.value.length ? '重新分析全部元素' : '开始分析当前设计稿元素'
+})
+const analysisActionDisabled = computed(
+  () =>
+    Boolean(props.referenceImage) && (props.analysisModelsLoading || !effectiveAnalysisModel.value),
+)
+const generationKey = computed(
+  () =>
+    `${props.prompt}\n@reference:${props.referenceImage}\n@model:${effectiveAnalysisModel.value}`,
+)
 const selectedNode = computed(
   () => nodes.value.find((item) => item.id === selectedId.value) || null,
 )
+const hoveredNode = computed(
+  () => nodes.value.find((item) => item.id === hoveredId.value) || null,
+)
+const inspectorNode = computed(() => hoveredNode.value || selectedNode.value)
+const inspectorIsSelected = computed(
+  () => Boolean(inspectorNode.value && inspectorNode.value.id === selectedId.value),
+)
+const inspectorPreviewUrl = computed(() =>
+  hoveredNode.value ? hoveredPreviewUrl.value : selectedPreviewUrl.value,
+)
+const inspectorNaturalBounds = computed(() => {
+  const node = inspectorNode.value
+  return node ? naturalBoundsForNode(node, documentViewport.value, sourceViewport.value) : null
+})
 const selectedNaturalBounds = computed(() => {
   const node = selectedNode.value
   return node ? naturalBoundsForNode(node, documentViewport.value, sourceViewport.value) : null
 })
+const selectedCanConfirm = computed(() => {
+  const node = selectedNode.value
+  return Boolean(node && (node.manualSelection || node.manuallyAdjusted || node.pixelCalibrated))
+})
 function nodeSupportsAsset(node) {
   return Boolean(
     node &&
+      !node.qualityIssue &&
       (node.manualSelection ||
-        ['icon', 'image'].includes(node.category) ||
-        ['icon', 'image'].includes(node.type)),
+        ['layout', 'component', 'icon', 'image'].includes(node.category) ||
+        ['frame', 'rectangle', 'button', 'input', 'icon', 'image'].includes(node.type)),
   )
 }
 
 const selectedSupportsAsset = computed(() => nodeSupportsAsset(selectedNode.value))
+const backgroundRemovalModels = computed(() => {
+  const models = runtimeConfigStore.getFeaturePayload('ai.imageTools')?.backgroundRemovalModels
+  return Array.isArray(models) ? models.filter((model) => model?.id) : []
+})
+const activeBackgroundRemovalModel = computed(
+  () =>
+    backgroundRemovalModels.value.find((model) => model.default === true) ||
+    backgroundRemovalModels.value[0] ||
+    null,
+)
 const selectedApprovedAsset = computed(() => {
   const assetId = selectedNode.value?.approvedAssetId
   return assetId ? assetLibrary.value.find((asset) => asset.id === assetId) || null : null
@@ -230,6 +299,7 @@ const layerEntries = computed(() => {
       .map((node) => ({ node, depth: layerDepth(node) }))
   }
   const knownIds = new Set(nodes.value.map((node) => node.id))
+  const nodesById = new Map(nodes.value.map((node) => [node.id, node]))
   const children = new Map()
   for (const node of nodes.value) {
     const parentId = knownIds.has(node.parentId) && node.parentId !== node.id ? node.parentId : ''
@@ -242,18 +312,31 @@ const layerEntries = computed(() => {
   const append = (node, depth) => {
     if (visited.has(node.id)) return
     visited.add(node.id)
-    entries.push({ node, depth })
     const descendants = (children.get(node.id) || []).slice().reverse()
+    entries.push({ node, depth, hasChildren: descendants.length > 0 })
+    if (collapsedLayerIds.value.has(node.id)) return
     descendants.forEach((child) => append(child, Math.min(3, depth + 1)))
   }
   ;(children.get('') || [])
     .slice()
     .reverse()
     .forEach((node) => append(node, 0))
+  const hiddenByCollapsedAncestor = (node) => {
+    const ancestors = new Set()
+    let parentId = node.parentId
+    while (parentId && !ancestors.has(parentId)) {
+      if (collapsedLayerIds.value.has(parentId)) return true
+      ancestors.add(parentId)
+      parentId = nodesById.get(parentId)?.parentId || ''
+    }
+    return false
+  }
   nodes.value
     .slice()
     .reverse()
-    .forEach((node) => append(node, 0))
+    .forEach((node) => {
+      if (!hiddenByCollapsedAncestor(node)) append(node, 0)
+    })
   return entries
 })
 const viewportFrameStyle = computed(() => ({
@@ -281,8 +364,9 @@ function documentSnapshot() {
 
 function cacheKey() {
   if (props.documentId) return props.documentId
+  const seedId = String(props.seedFindings?.id || '')
   const source = props.referenceImage
-    ? `reference:${props.referenceImage}`
+    ? `reference:${props.referenceImage}${seedId ? `:findings:${seedId}` : ''}`
     : `prompt:${props.prompt}`
   let hash = 2166136261
   for (let index = 0; index < source.length; index += 1) {
@@ -303,6 +387,7 @@ function persistActiveAnalysisSession(session = {}) {
     ...session,
     version: ACTIVE_DESIGN_ANALYSIS_VERSION,
     prompt: props.prompt,
+    model: String(session.model || effectiveAnalysisModel.value).trim(),
     referenceImage: props.referenceImage,
     viewport: { ...documentViewport.value },
     sourceViewport: { ...sourceViewport.value },
@@ -383,7 +468,7 @@ function restoreCachedDocument() {
     sourceViewport.value = cached.sourceViewport || cached.viewport || { ...props.viewport }
     nodes.value = cached.nodes
     tokens.value = cached.tokens || { colors: [], spacing: [], typography: [] }
-    assetLibrary.value = Array.isArray(cached.assetLibrary) ? cached.assetLibrary : []
+    assetLibrary.value = rasterAssets(cached.assetLibrary)
     websiteCode.value = String(cached.websiteCode || '')
     generatedPrompt = generationKey.value
     showReference.value = Boolean(props.referenceImage)
@@ -440,12 +525,13 @@ function restoreHistorySnapshot(snapshot) {
   sourceViewport.value = restored.sourceViewport || restored.viewport
   nodes.value = restored.nodes
   tokens.value = restored.tokens
-  assetLibrary.value = Array.isArray(restored.assetLibrary) ? restored.assetLibrary : []
+  assetLibrary.value = rasterAssets(restored.assetLibrary)
   selectedId.value = ''
   editingTextId.value = ''
   lastHistorySnapshot = snapshot
   void nextTick(() => {
     applyingHistory = false
+    persistCachedDocument()
   })
 }
 
@@ -541,14 +627,16 @@ function clamp(value, min, max) {
 function fitCanvas() {
   const host = canvasViewport.value
   if (!host) return
-  const availableWidth = Math.max(280, host.clientWidth - 96)
-  const availableHeight = Math.max(280, host.clientHeight - 96)
+  const toolbarHeight =
+    host.querySelector('.adc-canvas-toolbar')?.getBoundingClientRect().height || 0
+  const availableWidth = Math.max(120, host.clientWidth - 96)
+  const availableHeight = Math.max(80, host.clientHeight - 108 - toolbarHeight)
   zoom.value = clamp(
     Math.min(
       availableWidth / documentViewport.value.width,
       availableHeight / documentViewport.value.height,
     ),
-    0.2,
+    MIN_CANVAS_ZOOM,
     1,
   )
 }
@@ -593,6 +681,7 @@ function updatePreciseRegionBounds({ id, bounds }) {
     integer: true,
   })
   node.manuallyAdjusted = true
+  node.precisionStatus = 'manual'
   node.selectionConfirmed = false
 }
 
@@ -642,6 +731,10 @@ function createPreciseRegion(bounds) {
 function confirmPreciseRegion() {
   const node = selectedNode.value
   if (!node) return
+  if (!selectedCanConfirm.value) {
+    assetError.value = '自动像素校准未通过，请先拖动选框或控制点修正边界'
+    return
+  }
   node.naturalBounds = naturalBoundsForNode(node, documentViewport.value, sourceViewport.value)
   node.selectionConfirmed = true
   assetError.value = ''
@@ -664,38 +757,32 @@ function clearHoveredNode(id) {
   if (hoveredId.value === id) hoveredId.value = ''
 }
 
+function toggleLayerExpanded(node) {
+  const next = new Set(collapsedLayerIds.value)
+  if (next.has(node.id)) next.delete(node.id)
+  else next.add(node.id)
+  collapsedLayerIds.value = next
+}
+
 function toggleLayerPanel() {
   preserveCanvasZoom()
   showLayerPanel.value = !showLayerPanel.value
 }
 
-function preserveCanvasZoom({ centerSelection = false } = {}) {
-  if (!props.referenceImage || !nodes.value.length) return
-  const currentZoom = zoom.value
-  preservedCanvasZoom = currentZoom
-  suppressCanvasFit = true
-  if (preserveZoomFrame) window.cancelAnimationFrame(preserveZoomFrame)
-  if (preserveZoomTimer) window.clearTimeout(preserveZoomTimer)
+function preserveCanvasZoom() {
+  if (!props.referenceImage) return
+  if (canvasRefitFrame) window.cancelAnimationFrame(canvasRefitFrame)
+  if (canvasRefitTimer) window.clearTimeout(canvasRefitTimer)
   void nextTick(() => {
-    zoom.value = currentZoom
-    preserveZoomFrame = window.requestAnimationFrame(() => {
-      zoom.value = currentZoom
-      preserveZoomFrame = 0
-      preserveZoomTimer = window.setTimeout(() => {
-        zoom.value = currentZoom
-        suppressCanvasFit = false
-        preserveZoomTimer = null
-        if (centerSelection) centerSelectedNode()
+    canvasRefitFrame = window.requestAnimationFrame(() => {
+      fitCanvas()
+      canvasRefitFrame = 0
+      canvasRefitTimer = window.setTimeout(() => {
+        fitCanvas()
+        canvasRefitTimer = null
       }, 160)
     })
   })
-}
-
-function centerSelectedNode() {
-  const id = selectedId.value
-  if (!id) return
-  const element = artboard.value?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)
-  element?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
 }
 
 function beginNodeDrag(event, node) {
@@ -860,14 +947,21 @@ function addNode(type) {
 }
 
 function deleteSelected() {
-  if (!selectedNode.value || selectedNode.value.locked) return
-  if (props.referenceImage && selectedNode.value.sourceBounds) {
-    selectedNode.value.hidden = true
-    selectedId.value = ''
-    return
-  }
-  nodes.value = nodes.value.filter((item) => item.id !== selectedNode.value.id)
-  selectedId.value = ''
+  deleteNode(selectedNode.value)
+}
+
+function deleteNode(node) {
+  if (!node || node.locked) return
+  const parentId = node.parentId && node.parentId !== node.id ? node.parentId : ''
+  nodes.value = nodes.value
+    .filter((item) => item.id !== node.id)
+    .map((item) => (item.parentId === node.id ? { ...item, parentId } : item))
+  assetLibrary.value = assetLibrary.value.filter((asset) => asset.sourceRegionId !== node.id)
+  const nextCollapsed = new Set(collapsedLayerIds.value)
+  nextCollapsed.delete(node.id)
+  collapsedLayerIds.value = nextCollapsed
+  if (selectedId.value === node.id) selectedId.value = ''
+  if (hoveredId.value === node.id) hoveredId.value = ''
 }
 
 function duplicateSelected() {
@@ -1052,7 +1146,7 @@ function documentHtml(referenceDataUrl = '') {
         .join('\n')
     : ''
   const reference = fidelityExport
-    ? `<img src="${escapeHtml(referenceDataUrl)}" alt="" style="position:absolute;z-index:0;inset:0;width:100%;height:100%;object-fit:fill">`
+    ? `<img src="${escapeHtml(referenceDataUrl)}" alt="" style="position:absolute;z-index:0;inset:0;width:100%;height:100%;object-fit:contain;object-position:center">`
     : ''
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(documentName.value)}</title></head><body style="margin:0;background:#ececf2"><main style="position:relative;width:${documentViewport.value.width}px;height:${documentViewport.value.height}px;margin:0 auto;overflow:hidden;background:${documentViewport.value.background}">${reference}${patches}${layers}</main></body></html>`
 }
@@ -1244,6 +1338,31 @@ async function prepareAnalysisReference(viewport, signal) {
   return uploadAiTempBlob(analysisBlob, { signal })
 }
 
+async function calibrateReferenceElements(sourceNodes, signal) {
+  if (!props.referenceImage) return sourceNodes
+  const bitmap = await createImageBitmap(await referenceBlob(signal))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(documentViewport.value.width))
+  canvas.height = Math.max(1, Math.round(documentViewport.value.height))
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  context?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close?.()
+  if (!context) return sourceNodes
+  const image = context.getImageData(0, 0, canvas.width, canvas.height)
+  return sourceNodes.map((node) => {
+    if (node.type === 'frame') return { ...node, precisionStatus: 'semantic' }
+    const calibrated = calibrateRegionByType(image, node, node.type)
+    if (!calibrated) return { ...node, pixelCalibrated: false, precisionStatus: 'coarse' }
+    return {
+      ...node,
+      ...calibrated,
+      sourceBounds: { ...calibrated },
+      pixelCalibrated: true,
+      precisionStatus: 'pixel',
+    }
+  })
+}
+
 async function cropRegion(node) {
   if (!node || !props.referenceImage) return null
   const bitmap = await createImageBitmap(await referenceBlob())
@@ -1338,9 +1457,6 @@ async function refreshSelectedPreview() {
   generatedAssetBlob = null
   if (generatedAssetUrl.value?.startsWith('blob:')) URL.revokeObjectURL(generatedAssetUrl.value)
   generatedAssetUrl.value = ''
-  generatedSvg.value = ''
-  if (generatedSvgUrl.value) URL.revokeObjectURL(generatedSvgUrl.value)
-  generatedSvgUrl.value = ''
   assetDescriptionController?.abort()
   describingAsset.value = false
   if (!node || !props.referenceImage) return
@@ -1352,6 +1468,29 @@ async function refreshSelectedPreview() {
   } catch (caught) {
     if (sequence === previewSequence) regionCodeError.value = caught?.message || '区域预览生成失败'
   }
+}
+
+async function refreshHoveredPreview() {
+  const sequence = ++hoveredPreviewSequence
+  const node = hoveredNode.value
+  if (hoveredPreviewUrl.value) URL.revokeObjectURL(hoveredPreviewUrl.value)
+  hoveredPreviewUrl.value = ''
+  if (!node || !props.referenceImage) return
+  try {
+    const blob = await cropRegion(node)
+    if (sequence !== hoveredPreviewSequence || !blob) return
+    hoveredPreviewUrl.value = URL.createObjectURL(blob)
+  } catch {
+    // Hover previews are transient; a failed crop should not replace the selected-node state.
+  }
+}
+
+function scheduleHoveredPreview() {
+  if (hoveredPreviewTimer) window.clearTimeout(hoveredPreviewTimer)
+  hoveredPreviewTimer = window.setTimeout(() => {
+    hoveredPreviewTimer = null
+    void refreshHoveredPreview()
+  }, 70)
 }
 
 function scheduleSelectedPreview() {
@@ -1368,66 +1507,14 @@ async function fetchMediaBlob(source) {
   return response.blob()
 }
 
-async function generateSelectedSvg() {
-  if (!selectedNode.value || vectorizingSvg.value || !requireConfirmedRegion()) return
-  assetController?.abort()
-  assetController = new AbortController()
-  const currentController = assetController
-  assetRunId = ''
-  vectorizingSvg.value = true
-  assetError.value = ''
-  assetStage.value = '正在读取精确选区'
-  generatedAssetBlob = null
-  if (generatedAssetUrl.value?.startsWith('blob:')) URL.revokeObjectURL(generatedAssetUrl.value)
-  generatedAssetUrl.value = ''
-  assetDescription.value = ''
-  try {
-    const region = sourceRegion(selectedNode.value)
-    const source = selectedPreviewBlob || (await cropRegion(selectedNode.value))
-    const regionReferenceDataUrl = await uploadAiTempBlob(source, {
-      signal: currentController.signal,
-    })
-    const rawSvg = await generateDesignRegionSvg({
-      referenceImage: props.referenceImage,
-      regionReferenceDataUrl,
-      viewport: sourceViewport.value,
-      region,
-      signal: currentController.signal,
-      onStage(value) {
-        assetStage.value = value === 'complete' ? 'SVG 重建完成' : 'AI 正在重建可编辑矢量图形'
-      },
-      onRun(value) {
-        assetRunId = value
-      },
-    })
-    const svg = sanitizeGeneratedSvg(rawSvg, { title: selectedNode.value.name })
-    generatedSvg.value = svg
-    generatedAssetRegionId.value = selectedNode.value.id
-    generatedAssetMode.value = 'strict'
-    assetDescription.value = selectedNode.value.description || selectedNode.value.name
-    if (generatedSvgUrl.value) URL.revokeObjectURL(generatedSvgUrl.value)
-    generatedSvgUrl.value = URL.createObjectURL(svgBlob(svg))
-  } catch (caught) {
-    if (caught?.name !== 'AbortError') assetError.value = caught?.message || 'SVG 矢量重建失败'
-  } finally {
-    vectorizingSvg.value = false
-    if (assetController === currentController) assetController = null
-    assetRunId = ''
-  }
-}
-
-function downloadGeneratedSvg() {
-  if (!generatedSvg.value || !selectedNode.value) return
-  const safeName = selectedNode.value.name.replace(/[^\p{L}\p{N}._-]+/gu, '-') || 'ui-icon'
-  downloadBlob(svgBlob(generatedSvg.value), `${safeName}.svg`)
-}
-
-async function copyGeneratedSvg() {
-  await copyText(generatedSvg.value, 'SVG 已复制')
-}
-
 async function generateSelectedAsset(transparent) {
-  if (!selectedNode.value || generatingAsset.value || generating.value || !requireConfirmedRegion())
+  if (
+    !selectedNode.value ||
+    generatingAsset.value ||
+    removingAssetBackground.value ||
+    generating.value ||
+    !requireConfirmedRegion()
+  )
     return
   const regionId = selectedId.value
   const region = sourceRegion(selectedNode.value)
@@ -1440,9 +1527,6 @@ async function generateSelectedAsset(transparent) {
   generatedAssetBlob = null
   if (generatedAssetUrl.value?.startsWith('blob:')) URL.revokeObjectURL(generatedAssetUrl.value)
   generatedAssetUrl.value = ''
-  generatedSvg.value = ''
-  if (generatedSvgUrl.value) URL.revokeObjectURL(generatedSvgUrl.value)
-  generatedSvgUrl.value = ''
   generatedAssetTransparent.value = transparent
   generatedAssetMode.value = assetGenerationMode.value
   generatedAssetRegionId.value = regionId
@@ -1501,21 +1585,72 @@ async function generateSelectedAsset(transparent) {
   }
 }
 
+function generatedAssetFilename(node, suffix = '') {
+  const safeName = String(node?.name || 'ui-asset')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  return `${safeName || 'ui-asset'}${suffix}.png`
+}
+
+async function removeGeneratedAssetBackground() {
+  const node = selectedNode.value
+  if (!node || !generatedAssetBlob || removingAssetBackground.value) return
+  const regionId = node.id
+  removingAssetBackground.value = true
+  assetError.value = ''
+  assetStage.value = '正在移除素材背景'
+  try {
+    let blob = generatedAssetBlob
+    const tool = activeBackgroundRemovalModel.value
+    if (tool) {
+      const sourceFile = new File([blob], generatedAssetFilename(node, '-source'), {
+        type: blob.type || 'image/png',
+      })
+      const uploadedUrl = await uploadAiInputFile(sourceFile)
+      const response = await removeImageBackground(uploadedUrl, tool.id, {
+        idempotencyKey: `ui-design-asset-bg-${regionId}-${Date.now()}`,
+      })
+      const output = response?.result?.outputs?.[0] || response?.job?.originalMediaUrls?.[0] || ''
+      if (!output) throw new Error('背景移除完成，但没有返回透明图片')
+      blob = await fetchMediaBlob(output)
+      generatedAssetStatus.value = `已使用 ${tool.label || tool.name || '背景移除模型'} 去背`
+    } else {
+      blob = await removeFlatBackground(blob)
+      generatedAssetStatus.value = '已使用本地纯色背景识别去背'
+    }
+    if (selectedId.value !== regionId) return
+    if (!(await hasTransparency(blob))) {
+      blob = await removeFlatBackground(blob)
+    }
+    if (!(await hasTransparency(blob))) {
+      throw new Error('没有识别到可移除的背景，请切换透明生成重新尝试')
+    }
+    generatedAssetBlob = blob
+    generatedAssetTransparent.value = true
+    if (generatedAssetUrl.value?.startsWith('blob:')) URL.revokeObjectURL(generatedAssetUrl.value)
+    generatedAssetUrl.value = URL.createObjectURL(blob)
+    assetStage.value = '背景已移除，可加入素材库'
+  } catch (caught) {
+    assetError.value = caught?.message || '背景移除失败'
+  } finally {
+    removingAssetBackground.value = false
+  }
+}
+
 async function stopAssetGeneration() {
   assetController?.abort()
   if (assetRunId) await cancelAssistantRun(assetRunId).catch(() => null)
   assetDescriptionController?.abort()
   if (assetDescriptionRunId) await cancelAssistantRun(assetDescriptionRunId).catch(() => null)
   generatingAsset.value = false
-  vectorizingSvg.value = false
   describingAsset.value = false
 }
 
 function downloadGeneratedAsset() {
   if (!generatedAssetBlob || !selectedNode.value) return
-  const safeName = selectedNode.value.name.replace(/[^\p{L}\p{N}._-]+/gu, '-') || 'ui-asset'
   const suffix = generatedAssetTransparent.value ? '-transparent' : ''
-  downloadBlob(generatedAssetBlob, `${safeName}${suffix}.png`)
+  downloadBlob(generatedAssetBlob, generatedAssetFilename(selectedNode.value, suffix))
 }
 
 function assetId(regionId, format) {
@@ -1523,45 +1658,16 @@ function assetId(regionId, format) {
 }
 
 function assetPreviewSource(asset) {
-  if (asset?.url) return asset.url
-  if (!asset?.svgSource) return ''
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(asset.svgSource)}`
+  return asset?.url || ''
 }
 
-async function rasterizeGeneratedSvg() {
-  if (!generatedSvg.value) throw new Error('请先生成 SVG')
-  const source = URL.createObjectURL(svgBlob(generatedSvg.value))
-  try {
-    const image = new Image()
-    await new Promise((resolve, reject) => {
-      image.addEventListener('load', resolve, { once: true })
-      image.addEventListener('error', () => reject(new Error('SVG 预览读取失败')), { once: true })
-      image.src = source
-    })
-    const bounds = selectedNaturalBounds.value || { width: 512, height: 512 }
-    const scale = Math.min(1, 1024 / Math.max(bounds.width, bounds.height))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(bounds.width * scale))
-    canvas.height = Math.max(1, Math.round(bounds.height * scale))
-    canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return new Promise((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error('SVG 描述预览生成失败'))),
-        'image/png',
-      )
-    })
-  } finally {
-    URL.revokeObjectURL(source)
-  }
-}
-
-async function describeGeneratedAsset(format) {
+async function describeGeneratedAsset() {
   const node = selectedNode.value
   if (
     !node ||
     describingAsset.value ||
     generatedAssetRegionId.value !== node.id ||
-    (format === 'svg' ? !generatedSvg.value : !generatedAssetBlob)
+    !generatedAssetBlob
   ) {
     return
   }
@@ -1573,13 +1679,14 @@ async function describeGeneratedAsset(format) {
   assetError.value = ''
   assetStage.value = 'AI 正在理解素材细节'
   try {
-    const blob = format === 'svg' ? await rasterizeGeneratedSvg() : generatedAssetBlob
-    const reference = await uploadAiTempBlob(blob, { signal: currentController.signal })
+    const reference = await uploadAiTempBlob(generatedAssetBlob, {
+      signal: currentController.signal,
+    })
     assetDescription.value = await generateDesignAssetDescription({
       assetImage: reference,
       region: sourceRegion(node),
-      transparent: format === 'svg' || generatedAssetTransparent.value,
-      format,
+      transparent: generatedAssetTransparent.value,
+      format: 'png',
       generationMode: generatedAssetMode.value,
       signal: currentController.signal,
       onRun(value) {
@@ -1598,13 +1705,13 @@ async function describeGeneratedAsset(format) {
   }
 }
 
-async function approveGeneratedAsset(format) {
+async function approveGeneratedAsset() {
   const node = selectedNode.value
   if (
     !node ||
     approvingAsset.value ||
     generatedAssetRegionId.value !== node.id ||
-    (format === 'svg' ? !generatedSvg.value : !generatedAssetBlob)
+    !generatedAssetBlob
   ) {
     return
   }
@@ -1612,16 +1719,31 @@ async function approveGeneratedAsset(format) {
   assetError.value = ''
   assetStage.value = '正在保存到当前设计稿'
   try {
-    const persistentUrl = format === 'png' ? await uploadAiTempBlob(generatedAssetBlob, {}) : ''
+    const fileName = generatedAssetFilename(
+      node,
+      generatedAssetTransparent.value ? '-transparent' : '',
+    )
+    const file = new File([generatedAssetBlob], fileName, {
+      type: generatedAssetBlob.type || 'image/png',
+    })
+    const uploaded = await uploadFile(file)
+    const userAsset = await createUserAsset({
+      title: node.name.slice(0, 120),
+      fileKey: uploaded.key,
+      thumbnailKey: uploaded.thumbnailKey,
+      contentType: uploaded.contentType || file.type,
+    })
+    const persistentUrl = userAsset?.url || uploaded.url || ''
     const record = {
-      id: assetId(node.id, format),
+      id: assetId(node.id, 'png'),
+      userAssetId: userAsset?.id || '',
       sourceRegionId: node.id,
       name: node.name,
-      format,
+      format: 'png',
       url: persistentUrl,
-      svgSource: format === 'svg' ? generatedSvg.value : '',
+      thumbnailUrl: userAsset?.thumbnailUrl || uploaded.thumbnailUrl || '',
       description: assetDescription.value.trim() || node.description || node.name,
-      transparent: format === 'svg' || generatedAssetTransparent.value,
+      transparent: generatedAssetTransparent.value,
       generationMode: generatedAssetMode.value,
       naturalBounds: {
         ...naturalBoundsForNode(node, documentViewport.value, sourceViewport.value),
@@ -1631,14 +1753,67 @@ async function approveGeneratedAsset(format) {
     assetLibrary.value = [
       record,
       ...assetLibrary.value.filter(
-        (asset) => asset.sourceRegionId !== node.id || asset.format !== format,
+        (asset) => asset.sourceRegionId !== node.id || asset.format !== 'png',
       ),
     ]
     node.approvedAssetId = record.id
-    assetStage.value = '已加入当前设计稿素材库'
+    assetStage.value = '已加入设计稿和用户素材库'
     persistCachedDocument()
+    notificationService.success('素材已加入素材库')
   } catch (caught) {
     assetError.value = caught?.message || '素材保存失败'
+  } finally {
+    approvingAsset.value = false
+  }
+}
+
+async function approveOriginalCropAsset() {
+  const node = selectedNode.value
+  if (!node?.developerAsset || approvingAsset.value || !node.selectionConfirmed) return
+  approvingAsset.value = true
+  assetError.value = ''
+  assetStage.value = '正在提取原图素材'
+  try {
+    const blob = selectedPreviewBlob || (await cropRegion(node))
+    if (!blob) throw new Error('素材区域裁切失败')
+    const file = new File([blob], generatedAssetFilename(node, '-source'), {
+      type: blob.type || 'image/png',
+    })
+    const uploaded = await uploadFile(file)
+    const userAsset = await createUserAsset({
+      title: node.name.slice(0, 120),
+      fileKey: uploaded.key,
+      thumbnailKey: uploaded.thumbnailKey,
+      contentType: uploaded.contentType || file.type,
+    })
+    const record = {
+      id: assetId(node.id, 'png'),
+      userAssetId: userAsset?.id || '',
+      sourceRegionId: node.id,
+      name: node.name,
+      format: 'png',
+      url: userAsset?.url || uploaded.url || '',
+      thumbnailUrl: userAsset?.thumbnailUrl || uploaded.thumbnailUrl || '',
+      description: node.description || node.name,
+      transparent: await hasTransparency(blob),
+      generationMode: 'source',
+      naturalBounds: {
+        ...naturalBoundsForNode(node, documentViewport.value, sourceViewport.value),
+      },
+      createdAt: new Date().toISOString(),
+    }
+    assetLibrary.value = [
+      record,
+      ...assetLibrary.value.filter(
+        (asset) => asset.sourceRegionId !== node.id || asset.format !== 'png',
+      ),
+    ]
+    node.approvedAssetId = record.id
+    assetStage.value = '原图裁片已加入设计稿和用户素材库'
+    persistCachedDocument()
+    notificationService.success('开发素材已加入素材库')
+  } catch (caught) {
+    assetError.value = caught?.message || '原图素材保存失败'
   } finally {
     approvingAsset.value = false
   }
@@ -1845,8 +2020,154 @@ async function measureReferenceViewport(source, fallback, signal) {
   }
 }
 
+function seedFindingNode(finding, index, kind) {
+  const region = finding?.region || {}
+  const bounds = {
+    x: Math.round((Number(region.x) || 0) * documentViewport.value.width),
+    y: Math.round((Number(region.y) || 0) * documentViewport.value.height),
+    width: Math.max(4, Math.round((Number(region.width) || 0.05) * documentViewport.value.width)),
+    height: Math.max(
+      4,
+      Math.round((Number(region.height) || 0.05) * documentViewport.value.height),
+    ),
+  }
+  const isAsset = kind === 'asset'
+  const assetType = ['logo', 'icon'].includes(finding.type) ? 'icon' : 'image'
+  return {
+    id: `quality-${kind}-${finding.id || index + 1}`,
+    name: String(
+      finding.name || finding.title || `${isAsset ? '开发素材' : '品质问题'} ${index + 1}`,
+    ),
+    type: isAsset ? assetType : 'frame',
+    parentId: '',
+    ...bounds,
+    fill: 'transparent',
+    color: '#ffffff',
+    stroke: 'transparent',
+    strokeWidth: 0,
+    radius: 0,
+    opacity: 1,
+    text: '',
+    fontSize: 14,
+    fontWeight: 500,
+    lineHeight: 1.4,
+    align: 'left',
+    icon: '',
+    src: '',
+    objectFit: 'contain',
+    shadow: 'none',
+    category: isAsset ? (assetType === 'icon' ? 'icon' : 'image') : 'layout',
+    description: String(finding.reason || finding.evidence || finding.fix || finding.title || ''),
+    confidence: 0.9,
+    sourceBounds: { ...bounds },
+    naturalBounds: projectBounds(bounds, documentViewport.value, sourceViewport.value, {
+      integer: true,
+    }),
+    coordinateSpace: 'source-pixels',
+    manualSelection: false,
+    manuallyAdjusted: false,
+    selectionConfirmed: !isAsset,
+    developerAsset: isAsset,
+    qualityIssue: !isAsset,
+    suggestedFormat: normalizeRasterFormat(finding.suggestedFormat),
+    detached: false,
+    hidden: false,
+    locked: false,
+  }
+}
+
+function normalizedSemanticText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/产品|品牌|用户|素材|候选|图形|图标|插画|图片|视觉|组件/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function semanticMatchScore(asset, node) {
+  const target = normalizedSemanticText(`${asset.name}${asset.type}`)
+  const source = normalizedSemanticText(`${node.name}${node.text}${node.description}`)
+  if (!target || !source) return 0
+  let score = source.includes(target) || target.includes(source) ? 1 : 0
+  const targetChars = new Set([...target])
+  const overlap = [...targetChars].filter((char) => source.includes(char)).length
+  score = Math.max(score, overlap / Math.max(1, targetChars.size))
+  const compatible = {
+    logo: ['icon', 'image'],
+    icon: ['icon', 'image'],
+    avatar: ['image'],
+    illustration: ['image'],
+    photo: ['image'],
+    chart: ['image', 'icon', 'frame'],
+    decoration: ['image', 'icon', 'rectangle'],
+  }[asset.type] || ['image', 'icon']
+  if (!compatible.includes(node.type)) return 0
+  const spatial = spatialAssetAffinity(asset, node, documentViewport.value)
+  if (asset.region && spatial < 0.2) return 0
+  return score * 0.55 + 0.25 + spatial * 0.85
+}
+
+function applySeedAssetMatches() {
+  const assets = Array.isArray(props.seedFindings?.assets) ? props.seedFindings.assets : []
+  if (!assets.length) return
+  const available = nodes.value.filter(
+    (node) => !node.hidden && ['icon', 'image', 'frame', 'rectangle'].includes(node.type),
+  )
+  const used = new Set()
+  const matched = []
+  assets.forEach((asset) => {
+    const best = available
+      .filter((node) => !used.has(node.id))
+      .map((node) => ({ node, score: semanticMatchScore(asset, node) }))
+      .sort((a, b) => b.score - a.score)[0]
+    if (!best || best.score < 0.82) return
+    used.add(best.node.id)
+    best.node.developerAsset = true
+    best.node.suggestedFormat = normalizeRasterFormat(asset.suggestedFormat)
+    best.node.description = asset.reason || best.node.description
+    best.node.selectionConfirmed = false
+    matched.push(best.node)
+  })
+  if (matched.length) selectedId.value = matched[0].id
+}
+
+async function initializeSeedFindings() {
+  const findings = props.seedFindings
+  if (!props.referenceImage || !findings) return false
+  const issues = Array.isArray(findings.issues)
+    ? findings.issues.filter((item) => item?.region)
+    : []
+  const assets = Array.isArray(findings.assets)
+    ? findings.assets.filter((item) => item?.region)
+    : []
+  if (!issues.length && !assets.length) return false
+  const geometry = await measureReferenceViewport(props.referenceImage, props.viewport)
+  documentViewport.value = geometry.viewport
+  sourceViewport.value = geometry.sourceViewport
+  const issueNodes = issues.map((item, index) => seedFindingNode(item, index, 'issue'))
+  const assetNodes = assets.map((item, index) => seedFindingNode(item, index, 'asset'))
+  nodes.value = [...issueNodes, ...assetNodes]
+  tokens.value = { colors: [], spacing: [], typography: [] }
+  assetLibrary.value = []
+  documentName.value = '品质检查 · 问题与开发素材'
+  generatedPrompt = generationKey.value
+  showReference.value = true
+  stage.value = 'complete'
+  error.value = ''
+  selectedId.value = assetNodes[0]?.id || issueNodes[0]?.id || ''
+  resetHistory()
+  await nextTick()
+  fitCanvas()
+  persistCachedDocument()
+  return true
+}
+
 async function generate({ force = false } = {}) {
-  if (generating.value || !props.prompt.trim()) return
+  const analysisPrompt =
+    props.prompt.trim() ||
+    (props.seedFindings
+      ? '分析当前 UI 成稿的完整元素结构，并精确定位品质检查发现的开发素材候选。'
+      : '')
+  if (generating.value || !analysisPrompt) return
   const currentGenerationKey = generationKey.value
   if (!force && generatedPrompt === currentGenerationKey && nodes.value.length) return
   if (generatedPrompt && generatedPrompt !== currentGenerationKey) {
@@ -1901,7 +2222,8 @@ async function generate({ force = false } = {}) {
       ? await prepareAnalysisReference(documentViewport.value, controller.signal)
       : ''
     const document = await generateAiDesignDocument({
-      prompt: props.prompt,
+      prompt: analysisPrompt,
+      model: effectiveAnalysisModel.value,
       viewport: documentViewport.value,
       referenceImage: analysisReferenceImage,
       resumeSession,
@@ -1947,9 +2269,13 @@ async function generate({ force = false } = {}) {
     })
     documentName.value = document.name
     documentViewport.value = document.viewport
-    nodes.value = props.referenceImage
-      ? attachNaturalBounds(document.nodes, documentViewport.value, sourceViewport.value)
+    const calibratedNodes = props.referenceImage
+      ? await calibrateReferenceElements(document.nodes, controller.signal)
       : document.nodes
+    nodes.value = props.referenceImage
+      ? attachNaturalBounds(calibratedNodes, documentViewport.value, sourceViewport.value)
+      : calibratedNodes
+    if (props.seedFindings) applySeedAssetMatches()
     tokens.value = document.tokens
     generatedPrompt = currentGenerationKey
     stage.value = 'complete'
@@ -2053,6 +2379,7 @@ function preserveAnalysisOnPageExit() {
 }
 
 onMounted(() => {
+  void runtimeConfigStore.loadRuntimeConfig().catch(() => null)
   window.addEventListener('beforeunload', preserveAnalysisOnPageExit)
   window.addEventListener('pagehide', preserveAnalysisOnPageExit)
 })
@@ -2062,13 +2389,12 @@ watch(
   async (isOpen) => {
     if (!isOpen) {
       document.body.style.overflow = previousBodyOverflow
-      if (preserveZoomFrame) window.cancelAnimationFrame(preserveZoomFrame)
-      if (preserveZoomTimer) window.clearTimeout(preserveZoomTimer)
-      preserveZoomFrame = 0
-      preserveZoomTimer = null
-      suppressCanvasFit = false
+      if (canvasRefitFrame) window.cancelAnimationFrame(canvasRefitFrame)
+      if (canvasRefitTimer) window.clearTimeout(canvasRefitTimer)
+      canvasRefitFrame = 0
+      canvasRefitTimer = null
       if (generatingRegionCode.value) void stopRegionCodeGeneration()
-      if (generatingAsset.value || vectorizingSvg.value || describingAsset.value) {
+      if (generatingAsset.value || describingAsset.value) {
         void stopAssetGeneration()
       }
       if (generatingWebsite.value) void stopWebsiteRestoration()
@@ -2089,13 +2415,7 @@ watch(
     window.addEventListener('keydown', handleKeydown)
     await nextTick()
     animationContext = root.value ? gsap.context(() => {}, root.value) : null
-    resizeObserver = new ResizeObserver(() => {
-      if (suppressCanvasFit) {
-        zoom.value = preservedCanvasZoom
-        return
-      }
-      fitCanvas()
-    })
+    resizeObserver = new ResizeObserver(() => fitCanvas())
     if (canvasViewport.value) resizeObserver.observe(canvasViewport.value)
     fitCanvas()
   },
@@ -2103,20 +2423,29 @@ watch(
 )
 
 watch(
-  () => [props.open, props.generationNonce],
+  () => [props.open, props.generationNonce, props.seedFindings?.id || ''],
   ([isOpen, nonce]) => {
-    if (!isOpen || nonce === handledGenerationNonce) return
-    handledGenerationNonce = nonce
+    if (!isOpen) return
+    const shouldResumeGeneration = nonce !== handledGenerationNonce
+    if (shouldResumeGeneration) handledGenerationNonce = nonce
+    if (restoreCachedDocument()) {
+      if (props.seedFindings && shouldResumeGeneration) void generate({ force: true })
+      return
+    }
+    if (props.seedFindings) {
+      void initializeSeedFindings().then(() => {
+        void generate({ force: true })
+      })
+      return
+    }
+    if (!shouldResumeGeneration) return
     if (
       props.resumeSession?.version === ACTIVE_DESIGN_ANALYSIS_VERSION &&
       props.resumeSession?.conversationId
     ) {
       activeAnalysisSession = { ...props.resumeSession }
       void generate({ force: true })
-      return
     }
-    if (restoreCachedDocument()) return
-    void generate({ force: true })
   },
   { flush: 'post' },
 )
@@ -2129,9 +2458,9 @@ watch(
   },
 )
 watch(selectedId, () => {
-  preserveCanvasZoom({ centerSelection: Boolean(selectedId.value) })
+  preserveCanvasZoom()
   if (generatingRegionCode.value) void stopRegionCodeGeneration()
-  if (generatingAsset.value || vectorizingSvg.value || describingAsset.value) {
+  if (generatingAsset.value || describingAsset.value) {
     void stopAssetGeneration()
   }
   copyFeedback.value = ''
@@ -2145,6 +2474,10 @@ watch(() => {
   const node = selectedNode.value
   return node ? `${node.id}:${node.x}:${node.y}:${node.width}:${node.height}` : ''
 }, scheduleSelectedPreview)
+watch(() => {
+  const node = hoveredNode.value
+  return node ? `${node.id}:${node.x}:${node.y}:${node.width}:${node.height}` : ''
+}, scheduleHoveredPreview)
 watch(
   () => props.referenceImage,
   () => {
@@ -2162,13 +2495,14 @@ onBeforeUnmount(() => {
   assetDescriptionController?.abort()
   websiteController?.abort()
   if (selectedPreviewUrl.value) URL.revokeObjectURL(selectedPreviewUrl.value)
+  if (hoveredPreviewUrl.value) URL.revokeObjectURL(hoveredPreviewUrl.value)
   if (generatedAssetUrl.value?.startsWith('blob:')) URL.revokeObjectURL(generatedAssetUrl.value)
-  if (generatedSvgUrl.value) URL.revokeObjectURL(generatedSvgUrl.value)
   if (historyTimer) window.clearTimeout(historyTimer)
   if (copyFeedbackTimer) window.clearTimeout(copyFeedbackTimer)
   if (selectedPreviewTimer) window.clearTimeout(selectedPreviewTimer)
-  if (preserveZoomFrame) window.cancelAnimationFrame(preserveZoomFrame)
-  if (preserveZoomTimer) window.clearTimeout(preserveZoomTimer)
+  if (hoveredPreviewTimer) window.clearTimeout(hoveredPreviewTimer)
+  if (canvasRefitFrame) window.cancelAnimationFrame(canvasRefitFrame)
+  if (canvasRefitTimer) window.clearTimeout(canvasRefitTimer)
   endNodeDrag()
   endNodeResize()
   window.removeEventListener('keydown', handleKeydown)
@@ -2188,7 +2522,7 @@ onBeforeUnmount(() => {
       class="adc"
       :class="{
         'is-region-analyzer': referenceImage,
-        'has-region-selection': referenceImage && (selectedNode || inspectorMode),
+        'has-region-selection': referenceImage && (inspectorNode || inspectorMode),
         'is-inspector-wide': referenceImage && inspectorMode,
         'is-layers-collapsed': referenceImage && !showLayerPanel,
       }"
@@ -2222,7 +2556,7 @@ onBeforeUnmount(() => {
               ></i>
             </button>
           </template>
-          <div v-if="!referenceImage" class="adc-history" aria-label="历史操作">
+          <div class="adc-history" aria-label="历史操作">
             <button type="button" title="撤销 ⌘Z" :disabled="!historyPast.length" @click="undo">
               <i class="bi bi-arrow-counterclockwise"></i>
             </button>
@@ -2244,30 +2578,62 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div class="adc-actions">
+          <div
+            v-if="referenceImage"
+            class="adc-analysis-model"
+            :title="
+              generating ? '分析进行中，暂时不能切换模型' : analysisModelError || '指定元素分析模型'
+            "
+          >
+            <i class="bi bi-cpu" aria-hidden="true"></i>
+            <AspectRatioSelect
+              class="adc-analysis-model__select"
+              :model-value="effectiveAnalysisModel"
+              :options="analysisModels"
+              :disabled="generating || analysisModelsLoading || analysisModels.length < 2"
+              :show-ratio-icons="false"
+              use-option-label
+              compact-menu
+              glass-menu
+              menu-placement="bottom"
+              aria-label="元素分析模型"
+              :placeholder="analysisModelsLoading ? '加载模型…' : '选择分析模型'"
+              @update:model-value="emit('update:analysisModel', $event)"
+            />
+          </div>
           <button
             v-if="referenceImage"
             type="button"
             class="is-panel-action"
             :class="{ 'is-on': inspectorMode === 'library' }"
+            title="打开素材库"
             @click="openInspector('library')"
           >
-            <i class="bi bi-collection"></i>素材 {{ assetLibrary.length }}
+            <i class="bi bi-collection"></i><span>素材 {{ assetLibrary.length }}</span>
           </button>
           <button
             v-if="referenceImage"
             type="button"
             class="is-panel-action"
             :class="{ 'is-on': inspectorMode === 'website' }"
+            title="使用已确认素材还原网站"
             @click="openInspector('website')"
           >
-            <i class="bi bi-window"></i>还原网站
+            <i class="bi bi-window"></i><span>还原网站</span>
           </button>
           <span v-if="generating" class="adc-ai-status"><i></i>{{ stageLabel }}</span>
-          <button v-if="generating" type="button" @click="stopGeneration">
-            <i class="bi bi-stop-fill"></i>停止
+          <button v-if="generating" type="button" title="停止元素分析" @click="stopGeneration">
+            <i class="bi bi-stop-fill"></i><span>停止</span>
           </button>
-          <button v-else type="button" @click="generate({ force: true })">
-            <i class="bi bi-stars"></i>{{ referenceImage ? '重新分析' : '重新设计' }}
+          <button
+            v-else
+            type="button"
+            :title="analysisActionTitle"
+            :disabled="analysisActionDisabled"
+            @click="generate({ force: true })"
+          >
+            <i class="bi bi-stars"></i
+            ><span>{{ referenceImage ? analysisActionLabel : '重新设计' }}</span>
           </button>
           <button v-if="!referenceImage" type="button" @click="exportDocument('json')">
             <i class="bi bi-filetype-json"></i>
@@ -2296,39 +2662,82 @@ onBeforeUnmount(() => {
             ><i class="bi bi-search"></i><input v-model="layerSearch" placeholder="搜索图层"
           /></label>
           <div class="adc-layer-list" :class="{ 'is-region-list': referenceImage }">
-            <button
+            <div
               v-for="entry in layerEntries"
               :key="entry.node.id"
-              type="button"
+              role="button"
+              tabindex="0"
               :class="{
                 'is-on': selectedId === entry.node.id,
                 'is-hovered': hoveredId === entry.node.id,
                 'is-hidden': entry.node.hidden,
+                'has-children': entry.hasChildren,
               }"
-              :style="{ paddingLeft: `${6 + entry.depth * 9}px` }"
+              :style="{ paddingLeft: `${4 + entry.depth * 12}px` }"
               :aria-pressed="selectedId === entry.node.id"
               @pointerenter="hoverNode(entry.node.id)"
               @pointerleave="clearHoveredNode(entry.node.id)"
               @click="selectNode(entry.node)"
+              @keydown.enter.prevent="selectNode(entry.node)"
+              @keydown.space.prevent="selectNode(entry.node)"
             >
+              <button
+                v-if="entry.hasChildren"
+                type="button"
+                class="adc-layer-disclosure"
+                :title="collapsedLayerIds.has(entry.node.id) ? '展开层级' : '收起层级'"
+                :aria-label="collapsedLayerIds.has(entry.node.id) ? '展开层级' : '收起层级'"
+                :aria-expanded="!collapsedLayerIds.has(entry.node.id)"
+                @click.stop="toggleLayerExpanded(entry.node)"
+              >
+                <i
+                  class="bi"
+                  :class="collapsedLayerIds.has(entry.node.id) ? 'bi-chevron-right' : 'bi-chevron-down'"
+                ></i>
+              </button>
+              <span v-else class="adc-layer-disclosure-placeholder" aria-hidden="true"></span>
               <i class="bi" :class="NODE_ICONS[entry.node.type]"></i>
               <span
                 ><strong>{{ entry.node.name }}</strong
                 ><small>{{ entry.node.type }}</small></span
               >
-              <i
+              <button
                 v-if="!referenceImage"
+                type="button"
+                class="adc-layer-row-action"
+                :title="entry.node.hidden ? '显示图层' : '隐藏图层'"
+                :aria-label="entry.node.hidden ? '显示图层' : '隐藏图层'"
+                @click.stop="toggleNodeVisibility(entry.node)"
+              >
+                <i
                 class="bi"
                 :class="entry.node.hidden ? 'bi-eye-slash' : 'bi-eye'"
-                @click.stop="toggleNodeVisibility(entry.node)"
-              ></i>
-              <i
+                ></i>
+              </button>
+              <button
                 v-if="!referenceImage"
+                type="button"
+                class="adc-layer-row-action"
+                :title="entry.node.locked ? '解锁图层' : '锁定图层'"
+                :aria-label="entry.node.locked ? '解锁图层' : '锁定图层'"
+                @click.stop="toggleNodeLock(entry.node)"
+              >
+                <i
                 class="bi"
                 :class="entry.node.locked ? 'bi-lock-fill' : 'bi-unlock'"
-                @click.stop="toggleNodeLock(entry.node)"
-              ></i>
-            </button>
+                ></i>
+              </button>
+              <button
+                type="button"
+                class="adc-layer-row-action is-delete"
+                title="删除节点"
+                aria-label="删除节点"
+                :disabled="entry.node.locked"
+                @click.stop="deleteNode(entry.node)"
+              >
+                <i class="bi bi-trash3"></i>
+              </button>
+            </div>
           </div>
           <div v-if="generating && !nodes.length" class="adc-layers-loading">
             <i class="bi bi-stars"></i><span>AI 正在识别页面区域</span>
@@ -2337,11 +2746,11 @@ onBeforeUnmount(() => {
 
         <section ref="canvasViewport" class="adc-canvas" @pointerdown.self="selectedId = ''">
           <div class="adc-canvas-toolbar">
-            <button type="button" @click="zoom = clamp(zoom - 0.1, 0.2, 2)">
+            <button type="button" @click="zoom = clamp(zoom - 0.1, MIN_CANVAS_ZOOM, 2)">
               <i class="bi bi-dash"></i>
             </button>
             <span>{{ zoomLabel }}</span>
-            <button type="button" @click="zoom = clamp(zoom + 0.1, 0.2, 2)">
+            <button type="button" @click="zoom = clamp(zoom + 0.1, MIN_CANVAS_ZOOM, 2)">
               <i class="bi bi-plus"></i>
             </button>
             <button type="button" @click="fitCanvas">
@@ -2383,6 +2792,7 @@ onBeforeUnmount(() => {
                 :zoom="zoom"
                 :nodes="nodes"
                 :selected-id="selectedId"
+                :hovered-id="hoveredId"
                 :draw-mode="preciseDrawMode"
                 :disabled="generating"
                 @select="selectPreciseRegion"
@@ -2568,20 +2978,30 @@ onBeforeUnmount(() => {
               <p v-if="websiteError" class="adc-region-error">{{ websiteError }}</p>
             </template>
 
-            <template v-else-if="selectedNode">
+            <template v-else-if="inspectorNode">
               <header class="adc-region-head">
                 <span>
                   <small>{{
-                    selectedNode.manualSelection ? 'MANUAL REGION' : 'AI CANDIDATE'
+                    inspectorNode.manualSelection ? 'MANUAL REGION' : 'AI CANDIDATE'
                   }}</small>
-                  <strong>{{ selectedNode.name }}</strong>
+                  <strong>{{ inspectorNode.name }}</strong>
                 </span>
                 <div class="adc-region-head-actions">
-                  <em>{{ selectedNode.selectionConfirmed ? '已确认' : '候选' }}</em>
-                  <button type="button" title="复制尺寸与样式" @click="copySelectedRegionSpec">
+                  <em>{{ inspectorIsSelected ? (inspectorNode.selectionConfirmed ? '已确认' : '已选中') : '实时预览' }}</em>
+                  <button
+                    v-if="inspectorIsSelected"
+                    type="button"
+                    title="复制尺寸与样式"
+                    @click="copySelectedRegionSpec"
+                  >
                     <i class="bi bi-braces"></i>
                   </button>
-                  <button type="button" title="取消选择" @click="selectedId = ''">
+                  <button
+                    v-if="inspectorIsSelected"
+                    type="button"
+                    title="取消选择"
+                    @click="selectedId = ''"
+                  >
                     <i class="bi bi-x-lg"></i>
                   </button>
                 </div>
@@ -2591,9 +3011,9 @@ onBeforeUnmount(() => {
                 <h3>定位预览</h3>
                 <div>
                   <img
-                    v-if="selectedPreviewUrl"
-                    :src="selectedPreviewUrl"
-                    :alt="selectedNode.name"
+                    v-if="inspectorPreviewUrl"
+                    :src="inspectorPreviewUrl"
+                    :alt="inspectorNode.name"
                   />
                   <span v-else><i class="bi bi-arrow-repeat spin"></i>正在提取预览</span>
                 </div>
@@ -2604,18 +3024,19 @@ onBeforeUnmount(() => {
                 <dl>
                   <div>
                     <dt>类型</dt>
-                    <dd>{{ selectedNode.type }}</dd>
+                    <dd>{{ inspectorNode.type }}</dd>
                   </div>
                   <div>
                     <dt>原图尺寸</dt>
-                    <dd>{{ selectedNaturalBounds.width }} × {{ selectedNaturalBounds.height }}</dd>
+                    <dd>{{ inspectorNaturalBounds.width }} × {{ inspectorNaturalBounds.height }}</dd>
                   </div>
                   <div>
                     <dt>原图位置</dt>
-                    <dd>{{ selectedNaturalBounds.x }}, {{ selectedNaturalBounds.y }}</dd>
+                    <dd>{{ inspectorNaturalBounds.x }}, {{ inspectorNaturalBounds.y }}</dd>
                   </div>
                 </dl>
                 <div
+                  v-if="inspectorIsSelected"
                   class="adc-region-confirm"
                   :class="{ 'is-confirmed': selectedNode.selectionConfirmed }"
                 >
@@ -2627,25 +3048,40 @@ onBeforeUnmount(() => {
                       "
                     ></i>
                     <strong>{{
-                      selectedNode.selectionConfirmed ? '精确选区已确认' : '请校准选区边界'
+                      selectedNode.selectionConfirmed
+                        ? '精确选区已确认'
+                        : selectedCanConfirm
+                          ? '选区可确认'
+                          : '自动校准未通过'
                     }}</strong>
                     <small>{{
                       selectedNode.selectionConfirmed
                         ? '后续输出使用原图像素坐标'
-                        : '可拖动选框或八个控制点调整'
+                        : selectedCanConfirm
+                          ? '确认后才可生成或加入素材库'
+                          : '请先拖动选框或八个控制点修正边界'
                     }}</small>
                   </span>
                   <button
                     v-if="!selectedNode.selectionConfirmed"
                     type="button"
+                    :disabled="!selectedCanConfirm"
                     @click="confirmPreciseRegion"
                   >
                     确认选区
                   </button>
                 </div>
+                <button
+                  v-else
+                  type="button"
+                  class="adc-hover-pin"
+                  @click="selectNode(inspectorNode)"
+                >
+                  <i class="bi bi-pin-angle"></i>固定选择
+                </button>
               </section>
 
-              <nav class="adc-region-tabs" aria-label="选区操作">
+              <nav v-if="inspectorIsSelected" class="adc-region-tabs" aria-label="选区操作">
                 <button
                   v-if="selectedSupportsAsset"
                   type="button"
@@ -2667,11 +3103,29 @@ onBeforeUnmount(() => {
 
               <Transition name="adc-inspector-panel" mode="out-in">
                 <section
-                  v-if="regionInspectorTab === 'asset' && selectedSupportsAsset"
+                  v-if="inspectorIsSelected && regionInspectorTab === 'asset' && selectedSupportsAsset"
                   key="asset"
                   class="adc-region-assets"
                 >
-                  <h3>素材输出</h3>
+                  <h3>模块生图与素材</h3>
+                  <div v-if="selectedNode.developerAsset" class="adc-source-asset">
+                    <span>
+                      <i class="bi bi-box-seam"></i>
+                      <strong>开发素材候选</strong>
+                      <small>建议交付 {{ selectedNode.suggestedFormat.toUpperCase() }}</small>
+                    </span>
+                    <button
+                      type="button"
+                      :disabled="approvingAsset || !selectedNode.selectionConfirmed"
+                      @click="approveOriginalCropAsset"
+                    >
+                      <i
+                        class="bi"
+                        :class="approvingAsset ? 'bi-arrow-repeat spin' : 'bi-crop'"
+                      ></i>
+                      {{ approvingAsset ? '正在保存' : '原图裁片加入素材库' }}
+                    </button>
+                  </div>
                   <div class="adc-asset-mode" role="group" aria-label="素材生成策略">
                     <button
                       type="button"
@@ -2693,25 +3147,12 @@ onBeforeUnmount(() => {
                     {{ selectedApprovedAsset.format.toUpperCase() }}
                   </p>
                   <button
-                    v-if="selectedNode.category === 'icon' || selectedNode.type === 'icon'"
                     type="button"
                     class="is-primary"
                     :disabled="
-                      generatingAsset || vectorizingSvg || !selectedNode.selectionConfirmed
-                    "
-                    @click="generateSelectedSvg"
-                  >
-                    <i class="bi bi-bezier2"></i>
-                    <span
-                      ><strong>{{ vectorizingSvg ? '正在矢量化' : '生成 SVG' }}</strong
-                      ><small>纯路径轮廓，不嵌入截图</small></span
-                    >
-                  </button>
-                  <button
-                    type="button"
-                    :class="{ 'is-primary': selectedNode.category !== 'icon' }"
-                    :disabled="
-                      generatingAsset || vectorizingSvg || !selectedNode.selectionConfirmed
+                      generatingAsset ||
+                      removingAssetBackground ||
+                      !selectedNode.selectionConfirmed
                     "
                     @click="generateSelectedAsset(true)"
                   >
@@ -2721,7 +3162,9 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     :disabled="
-                      generatingAsset || vectorizingSvg || !selectedNode.selectionConfirmed
+                      generatingAsset ||
+                      removingAssetBackground ||
+                      !selectedNode.selectionConfirmed
                     "
                     @click="generateSelectedAsset(false)"
                   >
@@ -2730,7 +3173,7 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
-                    v-if="generatingAsset || vectorizingSvg"
+                    v-if="generatingAsset"
                     type="button"
                     class="adc-asset-stop"
                     @click="stopAssetGeneration"
@@ -2741,29 +3184,6 @@ onBeforeUnmount(() => {
                       ><small>点击停止重建任务</small></span
                     >
                   </button>
-
-                  <div v-if="generatedSvgUrl" class="adc-asset-result">
-                    <div class="adc-asset-preview is-svg">
-                      <img :src="generatedSvgUrl" :alt="`${selectedNode.name} SVG`" />
-                    </div>
-                    <span><strong>SVG 已生成</strong><small>纯路径 · 无嵌入位图</small></span>
-                    <div>
-                      <button
-                        type="button"
-                        title="AI 生成素材描述"
-                        :disabled="describingAsset || approvingAsset"
-                        @click="describeGeneratedAsset('svg')"
-                      >
-                        <i class="bi bi-text-paragraph"></i>
-                      </button>
-                      <button type="button" title="复制 SVG" @click="copyGeneratedSvg">
-                        <i class="bi bi-copy"></i>
-                      </button>
-                      <button type="button" title="下载 SVG" @click="downloadGeneratedSvg">
-                        <i class="bi bi-download"></i>
-                      </button>
-                    </div>
-                  </div>
 
                   <div v-if="generatedAssetUrl" class="adc-asset-result">
                     <div
@@ -2785,7 +3205,7 @@ onBeforeUnmount(() => {
                         type="button"
                         title="AI 生成素材描述"
                         :disabled="describingAsset || approvingAsset"
-                        @click="describeGeneratedAsset('png')"
+                        @click="describeGeneratedAsset"
                       >
                         <i class="bi bi-text-paragraph"></i>
                       </button>
@@ -2799,7 +3219,7 @@ onBeforeUnmount(() => {
                       </button>
                     </div>
                   </div>
-                  <div v-if="generatedSvgUrl || generatedAssetUrl" class="adc-asset-approval">
+                  <div v-if="generatedAssetUrl" class="adc-asset-approval">
                     <label>
                       <span>素材描述</span>
                       <textarea
@@ -2811,8 +3231,8 @@ onBeforeUnmount(() => {
                     </label>
                     <button
                       type="button"
-                      :disabled="approvingAsset || describingAsset"
-                      @click="approveGeneratedAsset(generatedSvgUrl ? 'svg' : 'png')"
+                      :disabled="approvingAsset || describingAsset || removingAssetBackground"
+                      @click="approveGeneratedAsset"
                     >
                       <i
                         class="bi"
@@ -2824,7 +3244,7 @@ onBeforeUnmount(() => {
                   </div>
                 </section>
 
-                <section v-else key="code" class="adc-region-code">
+                <section v-else-if="inspectorIsSelected" key="code" class="adc-region-code">
                   <div class="adc-region-code-head">
                     <h3>区域代码</h3>
                     <div role="group" aria-label="代码类型">
@@ -2877,11 +3297,11 @@ onBeforeUnmount(() => {
                 </section>
               </Transition>
 
-              <p v-if="copyFeedback" class="adc-copy-feedback" role="status">
+              <p v-if="inspectorIsSelected && copyFeedback" class="adc-copy-feedback" role="status">
                 <i class="bi bi-check2"></i>{{ copyFeedback }}
               </p>
 
-              <p v-if="assetError || regionCodeError" class="adc-region-error">
+              <p v-if="inspectorIsSelected && (assetError || regionCodeError)" class="adc-region-error">
                 {{ assetError || regionCodeError }}
               </p>
             </template>
@@ -3118,7 +3538,7 @@ onBeforeUnmount(() => {
   background: #18191f;
 }
 .adc.is-region-analyzer .adc-topbar {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(0, 1.3fr);
 }
 .adc-brand,
 .adc-actions,
@@ -3243,8 +3663,52 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 .adc-actions {
+  min-width: 0;
+  max-width: 100%;
   justify-content: flex-end;
   gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.adc-actions::-webkit-scrollbar {
+  display: none;
+}
+.adc-analysis-model {
+  display: inline-flex;
+  min-width: 0;
+  height: 31px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.045);
+}
+.adc-analysis-model > i:first-child {
+  color: #9f93ff;
+  font-size: 0.72rem;
+}
+.adc-analysis-model__select {
+  width: clamp(92px, 10vw, 156px);
+  min-width: 0;
+}
+.adc-analysis-model :deep(.ratio-select__trigger) {
+  min-height: 29px;
+  padding: 0 5px 0 0;
+  color: rgba(255, 255, 255, 0.82);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  font-size: 0.62rem;
+  font-weight: 620;
+}
+.adc-analysis-model :deep(.ratio-select__trigger:hover),
+.adc-analysis-model :deep(.ratio-select.is-open .ratio-select__trigger) {
+  background: rgba(255, 255, 255, 0.05);
+  border: 0;
+  box-shadow: none;
 }
 .adc-actions button {
   display: flex;
@@ -3349,13 +3813,14 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 2px;
 }
-.adc-layer-list button {
+.adc-layer-list > div {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 20px 20px;
+  grid-template-columns: 16px 20px minmax(0, 1fr) repeat(3, 20px);
   align-items: center;
-  gap: 5px;
+  gap: 3px;
   min-width: 0;
-  padding: 6px;
+  min-height: 36px;
+  padding: 4px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -3363,23 +3828,27 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
 }
-.adc-layer-list.is-region-list button {
-  grid-template-columns: 22px minmax(0, 1fr);
+.adc-layer-list.is-region-list > div {
+  grid-template-columns: 16px 20px minmax(0, 1fr) 24px;
   min-height: 38px;
 }
-.adc-layer-list button:hover,
-.adc-layer-list button.is-hovered,
-.adc-layer-list button.is-on {
+.adc-layer-list > div:hover,
+.adc-layer-list > div.is-hovered,
+.adc-layer-list > div.is-on {
   background: rgba(255, 255, 255, 0.06);
   color: #fff;
 }
-.adc-layer-list button.is-on {
+.adc-layer-list > div:focus-visible {
+  outline: 1px solid rgba(122, 162, 255, 0.7);
+  outline-offset: -1px;
+}
+.adc-layer-list > div.is-on {
   box-shadow: inset 2px 0 #6d5cff;
 }
-.adc-layer-list button.is-hidden {
+.adc-layer-list > div.is-hidden {
   opacity: 0.42;
 }
-.adc-layer-list button > span {
+.adc-layer-list > div > span:not(.adc-layer-disclosure-placeholder) {
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -3397,8 +3866,45 @@ onBeforeUnmount(() => {
   color: rgba(255, 255, 255, 0.28);
   font-size: 0.53rem;
 }
-.adc-layer-list button > i:nth-last-child(-n + 2) {
-  font-size: 0.6rem;
+.adc-layer-disclosure,
+.adc-layer-row-action {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.36);
+  cursor: pointer;
+}
+.adc-layer-disclosure {
+  width: 16px;
+}
+.adc-layer-disclosure-placeholder {
+  width: 16px;
+  height: 20px;
+}
+.adc-layer-disclosure:hover,
+.adc-layer-row-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.adc-layer-row-action.is-delete {
+  opacity: 0;
+}
+.adc-layer-list > div:hover .adc-layer-row-action.is-delete,
+.adc-layer-list > div:focus-within .adc-layer-row-action.is-delete {
+  opacity: 1;
+}
+.adc-layer-row-action.is-delete:hover:not(:disabled) {
+  background: rgba(238, 82, 100, 0.14);
+  color: #ff8393;
+}
+.adc-layer-row-action:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 .adc-layer-list button.adc-source-layer {
   margin-top: 8px;
@@ -3481,7 +3987,8 @@ onBeforeUnmount(() => {
 .adc-reference :deep(.authenticated-image-media) {
   width: 100%;
   height: 100%;
-  object-fit: fill;
+  object-fit: contain;
+  object-position: center;
 }
 .adc-artboard.is-tracing .adc-reference {
   opacity: 1;
@@ -4003,8 +4510,8 @@ onBeforeUnmount(() => {
 }
 .adc-region-preview img {
   display: block;
-  max-width: 100%;
-  max-height: 180px;
+  width: 100%;
+  height: 132px;
   object-fit: contain;
 }
 .adc-region-preview > div > span {
@@ -4094,6 +4601,28 @@ onBeforeUnmount(() => {
 .adc-region-confirm.is-confirmed i {
   color: #65d79a;
 }
+.adc-hover-pin {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  margin-top: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(122, 162, 255, 0.24);
+  border-radius: 7px;
+  background: rgba(91, 140, 255, 0.09);
+  color: #b9cbff;
+  font-size: 0.57rem;
+  cursor: pointer;
+}
+.adc-hover-pin:hover,
+.adc-hover-pin:focus-visible {
+  border-color: rgba(122, 162, 255, 0.48);
+  background: rgba(91, 140, 255, 0.15);
+  color: #fff;
+  outline: 0;
+}
 .adc-region-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4136,6 +4665,46 @@ onBeforeUnmount(() => {
 }
 .adc-region-assets h3 {
   margin-bottom: 3px;
+}
+.adc-source-asset {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(169, 156, 255, 0.2);
+  border-radius: 7px;
+  background: rgba(109, 92, 255, 0.09);
+}
+.adc-source-asset > span {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+}
+.adc-source-asset > span i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+}
+.adc-source-asset > span strong {
+  font-size: 0.59rem;
+}
+.adc-source-asset > span small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.51rem;
+}
+.adc-source-asset > button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: #6d5cff;
+  color: #fff;
+  font-size: 0.56rem;
+  cursor: pointer;
+}
+.adc-source-asset > button i {
+  margin-right: 6px;
+}
+.adc-source-asset > button:disabled {
+  cursor: wait;
+  opacity: 0.52;
 }
 .adc-asset-mode {
   display: grid;
@@ -4265,8 +4834,7 @@ onBeforeUnmount(() => {
   background: #0f1015;
   overflow: hidden;
 }
-.adc-asset-preview.is-transparent,
-.adc-asset-preview.is-svg {
+.adc-asset-preview.is-transparent {
   background-color: #f3f4f6;
   background-image:
     linear-gradient(45deg, #d8dbe1 25%, transparent 25%),
@@ -4649,6 +5217,64 @@ onBeforeUnmount(() => {
 @keyframes adc-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1200px) {
+  .adc.is-region-analyzer {
+    --adc-layer-width: 184px;
+  }
+
+  .adc.is-region-analyzer.has-region-selection {
+    --adc-inspector-width: 292px;
+  }
+
+  .adc.is-region-analyzer.is-inspector-wide {
+    --adc-inspector-width: 340px;
+  }
+
+  .adc-actions button > span {
+    display: none;
+  }
+
+  .adc-actions button {
+    width: 31px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .adc-analysis-model__select {
+    width: 90px;
+  }
+}
+
+@media (max-width: 840px) {
+  .adc.is-region-analyzer {
+    --adc-layer-width: 0px;
+    inset: 4px;
+  }
+
+  .adc.is-region-analyzer.has-region-selection {
+    --adc-inspector-width: min(292px, 42vw);
+  }
+
+  .adc.is-region-analyzer .adc-layers {
+    display: none;
+  }
+
+  .adc.is-region-analyzer .adc-topbar {
+    grid-template-columns: auto minmax(0, 1fr);
+    padding-inline: 7px;
+  }
+
+  .adc-brand > strong,
+  .adc-region-total,
+  .adc-layer-toggle {
+    display: none;
+  }
+
+  .adc-analysis-model__select {
+    width: 76px;
   }
 }
 

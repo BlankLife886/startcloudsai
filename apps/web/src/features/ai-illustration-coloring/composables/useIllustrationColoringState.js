@@ -33,7 +33,10 @@ import {
   isTerminalColoringJobStatus,
   mapColoringJobToHistory,
 } from '@/features/ai-illustration-coloring/domain/mapColoringJobToHistory'
-import { takePendingPrompt } from '@/features/creator-hub/studioTools'
+import {
+  composePendingLaunchPrompt,
+  takePendingPrompt,
+} from '@/features/creator-hub/studioTools'
 import { prepareColoringUploadBlob } from '@/features/ai-illustration-coloring/domain/prepareColoringUpload'
 import {
   coloringRetryMayCreatePaidRequest,
@@ -2834,7 +2837,31 @@ export function useIllustrationColoringState() {
     loadHistory()
     restoreColoringDraft()
     const pending = takePendingPrompt('coloring')
-    if (pending?.prompt) customPrompt.value = pending.prompt
+    if (pending) {
+      const launchConfig = pending.config || {}
+      customPrompt.value = composePendingLaunchPrompt(pending)
+      const nextSettings = { ...settings.value }
+      if (
+        launchConfig.ratio &&
+        COLORING_OUTPUT_ORIENTATION_OPTIONS.some((item) => item.id === launchConfig.ratio)
+      ) {
+        nextSettings.outputOrientation = launchConfig.ratio
+      }
+      if (
+        launchConfig.resolution &&
+        COLORING_OUTPUT_SIZE_OPTIONS.some((item) => item.id === launchConfig.resolution)
+      ) {
+        nextSettings.outputSize = launchConfig.resolution
+      }
+      if (COLORING_BATCH_COUNT_OPTIONS.includes(Number(launchConfig.count))) {
+        nextSettings.generationCount = Number(launchConfig.count)
+      }
+      if (launchConfig.model) {
+        nextSettings.publicModelKey = launchConfig.model
+        selectedModelKey.value = launchConfig.model
+      }
+      settings.value = nextSettings
+    }
     const active = historyItems.value.find((item) => item.id === activeHistoryId.value)
     if (active && !sourceBlobUrl.value) {
       applyHistoryItemToUi(active, { preserveLocalBlob: true })

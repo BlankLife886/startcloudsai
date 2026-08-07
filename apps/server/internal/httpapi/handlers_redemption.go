@@ -45,7 +45,7 @@ func (s *Server) redeemCode(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	redeemed, entry, err := redemption.Redeem(ctx, s.St, user.ID, code)
+	redeemed, _, err := redemption.Redeem(ctx, s.St, user.ID, code)
 	if err != nil {
 		if _, isApp := apperr.As(err); isApp {
 			s.RedeemLimiter.Fail(limiterKey, "")
@@ -59,7 +59,14 @@ func (s *Server) redeemCode(c *gin.Context) {
 	if nerr := store.InsertNotification(ctx, s.St.Pool, &user.ID, "system", "兑换码入账", &msg); nerr != nil {
 		log.Printf("notify redeem code %s: %v", redeemed.ID, nerr)
 	}
-	respondCreated(c, gin.H{"grantCents": redeemed.GrantCents, "balanceCents": entry.BalanceAfterCents})
+	wallet, err := store.GetWallet(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	response := walletDict(wallet)
+	response["grantCents"] = redeemed.GrantCents
+	respondCreated(c, response)
 }
 
 // ---------- Admin ----------

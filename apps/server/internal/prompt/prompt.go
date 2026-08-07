@@ -178,13 +178,26 @@ func compilePuzzle(prompt string, params map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
+func compileEcommerce(prompt string, params map[string]any) string {
+	parts := []string{
+		"你是专业电商视觉设计师与商品摄影师。",
+		"严格遵循参考图角色和任务描述，保持商品外观、品牌、文字、颜色、比例与材质准确，不虚构商品参数或品牌信息。",
+		fmt.Sprintf("电商视觉任务：%s", prompt),
+	}
+	if suffix := styleSuffix(params); suffix != "" {
+		parts = append(parts, suffix)
+	}
+	return strings.Join(parts, " ")
+}
+
 var compilers = map[string]func(string, map[string]any) string{
-	"t2i":         compileT2I,
-	"coloring":    compileColoring,
-	"ui_design":   compileUIDesign,
-	"model_sheet": compileModelSheet,
-	"game_art":    compileGameArt,
-	"puzzle":      compilePuzzle,
+	"t2i":              compileT2I,
+	"coloring":         compileColoring,
+	"ui_design":        compileUIDesign,
+	"ecommerce_design": compileEcommerce,
+	"model_sheet":      compileModelSheet,
+	"game_art":         compileGameArt,
+	"puzzle":           compilePuzzle,
 }
 
 // Compile 返回 (final_prompt, size)；size 为空字符串表示未指定。

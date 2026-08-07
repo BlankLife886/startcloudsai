@@ -18,8 +18,10 @@ type QuickTo = (value: number) => gsap.core.Tween
 
 type ItemMotion = {
   xTo: QuickTo
-  scaleTo: QuickTo
-  iconScaleTo: QuickTo | null
+  scaleXTo: QuickTo
+  scaleYTo: QuickTo
+  iconScaleXTo: QuickTo | null
+  iconScaleYTo: QuickTo | null
   hovering: boolean
   pressing: boolean
 }
@@ -74,9 +76,13 @@ export function useAdminShellMotion(opts: {
 
     motion = {
       xTo: gsap.quickTo(el, 'x', { duration: 0.22, ease: 'power2.out' }),
-      scaleTo: gsap.quickTo(el, 'scale', { duration: 0.2, ease: 'power2.out' }),
-      iconScaleTo: icon
-        ? gsap.quickTo(icon, 'scale', { duration: 0.2, ease: 'power2.out' })
+      scaleXTo: gsap.quickTo(el, 'scaleX', { duration: 0.2, ease: 'power2.out' }),
+      scaleYTo: gsap.quickTo(el, 'scaleY', { duration: 0.2, ease: 'power2.out' }),
+      iconScaleXTo: icon
+        ? gsap.quickTo(icon, 'scaleX', { duration: 0.2, ease: 'power2.out' })
+        : null,
+      iconScaleYTo: icon
+        ? gsap.quickTo(icon, 'scaleY', { duration: 0.2, ease: 'power2.out' })
         : null,
       hovering: false,
       pressing: false,
@@ -87,26 +93,29 @@ export function useAdminShellMotion(opts: {
 
   function applyItemRest(el: HTMLElement) {
     const motion = ensureItemMotion(el)
+    const setScale = (value: number, iconValue: number) => {
+      motion.scaleXTo(value)
+      motion.scaleYTo(value)
+      motion.iconScaleXTo?.(iconValue)
+      motion.iconScaleYTo?.(iconValue)
+    }
     const active = el.classList.contains('is-active')
     const collapsed = Boolean(
       opts.aside.value?.classList.contains('is-collapsed'),
     )
     const hoverX = collapsed ? 1 : 3
     if (motion.pressing) {
-      motion.scaleTo(active ? 0.985 : 0.97)
+      setScale(active ? 0.985 : 0.97, 0.96)
       motion.xTo(active ? 0 : collapsed ? 0 : 1)
-      motion.iconScaleTo?.(0.96)
       return
     }
     if (motion.hovering) {
-      motion.scaleTo(active ? 1.015 : 1.02)
+      setScale(active ? 1.015 : 1.02, 1.1)
       motion.xTo(active ? 0 : hoverX)
-      motion.iconScaleTo?.(1.1)
       return
     }
-    motion.scaleTo(1)
+    setScale(1, 1)
     motion.xTo(0)
-    motion.iconScaleTo?.(1)
   }
 
   function bindSidebarPointer(aside: HTMLElement) {
@@ -151,7 +160,9 @@ export function useAdminShellMotion(opts: {
       const motion = ensureItemMotion(el)
       motion.pressing = false
       // 轻弹一下再回到 hover/rest
-      motion.scaleTo(motion.hovering ? 1.03 : 1.02)
+      const value = motion.hovering ? 1.03 : 1.02
+      motion.scaleXTo(value)
+      motion.scaleYTo(value)
       requestAnimationFrame(() => applyItemRest(el))
     }
 
@@ -267,13 +278,21 @@ export function useAdminShellMotion(opts: {
         : null
     if (!el || prefersReducedMotion()) return
 
-    const scaleTo = gsap.quickTo(el, 'scale', {
+    const scaleXTo = gsap.quickTo(el, 'scaleX', {
+      duration: 0.2,
+      ease: 'power2.out',
+    })
+    const scaleYTo = gsap.quickTo(el, 'scaleY', {
       duration: 0.2,
       ease: 'power2.out',
     })
     gsap.set(el, { transformOrigin: '50% 50%' })
-    scaleTo(0.96)
-    requestAnimationFrame(() => scaleTo(1))
+    scaleXTo(0.96)
+    scaleYTo(0.96)
+    requestAnimationFrame(() => {
+      scaleXTo(1)
+      scaleYTo(1)
+    })
   }
 
   watch(

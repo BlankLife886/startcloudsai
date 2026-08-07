@@ -74,59 +74,6 @@ export const T2I_MODERATION_OPTIONS = [
   { value: 'low', label: '低限制', icon: 'bi-shield' },
 ]
 
-export const T2I_PROMPT_LIBRARY = [
-  {
-    id: 'cinematic',
-    label: '电影感',
-    prompt: '电影感光影，浅景深，戏剧性打光，细腻色彩，适合作为桌面壁纸',
-  },
-  {
-    id: 'minimal',
-    label: '极简干净',
-    prompt: '极简干净构图，大面积留白，柔和光线，克制高级，适合作为桌面壁纸',
-  },
-  {
-    id: 'anime',
-    label: '动漫场景',
-    prompt: '动漫场景，清晰线条，鲜明色彩，氛围感强，适合作为桌面壁纸',
-  },
-  {
-    id: 'cyber',
-    label: '赛博霓虹',
-    prompt: '赛博霓虹夜景，湿润地面反射，未来都市，高对比光影，适合作为桌面壁纸',
-  },
-  {
-    id: 'nature',
-    label: '自然风景',
-    prompt: '自然风景，清透空气感，真实材质，开阔构图，适合作为桌面壁纸',
-  },
-  {
-    id: 'dreamy',
-    label: '梦幻柔光',
-    prompt: '梦幻柔光，轻雾与散射光，柔和色调，安静治愈，适合作为桌面壁纸',
-  },
-  {
-    id: 'rain-tokyo',
-    label: '雨夜东京',
-    prompt: WALLPAPER_INSPIRATION_PROMPTS[0],
-  },
-  {
-    id: 'moon-sea',
-    label: '海上月色',
-    prompt: WALLPAPER_INSPIRATION_PROMPTS[1],
-  },
-  {
-    id: 'sky-library',
-    label: '云中图书馆',
-    prompt: WALLPAPER_INSPIRATION_PROMPTS[2],
-  },
-  {
-    id: 'spring-valley',
-    label: '春日山谷',
-    prompt: WALLPAPER_INSPIRATION_PROMPTS[3],
-  },
-]
-
 export function resolveT2iOutputSize(aspectRatio = '16:9', resolutionScale = '2K') {
   if (String(aspectRatio || '').trim().toLowerCase() === 'auto') {
     return 'auto'

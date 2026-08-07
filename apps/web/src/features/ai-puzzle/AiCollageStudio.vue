@@ -1,13 +1,16 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { proxyWallhavenImageUrl, wallpaperApi } from '@/services/api'
-import { getDisplayImageUrl } from '@/services/aiWallpaper'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import notificationService from '@/services/notification'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
+import {
+  composePendingLaunchPrompt,
+  takePendingPrompt,
+} from '@/features/creator-hub/studioTools'
 import { useCollageEditor } from '@/features/ai-puzzle/composables/useCollageEditor'
 import {
   BASE_BOARD_WIDTH,
   COLLAGE_CATEGORIES,
+  COLLAGE_TEMPLATES,
   FILTER_PRESETS,
   RATIO_PRESETS,
   TEXT_POSITIONS,
@@ -74,17 +77,17 @@ const sideTab = ref('templates')
 const inspectorTab = ref('canvas')
 const categoryId = ref('all')
 const searchQuery = ref('')
-const wallpaperQuery = ref('')
+const inspirationQuery = ref('')
 const fileInput = ref(null)
 const dragOverCell = ref(-1)
 const draggingImageSrc = ref('')
-const wallpapers = ref([])
-const wallpaperLoading = ref(false)
 const uploadDragOver = ref(false)
 const exportMenuOpen = ref(false)
 const exportFormat = ref('png')
 const exportWidth = ref(2400)
 const stageEl = ref(null)
+const mobilePanel = ref('canvas')
+const ownedObjectUrls = new Set()
 let stageResizeObserver = null
 
 /** 图片自然尺寸缓存（src -> {w, h}），用于精确取景预览 */
@@ -96,7 +99,25 @@ const EXPORT_SIZES = [
   { label: '超清 3600px', value: 3600 },
 ]
 
+const INSPIRATION_IMAGES = [
+  { id: 'landscape', label: '风景', src: '/sucai/profile-dark-landscape.png' },
+  { id: 'wallpaper-blue', label: '蓝色壁纸', src: '/sucai/ai-wallpaper-server-459defa9-9acc-4f92-8d1b-9a6b8e96fdec-1.webp' },
+  { id: 'wallpaper-color', label: '多彩壁纸', src: '/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.webp' },
+  { id: 'character', label: '角色', src: '/sucai/game-character-1785420271150.webp' },
+  { id: 'character-alt', label: '人物', src: '/sucai/game-character-1785420185589.webp' },
+  { id: 'game-ui', label: '游戏界面', src: '/sucai/game-ui-1785420083438.webp' },
+  { id: 'game-prop', label: '游戏道具', src: '/sucai/game-prop-1785420109672.webp' },
+  { id: 'model-sheet', label: '模型设定', src: '/sucai/ultra-model-sheet-board-1785420340076.webp' },
+  { id: 'ui-design', label: '界面设计', src: '/sucai/ui-design-1785420316960.webp' },
+  { id: 'wireframe', label: '线框场景', src: '/game-art/wireframe-horizon.jpg' },
+]
+
 const filteredTemplates = computed(() => filterTemplates(categoryId.value, searchQuery.value))
+const filteredInspirations = computed(() => {
+  const query = inspirationQuery.value.trim().toLowerCase()
+  if (!query) return INSPIRATION_IMAGES
+  return INSPIRATION_IMAGES.filter((item) => item.label.toLowerCase().includes(query))
+})
 const fillProgress = computed(() => {
   const total = template.value.cells.length
   if (!total) return 0
@@ -206,11 +227,22 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
+function createLocalObjectUrl(file) {
+  const url = URL.createObjectURL(file)
+  ownedObjectUrls.add(url)
+  return url
+}
+
+function openUploadPanel() {
+  sideTab.value = 'uploads'
+  mobilePanel.value = 'assets'
+}
+
 function applyFiles(files) {
   let added = 0
   for (const file of files) {
     if (!file?.type?.startsWith('image/')) continue
-    const src = URL.createObjectURL(file)
+    const src = createLocalObjectUrl(file)
     addUpload(src, file.name || '本地图片')
     warmImageSize(src)
     added += 1
@@ -221,6 +253,7 @@ function applyFiles(files) {
       const last = uploads.value[0]
       if (last?.src) assignImageSmart(last.src)
     }
+    mobilePanel.value = added === 1 ? 'canvas' : 'assets'
     notificationService.success(`已添加 ${added} 张图片`)
   }
   return added
@@ -280,7 +313,7 @@ function onCellDrop(event, index) {
   if (!src) {
     const file = event.dataTransfer.files?.[0]
     if (file?.type?.startsWith('image/')) {
-      src = URL.createObjectURL(file)
+      src = createLocalObjectUrl(file)
       addUpload(src, file.name || '本地图片')
     }
   }
@@ -370,38 +403,36 @@ function onCellScaleInput(value) {
 function onUploadItemClick(src) {
   assignImageSmart(src, selectedCell.value)
   inspectorTab.value = 'cell'
+  mobilePanel.value = 'canvas'
 }
 
-// ---------------- 壁纸库 ----------------
-async function loadWallpapers({ random = true } = {}) {
-  wallpaperLoading.value = true
-  try {
-    const q = wallpaperQuery.value.trim()
-    const response = await wallpaperApi.search({
-      q,
-      sorting: q ? 'relevance' : 'random',
-      purity: '100',
-      page: random && !q ? Math.floor(Math.random() * 12) + 1 : 1,
-    })
-    wallpapers.value = (response?.images || []).slice(0, 12)
-  } catch {
-    wallpapers.value = []
-    notificationService.warning('壁纸加载失败，可稍后重试')
-  } finally {
-    wallpaperLoading.value = false
-  }
-}
-
-function wallpaperSrc(wallpaper) {
-  return proxyWallhavenImageUrl(wallpaper.path || wallpaper.thumbs?.large || wallpaper.thumbnail)
-}
-
-function addWallpaperToUploads(wallpaper) {
-  const src = wallpaperSrc(wallpaper)
-  addUpload(src, wallpaper.id ? `#${wallpaper.id}` : '壁纸')
+// ---------------- 内置灵感素材 ----------------
+function addInspirationToUploads(item) {
+  const src = String(item?.src || '').trim()
+  if (!src) return
+  addUpload(src, item.label || '灵感素材')
   warmImageSize(src)
   assignImageSmart(src)
   sideTab.value = 'uploads'
+  mobilePanel.value = 'canvas'
+}
+
+async function chooseTemplate(id) {
+  setTemplate(id)
+  mobilePanel.value = 'canvas'
+  await nextTick()
+  fitZoom()
+}
+
+function toggleCaption() {
+  recordAdjustStart()
+  caption.value = { ...caption.value, enabled: !caption.value.enabled }
+}
+
+function setCaptionPosition(id) {
+  if (caption.value.position === id) return
+  recordAdjustStart()
+  caption.value = { ...caption.value, position: id }
 }
 
 // ---------------- AI 布局 / 导出 ----------------
@@ -444,8 +475,15 @@ async function handleExport() {
     const link = document.createElement('a')
     link.href = url
     link.download = `walleven-collage-${Date.now()}.${exportFormat.value === 'jpeg' ? 'jpg' : 'png'}`
-    link.click()
-    URL.revokeObjectURL(url)
+    link.rel = 'noopener'
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    try {
+      link.click()
+    } finally {
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    }
     notificationService.success('拼图已导出')
   } catch (err) {
     notificationService.error(err?.message || '导出失败，请重试')
@@ -535,7 +573,28 @@ function onDocumentClick(event) {
 
 onMounted(async () => {
   await runtimeConfigStore.loadRuntimeConfig().catch(() => null)
-  loadWallpapers()
+  const pending = takePendingPrompt('puzzle')
+  if (pending) {
+    const launchConfig = pending.config || {}
+    if (COLLAGE_TEMPLATES.some((item) => item.id === launchConfig.skill)) {
+      setTemplate(launchConfig.skill)
+    }
+    if (RATIO_PRESETS.some((item) => item.id === launchConfig.ratio)) {
+      setRatio(launchConfig.ratio)
+    }
+    if (EXPORT_SIZES.some((item) => item.value === Number(launchConfig.resolution))) {
+      exportWidth.value = Number(launchConfig.resolution)
+    }
+    const launchPrompt = composePendingLaunchPrompt(pending, 40)
+    if (launchPrompt) {
+      caption.value = {
+        ...caption.value,
+        enabled: true,
+        content: launchPrompt,
+      }
+      inspectorTab.value = 'canvas'
+    }
+  }
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('paste', onPaste)
   document.addEventListener('click', onDocumentClick, true)
@@ -552,9 +611,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick, true)
   stageResizeObserver?.disconnect()
   stageResizeObserver = null
-  uploads.value.forEach((item) => {
-    if (item.src?.startsWith('blob:')) URL.revokeObjectURL(item.src)
-  })
+  ownedObjectUrls.forEach((url) => URL.revokeObjectURL(url))
+  ownedObjectUrls.clear()
 })
 
 watch(selectedCell, () => {
@@ -581,8 +639,8 @@ watch(ratioId, () => {
           </div>
         </div>
         <div class="collage-top-status">
+          <span class="is-free"><i class="bi bi-shield-check"></i> 免费 · 本地处理</span>
           <span>{{ filledCount }}/{{ template.cells.length }} 格</span>
-          <span>{{ fillProgress }}%</span>
           <span>{{ exportWidth }}px</span>
         </div>
         <div class="collage-history-btns">
@@ -596,6 +654,10 @@ watch(ratioId, () => {
       </div>
 
       <div class="collage-topbar-right">
+        <button type="button" class="collage-top-btn collage-add-btn" @click="triggerUpload">
+          <i class="bi bi-plus-lg"></i>
+          <span>添加图片</span>
+        </button>
         <button
           type="button"
           class="collage-top-btn"
@@ -628,7 +690,7 @@ watch(ratioId, () => {
           <button
             type="button"
             class="collage-top-btn primary"
-            :disabled="exporting"
+            :disabled="exporting || !filledCount"
             @click="handleExport"
           >
             <i class="bi" :class="exporting ? 'bi-arrow-repeat spin' : 'bi-download'"></i>
@@ -678,9 +740,33 @@ watch(ratioId, () => {
       </div>
     </header>
 
+    <nav class="collage-mobile-nav" aria-label="拼图工作区">
+      <button
+        type="button"
+        :class="{ active: mobilePanel === 'assets' }"
+        @click="mobilePanel = 'assets'"
+      >
+        <i class="bi bi-collection"></i><span>素材</span>
+      </button>
+      <button
+        type="button"
+        :class="{ active: mobilePanel === 'canvas' }"
+        @click="mobilePanel = 'canvas'"
+      >
+        <i class="bi bi-bounding-box"></i><span>画布</span>
+      </button>
+      <button
+        type="button"
+        :class="{ active: mobilePanel === 'settings' }"
+        @click="mobilePanel = 'settings'"
+      >
+        <i class="bi bi-sliders"></i><span>调整</span>
+      </button>
+    </nav>
+
     <div class="collage-workspace">
       <!-- 左侧素材栏 -->
-      <aside class="collage-sidebar">
+      <aside class="collage-sidebar" :class="{ 'is-mobile-active': mobilePanel === 'assets' }">
         <div class="collage-side-tabs">
           <button
             type="button"
@@ -701,17 +787,24 @@ watch(ratioId, () => {
           </button>
           <button
             type="button"
-            :class="{ active: sideTab === 'wallpapers' }"
-            @click="sideTab = 'wallpapers'"
+            :class="{ active: sideTab === 'inspiration' }"
+            @click="sideTab = 'inspiration'"
           >
-            <i class="bi bi-image"></i>
-            壁纸
+            <i class="bi bi-stars"></i>
+            灵感
           </button>
         </div>
 
         <div class="collage-side-body">
           <!-- 模板 -->
           <template v-if="sideTab === 'templates'">
+            <div class="collage-panel-intro">
+              <span class="collage-panel-intro__icon is-blue"><i class="bi bi-grid-1x2"></i></span>
+              <div>
+                <strong>选择拼图结构</strong>
+                <p>按图片数量和展示场景快速选择</p>
+              </div>
+            </div>
             <input
               v-model="searchQuery"
               class="collage-search"
@@ -736,7 +829,7 @@ watch(ratioId, () => {
                 type="button"
                 class="collage-template-card"
                 :class="{ active: templateId === item.id }"
-                @click="setTemplate(item.id)"
+                @click="chooseTemplate(item.id)"
               >
                 <div class="collage-template-preview" :style="{ aspectRatio: item.ratio || 1 }">
                   <span
@@ -745,14 +838,24 @@ watch(ratioId, () => {
                     :style="miniCellStyle(cell)"
                   ></span>
                 </div>
-                <em>{{ item.name }}</em>
-                <small>{{ item.cells.length }} 格</small>
+                <span class="collage-template-copy">
+                  <em>{{ item.name }}</em>
+                  <small>{{ item.cells.length }} 格 · {{ item.ratio === 1 ? '方形画布' : '自适应画布' }}</small>
+                </span>
+                <i class="bi bi-chevron-right collage-template-arrow"></i>
               </button>
             </div>
           </template>
 
           <!-- 素材 -->
           <template v-else-if="sideTab === 'uploads'">
+            <div class="collage-panel-intro">
+              <span class="collage-panel-intro__icon is-green"><i class="bi bi-images"></i></span>
+              <div>
+                <strong>管理图片素材</strong>
+                <p>上传后点击填入，或拖到指定格子</p>
+              </div>
+            </div>
             <div
               class="collage-upload-zone"
               :class="{ 'is-dragover': uploadDragOver }"
@@ -776,6 +879,14 @@ watch(ratioId, () => {
             <p v-if="uploads.length" class="collage-hero-hint">
               点击素材填入当前格，或拖到画布；支持 Ctrl+V 粘贴图片。
             </p>
+            <div v-if="uploads.length" class="collage-material-actions">
+              <button type="button" @click="autoFillFromUploads(); mobilePanel = 'canvas'">
+                <i class="bi bi-grid-3x3-gap"></i>自动填充空格
+              </button>
+              <button type="button" :disabled="filledCount < 2" @click="shuffleCells()">
+                <i class="bi bi-shuffle"></i>打乱顺序
+              </button>
+            </div>
             <div v-if="uploads.length" class="collage-upload-grid">
               <div
                 v-for="item in uploads"
@@ -798,61 +909,57 @@ watch(ratioId, () => {
             </div>
           </template>
 
-          <!-- 壁纸库 -->
+          <!-- 内置灵感素材 -->
           <template v-else>
+            <div class="collage-panel-intro">
+              <span class="collage-panel-intro__icon is-blue"><i class="bi bi-stars"></i></span>
+              <div>
+                <strong>灵感素材</strong>
+                <p>使用内置图片快速体验排版效果</p>
+              </div>
+            </div>
             <div class="collage-wallpaper-toolbar">
               <input
-                v-model="wallpaperQuery"
+                v-model="inspirationQuery"
                 class="collage-search"
                 type="search"
-                placeholder="搜索壁纸，如 landscape…"
-                @keydown.enter="loadWallpapers({ random: false })"
+                placeholder="搜索灵感素材…"
               />
-              <button
-                type="button"
-                class="collage-top-btn"
-                :disabled="wallpaperLoading"
-                @click="loadWallpapers()"
-              >
-                <i class="bi bi-arrow-clockwise" :class="{ spin: wallpaperLoading }"></i>
-                换一批
-              </button>
             </div>
-            <div v-if="wallpaperLoading" class="collage-side-empty">
-              <i class="bi bi-hourglass-split"></i>
-              <span>加载中…</span>
-            </div>
-            <div v-else-if="wallpapers.length" class="collage-wallpaper-grid">
+            <div v-if="filteredInspirations.length" class="collage-wallpaper-grid">
               <button
-                v-for="item in wallpapers"
+                v-for="item in filteredInspirations"
                 :key="item.id"
                 type="button"
                 class="collage-wallpaper-item"
                 draggable="true"
-                @dragstart="onDragStartUpload($event, wallpaperSrc(item))"
+                :title="item.label"
+                @dragstart="onDragStartUpload($event, item.src)"
                 @dragend="onDragEndUpload"
-                @click="addWallpaperToUploads(item)"
+                @click="addInspirationToUploads(item)"
               >
-                <img :src="getDisplayImageUrl(item)" alt="" loading="lazy" draggable="false" />
+                <img :src="item.src" :alt="item.label" loading="lazy" draggable="false" />
               </button>
             </div>
             <div v-else class="collage-side-empty">
-              <i class="bi bi-image"></i>
-              <span>没有找到壁纸，换个关键词试试</span>
+              <i class="bi bi-search"></i>
+              <span>没有匹配的灵感素材</span>
             </div>
           </template>
         </div>
       </aside>
 
       <!-- 中央画布 -->
-      <section class="collage-stage-wrap">
+      <section
+        class="collage-stage-wrap"
+        :class="{ 'is-mobile-active': mobilePanel === 'canvas' }"
+      >
         <div class="collage-stage-toolbar">
           <span class="collage-stage-chip">{{ template.name }}</span>
           <span class="collage-stage-chip">{{ filledCount }}/{{ template.cells.length }} 格</span>
           <div class="collage-fill-progress" :title="`已填充 ${fillProgress}%`">
             <span :style="{ width: `${fillProgress}%` }"></span>
           </div>
-          <span class="collage-stage-hint">拖入 · 粘贴 · 双击重置取景 · Ctrl+S 导出</span>
         </div>
 
         <div ref="stageEl" class="collage-stage" @wheel="onStageWheel">
@@ -894,7 +1001,7 @@ watch(ratioId, () => {
                 </div>
               </div>
 
-              <div v-if="!filledCount" class="collage-board-empty" @click="sideTab = 'uploads'">
+              <div v-if="!filledCount" class="collage-board-empty" @click="openUploadPanel">
                 <i class="bi bi-cloud-arrow-up"></i>
                 <strong>开始创作</strong>
                 <span>上传、粘贴或从壁纸库挑选图片</span>
@@ -923,7 +1030,10 @@ watch(ratioId, () => {
       </section>
 
       <!-- 右侧属性 -->
-      <aside class="collage-inspector">
+      <aside
+        class="collage-inspector"
+        :class="{ 'is-mobile-active': mobilePanel === 'settings' }"
+      >
         <div class="collage-inspector-tabs">
           <button
             type="button"
@@ -944,6 +1054,17 @@ watch(ratioId, () => {
         <div class="collage-inspector-body">
           <!-- 画布设置 -->
           <template v-if="inspectorTab === 'canvas'">
+            <div class="collage-panel-intro collage-inspector-intro">
+              <span class="collage-panel-intro__icon is-blue"><i class="bi bi-bounding-box"></i></span>
+              <div>
+                <strong>画布设置</strong>
+                <p>统一调整版式、留白与背景</p>
+              </div>
+            </div>
+            <div class="collage-section-label">
+              <strong>布局与尺寸</strong>
+              <span>控制画布结构和格子边界</span>
+            </div>
             <div class="collage-field">
               <span>画布比例</span>
               <div class="collage-ratio-grid">
@@ -1002,6 +1123,10 @@ watch(ratioId, () => {
               </div>
             </div>
 
+            <div class="collage-section-label">
+              <strong>外观</strong>
+              <span>设置背景和叠加标题</span>
+            </div>
             <div class="collage-field">
               <span>背景</span>
               <div class="collage-bg-grid">
@@ -1021,9 +1146,9 @@ watch(ratioId, () => {
                 >
                   <i class="bi bi-eyedropper"></i>
                   <input
-                    type="color"
-                    :value="customBgColor || '#ffffff'"
-                    @input="setCustomBgColor($event.target.value)"
+                  type="color"
+                  :value="customBgColor || '#ffffff'"
+                    @change="setCustomBgColor($event.target.value)"
                   />
                 </label>
               </div>
@@ -1036,7 +1161,10 @@ watch(ratioId, () => {
                   type="button"
                   class="collage-switch"
                   :class="{ on: caption.enabled }"
-                  @click="caption.enabled = !caption.enabled"
+                  role="switch"
+                  :aria-checked="caption.enabled"
+                  aria-label="标题文字"
+                  @click="toggleCaption"
                 >
                   <i></i>
                 </button>
@@ -1048,6 +1176,7 @@ watch(ratioId, () => {
                   type="text"
                   maxlength="40"
                   placeholder="输入标题文字…"
+                  @focus="recordAdjustStart"
                 />
                 <div class="collage-text-row">
                   <div class="collage-ratio-grid collage-text-pos">
@@ -1056,7 +1185,7 @@ watch(ratioId, () => {
                       :key="pos.id"
                       type="button"
                       :class="{ active: caption.position === pos.id }"
-                      @click="caption.position = pos.id"
+                      @click="setCaptionPosition(pos.id)"
                     >
                       {{ pos.label }}
                     </button>
@@ -1066,10 +1195,18 @@ watch(ratioId, () => {
                     class="collage-text-color"
                     type="color"
                     title="文字颜色"
+                    @pointerdown="recordAdjustStart"
                   />
                 </div>
                 <div class="collage-field-row">
-                  <input v-model.number="caption.size" type="range" min="3" max="10" step="0.5" />
+                  <input
+                    v-model.number="caption.size"
+                    type="range"
+                    min="3"
+                    max="10"
+                    step="0.5"
+                    @pointerdown="recordAdjustStart"
+                  />
                   <output>字号</output>
                 </div>
               </template>
@@ -1088,12 +1225,23 @@ watch(ratioId, () => {
 
           <!-- 格子设置 -->
           <template v-else>
+            <div class="collage-panel-intro collage-inspector-intro">
+              <span class="collage-panel-intro__icon is-green"><i class="bi bi-crop"></i></span>
+              <div>
+                <strong>格子调整</strong>
+                <p>微调当前图片的取景与风格</p>
+              </div>
+            </div>
             <div class="collage-cell-indicator">
               <span>第 {{ selectedCell + 1 }} 格</span>
               <small>{{ selectedCellState?.src ? '已填充' : '空白' }}</small>
             </div>
 
             <template v-if="selectedCellState?.src">
+              <div class="collage-section-label">
+                <strong>图片效果</strong>
+                <span>调整构图和统一色调</span>
+              </div>
               <div class="collage-field">
                 <span>取景缩放</span>
                 <div class="collage-field-row">
@@ -1177,9 +1325,6 @@ watch(ratioId, () => {
               </div>
             </div>
 
-            <p class="collage-hero-hint">
-              快捷键：← → 切换格子，Delete 清空，Ctrl+Z 撤销，Ctrl+S 导出
-            </p>
           </template>
         </div>
       </aside>

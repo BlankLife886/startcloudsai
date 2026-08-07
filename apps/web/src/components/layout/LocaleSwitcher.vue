@@ -136,77 +136,61 @@ onBeforeUnmount(() => {
 }
 
 .locale-switcher__trigger {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 36px;
+  min-width: 36px;
   height: 36px;
+  min-height: 36px;
   padding: 0;
-  isolation: isolate;
-  overflow: hidden;
-  border: 1px solid rgba(242, 247, 255, 0.42);
+  border: 1px solid rgba(21, 22, 31, 0.1);
   border-radius: 50%;
-  color: #ffffff;
-  background:
-    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.42), transparent 42%),
-    linear-gradient(150deg, #8b7bff 0%, #6d5cff 48%, #5646e8 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    inset 0 -3px 6px rgba(49, 29, 162, 0.28),
-    0 4px 10px rgba(91, 77, 255, 0.34),
-    0 1px 2px rgba(28, 24, 58, 0.18);
+  color: var(--locale-accent);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfaff 100%);
+  box-shadow: 0 8px 20px rgb(45 42 83 / 10%);
+  box-sizing: border-box;
   cursor: pointer;
   transition:
-    transform 180ms var(--locale-ease),
-    box-shadow 180ms var(--locale-ease),
-    filter 180ms var(--locale-ease);
-}
-
-.locale-switcher__trigger::before {
-  position: absolute;
-  inset: 2px;
-  z-index: 0;
-  border-radius: 50%;
-  background: radial-gradient(circle at 50% 120%, rgba(255, 255, 255, 0.16), transparent 55%);
-  content: '';
-  pointer-events: none;
+    transform 150ms var(--locale-ease),
+    background 140ms var(--locale-ease),
+    color 140ms var(--locale-ease),
+    border-color 140ms var(--locale-ease),
+    box-shadow 150ms var(--locale-ease);
 }
 
 .locale-switcher__trigger:hover,
 .locale-switcher.is-open .locale-switcher__trigger {
-  transform: scale(1.04);
-  filter: saturate(1.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.68),
-    inset 0 -3px 6px rgba(49, 29, 162, 0.22),
-    0 8px 18px rgba(91, 77, 255, 0.42),
-    0 0 0 3px rgba(109, 92, 255, 0.16);
+  color: var(--locale-accent);
+  background: #ffffff;
+  border-color: color-mix(in srgb, var(--locale-accent) 45%, var(--locale-line));
+  transform: translateY(-1px);
+  box-shadow: 0 11px 25px rgb(45 42 83 / 15%);
 }
 
 .locale-switcher__trigger:active {
-  transform: scale(0.96);
-  box-shadow:
-    inset 0 2px 5px rgba(45, 27, 151, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    0 3px 8px rgba(91, 77, 255, 0.28);
+  transform: translateY(0) scale(0.97);
 }
 
 .locale-switcher__trigger:focus-visible {
-  outline: 2px solid #9a7bff;
-  outline-offset: 3px;
+  outline: 2px solid var(--locale-accent);
+  outline-offset: 2px;
+}
+
+:global(html.color-scheme-dark) .locale-switcher__trigger,
+:global(html.color-scheme-dark) .locale-switcher__trigger:hover,
+:global(html.color-scheme-dark) .locale-switcher.is-open .locale-switcher__trigger {
+  background: #ffffff;
+  color: var(--locale-accent);
 }
 
 .locale-switcher__face {
-  position: relative;
-  z-index: 1;
   display: block;
   font-family: var(--locale-sans);
   font-size: 13px;
-  font-weight: 780;
+  font-weight: 700;
   letter-spacing: 0;
   line-height: 1;
-  text-shadow: 0 1px 1px rgba(40, 28, 120, 0.28);
 }
 
 .locale-switcher__menu {
@@ -214,27 +198,25 @@ onBeforeUnmount(() => {
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  width: 168px;
+  width: 160px;
   margin: 0;
-  padding: 5px;
+  padding: 4px;
   list-style: none;
   border: 1px solid var(--locale-line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--locale-panel);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.65) inset,
-    0 14px 36px rgba(28, 24, 58, 0.12);
+  box-shadow: 0 10px 28px rgba(28, 24, 58, 0.1);
   transform-origin: top right;
 }
 
 .locale-switcher__option {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 16px;
+  grid-template-columns: 24px minmax(0, 1fr) 16px;
   align-items: center;
   column-gap: 8px;
   min-height: 34px;
   padding: 0 8px;
-  border-radius: 9px;
+  border-radius: 8px;
   color: var(--locale-text);
   font-family: var(--locale-sans);
   cursor: pointer;
@@ -257,14 +239,14 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
+  width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: 50%;
   color: var(--locale-muted);
-  background: color-mix(in srgb, var(--locale-muted) 10%, transparent);
+  background: color-mix(in srgb, var(--locale-muted) 12%, transparent);
   font-family: var(--locale-sans);
   font-size: 11px;
-  font-weight: 720;
+  font-weight: 700;
   letter-spacing: 0;
   line-height: 1;
 }

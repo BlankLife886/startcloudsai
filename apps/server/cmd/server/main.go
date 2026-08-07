@@ -56,6 +56,9 @@ func main() {
 }
 
 func runServe(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
 	if err := store.Migrate(cfg.DatabaseURL); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
@@ -129,6 +132,9 @@ func runServe(cfg *config.Config) error {
 }
 
 func runWorker(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	st, err := newStore(ctx, cfg)
 	if err != nil {

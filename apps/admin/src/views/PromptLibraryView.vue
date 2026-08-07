@@ -2,11 +2,16 @@
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElCheckbox, ElMessage, ElMessageBox, type CheckboxValueType } from 'element-plus'
 import {
+  ArrowDown,
   CollectionTag,
+  CircleCheck,
+  CircleClose,
   CopyDocument,
   Delete,
+  Download,
   EditPen,
   Link,
+  MagicStick,
   Picture,
   Plus,
   Pointer,
@@ -14,9 +19,11 @@ import {
   Refresh,
   Search,
   Star,
+  UploadFilled,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
+import PromptCategoryManager from '@/components/PromptCategoryManager.vue'
 import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { request, normalizeList, type Page } from '@/request'
 import { TASK_TYPES, taskTypeLabel } from '@/utils'
@@ -62,13 +69,42 @@ interface PromptSource {
   createdAt?: string
 }
 
-interface SourceSyncResult {
-  imported: number
-  updated: number
-  unchanged: number
-  failed: number
-  durationMs: number
-  itemCount: number
+interface PromptImportBatch {
+  id: string
+  status: 'fetching' | 'review' | 'publishing' | 'completed' | 'failed'
+  analysisMode: 'manual' | 'rules' | 'ai'
+  sourceCount: number
+  fetchedCount: number
+  uniqueCount: number
+  duplicateCount: number
+  approvedCount: number
+  rejectedCount: number
+  importedCount: number
+  updatedCount: number
+  failedSourceCount: number
+  error?: string
+  createdAt: string
+  completedAt?: string | null
+}
+
+interface PromptImportItem {
+  id: string
+  batchId: string
+  sourceName: string
+  title: string
+  prompt: string
+  taskType: string
+  category: string
+  tags: string[]
+  coverUrl?: string
+  duplicateKind: 'none' | 'batch' | 'library' | 'possible'
+  duplicateTitle?: string
+  duplicateAction: 'pending' | 'keep' | 'drop'
+  complianceStatus: 'pending' | 'safe' | 'blocked'
+  complianceReason?: string
+  reviewStatus: 'pending' | 'approved' | 'rejected'
+  publishedPromptId?: string | null
+  publishedAt?: string | null
 }
 
 interface CategoryOption {
@@ -76,24 +112,46 @@ interface CategoryOption {
   label: string
   icon: string
   color: string
+  active: boolean
 }
 
-/**
- * 内置分类与用户端文生图工作台（AiWallpaperStudio 的 PROMPT_CATEGORY_META）保持一致，
- * 保证后台录入与用户端筛选联动；颜色取规范图表色序。
- */
-const CATEGORY_OPTIONS: CategoryOption[] = [
-  { value: 'all', label: '全部内容', icon: '▦', color: '#5a8f00' },
-  { value: 'portrait', label: '人像人物', icon: '◉', color: '#f472b6' },
-  { value: 'photography', label: '摄影写实', icon: '◎', color: '#38bdf8' },
-  { value: 'product', label: '产品商业', icon: '◇', color: '#fbbf24' },
-  { value: 'illustration', label: '插画动漫', icon: '✦', color: '#a78bfa' },
-  { value: 'scene', label: '场景建筑', icon: '△', color: '#34d399' },
-  { value: 'design', label: '视觉设计', icon: '✥', color: '#5a8f00' },
-  { value: 'game', label: '游戏美术', icon: '◆', color: '#f87171' },
-  { value: 'typography', label: '文字排版', icon: 'T', color: '#64748b' },
-  { value: 'other', label: '其他', icon: '·', color: '#64748b' },
-]
+interface PromptCategory {
+  id: string
+  key: string
+  label: string
+  sort: number
+  active: boolean
+  builtin: boolean
+  count: number
+}
+
+const CATEGORY_COLORS = ['#5a8f00', '#f472b6', '#38bdf8', '#fbbf24', '#a78bfa', '#34d399', '#f87171', '#64748b']
+const promptCategories = ref<PromptCategory[]>([])
+const categoryManagerOpen = ref(false)
+
+function colorForCategory(key: string) {
+  let hash = 0
+  for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) | 0
+  return CATEGORY_COLORS[Math.abs(hash) % CATEGORY_COLORS.length]
+}
+
+const categoryOptions = computed<CategoryOption[]>(() => [
+  { value: 'all', label: '全部内容', icon: '▦', color: '#5a8f00', active: true },
+  ...promptCategories.value.map((item) => ({
+    value: item.key,
+    label: item.label,
+    icon: item.label.trim().slice(0, 1) || '·',
+    color: colorForCategory(item.key),
+    active: item.active,
+  })),
+])
+
+async function loadPromptCategories() {
+  const page = await request<PromptCategory[] | Page<PromptCategory>>(
+    '/api/v1/admin/prompt-categories',
+  ).then(normalizeList)
+  promptCategories.value = page.items
+}
 
 const query = ref('')
 const categoryFilter = ref('all')
@@ -104,6 +162,14 @@ const orderFilter = ref('manual')
 const tagFilter = ref<string[]>([])
 const availableTags = ref<string[]>([])
 let filterReloadTimer: ReturnType<typeof setTimeout> | null = null
+
+async function handlePromptCategoriesChanged() {
+  await loadPromptCategories()
+  if (!categoryOptions.value.some((item) => item.value === categoryFilter.value)) {
+    categoryFilter.value = 'all'
+  }
+  await refresh()
+}
 const items = ref<PromptItem[]>([])
 const promptScopeTotal = ref(0)
 const categoryCounts = ref<Record<string, number>>({})
@@ -381,7 +447,7 @@ async function applyBatchEdit() {
 const updatingItemFields = reactive(new Set<string>())
 
 function categoryOptionsFor(item: PromptItem) {
-  const options = CATEGORY_OPTIONS.slice(1)
+  const options = categoryOptions.value.slice(1)
   if (!item.category || options.some((category) => category.value === item.category)) return options
   return [categoryMeta(item.category), ...options]
 }
@@ -499,10 +565,10 @@ async function submitQuickSort(position = quickSortPosition.value) {
 
 function categoryMeta(value: string | undefined): CategoryOption {
   const key = value ?? 'other'
-  const found = CATEGORY_OPTIONS.find((item) => item.value === key)
+  const found = categoryOptions.value.find((item) => item.value === key)
   if (found) return found
   // 自建分类：以原始 key 展示，用中性色
-  return { value: key, label: key, icon: '·', color: '#94a3b8' }
+  return { value: key, label: key, icon: '·', color: '#94a3b8', active: false }
 }
 
 function formatTime(value: string | undefined) {
@@ -886,9 +952,308 @@ function formatMeta(format: string): FormatMeta {
 }
 
 const sources = ref<PromptSource[]>([])
+const enabledSourceCount = computed(() => sources.value.filter((source) => source.enabled).length)
 const sourcesLoading = ref(false)
 const sourcesDrawerOpen = ref(false)
 const syncingSourceId = ref('')
+const importBatches = ref<PromptImportBatch[]>([])
+const importBatchCreating = ref(false)
+const importMode = ref<'manual' | 'rules' | 'ai'>('rules')
+const importReviewOpen = ref(false)
+const activeImportBatch = ref<PromptImportBatch | null>(null)
+const importItems = ref<PromptImportItem[]>([])
+const importItemsLoading = ref(false)
+const importAnalyzing = ref(false)
+const importBulkWorking = ref(false)
+const importView = ref<'all' | 'duplicates' | 'pending' | 'approved' | 'rejected'>('all')
+const importPage = ref(1)
+const importTotal = ref(0)
+const selectedImportItemIds = ref<string[]>([])
+const importFileRef = ref<HTMLInputElement | null>(null)
+const importFileUploading = ref(false)
+const importCoverInputRef = ref<HTMLInputElement | null>(null)
+const importCoverTarget = ref<PromptImportItem | null>(null)
+const importCoverPreviewUrl = ref('')
+const importCoverUpdatingIds = reactive(new Set<string>())
+const importSelectableItems = computed(() => importItems.value.filter((item) => !item.publishedAt))
+const selectedImportItemSet = computed(() => new Set(selectedImportItemIds.value))
+const importPageAllSelected = computed(() =>
+  importSelectableItems.value.length > 0 &&
+  importSelectableItems.value.every((item) => selectedImportItemSet.value.has(item.id)),
+)
+const importPageSomeSelected = computed(() =>
+  importSelectableItems.value.some((item) => selectedImportItemSet.value.has(item.id)) &&
+  !importPageAllSelected.value,
+)
+
+async function loadImportBatches(silent = false) {
+  const data = await request<PromptImportBatch[] | Page<PromptImportBatch>>(
+    '/api/v1/admin/prompt-import-batches',
+    { silent },
+  )
+  importBatches.value = normalizeList(data).items
+}
+
+function exportPromptLibrary(format: 'json' | 'csv') {
+  const link = document.createElement('a')
+  link.href = `/api/v1/admin/prompts/export?format=${format}`
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+async function importPromptLibraryFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('导入文件不能超过 10MB')
+    return
+  }
+  const body = new FormData()
+  body.append('file', file)
+  body.append('mode', importMode.value)
+  importFileUploading.value = true
+  try {
+    const response = await fetch('/api/v1/admin/prompt-import-batches/upload', {
+      method: 'POST', credentials: 'include', body,
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.success) throw new Error(payload?.error || `导入失败（${response.status}）`)
+    const result = payload.data as { batchId: string; fetchedCount: number; duplicateCount: number }
+    await loadImportBatches()
+    const batch = importBatches.value.find((item) => item.id === result.batchId)
+    if (batch) {
+      importView.value = result.duplicateCount > 0 ? 'duplicates' : 'pending'
+      await openImportBatch(batch)
+      if (importMode.value === 'ai') void analyzeImportBatch()
+    }
+    ElMessage.success(`已从文件录入 ${result.fetchedCount} 条，进入批次审核`)
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '文件导入失败')
+  } finally {
+    importFileUploading.value = false
+  }
+}
+
+async function createImportBatch() {
+  if (!sources.value.some((source) => source.enabled)) {
+    ElMessage.warning('请先启用至少一个数据源')
+    return
+  }
+  importBatchCreating.value = true
+  try {
+    const result = await request<{ batchId: string; fetchedCount: number; duplicateCount: number; failedSourceCount: number }>(
+      '/api/v1/admin/prompt-import-batches',
+      { method: 'POST', body: { mode: importMode.value, sourceIds: [] } },
+    )
+    await Promise.all([loadSources(), loadImportBatches()])
+    const batch = importBatches.value.find((item) => item.id === result.batchId)
+    if (batch) {
+      importView.value = result.duplicateCount > 0 ? 'duplicates' : 'pending'
+      await openImportBatch(batch)
+      if (importMode.value === 'ai') void analyzeImportBatch()
+    }
+    const failed = result.failedSourceCount ? `，${result.failedSourceCount} 个源失败` : ''
+    ElMessage.success(`已获取 ${result.fetchedCount} 条，发现 ${result.duplicateCount} 条重复${failed}`)
+  } finally {
+    importBatchCreating.value = false
+  }
+}
+
+async function loadImportItems() {
+  const batch = activeImportBatch.value
+  if (!batch) return
+  importItemsLoading.value = true
+  try {
+    const page = await request<{ items: PromptImportItem[]; total: number }>(
+      `/api/v1/admin/prompt-import-batches/${batch.id}/items`,
+      { query: { view: importView.value, page: importPage.value, limit: 50 } },
+    )
+    importItems.value = page.items
+    importTotal.value = page.total
+  } finally {
+    importItemsLoading.value = false
+  }
+}
+
+async function openImportBatch(batch: PromptImportBatch) {
+  activeImportBatch.value = batch
+  importPage.value = 1
+  selectedImportItemIds.value = []
+  importReviewOpen.value = true
+  await loadImportItems()
+}
+
+async function refreshImportBatch() {
+  const batch = activeImportBatch.value
+  if (!batch) return
+  activeImportBatch.value = await request<PromptImportBatch>(`/api/v1/admin/prompt-import-batches/${batch.id}`)
+  await loadImportItems()
+  void loadImportBatches(true)
+}
+
+async function patchImportItem(item: PromptImportItem, changes: Record<string, unknown>) {
+  const wasPublished = Boolean(item.publishedAt)
+  const updated = await request<PromptImportItem>(
+    `/api/v1/admin/prompt-import-batches/${item.batchId}/items/${item.id}`,
+    { method: 'PATCH', body: changes, silent: true },
+  )
+  Object.assign(item, updated)
+  await refreshImportBatch()
+  if (!wasPublished && updated.publishedAt) await refresh()
+}
+
+async function approveImportItem(item: PromptImportItem) {
+  await patchImportItem(item, {
+    complianceStatus: 'safe',
+    reviewStatus: 'approved',
+    ...(item.duplicateKind !== 'none' ? { duplicateAction: 'keep' } : {}),
+  })
+  ElMessage.success('已通过并加入提示词库')
+}
+
+function triggerImportCoverPick(item: PromptImportItem) {
+  if (item.publishedAt || importCoverUpdatingIds.has(item.id)) return
+  importCoverTarget.value = item
+  importCoverInputRef.value?.click()
+}
+
+function openImportCoverPreview(item: PromptImportItem) {
+  if (!item.coverUrl) return
+  importCoverPreviewUrl.value = item.coverUrl
+}
+
+async function uploadImportCover(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const item = importCoverTarget.value
+  importCoverTarget.value = null
+  if (!file || !item) return
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    ElMessage.warning('封面仅支持 PNG、JPG 或 WebP')
+    return
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    ElMessage.warning('提示词封面不能超过 8MB')
+    return
+  }
+  const body = new FormData()
+  body.append('file', file)
+  importCoverUpdatingIds.add(item.id)
+  try {
+    const response = await fetch(
+      `/api/v1/admin/prompt-import-batches/${item.batchId}/items/${item.id}/cover`,
+      { method: 'PUT', credentials: 'include', body },
+    )
+    const payload = await response.json().catch(() => null) as
+      | { success?: boolean; data?: PromptImportItem; error?: string }
+      | null
+    if (!response.ok || !payload?.success || !payload.data) {
+      throw new Error(payload?.error || `封面上传失败（HTTP ${response.status}）`)
+    }
+    Object.assign(item, payload.data)
+    ElMessage.success('封面已替换')
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '封面上传失败')
+  } finally {
+    importCoverUpdatingIds.delete(item.id)
+  }
+}
+
+function toggleImportItemSelection(item: PromptImportItem, checked: CheckboxValueType) {
+  const next = new Set(selectedImportItemIds.value)
+  if (checked) next.add(item.id)
+  else next.delete(item.id)
+  selectedImportItemIds.value = Array.from(next)
+}
+
+function toggleImportPageSelection(checked: CheckboxValueType) {
+  const next = new Set(selectedImportItemIds.value)
+  for (const item of importSelectableItems.value) {
+    if (checked) next.add(item.id)
+    else next.delete(item.id)
+  }
+  selectedImportItemIds.value = Array.from(next)
+}
+
+interface PromptImportBulkResult {
+  batch: PromptImportBatch
+  reviewed: number
+  imported: number
+  updated: number
+}
+
+async function bulkReviewImport(action: string, itemIds: string[] = []) {
+  const batch = activeImportBatch.value
+  if (!batch || importBulkWorking.value) return
+  importBulkWorking.value = true
+  try {
+    const result = await request<PromptImportBulkResult>(
+      `/api/v1/admin/prompt-import-batches/${batch.id}/bulk-review`,
+      { method: 'POST', body: { action, itemIds } },
+    )
+    selectedImportItemIds.value = []
+    activeImportBatch.value = result.batch
+    await Promise.all([loadImportItems(), loadImportBatches(true)])
+    if (result.imported || result.updated) await refresh()
+    if (action.startsWith('approve')) {
+      ElMessage.success(`已审核 ${result.reviewed} 条，新增 ${result.imported} 条、更新 ${result.updated} 条`)
+    } else {
+      ElMessage.success(`已处理 ${result.reviewed} 条`)
+    }
+  } finally {
+    importBulkWorking.value = false
+  }
+}
+
+function approveSelectedImportItems() {
+  if (!selectedImportItemIds.value.length) {
+    ElMessage.warning('请先选择需要通过的数据')
+    return
+  }
+  return bulkReviewImport('approve-selected', selectedImportItemIds.value)
+}
+
+function rejectSelectedImportItems() {
+  if (!selectedImportItemIds.value.length) {
+    ElMessage.warning('请先选择需要移除的数据')
+    return
+  }
+  return bulkReviewImport('reject-selected', selectedImportItemIds.value)
+}
+
+async function approveAllImportItems() {
+  try {
+    await ElMessageBox.confirm(
+      '将当前批次中所有待处理项标记为合规、保留重复项并立即加入提示词库。',
+      '全部通过可入库项',
+      { type: 'warning', confirmButtonText: '确认全部通过', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await bulkReviewImport('approve-all')
+}
+
+async function analyzeImportBatch() {
+  const batch = activeImportBatch.value
+  if (!batch || importAnalyzing.value) return
+  importAnalyzing.value = true
+  try {
+    const result = await request<{ analyzed: number }>(
+      `/api/v1/admin/prompt-import-batches/${batch.id}/analyze`,
+      { method: 'POST' },
+    )
+    ElMessage.success(`AI 已完成 ${result.analyzed} 条分类、去重与合规检测`)
+    await refreshImportBatch()
+  } finally {
+    importAnalyzing.value = false
+  }
+}
 
 async function loadSources(silent = false) {
   sourcesLoading.value = true
@@ -904,7 +1269,7 @@ async function loadSources(silent = false) {
 
 function openSourcesDrawer() {
   sourcesDrawerOpen.value = true
-  void loadSources()
+  void Promise.all([loadSources(), loadImportBatches()])
 }
 
 /** ISO 时间 → 相对时间（源卡片"上次同步"用） */
@@ -935,6 +1300,17 @@ function sourceUrlOf(source: PromptSource) {
   return source.url || ''
 }
 
+async function copySourceUrl(source: PromptSource) {
+  const url = sourceUrlOf(source)
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    ElMessage.success('源地址已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
+
 async function copyPromptText(item: PromptItem) {
   const text = item.prompt?.trim()
   if (!text) {
@@ -962,12 +1338,18 @@ async function toggleSource(source: PromptSource, enabled: boolean) {
 async function syncSource(source: PromptSource) {
   syncingSourceId.value = source.id
   try {
-    const result = await request<SourceSyncResult>(`/api/v1/admin/prompt-sources/${source.id}/synchronizations`, {
-      method: 'POST',
-    })
-    const failedText = result.failed ? `，失败 ${result.failed} 条` : ''
-    ElMessage.success(`同步完成：新增 ${result.imported} 条、更新 ${result.updated} 条${failedText}`)
-    await Promise.all([loadSources(), refresh()])
+    const result = await request<{ batchId: string; fetchedCount: number; duplicateCount: number }>(
+      '/api/v1/admin/prompt-import-batches',
+      { method: 'POST', body: { mode: importMode.value, sourceIds: [source.id] } },
+    )
+    await Promise.all([loadSources(), loadImportBatches()])
+    const batch = importBatches.value.find((item) => item.id === result.batchId)
+    if (batch) {
+      importView.value = result.duplicateCount > 0 ? 'duplicates' : 'pending'
+      await openImportBatch(batch)
+      if (importMode.value === 'ai') void analyzeImportBatch()
+    }
+    ElMessage.success(`已获取 ${result.fetchedCount} 条，进入审核 ${result.duplicateCount} 条重复项`)
   } catch {
     // 错误提示由 request 统一弹出；重新拉取以展示 lastError
     await loadSources(true)
@@ -1069,7 +1451,15 @@ async function saveSource() {
 
 onMounted(() => {
   void reset()
+  void loadPromptCategories()
   void loadSources(true)
+  void loadImportBatches(true)
+})
+
+watch(importView, () => {
+  importPage.value = 1
+  selectedImportItemIds.value = []
+  void loadImportItems()
 })
 
 onBeforeUnmount(() => {
@@ -1130,6 +1520,23 @@ onBeforeUnmount(() => {
         <el-button @click="resetFilters">重置</el-button>
       </div>
       <div class="library-toolbar__actions">
+        <input
+          ref="importFileRef"
+          class="prompt-transfer-input"
+          type="file"
+          accept=".json,.csv,application/json,text/csv"
+          @change="importPromptLibraryFile"
+        />
+        <el-button :icon="UploadFilled" :loading="importFileUploading" @click="importFileRef?.click()">导入</el-button>
+        <el-dropdown @command="exportPromptLibrary">
+          <el-button :icon="Download">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="json">导出全部 JSON</el-dropdown-item>
+              <el-dropdown-item command="csv">导出全部 CSV</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-badge :value="sources.length" :hidden="!sources.length" :offset="[-4, 4]" class="sources-entry-badge">
           <el-button :icon="Link" @click="openSourcesDrawer">数据源</el-button>
         </el-badge>
@@ -1142,6 +1549,7 @@ onBeforeUnmount(() => {
           {{ selectionMode ? '退出多选' : '多选' }}
         </el-button>
         <el-button :icon="Rank" @click="openSortDrawer">排序</el-button>
+        <el-button :icon="CollectionTag" @click="categoryManagerOpen = true">分类管理</el-button>
         <div class="library-toolbar__buttons">
           <el-button type="primary" :icon="Plus" @click="openEditor()">新增</el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
@@ -1152,7 +1560,7 @@ onBeforeUnmount(() => {
     <section class="items-workspace">
       <aside class="category-rail" aria-label="内容分类">
         <button
-          v-for="category in CATEGORY_OPTIONS"
+          v-for="category in categoryOptions"
           :key="category.value"
           type="button"
           :class="{
@@ -1192,7 +1600,7 @@ onBeforeUnmount(() => {
                 aria-label="批量修改分类"
               >
                 <el-option
-                  v-for="category in CATEGORY_OPTIONS.slice(1)"
+                  v-for="category in categoryOptions.slice(1)"
                   :key="category.value"
                   :label="category.label"
                   :value="category.value"
@@ -1287,7 +1695,11 @@ onBeforeUnmount(() => {
                     @click.stop
                     @change="toggleSelected(entry.item.id, Boolean($event))"
                   />
-                  <span v-if="entry.item.sourceId" class="sync-badge" title="来自远程数据源，同步时会自动更新">
+                  <span
+                    v-if="entry.item.sourceId"
+                    class="sync-badge"
+                    title="来自远程数据源，同步时会自动更新"
+                  >
                     <el-icon><Link /></el-icon>
                     同步
                   </span>
@@ -1354,6 +1766,7 @@ onBeforeUnmount(() => {
                       />
                     </el-select>
                     <div class="prompt-card__actions">
+                      <el-button link @click="openQuickSort(entry.item)">位置</el-button>
                       <el-button link type="primary" @click="openEditor(entry.item)">编辑</el-button>
                       <el-button link type="danger" @click="remove(entry.item)">删除</el-button>
                     </div>
@@ -1381,6 +1794,11 @@ onBeforeUnmount(() => {
           </div>
       </main>
     </section>
+
+    <PromptCategoryManager
+      v-model="categoryManagerOpen"
+      @changed="handlePromptCategoriesChanged"
+    />
 
     <AdminDialog
       v-model="quickSortOpen"
@@ -1467,7 +1885,7 @@ onBeforeUnmount(() => {
         <div class="prompt-sort-filters">
           <el-input v-model="sortQuery" clearable :prefix-icon="Search" placeholder="搜索名称或提示词，快速定位目标" />
           <el-select v-model="sortCategory" aria-label="排序分类">
-            <el-option v-for="category in CATEGORY_OPTIONS" :key="category.value" :label="category.label" :value="category.value" />
+            <el-option v-for="category in categoryOptions" :key="category.value" :label="category.label" :value="category.value" />
           </el-select>
           <el-select v-model="sortType" aria-label="排序功能">
             <el-option label="全部功能" value="all" />
@@ -1605,15 +2023,13 @@ onBeforeUnmount(() => {
               <el-select
                 v-model="form.category"
                 filterable
-                allow-create
-                default-first-option
                 placeholder="选择内容分类"
                 style="width: 100%"
               >
                 <el-option
-                  v-for="category in CATEGORY_OPTIONS.slice(1)"
+                  v-for="category in categoryOptions.slice(1)"
                   :key="category.value"
-                  :label="`${category.label}（${category.value}）`"
+                  :label="`${category.label}（${category.value}）${category.active ? '' : ' · 已停用'}`"
                   :value="category.value"
                 />
               </el-select>
@@ -1718,7 +2134,7 @@ onBeforeUnmount(() => {
 
     <el-drawer
       v-model="sourcesDrawerOpen"
-      size="560px"
+      size="620px"
       append-to-body
       class="library-drawer sources-drawer"
     >
@@ -1727,13 +2143,69 @@ onBeforeUnmount(() => {
           <span class="library-drawer__mark"><el-icon><Link /></el-icon></span>
           <div>
             <strong>提示词数据源</strong>
-            <small>同步 JSON / Markdown / HTML 远程源</small>
+            <small>{{ enabledSourceCount }} / {{ sources.length }} 个数据源已启用</small>
           </div>
-          <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
+          <el-button :icon="Plus" @click="openSourceEditor()">新建源</el-button>
         </div>
       </template>
       <div class="sources-panel">
-        <div v-loading="sourcesLoading" class="source-list">
+        <section class="import-launcher">
+          <div class="import-launcher__head">
+            <span class="import-launcher__icon"><el-icon><MagicStick /></el-icon></span>
+            <div>
+              <strong>批量获取</strong>
+              <span>从 {{ enabledSourceCount }} 个启用源创建审核批次</span>
+            </div>
+          </div>
+          <div class="import-launcher__actions">
+            <el-segmented
+              v-model="importMode"
+              :options="[
+                { label: '自动规则', value: 'rules' },
+                { label: 'AI 辅助', value: 'ai' },
+                { label: '全人工', value: 'manual' },
+              ]"
+            />
+            <el-button
+              type="primary"
+              :icon="MagicStick"
+              :loading="importBatchCreating"
+              @click="createImportBatch"
+            >
+              获取全部源
+            </el-button>
+          </div>
+        </section>
+
+        <section v-if="importBatches.length" class="import-batches">
+          <header><strong>最近批次</strong><span>待审核批次可随时继续处理</span></header>
+          <button
+            v-for="batch in importBatches.slice(0, 5)"
+            :key="batch.id"
+            type="button"
+            class="import-batch-row"
+            @click="openImportBatch(batch)"
+          >
+            <span class="import-batch-row__status" :class="`is-${batch.status}`">
+              {{ batch.status === 'review' ? '待审核' : batch.status === 'completed' ? '已发布' : batch.status === 'failed' ? '失败' : '处理中' }}
+            </span>
+            <span>{{ formatTime(batch.createdAt) }}</span>
+            <span>{{ batch.fetchedCount }} 条</span>
+            <span v-if="batch.duplicateCount">重复 {{ batch.duplicateCount }}</span>
+            <span class="import-batch-row__arrow">›</span>
+          </button>
+        </section>
+
+        <section class="source-list-section">
+          <header class="source-list-head">
+            <div>
+              <strong>数据源</strong>
+              <span>{{ sources.length }} 个</span>
+            </div>
+            <small>{{ enabledSourceCount }} 个启用</small>
+          </header>
+
+          <div v-loading="sourcesLoading" class="source-list">
           <article
             v-for="source in sources"
             :key="source.id"
@@ -1742,6 +2214,7 @@ onBeforeUnmount(() => {
           >
             <header class="source-card__head">
               <div class="source-card__title">
+                <span class="source-card__state" :class="{ 'is-active': source.enabled }" />
                 <strong :title="source.name">{{ source.name }}</strong>
                 <span class="format-badge" :style="{ '--format-color': formatMeta(source.format).color }">
                   {{ formatMeta(source.format).label }}
@@ -1750,6 +2223,7 @@ onBeforeUnmount(() => {
               <el-switch
                 :model-value="source.enabled"
                 size="small"
+                :aria-label="`${source.enabled ? '停用' : '启用'} ${source.name}`"
                 @change="toggleSource(source, Boolean($event))"
               />
             </header>
@@ -1757,57 +2231,75 @@ onBeforeUnmount(() => {
             <button
               class="source-card__url"
               type="button"
-              title="点击复制源地址"
+              title="复制源地址"
               @click="copySourceUrl(source)"
             >
               <span>{{ sourceUrlOf(source) || '未填写源地址' }}</span>
               <el-icon><CopyDocument /></el-icon>
             </button>
 
-            <div class="source-card__meta">
-              <span class="is-strong">{{ source.itemCount ?? 0 }} 条词条</span>
-              <span>{{ taskTypeLabel(source.taskType) }}</span>
-              <span>
-                {{ source.lastSyncedAt ? `${relativeTime(source.lastSyncedAt)}同步` : '尚未同步'
-                }}<template v-if="source.lastSyncedAt && source.lastSyncDurationMs != null">
-                  · {{ source.lastSyncDurationMs }}ms</template
-                >
-              </span>
-              <span :class="source.autoSyncEnabled ? 'is-auto' : ''">
-                {{ source.autoSyncEnabled ? `自动同步 · ${intervalLabel(source.syncIntervalMinutes)}` : '仅手动同步' }}
-              </span>
-            </div>
-
             <div v-if="source.lastError" class="source-card__error">
               <el-icon><WarningFilled /></el-icon>
               <span :title="source.lastError">{{ source.lastError }}</span>
             </div>
 
-            <footer class="source-card__actions">
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                :icon="Refresh"
-                :loading="syncingSourceId === source.id"
-                @click="syncSource(source)"
-              >
-                立即同步
-              </el-button>
-              <el-button size="small" :icon="EditPen" @click="openSourceEditor(source)">编辑</el-button>
-              <el-tooltip content="删除数据源" placement="top">
-                <el-button size="small" type="danger" text :icon="Delete" @click="removeSource(source)" />
-              </el-tooltip>
+            <footer class="source-card__footer">
+              <div class="source-card__meta">
+                <span class="is-strong">{{ source.itemCount ?? 0 }} 条</span>
+                <span>{{ taskTypeLabel(source.taskType) }}</span>
+                <span>
+                  {{ source.lastSyncedAt ? `${relativeTime(source.lastSyncedAt)}同步` : '尚未同步'
+                  }}<template v-if="source.lastSyncedAt && source.lastSyncDurationMs != null">
+                    · {{ source.lastSyncDurationMs }}ms</template
+                  >
+                </span>
+                <span :class="source.autoSyncEnabled ? 'is-auto' : ''">
+                  {{ source.autoSyncEnabled ? intervalLabel(source.syncIntervalMinutes) : '仅手动' }}
+                </span>
+              </div>
+
+              <div class="source-card__actions">
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  :icon="Refresh"
+                  :loading="syncingSourceId === source.id"
+                  @click="syncSource(source)"
+                >
+                  获取
+                </el-button>
+                <el-tooltip content="编辑数据源" placement="top">
+                  <el-button
+                    size="small"
+                    circle
+                    :icon="EditPen"
+                    :aria-label="`编辑 ${source.name}`"
+                    @click="openSourceEditor(source)"
+                  />
+                </el-tooltip>
+                <el-tooltip content="删除数据源" placement="top">
+                  <el-button
+                    size="small"
+                    circle
+                    type="danger"
+                    text
+                    :icon="Delete"
+                    :aria-label="`删除 ${source.name}`"
+                    @click="removeSource(source)"
+                  />
+                </el-tooltip>
+              </div>
             </footer>
           </article>
 
           <div v-if="!sourcesLoading && !sources.length" class="sources-empty">
             <el-icon><Link /></el-icon>
             <strong>还没有数据源</strong>
-            <span>接入 JSON / Markdown / HTML 远程源，批量导入提示词</span>
             <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
           </div>
-        </div>
+          </div>
+        </section>
       </div>
     </el-drawer>
 
@@ -1873,6 +2365,194 @@ onBeforeUnmount(() => {
         </div>
       </el-form>
     </AdminDialog>
+
+    <el-dialog
+      v-model="importReviewOpen"
+      width="min(1180px, 94vw)"
+      append-to-body
+      destroy-on-close
+      class="prompt-import-dialog"
+    >
+      <template #header>
+        <div class="import-review-head">
+          <div>
+            <strong>提示词批次审核</strong>
+            <span v-if="activeImportBatch">
+              共 {{ activeImportBatch.fetchedCount }} 条 · 重复 {{ activeImportBatch.duplicateCount }} 条 ·
+              已通过 {{ activeImportBatch.approvedCount }} 条 · 已入库
+              {{ activeImportBatch.importedCount + activeImportBatch.updatedCount }} 条
+            </span>
+          </div>
+          <el-tag v-if="activeImportBatch?.status === 'review'" type="warning" effect="light">待完成</el-tag>
+          <el-tag v-else-if="activeImportBatch?.status === 'completed'" type="success" effect="light">已发布</el-tag>
+        </div>
+      </template>
+
+      <input
+        ref="importCoverInputRef"
+        class="prompt-transfer-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        @change="uploadImportCover"
+      />
+
+      <div class="import-review-toolbar">
+        <el-segmented
+          v-model="importView"
+          :options="[
+            { label: '全部', value: 'all' },
+            { label: `重复项 ${activeImportBatch?.duplicateCount ?? 0}`, value: 'duplicates' },
+            { label: '待处理', value: 'pending' },
+            { label: '已通过', value: 'approved' },
+            { label: '已移除', value: 'rejected' },
+          ]"
+        />
+        <div class="import-review-toolbar__actions">
+          <el-button :icon="MagicStick" :loading="importAnalyzing" @click="analyzeImportBatch">AI 自动检测</el-button>
+          <el-button @click="bulkReviewImport('drop-duplicates')">重复项全部移除</el-button>
+          <el-button @click="bulkReviewImport('keep-duplicates')">重复项全部保留</el-button>
+          <el-button type="danger" plain @click="bulkReviewImport('reject-blocked')">移除违规项</el-button>
+          <el-button type="success" plain @click="bulkReviewImport('approve-safe')">通过安全项</el-button>
+          <el-button type="success" :loading="importBulkWorking" @click="approveAllImportItems">全部通过</el-button>
+        </div>
+      </div>
+
+      <div v-if="importItems.length" class="import-review-selection">
+        <el-checkbox
+          :model-value="importPageAllSelected"
+          :indeterminate="importPageSomeSelected"
+          :disabled="!importSelectableItems.length || importBulkWorking"
+          @change="toggleImportPageSelection"
+        >
+          全选当前页
+        </el-checkbox>
+        <span>已选择 {{ selectedImportItemIds.length }} 条</span>
+        <div>
+          <el-button
+            size="small"
+            type="success"
+            :disabled="!selectedImportItemIds.length"
+            :loading="importBulkWorking"
+            @click="approveSelectedImportItems"
+          >批量通过并入库</el-button>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            :disabled="!selectedImportItemIds.length"
+            :loading="importBulkWorking"
+            @click="rejectSelectedImportItems"
+          >批量移除</el-button>
+        </div>
+      </div>
+
+      <div v-loading="importItemsLoading" class="import-review-list">
+        <article
+          v-for="item in importItems"
+          :key="item.id"
+          class="import-review-item"
+          :class="{ 'is-selected': selectedImportItemSet.has(item.id), 'is-published': item.publishedAt }"
+        >
+          <div class="import-review-item__check">
+            <el-checkbox
+              v-if="!item.publishedAt"
+              :model-value="selectedImportItemSet.has(item.id)"
+              :aria-label="`选择 ${item.title}`"
+              @change="toggleImportItemSelection(item, $event)"
+            />
+            <el-icon v-else><CircleCheck /></el-icon>
+          </div>
+          <div
+            v-loading="importCoverUpdatingIds.has(item.id)"
+            class="import-review-item__cover"
+          >
+            <button
+              v-if="item.coverUrl"
+              type="button"
+              class="import-review-cover-preview"
+              aria-label="查看封面大图"
+              title="点击查看大图"
+              @click.stop="openImportCoverPreview(item)"
+            >
+              <el-image :src="item.coverUrl" fit="cover" lazy />
+            </button>
+            <el-icon v-else><Picture /></el-icon>
+            <div v-if="!item.publishedAt" class="import-review-cover-actions" @click.stop>
+              <el-tooltip content="上传图片替换" placement="top">
+                <button
+                  type="button"
+                  :disabled="importCoverUpdatingIds.has(item.id)"
+                  aria-label="上传图片替换"
+                  @click="triggerImportCoverPick(item)"
+                >
+                  <el-icon><UploadFilled /></el-icon>
+                </button>
+              </el-tooltip>
+            </div>
+          </div>
+          <div class="import-review-item__body">
+            <header>
+              <div><strong>{{ item.title }}</strong><span>{{ item.sourceName }}</span></div>
+              <div class="import-review-item__badges">
+                <el-tag v-if="item.duplicateKind !== 'none'" type="warning" size="small">重复：{{ item.duplicateTitle || '已有内容' }}</el-tag>
+                <el-tag :type="item.complianceStatus === 'blocked' ? 'danger' : item.complianceStatus === 'safe' ? 'success' : 'info'" size="small">
+                  {{ item.complianceStatus === 'blocked' ? '疑似违规' : item.complianceStatus === 'safe' ? '规则安全' : '待检测' }}
+                </el-tag>
+                <el-tag v-if="item.publishedAt" type="success" effect="dark" size="small">已入库</el-tag>
+              </div>
+            </header>
+            <p>{{ item.prompt }}</p>
+            <small v-if="item.complianceReason">{{ item.complianceReason }}</small>
+            <footer v-if="!item.publishedAt">
+              <el-select
+                :model-value="item.category"
+                size="small"
+                style="width: 128px"
+                @change="patchImportItem(item, { category: $event })"
+              >
+                <el-option v-for="category in categoryOptions.slice(1)" :key="category.value" :label="category.label" :value="category.value" />
+              </el-select>
+              <template v-if="item.duplicateKind !== 'none'">
+                <el-button size="small" :type="item.duplicateAction === 'keep' ? 'primary' : ''" @click="patchImportItem(item, { duplicateAction: 'keep' })">保留</el-button>
+                <el-button size="small" :type="item.duplicateAction === 'drop' ? 'danger' : ''" @click="patchImportItem(item, { duplicateAction: 'drop', reviewStatus: 'rejected' })">移除</el-button>
+              </template>
+              <el-button size="small" :icon="CircleCheck" @click="approveImportItem(item)">合规并通过</el-button>
+              <el-button size="small" type="danger" plain :icon="CircleClose" @click="patchImportItem(item, { complianceStatus: 'blocked', reviewStatus: 'rejected' })">移除</el-button>
+            </footer>
+            <footer v-else class="import-review-item__published">
+              <span>该项审核通过后已自动加入提示词库</span>
+            </footer>
+          </div>
+        </article>
+        <el-empty v-if="!importItemsLoading && !importItems.length" description="当前范围没有数据" />
+      </div>
+
+      <el-pagination
+        v-if="importTotal > 50"
+        v-model:current-page="importPage"
+        :page-size="50"
+        :total="importTotal"
+        layout="prev, pager, next, total"
+        @current-change="loadImportItems"
+      />
+
+      <template #footer>
+        <div class="import-review-footer">
+          <span>审核通过的数据会立即加入提示词库；新增内容保留 24 小时最新状态。</span>
+          <div>
+            <el-button type="primary" @click="importReviewOpen = false">关闭</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-image-viewer
+      v-if="importCoverPreviewUrl"
+      :url-list="[importCoverPreviewUrl]"
+      hide-on-click-modal
+      teleported
+      @close="importCoverPreviewUrl = ''"
+    />
   </div>
 </template>
 
@@ -3101,6 +3781,301 @@ onBeforeUnmount(() => {
   }
 }
 
+.prompt-transfer-input {
+  display: none;
+}
+
+.import-launcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-launcher__head {
+  display: flex;
+  min-width: 150px;
+  flex: 1 1 160px;
+  align-items: center;
+  gap: 9px;
+
+  > div {
+    display: grid;
+    gap: 2px;
+  }
+
+  span {
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+}
+
+.import-launcher__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.import-launcher__actions,
+.import-review-toolbar,
+.import-review-toolbar__actions,
+.import-review-footer,
+.import-review-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-launcher__actions,
+.import-review-footer {
+  justify-content: space-between;
+}
+
+.import-launcher__actions {
+  flex: 0 1 auto;
+
+  :deep(.el-segmented) {
+    --el-segmented-item-selected-color: var(--accent-ink);
+    --el-segmented-item-selected-bg-color: var(--accent-soft);
+    padding: 3px;
+  }
+}
+
+.import-batches {
+  display: grid;
+  gap: 6px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+
+  > header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0 2px;
+
+    span { color: var(--ink-3); font-size: 12px; }
+  }
+}
+
+.import-batch-row {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+
+  &:hover { border-color: var(--accent); }
+}
+
+.import-batch-row__status {
+  color: var(--warning);
+  font-weight: 700;
+  &.is-completed { color: var(--success); }
+  &.is-failed { color: var(--danger); }
+}
+
+.import-batch-row__arrow { font-size: 20px; }
+
+:global(.prompt-import-dialog .el-dialog__body) {
+  padding-top: 8px;
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:global(.prompt-import-dialog) {
+  height: min(820px, 92vh);
+  display: flex;
+  flex-direction: column;
+  margin-top: 4vh !important;
+}
+
+.import-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 28px;
+
+  > div { display: grid; gap: 4px; }
+  strong { font-size: 17px; }
+  span { color: var(--ink-3); font-size: 12px; }
+}
+
+.import-review-toolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-review-selection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+
+  > span {
+    color: var(--ink-3);
+    font-size: 12px;
+  }
+
+  > div {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+  }
+}
+
+.import-review-list {
+  min-height: 0;
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 12px 2px;
+}
+
+.import-review-item {
+  display: grid;
+  grid-template-columns: 22px 112px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+
+  &.is-selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  &.is-published {
+    background: color-mix(in srgb, var(--success) 5%, var(--surface-1));
+  }
+}
+
+.import-review-item__check {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+  color: var(--success);
+}
+
+.import-review-item__cover {
+  position: relative;
+  width: 112px;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--ink-3);
+
+}
+
+.import-review-cover-preview {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+
+  .el-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+}
+
+.import-review-cover-actions {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+
+  button {
+    display: grid;
+    width: 27px;
+    height: 27px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, white 36%, transparent);
+    border-radius: 6px;
+    color: white;
+    background: color-mix(in srgb, black 68%, transparent);
+    backdrop-filter: blur(8px);
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+
+    &:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--accent) 82%, black);
+      transform: translateY(-1px);
+    }
+
+    &:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+  }
+}
+
+.import-review-item__body {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+
+  header, footer, .import-review-item__badges {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  header { justify-content: space-between; }
+  header > div:first-child { min-width: 0; display: grid; gap: 2px; }
+  header span, small { color: var(--ink-3); font-size: 12px; }
+  p { margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+  footer { flex-wrap: wrap; }
+}
+
+.import-review-item__published span {
+  color: var(--success) !important;
+  font-weight: 650;
+}
+
+.import-review-footer {
+  width: 100%;
+  span { color: var(--ink-3); font-size: 12px; }
+}
+
 /* 词库卡片：远程源词条角标（叠在封面图上，跟随主题的 accent 令牌） */
 .sync-badge {
   position: absolute;
@@ -3125,7 +4100,7 @@ onBeforeUnmount(() => {
 
 .sources-panel {
   display: grid;
-  gap: 14px;
+  gap: 0;
 }
 
 .sources-panel__head {
@@ -3156,27 +4131,57 @@ onBeforeUnmount(() => {
 
 .source-list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   min-height: 200px;
   align-content: start;
 }
 
+.source-list-section {
+  display: grid;
+  gap: 9px;
+  padding-top: 14px;
+}
+
+.source-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+
+  > div {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  strong {
+    color: var(--ink-1);
+    font-size: 13px;
+  }
+
+  span,
+  small {
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+}
+
 .source-card {
   display: grid;
-  gap: 10px;
-  padding: 14px 15px;
+  gap: 8px;
+  padding: 11px 12px;
   border: 1px solid var(--library-border);
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
   transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
     opacity 0.2s ease;
 
   &:hover {
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-    box-shadow: var(--shadow-md);
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--library-border));
+    background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface));
   }
 
   &.is-disabled {
@@ -3210,15 +4215,28 @@ onBeforeUnmount(() => {
   }
 }
 
+.source-card__state {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-4);
+
+  &.is-active {
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent);
+  }
+}
+
 .format-badge {
   flex-shrink: 0;
-  padding: 3px 8px;
-  border-radius: 999px;
+  padding: 3px 6px;
+  border-radius: 4px;
   color: var(--format-color);
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   background: color-mix(in srgb, var(--format-color) 12%, transparent);
 }
 
@@ -3229,9 +4247,9 @@ onBeforeUnmount(() => {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   color: var(--ink-2);
   font-size: 11px;
   text-align: left;
@@ -3257,7 +4275,8 @@ onBeforeUnmount(() => {
 
   &:hover {
     color: var(--accent-ink);
-    background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+    background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface-2));
 
     .el-icon {
       color: var(--accent-ink);
@@ -3270,24 +4289,30 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  min-width: 0;
+  gap: 4px 0;
 
   span {
-    padding: 3px 8px;
-    border-radius: 6px;
-    color: var(--ink-2);
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink-3);
     font-size: 10px;
-    background: var(--surface-3);
+
+    & + span::before {
+      width: 1px;
+      height: 10px;
+      margin: 0 7px;
+      background: var(--line);
+      content: '';
+    }
 
     &.is-strong {
-      color: var(--accent-ink);
+      color: var(--ink-2);
       font-weight: 650;
-      background: var(--accent-soft);
     }
 
     &.is-auto {
       color: var(--success);
-      background: var(--success-soft);
     }
   }
 }
@@ -3314,13 +4339,18 @@ onBeforeUnmount(() => {
   }
 }
 
-.source-card__actions {
+.source-card__footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--library-border);
+}
+
+.source-card__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
 
   .el-button + .el-button {
     margin-left: 0;
@@ -3335,7 +4365,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   color: var(--library-muted);
   border: 1px dashed var(--library-border);
-  border-radius: 14px;
+  border-radius: 8px;
 
   .el-icon {
     font-size: 30px;
@@ -3345,9 +4375,6 @@ onBeforeUnmount(() => {
     color: var(--el-text-color-primary);
   }
 
-  span {
-    font-size: 12px;
-  }
 }
 
 @media (max-width: 1500px) {
@@ -3529,6 +4556,10 @@ onBeforeUnmount(() => {
 
 .sources-drawer {
   max-width: 94vw;
+}
+
+.sources-drawer .el-drawer__body {
+  padding: 14px 16px 18px;
 }
 
 .prompt-quick-sort-dialog {

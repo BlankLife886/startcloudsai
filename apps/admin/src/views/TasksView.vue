@@ -10,6 +10,7 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Document, Picture, Refresh, Search } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
+import TaskRuntimeSettingsDialog from '@/components/settings/TaskRuntimeSettingsDialog.vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
@@ -575,6 +576,7 @@ async function forceFail(task: AdminTask) {
     >
       <template #actions>
         <div class="refresh-actions">
+          <TaskRuntimeSettingsDialog />
           <span class="refresh-dot" :class="{ 'is-live': autoRefresh }" />
           <el-switch
             v-model="autoRefresh"

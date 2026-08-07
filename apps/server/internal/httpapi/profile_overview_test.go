@@ -16,7 +16,7 @@ func TestOverviewReturnsAssetAndSubmissionTotals(t *testing.T) {
 		t.Fatalf("insert wallet: %v", err)
 	}
 
-	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "素材", "assets/source.png", "assets/thumb.jpg", "image/png", 128); err != nil {
+	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "素材", "assets/source.png", "assets/thumb.jpg", "image/png", 128, nil); err != nil {
 		t.Fatalf("insert user asset: %v", err)
 	}
 	pendingTaskID := env.newSucceededTask(t, user.ID)

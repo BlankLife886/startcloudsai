@@ -2,6 +2,8 @@
 
 用户端基于 Vue 3、Vite、Pinia、Vue Router 和 Tailwind CSS 4。GSAP、anime.js 与 Three.js 用于首页和部分工作台动效；Bootstrap Icons 提供界面图标。
 
+用户端仅面向桌面浏览器，最低支持视口为 `1280x720`。不新增或验收手机/平板布局，完整边界见 [桌面端 UI 支持策略](../../docs/DESKTOP_UI_POLICY.md)。
+
 所有业务请求使用同源 `/api/v1`，鉴权凭据为 HttpOnly Cookie。生产构建由 nginx 托管，并由仓库根网关统一转发 API。
 
 ## 开发与验证

@@ -10,7 +10,6 @@ import notificationService from '@/services/notification'
 import { TRANSPARENT_PNG_PROMPT_INSTRUCTION } from '@/features/ai-shared/transparentPng'
 import { computed, ref, watch } from 'vue'
 import {
-  T2I_PROMPT_LIBRARY,
   WALLPAPER_INSPIRATION_PROMPTS,
   WALLPAPER_PROMPT_PRESETS,
   resolveT2iOutputSize,
@@ -85,7 +84,6 @@ export function useWallpaperInputs(deps = {}) {
   const activeAuthor = deps.activeAuthor || ref('')
 
   const promptPresets = WALLPAPER_PROMPT_PRESETS
-  const promptLibrary = T2I_PROMPT_LIBRARY
   const inspirationPrompts = WALLPAPER_INSPIRATION_PROMPTS
   const outputSizeLabel = computed(() =>
     resolveT2iOutputSize(aspectRatio.value, resolutionScale.value),
@@ -724,7 +722,6 @@ export function useWallpaperInputs(deps = {}) {
     authorQuery,
     activeAuthor,
     promptPresets,
-    promptLibrary,
     inspirationPrompts,
     sourcePreview,
     sourceRemoteUrl,

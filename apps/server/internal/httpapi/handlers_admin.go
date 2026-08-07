@@ -365,16 +365,31 @@ func (s *Server) adminListPlans(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	usageByPlan, err := store.ListPlanUsage(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	items := make([]gin.H, 0, len(plans))
 	for _, p := range plans {
-		items = append(items, planDict(p, true))
+		items = append(items, adminPlanDict(p, usageByPlan[p.ID]))
 	}
 	ok(c, gin.H{"items": items})
+}
+
+func adminPlanDict(plan *store.Plan, usage store.PlanUsage) gin.H {
+	dict := planDict(plan, true)
+	dict["orderCount"] = usage.OrderCount
+	dict["subscriptionCount"] = usage.SubscriptionCount
+	dict["deletable"] = usage.OrderCount == 0 && usage.SubscriptionCount == 0
+	return dict
 }
 
 type planIn struct {
 	Code            string   `json:"code"`
 	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Badge           string   `json:"badge"`
 	Kind            *string  `json:"kind"`
 	PriceCents      *int64   `json:"priceCents"`
 	GrantCents      *int64   `json:"grantCents"`
@@ -383,20 +398,100 @@ type planIn struct {
 	DailyGrantCents *int64   `json:"dailyGrantCents"`
 	Features        []string `json:"features"`
 	Active          *bool    `json:"active"`
+	Recommended     *bool    `json:"recommended"`
 	Sort            *int     `json:"sort"`
 }
 
-// validatePlanKind kind=subscription 时 durationDays 与 dailyGrantCents 必须为正。
-func validatePlanKind(kind string, durationDays int, dailyGrantCents int64) error {
-	if kind != "topup" && kind != "subscription" {
+func cleanPlanFeatures(features []string) ([]string, error) {
+	if len(features) > 12 {
+		return nil, apperr.E("validation_error", "features: 最多配置 12 条权益", 422)
+	}
+	out := make([]string, 0, len(features))
+	seen := make(map[string]struct{}, len(features))
+	for _, feature := range features {
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+		if len([]rune(feature)) > 120 {
+			return nil, apperr.E("validation_error", "features: 单条权益最多 120 字", 422)
+		}
+		if _, ok := seen[feature]; ok {
+			continue
+		}
+		seen[feature] = struct{}{}
+		out = append(out, feature)
+	}
+	return out, nil
+}
+
+func validPlanCode(code string) bool {
+	if len(code) < 1 || len(code) > 64 {
+		return false
+	}
+	for index, char := range code {
+		valid := char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || (index > 0 && (char == '-' || char == '_'))
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizePlan(plan *store.Plan) error {
+	plan.Code = strings.ToLower(strings.TrimSpace(plan.Code))
+	plan.Name = strings.TrimSpace(plan.Name)
+	plan.Description = strings.TrimSpace(plan.Description)
+	plan.Badge = strings.TrimSpace(plan.Badge)
+	plan.Kind = strings.ToLower(strings.TrimSpace(plan.Kind))
+	features, err := cleanPlanFeatures(plan.Features)
+	if err != nil {
+		return err
+	}
+	plan.Features = features
+	if !validPlanCode(plan.Code) {
+		return apperr.E("validation_error", "code: 仅支持小写字母、数字、短横线和下划线，长度 1-64", 422)
+	}
+	if plan.Name == "" || len([]rune(plan.Name)) > 128 {
+		return apperr.E("validation_error", "name: 长度须在 1-128 之间", 422)
+	}
+	if len([]rune(plan.Description)) > 500 {
+		return apperr.E("validation_error", "description: 最多 500 字", 422)
+	}
+	if len([]rune(plan.Badge)) > 24 {
+		return apperr.E("validation_error", "badge: 最多 24 字", 422)
+	}
+	if plan.Kind != "topup" && plan.Kind != "subscription" {
 		return apperr.E("validation_error", "kind: 须为 topup/subscription", 422)
 	}
-	if kind == "subscription" {
-		if durationDays <= 0 {
+	if plan.PriceCents < 0 || plan.PriceCents > 1000000000 {
+		return apperr.E("validation_error", "priceCents: 须在 0-1000000000 之间", 422)
+	}
+	for name, value := range map[string]int64{
+		"grantCents": plan.GrantCents, "bonusCents": plan.BonusCents, "dailyGrantCents": plan.DailyGrantCents,
+	} {
+		if value < 0 || value > 1000000000 {
+			return apperr.E("validation_error", name+": 须在 0-1000000000 之间", 422)
+		}
+	}
+	if plan.DurationDays < 0 || plan.DurationDays > 3650 {
+		return apperr.E("validation_error", "durationDays: 须在 0-3650 之间", 422)
+	}
+	if plan.Sort < 0 || plan.Sort > 1000000 {
+		return apperr.E("validation_error", "sort: 须在 0-1000000 之间", 422)
+	}
+	if plan.Kind == "subscription" {
+		if plan.DurationDays <= 0 {
 			return apperr.E("validation_error", "durationDays: 订阅套餐须为正整数", 422)
 		}
-		if dailyGrantCents <= 0 {
+		if plan.DailyGrantCents <= 0 {
 			return apperr.E("validation_error", "dailyGrantCents: 订阅套餐须为正整数", 422)
+		}
+	} else {
+		plan.DurationDays = 0
+		plan.DailyGrantCents = 0
+		if plan.GrantCents+plan.BonusCents <= 0 {
+			return apperr.E("validation_error", "topup 套餐的发放积分必须大于 0", 422)
 		}
 	}
 	return nil
@@ -406,14 +501,6 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 	var body planIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
-		return
-	}
-	if body.Code == "" || len([]rune(body.Code)) > 64 {
-		fail(c, apperr.E("validation_error", "code: 长度须在 1-64 之间", 422))
-		return
-	}
-	if body.Name == "" || len([]rune(body.Name)) > 128 {
-		fail(c, apperr.E("validation_error", "name: 长度须在 1-128 之间", 422))
 		return
 	}
 	if body.PriceCents == nil || *body.PriceCents < 0 {
@@ -452,10 +539,6 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		}
 		dailyGrant = *body.DailyGrantCents
 	}
-	if err := validatePlanKind(kind, durationDays, dailyGrant); err != nil {
-		fail(c, err)
-		return
-	}
 	active := true
 	if body.Active != nil {
 		active = *body.Active
@@ -464,19 +547,15 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 	if body.Sort != nil {
 		sortVal = *body.Sort
 	}
-	ctx := c.Request.Context()
-	existing, err := store.GetPlanByCode(ctx, s.St.Pool, body.Code)
-	if err != nil {
-		fail(c, err)
-		return
+	recommended := false
+	if body.Recommended != nil {
+		recommended = *body.Recommended
 	}
-	if existing != nil {
-		fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
-		return
-	}
-	plan, err := store.InsertPlan(ctx, s.St.Pool, &store.Plan{
+	planInput := &store.Plan{
 		Code:            body.Code,
 		Name:            body.Name,
+		Description:     body.Description,
+		Badge:           body.Badge,
 		Kind:            kind,
 		PriceCents:      *body.PriceCents,
 		GrantCents:      *body.GrantCents,
@@ -485,9 +564,41 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		DailyGrantCents: dailyGrant,
 		Features:        body.Features,
 		Active:          active,
+		Recommended:     recommended,
 		Sort:            sortVal,
-	})
+	}
+	if err := normalizePlan(planInput); err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	existing, err := store.GetPlanByCode(ctx, s.St.Pool, planInput.Code)
 	if err != nil {
+		fail(c, err)
+		return
+	}
+	if existing != nil {
+		fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
+		return
+	}
+	var plan *store.Plan
+	if planInput.Recommended {
+		err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+			if clearErr := store.ClearRecommendedPlans(ctx, tx, uuid.Nil); clearErr != nil {
+				return clearErr
+			}
+			var insertErr error
+			plan, insertErr = store.InsertPlan(ctx, tx, planInput)
+			return insertErr
+		})
+	} else {
+		plan, err = store.InsertPlan(ctx, s.St.Pool, planInput)
+	}
+	if err != nil {
+		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
+			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
+			return
+		}
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
 			return
@@ -495,12 +606,14 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, planDict(plan, true))
+	ok(c, adminPlanDict(plan, store.PlanUsage{}))
 }
 
 type planPatchIn struct {
 	Code            Opt[string]   `json:"code"`
 	Name            Opt[string]   `json:"name"`
+	Description     Opt[string]   `json:"description"`
+	Badge           Opt[string]   `json:"badge"`
 	Kind            Opt[string]   `json:"kind"`
 	PriceCents      Opt[int64]    `json:"priceCents"`
 	GrantCents      Opt[int64]    `json:"grantCents"`
@@ -509,6 +622,7 @@ type planPatchIn struct {
 	DailyGrantCents Opt[int64]    `json:"dailyGrantCents"`
 	Features        Opt[[]string] `json:"features"`
 	Active          Opt[bool]     `json:"active"`
+	Recommended     Opt[bool]     `json:"recommended"`
 	Sort            Opt[int]      `json:"sort"`
 }
 
@@ -523,13 +637,8 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if body.Code.Valid && (body.Code.Value == "" || len([]rune(body.Code.Value)) > 64) {
-		fail(c, apperr.E("validation_error", "code: 长度须在 1-64 之间", 422))
-		return
-	}
-	if body.Name.Valid && (body.Name.Value == "" || len([]rune(body.Name.Value)) > 128) {
-		fail(c, apperr.E("validation_error", "name: 长度须在 1-128 之间", 422))
-		return
+	if body.Code.Valid {
+		body.Code.Value = strings.ToLower(strings.TrimSpace(body.Code.Value))
 	}
 	for name, v := range map[string]Opt[int64]{"priceCents": body.PriceCents, "grantCents": body.GrantCents, "bonusCents": body.BonusCents, "dailyGrantCents": body.DailyGrantCents} {
 		if v.Valid && v.Value < 0 {
@@ -568,6 +677,12 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.Name.Valid {
 		plan.Name = body.Name.Value
 	}
+	if body.Description.Valid {
+		plan.Description = body.Description.Value
+	}
+	if body.Badge.Valid {
+		plan.Badge = body.Badge.Value
+	}
 	if body.Kind.Valid {
 		plan.Kind = body.Kind.Value
 	}
@@ -592,19 +707,50 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.Active.Valid {
 		plan.Active = body.Active.Value
 	}
+	if body.Recommended.Valid {
+		plan.Recommended = body.Recommended.Value
+	}
 	if body.Sort.Valid {
 		plan.Sort = body.Sort.Value
 	}
-	// patch 后按最终值整体校验 kind 组合
-	if err := validatePlanKind(plan.Kind, plan.DurationDays, plan.DailyGrantCents); err != nil {
+	if err := normalizePlan(plan); err != nil {
 		fail(c, err)
 		return
 	}
-	if err := store.UpdatePlan(ctx, s.St.Pool, plan); err != nil {
+	updatePlan := func(q store.Q) error { return store.UpdatePlan(ctx, q, plan) }
+	if plan.Recommended {
+		err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+			if clearErr := store.ClearRecommendedPlans(ctx, tx, plan.ID); clearErr != nil {
+				return clearErr
+			}
+			return updatePlan(tx)
+		})
+	} else {
+		err = updatePlan(s.St.Pool)
+	}
+	if err != nil {
+		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
+			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
+			return
+		}
+		if store.IsUniqueViolation(err, "") {
+			fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
+			return
+		}
 		fail(c, err)
 		return
 	}
-	ok(c, planDict(plan, true))
+	plan, err = store.GetPlan(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	usage, err := store.GetPlanUsage(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, adminPlanDict(plan, usage))
 }
 
 func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
@@ -623,13 +769,25 @@ func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("plan_not_found", "套餐不存在", 404))
 		return
 	}
-	// 有历史订单外键引用，下架而非物理删除
-	plan.Active = false
-	if err := store.UpdatePlan(ctx, s.St.Pool, plan); err != nil {
+	usage, err := store.GetPlanUsage(ctx, s.St.Pool, plan.ID)
+	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	if usage.OrderCount > 0 || usage.SubscriptionCount > 0 {
+		fail(c, apperr.E("plan_in_use", "套餐已有历史订单或订阅，不能删除；请改为下架", 409))
+		return
+	}
+	deleted, err := store.DeletePlan(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !deleted {
+		fail(c, apperr.E("plan_in_use", "套餐已被业务记录引用，不能删除；请改为下架", 409))
+		return
+	}
+	c.Status(204)
 }
 
 // ---------- tasks ----------
@@ -731,13 +889,7 @@ func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 		return
 	}
 	if err := s.Queue.EnqueueRunTaskRecovery(c.Request.Context(), task.ID.String()); err != nil {
-		// C1 补偿：重跑入队失败 → queued→failed + 解冻，返回 500 让管理员重试
-		log.Printf("task %s requeue enqueue failed, compensating: %v", task.ID, err)
-		if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
-			log.Printf("task %s requeue compensation failed (queued reaper will pick up): %v", task.ID, cerr)
-		}
-		fail(c, apperr.E("enqueue_failed", "任务入队失败，费用已退回，请重试", 500))
-		return
+		log.Printf("task %s admin requeue deferred; durable queued recovery will retry: %v", task.ID, err)
 	}
 	ok(c, adminTaskDict(task, nil))
 }
@@ -1413,16 +1565,31 @@ func (s *Server) adminDeleteChangelog(c *gin.Context, _ *store.User) {
 var settingsCamel = map[string]string{
 	"task_prices":                                 "taskPrices",
 	"user_max_running_tasks":                      "userMaxRunningTasks",
+	"user_max_running_images":                     "userMaxRunningImages",
 	"user_max_concurrent_tasks":                   "userMaxConcurrentTasks",
 	"global_max_concurrent_tasks":                 "globalMaxConcurrentTasks",
 	"global_max_active_tasks":                     "globalMaxActiveTasks",
+	"global_max_active_images":                    "globalMaxActiveImages",
 	"task_failure_retry_count":                    "taskFailureRetryCount",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
 	"signup_bonus_cents":                          "signupBonusCents",
 	"registration_enabled":                        "registrationEnabled",
 	"task_models":                                 "taskModels",
 	"image_service_routes":                        "imageServiceRoutes",
-	"free_daily_cents":                            "freeDailyCents",
+	"checkin_enabled":                             "checkinEnabled",
+	"checkin_campaign_title":                      "checkinCampaignTitle",
+	"checkin_rewards":                             "checkinRewards",
+	"growth_group_enabled":                        "growthGroupEnabled",
+	"growth_group_campaign_key":                   "growthGroupCampaignKey",
+	"growth_group_target_members":                 "growthGroupTargetMembers",
+	"growth_group_reward_cents":                   "growthGroupRewardCents",
+	"growth_group_duration_hours":                 "growthGroupDurationHours",
+	"growth_failure_bonus_enabled":                "growthFailureBonusEnabled",
+	"growth_failure_bonus_cents":                  "growthFailureBonusCents",
+	"growth_failure_bonus_daily_limit":            "growthFailureBonusDailyLimit",
+	"growth_usage_rewards_enabled":                "growthUsageRewardsEnabled",
+	"growth_usage_milestones":                     "growthUsageMilestones",
+	"suggestion_reward_max_cents":                 "suggestionRewardMaxCents",
 	"submission_enabled":                          "submissionEnabled",
 	"auto_approve":                                "autoApprove",
 	"daily_limit":                                 "dailyLimit",
@@ -1556,10 +1723,19 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "未知任务类型："+strings.Join(invalid, ", "), 422))
 				return
 			}
+			// 拼图没有服务端调用，后台不能把本地工具误配成收费任务。
+			prices["puzzle"] = 0
+			raw, _ = json.Marshal(prices)
 		case "user_max_running_tasks":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 10000 {
 				fail(c, apperr.E("validation_error", "userMaxRunningTasks: 须在 1-10000 之间", 422))
+				return
+			}
+		case "user_max_running_images":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100000 {
+				fail(c, apperr.E("validation_error", "userMaxRunningImages: 须在 1-100000 之间", 422))
 				return
 			}
 		case "user_max_concurrent_tasks":
@@ -1580,19 +1756,43 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "globalMaxActiveTasks: 须在 10-10000000 之间", 422))
 				return
 			}
+		case "global_max_active_images":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 10 || v > 10000000 {
+				fail(c, apperr.E("validation_error", "globalMaxActiveImages: 须在 10-10000000 之间", 422))
+				return
+			}
 		case "task_failure_retry_count":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 100 {
 				fail(c, apperr.E("validation_error", "taskFailureRetryCount: 须在 0-100 之间", 422))
 				return
 			}
-		case "signup_bonus_cents", "free_daily_cents", "daily_limit":
+		case "signup_bonus_cents", "daily_limit", "growth_group_reward_cents", "growth_failure_bonus_cents", "suggestion_reward_max_cents":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1_000_000 {
 				fail(c, apperr.E("validation_error", camel+": 须为非负整数", 422))
 				return
 			}
-		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled":
+		case "growth_group_target_members":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 2 || v > 10 {
+				fail(c, apperr.E("validation_error", "growthGroupTargetMembers: 须在 2-10 之间", 422))
+				return
+			}
+		case "growth_group_duration_hours":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 720 {
+				fail(c, apperr.E("validation_error", "growthGroupDurationHours: 须在 1-720 之间", 422))
+				return
+			}
+		case "growth_failure_bonus_daily_limit":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 100 {
+				fail(c, apperr.E("validation_error", "growthFailureBonusDailyLimit: 须在 0-100 之间", 422))
+				return
+			}
+		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
@@ -1633,6 +1833,65 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 					cleaned[label] = model
 				}
 				raw, _ = json.Marshal(cleaned)
+			}
+		case "checkin_rewards":
+			var rewards []int64
+			if err := json.Unmarshal(raw, &rewards); err != nil || len(rewards) != 7 {
+				fail(c, apperr.E("validation_error", "checkinRewards: 必须配置连续 7 天奖励", 422))
+				return
+			}
+			positive := false
+			for _, reward := range rewards {
+				if reward < 0 || reward > 1000000 {
+					fail(c, apperr.E("validation_error", "checkinRewards: 单日奖励须在 0-1000000 之间", 422))
+					return
+				}
+				positive = positive || reward > 0
+			}
+			if !positive {
+				fail(c, apperr.E("validation_error", "checkinRewards: 至少一天奖励须大于 0", 422))
+				return
+			}
+		case "checkin_campaign_title":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "checkinCampaignTitle: 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len([]rune(v)) < 2 || len([]rune(v)) > 40 {
+				fail(c, apperr.E("validation_error", "checkinCampaignTitle: 长度须在 2-40 之间", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
+		case "growth_group_campaign_key":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "growthGroupCampaignKey: 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len(v) < 2 || len(v) > 64 {
+				fail(c, apperr.E("validation_error", "growthGroupCampaignKey: 长度须在 2-64 之间", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
+		case "growth_usage_milestones":
+			var milestones []struct {
+				Units       int64 `json:"units"`
+				RewardCents int64 `json:"rewardCents"`
+			}
+			if err := json.Unmarshal(raw, &milestones); err != nil || len(milestones) < 1 || len(milestones) > 12 {
+				fail(c, apperr.E("validation_error", "growthUsageMilestones: 须配置 1-12 个里程碑", 422))
+				return
+			}
+			seen := map[int64]bool{}
+			for _, milestone := range milestones {
+				if milestone.Units < 1 || milestone.Units > 1_000_000 || milestone.RewardCents < 1 || milestone.RewardCents > 1_000_000 || seen[milestone.Units] {
+					fail(c, apperr.E("validation_error", "growthUsageMilestones: 张数或奖励无效且张数不能重复", 422))
+					return
+				}
+				seen[milestone.Units] = true
 			}
 		case "c2a_base_url", "sub2api_base_url", "crun_base_url":
 			var v string
@@ -1689,6 +1948,17 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			raw, _ = json.Marshal(v)
 		}
 		updates[snake] = raw
+	}
+	if raw, exists := updates["trial_campaign_feature_keys"]; exists {
+		var values []string
+		_ = json.Unmarshal(raw, &values)
+		if len(values) > 0 {
+			updates["trial_campaign_feature_key"], _ = json.Marshal(values[0])
+		}
+	} else if raw, exists := updates["trial_campaign_feature_key"]; exists {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		updates["trial_campaign_feature_keys"], _ = json.Marshal([]string{value})
 	}
 	ctx := c.Request.Context()
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {

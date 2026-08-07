@@ -145,7 +145,7 @@ html.color-scheme-dark .main-content.main--canvas-app {
 }
 
 .main-content.main--profile-console > .pp-page {
-  --app-page-content-top-gap: clamp(28px, 5vh, 52px);
+  --app-page-content-top-gap: 8px;
 }
 
 /* 拼图台：顶栏表面延伸到 Header 后方 */
@@ -268,7 +268,7 @@ html:not(.color-scheme-dark) .main-content.main--pricing-console {
   background: #f3f4f8;
 }
 
-/* 个人中心：底色交给页面氛围层（风景/玻璃），壳层保持透明 */
+/* 个人中心：底色交给页面科幻氛围层，壳层保持透明 */
 .main-content.main--profile-console {
   padding-top: 0;
   padding-bottom: 0;
@@ -281,22 +281,11 @@ html:not(.color-scheme-dark) .main-content.main--pricing-console {
 }
 
 html.color-scheme-dark .main-content.main--profile-console {
-  background: #07090f;
+  background: #0d0f18;
 }
 
 html:not(.color-scheme-dark) .main-content.main--profile-console {
-  background: #eef4ff;
-}
-
-/* 个人中心：顶栏彻底关闭磨砂，亮色也不糊背景图 */
-body:has(.main--profile-console) .site-header,
-body:has(.main--profile-console) .site-header.is-scrolled,
-body:has(.main--profile-console) .site-header.is-dark,
-body:has(.main--profile-console) .site-header.is-dark.is-scrolled,
-body:has(.main--profile-console) .site-header .header-shell,
-body:has(.main--profile-console) .site-header.is-scrolled .header-shell {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+  background: #f7f7ff;
 }
 
 body:has(.main--profile-console) .site-header.is-scrolled {

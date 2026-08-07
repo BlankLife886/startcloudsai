@@ -21,7 +21,10 @@ import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalSt
 import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
 import notificationService from '@/services/notification'
-import { takePendingPrompt } from '@/features/creator-hub/studioTools'
+import {
+  composePendingLaunchPrompt,
+  takePendingPrompt,
+} from '@/features/creator-hub/studioTools'
 import { useAppearanceStore } from '@/stores/appearance'
 import { gsap } from 'gsap'
 import { prefersReducedMotion } from '@/lib/anime'
@@ -830,13 +833,29 @@ watch([panelTab, gallerySentinelRef], () => {
   else galleryObserver?.disconnect()
 })
 
-onMounted(() => {
-  initialize()
+onMounted(async () => {
+  await initialize()
   setupPageMotion()
   window.addEventListener('keydown', handleKeydown)
   setupGalleryObserver()
   const pending = takePendingPrompt('model_sheet')
-  if (pending?.prompt) prompt.value = pending.prompt.slice(0, 1500)
+  if (pending) {
+    const launchConfig = pending.config || {}
+    const launchPrompt = composePendingLaunchPrompt(pending, 1500)
+    if (launchPrompt) prompt.value = launchPrompt
+    if (['character', 'object'].includes(launchConfig.skill)) {
+      subjectType.value = launchConfig.skill
+    }
+    if (ASPECT_OPTIONS.includes(launchConfig.ratio)) aspectRatio.value = launchConfig.ratio
+    const detailByQuality = { low: 48, medium: 65, high: 85 }
+    if (detailByQuality[launchConfig.quality]) detail.value = detailByQuality[launchConfig.quality]
+    if ([1, 2, 3, 4].includes(Number(launchConfig.count))) {
+      boardCount.value = Number(launchConfig.count)
+    }
+    if (launchConfig.model && models.value.some((model) => model.id === launchConfig.model)) {
+      modelId.value = launchConfig.model
+    }
+  }
 })
 
 onBeforeUnmount(() => {
@@ -1649,7 +1668,7 @@ function refreshHistory() {
           :disabled="cancelling"
           @click="cancelGeneration"
         >
-          {{ cancelling ? '正在取消…' : '取消生成' }}
+          {{ cancelling ? '等待已开始任务…' : '停止后续生成' }}
         </button>
       </footer>
     </aside>
@@ -1835,8 +1854,8 @@ function refreshHistory() {
                   type="button"
                   class="ms3-hud-cancel"
                   :disabled="cancelling"
-                  :title="cancelling ? '正在取消…' : '取消生成'"
-                  :aria-label="cancelling ? '正在取消…' : '取消生成'"
+                  :title="cancelling ? '等待已开始任务完成' : '停止后续生成'"
+                  :aria-label="cancelling ? '等待已开始任务完成' : '停止后续生成'"
                   @click="cancelGeneration"
                 >
                   <i

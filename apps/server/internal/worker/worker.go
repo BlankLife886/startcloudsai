@@ -3,12 +3,14 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,14 +42,21 @@ import (
 const (
 	typeCleanupSessions      = "cron:cleanup_sessions"
 	typeReapZombies          = "cron:reap_zombies"
+	typeEnsureImagePolls     = "cron:ensure_image_polls"
+	typeExpireTrialCampaigns = "cron:expire_trial_campaigns"
 	typeSyncPromptSources    = "cron:sync_prompt_sources"
 	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
 
-	zombieRunningMinutes  = 30
-	taskCompletionLease   = 5 * time.Minute
-	staleQueuedMinutes    = 10
-	maxTaskFailureRetries = 100
+	taskCompletionLease      = 5 * time.Minute
+	taskLease                = 2 * time.Minute
+	taskHeartbeatInterval    = 30 * time.Second
+	asyncTaskLease           = 15 * time.Minute
+	upstreamAttemptPollLease = 2 * time.Minute
+	staleQueuedMinutes       = 2
+	maxTaskFailureRetries    = 100
 )
+
+var errTaskProviderUnavailable = errors.New("task provider unavailable")
 
 type Worker struct {
 	Cfg        *config.Config
@@ -60,6 +69,9 @@ type Worker struct {
 	Stream           *redis.Client
 	imageMemory      *semaphore.Weighted
 	imageMemoryBytes int64
+	pollWorkers      *semaphore.Weighted
+	pollConcurrency  int
+	workerID         string
 	modelConfigMu    sync.Mutex
 	modelConfig      modelconfig.Config
 	modelConfigAt    time.Time
@@ -82,12 +94,18 @@ func (w *Worker) runtimeModelConfig(ctx context.Context) (modelconfig.Config, er
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) *Worker {
 	imageMemoryBytes := max(cfg.WorkerImageMemoryMiB, 64) << 20
+	pollConcurrency := max(1, min(cfg.WorkerConcurrency/4, int(imageMemoryBytes/(256<<20))))
+	host, _ := os.Hostname()
+	workerID := fmt.Sprintf("%s:%d", host, os.Getpid())
 	return &Worker{
 		Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue,
 		PromptSync:       promptsync.New(st, cfg.AppEnv == "development"),
 		Stream:           assistantstream.NewClient(cfg.RedisURL),
 		imageMemory:      semaphore.NewWeighted(imageMemoryBytes),
 		imageMemoryBytes: imageMemoryBytes,
+		pollWorkers:      semaphore.NewWeighted(int64(pollConcurrency)),
+		pollConcurrency:  pollConcurrency,
+		workerID:         workerID,
 	}
 }
 
@@ -108,16 +126,21 @@ func (w *Worker) Run() error {
 	if err := w.recoverAssistantRuns(startupCtx); err != nil {
 		return fmt.Errorf("recover assistant runs: %w", err)
 	}
+	if _, err := w.expireTrialCampaigns(startupCtx); err != nil {
+		return fmt.Errorf("expire trial campaigns: %w", err)
+	}
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: w.Cfg.WorkerConcurrency,
 	})
-	log.Printf("worker ready concurrency=%d", w.Cfg.WorkerConcurrency)
+	log.Printf("worker ready concurrency=%d poll_concurrency=%d image_memory_mib=%d", w.Cfg.WorkerConcurrency, w.pollConcurrency, w.imageMemoryBytes>>20)
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
 	mux.HandleFunc(taskflow.TypePollImageTask, w.handlePollImageTask)
 	mux.HandleFunc(taskflow.TypeRunAssistant, w.handleRunAssistant)
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
+	mux.HandleFunc(typeEnsureImagePolls, w.handleEnsureImagePolls)
+	mux.HandleFunc(typeExpireTrialCampaigns, w.handleExpireTrialCampaigns)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
 	mux.HandleFunc(typeBackfillPromptCovers, w.handleBackfillPromptCovers)
 
@@ -141,7 +164,7 @@ func (w *Worker) Run() error {
 // recoverRunningTasks 接管上一个 Worker 进程被停止时遗留的任务。ChatGPT2API
 // 以本地 task ID 作为 client_task_id，因此重新执行会查询原任务，而不会再生成一份。
 func (w *Worker) recoverRunningTasks(ctx context.Context) error {
-	ids, err := store.RequeueAllRunningTasks(ctx, w.St.Pool)
+	ids, err := store.RequeueExpiredRunningTasks(ctx, w.St.Pool, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -156,12 +179,34 @@ func (w *Worker) recoverRunningTasks(ctx context.Context) error {
 	return nil
 }
 
+func (w *Worker) heartbeatTaskLease(ctx context.Context, taskID uuid.UUID, owner string, cancelWork context.CancelFunc) {
+	ticker := time.NewTicker(taskHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			ok, err := store.RenewTaskLease(ctx, w.St.Pool, taskID, owner, now.UTC(), taskLease)
+			if err != nil {
+				log.Printf("task %s lease heartbeat failed: %v", taskID, err)
+			} else if !ok {
+				log.Printf("task %s lease was lost", taskID)
+				cancelWork()
+				return
+			}
+		}
+	}
+}
+
 type staticPeriodicConfigProvider struct{}
 
 func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 	return []*asynq.PeriodicTaskConfig{
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 10m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 2m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(3))},
+		{Cronspec: "@every 1m", Task: asynq.NewTask(typeEnsureImagePolls, nil, asynq.MaxRetry(3))},
+		{Cronspec: "@every 1m", Task: asynq.NewTask(typeExpireTrialCampaigns, nil, asynq.MaxRetry(3))},
 		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeBackfillPromptCovers, nil, asynq.MaxRetry(0))},
 	}, nil
@@ -202,11 +247,12 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			candidates = modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
 		}
 		if len(candidates) == 0 {
-			return nil, "", errors.New("任务绑定的模型没有可用服务商")
+			return nil, "", fmt.Errorf("%w: 任务绑定的模型没有可用服务商", errTaskProviderUnavailable)
 		}
 	}
 	var claimedTask *store.Task
 	deferReason := ""
+	leaseOwner := w.workerID + ":" + uuid.NewString()
 	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
 		if err := store.LockGlobalTaskExecution(ctx, tx); err != nil {
 			return err
@@ -257,13 +303,26 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			for _, failedProviderID := range taskParamStrings(queued.Params, "_failedProviderConfigIds") {
 				excluded[failedProviderID] = true
 			}
-			selected, ok := selectExecutionCandidateExcluding(candidates, runningByProvider, excluded)
-			resetFailedProviders := false
-			if !ok && len(excluded) > 0 {
-				selected, ok = selectExecutionCandidateExcluding(candidates, runningByProvider, nil)
-				resetFailedProviders = ok
+			pendingRouteKeys, pendingErr := store.PendingTaskUpstreamAttemptRouteKeys(ctx, tx, taskID)
+			if pendingErr != nil {
+				return pendingErr
 			}
+			for _, pendingRouteKey := range pendingRouteKeys {
+				excluded[pendingRouteKey] = true
+			}
+			selected, ok := selectExecutionCandidateExcluding(candidates, runningByProvider, excluded)
 			if !ok {
+				hasUntriedRoute := false
+				for _, candidate := range candidates {
+					if !excluded[modelconfig.ExecutionRouteKey(candidate.Provider)] {
+						hasUntriedRoute = true
+						break
+					}
+				}
+				if !hasUntriedRoute {
+					deferReason = "upstream_attempts_exhausted"
+					return nil
+				}
 				deferReason = "provider_execution_limit"
 				return nil
 			}
@@ -276,15 +335,12 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 				"_providerDisplayName": selected.Provider.Name,
 				"_modelDisplayName":    selected.Model.Name,
 			}
-			if resetFailedProviders {
-				route["_failedProviderConfigIds"] = []string{}
-			}
 			updated, err := store.SetQueuedTaskExecutionRoute(ctx, tx, taskID, selected.Model.UpstreamModel, route)
 			if err != nil || !updated {
 				return err
 			}
 		}
-		claimed, err := store.ClaimTask(ctx, tx, taskID, time.Now().UTC())
+		claimed, err := store.ClaimTask(ctx, tx, taskID, time.Now().UTC(), leaseOwner, taskLease)
 		if err != nil || !claimed {
 			return err
 		}
@@ -431,7 +487,9 @@ func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client
 		references = append(references, "data:"+contentType+";base64,"+base64.StdEncoding.EncodeToString(data))
 	}
 	encodedByIndex := make([]string, task.Count)
-	images, err := client.GenerateImageProgressive(ctx, finalPrompt, size, quality, task.Count, references, func(index int, image sub2api.Image) error {
+	images, err := client.GenerateImageProgressiveWithOptions(ctx, finalPrompt, size, quality, task.Count, references, sub2api.ImageOptions{
+		InputFidelity: taskParamString(task.Params, "inputFidelity"),
+	}, func(index int, image sub2api.Image) error {
 		if index < 0 || index >= len(encodedByIndex) {
 			log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", task.ID, index, len(encodedByIndex))
 			return nil
@@ -636,7 +694,7 @@ func (w *Worker) createCRUNImageTasks(ctx context.Context, task *store.Task, cli
 		OutputFormat:          taskParamString(task.Params, "outputFormat"),
 		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
 	}, taskParamStrings(task.Params, "_crunTaskIds"), func(created []string) error {
-		if err := store.SetTaskCRUNTaskIDs(ctx, w.St.Pool, task.ID, created); err != nil {
+		if err := store.SetTaskCRUNTaskIDsOwned(ctx, w.St.Pool, task.ID, created, taskLeaseOwner(task)); err != nil {
 			return err
 		}
 		if task.Params == nil {
@@ -667,7 +725,7 @@ func (w *Worker) createCRUNBackgroundRemovalTask(ctx context.Context, task *stor
 	if err != nil {
 		return "", err
 	}
-	if err := store.SetTaskCRUNTaskIDs(ctx, w.St.Pool, task.ID, []string{taskID}); err != nil {
+	if err := store.SetTaskCRUNTaskIDsOwned(ctx, w.St.Pool, task.ID, []string{taskID}, taskLeaseOwner(task)); err != nil {
 		return "", err
 	}
 	if task.Params == nil {
@@ -716,6 +774,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 		finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 		imageOptions := c2a.ImageOptions{
 			Quality:               taskParamString(task.Params, "quality"),
+			InputFidelity:         taskParamString(task.Params, "inputFidelity"),
 			TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 			OutputFormat:          taskParamString(task.Params, "outputFormat"),
 			ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
@@ -773,6 +832,7 @@ func (w *Worker) callUpstreamLegacy(ctx context.Context, task *store.Task, provi
 	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 	imageOptions := c2a.ImageOptions{
 		Quality:               taskParamString(task.Params, "quality"),
+		InputFidelity:         taskParamString(task.Params, "inputFidelity"),
 		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 		OutputFormat:          taskParamString(task.Params, "outputFormat"),
 		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
@@ -808,6 +868,55 @@ func (w *Worker) callUpstream(ctx context.Context, task *store.Task, provider, m
 	return w.callUpstreamLegacy(ctx, task, provider, model, onImage)
 }
 
+func upstreamAttemptExpiry(submittedAt time.Time, timeoutSecs int) time.Time {
+	retention := 3 * time.Duration(max(timeoutSecs, 1)) * time.Second
+	if retention < 30*time.Minute {
+		retention = 30 * time.Minute
+	}
+	if retention > 2*time.Hour {
+		retention = 2 * time.Hour
+	}
+	return submittedAt.Add(retention)
+}
+
+// registerConfiguredUpstreamAttempt persists the route snapshot before an
+// upstream call can create work. A later config edit/disable therefore cannot
+// make the already-submitted result unreachable.
+func (w *Worker) registerConfiguredUpstreamAttempt(ctx context.Context, task *store.Task) (uuid.UUID, string, error) {
+	selection, configured, err := w.configuredModelSelection(ctx, task)
+	if err != nil || !configured {
+		return uuid.Nil, "", err
+	}
+	provider := selection.Provider
+	if provider.Adapter != modelconfig.AdapterOpenAI && provider.Adapter != modelconfig.AdapterCRUN {
+		return uuid.Nil, "", nil
+	}
+	encryptedKey, err := settings.EncryptSecret(provider.APIKey, w.Cfg.AppSecret)
+	if err != nil {
+		return uuid.Nil, provider.Adapter, err
+	}
+	submittedAt := time.Now().UTC()
+	timeoutSecs := providerTimeoutSecs(&provider)
+	status := store.UpstreamAttemptPending
+	upstreamIDs := []string{task.ID.String()}
+	if provider.Adapter == modelconfig.AdapterCRUN {
+		status = store.UpstreamAttemptSubmitting
+		upstreamIDs = taskParamStrings(task.Params, "_crunTaskIds")
+	}
+	id, err := store.UpsertTaskUpstreamAttempt(ctx, w.St.Pool, store.UpstreamAttemptInput{
+		TaskID: task.ID, TaskAttempt: task.Attempt,
+		ProviderID: provider.ID, RouteID: provider.RouteID,
+		RouteKey: modelconfig.ExecutionRouteKey(provider), Adapter: provider.Adapter,
+		UpstreamModel: selection.Model.UpstreamModel, BaseURL: provider.BaseURL,
+		APIKeyEncrypted: encryptedKey, TimeoutSecs: timeoutSecs,
+		MaxConcurrency: provider.MaxConcurrency, UpstreamTaskIDs: upstreamIDs,
+		Status: status, SubmittedAt: submittedAt,
+		FailoverAt: submittedAt.Add(time.Duration(timeoutSecs) * time.Second),
+		ExpiresAt:  upstreamAttemptExpiry(submittedAt, timeoutSecs),
+	})
+	return id, provider.Adapter, err
+}
+
 func taskParamString(params map[string]any, key string) string {
 	if params == nil {
 		return ""
@@ -816,6 +925,13 @@ func taskParamString(params map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+func taskLeaseOwner(task *store.Task) string {
+	if task == nil || task.LeaseOwner == nil {
+		return ""
+	}
+	return strings.TrimSpace(*task.LeaseOwner)
 }
 
 func taskParamInt64(params map[string]any, key string) (int64, bool) {
@@ -891,7 +1007,35 @@ func (w *Worker) applyMaskEditComposite(ctx context.Context, task *store.Task, i
 	return out
 }
 
-func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage string) error {
+func (w *Worker) applyPreservedSourceCanvas(ctx context.Context, task *store.Task, imagesB64 []string) []string {
+	if !taskParamBool(task.Params, "preserveSourceCanvas") || len(task.InputKeys) == 0 {
+		return imagesB64
+	}
+	sourceData, err := w.Storage.GetBytes(ctx, task.InputKeys[0])
+	if err != nil {
+		log.Printf("task %s source canvas restore skipped: %v", task.ID, err)
+		return imagesB64
+	}
+	out := make([]string, 0, len(imagesB64))
+	for index, encoded := range imagesB64 {
+		resultData, decodeErr := base64.StdEncoding.DecodeString(encoded)
+		if decodeErr != nil {
+			log.Printf("task %s source canvas output %d: bad base64: %v", task.ID, index, decodeErr)
+			out = append(out, encoded)
+			continue
+		}
+		merged, mergeErr := media.CompositePreservedCanvas(sourceData, resultData)
+		if mergeErr != nil {
+			log.Printf("task %s source canvas output %d restore failed: %v", task.ID, index, mergeErr)
+			out = append(out, encoded)
+			continue
+		}
+		out = append(out, base64.StdEncoding.EncodeToString(merged))
+	}
+	return out
+}
+
+func (w *Worker) markFailedOwned(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage, owner string) error {
 	var task *store.Task
 	won := false
 	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -900,7 +1044,7 @@ func (w *Worker) markFailed(ctx context.Context, taskID uuid.UUID, errorCode, er
 			return err
 		}
 		task = t
-		won, err = taskflow.MarkFailed(ctx, tx, t, errorCode, errorMessage, "running")
+		won, err = taskflow.MarkFailedOwned(ctx, tx, t, errorCode, errorMessage, "running", owner)
 		return err
 	})
 	if err == nil && won {
@@ -975,25 +1119,28 @@ func (w *Worker) taskFailureRetryCount(ctx context.Context) int {
 	return int(count)
 }
 
-func (w *Worker) scheduleTaskRetry(ctx context.Context, task *store.Task) (bool, error) {
+func (w *Worker) scheduleTaskRetry(ctx context.Context, task *store.Task, owner string) (bool, error) {
 	if task == nil || task.Attempt >= w.taskFailureRetryCount(ctx) {
 		return false, nil
 	}
-	if err := store.BumpTaskAttempt(ctx, w.St.Pool, task.ID); err != nil {
-		return false, err
-	}
-	task.Attempt++
-	w.recordFailedTaskProvider(ctx, task)
-	requeued, err := store.RequeueRunningTask(ctx, w.St.Pool, task.ID)
+	failed := failedTaskProviderIDs(task)
+	attempt, requeued, err := store.RetryRunningTaskOwned(ctx, w.St.Pool, task.ID, owner, task.Attempt, failed)
 	if err != nil || !requeued {
 		return false, err
 	}
-	delay := time.Duration(task.Attempt*15) * time.Second
+	task.Attempt = attempt
+	if task.Params == nil {
+		task.Params = map[string]any{}
+	}
+	delete(task.Params, "_upstreamStage")
+	delete(task.Params, "_crunTaskIds")
+	task.Params["_failedProviderConfigIds"] = failed
+	delay := time.Duration(attempt*15) * time.Second
 	if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, task.ID.String(), delay); err != nil {
 		// The task remains queued so the stale-queue reaper can recover it.
 		log.Printf("task %s retry enqueue failed; stale queue reaper will retry: %v", task.ID, err)
 	} else {
-		log.Printf("task %s retry scheduled attempt=%d delay=%s", task.ID, task.Attempt, delay)
+		log.Printf("task %s retry scheduled attempt=%d delay=%s", task.ID, attempt, delay)
 	}
 	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "queued", Status: "queued"})
 	return true, nil
@@ -1011,10 +1158,25 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 
 	task, deferReason, err := w.claimTask(ctx, taskID)
 	if err != nil {
+		if errors.Is(err, errTaskProviderUnavailable) {
+			_, failErr := taskflow.FailQueuedTask(ctx, w.St, taskID, "model_config_error", "任务绑定的模型暂时没有可用服务商，费用已退回")
+			return failErr
+		}
 		return err
 	}
 	if deferReason != "" {
-		delay := 2*time.Second + time.Duration(taskID[0]%4)*time.Second
+		if deferReason == "upstream_attempts_exhausted" {
+			failed, failErr := taskflow.FailQueuedTask(ctx, w.St, taskID,
+				"upstream_unreachable", "所有生成线路均已失联或失败，任务已终止并退款")
+			if failErr == nil && failed {
+				_ = store.SupersedePendingTaskUpstreamAttempts(ctx, w.St.Pool, taskID, time.Now().UTC())
+				if closedTask, getErr := store.GetTask(ctx, w.St.Pool, taskID); getErr == nil && closedTask != nil {
+					w.publishTaskEvent(ctx, closedTask, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
+				}
+			}
+			return failErr
+		}
+		delay := taskDispatchBackoff(deferReason, taskID)
 		if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, taskID.String(), delay); err != nil {
 			return err
 		}
@@ -1025,6 +1187,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s not claimable, skip", taskID)
 		return nil
 	}
+	leaseOwner := taskLeaseOwner(task)
+	if leaseOwner == "" {
+		return fmt.Errorf("task %s was claimed without a lease owner", taskID)
+	}
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
+	ctx = workCtx
+	go w.heartbeatTaskLease(workCtx, taskID, leaseOwner, cancelWork)
 	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "running", Status: "running"})
 	queueWait := time.Since(task.CreatedAt)
 	if queueWait < 0 {
@@ -1038,7 +1208,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	if provider != "c2a" && provider != "sub2api" && provider != "crun" {
 		provider, err = settings.ImageServiceProvider(ctx, w.St.Pool, task.Type)
 		if err != nil {
-			return err
+			return w.markFailedOwned(ctx, taskID, "model_config_error", "图片服务配置读取失败，费用已退回", leaseOwner)
 		}
 	}
 	// 服务在创建任务时快照；C2A 模型也在创建时固定，旧任务和 Sub2API 模型在首次执行时补齐。
@@ -1047,7 +1217,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		if provider == "sub2api" {
 			client, clientErr := w.assistantClient(ctx)
 			if clientErr != nil {
-				return clientErr
+				return w.markFailedOwned(ctx, taskID, "model_config_error", "图片服务配置不可用，费用已退回", leaseOwner)
 			}
 			model = client.ImageModel()
 		} else if provider == "crun" {
@@ -1056,10 +1226,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			model, err = settings.TaskModel(ctx, w.St.Pool, task.Type)
 		}
 		if err != nil {
-			return err
+			return w.markFailedOwned(ctx, taskID, "model_config_error", "图片模型配置读取失败，费用已退回", leaseOwner)
 		}
-		if err := store.SetTaskModel(ctx, w.St.Pool, task.ID, model); err != nil {
-			return err
+		updated, updateErr := store.SetTaskModelOwned(ctx, w.St.Pool, task.ID, model, leaseOwner)
+		if updateErr != nil {
+			return updateErr
+		}
+		if !updated {
+			return fmt.Errorf("task %s lease lost before model selection", task.ID)
 		}
 		task.Model = model
 	}
@@ -1067,10 +1241,19 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	errorCode, errorMessage := "internal_error", "未知错误"
 	collector := newTaskOutputCollector(w, ctx, task)
 	upstreamStartedAt := time.Now()
-	imagesB64, callErr := w.callUpstream(ctx, task, provider, model, collector.persist)
+	attemptID, attemptAdapter, attemptErr := w.registerConfiguredUpstreamAttempt(ctx, task)
+	var imagesB64 []string
+	var callErr error
+	if attemptErr != nil {
+		callErr = fmt.Errorf("persist upstream attempt: %w", attemptErr)
+	} else {
+		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
+	}
 	var netErr *c2a.NetworkError
 	var pendingErr *asyncImagePendingError
-	if errors.As(callErr, &pendingErr) {
+	ambiguousOpenAISubmit := attemptID != uuid.Nil && attemptAdapter == modelconfig.AdapterOpenAI &&
+		callErr != nil && isRetryableTaskError(callErr)
+	if errors.As(callErr, &pendingErr) || ambiguousOpenAISubmit {
 		delay := 2*time.Second + time.Duration(taskID[0]%3)*time.Second
 		providerID := taskParamString(task.Params, "_providerConfigId")
 		routeID := taskParamString(task.Params, "_providerRouteId")
@@ -1078,17 +1261,47 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		if routeKey == "" {
 			routeKey = providerID
 		}
-		if markErr := store.MarkTaskUpstreamPending(ctx, w.St.Pool, taskID); markErr != nil {
-			_, _ = store.RequeueRunningTask(ctx, w.St.Pool, taskID)
+		if attemptID != uuid.Nil {
+			upstreamIDs := []string{taskID.String()}
+			if attemptAdapter == modelconfig.AdapterCRUN {
+				upstreamIDs = taskParamStrings(task.Params, "_crunTaskIds")
+			}
+			if persistErr := store.SetTaskUpstreamAttemptPending(ctx, w.St.Pool, attemptID, upstreamIDs); persistErr != nil {
+				_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, leaseOwner)
+				return fmt.Errorf("persist pending upstream attempt: %w", persistErr)
+			}
+		}
+		if markErr := store.MarkTaskUpstreamPendingOwned(ctx, w.St.Pool, taskID, leaseOwner); markErr != nil {
+			_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, leaseOwner)
 			return markErr
 		}
+		if transferred, transferErr := store.TransferTaskLease(ctx, w.St.Pool, taskID, leaseOwner,
+			"poller:"+routeKey, time.Now().UTC(), asyncTaskLease); transferErr != nil || !transferred {
+			_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, leaseOwner)
+			if transferErr != nil {
+				return transferErr
+			}
+			return fmt.Errorf("task %s lease transfer failed", taskID)
+		}
 		if enqueueErr := w.Queue.EnqueueImagePoll(ctx, providerID, routeID, routeKey, 0, delay); enqueueErr != nil {
-			_, _ = store.RequeueRunningTask(ctx, w.St.Pool, taskID)
+			_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, "poller:"+routeKey)
 			return enqueueErr
 		}
 		w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "upstream_pending", Status: "running"})
-		log.Printf("task %s submitted asynchronously poll_in=%s", taskID, delay)
+		if ambiguousOpenAISubmit {
+			log.Printf("task %s submit result ambiguous; preserving route attempt and polling by client task id: %v", taskID, callErr)
+		}
+		log.Printf("task %s submitted asynchronously attempt=%s poll_in=%s", taskID, attemptID, delay)
 		return nil
+	}
+	if attemptID != uuid.Nil {
+		attemptStatus := store.UpstreamAttemptSucceeded
+		attemptMessage := ""
+		if callErr != nil {
+			attemptStatus = store.UpstreamAttemptFailed
+			attemptMessage = callErr.Error()
+		}
+		_, _ = store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID, attemptStatus, attemptMessage, time.Now().UTC())
 	}
 	outputKeys, thumbnailKeys := collector.completed()
 	logTaskStage(taskID.String(), "upstream", upstreamStartedAt,
@@ -1120,10 +1333,10 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	}
 	configuredProvider := taskParamString(task.Params, "_providerConfigId") != ""
 	if callErr != nil && isRetryableTaskError(callErr) && len(outputKeys) == 0 &&
-		(configuredProvider || provider == "c2a" || provider == "crun") {
+		(configuredProvider || provider == "c2a" || provider == "crun") && taskRetryIsIdempotent(task, provider) {
 		recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelRecovery()
-		retried, retryErr := w.scheduleTaskRetry(recoveryCtx, task)
+		retried, retryErr := w.scheduleTaskRetry(recoveryCtx, task, leaseOwner)
 		if retried {
 			return nil
 		}
@@ -1140,8 +1353,13 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 				if gerr != nil || dbTask == nil {
 					return gerr
 				}
-				won, merr := taskflow.MarkSucceeded(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC())
+				won, merr := taskflow.MarkSucceededOwned(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC(), leaseOwner)
 				if won {
+					if attemptID != uuid.Nil {
+						if supersedeErr := store.SupersedeOtherTaskUpstreamAttempts(ctx, tx, taskID, attemptID, time.Now().UTC()); supersedeErr != nil {
+							return supersedeErr
+						}
+					}
 					succeeded = dbTask
 				}
 				return merr
@@ -1163,7 +1381,30 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		errorCode, errorMessage = "storage_error", "图片保存失败，请重试"
 	}
 
-	return w.markFailed(ctx, taskID, errorCode, errorMessage)
+	return w.markFailedOwned(ctx, taskID, errorCode, errorMessage, leaseOwner)
+}
+
+func taskRetryIsIdempotent(task *store.Task, provider string) bool {
+	adapter := strings.ToLower(taskParamString(task.Params, "_serviceProvider"))
+	if adapter == modelconfig.AdapterOpenAI || provider == "c2a" {
+		return true
+	}
+	if adapter == modelconfig.AdapterCRUN || provider == "crun" {
+		// CRUN does not expose a client idempotency key. It is safe to resume only
+		// after every upstream task ID has been durably recorded.
+		return len(taskParamStrings(task.Params, "_crunTaskIds")) > 0
+	}
+	return false
+}
+
+func taskDispatchBackoff(reason string, taskID uuid.UUID) time.Duration {
+	if reason == "user_execution_limit" {
+		return 5*time.Second + time.Duration(taskID[0]%6)*time.Second
+	}
+	// Provider and global saturation affect many queued tasks at once. A wider
+	// deterministic jitter avoids a thundering herd against PostgreSQL and Redis
+	// while image generation is already using all available upstream capacity.
+	return 15*time.Second + time.Duration(taskID[0]%16)*time.Second
 }
 
 func isRetryableTaskError(err error) bool {
@@ -1175,6 +1416,16 @@ func isRetryableTaskError(err error) bool {
 }
 
 func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
+	if w.pollWorkers != nil && !w.pollWorkers.TryAcquire(1) {
+		var deferred taskflow.PollImageTasksPayload
+		if json.Unmarshal(t.Payload(), &deferred) == nil {
+			return w.Queue.EnqueueImagePoll(ctx, deferred.ProviderID, deferred.RouteID, deferred.RouteKey, deferred.Generation, time.Second)
+		}
+		return nil
+	}
+	if w.pollWorkers != nil {
+		defer w.pollWorkers.Release(1)
+	}
 	var payload taskflow.PollImageTasksPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("bad poll payload: %w", err)
@@ -1203,29 +1454,113 @@ func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
 	if routeKey == "" {
 		routeKey = payload.ProviderID
 	}
+	if provider == nil {
+		// A provider/route can be disabled or edited after submission. Poll with
+		// the encrypted route snapshot captured by the attempt instead of losing
+		// the upstream result.
+		snapshot, snapshotErr := store.GetPendingUpstreamAttemptRoute(ctx, w.St.Pool, routeKey)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		if snapshot != nil {
+			provider = &modelconfig.Provider{
+				ID: snapshot.ProviderID, RouteID: snapshot.RouteID,
+				Adapter: snapshot.Adapter, BaseURL: snapshot.BaseURL,
+				TimeoutSecs: snapshot.TimeoutSecs, MaxConcurrency: snapshot.MaxConcurrency,
+				Enabled: true,
+			}
+		}
+	}
 	if provider == nil || (provider.Adapter != modelconfig.AdapterOpenAI && provider.Adapter != modelconfig.AdapterCRUN) {
 		return w.requeueUnavailableProviderTasks(ctx, routeKey)
 	}
 	routeKey = modelconfig.ExecutionRouteKey(*provider)
-	limit := min(max(provider.MaxConcurrency, 100), 10000)
-	tasks, err := store.ListAsyncPendingTasksByProvider(ctx, w.St.Pool, routeKey, limit)
-	if err != nil || len(tasks) == 0 {
+	// Keep each poll short enough that result persistence cannot consume the
+	// whole Asynq timeout. Provider capacity still controls total in-flight work.
+	limit := min(max(provider.MaxConcurrency, 20), 10000)
+	pollOwner := "attempt-poller:" + routeKey + ":" + uuid.NewString()
+	tasks, err := store.ClaimPendingUpstreamTasksByRoute(ctx, w.St.Pool, routeKey, pollOwner,
+		time.Now().UTC(), upstreamAttemptPollLease, limit)
+	if err != nil {
 		return err
 	}
-	switch provider.Adapter {
-	case modelconfig.AdapterOpenAI:
-		w.pollOpenAIProviderTasks(ctx, provider, tasks)
-	case modelconfig.AdapterCRUN:
-		w.pollCRUNProviderTasks(ctx, provider, tasks)
+	if len(tasks) == 0 {
+		pendingRoute, pendingErr := store.GetPendingUpstreamAttemptRoute(ctx, w.St.Pool, routeKey)
+		if pendingErr != nil {
+			return pendingErr
+		}
+		if pendingRoute == nil {
+			return nil
+		}
+		// Keep one lightweight route coordinator alive. A submit racing with an
+		// empty poll can otherwise have its enqueue deduplicated just before this
+		// handler exits, leaving completed upstream work without a successor poll.
+		return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, 5*time.Second)
+	}
+	type providerTaskGroup struct {
+		provider *modelconfig.Provider
+		tasks    []*store.Task
+	}
+	groups := make(map[string]*providerTaskGroup)
+	for _, task := range tasks {
+		attemptProvider, providerErr := w.providerForUpstreamAttempt(task, provider)
+		if providerErr != nil {
+			w.finishFailedUpstreamAttempt(ctx, task, "model_config_error", "历史服务商凭据无法解密", "")
+			continue
+		}
+		fingerprint := sha256.Sum256([]byte(strings.Join([]string{
+			attemptProvider.Adapter, attemptProvider.BaseURL, attemptProvider.APIKey,
+			strconv.Itoa(attemptProvider.TimeoutSecs),
+		}, "\x00")))
+		key := fmt.Sprintf("%x", fingerprint)
+		group := groups[key]
+		if group == nil {
+			group = &providerTaskGroup{provider: attemptProvider}
+			groups[key] = group
+		}
+		group.tasks = append(group.tasks, task)
+	}
+	for _, group := range groups {
+		switch group.provider.Adapter {
+		case modelconfig.AdapterOpenAI:
+			w.pollOpenAIProviderTasks(ctx, group.provider, group.tasks)
+		case modelconfig.AdapterCRUN:
+			w.pollCRUNProviderTasks(ctx, group.provider, group.tasks)
+		}
 	}
 	delay := 2*time.Second + time.Duration(len(tasks)%3)*time.Second
 	return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, delay)
 }
 
+func (w *Worker) providerForUpstreamAttempt(task *store.Task, fallback *modelconfig.Provider) (*modelconfig.Provider, error) {
+	baseURL := taskParamString(task.Params, "_upstreamBaseURL")
+	encryptedKey := taskParamString(task.Params, "_upstreamAPIKeyEncrypted")
+	if baseURL == "" || encryptedKey == "" {
+		if fallback == nil {
+			return nil, errors.New("upstream attempt route snapshot unavailable")
+		}
+		copyProvider := *fallback
+		return &copyProvider, nil
+	}
+	apiKey, err := settings.DecryptSecret(encryptedKey, w.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
+	}
+	timeout, _ := taskParamInt64(task.Params, "_upstreamTimeoutSecs")
+	maxConcurrency, _ := taskParamInt64(task.Params, "_upstreamMaxConcurrency")
+	return &modelconfig.Provider{
+		ID:      taskParamString(task.Params, "_providerConfigId"),
+		RouteID: taskParamString(task.Params, "_providerRouteId"),
+		Adapter: taskParamString(task.Params, "_serviceProvider"),
+		BaseURL: baseURL, APIKey: apiKey, TimeoutSecs: int(timeout),
+		MaxConcurrency: max(1, int(maxConcurrency)), Enabled: true,
+	}, nil
+}
+
 func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
 	client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.AppEnv == "development")
-	for start := 0; start < len(tasks); start += 100 {
-		end := min(start+100, len(tasks))
+	for start := 0; start < len(tasks); start += 20 {
+		end := min(start+20, len(tasks))
 		batch := tasks[start:end]
 		ids := make([]string, 0, len(batch))
 		expected := make(map[string]int, len(batch))
@@ -1233,84 +1568,113 @@ func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelcon
 		claims := make(map[string]string, len(batch))
 		for _, task := range batch {
 			id := task.ID.String()
-			claimID := uuid.NewString()
-			claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
-			if err != nil {
-				log.Printf("task %s async completion claim failed: %v", task.ID, err)
-				continue
-			}
-			if !claimed {
-				continue
-			}
 			ids = append(ids, id)
 			expected[id] = task.Count
 			byID[id] = task
-			claims[id] = claimID
 		}
 		if len(ids) == 0 {
 			continue
 		}
 		processed := make(map[string]bool, len(ids))
-		for taskID, result := range client.PollImageTasks(ctx, ids, expected) {
+		client.PollImageTasksEachGuarded(ctx, ids, expected, func(taskID string) bool {
 			task := byID[taskID]
 			if task == nil {
-				continue
+				return false
+			}
+			claimID := uuid.NewString()
+			claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
+			if err != nil {
+				log.Printf("task %s async completion claim failed: %v", task.ID, err)
+				return false
+			}
+			if claimed {
+				claims[taskID] = claimID
+			}
+			return claimed
+		}, func(taskID string, result c2a.ImageTaskPollResult) {
+			task := byID[taskID]
+			if task == nil {
+				return
 			}
 			processed[taskID] = true
 			claimID := claims[taskID]
 			if result.Pending {
-				w.finishPendingImagePoll(ctx, task, provider, claimID)
-				continue
-			}
-			if result.Err == nil {
-				if err := w.completePolledImageTask(ctx, task, result.Images, claimID); err != nil {
-					log.Printf("task %s async completion failed: %v", task.ID, err)
+				if result.Missing {
+					w.finishUncertainImagePoll(ctx, task, "upstream task missing from poll response", false, "")
+				} else {
+					w.finishPendingImagePoll(ctx, task, provider, "")
 				}
-				continue
+				return
 			}
-			if c2a.IsRetryableError(result.Err) && !imagePollExpired(task, providerTimeoutSecs(provider)) {
-				_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
-				continue
+			if result.Err != nil {
+				if result.ExplicitFailure {
+					if claimID == "" {
+						var claimed bool
+						claimID, claimed = w.claimAsyncTaskCompletion(ctx, task)
+						if !claimed {
+							w.releaseUpstreamAttemptPoll(ctx, task)
+							return
+						}
+					}
+					w.finishOpenAIPollError(ctx, task, result.Err, claimID)
+					return
+				}
+				w.finishUncertainImagePoll(ctx, task, result.Err.Error(), !c2a.IsRetryableError(result.Err), claimID)
+				return
 			}
-			var upstreamErr *c2a.UpstreamError
-			if errors.As(result.Err, &upstreamErr) {
-				_ = w.markFailedClaimed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(upstreamErr.Message), claimID)
-			} else {
-				_ = w.markFailedClaimed(ctx, task.ID, "upstream_unreachable", "生成服务暂时不可用，请稍后重试", claimID)
+			if claimID == "" {
+				// Another route owns completion; release only this attempt poll.
+				w.releaseUpstreamAttemptPoll(ctx, task)
+				return
 			}
-		}
-		for taskID, claimID := range claims {
+			if err := w.completePolledImageTask(ctx, task, result.Images, claimID); err != nil {
+				log.Printf("task %s async completion failed: %v", task.ID, err)
+			}
+		})
+		for taskID, task := range byID {
 			if !processed[taskID] {
-				_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, byID[taskID].ID, claimID)
+				if claimID := claims[taskID]; claimID != "" {
+					_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+				}
+				w.releaseUpstreamAttemptPoll(ctx, task)
 			}
 		}
 	}
 }
 
+func (w *Worker) finishOpenAIPollError(ctx context.Context, task *store.Task, pollErr error, claimID string) {
+	var upstreamErr *c2a.UpstreamError
+	if errors.As(pollErr, &upstreamErr) {
+		w.finishFailedUpstreamAttempt(ctx, task, "upstream_error", sanitizeUpstreamMessage(upstreamErr.Message), claimID)
+		return
+	}
+	w.finishFailedUpstreamAttempt(ctx, task, "upstream_unreachable", "生成服务暂时不可用，请稍后重试", claimID)
+}
+
 func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
 	for _, task := range tasks {
-		claimID := uuid.NewString()
-		claimed, claimErr := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
-		if claimErr != nil {
-			log.Printf("task %s CRUN completion claim failed: %v", task.ID, claimErr)
-			continue
-		}
-		if !claimed {
-			continue
-		}
 		client, err := crun.New(provider.BaseURL, provider.APIKey, task.Model, provider.TimeoutSecs)
 		if err != nil {
-			_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
-			_ = w.markFailed(ctx, task.ID, "model_config_error", "任务绑定的服务商配置已失效")
+			claimID, claimed := w.claimAsyncTaskCompletion(ctx, task)
+			if claimed {
+				w.finishFailedUpstreamAttempt(ctx, task, "model_config_error", "任务绑定的服务商配置已失效", claimID)
+			} else {
+				w.releaseUpstreamAttemptPoll(ctx, task)
+			}
 			continue
 		}
 		urls, pending, pollErr := client.PollTasks(ctx, taskParamStrings(task.Params, "_crunTaskIds"))
 		if pending || crun.IsRetryableError(pollErr) {
-			w.finishPendingImagePoll(ctx, task, provider, claimID)
+			w.finishPendingImagePoll(ctx, task, provider, "")
+			continue
+		}
+		claimID, claimed := w.claimAsyncTaskCompletion(ctx, task)
+		if !claimed {
+			w.releaseUpstreamAttemptPoll(ctx, task)
 			continue
 		}
 		if pollErr != nil {
-			_ = w.markFailedClaimed(ctx, task.ID, "upstream_error", sanitizeUpstreamMessage(pollErr.Error()), claimID)
+			w.finishFailedUpstreamAttempt(ctx, task, "upstream_error", sanitizeUpstreamMessage(pollErr.Error()), claimID)
 			continue
 		}
 		images := make([]string, 0, len(urls))
@@ -1324,6 +1688,7 @@ func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfi
 		}
 		if pollErr != nil {
 			_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+			w.releaseUpstreamAttemptPoll(ctx, task)
 			log.Printf("task %s CRUN image download failed: %v", task.ID, pollErr)
 			continue
 		}
@@ -1331,6 +1696,16 @@ func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfi
 			log.Printf("task %s CRUN completion failed: %v", task.ID, err)
 		}
 	}
+}
+
+func (w *Worker) claimAsyncTaskCompletion(ctx context.Context, task *store.Task) (string, bool) {
+	claimID := uuid.NewString()
+	claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
+	if err != nil {
+		log.Printf("task %s completion claim failed: %v", task.ID, err)
+		return "", false
+	}
+	return claimID, claimed
 }
 
 func providerTimeoutSecs(provider *modelconfig.Provider) int {
@@ -1343,64 +1718,297 @@ func providerTimeoutSecs(provider *modelconfig.Provider) int {
 	return 300
 }
 
-func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider, claimID string) {
-	if imagePollExpired(task, providerTimeoutSecs(provider)) {
-		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
-		retried, err := w.scheduleTaskRetry(ctx, task)
+func upstreamAttemptID(task *store.Task) uuid.UUID {
+	if task == nil {
+		return uuid.Nil
+	}
+	id, err := uuid.Parse(taskParamString(task.Params, "_upstreamAttemptId"))
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
+}
+
+func upstreamAttemptTime(task *store.Task, key string) (time.Time, bool) {
+	value, ok := taskParamInt64(task.Params, key)
+	if !ok || value <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(value).UTC(), true
+}
+
+func (w *Worker) releaseUpstreamAttemptPoll(ctx context.Context, task *store.Task) {
+	id := upstreamAttemptID(task)
+	owner := taskParamString(task.Params, "_upstreamAttemptPollOwner")
+	if id == uuid.Nil || owner == "" {
+		return
+	}
+	if err := store.ReleaseTaskUpstreamAttemptPoll(ctx, w.St.Pool, id, owner); err != nil {
+		log.Printf("task %s attempt %s poll lease release failed: %v", task.ID, id, err)
+	}
+}
+
+func taskUsesAttemptRoute(task *store.Task, attemptTask *store.Task) bool {
+	if task == nil || attemptTask == nil {
+		return false
+	}
+	return taskParamString(task.Params, "_providerRouteKey") == taskParamString(attemptTask.Params, "_providerRouteKey")
+}
+
+func (w *Worker) renewCurrentAttemptTaskLease(ctx context.Context, attemptTask *store.Task) {
+	current, err := store.GetTask(ctx, w.St.Pool, attemptTask.ID)
+	if err != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, attemptTask) {
+		return
+	}
+	owner := taskLeaseOwner(current)
+	if owner != "poller:"+taskParamString(attemptTask.Params, "_providerRouteKey") {
+		return
+	}
+	_, _ = store.RenewTaskLease(ctx, w.St.Pool, current.ID, owner, time.Now().UTC(), asyncTaskLease)
+}
+
+func (w *Worker) finalizeTaskAfterAttempts(ctx context.Context, attemptTask *store.Task, errorCode, errorMessage string) {
+	pending, err := store.CountPendingTaskUpstreamAttempts(ctx, w.St.Pool, attemptTask.ID)
+	if err != nil || pending > 0 {
 		if err != nil {
-			log.Printf("task %s timeout retry scheduling failed: %v", task.ID, err)
-		}
-		if !retried {
-			_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "生成服务响应超时，请重试")
+			log.Printf("task %s count pending attempts failed: %v", attemptTask.ID, err)
 		}
 		return
 	}
-	_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+	current, err := store.GetTask(ctx, w.St.Pool, attemptTask.ID)
+	if err != nil || current == nil {
+		return
+	}
+	switch current.Status {
+	case "queued":
+		_, err = taskflow.FailQueuedTask(ctx, w.St, current.ID, errorCode, errorMessage)
+	case "running":
+		// Do not fail a newly claimed synchronous attempt during the tiny window
+		// before its durable attempt row is registered.
+		if !taskUsesAttemptRoute(current, attemptTask) {
+			return
+		}
+		owner := taskLeaseOwner(current)
+		if owner == "" {
+			return
+		}
+		err = w.markFailedOwned(ctx, current.ID, errorCode, errorMessage, owner)
+	}
+	if err != nil {
+		log.Printf("task %s final failure after attempts failed: %v", attemptTask.ID, err)
+	}
+}
+
+func (w *Worker) failCurrentTaskAndCloseAttempts(ctx context.Context, attemptTask *store.Task, errorCode, errorMessage string) {
+	var failedTask *store.Task
+	won := false
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		current, getErr := store.GetTask(ctx, tx, attemptTask.ID)
+		if getErr != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, attemptTask) {
+			return getErr
+		}
+		owner := taskLeaseOwner(current)
+		if owner == "" {
+			return nil
+		}
+		won, getErr = taskflow.MarkFailedOwned(ctx, tx, current, errorCode, errorMessage, "running", owner)
+		if getErr != nil || !won {
+			return getErr
+		}
+		if getErr = store.SupersedePendingTaskUpstreamAttempts(ctx, tx, current.ID, time.Now().UTC()); getErr != nil {
+			return getErr
+		}
+		failedTask = current
+		return nil
+	})
+	if err != nil {
+		log.Printf("task %s terminal close after route exhaustion failed: %v", attemptTask.ID, err)
+		return
+	}
+	if won && failedTask != nil {
+		taskflow.NotifyTaskFailed(ctx, w.St.Pool, failedTask)
+		w.publishTaskEvent(ctx, failedTask, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
+	}
+}
+
+func (w *Worker) finishUncertainImagePoll(ctx context.Context, task *store.Task, detail string, immediate bool, claimID string) {
+	if claimID != "" {
+		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+	}
+	defer w.releaseUpstreamAttemptPoll(ctx, task)
+	attemptID := upstreamAttemptID(task)
+	if attemptID == uuid.Nil {
+		return
+	}
+	if len(detail) > 2000 {
+		detail = detail[:2000]
+	}
+	if err := store.RecordTaskUpstreamAttemptPollError(ctx, w.St.Pool, attemptID, detail); err != nil {
+		log.Printf("task %s attempt %s record unknown poll outcome failed: %v", task.ID, attemptID, err)
+		return
+	}
+	now := time.Now().UTC()
+	if !immediate {
+		if submittedAt, ok := upstreamAttemptTime(task, "_upstreamAttemptSubmittedAtMs"); ok && now.Before(submittedAt.Add(30*time.Second)) {
+			w.renewCurrentAttemptTaskLease(ctx, task)
+			return
+		}
+	}
+	scheduled, err := store.MarkTaskUpstreamAttemptFailoverScheduled(ctx, w.St.Pool, attemptID, now)
+	if err != nil {
+		log.Printf("task %s attempt %s unknown-outcome failover fence failed: %v", task.ID, attemptID, err)
+		return
+	}
+	if !scheduled && !taskParamBool(task.Params, "_upstreamAttemptFailoverScheduled") {
+		w.renewCurrentAttemptTaskLease(ctx, task)
+		return
+	}
+	current, err := store.GetTask(ctx, w.St.Pool, task.ID)
+	if err != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, task) {
+		return
+	}
+	retried, retryErr := w.scheduleTaskRetry(ctx, current, taskLeaseOwner(current))
+	if retryErr != nil {
+		log.Printf("task %s uncertain route failover scheduling failed: %v", task.ID, retryErr)
+		return
+	}
+	if retried {
+		log.Printf("task %s attempt %s route outcome unknown; switched route while retaining background recovery", task.ID, attemptID)
+		return
+	}
+	w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "所有生成线路均已失联或失败，任务已终止并退款")
+}
+
+func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider, claimID string) {
+	if claimID != "" {
+		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+	}
+	defer w.releaseUpstreamAttemptPoll(ctx, task)
+	attemptID := upstreamAttemptID(task)
+	if attemptID == uuid.Nil {
+		return
+	}
+	now := time.Now().UTC()
+	if expiresAt, ok := upstreamAttemptTime(task, "_upstreamAttemptExpiresAtMs"); ok && !now.Before(expiresAt) {
+		finished, err := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID,
+			store.UpstreamAttemptExpired, "upstream result recovery window expired", now)
+		if err != nil {
+			log.Printf("task %s attempt %s expiry failed: %v", task.ID, attemptID, err)
+			return
+		}
+		if finished {
+			w.finalizeTaskAfterAttempts(ctx, task, "upstream_unreachable", "生成服务响应超时，请重试")
+		}
+		return
+	}
+	if failoverAt, ok := upstreamAttemptTime(task, "_upstreamAttemptFailoverAtMs"); ok && !now.Before(failoverAt) {
+		scheduled, err := store.MarkTaskUpstreamAttemptFailoverScheduled(ctx, w.St.Pool, attemptID, now)
+		if err != nil {
+			log.Printf("task %s attempt %s failover fence failed: %v", task.ID, attemptID, err)
+		} else if scheduled || taskParamBool(task.Params, "_upstreamAttemptFailoverScheduled") {
+			current, getErr := store.GetTask(ctx, w.St.Pool, task.ID)
+			if getErr == nil && current != nil && current.Status == "running" && taskUsesAttemptRoute(current, task) {
+				owner := taskLeaseOwner(current)
+				retried, retryErr := w.scheduleTaskRetry(ctx, current, owner)
+				if retryErr != nil {
+					log.Printf("task %s timeout failover scheduling failed: %v", task.ID, retryErr)
+				} else if retried {
+					log.Printf("task %s attempt %s timed out; old result remains recoverable while a new route starts", task.ID, attemptID)
+				} else {
+					w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "所有生成线路均已失联或失败，任务已终止并退款")
+				}
+			}
+		}
+	}
+	// Keep only a still-active route lease alive. Exhausted routes are closed
+	// above instead of presenting a long recovery window as "generating".
+	w.renewCurrentAttemptTaskLease(ctx, task)
 }
 
 func (w *Worker) requeueUnavailableProviderTasks(ctx context.Context, providerID string) error {
-	tasks, err := store.ListAsyncPendingTasksByProvider(ctx, w.St.Pool, providerID, 10000)
+	owner := "unavailable-attempt:" + providerID + ":" + uuid.NewString()
+	tasks, err := store.ClaimPendingUpstreamTasksByRoute(ctx, w.St.Pool, providerID, owner,
+		time.Now().UTC(), upstreamAttemptPollLease, 10000)
 	if err != nil {
 		return err
 	}
 	for _, task := range tasks {
-		retried, retryErr := w.scheduleTaskRetry(ctx, task)
-		if retryErr != nil {
-			log.Printf("task %s provider failover scheduling failed: %v", task.ID, retryErr)
-		}
-		if !retried {
-			_ = w.markFailed(ctx, task.ID, "upstream_unreachable", "任务绑定的服务商当前不可用")
-		}
+		w.finishFailedUpstreamAttempt(ctx, task, "upstream_unreachable", "任务绑定的服务商当前不可用", "")
 	}
 	return nil
 }
 
-func (w *Worker) recordFailedTaskProvider(ctx context.Context, task *store.Task) {
+func (w *Worker) finishFailedUpstreamAttempt(ctx context.Context, task *store.Task, errorCode, errorMessage, claimID string) {
+	if claimID != "" {
+		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+	}
+	defer w.releaseUpstreamAttemptPoll(ctx, task)
+	attemptID := upstreamAttemptID(task)
+	if attemptID == uuid.Nil {
+		return
+	}
+	finished, err := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID,
+		store.UpstreamAttemptFailed, errorMessage, time.Now().UTC())
+	if err != nil || !finished {
+		if err != nil {
+			log.Printf("task %s attempt %s failure persistence failed: %v", task.ID, attemptID, err)
+		}
+		return
+	}
+	current, getErr := store.GetTask(ctx, w.St.Pool, task.ID)
+	if getErr == nil && current != nil && current.Status == "running" && taskUsesAttemptRoute(current, task) {
+		retried, retryErr := w.scheduleTaskRetry(ctx, current, taskLeaseOwner(current))
+		if retryErr != nil {
+			log.Printf("task %s failed-route retry scheduling failed: %v", task.ID, retryErr)
+		}
+		if retried {
+			return
+		}
+		w.failCurrentTaskAndCloseAttempts(ctx, task, errorCode, errorMessage)
+		return
+	}
+	w.finalizeTaskAfterAttempts(ctx, task, errorCode, errorMessage)
+}
+
+func failedTaskProviderIDs(task *store.Task) []string {
 	providerID := taskParamString(task.Params, "_providerRouteKey")
 	if providerID == "" {
 		providerID = taskParamString(task.Params, "_providerConfigId")
 	}
 	if providerID == "" {
-		return
+		return taskParamStrings(task.Params, "_failedProviderConfigIds")
 	}
 	failed := taskParamStrings(task.Params, "_failedProviderConfigIds")
 	for _, existing := range failed {
 		if existing == providerID {
-			return
+			return failed
 		}
 	}
-	failed = append(failed, providerID)
-	if err := store.SetTaskFailedProviderIDs(ctx, w.St.Pool, task.ID, failed); err != nil {
-		log.Printf("task %s failed provider history update failed: %v", task.ID, err)
-		return
-	}
-	if task.Params == nil {
-		task.Params = map[string]any{}
-	}
-	task.Params["_failedProviderConfigIds"] = failed
+	return append(failed, providerID)
 }
 
 func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, images []string, claimID string) error {
+	defer w.releaseUpstreamAttemptPoll(ctx, task)
+	claimCtx, cancelClaim := context.WithCancel(ctx)
+	defer cancelClaim()
+	go func() {
+		ticker := time.NewTicker(taskCompletionLease / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-claimCtx.Done():
+				return
+			case now := <-ticker.C:
+				ok, err := store.RenewTaskCompletionClaim(claimCtx, w.St.Pool, task.ID, claimID, now, taskCompletionLease)
+				if err != nil || !ok {
+					if err != nil {
+						log.Printf("task %s completion lease renewal failed: %v", task.ID, err)
+					}
+					return
+				}
+			}
+		}
+	}()
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -1413,7 +2021,8 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 	}
 	outputKeys, thumbnailKeys := collector.completed()
 	if len(outputKeys) == 0 {
-		return w.markFailedClaimed(ctx, task.ID, "upstream_error", "生成服务未返回图片，请重试", claimID)
+		w.finishFailedUpstreamAttempt(ctx, task, "upstream_error", "生成服务未返回图片，请重试", claimID)
+		return nil
 	}
 	var succeeded *store.Task
 	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -1423,6 +2032,17 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 		}
 		won, markErr := taskflow.MarkSucceededClaimed(ctx, tx, dbTask, outputKeys, thumbnailKeys, time.Now().UTC(), claimID)
 		if won {
+			attemptID := upstreamAttemptID(task)
+			if attemptID != uuid.Nil {
+				finishedAt := time.Now().UTC()
+				if _, attemptErr := store.FinishTaskUpstreamAttempt(ctx, tx, attemptID,
+					store.UpstreamAttemptSucceeded, "", finishedAt); attemptErr != nil {
+					return attemptErr
+				}
+				if supersedeErr := store.SupersedeOtherTaskUpstreamAttempts(ctx, tx, task.ID, attemptID, finishedAt); supersedeErr != nil {
+					return supersedeErr
+				}
+			}
 			succeeded = dbTask
 		}
 		return markErr
@@ -1486,25 +2106,9 @@ func (w *Worker) enqueueAutomaticBackgroundRemoval(ctx context.Context, parent *
 			continue
 		}
 		if err := w.Queue.EnqueueRunTask(ctx, child.ID.String()); err != nil {
-			log.Printf("task %s automatic background removal %d enqueue failed: %v", parent.ID, index, err)
-			if created {
-				if _, failErr := taskflow.FailQueuedEnqueue(ctx, w.St, child.ID); failErr != nil {
-					log.Printf("task %s automatic background removal enqueue compensation failed: %v", child.ID, failErr)
-				}
-			}
+			log.Printf("task %s automatic background removal %d enqueue deferred; durable queued recovery will retry: %v", parent.ID, index, err)
 		}
 	}
-}
-
-func imagePollExpired(task *store.Task, timeoutSecs int) bool {
-	if timeoutSecs <= 0 {
-		timeoutSecs = 300
-	}
-	startedAt := task.CreatedAt
-	if task.StartedAt != nil {
-		startedAt = *task.StartedAt
-	}
-	return time.Since(startedAt) >= time.Duration(timeoutSecs)*time.Second
 }
 
 // handleCleanupSessions cron：每小时清理过期 session。
@@ -1528,6 +2132,30 @@ func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error
 	return nil
 }
 
+func (w *Worker) expireTrialCampaigns(ctx context.Context) (int64, error) {
+	var expired int64
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockTrialCampaignLifecycle(ctx, tx); err != nil {
+			return err
+		}
+		var err error
+		expired, err = store.CloseExpiredTrialCampaigns(ctx, tx, time.Now().UTC())
+		return err
+	})
+	return expired, err
+}
+
+func (w *Worker) handleExpireTrialCampaigns(ctx context.Context, _ *asynq.Task) error {
+	expired, err := w.expireTrialCampaigns(ctx)
+	if err != nil {
+		return err
+	}
+	if expired > 0 {
+		log.Printf("closed %d expired trial campaigns", expired)
+	}
+	return nil
+}
+
 // handleSyncPromptSources cron：每 30 分钟扫描到期的提示词数据源并同步。
 func (w *Worker) handleSyncPromptSources(ctx context.Context, _ *asynq.Task) error {
 	return w.PromptSync.SyncDue(ctx)
@@ -1538,25 +2166,19 @@ func (w *Worker) handleBackfillPromptCovers(ctx context.Context, _ *asynq.Task) 
 	return w.PromptSync.BackfillCoverDimensions(ctx, 24)
 }
 
-// handleReapZombies cron：每 10 分钟做两种回收——
-//  1. running 超过 30 分钟的孤儿任务恢复为 queued 并接管；
-//  2. queued 超过 10 分钟的任务（入队丢失/Redis 异常）重新入队一次，
-//     再失败则 failed + release（C1 兜底）。
+// handleReapZombies cron：每 2 分钟做两种回收——
+//  1. lease 过期的孤儿任务恢复为 queued 并接管；
+//  2. queued 超过 2 分钟的任务（入队丢失/Redis 异常）检查后补入队；
+//     Redis 仍不可用时保持 queued，下一轮继续恢复。
 func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
-	threshold := time.Now().UTC().Add(-zombieRunningMinutes * time.Minute)
-	zombieIDs, err := store.ListZombieTaskIDs(ctx, w.St.Pool, threshold)
+	// Lease expiry, rather than task age, determines whether a running task is
+	// safe to recover. Long-running tasks remain protected by heartbeats.
+	threshold := time.Now().UTC()
+	zombieIDs, err := store.RequeueExpiredRunningTasks(ctx, w.St.Pool, threshold)
 	if err != nil {
 		return err
 	}
 	for _, taskID := range zombieIDs {
-		requeued, err := store.RequeueRunningTask(ctx, w.St.Pool, taskID)
-		if err != nil {
-			log.Printf("failed to recover zombie task %s: %v", taskID, err)
-			continue
-		}
-		if !requeued {
-			continue
-		}
 		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
 			log.Printf("recovered zombie task %s enqueue failed: %v", taskID, err)
 			continue
@@ -1567,7 +2189,20 @@ func (w *Worker) handleReapZombies(ctx context.Context, _ *asynq.Task) error {
 	return w.reapStaleQueued(ctx)
 }
 
-// reapStaleQueued C1 第二种扫描：queued 超时的任务先按业务 task ID 检查
+func (w *Worker) handleEnsureImagePolls(ctx context.Context, _ *asynq.Task) error {
+	routes, err := store.ListAsyncPendingRoutes(ctx, w.St.Pool, 1000)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if err := w.Queue.EnqueueImagePoll(ctx, route.ProviderID, route.RouteID, route.RouteKey, 0, 0); err != nil {
+			return fmt.Errorf("ensure image poll for route %s: %w", route.RouteKey, err)
+		}
+	}
+	return nil
+}
+
+// reapStaleQueued 扫描 queued 超时任务，先按业务 task ID 检查
 // 所有可执行队列记录，确实丢失时才补一次入队。
 func (w *Worker) reapStaleQueued(ctx context.Context) error {
 	threshold := time.Now().UTC().Add(-staleQueuedMinutes * time.Minute)
@@ -1584,10 +2219,7 @@ func (w *Worker) reapStaleQueued(ctx context.Context) error {
 			continue
 		}
 		if err := w.Queue.EnqueueRunTaskRecovery(ctx, taskID.String()); err != nil {
-			log.Printf("stale queued task %s re-enqueue failed, marking failed: %v", taskID, err)
-			if _, ferr := taskflow.FailQueuedEnqueue(ctx, w.St, taskID); ferr != nil {
-				log.Printf("stale queued task %s compensation failed: %v", taskID, ferr)
-			}
+			log.Printf("stale queued task %s re-enqueue failed; keeping durable queued state: %v", taskID, err)
 			continue
 		}
 		log.Printf("re-enqueued stale queued task %s", taskID)

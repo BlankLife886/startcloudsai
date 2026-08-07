@@ -31,15 +31,26 @@ func adminUserDict(u *store.User, wallet *store.Wallet) gin.H {
 	d["lastLoginAt"] = iso(u.LastLoginAt)
 	d["submissionBannedUntil"] = iso(u.SubmissionBannedUntil)
 	if wallet != nil {
-		d["wallet"] = walletDict(wallet.BalanceCents, wallet.FrozenCents)
+		d["wallet"] = walletDict(wallet)
 	}
 	return d
 }
 
-func walletDict(balancePoints, frozenPoints int64) gin.H {
+func walletDict(wallet *store.Wallet) gin.H {
+	if wallet == nil {
+		wallet = &store.Wallet{}
+	}
+	balancePoints := wallet.BalanceCents + wallet.TrialBalanceCents
+	frozenPoints := wallet.FrozenCents + wallet.TrialFrozenCents
 	return gin.H{
 		"balancePoints": balancePoints, "frozenPoints": frozenPoints,
 		"balanceCents": balancePoints, "frozenCents": frozenPoints,
+		"availableCents": balancePoints, "totalCents": balancePoints + frozenPoints,
+		"normalBalanceCents": wallet.BalanceCents,
+		"trialBalanceCents":  wallet.TrialBalanceCents,
+		"normalFrozenCents":  wallet.FrozenCents,
+		"trialFrozenCents":   wallet.TrialFrozenCents,
+		"trialFeatureKey":    wallet.TrialFeatureKey,
 	}
 }
 
@@ -132,6 +143,7 @@ func ledgerDict(e *store.LedgerEntry) gin.H {
 		"sourceType":         e.SourceType,
 		"sourceId":           e.SourceID,
 		"reason":             e.Reason,
+		"creditBucket":       e.CreditBucket,
 		"createdAt":          isoValue(e.CreatedAt),
 	}
 }
@@ -175,6 +187,8 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 		"id":               p.ID.String(),
 		"code":             p.Code,
 		"name":             p.Name,
+		"description":      p.Description,
+		"badge":            p.Badge,
 		"kind":             p.Kind,
 		"priceCents":       p.PriceCents,
 		"grantCents":       p.GrantCents,
@@ -185,11 +199,13 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 		"dailyGrantCents":  p.DailyGrantCents,
 		"dailyGrantPoints": p.DailyGrantCents,
 		"features":         nonNilStrings(p.Features),
+		"recommended":      p.Recommended,
 		"sort":             p.Sort,
 	}
 	if includeAdmin {
 		d["active"] = p.Active
 		d["createdAt"] = isoValue(p.CreatedAt)
+		d["updatedAt"] = isoValue(p.UpdatedAt)
 	}
 	return d
 }

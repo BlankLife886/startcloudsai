@@ -59,6 +59,19 @@ func TestUserDictIncludesProfileDetails(t *testing.T) {
 	}
 }
 
+func TestWalletDictUsesSingleAvailableBalanceDefinition(t *testing.T) {
+	dict := walletDict(&store.Wallet{
+		BalanceCents: 80, TrialBalanceCents: 20,
+		FrozenCents: 15, TrialFrozenCents: 5,
+	})
+	if dict["availableCents"] != int64(100) || dict["balanceCents"] != int64(100) {
+		t.Fatalf("available balance = %#v", dict)
+	}
+	if dict["frozenCents"] != int64(20) || dict["totalCents"] != int64(120) {
+		t.Fatalf("wallet totals = %#v", dict)
+	}
+}
+
 func TestLedgerDictWithTaskIncludesUserFacingTaskDetails(t *testing.T) {
 	taskID := uuid.New()
 	entry := &store.LedgerEntry{

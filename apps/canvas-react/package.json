@@ -45,5 +45,13 @@
         "prettier": "^3.8.3",
         "typescript": "^5",
         "vite": "^7.3.0"
+    },
+    "optionalDependencies": {
+        "@rollup/rollup-linux-arm64-musl": "4.62.2",
+        "@rollup/rollup-linux-x64-musl": "4.62.2",
+        "@tailwindcss/oxide-linux-arm64-musl": "4.2.4",
+        "@tailwindcss/oxide-linux-x64-musl": "4.2.4",
+        "lightningcss-linux-arm64-musl": "1.32.0",
+        "lightningcss-linux-x64-musl": "1.32.0"
     }
 }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
+	appconfig "github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/aws/smithy-go"
 )
 
@@ -56,6 +58,18 @@ func TestTransientObjectReadError(t *testing.T) {
 	} {
 		if transientObjectReadError(err) {
 			t.Fatalf("expected permanent error: %v", err)
+		}
+	}
+}
+
+func TestValidateConfigRejectsIncompleteConfig(t *testing.T) {
+	err := ValidateConfig(&appconfig.Config{R2Bucket: "starcloudsai"})
+	if err == nil {
+		t.Fatal("incomplete object storage configuration must be rejected")
+	}
+	for _, key := range []string{"R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Fatalf("error %q does not mention %s", err, key)
 		}
 	}
 }

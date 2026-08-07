@@ -54,6 +54,23 @@ func TestUIDesignIterationLocksUnchangedContent(t *testing.T) {
 	}
 }
 
+func TestEcommerceDesignUsesCommercePromptBoundary(t *testing.T) {
+	p, _ := prompt.Compile("ecommerce_design", "生成亚马逊耳机商品套图", map[string]any{})
+	for _, expected := range []string{
+		"专业电商视觉设计师",
+		"保持商品外观",
+		"不虚构商品参数",
+		"生成亚马逊耳机商品套图",
+	} {
+		if !strings.Contains(p, expected) {
+			t.Fatalf("compiled ecommerce prompt missing %q: %s", expected, p)
+		}
+	}
+	if strings.Contains(p, "UI 设计稿") {
+		t.Fatalf("ecommerce prompt must not use the UI design compiler: %s", p)
+	}
+}
+
 func TestFemalePortraitDirectorSkillAppliedToT2I(t *testing.T) {
 	p, size := prompt.Compile("t2i", "窗边的新中式女性人像", map[string]any{
 		"size":     "1024x1536",
@@ -84,7 +101,7 @@ func TestFemalePortraitDirectorSkillOnlyAppliesToT2I(t *testing.T) {
 }
 
 func TestTypeTemplatesIncludeUserPrompt(t *testing.T) {
-	for _, taskType := range []string{"coloring", "ui_design", "model_sheet", "game_art", "puzzle"} {
+	for _, taskType := range []string{"coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle"} {
 		p, _ := prompt.Compile(taskType, "USERPROMPT", map[string]any{"style": "赛博朋克"})
 		if !strings.Contains(p, "USERPROMPT") {
 			t.Fatalf("%s: prompt missing user input: %q", taskType, p)

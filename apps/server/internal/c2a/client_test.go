@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -127,7 +128,7 @@ func TestGenerateImagesWithOptionsForwardsConfiguredCapabilities(t *testing.T) {
 	client := NewWithPolicy(server.URL, "test-key", 30, true)
 	_, err := client.GenerateImagesWithOptions(
 		context.Background(), "task-options", "draw a logo", "gpt-image-2", 1, "1024x1024",
-		ImageOptions{Quality: "medium", TransparentBackground: true, OutputFormat: "webp", ModerationLevel: "low"},
+		ImageOptions{Quality: "medium", InputFidelity: "high", TransparentBackground: true, OutputFormat: "webp", ModerationLevel: "low"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +139,33 @@ func TestGenerateImagesWithOptionsForwardsConfiguredCapabilities(t *testing.T) {
 		if payload[key] != want {
 			t.Fatalf("%s = %#v, want %#v", key, payload[key], want)
 		}
+	}
+	if _, exists := payload["input_fidelity"]; exists {
+		t.Fatal("generation payload must not include input_fidelity without reference images")
+	}
+}
+
+func TestEditImagesWithOptionsForwardsInputFidelity(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"edit-fidelity","status":"success","data":[{"b64_json":"done"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	_, err := client.EditImagesWithOptions(
+		context.Background(), "edit-fidelity", "keep identity", "gpt-image-2", 1,
+		[]string{"aW1hZ2U="}, "1024x1024", ImageOptions{InputFidelity: "high"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["input_fidelity"] != "high" {
+		t.Fatalf("input_fidelity = %#v", payload["input_fidelity"])
 	}
 }
 
@@ -339,5 +367,79 @@ func TestPollImageTasksBatchesMultipleIDs(t *testing.T) {
 	results := client.PollImageTasks(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1})
 	if requests != 1 || !results["task-a"].Pending || results["task-b"].Pending || len(results["task-b"].Images) != 1 {
 		t.Fatalf("requests=%d results=%#v", requests, results)
+	}
+}
+
+func TestPollImageTasksAcceptsResultsField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-results","status":"success","succeeded_count":1,"results":[{"b64_json":"done-from-results"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, err := client.PollImageTask(context.Background(), "task-results", 1)
+	if err != nil || pending || len(images) != 1 || images[0] != "done-from-results" {
+		t.Fatalf("images=%#v pending=%v err=%v", images, pending, err)
+	}
+}
+
+func TestPollImageTasksClassifiesMissingAndExplicitFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"failed","status":"error","error_code":"rejected","error":"rejected upstream"}],"missing_ids":["missing"]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), []string{"failed", "missing"}, map[string]int{"failed": 1, "missing": 1})
+	if results["failed"].Pending || !results["failed"].ExplicitFailure || results["failed"].Err == nil {
+		t.Fatalf("explicit failure misclassified: %#v", results["failed"])
+	}
+	if !results["missing"].Pending || !results["missing"].Missing || results["missing"].ExplicitFailure {
+		t.Fatalf("missing task misclassified: %#v", results["missing"])
+	}
+}
+
+func TestPollImageTasksEachStreamsResultsInResponseOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-a","status":"success","data":[{"b64_json":"a"}]},{"id":"task-b","status":"success","data":[{"b64_json":"b"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var order []string
+	client.PollImageTasksEach(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1}, func(taskID string, result ImageTaskPollResult) {
+		if result.Err != nil || result.Pending || len(result.Images) != 1 {
+			t.Fatalf("task %s result = %#v", taskID, result)
+		}
+		order = append(order, taskID+":"+result.Images[0])
+	})
+	if got := strings.Join(order, ","); got != "task-a:a,task-b:b" {
+		t.Fatalf("stream order = %q", got)
+	}
+}
+
+func TestPollImageTasksEachGuardedClaimsOnlyTerminalResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"pending","status":"running","data":[]},{"id":"done","status":"success","data":[{"b64_json":"image"}]}]}`))
+	}))
+	defer server.Close()
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var claimed []string
+	results := map[string]ImageTaskPollResult{}
+	client.PollImageTasksEachGuarded(context.Background(), []string{"pending", "done"}, map[string]int{"pending": 1, "done": 1}, func(taskID string) bool {
+		claimed = append(claimed, taskID)
+		return true
+	}, func(taskID string, result ImageTaskPollResult) {
+		results[taskID] = result
+	})
+	if strings.Join(claimed, ",") != "done" {
+		t.Fatalf("completion claims = %#v, want only done", claimed)
+	}
+	if !results["pending"].Pending || results["done"].Pending || len(results["done"].Images) != 1 {
+		t.Fatalf("results = %#v", results)
 	}
 }

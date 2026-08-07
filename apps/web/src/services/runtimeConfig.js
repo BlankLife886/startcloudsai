@@ -4,6 +4,7 @@ const STUDIO_FEATURE_KEYS = [
   'ai.wallpaperGeneration',
   'ai.illustrationColoring',
   'ai.uiDesign',
+  'ai.ecommerceDesign',
   'ai.ultraModelSheet',
   'ai.gameDesign',
   'ai.puzzle',

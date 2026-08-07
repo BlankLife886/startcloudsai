@@ -49,10 +49,10 @@ func TestPricingReturnsStructuredModelRoutePrices(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Data.TaskPrices["t2i"] != 30 || response.Data.TaskPrices["puzzle"] != 5 {
+	if response.Data.TaskPrices["t2i"] != 30 || response.Data.TaskPrices["puzzle"] != 0 {
 		t.Fatalf("task prices = %#v", response.Data.TaskPrices)
 	}
-	if response.Data.TaskPointPrices["t2i"] != 30 || response.Data.TaskPointPrices["puzzle"] != 5 {
+	if response.Data.TaskPointPrices["t2i"] != 30 || response.Data.TaskPointPrices["puzzle"] != 0 {
 		t.Fatalf("task point prices = %#v", response.Data.TaskPointPrices)
 	}
 	if got := response.Data.TaskPriceRanges["t2i"]; got.MinCents != 20 || got.MaxCents != 30 {
@@ -182,10 +182,15 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	cfg.Models = []modelconfig.Model{
 		{ID: "t2i-model", Name: "文生图模型", ProviderID: "provider", UpstreamModel: "upstream-a", Kind: "image", Resolutions: []string{"1K", "2K"}, Public: true, Enabled: true},
 		{ID: "game-model", Name: "游戏模型", ProviderID: "provider", UpstreamModel: "upstream-b", Kind: "image", Resolutions: []string{"4K"}, Public: true, Enabled: true},
+		{ID: "ui-analysis", Name: "元素分析模型", ProviderID: "provider", UpstreamModel: "upstream-chat", Kind: "chat", Public: true, Enabled: true},
 	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
 		modelconfig.WorkspaceT2I:     {ModelIDs: []string{"t2i-model"}},
 		modelconfig.WorkspaceGameArt: {ModelIDs: []string{"game-model"}},
+		modelconfig.WorkspaceUIDesign: {
+			ModelIDs:        []string{"ui-analysis"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "ui-analysis"},
+		},
 	}
 	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -207,6 +212,12 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 						Resolutions              []string            `json:"resolutions"`
 						AspectRatiosByResolution map[string][]string `json:"aspectRatiosByResolution"`
 					} `json:"publicModels"`
+					AnalysisModels []struct {
+						ID      string `json:"id"`
+						Model   string `json:"model"`
+						Label   string `json:"label"`
+						Default bool   `json:"default"`
+					} `json:"analysisModels"`
 				} `json:"config"`
 			} `json:"features"`
 		} `json:"data"`
@@ -225,5 +236,58 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	}
 	if len(game) != 1 || game[0].ID != "game-model" || game[0].Label != "游戏模型" || len(game[0].Resolutions) != 1 || game[0].Resolutions[0] != "4K" {
 		t.Fatalf("game models = %#v", game)
+	}
+	analysis := response.Data.Features["ai.uiDesign"].Config.AnalysisModels
+	if len(analysis) != 1 || analysis[0].ID != "ui-analysis" || analysis[0].Model != "ui-analysis" ||
+		analysis[0].Label != "元素分析模型" || !analysis[0].Default {
+		t.Fatalf("UI analysis models = %#v", analysis)
+	}
+}
+
+func TestRuntimeConfigFallsBackToAssistantChatForUIDesignAnalysis(t *testing.T) {
+	st := testdb.Setup(t)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: "openai", BaseURL: "https://example.com",
+		APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "assistant-chat", Name: "助手视觉模型", ProviderID: "provider", UpstreamModel: "upstream-chat",
+		Kind: modelconfig.ModelKindChat, Public: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs:        []string{"assistant-chat"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "assistant-chat"},
+		},
+		modelconfig.WorkspaceUIDesign: {ModelIDs: []string{}},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
+	(&Server{St: st}).runtimeConfig(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Features map[string]struct {
+				Config struct {
+					AnalysisModels []struct {
+						Model string `json:"model"`
+					} `json:"analysisModels"`
+				} `json:"config"`
+			} `json:"features"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	models := response.Data.Features["ai.uiDesign"].Config.AnalysisModels
+	if len(models) != 1 || models[0].Model != "assistant-chat" {
+		t.Fatalf("UI design analysis fallback = %#v", models)
 	}
 }

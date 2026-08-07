@@ -221,7 +221,12 @@ const PROMPT_CATEGORIES = [
 
 function defaultPromptCategory(taskType = '') {
   if (taskType === 'game_art') return 'game'
-  if (taskType === 'ui_design' || taskType === 'model_sheet' || taskType === 'puzzle') return 'design'
+  if (
+    taskType === 'ui_design' ||
+    taskType === 'ecommerce_design' ||
+    taskType === 'model_sheet' ||
+    taskType === 'puzzle'
+  ) return 'design'
   if (taskType === 'coloring') return 'illustration'
   return 'other'
 }

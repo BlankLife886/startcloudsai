@@ -4,6 +4,8 @@
 
 项目由 Vue 主站、React 无限画布、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
 
+> UI 产品边界：本项目只面向桌面浏览器，最低支持视口为 `1280x720`，不开发或验收手机/平板适配。具体约束见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
+
 ## 仓库结构
 
 ```text
@@ -30,7 +32,7 @@
 | `postgres` | 业务数据、钱包账本和运营内容 |
 | `redis` | Asynq 队列 |
 
-外部依赖为 `chatgpt2api` 图片任务接口和 Cloudflare R2（S3 兼容对象存储）。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问 R2。
+外部依赖包括 `chatgpt2api`/OpenAI 兼容图片服务、Sub2API 对话服务、CRUN 异步图片工具、Cloudflare R2（S3 兼容对象存储）和 SMTP 邮件服务。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问 R2。
 
 ## Docker 本地启动
 
@@ -128,6 +130,7 @@ CI 使用 Node.js 22、Go module 中声明的 Go 版本和 PostgreSQL 17，执�
 cd apps/server && go vet ./... && go test ./...
 cd apps/web && npm ci && npm run check:imports && npm run lint && npm run build
 cd apps/admin && npm ci && npm run build
+cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 ```
 
 用户端还提供图片处理验证脚本。Playwright 配置目前保留了旧 monorepo 启动命令，尚不能作为本仓库的有效测试入口；详见 [apps/web/README.md](apps/web/README.md)。
@@ -142,6 +145,7 @@ cd apps/admin && npm ci && npm run build
 - [高并发任务稳定性方案](docs/HIGH_CONCURRENCY_TASK_STABILITY.md)
 - [Go 性能与实时可观测性](docs/GO_PERFORMANCE_OBSERVABILITY.md)
 - [管理端 UI 规范](docs/ADMIN_UI_STYLE.md)
+- [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)
 - [用户端首页设计规范](apps/web/DESIGN.md)
 - [用户端开发说明](apps/web/README.md)
 - [管理端开发说明](apps/admin/README.md)

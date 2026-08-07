@@ -20,6 +20,11 @@ export type Prompt = {
 
 export const ALL_PROMPTS_OPTION = "全部";
 
+export type PromptCategoryOption = {
+    value: string;
+    label: string;
+};
+
 export type PromptListResponse = {
     items: Prompt[];
     tags: string[];
@@ -44,6 +49,15 @@ type SitePromptPage = {
     categoryCounts?: Record<string, unknown>;
     tags?: unknown;
     total?: unknown;
+};
+
+type SitePromptCategory = {
+    key?: unknown;
+    label?: unknown;
+};
+
+type SitePromptCategoriesResponse = {
+    items?: SitePromptCategory[];
 };
 
 function mapPrompt(raw: SitePrompt): Prompt {
@@ -99,6 +113,14 @@ export async function fetchPrompts({
         total: Math.max(0, Number(data.total) || 0),
         nextCursor: data.nextCursor ? String(data.nextCursor) : undefined,
     };
+}
+
+export async function fetchPromptCategories(type = ""): Promise<PromptCategoryOption[]> {
+    const query = serializeApiParams({ type: type || undefined });
+    const data = await starcloudsRequest<SitePromptCategoriesResponse>(`/prompts/categories?${query.toString()}`);
+    return (Array.isArray(data.items) ? data.items : [])
+        .map((item) => ({ value: String(item.key || "").trim(), label: String(item.label || "").trim() }))
+        .filter((item) => item.value && item.label && !["all", "today", "latest", "favorites", "my-favorites"].includes(item.value));
 }
 
 function isActiveOption(value: string) {

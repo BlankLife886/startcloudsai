@@ -13,12 +13,13 @@ import (
 )
 
 const taskCols = `id, user_id, type, model, status, prompt, params, count, input_keys, output_keys, thumbnail_keys, cost_cents,
-	idempotency_key, error_code, error_message, attempt, started_at, finished_at, created_at`
+	work_units, idempotency_key, error_code, error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at`
 
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	err := row.Scan(&t.ID, &t.UserID, &t.Type, &t.Model, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys, &t.ThumbnailKeys,
-		&t.CostCents, &t.IdempotencyKey, &t.ErrorCode, &t.ErrorMessage, &t.Attempt, &t.StartedAt, &t.FinishedAt, &t.CreatedAt)
+		&t.CostCents, &t.WorkUnits, &t.IdempotencyKey, &t.ErrorCode, &t.ErrorMessage, &t.Attempt, &t.StartedAt,
+		&t.LeaseOwner, &t.HeartbeatAt, &t.LeaseUntil, &t.FinishedAt, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +36,7 @@ type NewTask struct {
 	Count          int
 	InputKeys      []string
 	CostCents      int64
+	WorkUnits      int
 	IdempotencyKey *string
 }
 
@@ -46,9 +48,9 @@ func InsertTask(ctx context.Context, q Q, n NewTask) (*Task, error) {
 		n.InputKeys = []string{}
 	}
 	return scanTask(q.QueryRow(ctx,
-		`INSERT INTO tasks (id, user_id, type, model, prompt, params, count, input_keys, output_keys, cost_cents, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, $9, $10) RETURNING `+taskCols,
-		n.ID, n.UserID, n.Type, n.Model, n.Prompt, n.Params, n.Count, n.InputKeys, n.CostCents, n.IdempotencyKey))
+		`INSERT INTO tasks (id, user_id, type, model, prompt, params, count, input_keys, output_keys, cost_cents, work_units, idempotency_key)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, $9, $10, $11) RETURNING `+taskCols,
+		n.ID, n.UserID, n.Type, n.Model, n.Prompt, n.Params, n.Count, n.InputKeys, n.CostCents, max(n.WorkUnits, 1), n.IdempotencyKey))
 }
 
 func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
@@ -94,15 +96,29 @@ func CountActiveTasks(ctx context.Context, q Q, userID uuid.UUID) (int64, error)
 	return n, err
 }
 
+func CountActiveTaskUnits(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx,
+		`SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE user_id = $1 AND status IN ('queued', 'running')`, userID).Scan(&n)
+	return n, err
+}
+
 func CountTasksInStatuses(ctx context.Context, q Q, statuses []string) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE status = ANY($1)`, statuses).Scan(&n)
 	return n, err
 }
 
+func CountTaskUnitsInStatuses(ctx context.Context, q Q, statuses []string) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE status = ANY($1)`, statuses).Scan(&n)
+	return n, err
+}
+
 type TaskPressure struct {
 	Queued          int64
 	Running         int64
+	ActiveUnits     int64
 	OldestQueuedAt  *time.Time
 	OldestRunningAt *time.Time
 }
@@ -113,11 +129,12 @@ func GetTaskPressure(ctx context.Context, q Q) (TaskPressure, error) {
 		SELECT
 			count(*) FILTER (WHERE status = 'queued'),
 			count(*) FILTER (WHERE status = 'running'),
+			COALESCE(sum(GREATEST(work_units, 1)), 0),
 			min(created_at) FILTER (WHERE status = 'queued'),
 			min(started_at) FILTER (WHERE status = 'running')
 		FROM tasks
 		WHERE status IN ('queued', 'running')`).Scan(
-		&out.Queued, &out.Running, &out.OldestQueuedAt, &out.OldestRunningAt,
+		&out.Queued, &out.Running, &out.ActiveUnits, &out.OldestQueuedAt, &out.OldestRunningAt,
 	)
 	return out, err
 }
@@ -169,9 +186,17 @@ func SetQueuedTaskExecutionRoute(ctx context.Context, q Q, id uuid.UUID, model s
 }
 
 func MarkTaskUpstreamPending(ctx context.Context, q Q, id uuid.UUID) error {
+	return markTaskUpstreamPending(ctx, q, id, "")
+}
+
+func MarkTaskUpstreamPendingOwned(ctx context.Context, q Q, id uuid.UUID, owner string) error {
+	return markTaskUpstreamPending(ctx, q, id, owner)
+}
+
+func markTaskUpstreamPending(ctx context.Context, q Q, id uuid.UUID, owner string) error {
 	_, err := q.Exec(ctx, `UPDATE tasks
 		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_upstreamStage}', '"async_pending"'::jsonb, true)
-		WHERE id = $1 AND status = 'running'`, id)
+		WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_owner = $2)`, id, owner)
 	return err
 }
 
@@ -186,29 +211,39 @@ func SetTaskFailedProviderIDs(ctx context.Context, q Q, id uuid.UUID, providerID
 	return err
 }
 
-func ListAsyncPendingTasksByProvider(ctx context.Context, q Q, providerID string, limit int) ([]*Task, error) {
+type AsyncPendingRoute struct {
+	ProviderID string
+	RouteID    string
+	RouteKey   string
+}
+
+func ListAsyncPendingRoutes(ctx context.Context, q Q, limit int) ([]AsyncPendingRoute, error) {
 	if limit < 1 {
-		limit = 100
+		limit = 1000
 	}
-	rows, err := q.Query(ctx, `SELECT `+taskCols+` FROM tasks
-		WHERE status = 'running'
-		  AND params ->> '_upstreamStage' = 'async_pending'
-		  AND COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId') = $1
-		ORDER BY started_at, id
-		LIMIT $2`, providerID, limit)
+	rows, err := q.Query(ctx, `SELECT DISTINCT
+		attempt.provider_id, attempt.route_id, attempt.route_key
+		FROM task_upstream_attempts attempt
+		JOIN tasks task ON task.id = attempt.task_id
+		WHERE attempt.status IN ('submitting','pending')
+		  AND task.status IN ('queued','running')
+		ORDER BY attempt.route_key
+		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]*Task, 0, limit)
+	routes := make([]AsyncPendingRoute, 0, limit)
 	for rows.Next() {
-		task, err := scanTask(rows)
-		if err != nil {
+		var route AsyncPendingRoute
+		if err := rows.Scan(&route.ProviderID, &route.RouteID, &route.RouteKey); err != nil {
 			return nil, err
 		}
-		out = append(out, task)
+		if route.RouteKey != "" {
+			routes = append(routes, route)
+		}
 	}
-	return out, rows.Err()
+	return routes, rows.Err()
 }
 
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
@@ -250,8 +285,8 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 
 const adminTaskSourceSQL = `
 		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
-			output_keys, thumbnail_keys, cost_cents, idempotency_key, error_code,
-			error_message, attempt, started_at, finished_at, created_at
+			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
+			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at
 		FROM tasks
 		UNION ALL
 		SELECT run.id, run.user_id, 'assistant'::text AS type,
@@ -279,9 +314,10 @@ const adminTaskSourceSQL = `
 				FROM jsonb_array_elements(COALESCE(message.metadata->'images', '[]'::jsonb)) image
 				WHERE COALESCE(image->>'fileKey', '') <> ''
 			), '[]'::jsonb) AS thumbnail_keys,
-			0::bigint AS cost_cents, NULL::text AS idempotency_key,
+			0::bigint AS cost_cents, 1::integer AS work_units, NULL::text AS idempotency_key,
 			run.error_code, run.error_message, 0::integer AS attempt,
-			run.started_at, run.finished_at, run.created_at
+			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
+			NULL::timestamptz AS lease_until, run.finished_at, run.created_at
 		FROM assistant_runs run
 		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
 	`
@@ -558,9 +594,33 @@ func TaskTypeCountsSince(ctx context.Context, q Q, since time.Time) (map[string]
 
 // --- 状态机条件更新（返回是否抢到迁移） ---
 
-func ClaimTask(ctx context.Context, q Q, id uuid.UUID, startedAt time.Time) (bool, error) {
+func ClaimTask(ctx context.Context, q Q, id uuid.UUID, startedAt time.Time, owner string, lease time.Duration) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'running', started_at = $2 WHERE id = $1 AND status = 'queued'`, id, startedAt)
+		`UPDATE tasks SET status = 'running', started_at = $2, lease_owner = $3, heartbeat_at = $2, lease_until = $4
+		 WHERE id = $1 AND status = 'queued'
+		   AND (COALESCE(params->>'_completionClaimId', '') = ''
+			OR COALESCE((params->>'_completionClaimedAtMs')::bigint, 0) < $5)`,
+		id, startedAt, owner, startedAt.Add(lease), startedAt.Add(-5*time.Minute).UnixMilli())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func RenewTaskLease(ctx context.Context, q Q, id uuid.UUID, owner string, now time.Time, lease time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET lease_owner = $2, heartbeat_at = $3, lease_until = $4
+		WHERE id = $1 AND status = 'running' AND lease_owner = $2`, id, owner, now, now.Add(lease))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func TransferTaskLease(ctx context.Context, q Q, id uuid.UUID, fromOwner, toOwner string, now time.Time, lease time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET lease_owner = $3, heartbeat_at = $4, lease_until = $5
+		WHERE id = $1 AND status = 'running' AND lease_owner = $2`, id, fromOwner, toOwner, now, now.Add(lease))
 	if err != nil {
 		return false, err
 	}
@@ -574,17 +634,33 @@ func SetTaskModel(ctx context.Context, q Q, id uuid.UUID, model string) error {
 	return err
 }
 
+func SetTaskModelOwned(ctx context.Context, q Q, id uuid.UUID, model, owner string) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE tasks SET model = $2 WHERE id = $1 AND status = 'running' AND model = '' AND lease_owner = $3`, id, model, owner)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // SetTaskPartialOutputs persists images while generation is still running so
 // reconnecting clients can recover already completed results.
 func SetTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string) error {
-	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, "")
+	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, "", "")
 }
 
 func SetTaskPartialOutputsClaimed(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID string) error {
-	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, claimID)
+	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, claimID, "")
 }
 
-func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID string) error {
+func SetTaskPartialOutputsOwned(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, owner string) error {
+	if strings.TrimSpace(owner) == "" {
+		return errors.New("task lease owner is required")
+	}
+	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, "", owner)
+}
+
+func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID, owner string) error {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
@@ -593,9 +669,10 @@ func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, t
 	}
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3
-		 WHERE id = $1 AND status = 'running'
-		   AND ($4 = '' OR params->>'_completionClaimId' = $4)`,
-		id, outputKeys, thumbnailKeys, claimID)
+		 WHERE id = $1 AND (($4 <> '' AND status IN ('queued','running')) OR ($4 = '' AND status = 'running'))
+		   AND ($4 = '' OR params->>'_completionClaimId' = $4)
+		   AND ($5 = '' OR lease_owner = $5)`,
+		id, outputKeys, thumbnailKeys, claimID, owner)
 	if err != nil {
 		return err
 	}
@@ -608,19 +685,34 @@ func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, t
 // TryClaimTaskCompletion fences provider-level pollers before they download and
 // persist a completed result. Expired claims can be recovered after a crash.
 func TryClaimTaskCompletion(ctx context.Context, q Q, id uuid.UUID, claimID string, claimedAt time.Time, lease time.Duration) (bool, error) {
+	return tryClaimTaskCompletion(ctx, q, id, claimID, claimedAt, lease, "")
+}
+
+func TryClaimTaskCompletionOwned(ctx context.Context, q Q, id uuid.UUID, claimID string, claimedAt time.Time, lease time.Duration, owner string) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, errors.New("task lease owner is required")
+	}
+	return tryClaimTaskCompletion(ctx, q, id, claimID, claimedAt, lease, owner)
+}
+
+func tryClaimTaskCompletion(ctx context.Context, q Q, id uuid.UUID, claimID string, claimedAt time.Time, lease time.Duration, owner string) (bool, error) {
 	if strings.TrimSpace(claimID) == "" {
 		return false, errors.New("completion claim id is required")
 	}
 	claimedAtMs := claimedAt.UTC().UnixMilli()
 	cutoffMs := claimedAt.Add(-lease).UTC().UnixMilli()
+	statusFence := `status IN ('queued','running') AND $5 = ''`
+	if owner != "" {
+		statusFence = `status = 'running' AND lease_owner = $5`
+	}
 	tag, err := q.Exec(ctx, `UPDATE tasks
 		SET params = jsonb_set(
 			jsonb_set(COALESCE(params, '{}'::jsonb), '{_completionClaimId}', to_jsonb($2::text), true),
 			'{_completionClaimedAtMs}', to_jsonb($3::bigint), true)
-		WHERE id = $1 AND status = 'running'
+		WHERE id = $1 AND `+statusFence+`
 		  AND (COALESCE(params->>'_completionClaimId', '') = ''
 			OR COALESCE((params->>'_completionClaimedAtMs')::bigint, 0) < $4)`,
-		id, claimID, claimedAtMs, cutoffMs)
+		id, claimID, claimedAtMs, cutoffMs, owner)
 	if err != nil {
 		return false, err
 	}
@@ -630,7 +722,18 @@ func TryClaimTaskCompletion(ctx context.Context, q Q, id uuid.UUID, claimID stri
 func ReleaseTaskCompletionClaim(ctx context.Context, q Q, id uuid.UUID, claimID string) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE tasks
 		SET params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
-		WHERE id = $1 AND status = 'running' AND params->>'_completionClaimId' = $2`, id, claimID)
+		WHERE id = $1 AND status IN ('queued','running') AND params->>'_completionClaimId' = $2`, id, claimID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func RenewTaskCompletionClaim(ctx context.Context, q Q, id uuid.UUID, claimID string, now time.Time, lease time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_completionClaimedAtMs}', to_jsonb($3::bigint), true)
+		WHERE id = $1 AND status IN ('queued','running') AND params->>'_completionClaimId' = $2`,
+		id, claimID, now.UTC().UnixMilli())
 	if err != nil {
 		return false, err
 	}
@@ -647,14 +750,21 @@ func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (b
 }
 
 func MarkTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
-	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, "")
+	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, "", "")
 }
 
 func MarkTaskSucceededClaimed(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
-	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, claimID)
+	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, claimID, "")
 }
 
-func markTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
+func MarkTaskSucceededOwned(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, owner string) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, errors.New("task lease owner is required")
+	}
+	return markTaskSucceeded(ctx, q, id, outputKeys, thumbnailKeys, finishedAt, "", owner)
+}
+
+func markTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID, owner string) (bool, error) {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
@@ -664,9 +774,11 @@ func markTaskSucceeded(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumb
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET status = 'succeeded', output_keys = $2, thumbnail_keys = $3, finished_at = $4,
 			error_code = NULL, error_message = NULL,
+			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
 			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
-		 WHERE id = $1 AND status = 'running'
-		   AND ($5 = '' OR params->>'_completionClaimId' = $5)`, id, outputKeys, thumbnailKeys, finishedAt, claimID)
+		 WHERE id = $1 AND (($5 <> '' AND status IN ('queued','running')) OR ($5 = '' AND status = 'running'))
+		   AND ($5 = '' OR params->>'_completionClaimId' = $5)
+		   AND ($6 = '' OR lease_owner = $6)`, id, outputKeys, thumbnailKeys, finishedAt, claimID, owner)
 	if err != nil {
 		return false, err
 	}
@@ -699,19 +811,28 @@ func LockUserTaskExecution(ctx context.Context, q Q, userID uuid.UUID) error {
 }
 
 func MarkTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time) (bool, error) {
-	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, "")
+	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, "", "")
 }
 
 func MarkTaskFailedClaimed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, claimID string) (bool, error) {
-	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, claimID)
+	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, claimID, "")
 }
 
-func markTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, claimID string) (bool, error) {
+func MarkTaskFailedOwned(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, owner string) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, errors.New("task lease owner is required")
+	}
+	return markTaskFailed(ctx, q, id, fromStatus, errorCode, errorMessage, finishedAt, "", owner)
+}
+
+func markTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time, claimID, owner string) (bool, error) {
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET status = 'failed', error_code = $3, error_message = $4, finished_at = $5,
+			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
 			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
-		 WHERE id = $1 AND status = $2
-		   AND ($6 = '' OR params->>'_completionClaimId' = $6)`, id, fromStatus, errorCode, errorMessage, finishedAt, claimID)
+		 WHERE id = $1 AND (($6 <> '' AND status IN ('queued','running')) OR ($6 = '' AND status = $2))
+		   AND ($6 = '' OR params->>'_completionClaimId' = $6)
+		   AND ($7 = '' OR lease_owner = $7)`, id, fromStatus, errorCode, errorMessage, finishedAt, claimID, owner)
 	if err != nil {
 		return false, err
 	}
@@ -720,9 +841,13 @@ func markTaskFailed(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCod
 
 func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'queued', error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
+		`UPDATE tasks SET status = 'queued', attempt = attempt + 1,
+			error_code = NULL, error_message = NULL, started_at = NULL,
+			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL, finished_at = NULL,
 			output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb,
-			params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
+			params = COALESCE(params, '{}'::jsonb)
+				- '_crunTaskIds' - '_upstreamStage' - '_failedProviderConfigIds'
+				- '_completionClaimId' - '_completionClaimedAtMs'
 		 WHERE id = $1 AND status = 'failed'`, id)
 	if err != nil {
 		return false, err
@@ -731,35 +856,63 @@ func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 }
 
 func SetTaskCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string) error {
+	return setTaskCRUNTaskIDs(ctx, q, id, taskIDs, "")
+}
+
+func SetTaskCRUNTaskIDsOwned(ctx context.Context, q Q, id uuid.UUID, taskIDs []string, owner string) error {
+	return setTaskCRUNTaskIDs(ctx, q, id, taskIDs, owner)
+}
+
+func setTaskCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string, owner string) error {
 	payload, err := json.Marshal(taskIDs)
 	if err != nil {
 		return err
 	}
 	_, err = q.Exec(ctx, `UPDATE tasks SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_crunTaskIds}', $2::jsonb, true)
-		WHERE id = $1`, id, string(payload))
+		WHERE id = $1 AND ($3 = '' OR (status = 'running' AND lease_owner = $3))`, id, string(payload), owner)
 	return err
 }
 
 // RequeueRunningTask 将失去 Worker 的 running 任务恢复到 queued。任务原有冻结金额
 // 保持不变，后续仍以同一个 task ID 查询幂等的上游图片任务。
 func RequeueRunningTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
+	return requeueRunningTask(ctx, q, id, "")
+}
+
+func RequeueRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, errors.New("task lease owner is required")
+	}
+	return requeueRunningTask(ctx, q, id, owner)
+}
+
+func requeueRunningTask(ctx context.Context, q Q, id uuid.UUID, owner string) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'queued', started_at = NULL
-		 WHERE id = $1 AND status = 'running'`, id)
+		`UPDATE tasks SET status = 'queued', started_at = NULL, lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
+			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		 WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_owner = $2)`, id, owner)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
 }
 
-// RequeueAllRunningTasks is used once when a Worker process starts. A running
-// row cannot have a live handler in the newly started process, so it is safe to
-// make it claimable again. Upstream submission is idempotent on the task ID.
-func RequeueAllRunningTasks(ctx context.Context, q Q) ([]uuid.UUID, error) {
+// RequeueExpiredRunningTasks only recovers rows whose lease has expired. This
+// keeps live tasks safe during rolling deploys and multi-worker startup.
+func RequeueExpiredRunningTasks(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
 	rows, err := q.Query(ctx,
-		`UPDATE tasks SET status = 'queued', started_at = NULL
-		 WHERE status = 'running'
-		 RETURNING id`)
+		`WITH expired AS (
+			SELECT id FROM tasks
+			WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= $1)
+			ORDER BY lease_until NULLS FIRST, started_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT 500
+		)
+		UPDATE tasks AS task SET status = 'queued', started_at = NULL, lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
+			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		FROM expired
+		WHERE task.id = expired.id AND task.status = 'running' AND (task.lease_until IS NULL OR task.lease_until <= $1)
+		RETURNING task.id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -775,9 +928,48 @@ func RequeueAllRunningTasks(ctx context.Context, q Q) ([]uuid.UUID, error) {
 	return ids, rows.Err()
 }
 
+// RequeueAllRunningTasks is retained for test and maintenance callers. New
+// workers must use RequeueExpiredRunningTasks so live leases are preserved.
+func RequeueAllRunningTasks(ctx context.Context, q Q) ([]uuid.UUID, error) {
+	return RequeueExpiredRunningTasks(ctx, q, time.Now().UTC())
+}
+
+func ClearTaskLease(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE tasks SET lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL WHERE id = $1`, id)
+	return err
+}
+
 func BumpTaskAttempt(ctx context.Context, q Q, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `UPDATE tasks SET attempt = attempt + 1 WHERE id = $1`, id)
 	return err
+}
+
+// RetryRunningTaskOwned atomically records provider failover history, bumps the
+// attempt, and returns a lease-owned running task to queued. A stale worker can
+// never split these state changes or retry work after losing its lease.
+func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string, expectedAttempt int, failedProviderIDs []string) (int, bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return expectedAttempt, false, errors.New("task lease owner is required")
+	}
+	payload, err := json.Marshal(failedProviderIDs)
+	if err != nil {
+		return expectedAttempt, false, err
+	}
+	var attempt int
+	err = q.QueryRow(ctx, `UPDATE tasks SET
+		status = 'queued', attempt = attempt + 1, started_at = NULL, finished_at = NULL,
+		lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
+		error_code = NULL, error_message = NULL,
+		params = jsonb_set(
+			COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_crunTaskIds',
+			'{_failedProviderConfigIds}', $4::jsonb, true)
+		WHERE id = $1 AND status = 'running' AND lease_owner = $2 AND attempt = $3
+		  AND COALESCE(params->>'_completionClaimId', '') = ''
+		RETURNING attempt`, id, owner, expectedAttempt, string(payload)).Scan(&attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return expectedAttempt, false, nil
+	}
+	return attempt, err == nil, err
 }
 
 func DeleteTask(ctx context.Context, q Q, id uuid.UUID) error {
@@ -788,13 +980,13 @@ func DeleteTask(ctx context.Context, q Q, id uuid.UUID) error {
 // ListZombieTaskIDs 找出 running 且 started_at 早于阈值的任务。
 func ListZombieTaskIDs(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
 	return listTaskIDs(ctx, q,
-		`SELECT id FROM tasks WHERE status = 'running' AND started_at < $1 ORDER BY started_at LIMIT 500`, before)
+		`SELECT id FROM tasks WHERE status = 'running' AND (lease_until IS NULL OR lease_until < $1) ORDER BY started_at LIMIT 500`, before)
 }
 
 // ListStaleQueuedTaskIDs 找出 queued 且 created_at 早于阈值的任务（入队丢失回收）。
 func ListStaleQueuedTaskIDs(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
 	return listTaskIDs(ctx, q,
-		`SELECT id FROM tasks WHERE status = 'queued' AND created_at < $1 ORDER BY created_at LIMIT 500`, before)
+		`SELECT id FROM tasks WHERE status = 'queued' AND created_at < $1 ORDER BY created_at LIMIT 15000`, before)
 }
 
 func listTaskIDs(ctx context.Context, q Q, sql string, args ...any) ([]uuid.UUID, error) {

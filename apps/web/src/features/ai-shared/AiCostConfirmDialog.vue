@@ -1,5 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
+import { updateProfile } from '@/services/meApi'
+import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -10,12 +12,19 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
+const authStore = useAuthStore()
 const panelRef = ref(null)
+const skipEveryTime = ref(false)
+const savingPreference = ref(false)
 
 watch(
   () => props.show,
   (show) => {
-    if (show) nextTick(() => panelRef.value?.focus())
+    if (show) {
+      skipEveryTime.value = false
+      savingPreference.value = false
+      nextTick(() => panelRef.value?.focus())
+    }
   },
 )
 
@@ -65,7 +74,18 @@ const creditInsufficient = computed(
     creditAvailable.value < totalCostPoints.value,
 )
 const featureLabel = computed(() => String(props.cost?.featureLabel || '本次 AI 功能').trim())
-const confirmDisabled = computed(() => isCredits.value && creditInsufficient.value)
+const unitLabel = computed(() => String(props.cost?.unitLabel || '张').trim())
+const summary = computed(() =>
+  String(
+    props.cost?.summary ||
+      (isCredits.value
+        ? '提交后先冻结预计费用，任务完成后按实际生成结果结算。'
+        : '请确认预计调用费用后再提交任务。'),
+  ),
+)
+const confirmDisabled = computed(
+  () => (isCredits.value && creditInsufficient.value) || savingPreference.value,
+)
 const totalLabel = computed(() => {
   if (hasServerPricing.value) return formatPoints(totalPriceCents.value)
   if (isCredits.value && unitCost.value > 0) return `${formatAmount(unitCost.value)} 积分`
@@ -74,10 +94,29 @@ const totalLabel = computed(() => {
 })
 const breakdownLabel = computed(() => {
   if (hasServerPricing.value) {
-    return `${formatPoints(unitPriceCents.value)} / 张 × ${imageCount.value} 张`
+    return `${formatPoints(unitPriceCents.value)} / ${unitLabel.value} × ${imageCount.value} ${unitLabel.value}`
   }
-  return imageCount.value > 1 ? `${imageCount.value} 张` : '1 张'
+  return `${imageCount.value} ${unitLabel.value}`
 })
+
+async function persistSkipPreference() {
+  if (!skipEveryTime.value || !authStore.isAuthenticated) return
+  savingPreference.value = true
+  try {
+    const result = await updateProfile({ requireCostConfirm: false })
+    authStore.patchUser(result?.user || { requireCostConfirm: false })
+  } catch {
+    // 偏好保存失败不阻断本次确认生成
+  } finally {
+    savingPreference.value = false
+  }
+}
+
+async function handleConfirm() {
+  if (confirmDisabled.value) return
+  await persistSkipPreference()
+  emit('confirm')
+}
 </script>
 
 <template>
@@ -103,7 +142,7 @@ const breakdownLabel = computed(() => {
           <span class="ai-cost-confirm-icon" aria-hidden="true">
             <i class="bi" :class="isCredits ? 'bi-coin' : 'bi-cash-coin'"></i>
           </span>
-          <div>
+          <div class="ai-cost-confirm-titles">
             <span class="ai-cost-confirm-eyebrow">{{ featureLabel }}</span>
             <h5 id="ai-cost-confirm-title">
               {{ isCredits ? '确认生成费用' : '确认本次 AI 费用' }}
@@ -121,50 +160,50 @@ const breakdownLabel = computed(() => {
         </header>
 
         <p id="ai-cost-confirm-summary" class="ai-cost-confirm-summary">
-          {{
-            isCredits
-              ? '提交后先冻结预计费用，任务完成后按实际生成结果结算。'
-              : '请确认预计调用费用后再提交任务。'
-          }}
+          {{ summary }}
         </p>
 
-        <div class="ai-cost-confirm-total">
-          <span>本次预计</span>
-          <strong>{{ totalLabel }}</strong>
-          <small>{{ breakdownLabel }}</small>
-        </div>
+        <div class="ai-cost-confirm-card">
+          <div class="ai-cost-confirm-total">
+            <div class="ai-cost-confirm-total__copy">
+              <span>本次预计</span>
+              <small>{{ breakdownLabel }}</small>
+            </div>
+            <strong>{{ totalLabel }}</strong>
+          </div>
 
-        <div v-if="isCredits" class="ai-cost-confirm-balance">
-          <div>
-            <span>当前可用</span>
-            <strong>{{
-              creditAvailable == null ? '读取中' : formatPoints(creditAvailable)
-            }}</strong>
+          <div v-if="isCredits" class="ai-cost-confirm-balance">
+            <div>
+              <span>当前可用</span>
+              <strong>{{
+                creditAvailable == null ? '读取中' : formatPoints(creditAvailable)
+              }}</strong>
+            </div>
+            <i class="bi bi-arrow-right" aria-hidden="true"></i>
+            <div :class="{ danger: creditInsufficient }">
+              <span>支付后余额</span>
+              <strong>
+                {{
+                  creditAvailable == null
+                    ? '待计算'
+                    : creditInsufficient
+                      ? '余额不足'
+                      : formatPoints(creditRemaining)
+                }}
+              </strong>
+            </div>
           </div>
-          <i class="bi bi-arrow-right" aria-hidden="true"></i>
-          <div :class="{ danger: creditInsufficient }">
-            <span>支付后余额</span>
-            <strong>
-              {{
-                creditAvailable == null
-                  ? '待计算'
-                  : creditInsufficient
-                    ? '余额不足'
-                    : formatPoints(creditRemaining)
-              }}
-            </strong>
-          </div>
-        </div>
 
-        <div v-else class="ai-cost-confirm-balance">
-          <div>
-            <span>今日已用</span>
-            <strong>${{ Number(cost?.dayCost || 0).toFixed(4) }}</strong>
-          </div>
-          <i class="bi bi-dot" aria-hidden="true"></i>
-          <div>
-            <span>本月已用</span>
-            <strong>${{ Number(cost?.monthCost || 0).toFixed(4) }}</strong>
+          <div v-else class="ai-cost-confirm-balance">
+            <div>
+              <span>今日已用</span>
+              <strong>${{ Number(cost?.dayCost || 0).toFixed(4) }}</strong>
+            </div>
+            <i class="bi bi-dot" aria-hidden="true"></i>
+            <div>
+              <span>本月已用</span>
+              <strong>${{ Number(cost?.monthCost || 0).toFixed(4) }}</strong>
+            </div>
           </div>
         </div>
 
@@ -178,15 +217,10 @@ const breakdownLabel = computed(() => {
         </p>
 
         <footer class="ai-cost-confirm-footer" :class="{ 'is-no-preference': hidePreference }">
-          <RouterLink
-            v-if="!hidePreference"
-            class="ai-cost-confirm-preference"
-            :to="{ name: 'profile', query: { tab: 'account' }, hash: '#generation-preferences' }"
-            @click="emit('cancel')"
-          >
-            <i class="bi bi-sliders2" aria-hidden="true"></i>
-            不再每次确认
-          </RouterLink>
+          <label v-if="!hidePreference" class="ai-cost-confirm-preference">
+            <input v-model="skipEveryTime" type="checkbox" />
+            <span>不再每次确认</span>
+          </label>
           <div class="ai-cost-confirm-actions">
             <button type="button" class="ai-cost-confirm-btn ghost" @click.stop="emit('cancel')">
               取消
@@ -195,10 +229,9 @@ const breakdownLabel = computed(() => {
               type="button"
               class="ai-cost-confirm-btn primary"
               :disabled="confirmDisabled"
-              @click.stop="emit('confirm')"
+              @click.stop="handleConfirm"
             >
-              {{ isCredits ? '确认并生成' : '继续生成' }}
-              <i class="bi bi-arrow-right" aria-hidden="true"></i>
+              确认
             </button>
           </div>
         </footer>
@@ -209,14 +242,21 @@ const breakdownLabel = computed(() => {
 
 <style scoped>
 .ai-cost-confirm-layer {
+  --cc-accent: #6d5cff;
+  --cc-accent-2: #8b7bff;
+  --cc-accent-rgb: 109, 92, 255;
+  --cc-on-accent: #fff;
+  --cc-danger: #ff8d8d;
+  --cc-danger-soft: rgba(255, 141, 141, 0.12);
+
   position: fixed;
   inset: 0;
   z-index: 2500;
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(5, 6, 9, 0.7);
-  backdrop-filter: blur(10px) saturate(0.82);
+  background: rgba(9, 9, 12, 0.62);
+  backdrop-filter: blur(12px) saturate(0.9);
 }
 
 .ai-cost-confirm-layer.is-elevated {
@@ -224,55 +264,65 @@ const breakdownLabel = computed(() => {
 }
 
 .ai-cost-confirm-panel {
-  width: min(430px, calc(100vw - 32px));
-  padding: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  background: rgba(18, 19, 23, 0.97);
-  color: #f5f6f8;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px 22px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(var(--cc-accent-rgb), 0.16), transparent 42%),
+    rgba(18, 18, 24, 0.97);
+  color: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
   animation: ai-cost-confirm-in 0.2s ease-out both;
   outline: none;
 }
 
 .ai-cost-confirm-head {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 32px;
+  grid-template-columns: 40px minmax(0, 1fr) 32px;
   align-items: center;
   gap: 12px;
 }
 
 .ai-cost-confirm-icon {
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(118, 219, 162, 0.32);
-  border-radius: 8px;
-  background: rgba(118, 219, 162, 0.11);
-  color: #8de0af;
-  font-size: 1rem;
+  border: 1px solid rgba(var(--cc-accent-rgb), 0.38);
+  border-radius: 12px;
+  background: rgba(var(--cc-accent-rgb), 0.14);
+  color: var(--cc-accent-2);
+  font-size: 1.05rem;
 }
 
 .is-credits .ai-cost-confirm-icon {
-  border-color: rgba(245, 188, 66, 0.36);
-  background: rgba(245, 188, 66, 0.12);
-  color: #f5bc42;
+  border-color: rgba(var(--cc-accent-rgb), 0.42);
+  background: rgba(var(--cc-accent-rgb), 0.16);
+  color: var(--cc-accent-2);
+}
+
+.ai-cost-confirm-titles {
+  min-width: 0;
 }
 
 .ai-cost-confirm-eyebrow {
   display: block;
   overflow: hidden;
   color: rgba(255, 255, 255, 0.48);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.68rem;
+  letter-spacing: 0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ai-cost-confirm-head h5 {
-  margin: 3px 0 0;
-  font-size: 1rem;
-  font-weight: 680;
+  margin: 4px 0 0;
+  font-size: 1.05rem;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .ai-cost-confirm-close {
@@ -281,7 +331,7 @@ const breakdownLabel = computed(() => {
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: 10px;
   background: transparent;
   color: rgba(255, 255, 255, 0.52);
   cursor: pointer;
@@ -296,40 +346,56 @@ const breakdownLabel = computed(() => {
 }
 
 .ai-cost-confirm-summary {
-  margin: 16px 0 0;
+  margin: 14px 0 0;
   color: rgba(255, 255, 255, 0.58);
-  font-size: 0.76rem;
-  line-height: 1.6;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.ai-cost-confirm-card {
+  display: grid;
+  gap: 0;
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(var(--cc-accent-rgb), 0.18);
+  border-radius: 14px;
+  background: rgba(var(--cc-accent-rgb), 0.08);
 }
 
 .ai-cost-confirm-total {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 3px 16px;
-  margin-top: 18px;
-  padding: 17px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 12px;
 }
 
-.ai-cost-confirm-total > span {
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 0.75rem;
+.ai-cost-confirm-total__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-cost-confirm-total__copy > span {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.ai-cost-confirm-total__copy > small {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.66rem;
+  line-height: 1.35;
 }
 
 .ai-cost-confirm-total strong {
-  grid-row: 1 / span 2;
-  grid-column: 2;
-  color: #f5bc42;
+  flex: 0 0 auto;
+  color: var(--cc-accent-2);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 1.4rem;
-  font-weight: 720;
-}
-
-.ai-cost-confirm-total small {
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 0.67rem;
+  font-size: 1.35rem;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .ai-cost-confirm-balance {
@@ -337,12 +403,14 @@ const breakdownLabel = computed(() => {
   grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  padding: 15px 0 2px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid rgba(var(--cc-accent-rgb), 0.14);
 }
 
 .ai-cost-confirm-balance > div {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .ai-cost-confirm-balance > div:last-child {
@@ -351,22 +419,25 @@ const breakdownLabel = computed(() => {
 
 .ai-cost-confirm-balance span {
   color: rgba(255, 255, 255, 0.45);
-  font-size: 0.67rem;
+  font-size: 0.66rem;
 }
 
 .ai-cost-confirm-balance strong {
-  color: rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.92);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.82rem;
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-cost-confirm-balance > i {
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(var(--cc-accent-rgb), 0.55);
   text-align: center;
 }
 
 .ai-cost-confirm-balance .danger strong {
-  color: #ff9898;
+  color: var(--cc-danger);
 }
 
 .ai-cost-confirm-warn {
@@ -374,17 +445,18 @@ const breakdownLabel = computed(() => {
   align-items: flex-start;
   gap: 8px;
   margin: 12px 0 0;
-  padding: 9px 10px;
-  border-left: 2px solid rgba(245, 188, 66, 0.72);
-  background: rgba(245, 188, 66, 0.08);
-  color: #f7d99c;
-  font-size: 0.7rem;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--cc-accent-rgb), 0.28);
+  background: rgba(var(--cc-accent-rgb), 0.1);
+  color: #c9c0ff;
+  font-size: 0.72rem;
   line-height: 1.5;
 }
 
 .ai-cost-confirm-warn.is-danger {
-  border-color: rgba(255, 118, 118, 0.76);
-  background: rgba(255, 118, 118, 0.08);
+  border-color: rgba(255, 141, 141, 0.36);
+  background: var(--cc-danger-soft);
   color: #ffb2b2;
 }
 
@@ -392,8 +464,8 @@ const breakdownLabel = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  margin-top: 20px;
+  gap: 12px;
+  margin-top: 18px;
 }
 
 .ai-cost-confirm-footer.is-no-preference {
@@ -403,37 +475,49 @@ const breakdownLabel = computed(() => {
 .ai-cost-confirm-preference {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: rgba(255, 255, 255, 0.46);
-  font-size: 0.68rem;
-  text-decoration: none;
-  transition: color 0.18s ease;
+  gap: 8px;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.72rem;
+  cursor: pointer;
+  user-select: none;
 }
 
-.ai-cost-confirm-preference:hover {
-  color: #f5bc42;
+.ai-cost-confirm-preference input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--cc-accent);
+  cursor: pointer;
+}
+
+.ai-cost-confirm-preference span {
+  line-height: 1.3;
 }
 
 .ai-cost-confirm-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
 }
 
 .ai-cost-confirm-btn {
-  min-height: 36px;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 0 13px;
-  border-radius: 7px;
-  font-size: 0.76rem;
-  font-weight: 650;
+  gap: 6px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 680;
+  white-space: nowrap;
   cursor: pointer;
   transition:
     transform 0.16s ease,
     background 0.18s ease,
-    border-color 0.18s ease;
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .ai-cost-confirm-btn:hover:not(:disabled) {
@@ -448,7 +532,7 @@ const breakdownLabel = computed(() => {
 .ai-cost-confirm-btn.ghost {
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: transparent;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .ai-cost-confirm-btn.ghost:hover:not(:disabled) {
@@ -457,14 +541,21 @@ const breakdownLabel = computed(() => {
 }
 
 .ai-cost-confirm-btn.primary {
-  border: 1px solid #dca52f;
-  background: #dca52f;
-  color: #1b1508;
+  border: 1px solid rgba(242, 247, 255, 0.28);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.22), transparent 44%),
+    linear-gradient(108deg, rgba(84, 70, 255, 0.96), rgba(127, 103, 255, 0.88) 54%, rgba(159, 125, 255, 0.9));
+  color: var(--cc-on-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 10px 24px rgba(91, 77, 255, 0.34);
 }
 
 .ai-cost-confirm-btn.primary:hover:not(:disabled) {
-  border-color: #efbd4e;
-  background: #efbd4e;
+  border-color: rgba(255, 255, 255, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 14px 28px rgba(91, 77, 255, 0.42);
 }
 
 @keyframes ai-cost-confirm-in {
@@ -478,7 +569,24 @@ const breakdownLabel = computed(() => {
   }
 }
 
+@media (max-width: 420px) {
+  .ai-cost-confirm-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
 
+  .ai-cost-confirm-actions {
+    width: 100%;
+  }
+
+  .ai-cost-confirm-btn {
+    flex: 1 1 auto;
+  }
+
+  .ai-cost-confirm-preference {
+    justify-content: center;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ai-cost-confirm-panel {
@@ -496,34 +604,62 @@ const breakdownLabel = computed(() => {
 }
 
 .ai-cost-confirm-layer.is-light {
-  background: rgba(48, 49, 62, 0.3);
+  background: rgba(48, 49, 62, 0.28);
 }
 
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-panel {
-  border-color: rgba(34, 36, 50, 0.1);
-  background: #ffffff;
+  border-color: rgba(109, 92, 255, 0.12);
+  background:
+    radial-gradient(circle at 14% 0%, rgba(109, 92, 255, 0.08), transparent 40%),
+    #ffffff;
   color: #242531;
-  box-shadow: 0 24px 70px rgba(48, 44, 78, 0.18);
+  box-shadow: 0 24px 64px rgba(43, 39, 77, 0.14);
 }
 
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-summary,
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-eyebrow,
-.ai-cost-confirm-layer.is-light .ai-cost-confirm-total > span,
-.ai-cost-confirm-layer.is-light .ai-cost-confirm-total > small,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total__copy > span,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total__copy > small,
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-balance span,
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-preference {
-  color: rgba(43, 45, 60, 0.56);
+  color: rgba(43, 45, 60, 0.62);
 }
 
-.ai-cost-confirm-layer.is-light .ai-cost-confirm-total,
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-card {
+  border-color: rgba(109, 92, 255, 0.14);
+  background: #f6f6fb;
+}
+
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-balance {
-  border-color: rgba(34, 36, 50, 0.09);
-  background: #f7f7fa;
+  border-top-color: rgba(109, 92, 255, 0.1);
 }
 
-.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance strong,
-.ai-cost-confirm-layer.is-light .ai-cost-confirm-total strong {
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance strong {
   color: #242531;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-total strong {
+  color: #5b4ae8;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance > i {
+  color: rgba(109, 92, 255, 0.55);
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-balance .danger strong {
+  color: #d94848;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-warn {
+  border-color: rgba(109, 92, 255, 0.18);
+  background: rgba(109, 92, 255, 0.06);
+  color: #5a4db8;
+}
+
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-warn.is-danger {
+  border-color: rgba(217, 72, 72, 0.22);
+  background: rgba(217, 72, 72, 0.06);
+  color: #c24141;
 }
 
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-close,
@@ -532,8 +668,13 @@ const breakdownLabel = computed(() => {
   color: rgba(43, 45, 60, 0.72);
 }
 
+.ai-cost-confirm-layer.is-light .ai-cost-confirm-close:hover {
+  background: rgba(109, 92, 255, 0.08);
+  color: #242531;
+}
+
 .ai-cost-confirm-layer.is-light .ai-cost-confirm-btn.ghost:hover:not(:disabled) {
-  border-color: rgba(34, 36, 50, 0.2);
-  background: rgba(34, 36, 50, 0.05);
+  border-color: rgba(109, 92, 255, 0.28);
+  background: rgba(109, 92, 255, 0.06);
 }
 </style>

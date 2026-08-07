@@ -59,6 +59,10 @@ type Image struct {
 	RevisedPrompt string `json:"revisedPrompt,omitempty"`
 }
 
+type ImageOptions struct {
+	InputFidelity string
+}
+
 type UpstreamError struct {
 	Status  int
 	Message string
@@ -637,13 +641,17 @@ func contains(values []string, value string) bool {
 }
 
 func (c *Client) GenerateImage(ctx context.Context, prompt, size, quality string, count int, referenceImages []string) ([]Image, error) {
-	return c.GenerateImageProgressive(ctx, prompt, size, quality, count, referenceImages, nil)
+	return c.GenerateImageProgressiveWithOptions(ctx, prompt, size, quality, count, referenceImages, ImageOptions{}, nil)
 }
 
 // GenerateImageProgressive fans out multi-image requests and calls onImage as
 // soon as each indexed result is available. The returned slice remains ordered
 // by requested index for callers that only need the final aggregate.
 func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, quality string, count int, referenceImages []string, onImage func(index int, image Image) error) ([]Image, error) {
+	return c.GenerateImageProgressiveWithOptions(ctx, prompt, size, quality, count, referenceImages, ImageOptions{}, onImage)
+}
+
+func (c *Client) GenerateImageProgressiveWithOptions(ctx context.Context, prompt, size, quality string, count int, referenceImages []string, options ImageOptions, onImage func(index int, image Image) error) ([]Image, error) {
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
@@ -651,7 +659,7 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 		return nil, errors.New("image count must be between 1 and 4")
 	}
 	if count == 1 {
-		generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+		generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages, options)
 		if err != nil {
 			return nil, err
 		}
@@ -673,7 +681,7 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 	results := make(chan result, count)
 	for index := 0; index < count; index++ {
 		go func(index int) {
-			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages, options)
 			if err != nil {
 				results <- result{index: index, err: err}
 				return
@@ -715,10 +723,10 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 	return nil, firstErr
 }
 
-func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
+func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size, quality string, referenceImages []string, options ImageOptions) ([]Image, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		images, err := c.generateSingleImage(ctx, prompt, size, quality, referenceImages)
+		images, err := c.generateSingleImage(ctx, prompt, size, quality, referenceImages, options)
 		if err == nil {
 			return images, nil
 		}
@@ -753,7 +761,7 @@ func transientImageError(err error) bool {
 	return errors.As(err, &netErr) && netErr.Temporary()
 }
 
-func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
+func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality string, referenceImages []string, options ImageOptions) ([]Image, error) {
 	prompt = buildImagePrompt(prompt, size, quality)
 	path := "/v1/images/generations"
 	payload := map[string]any{
@@ -767,6 +775,10 @@ func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality 
 			images = append(images, map[string]string{"image_url": imageURL})
 		}
 		payload["images"] = images
+		switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+		case "low", "high":
+			payload["input_fidelity"] = fidelity
+		}
 	}
 	req, err := c.newJSONRequest(ctx, path, payload)
 	if err != nil {

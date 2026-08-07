@@ -1,6 +1,7 @@
 <script setup>
 import { useAuthStore } from '@/stores/auth'
 import { useAppearanceStore } from '@/stores/appearance'
+import { useLocaleStore } from '@/stores/locale'
 import { useSettingsStore } from '@/stores/settings'
 import { DEFAULT_AUTH_REDIRECT, createLoginRedirectQuery } from '@/services/authRedirect'
 import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
@@ -13,17 +14,30 @@ import { navigationTarget } from '@/router'
 import ThemeDayNightSwitch from '@/components/layout/ThemeDayNightSwitch.vue'
 import LocaleSwitcher from '@/components/layout/LocaleSwitcher.vue'
 import RedeemCodeDialog from '@/components/layout/RedeemCodeDialog.vue'
+import TrialAccessDialog from '@/components/layout/TrialAccessDialog.vue'
+import NavNotificationsMenu from '@/components/layout/NavNotificationsMenu.vue'
+import NavMusicPlayer from '@/components/layout/NavMusicPlayer.vue'
+import DeleteHistoryConfirmDialog from '@/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue'
 import { STUDIO_TOOLS } from '@/features/creator-hub/studioTools'
+import { ECOMMERCE_MENU_GROUPS, ECOMMERCE_MENU_LINKS } from '@/features/ecommerce/ecommerceTools'
+import { useClientNotifications } from '@/composables/useClientNotifications'
+import { getTrialAccessCampaign } from '@/services/trialAccessApi'
 
 const route = useRoute()
 const router = useRouter()
 const settingsStore = useSettingsStore()
 const appearanceStore = useAppearanceStore()
 const authStore = useAuthStore()
+const localeStore = useLocaleStore()
 const runtimeConfigStore = useRuntimeConfigStore()
 const { balanceDisplay, availableCents, refreshWalletBalance } = useClientWalletBalance()
+const { refreshUnreadCount } = useClientNotifications()
 const balanceNumberDisplay = computed(() => formatPoints(availableCents.value, { withUnit: false }))
 const redeemDialogOpen = ref(false)
+const trialDialogOpen = ref(false)
+const trialCampaignAvailable = ref(false)
+const logoutConfirmOpen = ref(false)
+const mobileNavOpen = ref(false)
 
 const activeDropdown = ref('')
 let dropdownCloseTimer = null
@@ -93,6 +107,8 @@ const shareLink = { to: '/share', label: '社区', icon: 'bi-images' }
 
 const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-credit-card-2-front-fill' }
 
+const incentivesLink = { to: '/incentive-plans', label: '创作激励', icon: 'bi-gift' }
+
 const toolLinks = [
   {
     to: '/tools/background-remove',
@@ -102,6 +118,7 @@ const toolLinks = [
   },
   { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
   { to: '/updates', label: '更新说明', icon: 'bi-megaphone-fill' },
+  { to: '/feedback', label: '问题反馈', icon: 'bi-chat-square-text' },
 ]
 
 /** bento 布局：hero 左侧通高 / tile 叠字卡 */
@@ -115,7 +132,7 @@ const BENTO_VARIANT = {
   puzzle: 'tile',
 }
 
-const imageDesignLinks = STUDIO_TOOLS.map((tool) => ({
+const imageDesignLinks = STUDIO_TOOLS.filter((tool) => tool.id !== 'ecommerce').map((tool) => ({
   id: tool.id,
   to: tool.to,
   label: tool.label,
@@ -132,10 +149,14 @@ const aiLinks = imageDesignLinks
 const routePrefetchers = {
   '/assistant': () => import('@/views/AssistantWorkspaceView.vue'),
   '/updates': () => import('@/views/UpdatesView.vue'),
+  '/feedback': () => import('@/views/FeedbackView.vue'),
+  '/check-in': () => import('@/views/CheckinView.vue'),
+  '/incentive-plans': () => import('@/views/CreatorIncentivesView.vue'),
   '/pricing': () => import('@/views/PricingView.vue'),
   '/share': () => import('@/views/ShareView.vue'),
   '/studio': () => import('@/views/StudioHubView.vue'),
   '/canvas': () => import('@/views/CanvasAppView.vue'),
+  '/ecommerce-design': () => import('@/views/EcommerceDesignView.vue'),
   '/prompts': () => import('@/views/PromptLibraryView.vue'),
   '/history': () => import('@/views/CreationHistoryView.vue'),
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
@@ -148,6 +169,11 @@ const routePrefetchers = {
   '/app-space': () => import('@/views/AppSpaceView.vue'),
   '/auth': () => import('@/views/auth/AuthAccountView.vue'),
   '/profile': () => import('@/views/ProfileView.vue'),
+  '/notifications': () => import('@/views/NotificationsView.vue'),
+  '/materials': () => import('@/views/MaterialsLibraryView.vue'),
+  '/submissions': () => import('@/views/SubmissionsView.vue'),
+  '/wallet': () => import('@/views/WalletView.vue'),
+  '/account': () => import('@/views/AccountSettingsView.vue'),
 }
 const prefetchedRoutes = new Set()
 
@@ -166,6 +192,15 @@ const dropdownGroupDefs = {
     mega: true,
     primaryTo: '/studio',
   },
+  ecommerce: {
+    name: 'ecommerce',
+    label: 'AI 电商',
+    icon: 'bi-bag-check-fill',
+    links: ECOMMERCE_MENU_LINKS,
+    groups: ECOMMERCE_MENU_GROUPS,
+    commerceMega: true,
+    primaryTo: '/ecommerce-design',
+  },
   tools: {
     name: 'tools',
     label: '工具',
@@ -174,16 +209,18 @@ const dropdownGroupDefs = {
   },
 }
 
-/** 顶栏顺序：首页 → 创作台 → 智能画布 → 图片设计 → 提示词 → 社区 → 历史 → 价格 → 工具 */
+/** 顶栏顺序：首页 → 创作台 → 智能画布 → AI 电商 → 图片设计 → 提示词 → 社区 → 历史 → 价格 → 创作激励 → 工具 */
 const NAV_ORDER = [
   { type: 'home' },
   { type: 'link', link: studioLink },
   { type: 'link', link: canvasLink },
+  { type: 'group', key: 'ecommerce' },
   { type: 'group', key: 'image-design' },
   { type: 'link', link: promptsLink },
   { type: 'link', link: shareLink },
   { type: 'link', link: historyLink },
   { type: 'link', link: pricingLink },
+  { type: 'link', link: incentivesLink },
   { type: 'group', key: 'tools' },
 ]
 
@@ -228,6 +265,11 @@ const loginRoute = computed(() => ({
     mode: 'login',
   },
 }))
+const trialButtonLabel = computed(() => {
+  if (localeStore.locale === 'en') return 'Get trial access'
+  if (localeStore.locale === 'zh-TW') return '取得體驗資格'
+  return '获取体验资格'
+})
 const profileRoute = { name: 'profile' }
 
 const accountDisplayName = computed(
@@ -238,7 +280,10 @@ const accountDisplayName = computed(
     '创作者',
 )
 const accountAvatarUrl = computed(
-  () => settingsStore.settings.avatar_url || '/brand/avatar-placeholder.svg',
+  () =>
+    authStore.user?.avatarUrl ||
+    settingsStore.settings.avatar_url ||
+    '/brand/avatar-placeholder.svg',
 )
 const accountMenuOpen = computed(() => activeDropdown.value === 'account')
 const accountLoggingOut = ref(false)
@@ -264,18 +309,63 @@ function closeRedeemDialog() {
   redeemDialogOpen.value = false
 }
 
+async function refreshTrialCampaignAvailability() {
+  try {
+    const campaign = await getTrialAccessCampaign()
+    trialCampaignAvailable.value = campaign?.enabled === true && campaign?.status === 'active'
+    return campaign
+  } catch {
+    trialCampaignAvailable.value = false
+    return null
+  }
+}
+
+async function openTrialDialog() {
+  closeMenu()
+  closeDropdowns()
+  const campaign = await refreshTrialCampaignAvailability()
+  if (!campaign?.enabled) {
+    notificationService.info('当前没有开放中的体验活动')
+    trialDialogOpen.value = false
+    return
+  }
+  trialDialogOpen.value = true
+}
+
+function closeTrialDialog() {
+  trialDialogOpen.value = false
+}
+
+function consumeTrialDialogQuery() {
+  if (route.query.trial !== 'apply') return
+  const query = { ...route.query }
+  delete query.trial
+  router.replace({ path: route.path, query, hash: route.hash }).catch(() => {})
+  void openTrialDialog()
+}
+
 function openRedeemFromMenu() {
   closeMenu()
   openRedeemDialog()
 }
 
+function openLogoutConfirm() {
+  if (accountLoggingOut.value) return
+  closeMenu()
+  logoutConfirmOpen.value = true
+}
+
+function closeLogoutConfirm() {
+  if (accountLoggingOut.value) return
+  logoutConfirmOpen.value = false
+}
+
 async function handleAccountLogout() {
   if (accountLoggingOut.value) return
-  if (!window.confirm('退出当前账号？退出后需要重新登录。')) return
   accountLoggingOut.value = true
-  closeMenu()
   try {
     const result = await authStore.logout()
+    logoutConfirmOpen.value = false
     if (result?.error) {
       notificationService.warning('本机登录状态已清除，服务器会话可能仍需稍后重试。')
     } else {
@@ -296,12 +386,13 @@ async function handleAccountLogout() {
 function isLinkVisible(link) {
   if (runtimeConfigStore.isBlocked) return false
   if (link.feature && !runtimeConfigStore.isFeatureEnabled(link.feature)) return false
-  return runtimeConfigStore.isRouteVisible(link.to)
+  return runtimeConfigStore.isRouteVisible(normalizePrefetchPath(link.to))
 }
 
 function isLinkDisabled(link) {
+  if (link.disabled) return true
   if (link.feature && !runtimeConfigStore.isFeatureEnabled(link.feature)) return true
-  return !runtimeConfigStore.isRouteClickable(link.to)
+  return !runtimeConfigStore.isRouteClickable(normalizePrefetchPath(link.to))
 }
 
 function linkDisabledReason(link) {
@@ -316,7 +407,17 @@ function handleDisabledLinkClick(event) {
 
 function isRouteActive(path) {
   const currentPath = effectiveRoutePath.value
-  return currentPath === path || currentPath.startsWith(`${path}/`)
+  const targetPath = normalizePrefetchPath(path)
+  return currentPath === targetPath || currentPath.startsWith(`${targetPath}/`)
+}
+
+function isCommerceLinkActive(link) {
+  const targetPath = normalizePrefetchPath(link?.to)
+  if (targetPath !== '/ecommerce-design') return isRouteActive(targetPath)
+  if (effectiveRoutePath.value !== targetPath) return false
+  const query = String(link?.to || '').split('?')[1] || ''
+  const targetTool = new URLSearchParams(query).get('tool') || 'detail'
+  return String(route.query.tool || 'detail') === targetTool
 }
 
 function isGroupActive(links) {
@@ -334,6 +435,15 @@ function getFirstNavigableLink(links = []) {
 }
 
 function handleGroupPrimaryClick(group, event) {
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(max-width: 760px)').matches &&
+    (group.commerceMega || group.mega)
+  ) {
+    openDropdown(group.name)
+    return
+  }
+
   if (group.primaryTo) {
     closeMenu()
     closeDropdowns()
@@ -392,6 +502,12 @@ function openDropdown(name) {
 function closeMenu() {
   clearDropdownCloseTimer()
   activeDropdown.value = ''
+  mobileNavOpen.value = false
+}
+
+function toggleMobileNav() {
+  mobileNavOpen.value = !mobileNavOpen.value
+  if (!mobileNavOpen.value) activeDropdown.value = ''
 }
 
 function normalizePrefetchPath(to) {
@@ -483,6 +599,14 @@ function handleEscape(event) {
     closeRedeemDialog()
     return
   }
+  if (trialDialogOpen.value) {
+    closeTrialDialog()
+    return
+  }
+  if (logoutConfirmOpen.value) {
+    closeLogoutConfirm()
+    return
+  }
   closeMenu()
 }
 
@@ -491,6 +615,7 @@ watch(
   () => {
     closeMenu()
     publishHeaderOffset()
+    consumeTrialDialogQuery()
   },
 )
 
@@ -504,7 +629,12 @@ watch(activeDropdown, () => publishChromeOffsets())
 watch(
   () => authStore.isAuthenticated,
   (ok) => {
-    if (ok) void refreshWalletBalance({ force: true }).catch(() => null)
+    if (ok) {
+      void refreshWalletBalance({ force: true }).catch(() => null)
+      void refreshUnreadCount({ force: true }).catch(() => null)
+      return
+    }
+    void refreshUnreadCount({ force: true }).catch(() => null)
   },
 )
 
@@ -512,6 +642,7 @@ onMounted(() => {
   if (typeof window !== 'undefined') {
     syncHeaderScrollState()
     window.addEventListener('scroll', onWindowScroll, { passive: true })
+    window.addEventListener('focus', refreshTrialCampaignAvailability)
   }
   publishHeaderOffset()
   window.addEventListener('resize', publishHeaderOffset)
@@ -520,7 +651,10 @@ onMounted(() => {
   nextTick(() => bindChromeResizeObservers())
   if (authStore.isAuthenticated) {
     void refreshWalletBalance({ force: true }).catch(() => null)
+    void refreshUnreadCount({ force: true }).catch(() => null)
   }
+  consumeTrialDialogQuery()
+  void refreshTrialCampaignAvailability()
 })
 
 function onDropdownFocusOut(event, name) {
@@ -533,6 +667,7 @@ function onDropdownFocusOut(event, name) {
 onBeforeUnmount(() => {
   clearDropdownCloseTimer()
   window.removeEventListener('scroll', onWindowScroll)
+  window.removeEventListener('focus', refreshTrialCampaignAvailability)
   if (scrollRaf) {
     window.cancelAnimationFrame(scrollRaf)
     scrollRaf = 0
@@ -554,6 +689,7 @@ onBeforeUnmount(() => {
       'nav-motion-off': !settingsStore.getSetting('sidebar_animation_effect', true),
       'is-dark': appearanceStore.isDark,
       'is-scrolled': isScrolled,
+      'is-mobile-open': mobileNavOpen,
     }"
   >
     <div class="header-shell">
@@ -570,7 +706,18 @@ onBeforeUnmount(() => {
           </router-link>
         </div>
 
-        <nav class="main-nav" aria-label="主导航">
+        <button
+          type="button"
+          class="nav-mobile-toggle"
+          :aria-expanded="mobileNavOpen"
+          aria-controls="primary-navigation"
+          :aria-label="mobileNavOpen ? '关闭主导航' : '打开主导航'"
+          @click.stop="toggleMobileNav"
+        >
+          <i class="bi" :class="mobileNavOpen ? 'bi-x-lg' : 'bi-list'" aria-hidden="true"></i>
+        </button>
+
+        <nav id="primary-navigation" class="main-nav" aria-label="主导航">
           <template v-for="item in navItems" :key="item.id">
             <router-link
               v-if="item.type === 'link'"
@@ -598,6 +745,7 @@ onBeforeUnmount(() => {
                 open: activeDropdown === item.name,
                 active: isGroupActive(item.links),
                 'nav-dropdown--mega': item.mega,
+                'nav-dropdown--commerce': item.commerceMega,
               }"
               @mouseenter="openDropdown(item.name)"
               @mouseleave="scheduleCloseDropdowns"
@@ -628,7 +776,10 @@ onBeforeUnmount(() => {
                   class="nav-dropdown-chevron-btn"
                   :aria-expanded="activeDropdown === item.name"
                   aria-label="展开子菜单"
+                  @pointerdown.prevent.stop
                   @click.stop="toggleDropdown(item.name)"
+                  @keydown.enter.prevent.stop="openDropdown(item.name)"
+                  @keydown.space.prevent.stop="openDropdown(item.name)"
                 >
                   <i
                     class="bi bi-chevron-down dropdown-chevron"
@@ -639,7 +790,71 @@ onBeforeUnmount(() => {
               </div>
 
               <div
-                v-if="item.mega"
+                v-if="item.commerceMega"
+                :id="`nav-dropdown-${item.name}`"
+                class="nav-dropdown-menu commerce-mega-menu"
+                role="menu"
+                :data-dropdown-menu="item.name"
+              >
+                <section
+                  v-for="group in item.groups"
+                  :key="group.id"
+                  class="commerce-menu-group"
+                  :class="`is-${group.id}`"
+                  :aria-label="group.label"
+                >
+                  <div class="commerce-menu-group__visual" aria-hidden="true">
+                    <img
+                      src="/ecommerce/ecommerce-menu-preview-v1.webp"
+                      alt=""
+                      width="1024"
+                      height="1536"
+                    />
+                    <span><i class="bi bi-stars"></i>{{ group.label }}</span>
+                  </div>
+                  <div class="commerce-menu-group__content">
+                    <div class="commerce-menu-group__heading">
+                      <h3>{{ group.label }}</h3>
+                      <p>{{ group.description }}</p>
+                    </div>
+                    <div class="commerce-menu-grid">
+                      <RouterLink
+                        v-for="link in group.items.filter(isLinkVisible)"
+                        :key="link.to"
+                        :to="link.to"
+                        class="commerce-menu-card"
+                        :class="{
+                          active: isCommerceLinkActive(link),
+                          disabled: isLinkDisabled(link),
+                        }"
+                        :aria-disabled="isLinkDisabled(link)"
+                        :title="isLinkDisabled(link) ? linkDisabledReason(link) : link.label"
+                        role="menuitem"
+                        @click="
+                          isLinkDisabled(link) ? handleDisabledLinkClick($event) : closeMenu()
+                        "
+                        @focus="prefetchRoute(link.to)"
+                        @pointerenter="prefetchRoute(link.to)"
+                      >
+                        <span class="commerce-menu-card__icon" aria-hidden="true">
+                          <i class="bi" :class="link.icon"></i>
+                        </span>
+                        <span class="commerce-menu-card__copy">
+                          <strong>{{ link.label }}</strong>
+                          <small>{{ link.tagline }}</small>
+                        </span>
+                        <i
+                          class="bi bi-arrow-right-short commerce-menu-card__arrow"
+                          aria-hidden="true"
+                        ></i>
+                      </RouterLink>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <div
+                v-else-if="item.mega"
                 :id="`nav-dropdown-${item.name}`"
                 class="nav-dropdown-menu nav-mega-menu"
                 role="menu"
@@ -660,7 +875,7 @@ onBeforeUnmount(() => {
                       },
                     ]"
                     :aria-disabled="isLinkDisabled(link)"
-                    :title="isLinkDisabled(link) ? linkDisabledReason(link) : link.tagline"
+                    :title="isLinkDisabled(link) ? linkDisabledReason(link) : link.label"
                     role="menuitem"
                     @click="isLinkDisabled(link) ? handleDisabledLinkClick($event) : closeMenu()"
                     @focus="onMegaCardEnter(link)"
@@ -668,6 +883,7 @@ onBeforeUnmount(() => {
                   >
                     <span class="nav-bento-card__media" aria-hidden="true">
                       <img
+                        v-if="link.cover"
                         :src="link.cover"
                         :alt="''"
                         loading="lazy"
@@ -676,7 +892,6 @@ onBeforeUnmount(() => {
                     </span>
                     <span class="nav-bento-card__copy">
                       <strong>{{ link.label }}</strong>
-                      <small>{{ link.tagline }}</small>
                     </span>
                     <em
                       v-if="isRouteActive(link.to)"
@@ -723,8 +938,33 @@ onBeforeUnmount(() => {
 
         <div class="header-tools">
           <div class="tool-actions">
-            <LocaleSwitcher class="nav-locale-switch" />
+            <NavMusicPlayer />
+            <router-link
+              to="/check-in"
+              class="nav-checkin-btn"
+              data-no-translate
+              title="每日签到领积分"
+              @click="closeMenu"
+              @focus="prefetchRoute('/check-in')"
+              @pointerenter="prefetchRoute('/check-in')"
+            >
+              <i class="bi bi-calendar-check" aria-hidden="true"></i>
+              <span>签到</span>
+            </router-link>
+            <button
+              v-if="trialCampaignAvailable"
+              type="button"
+              class="nav-trial-btn"
+              data-no-translate
+              :title="trialButtonLabel"
+              @click="openTrialDialog"
+            >
+              <i class="bi bi-stars" aria-hidden="true"></i>
+              <span>{{ trialButtonLabel }}</span>
+            </button>
             <ThemeDayNightSwitch class="nav-theme-switch" />
+
+            <LocaleSwitcher v-if="!authStore.isAuthenticated" class="nav-locale-switch" />
 
             <router-link
               v-if="!authStore.isAuthenticated && authVisible"
@@ -771,6 +1011,9 @@ onBeforeUnmount(() => {
                 <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
                 <span>{{ balanceNumberDisplay }}</span>
               </button>
+
+              <LocaleSwitcher class="nav-locale-switch" />
+              <NavNotificationsMenu @open-trial="openTrialDialog" />
 
               <div
                 v-if="profileVisible"
@@ -834,6 +1077,39 @@ onBeforeUnmount(() => {
                         <span>个人中心</span>
                       </router-link>
                       <router-link
+                        class="account-menu__item"
+                        role="menuitem"
+                        to="/submissions"
+                        @click="closeMenu()"
+                        @focus="prefetchRoute('/submissions')"
+                        @pointerenter="prefetchRoute('/submissions')"
+                      >
+                        <i class="bi bi-send-check" aria-hidden="true"></i>
+                        <span>我的投稿</span>
+                      </router-link>
+                      <router-link
+                        class="account-menu__item"
+                        role="menuitem"
+                        to="/wallet"
+                        @click="closeMenu()"
+                        @focus="prefetchRoute('/wallet')"
+                        @pointerenter="prefetchRoute('/wallet')"
+                      >
+                        <i class="bi bi-wallet2" aria-hidden="true"></i>
+                        <span>钱包</span>
+                      </router-link>
+                      <router-link
+                        class="account-menu__item"
+                        role="menuitem"
+                        to="/account"
+                        @click="closeMenu()"
+                        @focus="prefetchRoute('/account')"
+                        @pointerenter="prefetchRoute('/account')"
+                      >
+                        <i class="bi bi-person-gear" aria-hidden="true"></i>
+                        <span>账号设置</span>
+                      </router-link>
+                      <router-link
                         v-if="isLinkVisible(pricingLink)"
                         class="account-menu__item"
                         role="menuitem"
@@ -859,12 +1135,23 @@ onBeforeUnmount(() => {
                         <i class="bi bi-ticket-perforated" aria-hidden="true"></i>
                         <span>兑换码</span>
                       </button>
+                      <router-link
+                        class="account-menu__item"
+                        role="menuitem"
+                        to="/materials"
+                        @click="closeMenu()"
+                        @focus="prefetchRoute('/materials')"
+                        @pointerenter="prefetchRoute('/materials')"
+                      >
+                        <i class="bi bi-collection" aria-hidden="true"></i>
+                        <span>素材库</span>
+                      </router-link>
                       <button
                         type="button"
                         class="account-menu__item is-danger"
                         role="menuitem"
                         :disabled="accountLoggingOut"
-                        @click="handleAccountLogout"
+                        @click="openLogoutConfirm"
                       >
                         <i
                           class="bi"
@@ -885,6 +1172,24 @@ onBeforeUnmount(() => {
   </header>
 
   <RedeemCodeDialog :open="redeemDialogOpen" @close="closeRedeemDialog" />
+  <TrialAccessDialog
+    :open="trialDialogOpen"
+    @close="closeTrialDialog"
+    @redeemed="refreshWalletBalance({ force: true })"
+  />
+  <DeleteHistoryConfirmDialog
+    :open="logoutConfirmOpen"
+    :busy="accountLoggingOut"
+    heading="退出当前账号？"
+    description="退出后需要重新登录才能继续查看个人资料和创作记录。"
+    confirm-label="确认退出"
+    busy-label="正在退出…"
+    icon="bi-box-arrow-right"
+    tone="accent"
+    :light="!appearanceStore.isDark"
+    @close="closeLogoutConfirm"
+    @confirm="handleAccountLogout"
+  />
 </template>
 
 <style scoped>
@@ -1331,6 +1636,268 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
+.nav-dropdown.nav-dropdown--commerce {
+  position: relative;
+  z-index: 31;
+}
+
+.nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
+  top: calc(100% + 12px);
+  width: min(1040px, calc(100vw - 32px));
+  padding: 16px;
+  gap: 12px;
+  border: 0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 20px 56px rgb(18 20 28 / 14%);
+  transform: translate3d(-36%, -8px, 0);
+}
+
+.nav-dropdown.nav-dropdown--commerce.open .commerce-mega-menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate3d(-36%, 0, 0);
+}
+
+.commerce-mega-menu::before {
+  top: -16px;
+  height: 16px;
+}
+
+.commerce-menu-group {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 176px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
+}
+
+.commerce-menu-group + .commerce-menu-group {
+  padding-top: 12px;
+  border-top: 1px solid #eceef1;
+}
+
+.commerce-menu-group__visual {
+  position: relative;
+  min-height: 94px;
+  overflow: hidden;
+  background: #eef0f6;
+  border-radius: 8px;
+}
+
+.commerce-menu-group__visual img {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: block;
+  width: 100%;
+  height: 300%;
+  max-width: none;
+  object-fit: cover;
+}
+
+.commerce-menu-group.is-create .commerce-menu-group__visual img {
+  transform: translateY(-33.333%);
+}
+
+.commerce-menu-group.is-image .commerce-menu-group__visual img {
+  transform: translateY(-66.666%);
+}
+
+.commerce-menu-group__visual::after {
+  position: absolute;
+  inset: 40% 0 0;
+  content: '';
+  background: linear-gradient(to bottom, transparent, rgb(16 18 28 / 68%));
+}
+
+.commerce-menu-group__visual > span {
+  position: absolute;
+  z-index: 1;
+  right: 10px;
+  bottom: 9px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 760;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 32%);
+}
+
+.commerce-menu-group__content {
+  min-width: 0;
+}
+
+.commerce-menu-group__heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 9px;
+  margin: 1px 0 8px;
+}
+
+.commerce-menu-group h3 {
+  margin: 0;
+  color: #22252a;
+  font-size: 0.78rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.commerce-menu-group__heading p {
+  margin: 0;
+  overflow: hidden;
+  color: #8a9099;
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commerce-menu-grid {
+  display: grid;
+  gap: 7px;
+}
+
+.commerce-menu-group.is-model .commerce-menu-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.commerce-menu-group.is-create .commerce-menu-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.commerce-menu-group.is-image .commerce-menu-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.commerce-menu-card {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 54px;
+  grid-template-columns: 34px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  color: #24272c;
+  background: #f7f8f9;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  text-decoration: none;
+}
+
+.commerce-menu-card:hover,
+.commerce-menu-card:focus-visible,
+.commerce-menu-card.active {
+  color: #15171a;
+  background: #f0f4ff;
+  border-color: #dbe5ff;
+  outline: none;
+}
+
+.commerce-menu-card__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #315fbc;
+  background: #e8efff;
+  border-radius: 6px;
+  font-size: 0.94rem;
+}
+
+.commerce-menu-card:nth-child(2n) .commerce-menu-card__icon {
+  color: #267a6a;
+  background: #e3f4ef;
+}
+
+.commerce-menu-card__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.commerce-menu-card__copy strong {
+  overflow: hidden;
+  font-size: 0.76rem;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commerce-menu-card__copy small {
+  overflow: hidden;
+  color: #7b828c;
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commerce-menu-card__arrow {
+  color: #a9afb8;
+  font-size: 0.9rem;
+}
+
+.site-header.is-dark .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
+  background: #18181d;
+  border: 1px solid #2d2d35;
+  box-shadow: 0 26px 64px rgb(0 0 0 / 45%);
+}
+
+.site-header.is-dark .commerce-menu-group + .commerce-menu-group {
+  border-color: rgb(255 255 255 / 8%);
+}
+
+.site-header.is-dark .commerce-menu-group h3,
+.site-header.is-dark .commerce-menu-card {
+  color: rgb(255 255 255 / 90%);
+}
+
+.site-header.is-dark .commerce-menu-group__heading p {
+  color: rgb(255 255 255 / 48%);
+}
+
+.site-header.is-dark .commerce-menu-card {
+  background: #222228;
+  border-color: transparent;
+}
+
+.site-header.is-dark .commerce-menu-card__copy small {
+  color: rgb(255 255 255 / 52%);
+}
+
+.site-header.is-dark .commerce-menu-card__icon {
+  color: #a9bfff;
+  background: rgb(102 132 225 / 16%);
+}
+
+.site-header.is-dark .commerce-menu-card:nth-child(2n) .commerce-menu-card__icon {
+  color: #83d8c4;
+  background: rgb(72 174 149 / 14%);
+}
+
+.site-header.is-dark .commerce-menu-card__arrow {
+  color: rgb(255 255 255 / 34%);
+}
+
+.site-header.is-dark .commerce-menu-group__visual {
+  background: #222228;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
+}
+
+.site-header.is-dark .commerce-menu-group__visual img {
+  filter: brightness(0.78) saturate(0.84);
+}
+
+.site-header.is-dark .commerce-menu-card:hover,
+.site-header.is-dark .commerce-menu-card.active {
+  background: #2b263d;
+  border-color: #514875;
+}
+
 .nav-dropdown.nav-dropdown--mega {
   position: relative;
   z-index: 30;
@@ -1370,7 +1937,7 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-template-areas:
     'assistant assistant assistant model model model t2i t2i t2i coloring coloring coloring'
-    'assistant assistant assistant model model model ui ui ui ui ui ui'
+    'assistant assistant assistant model model model ui ui ui ecommerce ecommerce ecommerce'
     'game game game game game game puzzle puzzle puzzle puzzle puzzle puzzle';
   gap: var(--bento-gap);
   min-width: 0;
@@ -1413,6 +1980,12 @@ onBeforeUnmount(() => {
 /* UI 横图 */
 .nav-bento-card.is-ui {
   grid-area: ui;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+}
+
+.nav-bento-card.is-ecommerce {
+  grid-area: ecommerce;
   aspect-ratio: 16 / 9;
   width: 100%;
 }
@@ -1499,11 +2072,7 @@ onBeforeUnmount(() => {
 }
 
 .nav-bento-card.is-assistant .nav-bento-card__copy {
-  padding: 16px 14px 14px;
-}
-
-.nav-bento-card.is-assistant .nav-bento-card__copy strong {
-  font-size: 1.05rem;
+  padding: 12px 12px 10px;
 }
 
 .nav-bento-card__copy strong {
@@ -1603,6 +2172,10 @@ onBeforeUnmount(() => {
     --bento-gap: 6px;
   }
 
+  .commerce-menu-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .nav-bento-card {
     border-radius: 12px;
   }
@@ -1635,8 +2208,11 @@ onBeforeUnmount(() => {
 
 .nav-locale-switch,
 .nav-theme-switch {
-  margin-inline: 2px;
   height: 36px;
+}
+
+.nav-theme-switch {
+  margin-inline: 2px;
 }
 
 .tool-actions > * {
@@ -1712,40 +2288,113 @@ onBeforeUnmount(() => {
   height: 36px;
   min-height: 36px;
   padding: 0 14px;
-  border: 1px solid var(--nav-line);
+  border: 1px solid rgba(21, 22, 31, 0.1);
   border-radius: 999px;
-  color: var(--nav-heading);
+  color: var(--nav-accent);
   text-decoration: none;
   font: inherit;
   font-size: 0.82rem;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.82);
+  font-weight: 760;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfaff 100%);
+  box-shadow: 0 8px 20px rgb(45 42 83 / 10%);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
   white-space: nowrap;
   line-height: 1;
   box-sizing: border-box;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.nav-trial-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 15px;
+  color: #fff;
+  background:
+    radial-gradient(circle at 20% 0%, rgb(255 255 255 / 25%), transparent 42%),
+    linear-gradient(108deg, #5f4bf3, #8b5cf6 62%, #c052d5);
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgb(109 92 255 / 24%);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.nav-checkin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 13px;
+  color: #5b3a06;
+  background: linear-gradient(115deg, #fef3c7, #fde68a 58%, #f9a8d4);
+  border: 1px solid rgb(245 158 11 / 22%);
+  border-radius: 999px;
+  box-shadow: 0 8px 20px rgb(245 158 11 / 16%);
+  font-size: 0.78rem;
+  font-weight: 780;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.nav-checkin-btn:hover {
+  color: #5b3a06;
+  transform: translateY(-1px);
+  box-shadow: 0 11px 25px rgb(245 158 11 / 23%);
+}
+
+.nav-trial-btn:hover {
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 11px 26px rgb(109 92 255 / 32%);
+}
+
+.nav-trial-btn i {
+  font-size: 0.9rem;
 }
 
 .site-header.is-dark .nav-redeem-btn,
 .site-header.is-dark .nav-credits-chip {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--nav-line);
-  color: var(--nav-heading);
+  background: #ffffff;
+  border-color: rgba(21, 22, 31, 0.1);
+  color: var(--nav-accent);
 }
 
 .nav-redeem-btn:hover,
-.nav-credits-chip:hover {
-  border-color: color-mix(in srgb, var(--nav-accent) 36%, var(--nav-line));
-  background: var(--nav-accent-soft);
-  color: var(--nav-heading);
+.nav-credits-chip:hover,
+.site-header.is-dark .nav-redeem-btn:hover,
+.site-header.is-dark .nav-credits-chip:hover {
+  border-color: color-mix(in srgb, var(--nav-accent) 45%, rgba(21, 22, 31, 0.12));
+  background: #ffffff;
+  color: var(--nav-accent);
+  transform: translateY(-1px);
+  box-shadow: 0 11px 25px rgb(45 42 83 / 15%);
   filter: none;
 }
 
 .nav-redeem-btn i {
   font-size: 0.92rem;
-  color: var(--nav-accent);
+  color: inherit;
 }
 
 .nav-credits-chip {
@@ -1754,13 +2403,13 @@ onBeforeUnmount(() => {
 }
 
 .nav-credits-chip i {
-  color: var(--nav-accent);
+  color: inherit;
   font-size: 0.88rem;
 }
 
 .site-header.is-dark .nav-redeem-btn i,
 .site-header.is-dark .nav-credits-chip i {
-  color: var(--nav-accent);
+  color: inherit;
 }
 
 .nav-credits-chip.disabled,
@@ -1772,7 +2421,11 @@ onBeforeUnmount(() => {
 
 .account-menu {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
+  height: 36px;
 }
 
 .account-menu.disabled {
@@ -1786,6 +2439,8 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 36px;
   height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   padding: 0;
   border: 1px solid var(--nav-line);
   border-radius: 50%;
@@ -1794,9 +2449,12 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.82);
   cursor: pointer;
   font: inherit;
+  line-height: 0;
   appearance: none;
   -webkit-appearance: none;
   overflow: hidden;
+  box-sizing: border-box;
+  vertical-align: middle;
 }
 
 .site-header.is-dark .account-chip {
@@ -1820,9 +2478,11 @@ onBeforeUnmount(() => {
 }
 
 .account-chip__avatar {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center center;
   border: 0;
   border-radius: 50%;
   background: var(--nav-accent-soft);
@@ -1857,9 +2517,11 @@ onBeforeUnmount(() => {
 }
 
 .account-menu__avatar {
+  display: block;
   width: 40px;
   height: 40px;
   object-fit: cover;
+  object-position: center center;
   border-radius: 50%;
   background: var(--nav-accent-soft);
   flex: 0 0 auto;
@@ -1977,7 +2639,9 @@ onBeforeUnmount(() => {
 
 .nav-compact .nav-locale-switch :deep(.locale-switcher__trigger) {
   width: 32px;
+  min-width: 32px;
   height: 32px;
+  min-height: 32px;
 }
 
 .nav-compact .nav-theme-switch :deep(.theme-dn-switch) {
@@ -1995,9 +2659,39 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
 }
 
+.nav-compact .nav-trial-btn {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 0.76rem;
+}
+
+.nav-compact .nav-checkin-btn {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.nav-compact .nav-notify {
+  height: 32px;
+}
+
+.nav-compact :deep(.nav-notify__btn) {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.nav-compact .account-menu {
+  height: 32px;
+}
+
 .nav-compact .account-chip {
   width: 32px;
   height: 32px;
+  min-width: 32px;
+  min-height: 32px;
 }
 
 .nav-compact .account-login {
@@ -2008,6 +2702,16 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1480px) {
+  .nav-checkin-btn {
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+  }
+
+  .nav-checkin-btn span {
+    display: none;
+  }
+
   .nav-link,
   .nav-dropdown-label {
     padding: 0 9px;
@@ -2016,6 +2720,16 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1320px) {
+  .nav-trial-btn {
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+  }
+
+  .nav-trial-btn span {
+    display: none;
+  }
+
   .brand-copy small {
     display: none;
   }
@@ -2035,6 +2749,239 @@ onBeforeUnmount(() => {
   }
 }
 
+.nav-mobile-toggle {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .site-header {
+    z-index: 1100;
+  }
+
+  .header-shell,
+  .nav-compact .header-shell {
+    min-height: 60px;
+    padding: 0 12px;
+  }
+
+  .header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 38px;
+    gap: 8px;
+  }
+
+  .brand-cluster {
+    min-width: 0;
+  }
+
+  .brand-mark {
+    max-width: 100%;
+    padding-inline: 2px;
+  }
+
+  .brand-copy strong {
+    overflow: hidden;
+    max-width: 96px;
+    text-overflow: ellipsis;
+  }
+
+  .brand-copy small {
+    display: none;
+  }
+
+  .nav-mobile-toggle {
+    display: inline-grid;
+    grid-column: 3;
+    grid-row: 1;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    color: var(--nav-heading);
+    border: 1px solid var(--nav-line);
+    border-radius: 10px;
+    background: var(--nav-bg-solid);
+    box-shadow: 0 8px 22px rgb(22 20 45 / 8%);
+    font-size: 1.15rem;
+  }
+
+  .header-tools {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .tool-actions {
+    gap: 4px;
+  }
+
+  .nav-locale-switch,
+  .nav-theme-switch,
+  .nav-redeem-btn,
+  .nav-credits-chip {
+    display: none !important;
+  }
+
+  .nav-checkin-btn,
+  .nav-trial-btn,
+  .nav-compact .nav-checkin-btn,
+  .nav-compact .nav-trial-btn {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    min-height: 34px;
+    padding: 0;
+  }
+
+  .nav-checkin-btn span,
+  .nav-trial-btn span {
+    display: none;
+  }
+
+  .main-nav,
+  .header-row .main-nav {
+    position: absolute;
+    top: calc(100% + 7px);
+    right: 12px;
+    left: 12px;
+    display: none;
+    align-items: stretch;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    width: auto;
+    max-width: none;
+    max-height: min(72vh, 620px);
+    padding: 9px;
+    overflow: auto;
+    border: 1px solid var(--nav-line);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--nav-bg-solid) 94%, transparent);
+    box-shadow: 0 24px 60px rgb(19 17 41 / 22%);
+    backdrop-filter: blur(20px) saturate(1.1);
+  }
+
+  .site-header.is-mobile-open .main-nav {
+    display: flex;
+  }
+
+  .main-nav > .nav-link,
+  .main-nav > .nav-dropdown,
+  .nav-dropdown > .nav-link,
+  .nav-dropdown-label {
+    width: 100%;
+  }
+
+  .main-nav > .nav-link,
+  .nav-dropdown-label {
+    justify-content: flex-start;
+    min-height: 42px;
+    padding: 0 12px;
+    font-size: 0.86rem;
+  }
+
+  .main-nav .nav-link > i.bi:first-child,
+  .main-nav .nav-dropdown-label > i.bi:first-child {
+    display: inline-block;
+  }
+
+  .nav-dropdown-trigger {
+    display: flex;
+  }
+
+  .nav-dropdown-chevron-btn {
+    display: inline-grid;
+    flex: 0 0 38px;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    color: var(--nav-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 7px;
+  }
+
+  .nav-dropdown-chevron-btn:hover {
+    color: var(--nav-accent);
+    background: var(--nav-hover);
+  }
+
+  .nav-dropdown-chevron-btn .dropdown-chevron {
+    display: inline-block;
+  }
+
+  .nav-dropdown-menu,
+  .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu,
+  .nav-dropdown.nav-dropdown--mega .nav-dropdown-menu,
+  .nav-dropdown.nav-dropdown--mega .nav-mega-menu.nav-dropdown-menu,
+  .desk-nav .nav-dropdown.nav-dropdown--mega .nav-mega-menu.nav-dropdown-menu {
+    position: static;
+    display: none;
+    width: 100%;
+    max-width: none;
+    margin: 4px 0 8px;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .nav-dropdown.open > .nav-dropdown-menu,
+  .nav-dropdown.nav-dropdown--commerce.open > .commerce-mega-menu,
+  .nav-dropdown.nav-dropdown--mega.open > .nav-dropdown-menu,
+  .nav-dropdown.nav-dropdown--mega.open > .nav-mega-menu.nav-dropdown-menu {
+    display: block;
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+  }
+
+  .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .commerce-menu-group {
+    display: block;
+  }
+
+  .commerce-menu-group + .commerce-menu-group {
+    padding-top: 10px;
+  }
+
+  .commerce-menu-group__visual {
+    width: 100%;
+    min-height: 96px;
+    margin-bottom: 10px;
+  }
+
+  .commerce-menu-group__content {
+    width: 100%;
+  }
+
+  .commerce-menu-group__heading {
+    margin-bottom: 7px;
+  }
+
+  .commerce-menu-group.is-model .commerce-menu-grid,
+  .commerce-menu-group.is-create .commerce-menu-grid,
+  .commerce-menu-group.is-image .commerce-menu-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-bento {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .commerce-menu-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 430px) {
+  .brand-copy {
+    display: none;
+  }
+}
 </style>
 
 <style>
@@ -2059,5 +3006,4 @@ html.settings-no-blur .site-header.is-dark {
 html.settings-no-blur .site-header.is-dark.is-scrolled {
   background: rgba(18, 18, 24, 0.94);
 }
-
 </style>

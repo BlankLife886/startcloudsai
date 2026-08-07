@@ -28,7 +28,9 @@ import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
 import AssistantMarkdown from '@/components/assistant/AssistantMarkdown.vue'
 import AssistantImageViewer from '@/features/assistant/components/AssistantImageViewer.vue'
+import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
 import ModelPointPrice from '@/features/ai-shared/ModelPointPrice.vue'
+import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
 import { useAssistantAttachments } from '@/features/assistant/composables/useAssistantAttachments'
 import { useAssistantTextStream } from '@/features/assistant/composables/useAssistantTextStream'
 import {
@@ -52,6 +54,7 @@ import '@/features/assistant/styles/assistant-workspace.css'
 
 const authStore = useAuthStore()
 const appearanceStore = useAppearanceStore()
+const { normalBalanceCents, refreshWalletBalance } = useClientWalletBalance()
 const conversations = ref([])
 const activeId = ref('')
 const activeRunIds = ref({})
@@ -105,6 +108,9 @@ const imageGenerationModels = ref([])
 const modelSearch = ref('')
 const generationResolution = ref('1K')
 const generationCount = ref(2)
+const costConfirmOpen = ref(false)
+const costConfirmPayload = ref(null)
+let costConfirmResolver = null
 const customImageWidth = ref(1024)
 const customImageHeight = ref(1024)
 const selectedSkill = ref(null)
@@ -209,6 +215,87 @@ const selectedImageGenerationModel = computed(
     imageGenerationModels.value[0] ||
     null,
 )
+const selectedConversationModel = computed(
+  () =>
+    conversationModels.value.find((item) => item.model === conversationModel.value) ||
+    conversationModels.value[0] ||
+    null,
+)
+
+function modelPointPrice(model) {
+  const value = Number(model?.pricePoints)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function assistantChargeEstimate(responseMode, count = 1, model = '') {
+  const imageModel =
+    imageGenerationModels.value.find((item) => item.model === model) ||
+    selectedImageGenerationModel.value
+  const chatModel =
+    conversationModels.value.find((item) => item.model === model) || selectedConversationModel.value
+  const imageCount = Math.max(1, Math.min(Number(count) || 1, 4))
+  const chatCost = modelPointPrice(chatModel)
+  const imageUnitPrice = modelPointPrice(imageModel)
+  const imageCost = imageUnitPrice * imageCount
+  if (responseMode === 'image') {
+    return {
+      total: imageCost,
+      unitPrice: imageUnitPrice,
+      count: imageCount,
+      unitLabel: '张',
+      featureLabel: 'AI 助手生图',
+      summary: '提交后按图片数量预留费用，成功结算；失败或停止时自动退回。',
+    }
+  }
+  if (responseMode === 'agent') {
+    const total = Math.max(chatCost, imageCost)
+    return {
+      total,
+      unitPrice: total,
+      count: 1,
+      unitLabel: '次',
+      featureLabel: 'AI 助手 Agent',
+      summary: '先按可能发生的最高费用预留，路由完成后按对话或生图实际结果结算，多余部分自动退回。',
+    }
+  }
+  return {
+    total: chatCost,
+    unitPrice: chatCost,
+    count: 1,
+    unitLabel: '轮',
+    featureLabel: 'AI 助手对话',
+    summary: '每轮对话按当前模型价格预留，成功结算；失败或停止时自动退回。',
+  }
+}
+
+async function confirmAssistantCharge(responseMode, count = 1, model = '') {
+  const estimate = assistantChargeEstimate(responseMode, count, model)
+  if (estimate.total <= 0 || authStore.user?.requireCostConfirm === false) return true
+  await refreshWalletBalance({ force: true }).catch(() => null)
+  if (costConfirmResolver) costConfirmResolver(false)
+  costConfirmPayload.value = {
+    billingMode: 'credits',
+    unitCost: estimate.total,
+    unitPriceCents: estimate.unitPrice,
+    totalPriceCents: estimate.total,
+    count: estimate.count,
+    unitLabel: estimate.unitLabel,
+    featureLabel: estimate.featureLabel,
+    summary: estimate.summary,
+    creditAvailable: normalBalanceCents.value,
+  }
+  costConfirmOpen.value = true
+  return new Promise((resolve) => {
+    costConfirmResolver = resolve
+  })
+}
+
+function resolveAssistantCostConfirm(confirmed) {
+  costConfirmOpen.value = false
+  const resolve = costConfirmResolver
+  costConfirmResolver = null
+  resolve?.(confirmed)
+}
 const generationRatios = computed(() => {
   const supported = getModelAspectRatiosForResolution(
     selectedImageGenerationModel.value,
@@ -310,6 +397,7 @@ const canSend = computed(
     Boolean(draft.value.trim()) &&
     draft.value.trim().length <= 12000 &&
     !isGenerating.value &&
+    !costConfirmOpen.value &&
     !isUploadingReferences.value &&
     !serviceError.value &&
     !serviceLoading.value,
@@ -702,6 +790,7 @@ async function deleteConversation(id) {
     if (!activeId.value) newConversation()
   }
   pendingDeleteId.value = ''
+  if (cancelActive) void refreshWalletBalance({ force: true }).catch(() => null)
   notificationService.success('对话已删除')
 }
 
@@ -1824,6 +1913,7 @@ async function generateResponse(
     if (created.userMessage && currentUserMessage)
       Object.assign(currentUserMessage, created.userMessage)
     applyAssistantRunUpdate(conversation, assistantMessage, created)
+    void refreshWalletBalance({ force: true }).catch(() => null)
     await monitorAssistantRun(conversation, assistantMessage, created.run.id, controller)
   } catch (error) {
     if (error?.name === 'AbortError') {
@@ -1853,6 +1943,7 @@ async function generateResponse(
       setConversationStopping(conversation.id, false)
     }
     if (activeId.value === conversation.id) followConversationBottom()
+    void refreshWalletBalance({ force: true }).catch(() => null)
   }
 }
 
@@ -1942,6 +2033,9 @@ async function approveAgentProposal(message) {
   }
 
   const request = proposalImageRequest(proposal)
+  const proposalCount = Number(proposal.count || 1)
+  const proposalModel = proposal.model || imageGenerationModel.value
+  if (!(await confirmAssistantCharge('image', proposalCount, proposalModel))) return
   const userMessage = {
     id: uid(),
     role: 'user',
@@ -1955,11 +2049,11 @@ async function approveAgentProposal(message) {
     responseMode: 'image',
     userMessageId: userMessage.id,
     defaults: {
-      model: proposal.model || imageGenerationModel.value,
+      model: proposalModel,
       ratio: proposal.ratio || 'auto',
       requestRatio: proposal.ratio || 'auto',
       resolution: proposal.resolution || '1K',
-      count: Number(proposal.count || 1),
+      count: proposalCount,
       requestSize: request.requestSize,
       width: request.width,
       height: request.height,
@@ -1987,6 +2081,10 @@ async function sendMessage() {
   }
   const requestedImage = currentImageRequestSize()
   const requestedImageCount = imageCountFromPrompt(prompt)
+  const responseMode =
+    mode.value === 'image' ? 'image' : creationType.value === 'agent' ? 'agent' : 'chat'
+  const requestCount = requestedImageCount || generationCount.value
+  if (!(await confirmAssistantCharge(responseMode, requestCount, generationModel.value))) return
 
   const conversation = await ensureConversation()
   if (!conversation) return
@@ -2003,8 +2101,6 @@ async function sendMessage() {
   }
   conversation.messages.push(userMessage)
   markMessagesNew(userMessage.id)
-  const responseMode =
-    mode.value === 'image' ? 'image' : creationType.value === 'agent' ? 'agent' : 'chat'
   const assistantMessage = createAssistantPlaceholder({
     prompt,
     responseMode,
@@ -2014,7 +2110,7 @@ async function sendMessage() {
       ratio: requestedImage.ratioLabel,
       requestRatio: requestedImage.requestRatio,
       resolution: generationResolution.value,
-      count: requestedImageCount || generationCount.value,
+      count: requestCount,
       requestSize: requestedImage.size,
       width: requestedImage.width,
       height: requestedImage.height,
@@ -2038,7 +2134,11 @@ async function retryAssistant(message) {
   const prompt = conversation?.messages[index - 1]?.content?.trim()
   if (!conversation || index < 1 || !prompt) return
   const responseMode = await resolveAssistantRequestedMode(message)
-  message.model = currentAssistantModel(responseMode, message.model)
+  const retryModel = currentAssistantModel(responseMode, message.model)
+  if (!(await confirmAssistantCharge(responseMode, message.count || generationCount.value, retryModel))) {
+    return
+  }
+  message.model = retryModel
   message.requestedMode = responseMode
   message.content = ''
   message.images = []
@@ -2099,8 +2199,10 @@ async function stopGeneration(conversationId = activeId.value) {
   setConversationStopping(conversationId, false)
 
   try {
+    let canceled = false
     if (!runId.startsWith('creating:')) {
-      await cancelAssistantRun(runId)
+      const result = await cancelAssistantRun(runId)
+      canceled = result?.canceled === true
     } else {
       // 创建请求可能已在服务端提交但响应尚未返回，短暂重试以清理孤儿任务。
       for (const delay of [0, 120, 320]) {
@@ -2108,10 +2210,15 @@ async function stopGeneration(conversationId = activeId.value) {
         const activeRuns = await listActiveAssistantRuns()
         const created = activeRuns.find((run) => run.conversationId === conversationId)
         if (created) {
-          await cancelAssistantRun(created.id)
+          const result = await cancelAssistantRun(created.id)
+          canceled = result?.canceled === true
           break
         }
       }
+    }
+    if (canceled) {
+      notificationService.success('任务已停止，预留费用已释放')
+      void refreshWalletBalance({ force: true }).catch(() => null)
     }
   } catch (error) {
     notificationService.error(error?.message || '停止任务失败')
@@ -2360,6 +2467,8 @@ async function submitUserMessageEdit(message) {
   const retryModel = currentAssistantModel(responseMode, previousReply?.model)
   const requestedImage = currentImageRequestSize()
   const requestedImageCount = imageCountFromPrompt(prompt)
+  const retryCount = requestedImageCount || previousReply?.count || generationCount.value
+  if (!(await confirmAssistantCharge(responseMode, retryCount, retryModel))) return
   message.content = prompt
   message.editedAt = new Date().toISOString()
   if (messageIndex === 0) conversation.title = conversationTitle(prompt)
@@ -2374,7 +2483,7 @@ async function submitUserMessageEdit(message) {
       ratio: requestedImage.ratioLabel,
       requestRatio: requestedImage.requestRatio,
       resolution: generationResolution.value,
-      count: requestedImageCount || previousReply?.count || generationCount.value,
+      count: retryCount,
       requestSize: requestedImage.size,
       width: requestedImage.width,
       height: requestedImage.height,
@@ -2745,9 +2854,50 @@ onMounted(async () => {
   }
   restoreWorkspaceState(workspaceState)
   try {
-    const { takePendingPrompt } = await import('@/features/creator-hub/studioTools')
+    const { composePendingLaunchPrompt, takePendingPrompt } = await import(
+      '@/features/creator-hub/studioTools'
+    )
     const pending = takePendingPrompt(['assistant', 't2i'])
-    if (pending?.prompt) draft.value = pending.prompt.slice(0, 12000)
+    if (pending) {
+      const launchConfig = pending.config || {}
+      const launchPrompt = composePendingLaunchPrompt(pending, 12000)
+      if (launchPrompt) draft.value = launchPrompt
+      if (launchConfig.skill === 'image') {
+        creationType.value = 'image'
+        mode.value = 'image'
+        selectedSkill.value = null
+        if (
+          launchConfig.model &&
+          imageGenerationModels.value.some((item) => item.model === launchConfig.model)
+        ) {
+          imageGenerationModel.value = launchConfig.model
+        }
+        generationModel.value =
+          imageGenerationModel.value || imageGenerationModels.value[0]?.model || ''
+        ensureImageResolutionSupported()
+        if (generationRatios.value.some((item) => item.id === launchConfig.ratio)) {
+          generationRatio.value = launchConfig.ratio
+        }
+        if (imageResolutions.value.some((item) => item.id === launchConfig.resolution)) {
+          generationResolution.value = launchConfig.resolution
+        }
+        if ([1, 2, 3, 4].includes(Number(launchConfig.count))) {
+          generationCount.value = Number(launchConfig.count)
+        }
+        syncImageRequestSize()
+      } else {
+        creationType.value = 'agent'
+        mode.value = 'chat'
+        selectedSkill.value = skills.find((item) => item.name === launchConfig.skill) || null
+        if (
+          launchConfig.model &&
+          conversationModels.value.some((item) => item.model === launchConfig.model)
+        ) {
+          conversationModel.value = launchConfig.model
+        }
+        generationModel.value = conversationModel.value || conversationModels.value[0]?.model || ''
+      }
+    }
   } catch {
     // ignore
   }
@@ -2789,6 +2939,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  resolveAssistantCostConfirm(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('click', handleGlobalClick)
   window.removeEventListener('pagehide', handlePageHide)
@@ -4308,6 +4459,14 @@ onBeforeUnmount(() => {
       @close="closeImagePreview"
       @step="stepImagePreview"
       @download="(image) => downloadImage(image, image.index || 0)"
+    />
+    <AiCostConfirmDialog
+      :show="costConfirmOpen"
+      :cost="costConfirmPayload"
+      :light="!appearanceStore.isDark"
+      elevated
+      @confirm="resolveAssistantCostConfirm(true)"
+      @cancel="resolveAssistantCostConfirm(false)"
     />
   </div>
 </template>

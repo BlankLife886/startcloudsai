@@ -189,7 +189,7 @@ func (s *Server) overview(c *gin.Context) {
 		recentTasks = append(recentTasks, taskDict(t, nil, nil))
 	}
 	ok(c, gin.H{
-		"wallet": walletDict(wallet.BalanceCents, wallet.FrozenCents),
+		"wallet": walletDict(wallet),
 		"taskStats": gin.H{
 			"total":     total,
 			"succeeded": byStatus["succeeded"],
@@ -225,7 +225,7 @@ func (s *Server) myWallet(c *gin.Context) {
 		fail(c, apperr.E("not_found", "钱包不存在", 404))
 		return
 	}
-	ok(c, walletDict(wallet.BalanceCents, wallet.FrozenCents))
+	ok(c, walletDict(wallet))
 }
 
 func (s *Server) myLedger(c *gin.Context) {

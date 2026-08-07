@@ -1,6 +1,6 @@
 # 高并发任务稳定性方案
 
-本文定义 100 个以上用户分别连续创建 8-20 个图片任务时的调度、状态同步、失败恢复和容量边界。平台允许 800-2000 个任务处于上游在途状态；具体生成吞吐由服务商池容量决定，平台 Worker 不再因等待上游生成而成为主要瓶颈。
+本文定义当前项目对 `100 用户 × 40 张` 和 `100 用户 × 100 张` 同时提交的调度、状态同步、失败恢复和容量边界。按每任务 4 张打包时，两个场景分别是 1000 个任务 / 4000 个图片工作单元，以及 2500 个任务 / 10000 个图片工作单元；最坏情况下每张图片单独创建任务，则分别是 4000 和 10000 个任务。任务数和图片工作量默认都保留 12000 的持久排队容量。任务先可靠进入 PostgreSQL 和 Redis 排队；实际生成吞吐由服务商池容量决定，不能把 10000 张排队容量误配置成 10000 张同时执行。
 
 ## 核心不变量
 
@@ -12,6 +12,9 @@
 6. 恢复任务有次数、批量和时间边界，不能形成无限重试或重复队列记录。
 7. 全站达到容量水位后快速拒绝新任务，不能继续堆积直到数据库、Redis 或上游失效。
 8. 单个用户只能占用有限执行槽，排队数量不能转换成对其他用户的资源垄断。
+9. 所有运行态写入必须同时匹配任务 lease 或 completion claim；旧 Worker 不能覆盖接管者的结果。
+10. 重试次数、失败路由历史和 `running -> queued` 必须由一条条件更新原子完成。
+11. PostgreSQL 的 queued 行是接收成功凭据；Redis 暂时不可用不能把已接收任务改成失败。
 
 ## 前端调度算法
 
@@ -65,9 +68,13 @@ N 个 waitForTask 调用
 任务创建同时受两层持久化水位保护：
 
 - `user_max_running_tasks`：单用户 queued + running，默认 100。
-- `global_max_active_tasks`：全站 queued + running，默认 5000，为 2000 个在途任务保留排队缓冲。
+- `global_max_active_tasks`：全站 queued + running，默认 12000；即使每张图片单独形成任务，也能接收 10000 个任务并保留 20% 缓冲。
+- `user_max_running_images`：单用户 queued + running 的图片工作量，默认 400（每个 `count` 图片计 1 单位）。
+- `global_max_active_images`：全站 queued + running 的图片工作量，默认 12000，可完整接收 100 用户 × 100 张图片并保留 20% 缓冲。
 
-计数和插入位于同一个 PostgreSQL 事务。全局和用户 advisory transaction lock 使多个 API 实例也不能同时越过水位。用户重试携带的幂等键在容量判断之前读取，已经成功创建的任务仍能被找回。达到全站水位时 API 返回 `429 system_task_capacity`，前端保留本地任务和提示词，用户可以稍后重试。
+计数和插入位于同一个 PostgreSQL 事务。模型校验和线路解析先在用户级临界区完成，只有全局计数、插入和冻结进入短全局 admission 临界区，避免 2500 次创建把昂贵配置解析串行化。全局和用户 advisory transaction lock 使多个 API 实例也不能同时越过水位。用户重试携带的幂等键在容量判断之前读取，已经成功创建的任务仍能被找回。达到全站水位时 API 返回 `429 system_task_capacity`，前端保留本地任务和提示词，用户可以稍后重试。
+
+任务条数和图片工作量分别计数。一个 `count=4` 任务占用 1 个任务名额和 4 个图片单位，避免批量任务绕过容量保护。
 
 Worker 使用 `global_max_concurrent_tasks`（默认 2000）作为全站上游在途上限，使用 `user_max_concurrent_tasks`（默认 20）作为每用户在途配额。每次 `queued -> running` 认领都依次取得全站和用户 advisory lock，并在事务内重新统计 running 数，因此多个 Worker 实例共同遵守同一组限制。没有配额时，业务任务保持 queued，并以 2-5 秒抖动延迟重新入队。
 
@@ -95,7 +102,7 @@ PostgreSQL 持久任务 + Redis Asynq 队列
 异步提交 -> 延迟短轮询 -> 结果持久化
 ```
 
-支持 `/api/image-tasks` 异步接口的 OpenAI 兼容路由在提交后立即释放 Worker。同一 Base URL 路由共享一个聚合轮询器，每次状态请求携带最多 100 个任务 ID；未完成则以 2-4 秒抖动重新计划。CRUN 创建 job 后也立即释放 Worker，由路由级轮询器集中执行单轮 TaskInfo 查询。旧接口返回 404/405 时自动回退同步 OpenAI Images 接口；这类路由仍会在生成期间占用 Worker，因此不应承担大规模在途容量。
+支持 `/api/image-tasks` 异步接口的 OpenAI 兼容路由在提交后立即释放 Worker。同一 Base URL 路由共享一个聚合轮询器，每次状态请求携带最多 20 个任务 ID；未完成则以 2-4 秒抖动重新计划。CRUN 创建 job 后也立即释放 Worker，由路由级轮询器集中执行单轮 TaskInfo 查询。轮询结果处理期间 completion claim 会续租，避免大图上传超过固定租期后被重复处理。旧接口返回 404/405 时自动回退同步 OpenAI Images 接口；这类路由仍会在生成期间占用 Worker，因此不应承担大规模在途容量。
 
 ### 服务商内多 Base URL 容量加权
 
@@ -103,7 +110,7 @@ PostgreSQL 持久任务 + Redis Asynq 队列
 
 领取任务时在 PostgreSQL 全局执行锁内按稳定路由键统计 running 数，排除达到 `maxConcurrency` 的路由，并选择 `running / maxConcurrency` 最低者。该比较使用整数交叉相乘，避免浮点误差；同负载时保持稳定顺序。数据库迁移 `00034_provider_routes.sql` 为路由级 running 计数和异步待轮询查询建立部分索引。
 
-网络错误、429、可重试 5xx 或路由被停用时，任务可保持原业务 ID、冻结金额和上游幂等信息重新入队。额外尝试次数由后台 `taskFailureRetryCount` 控制，默认 `0` 不重试；开启后下一次领取优先排除刚失败的路由并选择同一服务商的其他路由，只有没有其他可用路由时才回到原路由继续有限次数恢复。
+网络错误、429、可重试 5xx 或路由被停用时，任务可保持原业务 ID、冻结金额和上游幂等信息重新入队。额外尝试次数由后台 `taskFailureRetryCount` 控制，默认 `2`；自动重试只用于带 `client_task_id` 的 OpenAI/C2A，或已经持久化全部上游 task ID 的 CRUN 任务。无法证明幂等的同步请求直接失败并退款，不能为了提高成功率重复创建上游订单。下一次领取优先排除刚失败的路由并选择同一服务商的其他路由。attempt 增加、失败线路历史和重新排队由同一条带 lease owner 的 SQL 完成。
 
 “同名模型跨服务商泄压”默认关闭。开启后，同名模型只有在类型、任务单价快照和本次请求所需能力全部一致时才会合并容量；负载选择可以更新任务实际执行的服务商、线路和上游模型，但冻结积分保持创建时的原值。
 
@@ -111,7 +118,7 @@ PostgreSQL 持久任务 + Redis Asynq 队列
 
 ### 图片内存背压
 
-每个 Worker 进程拥有一个加权信号量，预算由 `WORKER_IMAGE_MEMORY_MIB` 控制，默认 1024 MiB。输出持久化先从 Base64 流中只读取图片头，再按 `像素数 × 8 + 压缩数据 × 2` 估算权重；取得预算后才完整解码和生成缩略图。无足够预算时等待，不会提前创建完整解码缓冲。单张合法大图的权重最多等于总预算，确保极端图片最终仍可前进。
+每个 Worker 进程拥有一个加权信号量，预算由 `WORKER_IMAGE_MEMORY_MIB` 控制，默认 1024 MiB。输出持久化先按 `像素数 × 8 + 压缩数据 × 2` 估算权重；取得预算后才完整解码和生成缩略图。C2A 聚合轮询使用流式 JSON 解码，每解出一个任务就完成持久化，不再把一批最多 20 个任务、80 张图片同时保存在结果 Map。路由轮询器数量还会同时受 `WORKER_CONCURRENCY / 4` 和每路 256 MiB 预算约束；默认最多 4 个轮询器。
 
 该预算必须低于 `WORKER_GOMEMLIMIT`，还要为上游响应、Base64、Goroutine 栈、数据库和对象存储客户端保留空间。默认 `1024 MiB / 1700 MiB` 是 2 GiB Worker 容器的保守起点。
 
@@ -126,19 +133,21 @@ PostgreSQL 持久任务 + Redis Asynq 队列
 - Worker 重启、网络重试和延迟恢复继续查询同一上游任务。
 - 图片每完成一张就由 `taskOutputCollector` 持久化，部分成功不会因后续网络错误丢失。
 - 任务成功状态、原图 keys、缩略图 keys 和费用结算在事务中完成。
+- 同步 Worker 每次领取都生成唯一 lease owner；部分结果、成功、失败、重试和对象 key 全部带本次领取令牌。
+- 异步轮询先续租并取得 completion claim；claim 在下载和上传期间持续续期。
 
-对于异步 C2A 和 CRUN，轮询网络错误在服务商总超时内继续延迟查询，不重新提交任务。同步兼容线路失败且尚无产物时，任务从 `running` 恢复为 `queued`，使用同一任务 ID 接管；持久化 attempt 达到 3 后才进入最终失败结算。
+对于异步 C2A 和 CRUN，轮询网络错误在服务商总超时内继续延迟查询，不重新提交任务。同步兼容线路失败且尚无产物时，任务从 `running` 恢复为 `queued`，使用同一任务 ID 接管；持久化 attempt 达到配置次数（默认 2）后才进入最终失败结算。
 
 ### 僵尸与丢队列恢复
 
-周期回收每次最多处理 500 条，避免一次扫描长时间占用 Worker：
+任务使用 Worker lease 和 heartbeat。同步执行中的 Worker 每 30 秒续租；异步提交后转交给路由轮询租约。周期回收每次最多处理 500 条，避免一次扫描长时间占用 Worker：
 
-- `running` 超过 30 分钟：恢复为 queued，使用新 Asynq 记录接管。
-- `queued` 超过 10 分钟：先通过 Inspector 检查同一业务任务是否仍有 active、pending、scheduled 或 retry 记录。
+- lease 到期的 `running` 任务：由一条 `UPDATE ... WHERE lease_until <= now() RETURNING id` 原子恢复为 queued，再使用新 Asynq 记录接管；仍有心跳的长任务不会因运行时间长被误回收。
+- `queued` 超过 2 分钟：先通过 Inspector 检查同一业务任务是否仍有 active、pending、scheduled 或 retry 记录。
 - 原任务仍可执行：不重复入队。
 - 队列中确实不存在可执行记录：创建带唯一恢复 ID 的补偿任务。
 
-这一检查避免正常长队列中的旧任务每 10 分钟生成一个恢复副本。
+恢复扫描每 2 分钟执行，单次覆盖最多 15000 个 queued 任务。API 首次 Redis 入队失败时仍返回已持久化任务；扫描会在 Redis 恢复后补入队。补入队再次失败时保持 queued，下轮继续，不会因队列基础设施抖动退款或终止任务。这一检查也避免正常长队列中的旧任务生成恢复副本。
 
 ## API
 
@@ -171,6 +180,8 @@ cd apps/server
 go test ./...
 go vet ./...
 ```
+
+`TestAdmissionSupports100UsersWith100ImagesEach` 使用真实临时 PostgreSQL、完整迁移和每用户 6 个并发提交窗口，分别验证 2500 个 `count=4` 任务和 10000 个 `count=1` 任务；两种方式都必须全部准入且最终准确记录 10000 个工作单元。该测试同时覆盖更小的 `100 × 40` 容量场景。lease fencing、原子重试、过期恢复和流式批量轮询都有独立回归测试。
 
 后台 `/api/v1/admin/system/metrics` 返回 `taskPressure` 和 `providers`：数据库 queued/running/active、全站在途上限、Worker 短操作槽、单用户配额，以及每条 Base URL 路由的服务商名、路由名、running、容量和利用率。任一路由利用率达到 70% 应预警，达到 90% 应增加路由、提升经验证的容量或排查该上游。
 

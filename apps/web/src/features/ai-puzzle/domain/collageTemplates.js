@@ -688,17 +688,31 @@ function drawCaption(ctx, text, boardW, boardH) {
     ctx.shadowOffsetY = fontPx * 0.06
   }
 
-  const position = text.position || 'bottom'
-  if (position === 'top') {
-    ctx.textBaseline = 'top'
-    ctx.fillText(content, boardW / 2, pad)
-  } else if (position === 'center') {
-    ctx.textBaseline = 'middle'
-    ctx.fillText(content, boardW / 2, boardH / 2)
-  } else {
-    ctx.textBaseline = 'bottom'
-    ctx.fillText(content, boardW / 2, boardH - pad)
+  const maxWidth = boardW - pad * 2
+  const lines = []
+  let line = ''
+  for (const character of content) {
+    const next = `${line}${character}`
+    if (line && ctx.measureText(next).width > maxWidth) {
+      lines.push(line)
+      line = character
+    } else {
+      line = next
+    }
   }
+  if (line) lines.push(line)
+  const visibleLines = lines.slice(0, 3)
+  const lineHeight = fontPx * 1.22
+  const blockHeight = lineHeight * visibleLines.length
+  const position = text.position || 'bottom'
+  let startY = pad
+  if (position === 'center') startY = (boardH - blockHeight) / 2 + lineHeight / 2
+  else if (position === 'bottom') startY = boardH - pad - blockHeight + lineHeight
+  else startY = pad + lineHeight / 2
+  ctx.textBaseline = 'middle'
+  visibleLines.forEach((value, index) => {
+    ctx.fillText(value, boardW / 2, startY + index * lineHeight, maxWidth)
+  })
 
   ctx.shadowColor = 'transparent'
   ctx.shadowBlur = 0
@@ -747,6 +761,10 @@ export async function exportCollage({
   const images = await Promise.all(
     sources.map((src) => (src ? loadImage(src).catch(() => null) : Promise.resolve(null))),
   )
+  const failedImages = sources.filter((src, index) => src && !images[index]).length
+  if (failedImages) {
+    throw new Error(`${failedImages} 张图片读取失败，请移除后重新添加再导出`)
+  }
 
   for (let i = 0; i < template.cells.length; i += 1) {
     const img = images[i]

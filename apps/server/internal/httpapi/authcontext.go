@@ -79,9 +79,13 @@ func (s *Server) currentAdminAccount(c *gin.Context) (*store.AdminAccount, error
 		return nil, nil
 	}
 	if session.ExpiresAt.Sub(now) < adminRenewThreshold {
-		if err := store.UpdateAdminSessionExpiry(ctx, s.St.Pool, session.ID, now.Add(adminSessionTTL)); err != nil {
+		newExpiry := now.Add(adminSessionTTL)
+		if err := store.UpdateAdminSessionExpiry(ctx, s.St.Pool, session.ID, newExpiry); err != nil {
 			return nil, err
 		}
+		// 数据库与浏览器必须同时续期，否则 Cookie 会在首次登录满 12 小时后
+		// 被浏览器删除，即使服务端 session 仍然有效。
+		s.setAdminSessionCookie(c, token, int(adminSessionTTL/time.Second))
 	}
 	return admin, nil
 }

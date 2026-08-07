@@ -12,18 +12,33 @@ import (
 
 // Defaults 与 Python 版 settings_service.DEFAULTS 一致。
 var Defaults = map[string]json.RawMessage{
-	"task_prices":                                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
+	"task_prices":                                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "ecommerce_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 0}`),
 	"user_max_running_tasks":                      json.RawMessage(`100`),
+	"user_max_running_images":                     json.RawMessage(`400`),
 	"user_max_concurrent_tasks":                   json.RawMessage(`20`),
 	"global_max_concurrent_tasks":                 json.RawMessage(`2000`),
-	"global_max_active_tasks":                     json.RawMessage(`5000`),
-	"task_failure_retry_count":                    json.RawMessage(`0`),
+	"global_max_active_tasks":                     json.RawMessage(`12000`),
+	"global_max_active_images":                    json.RawMessage(`12000`),
+	"task_failure_retry_count":                    json.RawMessage(`2`),
 	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
 	"signup_bonus_cents":                          json.RawMessage(`100`),
 	"registration_enabled":                        json.RawMessage(`true`),
 	"task_models":                                 json.RawMessage(`{"default": "gpt-image-2"}`),
-	"image_service_routes":                        json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
-	"free_daily_cents":                            json.RawMessage(`0`),
+	"image_service_routes":                        json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","ecommerce_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
+	"checkin_enabled":                             json.RawMessage(`true`),
+	"checkin_campaign_title":                      json.RawMessage(`"连续签到领创作积分"`),
+	"checkin_rewards":                             json.RawMessage(`[10,15,20,25,30,40,80]`),
+	"growth_group_enabled":                        json.RawMessage(`true`),
+	"growth_group_campaign_key":                   json.RawMessage(`"launch-2026"`),
+	"growth_group_target_members":                 json.RawMessage(`3`),
+	"growth_group_reward_cents":                   json.RawMessage(`30`),
+	"growth_group_duration_hours":                 json.RawMessage(`48`),
+	"growth_failure_bonus_enabled":                json.RawMessage(`true`),
+	"growth_failure_bonus_cents":                  json.RawMessage(`3`),
+	"growth_failure_bonus_daily_limit":            json.RawMessage(`3`),
+	"growth_usage_rewards_enabled":                json.RawMessage(`true`),
+	"growth_usage_milestones":                     json.RawMessage(`[{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]`),
+	"suggestion_reward_max_cents":                 json.RawMessage(`10000`),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),
@@ -46,7 +61,7 @@ var Defaults = map[string]json.RawMessage{
 }
 
 var ImageServiceRouteKeys = []string{
-	"t2i", "coloring", "ui_design", "model_sheet", "game_art", "assistant_image", "ui_design_asset",
+	"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "assistant_image", "ui_design_asset",
 }
 
 func validImageServiceRoute(key string) bool {
@@ -150,6 +165,43 @@ func GetInt(ctx context.Context, q store.Q, key string) (int64, error) {
 	return v, nil
 }
 
+func GetString(ctx context.Context, q store.Q, key string) (string, error) {
+	raw, err := Get(ctx, q, key)
+	if err != nil || raw == nil {
+		return "", err
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func GetStrings(ctx context.Context, q store.Q, key string) ([]string, error) {
+	raw, err := Get(ctx, q, key)
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return []string{}, nil
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 // TaskPrices 返回任务单价表（原始 JSON 对象）。
 func TaskPrices(ctx context.Context, q store.Q) (map[string]int64, json.RawMessage, error) {
 	raw, err := Get(ctx, q, "task_prices")
@@ -165,12 +217,19 @@ func TaskPrices(ctx context.Context, q store.Q) (map[string]int64, json.RawMessa
 			delete(prices, taskType)
 		}
 	}
+	// AI 拼图完全在浏览器 Canvas 中执行，没有上游调用，存在该配置时强制免费。
+	if _, exists := prices["puzzle"]; exists {
+		prices["puzzle"] = 0
+	}
 	filtered, _ := json.Marshal(prices)
 	return prices, filtered, nil
 }
 
 // TaskPriceCents 某类型单价（DB 值缺项时回落到默认表）。
 func TaskPriceCents(ctx context.Context, q store.Q, taskType string) (int64, error) {
+	if taskType == "puzzle" {
+		return 0, nil
+	}
 	prices, _, err := TaskPrices(ctx, q)
 	if err != nil {
 		return 0, err

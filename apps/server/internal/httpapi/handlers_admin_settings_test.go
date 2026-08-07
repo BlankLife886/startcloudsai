@@ -42,8 +42,8 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 		t.Fatalf("concurrency settings = ceiling %#v effective %#v", out["workerConcurrencyCeiling"], out["effectiveGlobalConcurrency"])
 	}
 	retries, ok := out["taskFailureRetryCount"].(json.RawMessage)
-	if !ok || string(retries) != "0" {
-		t.Fatalf("taskFailureRetryCount = %#v, want 0", out["taskFailureRetryCount"])
+	if !ok || string(retries) != "2" {
+		t.Fatalf("taskFailureRetryCount = %#v, want 2", out["taskFailureRetryCount"])
 	}
 	balancing, ok := out["crossProviderSameModelBalancingEnabled"].(json.RawMessage)
 	if !ok || string(balancing) != "false" {
@@ -80,6 +80,133 @@ func TestAdminPutSettingsValidatesTaskFailureRetryCount(t *testing.T) {
 	balancingEnabled, err := settings.GetBool(context.Background(), st.Pool, "cross_provider_same_model_balancing_enabled")
 	if err != nil || !balancingEnabled {
 		t.Fatalf("stored cross-provider balancing = %v err=%v, want true", balancingEnabled, err)
+	}
+}
+
+func TestAdminPutSettingsValidatesCheckinCampaign(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	invalidBodies := []string{
+		`{"checkinRewards":[10,20]}`,
+		`{"checkinRewards":[10,20,30,40,50,60,-1]}`,
+		`{"checkinRewards":[0,0,0,0,0,0,0]}`,
+		`{"checkinCampaignTitle":"签"}`,
+		`{"checkinEnabled":"yes"}`,
+	}
+	for _, body := range invalidBodies {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	const validBody = `{"checkinEnabled":true,"checkinCampaignTitle":"  夏日连续创作计划  ","checkinRewards":[8,12,18,25,35,50,100]}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid checkin campaign status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	title, err := settings.Get(context.Background(), st.Pool, "checkin_campaign_title")
+	if err != nil || string(title) != `"夏日连续创作计划"` {
+		t.Fatalf("stored title = %s err=%v", title, err)
+	}
+	rewards, err := settings.Get(context.Background(), st.Pool, "checkin_rewards")
+	var storedRewards []int64
+	decodeErr := json.Unmarshal(rewards, &storedRewards)
+	if err != nil || decodeErr != nil || len(storedRewards) != 7 || storedRewards[0] != 8 || storedRewards[6] != 100 {
+		t.Fatalf("stored rewards = %s err=%v", rewards, err)
+	}
+}
+
+func TestAdminPutSettingsValidatesGrowthPrograms(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	invalidBodies := []string{
+		`{"growthGroupTargetMembers":1}`,
+		`{"growthGroupDurationHours":0}`,
+		`{"growthFailureBonusDailyLimit":101}`,
+		`{"growthGroupCampaignKey":"x"}`,
+		`{"growthUsageMilestones":[]}`,
+		`{"growthUsageMilestones":[{"units":10,"rewardCents":20},{"units":10,"rewardCents":30}]}`,
+		`{"growthUsageMilestones":[{"units":10,"rewardCents":0}]}`,
+	}
+	for _, body := range invalidBodies {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	const validBody = `{
+		"growthGroupEnabled":true,
+		"growthGroupCampaignKey":" autumn-2026 ",
+		"growthGroupTargetMembers":4,
+		"growthGroupRewardCents":45,
+		"growthGroupDurationHours":72,
+		"growthFailureBonusEnabled":true,
+		"growthFailureBonusCents":5,
+		"growthFailureBonusDailyLimit":2,
+		"growthUsageRewardsEnabled":true,
+		"growthUsageMilestones":[{"units":20,"rewardCents":30},{"units":80,"rewardCents":120}],
+		"suggestionRewardMaxCents":8000
+	}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid growth settings status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	campaign, err := settings.Get(context.Background(), st.Pool, "growth_group_campaign_key")
+	if err != nil || string(campaign) != `"autumn-2026"` {
+		t.Fatalf("stored campaign = %s err=%v", campaign, err)
+	}
+	milestones, err := settings.Get(context.Background(), st.Pool, "growth_usage_milestones")
+	var storedMilestones []struct {
+		Units       int64 `json:"units"`
+		RewardCents int64 `json:"rewardCents"`
+	}
+	decodeErr := json.Unmarshal(milestones, &storedMilestones)
+	if err != nil || decodeErr != nil || len(storedMilestones) != 2 || storedMilestones[1].RewardCents != 120 {
+		t.Fatalf("stored milestones = %s err=%v decodeErr=%v", milestones, err, decodeErr)
+	}
+}
+
+func TestAdminPutSettingsRejectsRetiredTrialCampaignFields(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	retiredBodies := []string{
+		`{"trialCampaignEnabled":true}`,
+		`{"trialCampaignTitle":"新功能限量体验"}`,
+		`{"trialCampaignFeatureKey":"ui_design"}`,
+		`{"trialCampaignFeatureKeys":["ui_design","game_art"]}`,
+		`{"trialCampaignAccessMode":"restricted"}`,
+		`{"trialCampaignCapacity":100}`,
+		`{"trialCampaignDisplayOffset":12}`,
+	}
+	for _, body := range retiredBodies {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("retired body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

@@ -23,6 +23,28 @@ import (
 
 func timeNow() time.Time { return time.Now().UTC() }
 
+func activeTrialCampaign(t *testing.T, st *store.Store) *store.TrialCampaign {
+	t.Helper()
+	item, err := store.GetActiveTrialCampaign(context.Background(), st.Pool)
+	if err != nil || item == nil {
+		t.Fatalf("active trial campaign = %#v err=%v", item, err)
+	}
+	return item
+}
+
+func configureTrialCampaign(t *testing.T, st *store.Store, featureKeys []string, accessMode string) *store.TrialCampaign {
+	t.Helper()
+	item := activeTrialCampaign(t, st)
+	updated, err := store.UpdateTrialCampaign(
+		context.Background(), st.Pool, item.ID, item.Title, featureKeys, accessMode,
+		item.Capacity, item.DisplayOffset, item.ExpiresAt, timeNow(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
+}
+
 func newUserWithBalance(t *testing.T, st *store.Store, balance int64) *store.User {
 	t.Helper()
 	ctx := context.Background()
@@ -42,6 +64,10 @@ func newUserWithBalance(t *testing.T, st *store.Store, balance int64) *store.Use
 		if err != nil {
 			t.Fatalf("grant: %v", err)
 		}
+	}
+	// 账务基础测试只验证任务冻结/结算/退款；增长补偿由独立用例显式开启。
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_enabled", json.RawMessage(`false`)); err != nil {
+		t.Fatalf("disable failure bonus: %v", err)
 	}
 	return user
 }
@@ -63,6 +89,21 @@ func mustAppErr(t *testing.T, err error, code string) {
 	}
 	if e.Code != code {
 		t.Fatalf("expected code %q, got %q (%s)", code, e.Code, e.Message)
+	}
+}
+
+func TestPuzzleIsLocalOnlyAndNeverCreatesBillableTask(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	_, created, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "puzzle", Prompt: "local collage", Count: 1,
+	})
+	if created {
+		t.Fatal("puzzle must not create a server task")
+	}
+	mustAppErr(t, err, "puzzle_local_only")
+	if state := getWallet(t, st, user.ID); state.BalanceCents != 100 || state.FrozenCents != 0 {
+		t.Fatalf("puzzle changed wallet: %#v", state)
 	}
 }
 
@@ -98,6 +139,42 @@ func TestCreateTaskFreezesCost(t *testing.T) {
 	w := getWallet(t, st, user.ID)
 	if w.BalanceCents != 60 || w.FrozenCents != 40 {
 		t.Fatalf("wallet = (%d, %d), want (60, 40)", w.BalanceCents, w.FrozenCents)
+	}
+}
+
+func TestRestrictedTrialFeatureRequiresApprovedEntitlement(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	campaign := configureTrialCampaign(t, st, []string{"text_to_image", "ui_design"}, "restricted")
+
+	_, _, err := createT2I(t, st, user.ID, 1, nil)
+	mustAppErr(t, err, "trial_feature_access_required")
+
+	application, err := store.InsertTrialAccessApplication(
+		ctx, st.Pool, user.ID, campaign.ID, 1, []string{"text_to_image", "ui_design"}, "产品设计师", "用于验证真实功能权限与任务授权流程。",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.GrantTrialFeatureEntitlement(ctx, st.Pool, user.ID, "text_to_image", application.ID, timeNow()); err != nil {
+		t.Fatal(err)
+	}
+
+	task, created, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil || !created || task == nil {
+		t.Fatalf("entitled create task = %#v created=%v err=%v", task, created, err)
+	}
+}
+
+func TestRestrictedCampaignDoesNotBlockOtherFeatures(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	configureTrialCampaign(t, st, []string{"ui_design"}, "restricted")
+
+	task, created, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil || !created || task == nil {
+		t.Fatalf("unrelated feature task = %#v created=%v err=%v", task, created, err)
 	}
 }
 
@@ -346,6 +423,83 @@ func TestGlobalTaskCapacityPreservesIdempotentReplay(t *testing.T) {
 	}
 }
 
+func TestAdmissionSupports100UsersWith100ImagesEach(t *testing.T) {
+	t.Run("25 packed tasks per user", func(t *testing.T) {
+		run100UserAdmissionScenario(t, 25, 4)
+	})
+	t.Run("100 single-image tasks per user", func(t *testing.T) {
+		run100UserAdmissionScenario(t, 100, 1)
+	})
+}
+
+func run100UserAdmissionScenario(t *testing.T, tasksPerUser, count int) {
+	t.Helper()
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_prices", json.RawMessage(`{"t2i":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "global_max_active_tasks", json.RawMessage(`12000`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "global_max_active_images", json.RawMessage(`12000`)); err != nil {
+		t.Fatal(err)
+	}
+
+	const users = 100
+	const submissionsPerUser = 6
+	createdUsers := make([]*store.User, 0, users)
+	for range users {
+		createdUsers = append(createdUsers, newUserWithBalance(t, st, 0))
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, users*tasksPerUser)
+	var wg sync.WaitGroup
+	for _, user := range createdUsers {
+		user := user
+		jobs := make(chan int, tasksPerUser)
+		for index := range tasksPerUser {
+			jobs <- index
+		}
+		close(jobs)
+		for range submissionsPerUser {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				for index := range jobs {
+					idem := fmt.Sprintf("load-%s-%d", user.ID, index)
+					_, _, err := createT2I(t, st, user.ID, count, &idem)
+					results <- err
+				}
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	accepted := 0
+	for err := range results {
+		if err != nil {
+			t.Fatalf("100x100 admission rejected work: %v", err)
+		}
+		accepted++
+	}
+	if accepted != users*tasksPerUser {
+		t.Fatalf("accepted tasks = %d, want %d", accepted, users*tasksPerUser)
+	}
+	var taskCount, imageUnits int64
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*), sum(work_units) FROM tasks WHERE status = 'queued'`).Scan(&taskCount, &imageUnits); err != nil {
+		t.Fatal(err)
+	}
+	wantTasks := int64(users * tasksPerUser)
+	if taskCount != wantTasks || imageUnits != 10000 {
+		t.Fatalf("queued tasks=%d image units=%d, want %d and 10000", taskCount, imageUnits, wantTasks)
+	}
+}
+
 func TestSettleOnSuccess(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)
@@ -439,6 +593,118 @@ func TestReleaseOnFailure(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("second mark: %v", err)
+	}
+}
+
+func TestFailureBonusIsIdempotentAndDailyCapped(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 200)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_enabled", json.RawMessage(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_cents", json.RawMessage(`3`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_daily_limit", json.RawMessage(`3`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var first *store.Task
+	for i := 0; i < 4; i++ {
+		task, _, err := createT2I(t, st, user.ID, 1, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = task
+		}
+		forceRunning(t, st, task.ID)
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			won, markErr := taskflow.MarkFailed(ctx, tx, task, "upstream_error", "boom", "running")
+			if !won && markErr == nil {
+				t.Fatal("expected failure transition to win")
+			}
+			return markErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		won, markErr := taskflow.MarkFailed(ctx, tx, first, "upstream_error", "boom", "running")
+		if won {
+			t.Fatal("replayed failure must not win")
+		}
+		return markErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 209 || w.FrozenCents != 0 {
+		t.Fatalf("wallet = (%d, %d), want (209, 0)", w.BalanceCents, w.FrozenCents)
+	}
+	var rewards int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger
+		WHERE user_id=$1 AND kind='grant' AND source_type='task_failure_bonus'`, user.ID).Scan(&rewards); err != nil {
+		t.Fatal(err)
+	}
+	if rewards != 3 {
+		t.Fatalf("failure bonus entries = %d, want 3", rewards)
+	}
+}
+
+func TestUsageMilestonesGrantEachThresholdOnce(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 200)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "growth_usage_rewards_enabled", json.RawMessage(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "growth_usage_milestones", json.RawMessage(`[
+		{"units":1,"rewardCents":7},{"units":3,"rewardCents":11}
+	]`)); err != nil {
+		t.Fatal(err)
+	}
+
+	task, _, err := createT2I(t, st, user.ID, 3, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceRunning(t, st, task.ID)
+	outputs := []string{"tasks/x/0.png", "tasks/x/1.png", "tasks/x/2.png"}
+	finishedAt := timeNow()
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		won, markErr := taskflow.MarkSucceeded(ctx, tx, task, outputs, nil, finishedAt)
+		if !won && markErr == nil {
+			t.Fatal("expected success transition to win")
+		}
+		return markErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		won, markErr := taskflow.MarkSucceeded(ctx, tx, task, outputs, nil, finishedAt)
+		if won {
+			t.Fatal("replayed success must not win")
+		}
+		return markErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 158 || w.FrozenCents != 0 {
+		t.Fatalf("wallet = (%d, %d), want (158, 0)", w.BalanceCents, w.FrozenCents)
+	}
+	var rewards int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger
+		WHERE user_id=$1 AND kind='grant' AND source_type='usage_milestone'`, user.ID).Scan(&rewards); err != nil {
+		t.Fatal(err)
+	}
+	if rewards != 2 {
+		t.Fatalf("usage milestone entries = %d, want 2", rewards)
 	}
 }
 

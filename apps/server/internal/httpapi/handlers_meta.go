@@ -28,15 +28,10 @@ func (s *Server) pricing(c *gin.Context) {
 	for taskType, priceRange := range priceRanges {
 		pointRanges[taskType] = gin.H{"minPoints": priceRange.MinCents, "maxPoints": priceRange.MaxCents}
 	}
-	freeDaily, err := settings.GetInt(ctx, s.St.Pool, "free_daily_cents")
-	if err != nil {
-		fail(c, err)
-		return
-	}
 	ok(c, gin.H{
-		"taskPointPrices": prices, "taskPointPriceRanges": pointRanges, "freeDailyPoints": freeDaily,
+		"taskPointPrices": prices, "taskPointPriceRanges": pointRanges,
 		// Legacy aliases remain until older clients stop reading the historical Cents names.
-		"taskPrices": prices, "taskPriceRanges": priceRanges, "freeDailyCents": freeDaily,
+		"taskPrices": prices, "taskPriceRanges": priceRanges,
 	})
 }
 
@@ -65,6 +60,17 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+		}
+	}
+	chatItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
+		model := selection.Model
+		price := modelconfig.EffectivePrice(model)
+		return gin.H{
+			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
+			"description": model.Description, "provider": selection.Provider.Name,
+			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
+			"pricePoints": price, "standardPricePoints": model.PriceCents,
+			"discountPricePoints": model.DiscountPriceCents, "default": isDefault,
 		}
 	}
 	toolItem := func(selection modelconfig.Selection) gin.H {
@@ -130,16 +136,31 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		}
 		return items
 	}
+	workspaceChatModels := func(workspace string) []gin.H {
+		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindChat)
+		if workspace == modelconfig.WorkspaceUIDesign && len(selections) == 0 {
+			selections = modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat)
+		}
+		items := make([]gin.H, 0, len(selections))
+		for index, selection := range selections {
+			items = append(items, chatItem(selection, index == 0))
+		}
+		return items
+	}
 	features := gin.H{
 		"ai.imageTools":           gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
 		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},
-		"ai.uiDesign":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceUIDesign)}},
-		"ai.ultraModelSheet":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
-		"ai.gameDesign":           gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
-		"ai.optimize":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
-		"ai.puzzle":               gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
+		"ai.uiDesign": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":   workspaceImageModels(modelconfig.WorkspaceUIDesign),
+			"analysisModels": workspaceChatModels(modelconfig.WorkspaceUIDesign),
+		}},
+		"ai.ecommerceDesign": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceEcommerce)}},
+		"ai.ultraModelSheet": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
+		"ai.gameDesign":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
+		"ai.optimize":        gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.puzzle":          gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
 	}
 	ok(c, gin.H{
 		"routes": gin.H{}, "features": features, "pageLayout": gin.H{},

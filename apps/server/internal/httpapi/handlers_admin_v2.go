@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
@@ -92,9 +93,9 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 	for _, n := range byStatus {
 		tasksTotal += n
 	}
-	walletOut := walletDict(0, 0)
+	walletOut := walletDict(nil)
 	if wallet != nil {
-		walletOut = walletDict(wallet.BalanceCents, wallet.FrozenCents)
+		walletOut = walletDict(wallet)
 	}
 	ok(c, gin.H{
 		"user":   adminUserDict(user, nil),
@@ -285,7 +286,8 @@ func adminAssistantRunDict(run *store.AssistantRun) gin.H {
 		"source": "assistant", "model": run.Params["model"], "status": run.Status,
 		"prompt": run.Prompt, "params": params, "count": run.Params["count"],
 		"inputKeys": []string{}, "outputKeys": []string{}, "outputUrls": []string{},
-		"costCents": 0, "errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
+		"costCents": run.CostCents, "reservedCents": run.ReservedCents,
+		"errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
 		"attempt": 0, "createdAt": isoValue(run.CreatedAt), "startedAt": iso(run.StartedAt),
 		"finishedAt": iso(run.FinishedAt),
 	}
@@ -308,7 +310,7 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 	var run *store.AssistantRun
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		run, err = store.GetAssistantRun(ctx, tx, id)
+		run, err = store.GetAssistantRunForUpdate(ctx, tx, id)
 		if err != nil {
 			return err
 		}
@@ -325,7 +327,7 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 		if err := validateAssistantRunCapacity(active, run.ConversationID); err != nil {
 			return err
 		}
-		changed, err := store.RequeueAssistantRun(ctx, tx, id)
+		changed, err := assistantbilling.Requeue(ctx, tx, run)
 		if err != nil {
 			return err
 		}
@@ -350,7 +352,9 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 	}
 	if err := s.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
 		message := "任务入队失败，请稍后重试"
-		_, _ = store.FailAssistantRun(ctx, s.St.Pool, id, "queue_error", message)
+		if _, failErr := assistantbilling.Fail(ctx, s.St, id, "queue_error", message); failErr != nil {
+			return nil, failErr
+		}
 		if assistantMessage, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && assistantMessage != nil {
 			_ = store.UpdateAssistantMessage(ctx, s.St.Pool, assistantMessage.ID, message, run.Mode, "failed",
 				assistantAdminMetadata(assistantMessage, run, "failed", message))
@@ -361,16 +365,12 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 }
 
 func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	run, changed, err := assistantbilling.CancelAdminQueued(ctx, s.St, id)
 	if err != nil {
 		return nil, err
 	}
 	if run == nil {
 		return nil, apperr.E("task_not_found", "任务不存在", 404)
-	}
-	changed, err := store.AdminCancelAssistantRun(ctx, s.St.Pool, id)
-	if err != nil {
-		return nil, err
 	}
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
@@ -388,16 +388,12 @@ func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*st
 }
 
 func (s *Server) adminForceFailAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	run, changed, err := assistantbilling.ForceFailAdmin(ctx, s.St, id)
 	if err != nil {
 		return nil, err
 	}
 	if run == nil {
 		return nil, apperr.E("task_not_found", "任务不存在", 404)
-	}
-	changed, err := store.AdminForceFailAssistantRun(ctx, s.St.Pool, id)
-	if err != nil {
-		return nil, err
 	}
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)

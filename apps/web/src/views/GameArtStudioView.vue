@@ -20,7 +20,10 @@ import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalSt
 import { listMyShareAssets, submitShareItem } from '@/services/shareGallery'
 import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import notificationService from '@/services/notification'
-import { takePendingPrompt } from '@/features/creator-hub/studioTools'
+import {
+  composePendingLaunchPrompt,
+  takePendingPrompt,
+} from '@/features/creator-hub/studioTools'
 import { useAppearanceStore } from '@/stores/appearance'
 
 const appearanceStore = useAppearanceStore()
@@ -5817,13 +5820,30 @@ async function ensureCanvasHistoryForType(kindVariant) {
   return promise
 }
 
-onMounted(() => {
+onMounted(async () => {
   preloadStudioBackgrounds()
-  void initializeStudio()
+  await initializeStudio()
   setupCanvasCardMotion()
   setupPageMotion()
   const pending = takePendingPrompt('game_art')
-  if (pending?.prompt) currentState.value.prompt = pending.prompt.slice(0, 1200)
+  if (pending) {
+    const launchConfig = pending.config || {}
+    if (ASSET_TYPES.some((type) => type.id === launchConfig.skill)) {
+      assetType.value = launchConfig.skill
+    }
+    if (currentType.value.aspects.includes(launchConfig.ratio)) {
+      currentState.value.aspect = launchConfig.ratio
+    }
+    const launchPrompt = composePendingLaunchPrompt(pending, 1200)
+    if (launchPrompt) currentState.value.prompt = launchPrompt
+    if (launchConfig.quality) hdMode.value = launchConfig.quality === 'high'
+    if ([1, 2, 3, 4].includes(Number(launchConfig.count))) {
+      imageCount.value = Number(launchConfig.count)
+    }
+    if (launchConfig.model && models.value.some((model) => model.id === launchConfig.model)) {
+      modelId.value = launchConfig.model
+    }
+  }
   taskClockTimer = window.setInterval(() => {
     if (generationTasks.value.length) taskClock.value = Date.now()
   }, 1000)

@@ -7,9 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math/big"
-	"net/smtp"
 	"strings"
 	"time"
 
@@ -70,26 +68,11 @@ func randomProfileName() string {
 }
 
 func (s *Server) sendLoginCode(email, code string) error {
-	if s.Cfg.SMTPAddr == "" || s.Cfg.SMTPFrom == "" {
-		if s.Cfg.AppEnv == "development" {
-			return nil
-		}
-		return fmt.Errorf("SMTP 未配置")
-	}
-	host := s.Cfg.SMTPAddr
-	if colon := strings.LastIndex(host, ":"); colon > 0 {
-		host = host[:colon]
-	}
-	var smtpAuth smtp.Auth
-	if s.Cfg.SMTPUser != "" {
-		smtpAuth = smtp.PlainAuth("", s.Cfg.SMTPUser, s.Cfg.SMTPPassword, host)
-	}
-	message := []byte("From: " + s.Cfg.SMTPFrom + "\r\n" +
-		"To: " + email + "\r\n" +
-		"Subject: StarCloudsAI verification code\r\n" +
-		"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" +
-		"Your login code is: " + code + "\r\nIt expires in 10 minutes.\r\n")
-	return smtp.SendMail(s.Cfg.SMTPAddr, smtpAuth, s.Cfg.SMTPFrom, []string{email}, message)
+	return s.sendPlainEmail(
+		email,
+		"StarCloudsAI verification code",
+		"Your login code is: "+code+"\nIt expires in 10 minutes.\n",
+	)
 }
 
 func (s *Server) authProviders(c *gin.Context) {

@@ -1,35 +1,33 @@
 <script setup>
 /**
  * 价格页 — 对齐文生图工作台视觉（网格底、面板圆角、紫 accent、亮暗 is-light）
- * 业务：套餐 / 创作单价 / 支付预留 / FAQ；支付 UI 仍关闭。
+ * 业务：运营套餐 / 创作单价 / 积分获取入口 / FAQ；支付通道未接入时不创建订单。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppearanceStore } from '@/stores/appearance'
 import { listPlans, formatCents, formatPoints } from '@/services/billingApi'
 import { getTaskPricing } from '@/services/metaApi'
-import { getWallet } from '@/services/meApi'
+import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
 import { TASK_TYPE_LABELS } from '@/services/tasksApi'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const appearanceStore = useAppearanceStore()
+const { availableCents, frozenCents, refreshWalletBalance } = useClientWalletBalance()
 
 const plans = ref([])
 const plansLoading = ref(true)
 const plansLoadFailed = ref(false)
 const pricing = ref(null)
-const wallet = ref(null)
 const section = ref('plans')
 const pageRoot = ref(null)
-
-const PAYMENT_UI_ENABLED = false
 
 const sectionTabs = [
   { id: 'plans', label: '套餐方案' },
   { id: 'unit', label: '创作单价' },
-  { id: 'pay', label: '支付方式' },
+  { id: 'pay', label: '获取积分' },
   { id: 'faq', label: '常见问题' },
 ]
 
@@ -53,12 +51,12 @@ const previewPlans = [
     id: 'preview-creator',
     name: '创作者计划',
     eyebrow: '持续创作',
-    description: '为持续创作准备的月度方案，正式价格与每日额度将在支付接入后公布。',
+    description: '为持续创作准备的月度方案，可先申请体验资格获取创作积分。',
     priceMode: 'coming',
     suffix: '/ 月',
     features: [
-      '计划包含月度创作额度',
-      '每日额度自动发放',
+      '连续创作权益预览',
+      '体验申请审核后一键领取积分',
       '覆盖全部图像工作台',
       '优先体验后续创作能力',
     ],
@@ -72,7 +70,12 @@ const previewPlans = [
     description: '面向高频制作与团队场景，套餐、发票和协作能力仍在规划中。',
     priceMode: 'coming',
     suffix: '/ 月',
-    features: ['更高的计划额度', '适合高频生产任务', '团队与商业能力预留', '支付接入后开放购买'],
+    features: [
+      '更高的计划额度',
+      '适合高频生产任务',
+      '团队与商业能力预留',
+      '可通过反馈页提交合作需求',
+    ],
     preview: true,
   },
 ]
@@ -90,6 +93,7 @@ const taskTypeMeta = {
   t2i: { icon: 'bi-image', tone: 'violet' },
   coloring: { icon: 'bi-palette2', tone: 'rose' },
   ui_design: { icon: 'bi-window-sidebar', tone: 'cyan' },
+  ecommerce_design: { icon: 'bi-bag-check', tone: 'green' },
   model_sheet: { icon: 'bi-badge-hd', tone: 'green' },
   game_art: { icon: 'bi-controller', tone: 'amber' },
   puzzle: { icon: 'bi-puzzle', tone: 'blue' },
@@ -125,31 +129,48 @@ function priceRatio(priceCents) {
 
 const displayPlans = computed(() => {
   if (!plans.value.length) return previewPlans
-  return plans.value.map((plan, index) => ({
+  return plans.value.map((plan) => ({
     ...plan,
     eyebrow: plan.kind === 'subscription' ? '订阅方案' : '额度包',
     description:
-      plan.kind === 'subscription'
-        ? '订阅期内按计划发放创作额度。支付接入前仅展示方案信息。'
-        : '一次性额度包，支付接入前仅展示方案信息。',
-    popular: index === 1,
+      String(plan.description || '').trim() ||
+      (plan.kind === 'subscription'
+        ? '订阅期内按计划每日发放创作积分。'
+        : '一次性发放到钱包，可用于全部创作工作台。'),
+    popular: plan.recommended === true,
     preview: false,
   }))
 })
 
-const availableCents = computed(() => Math.max(0, Number(wallet.value?.balanceCents || 0)))
-const frozenCents = computed(() => Math.max(0, Number(wallet.value?.frozenCents || 0)))
-
-const paymentMethods = [
-  { name: '支付宝', icon: 'bi-alipay', note: '尚未接入' },
-  { name: '微信支付', icon: 'bi-wechat', note: '尚未接入' },
-  { name: '银行卡', icon: 'bi-credit-card-2-front', note: '尚未接入' },
+const accessMethods = [
+  {
+    id: 'redeem',
+    name: '兑换码入账',
+    icon: 'bi-ticket-perforated',
+    note: '已有兑换码可直接进入钱包兑换',
+    action: '去兑换',
+  },
+  {
+    id: 'trial',
+    name: '申请体验资格',
+    icon: 'bi-stars',
+    note: '填写职业与用途，审核后一键领取积分',
+    action: '立即申请',
+  },
+  {
+    id: 'checkin',
+    name: '每日签到',
+    icon: 'bi-calendar-check',
+    note: '连续签到，每天获得免费创作积分',
+    action: '去签到',
+  },
 ]
 
 const faqs = [
   {
-    question: '现在可以购买套餐吗？',
-    answer: '暂时不可以。支付通道尚未接入，当前套餐用于提前了解方案结构，不会创建订单或发生扣款。',
+    question: '现在怎样获取套餐积分？',
+    answer:
+      '当前可通过兑换码、体验资格申请和每日签到获取积分。在线支付尚未接入，页面不会创建付款订单或发生自动扣款。',
   },
   {
     question: '当前创作如何计费？',
@@ -157,19 +178,18 @@ const faqs = [
       '任务提交时按张数冻结钱包额度，任务成功后结算；失败或取消时释放对应冻结额度。各工作台的当前单价可在本页下方查看。',
   },
   {
-    question: '为什么套餐显示“待公布”？',
+    question: '为什么有些套餐显示“待公布”？',
     answer:
-      '数据库尚未配置正式上架套餐时，页面只展示方案预览，不会虚构金额。配置正式套餐后，本页会自动显示对应价格和权益。',
+      '运营后台尚未配置正式上架套餐时，页面只展示方案预览，不会虚构金额。正式套餐上架后，本页会自动同步价格、积分与权益。',
   },
   {
-    question: '将来会支持哪些支付方式？',
+    question: '套餐价格会自动扣款吗？',
     answer:
-      '页面已经为支付宝、微信支付和银行卡预留入口。最终开放方式以支付服务完成接入和安全审计后的实际上线结果为准。',
+      '不会。当前价格只用于展示套餐价值，支付接口未开放，不会创建订单、跳转收银台或从钱包自动扣款。',
   },
   {
     question: '已有钱包额度会受影响吗？',
-    answer:
-      '不会。现有钱包余额、兑换码和任务扣费逻辑保持不变；恢复价格页不会启用任何新的自动扣费能力。',
+    answer: '不会。现有钱包余额、兑换码、签到奖励和任务扣费逻辑保持不变。',
   },
 ]
 
@@ -181,9 +201,10 @@ function planPrice(plan) {
   return formatCents(plan.priceCents)
 }
 
-function taskPriceLabel(priceCents) {
-  if (priceCents === null || !Number.isFinite(priceCents)) return '暂不可用'
-  return formatPoints(priceCents)
+function taskPriceLabel(row) {
+  if (row.type === 'puzzle') return '永久免费'
+  if (row.priceCents === null || !Number.isFinite(row.priceCents)) return '暂不可用'
+  return formatPoints(row.priceCents)
 }
 
 function planSuffix(plan) {
@@ -220,7 +241,7 @@ function planFeatures(plan) {
     )
   }
   const items = [...pointsFeatures, ...retained]
-  return items.length ? items : ['套餐信息已配置', '支付接入后开放购买', '当前不会创建订单']
+  return items.length ? items : ['全平台创作工具通用', '积分进入个人钱包', '当前不会自动创建订单']
 }
 
 function scrollToSection(id) {
@@ -230,6 +251,41 @@ function scrollToSection(id) {
 
 function goCreate() {
   router.push('/text-to-image')
+}
+
+function requestPlanAccess() {
+  router.push({
+    path: '/pricing',
+    query: {
+      ...router.currentRoute.value.query,
+      trial: 'apply',
+    },
+  })
+}
+
+function handlePlanAction(plan) {
+  if (plan.preview && plan.priceMode === 'unit') {
+    goCreate()
+    return
+  }
+  requestPlanAccess()
+}
+
+function planActionLabel(plan) {
+  if (plan.preview && plan.priceMode === 'unit') return '开始创作'
+  return '申请体验'
+}
+
+function useAccessMethod(method) {
+  if (method.id === 'redeem') {
+    router.push('/wallet')
+    return
+  }
+  if (method.id === 'trial') {
+    requestPlanAccess()
+    return
+  }
+  router.push('/check-in')
 }
 
 let revealObserver = null
@@ -304,9 +360,16 @@ onMounted(async () => {
   bindReveal()
 
   if (authStore.isAuthenticated) {
-    wallet.value = await getWallet().catch(() => null)
+    void refreshWalletBalance({ force: true }).catch(() => null)
   }
 })
+
+watch(
+  () => authStore.isAuthenticated,
+  (ok) => {
+    if (ok) void refreshWalletBalance({ force: true }).catch(() => null)
+  },
+)
 
 onBeforeUnmount(() => {
   revealObserver?.disconnect()
@@ -367,7 +430,7 @@ onBeforeUnmount(() => {
             <span>钱包</span>
             <span class="pricing-wallet__stamp">
               <i class="bi bi-lock-fill" aria-hidden="true"></i>
-              支付筹备中
+              安全计费
             </span>
           </header>
           <template v-if="authStore.isAuthenticated">
@@ -399,7 +462,7 @@ onBeforeUnmount(() => {
             <span>01 · PLANS</span>
             <h2 id="plans-title">套餐方案</h2>
           </div>
-          <p>按创作频率选择；支付接入前仅展示方案信息。</p>
+          <p>价格、积分和权益由运营后台统一配置；当前可申请体验或使用兑换码。</p>
         </header>
 
         <div v-if="plansLoading" class="pricing-plan-grid" aria-label="套餐加载中">
@@ -414,7 +477,9 @@ onBeforeUnmount(() => {
             data-reveal
             :style="{ '--reveal-delay': `${planIndex * 70}ms` }"
           >
-            <span v-if="plan.popular" class="pricing-plan__badge">推荐</span>
+            <span v-if="plan.badge || plan.popular" class="pricing-plan__badge">
+              {{ plan.badge || '推荐' }}
+            </span>
             <p class="pricing-plan__eyebrow">{{ plan.eyebrow }}</p>
             <h3>{{ plan.name }}</h3>
             <p class="pricing-plan__desc">{{ plan.description }}</p>
@@ -429,14 +494,9 @@ onBeforeUnmount(() => {
                 {{ feature }}
               </li>
             </ul>
-            <button
-              type="button"
-              class="pricing-plan__btn"
-              :disabled="!PAYMENT_UI_ENABLED"
-              title="支付通道尚未接入"
-            >
-              <i class="bi bi-lock-fill" aria-hidden="true"></i>
-              支付暂未开放
+            <button type="button" class="pricing-plan__btn" @click="handlePlanAction(plan)">
+              <span>{{ planActionLabel(plan) }}</span>
+              <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
             </button>
           </article>
         </div>
@@ -483,8 +543,9 @@ onBeforeUnmount(() => {
               <i></i>
             </span>
             <p class="pricing-unit-row__price">
-              <b>{{ taskPriceLabel(row.priceCents) }}</b>
-              <span v-if="row.priceCents !== null">/ 张</span>
+              <b>{{ taskPriceLabel(row) }}</b>
+              <span v-if="row.type === 'puzzle'">· 本地处理</span>
+              <span v-else-if="row.priceCents !== null">/ 张</span>
             </p>
           </li>
         </ul>
@@ -499,20 +560,23 @@ onBeforeUnmount(() => {
       >
         <header class="pricing-section__head">
           <div>
-            <span>03 · PAYMENT</span>
-            <h2 id="pay-title">支付方式</h2>
+            <span>03 · GET CREDITS</span>
+            <h2 id="pay-title">获取创作积分</h2>
           </div>
-          <p>通道开放后可在此选择付款方式。</p>
+          <p>无需在线支付，也可以通过以下方式开始创作。</p>
         </header>
 
         <div class="pricing-pay-grid">
-          <article v-for="method in paymentMethods" :key="method.name" aria-disabled="true">
+          <article v-for="method in accessMethods" :key="method.id">
             <i class="bi" :class="method.icon" aria-hidden="true"></i>
             <div>
               <strong>{{ method.name }}</strong>
               <small>{{ method.note }}</small>
             </div>
-            <i class="bi bi-lock-fill" aria-hidden="true"></i>
+            <button type="button" @click="useAccessMethod(method)">
+              {{ method.action }}
+              <i class="bi bi-arrow-right" aria-hidden="true"></i>
+            </button>
           </article>
         </div>
       </section>
@@ -694,7 +758,7 @@ onBeforeUnmount(() => {
 
 .pricing-hero__lede {
   margin: 0;
-  max-width: 46ch;
+  max-width: min(52ch, 100%);
   color: var(--pp-muted);
   font-size: 15px;
   line-height: 1.7;
@@ -862,7 +926,8 @@ onBeforeUnmount(() => {
 
 .pricing-section__head > p {
   margin: 0;
-  max-width: 28ch;
+  flex: 0 1 36ch;
+  max-width: min(36ch, 42%);
   color: var(--pp-muted);
   font-size: 13px;
   line-height: 1.6;
@@ -990,13 +1055,23 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 44px;
   margin-top: auto;
-  border: 1px solid var(--pp-line);
+  border: 1px solid var(--pp-line-strong);
   border-radius: 999px;
-  color: var(--pp-faint);
+  color: var(--pp-ink);
   font-size: 13px;
   font-weight: 700;
-  background: color-mix(in srgb, var(--pp-field) 80%, transparent);
-  cursor: not-allowed;
+  background: color-mix(in srgb, var(--pp-accent) 13%, var(--pp-field));
+  cursor: pointer;
+  transition:
+    transform 160ms var(--pp-ease),
+    border-color 160ms var(--pp-ease),
+    background 160ms var(--pp-ease);
+}
+
+.pricing-plan__btn:hover {
+  border-color: var(--pp-accent-2);
+  background: color-mix(in srgb, var(--pp-accent) 23%, var(--pp-field));
+  transform: translateY(-2px);
 }
 
 .pricing-note {
@@ -1099,7 +1174,6 @@ onBeforeUnmount(() => {
   gap: 12px;
   min-height: 84px;
   padding: 16px 18px;
-  opacity: 0.78;
 }
 
 .pricing-pay-grid > article > i:first-child {
@@ -1124,8 +1198,28 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.pricing-pay-grid > article > i:last-child {
-  color: var(--pp-faint);
+.pricing-pay-grid > article > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 11px;
+  color: var(--pp-ink);
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pp-accent) 10%, transparent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition:
+    border-color 160ms var(--pp-ease),
+    background 160ms var(--pp-ease);
+}
+
+.pricing-pay-grid > article > button:hover {
+  border-color: var(--pp-line-strong);
+  background: color-mix(in srgb, var(--pp-accent) 18%, transparent);
 }
 
 .pricing-faq {
@@ -1179,15 +1273,21 @@ onBeforeUnmount(() => {
   padding: 28px;
 }
 
+.pricing-cta > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .pricing-cta h2 {
   margin: 0 0 8px;
-  font-size: 26px;
+  font-size: clamp(20px, 2.4vw, 26px);
   font-weight: 740;
   letter-spacing: -0.02em;
 }
 
 .pricing-cta p {
   margin: 0;
+  max-width: 48ch;
   color: var(--pp-muted);
   font-size: 14px;
 }
@@ -1198,6 +1298,7 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 10px;
   flex: 0 0 auto;
+  white-space: nowrap;
   min-width: 168px;
   min-height: 50px;
   padding: 0 22px;
@@ -1278,6 +1379,7 @@ onBeforeUnmount(() => {
   }
 
   .pricing-section__head > p {
+    max-width: 100%;
     text-align: left;
   }
 
@@ -1294,8 +1396,6 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 }
-
-
 
 @media (prefers-reduced-motion: reduce) {
   .pricing-page [data-reveal] {

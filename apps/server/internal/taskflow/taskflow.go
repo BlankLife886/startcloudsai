@@ -12,9 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/growth"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
 
@@ -99,15 +101,43 @@ type CreateInput struct {
 	IdempotencyKey *string
 }
 
+func authorizeTrialFeature(ctx context.Context, q store.Q, userID uuid.UUID, feature trialfeature.Feature) error {
+	if feature.Key == "" {
+		return nil
+	}
+	campaign, err := store.GetActiveTrialCampaign(ctx, q)
+	if err != nil {
+		return err
+	}
+	if campaign == nil || campaign.AccessMode != "restricted" {
+		return nil
+	}
+	if !store.Contains(campaign.FeatureKeys, feature.Key) {
+		return nil
+	}
+	allowed, err := store.HasActiveTrialFeatureEntitlement(ctx, q, userID, feature.Key)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return apperr.E("trial_feature_access_required", fmt.Sprintf("「%s」正在内测，请先申请并通过体验资格审核", feature.Label), 403)
+	}
+	return nil
+}
+
 // CreateTask 校验 + 冻结 + 建任务（单事务）。返回 (task, created)。
 func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in CreateInput) (*store.Task, bool, error) {
 	if !store.Contains(store.TaskTypes, in.Type) {
 		return nil, false, apperr.E("validation_error", "不支持的任务类型", 422)
 	}
+	if in.Type == "puzzle" {
+		return nil, false, apperr.E("puzzle_local_only", "AI 拼图是免费本地工具，不创建云端生成任务", 422)
+	}
 	if in.Count < 1 || in.Count > 4 {
 		return nil, false, apperr.E("validation_error", "count 须在 1-4 之间", 422)
 	}
 	isBackgroundRemove := in.Type == "background_remove"
+	taskFeature, _ := trialfeature.ForTaskType(in.Type)
 	if isBackgroundRemove && (in.Count != 1 || len(in.InputKeys) != 1) {
 		return nil, false, apperr.E("validation_error", "背景移除任务必须且只能包含 1 张输入图片", 422)
 	}
@@ -115,9 +145,6 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	var task *store.Task
 	created := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
-		if err := store.LockGlobalTaskCreation(ctx, tx); err != nil {
-			return err
-		}
 		if err := store.LockUserTaskCreation(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -130,6 +157,9 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 				task = existing
 				return nil
 			}
+		}
+		if err := authorizeTrialFeature(ctx, tx, userID, taskFeature); err != nil {
+			return err
 		}
 
 		maxRunning, err := settings.GetInt(ctx, tx, "user_max_running_tasks")
@@ -146,21 +176,20 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if activeCount >= maxRunning {
 			return apperr.E("user_task_limit", fmt.Sprintf("同时进行中的任务不能超过 %d 个", maxRunning), 429)
 		}
-		globalLimit, err := settings.GetInt(ctx, tx, "global_max_active_tasks")
+		maxImages, err := settings.GetInt(ctx, tx, "user_max_running_images")
 		if err != nil {
 			return err
 		}
-		if globalLimit <= 0 {
-			globalLimit = 2000
+		if maxImages <= 0 {
+			maxImages = maxRunning * 4
 		}
-		globalActive, err := store.CountTasksInStatuses(ctx, tx, []string{"queued", "running"})
+		activeImages, err := store.CountActiveTaskUnits(ctx, tx, userID)
 		if err != nil {
 			return err
 		}
-		if globalActive >= globalLimit {
-			return apperr.E("system_task_capacity", "当前生成任务较多，请稍后再试；你的提示词不会丢失", 429)
+		if activeImages+int64(in.Count) > int64(maxImages) {
+			return apperr.E("user_image_capacity", fmt.Sprintf("同时处理的图片不能超过 %d 张", maxImages), 429)
 		}
-
 		taskID := uuid.New()
 		unitPrice, err := settings.TaskPriceCents(ctx, tx, in.Type)
 		if err != nil {
@@ -290,6 +319,41 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		}
 		costCents := unitPrice * int64(in.Count)
 
+		// Model validation and route resolution above are independent per user and
+		// intentionally happen before the short global admission section. Only the
+		// count-and-insert boundary is serialized across API replicas.
+		if err := store.LockGlobalTaskCreation(ctx, tx); err != nil {
+			return err
+		}
+		globalLimit, err := settings.GetInt(ctx, tx, "global_max_active_tasks")
+		if err != nil {
+			return err
+		}
+		if globalLimit <= 0 {
+			globalLimit = 12000
+		}
+		globalActive, err := store.CountTasksInStatuses(ctx, tx, []string{"queued", "running"})
+		if err != nil {
+			return err
+		}
+		if globalActive >= globalLimit {
+			return apperr.E("system_task_capacity", "当前生成任务较多，请稍后再试；你的提示词不会丢失", 429)
+		}
+		globalImageLimit, err := settings.GetInt(ctx, tx, "global_max_active_images")
+		if err != nil {
+			return err
+		}
+		if globalImageLimit <= 0 {
+			globalImageLimit = 12000
+		}
+		globalImages, err := store.CountTaskUnitsInStatuses(ctx, tx, []string{"queued", "running"})
+		if err != nil {
+			return err
+		}
+		if globalImages+int64(in.Count) > int64(globalImageLimit) {
+			return apperr.E("system_image_capacity", "系统排队容量已满，请稍后重试；已接收的任务不会丢失", 429)
+		}
+
 		task, err = store.InsertTask(ctx, tx, store.NewTask{
 			ID:             taskID,
 			UserID:         userID,
@@ -300,13 +364,17 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			Count:          in.Count,
 			InputKeys:      in.InputKeys,
 			CostCents:      costCents,
+			WorkUnits:      in.Count,
 			IdempotencyKey: in.IdempotencyKey,
 		})
 		if err != nil {
 			return err
 		}
 		if costCents > 0 {
-			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents,
+			if err := store.LockTrialCampaignLifecycleShared(ctx, tx); err != nil {
+				return err
+			}
+			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents, taskFeature.Key,
 				strPtr(fmt.Sprintf("任务冻结（%s×%d）", in.Type, in.Count)))
 			if err != nil {
 				return err
@@ -411,18 +479,26 @@ func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*sto
 // MarkSucceeded running→succeeded + settle，同事务。返回是否抢到状态迁移。
 // 通知已解耦：调用方在事务提交后调用 NotifyTaskSucceeded（尽力而为）。
 func MarkSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time) (bool, error) {
-	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, "")
+	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, "", "")
 }
 
 func MarkSucceededClaimed(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
-	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, claimID)
+	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, claimID, "")
 }
 
-func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID string) (bool, error) {
+func MarkSucceededOwned(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, owner string) (bool, error) {
+	return markSucceeded(ctx, q, task, outputKeys, thumbnailKeys, finishedAt, "", owner)
+}
+
+func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys, thumbnailKeys []string, finishedAt time.Time, claimID, owner string) (bool, error) {
 	var ok bool
 	var err error
 	if claimID == "" {
-		ok, err = store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt)
+		if owner == "" {
+			ok, err = store.MarkTaskSucceeded(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt)
+		} else {
+			ok, err = store.MarkTaskSucceededOwned(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt, owner)
+		}
 	} else {
 		ok, err = store.MarkTaskSucceededClaimed(ctx, q, task.ID, outputKeys, thumbnailKeys, finishedAt, claimID)
 	}
@@ -446,20 +522,27 @@ func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys,
 			}
 		}
 	}
+	if err := growth.ApplyTaskSuccessMilestones(ctx, q, task, len(outputKeys), finishedAt); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
 // MarkFailed fromStatus→failed + release，同事务。返回是否抢到状态迁移。
 // 通知已解耦：调用方在事务提交后调用 NotifyTaskFailed（尽力而为）。
 func MarkFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus string) (bool, error) {
-	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, "")
+	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, "", "")
 }
 
 func MarkFailedClaimed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, claimID string) (bool, error) {
-	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, claimID)
+	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, claimID, "")
 }
 
-func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, claimID string) (bool, error) {
+func MarkFailedOwned(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, owner string) (bool, error) {
+	return markFailed(ctx, q, task, errorCode, errorMessage, fromStatus, "", owner)
+}
+
+func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, errorMessage, fromStatus, claimID, owner string) (bool, error) {
 	msg := []rune(errorMessage)
 	if len(msg) > 2000 {
 		msg = msg[:2000]
@@ -467,7 +550,11 @@ func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 	var ok bool
 	var err error
 	if claimID == "" {
-		ok, err = store.MarkTaskFailed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now())
+		if owner == "" {
+			ok, err = store.MarkTaskFailed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now())
+		} else {
+			ok, err = store.MarkTaskFailedOwned(ctx, q, task.ID, fromStatus, errorCode, string(msg), now(), owner)
+		}
 	} else {
 		ok, err = store.MarkTaskFailedClaimed(ctx, q, task.ID, fromStatus, errorCode, string(msg), now(), claimID)
 	}
@@ -478,6 +565,9 @@ func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 		if _, err := wallet.ReleaseForTask(ctx, q, task.UserID, task.ID, task.CostCents, strPtr("任务失败解冻")); err != nil {
 			return false, err
 		}
+	}
+	if err := growth.ApplyTaskFailureCompensation(ctx, q, task, errorCode, now()); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -501,6 +591,13 @@ func NotifyTaskFailed(ctx context.Context, q store.Q, task *store.Task) {
 // FailQueuedEnqueue C1 入队失败补偿：条件更新 queued→failed（enqueue_failed）+ release，
 // 单事务；事务提交后尽力而为通知属主。返回是否抢到迁移。
 func FailQueuedEnqueue(ctx context.Context, st *store.Store, taskID uuid.UUID) (bool, error) {
+	return FailQueuedTask(ctx, st, taskID, "enqueue_failed", "任务入队失败，费用已退回，请重试")
+}
+
+// FailQueuedTask atomically terminates a queued task and releases its frozen
+// balance. It is used for permanent pre-execution errors so MaxRetry(0) queue
+// records can never leave paid work frozen indefinitely.
+func FailQueuedTask(ctx context.Context, st *store.Store, taskID uuid.UUID, errorCode, errorMessage string) (bool, error) {
 	var task *store.Task
 	won := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
@@ -509,7 +606,7 @@ func FailQueuedEnqueue(ctx context.Context, st *store.Store, taskID uuid.UUID) (
 			return err
 		}
 		task = t
-		won, err = MarkFailed(ctx, tx, t, "enqueue_failed", "任务入队失败，费用已退回，请重试", "queued")
+		won, err = MarkFailed(ctx, tx, t, errorCode, errorMessage, "queued")
 		return err
 	})
 	if err != nil || !won {
@@ -538,7 +635,8 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 			return apperr.E("task_not_cancelable", "仅失败任务可以重新入队", 400)
 		}
 		if t.CostCents > 0 {
-			if _, err := wallet.FreezeForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("任务重跑冻结")); err != nil {
+			feature, _ := trialfeature.ForTaskType(t.Type)
+			if _, err := wallet.FreezeForTask(ctx, tx, t.UserID, taskID, t.CostCents, feature.Key, strPtr("任务重跑冻结")); err != nil {
 				return err
 			}
 		}

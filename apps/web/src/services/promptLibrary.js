@@ -1,18 +1,15 @@
 /**
  * 提示词库（工作台词库面板数据源）。
  *
- * 优先走服务端 GET /api/v1/prompts（见 promptsApi.js，带内存缓存），
- * 服务端为空或请求失败时回退到调用方提供的本地静态词库，
- * 保持旧的页码式返回结构，工作台 UI 无需改动。
+ * 数据来自服务端 GET /api/v1/prompts（见 promptsApi.js，带内存缓存），
+ * 并转换为工作台使用的页码式返回结构。
  */
-import { listPrompts, recordPromptEngagement } from './promptsApi'
+import { listPromptCategories, listPrompts, recordPromptEngagement } from './promptsApi'
 
 // cursor 分页 → 页码分页的游标链：key = `${type}|${category}`，index p 存第 p+1 页的 cursor
 const cursorChains = new Map()
 // 各 type 的全量分类计数（来自不带分类筛选的请求），筛选态下沿用，避免分类 chips 消失
 const countsByType = new Map()
-// 记录服务端该 type 是否有数据：无数据时分类筛选也走本地静态词库
-const serverHasData = new Map()
 
 function chainKey(type, category, sort) {
   return `${type}|${category}|${sort}`
@@ -40,28 +37,6 @@ function toLegacyItem(item) {
   }
 }
 
-function normalizeFallbackItem(item) {
-  return {
-    id: String(item?.id || ''),
-    title: String(item?.title || item?.label || ''),
-    label: String(item?.label || item?.title || ''),
-    prompt: String(item?.prompt || ''),
-    taskType: String(item?.taskType || ''),
-    category: String(item?.category || item?.categoryKey || 'other'),
-    categoryKey: String(item?.categoryKey || item?.category || 'other'),
-    tags: Array.isArray(item?.tags) ? item.tags : [],
-    coverUrl: String(item?.coverUrl || item?.imageUrl || ''),
-    imageUrl: String(item?.imageUrl || item?.coverUrl || ''),
-    coverWidth: Math.max(0, Number(item?.coverWidth) || 0),
-    coverHeight: Math.max(0, Number(item?.coverHeight) || 0),
-    likeCount: Math.max(0, Number(item?.likeCount) || 0),
-    favoriteCount: Math.max(0, Number(item?.favoriteCount) || 0),
-    useCount: Math.max(0, Number(item?.useCount) || 0),
-    liked: item?.liked === true,
-    favorited: item?.favorited === true,
-  }
-}
-
 function countCategories(items) {
   const counts = { all: items.length }
   for (const item of items) {
@@ -69,19 +44,6 @@ function countCategories(items) {
     counts[key] = (counts[key] || 0) + 1
   }
   return counts
-}
-
-function buildFallbackResponse(fallbackItems, category) {
-  const all = fallbackItems.map(normalizeFallbackItem).filter((item) => item.prompt)
-  const filtered =
-    category && category !== 'all' ? all.filter((item) => item.categoryKey === category) : all
-  return {
-    items: filtered,
-    page: 1,
-    total: filtered.length,
-    hasMore: false,
-    categoryCounts: countCategories(all),
-  }
 }
 
 /**
@@ -92,7 +54,6 @@ function buildFallbackResponse(fallbackItems, category) {
  * @param {number} [options.pageNumber] - 从 1 开始
  * @param {number} [options.pageSize]
  * @param {string} [options.category] - 分类筛选（'all' 或空表示全部）
- * @param {Array}  [options.fallbackItems] - 本地静态词库，服务端为空/失败时回退
  * @returns {Promise<{items: Array, page: number, total: number, hasMore: boolean, categoryCounts: object}>}
  */
 export async function listPromptLibrary(type, options = {}) {
@@ -102,7 +63,6 @@ export async function listPromptLibrary(type, options = {}) {
     category = '',
     scope = '',
     sort = 'recommended',
-    fallbackItems = [],
   } = options
   const normalizedCategory = category === 'all' ? '' : String(category || '')
   const key = chainKey(type, normalizedCategory, `${scope}:${sort}`)
@@ -125,12 +85,6 @@ export async function listPromptLibrary(type, options = {}) {
       cursor,
       limit: pageSize,
     })
-    if (page === 1 && (!normalizedCategory || Number(categoryCounts?.all || 0) > 0)) {
-      serverHasData.set(type, items.length > 0 || Number(categoryCounts?.all || 0) > 0)
-    }
-    if (page === 1 && !scope && !items.length && !serverHasData.get(type)) {
-      return buildFallbackResponse(fallbackItems, normalizedCategory)
-    }
     const nextChain = chain.slice(0, page)
     if (nextCursor) nextChain[page] = nextCursor
     cursorChains.set(key, nextChain)
@@ -151,12 +105,10 @@ export async function listPromptLibrary(type, options = {}) {
     }
   } catch {
     if (page === 1) {
-      return scope
-        ? { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
-        : buildFallbackResponse(fallbackItems, normalizedCategory)
+      return { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
     }
     return { items: [], page, total: 0, hasMore: false, categoryCounts: { all: 0 } }
   }
 }
 
-export { recordPromptEngagement }
+export { listPromptCategories, recordPromptEngagement }

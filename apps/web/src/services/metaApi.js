@@ -3,7 +3,7 @@
  */
 import { apiGet } from './apiClient'
 
-/** 任务单价：{ taskPointPrices: { t2i: points, ... }, freeDailyPoints } */
+/** 任务单价：{ taskPointPrices: { t2i: points, ... } } */
 export async function getTaskPricing({ signal } = {}) {
   return apiGet('/pricing', { signal, fallbackMessage: '价格读取失败' })
 }

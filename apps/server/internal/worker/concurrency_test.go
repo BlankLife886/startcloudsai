@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -62,12 +64,12 @@ func TestAutomaticBackgroundRemovalModelRequiresImageParentConfiguration(t *test
 	}
 }
 
-func TestTaskFailureRetryCountDefaultsToZeroAndClamps(t *testing.T) {
+func TestTaskFailureRetryCountDefaultsToTwoAndClamps(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	w := &Worker{St: st}
-	if got := w.taskFailureRetryCount(ctx); got != 0 {
-		t.Fatalf("default retry count = %d, want 0", got)
+	if got := w.taskFailureRetryCount(ctx); got != 2 {
+		t.Fatalf("default retry count = %d, want 2", got)
 	}
 	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`7`)); err != nil {
 		t.Fatal(err)
@@ -80,6 +82,41 @@ func TestTaskFailureRetryCountDefaultsToZeroAndClamps(t *testing.T) {
 	}
 	if got := w.taskFailureRetryCount(ctx); got != maxTaskFailureRetries {
 		t.Fatalf("clamped retry count = %d, want %d", got, maxTaskFailureRetries)
+	}
+}
+
+func TestTaskRetryRequiresUpstreamIdempotency(t *testing.T) {
+	openAI := &store.Task{Params: map[string]any{"_serviceProvider": modelconfig.AdapterOpenAI}}
+	if !taskRetryIsIdempotent(openAI, "") {
+		t.Fatal("OpenAI client_task_id retry should be allowed")
+	}
+	crunUnknown := &store.Task{Params: map[string]any{"_serviceProvider": modelconfig.AdapterCRUN}}
+	if taskRetryIsIdempotent(crunUnknown, "") {
+		t.Fatal("CRUN retry without durable upstream IDs must be rejected")
+	}
+	crunKnown := &store.Task{Params: map[string]any{
+		"_serviceProvider": modelconfig.AdapterCRUN,
+		"_crunTaskIds":     []string{"upstream-1"},
+	}}
+	if !taskRetryIsIdempotent(crunKnown, "") {
+		t.Fatal("CRUN resume with durable upstream IDs should be allowed")
+	}
+	sub2api := &store.Task{Params: map[string]any{"_serviceProvider": "sub2api"}}
+	if taskRetryIsIdempotent(sub2api, "sub2api") {
+		t.Fatal("non-idempotent synchronous provider retry must be rejected")
+	}
+}
+
+func TestTaskDispatchBackoffSpreadsSaturatedQueue(t *testing.T) {
+	id := uuid.MustParse("ff000000-0000-0000-0000-000000000000")
+	if got := taskDispatchBackoff("user_execution_limit", id); got < 5*time.Second || got > 10*time.Second {
+		t.Fatalf("user backoff = %s", got)
+	}
+	if got := taskDispatchBackoff("provider_execution_limit", id); got < 15*time.Second || got > 30*time.Second {
+		t.Fatalf("provider backoff = %s", got)
+	}
+	if got := taskDispatchBackoff("global_execution_limit", id); got < 15*time.Second || got > 30*time.Second {
+		t.Fatalf("global backoff = %s", got)
 	}
 }
 
@@ -405,5 +442,276 @@ func TestTaskCompletionClaimIsExclusiveAndFencesStaleWriters(t *testing.T) {
 	}
 	if params["_completionClaimId"] != nil || params["_completionClaimedAtMs"] != nil {
 		t.Fatalf("completion claim leaked into finished task: %#v", params)
+	}
+}
+
+func TestTaskLeaseFencesStaleSyncWriterAndRetriesAtomically(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("lease-fence-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "worker-a:" + uuid.NewString()
+	staleOwner := "worker-b:" + uuid.NewString()
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until)
+		 VALUES ($1, 't2i', 'test', '{"_providerRouteKey":"route-a"}'::jsonb, 'running', 0, $2, now(), now() + interval '2 minutes') RETURNING id`,
+		user.ID, owner).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTaskPartialOutputsOwned(ctx, st.Pool, taskID, []string{"stale"}, nil, staleOwner); err == nil {
+		t.Fatal("stale lease owner persisted partial output")
+	}
+	if err := store.SetTaskPartialOutputsOwned(ctx, st.Pool, taskID, []string{"owned"}, nil, owner); err != nil {
+		t.Fatalf("lease owner persist: %v", err)
+	}
+	if won, err := store.MarkTaskSucceededOwned(ctx, st.Pool, taskID, []string{"stale"}, nil, time.Now().UTC(), staleOwner); err != nil || won {
+		t.Fatalf("stale success won=%v err=%v", won, err)
+	}
+	if _, won, err := store.RetryRunningTaskOwned(ctx, st.Pool, taskID, staleOwner, 0, []string{"route-a"}); err != nil || won {
+		t.Fatalf("stale retry won=%v err=%v", won, err)
+	}
+	attempt, won, err := store.RetryRunningTaskOwned(ctx, st.Pool, taskID, owner, 0, []string{"route-a"})
+	if err != nil || !won || attempt != 1 {
+		t.Fatalf("owned retry attempt=%d won=%v err=%v", attempt, won, err)
+	}
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "queued" || task.Attempt != 1 || task.LeaseOwner != nil || task.StartedAt != nil {
+		t.Fatalf("atomic retry state = %#v", task)
+	}
+	failed := taskParamStrings(task.Params, "_failedProviderConfigIds")
+	if len(failed) != 1 || failed[0] != "route-a" {
+		t.Fatalf("failed provider history = %#v", failed)
+	}
+}
+
+func TestExpiredTaskRecoveryIsAtomicAndPreservesLiveLease(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("lease-recovery-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ids := make([]uuid.UUID, 2)
+	for index, leaseUntil := range []time.Time{now.Add(-time.Minute), now.Add(time.Minute)} {
+		if err := st.Pool.QueryRow(ctx,
+			`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+			 VALUES ($1, 't2i', 'test', '{}'::jsonb, 'running', 0, $2, now(), $3, now()) RETURNING id`,
+			user.ID, fmt.Sprintf("owner-%d", index), leaseUntil).Scan(&ids[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recovered, err := store.RequeueExpiredRunningTasks(ctx, st.Pool, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0] != ids[0] {
+		t.Fatalf("recovered = %#v, want only %s", recovered, ids[0])
+	}
+	expired, _ := store.GetTask(ctx, st.Pool, ids[0])
+	live, _ := store.GetTask(ctx, st.Pool, ids[1])
+	if expired.Status != "queued" || live.Status != "running" || live.LeaseOwner == nil {
+		t.Fatalf("expired=%#v live=%#v", expired, live)
+	}
+}
+
+func TestAsyncPendingRoutesCanRebuildLostPollCoordinators(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("poll-recovery-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+		 VALUES ($1, 't2i', 'test', '{"_upstreamStage":"async_pending","_providerConfigId":"provider-a","_providerRouteId":"route-a","_providerRouteKey":"provider-a:route-a"}'::jsonb,
+		 'running', 0, 'poller:provider-a:route-a', now(), now() + interval '15 minutes', now()) RETURNING id`, user.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: taskID, ProviderID: "provider-a", RouteID: "route-a", RouteKey: "provider-a:route-a",
+		Adapter: modelconfig.AdapterOpenAI, UpstreamTaskIDs: []string{taskID.String()},
+		SubmittedAt: now, FailoverAt: now.Add(5 * time.Minute), ExpiresAt: now.Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := store.ListAsyncPendingRoutes(ctx, st.Pool, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].ProviderID != "provider-a" || routes[0].RouteID != "route-a" || routes[0].RouteKey != "provider-a:route-a" {
+		t.Fatalf("pending routes = %#v", routes)
+	}
+}
+
+func TestLateUpstreamAttemptSurvivesFailoverAndCompletesQueuedTask(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("late-result-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "poller:provider-a/route-a"
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+		 VALUES ($1, 't2i', 'test', '{"_providerConfigId":"provider-a","_providerRouteId":"route-a","_providerRouteKey":"provider-a/route-a"}'::jsonb,
+		 'running', 0, $2, now(), now() + interval '15 minutes', now()) RETURNING id`, user.ID, owner).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	attemptID, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: taskID, ProviderID: "provider-a", RouteID: "route-a", RouteKey: "provider-a/route-a",
+		Adapter: modelconfig.AdapterOpenAI, UpstreamTaskIDs: []string{taskID.String()}, BaseURL: "https://old.example",
+		APIKeyEncrypted: "encrypted-old-key", SubmittedAt: now,
+		FailoverAt: now.Add(-time.Second), ExpiresAt: now.Add(30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, won, err := store.RetryRunningTaskOwned(ctx, st.Pool, taskID, owner, 0, []string{"provider-a/route-a"}); err != nil || !won {
+		t.Fatalf("failover requeue won=%v err=%v", won, err)
+	}
+	claimedTasks, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, "provider-a/route-a", "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimedTasks) != 1 {
+		t.Fatalf("claimed old attempts=%d err=%v", len(claimedTasks), err)
+	}
+	if got := upstreamAttemptID(claimedTasks[0]); got != attemptID {
+		t.Fatalf("attempt id=%s want=%s", got, attemptID)
+	}
+	claimID := uuid.NewString()
+	claimed, err := store.TryClaimTaskCompletion(ctx, st.Pool, taskID, claimID, now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("late completion claim=%v err=%v", claimed, err)
+	}
+	completed, err := store.MarkTaskSucceededClaimed(ctx, st.Pool, taskID, []string{"late-winner"}, nil, now, claimID)
+	if err != nil || !completed {
+		t.Fatalf("late queued completion=%v err=%v", completed, err)
+	}
+	secondClaim, err := store.TryClaimTaskCompletion(ctx, st.Pool, taskID, uuid.NewString(), now, time.Minute)
+	if err != nil || secondClaim {
+		t.Fatalf("second route claim=%v err=%v", secondClaim, err)
+	}
+}
+
+func TestUpstreamAttemptRouteSnapshotSurvivesProviderRemoval(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("route-snapshot-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents) VALUES ($1, 't2i', 'test', '{}'::jsonb, 'queued', 0) RETURNING id`,
+		user.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: taskID, ProviderID: "deleted-provider", RouteID: "old-route", RouteKey: "deleted-provider/old-route",
+		Adapter: modelconfig.AdapterOpenAI, BaseURL: "https://old.example", APIKeyEncrypted: "enc:v1:test",
+		TimeoutSecs: 123, MaxConcurrency: 7, UpstreamTaskIDs: []string{taskID.String()},
+		SubmittedAt: now, FailoverAt: now.Add(time.Minute), ExpiresAt: now.Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	route, err := store.GetPendingUpstreamAttemptRoute(ctx, st.Pool, "deleted-provider/old-route")
+	if err != nil || route == nil {
+		t.Fatalf("snapshot route=%#v err=%v", route, err)
+	}
+	if route.BaseURL != "https://old.example" || route.APIKeyEncrypted != "enc:v1:test" || route.TimeoutSecs != 123 || route.MaxConcurrency != 7 {
+		t.Fatalf("snapshot changed: %#v", route)
+	}
+}
+
+func TestProviderForUpstreamAttemptPrefersImmutableSnapshot(t *testing.T) {
+	const secret = "attempt-snapshot-test-secret"
+	encrypted, err := settings.EncryptSecret("old-api-key", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{Cfg: &config.Config{AppSecret: secret}}
+	task := &store.Task{Params: map[string]any{
+		"_providerConfigId":        "provider-a",
+		"_providerRouteId":         "route-a",
+		"_serviceProvider":         modelconfig.AdapterOpenAI,
+		"_upstreamBaseURL":         "https://old.example",
+		"_upstreamAPIKeyEncrypted": encrypted,
+		"_upstreamTimeoutSecs":     123,
+		"_upstreamMaxConcurrency":  7,
+	}}
+	fallback := &modelconfig.Provider{BaseURL: "https://new.example", APIKey: "new-api-key", TimeoutSecs: 999}
+	provider, err := w.providerForUpstreamAttempt(task, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.BaseURL != "https://old.example" || provider.APIKey != "old-api-key" || provider.TimeoutSecs != 123 || provider.MaxConcurrency != 7 {
+		t.Fatalf("attempt did not use immutable snapshot: %#v", provider)
+	}
+}
+
+func TestDisconnectedPollRouteCannotLeaveTaskRunning(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("poll-404-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeKey := "provider-a/route-a"
+	owner := "poller:" + routeKey
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+		 VALUES ($1, 't2i', 'test', jsonb_build_object('_providerConfigId','provider-a','_providerRouteId','route-a','_providerRouteKey',$2::text),
+		 'running', 0, $3, now(), now() + interval '15 minutes', now()) RETURNING id`,
+		user.ID, routeKey, owner).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: taskID, ProviderID: "provider-a", RouteID: "route-a", RouteKey: routeKey,
+		Adapter: modelconfig.AdapterOpenAI, UpstreamTaskIDs: []string{taskID.String()},
+		SubmittedAt: now, FailoverAt: now.Add(5 * time.Minute), ExpiresAt: now.Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "route disconnected", http.StatusNotFound)
+	}))
+	defer server.Close()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_unreachable" {
+		t.Fatalf("disconnected task remained active: %#v", task)
+	}
+	var attemptStatus string
+	if err := st.Pool.QueryRow(ctx, `SELECT status FROM task_upstream_attempts WHERE task_id=$1`, taskID).Scan(&attemptStatus); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStatus != store.UpstreamAttemptSuperseded {
+		t.Fatalf("attempt status=%s", attemptStatus)
 	}
 }

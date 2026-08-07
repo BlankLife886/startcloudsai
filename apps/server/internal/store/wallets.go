@@ -17,8 +17,9 @@ func InsertWallet(ctx context.Context, q Q, userID uuid.UUID) error {
 func GetWallet(ctx context.Context, q Q, userID uuid.UUID) (*Wallet, error) {
 	var w Wallet
 	err := q.QueryRow(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, updated_at FROM wallets WHERE user_id = $1`, userID).
-		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.UpdatedAt)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
+		 FROM wallets WHERE user_id = $1`, userID).
+		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt)
 	return nilOnNoRows(&w, err)
 }
 
@@ -28,14 +29,15 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 		return out, nil
 	}
 	rows, err := q.Query(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, updated_at FROM wallets WHERE user_id = ANY($1)`, ids)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
+			 FROM wallets WHERE user_id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var w Wallet
-		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out[w.UserID] = &w
@@ -45,15 +47,15 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 
 func SumWalletBalance(ctx context.Context, q Q) (int64, error) {
 	var n int64
-	err := q.QueryRow(ctx, `SELECT COALESCE(SUM(balance_cents), 0) FROM wallets`).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0) FROM wallets`).Scan(&n)
 	return n, err
 }
 
-const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, created_at`
+const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket, created_at`
 
 func scanLedger(row pgx.Row) (*LedgerEntry, error) {
 	var e LedgerEntry
-	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreditBucket, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -67,11 +69,66 @@ func GetLedgerEntry(ctx context.Context, q Q, kind, sourceType, sourceID string)
 	return nilOnNoRows(e, err)
 }
 
-func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string) (*LedgerEntry, error) {
+func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string, creditBucket string) (*LedgerEntry, error) {
 	return scanLedger(q.QueryRow(ctx,
-		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+ledgerCols,
-		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason))
+		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+ledgerCols,
+		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason, creditBucket))
+}
+
+const taskCreditReservationCols = `task_id, generation, normal_cents, trial_cents,
+	normal_remaining_cents, trial_remaining_cents, trial_feature_key, created_at, updated_at`
+
+func scanTaskCreditReservation(row pgx.Row) (*TaskCreditReservation, error) {
+	var reservation TaskCreditReservation
+	err := row.Scan(
+		&reservation.TaskID, &reservation.Generation,
+		&reservation.NormalCents, &reservation.TrialCents,
+		&reservation.NormalRemainingCents, &reservation.TrialRemainingCents,
+		&reservation.TrialFeatureKey,
+		&reservation.CreatedAt, &reservation.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &reservation, nil
+}
+
+func InsertTaskCreditReservation(ctx context.Context, q Q, taskID uuid.UUID, generation int, normalCents, trialCents int64, trialFeatureKey string) (*TaskCreditReservation, error) {
+	return scanTaskCreditReservation(q.QueryRow(ctx,
+		`INSERT INTO task_credit_reservations (
+			task_id, generation, normal_cents, trial_cents,
+			normal_remaining_cents, trial_remaining_cents, trial_feature_key
+		 ) VALUES ($1, $2, $3, $4, $3, $4, NULLIF($5, '')) RETURNING `+taskCreditReservationCols,
+		taskID, generation, normalCents, trialCents, trialFeatureKey))
+}
+
+func GetTaskCreditReservationForUpdate(ctx context.Context, q Q, taskID uuid.UUID, generation int) (*TaskCreditReservation, error) {
+	item, err := scanTaskCreditReservation(q.QueryRow(ctx,
+		`SELECT `+taskCreditReservationCols+`
+		 FROM task_credit_reservations
+		 WHERE task_id = $1 AND generation = $2
+		 FOR UPDATE`, taskID, generation))
+	return nilOnNoRows(item, err)
+}
+
+func GetActiveTaskCreditReservationForUpdate(ctx context.Context, q Q, taskID uuid.UUID) (*TaskCreditReservation, error) {
+	item, err := scanTaskCreditReservation(q.QueryRow(ctx,
+		`SELECT `+taskCreditReservationCols+`
+		 FROM task_credit_reservations
+		 WHERE task_id = $1 AND normal_remaining_cents + trial_remaining_cents > 0
+		 ORDER BY generation DESC LIMIT 1
+		 FOR UPDATE`, taskID))
+	return nilOnNoRows(item, err)
+}
+
+func UpdateTaskCreditReservationRemaining(ctx context.Context, q Q, taskID uuid.UUID, generation int, normalRemainingCents, trialRemainingCents int64, at time.Time) error {
+	_, err := q.Exec(ctx,
+		`UPDATE task_credit_reservations
+		 SET normal_remaining_cents = $3, trial_remaining_cents = $4, updated_at = $5
+		 WHERE task_id = $1 AND generation = $2`,
+		taskID, generation, normalRemainingCents, trialRemainingCents, at)
+	return err
 }
 
 // CountTaskLedger 统计任务同 kind 账本条数（source_id = task_id 或 task_id/n）。
@@ -128,14 +185,18 @@ func ListLedgerFiltered(ctx context.Context, q Q, userID *uuid.UUID, kind, sourc
 }
 
 // SpendDailySince 每日任务结算消耗（UTC 日期 → 分）。
-// spend 账本 delta 为 0（结算只消耗冻结额），金额取关联任务的 cost_cents；
-// 任务被删除时退化为 ABS(delta_cents)。
+// spend 账本 delta 为 0（结算只消耗冻结额），金额取关联图片任务或助手运行的
+// cost_cents；记录被删除时退化为 ABS(delta_cents)。
 func SpendDailySince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
 	rows, err := q.Query(ctx,
 		`SELECT (l.created_at AT TIME ZONE 'UTC')::date::text AS day,
-		        COALESCE(SUM(GREATEST(ABS(l.delta_cents), COALESCE(t.cost_cents, 0))), 0)
+		        COALESCE(SUM(GREATEST(
+		            ABS(l.delta_cents), COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0)
+		        )), 0)
 		 FROM wallet_ledger l
 		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
+		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
+		      AND a.id::text = split_part(l.source_id, '/', 1)
 		 WHERE l.kind = 'spend' AND l.created_at >= $1
 		 GROUP BY day`, since)
 	if err != nil {

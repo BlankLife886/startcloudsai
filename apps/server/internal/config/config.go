@@ -22,6 +22,8 @@ type Config struct {
 	SMTPUser     string
 	SMTPPassword string
 	SMTPFrom     string
+	// TrialApplicationEmail 接收体验资格申请通知；为空时回退到 SMTPFrom。
+	TrialApplicationEmail string
 
 	DatabaseURL         string
 	RedisURL            string
@@ -123,13 +125,17 @@ func Load() *Config {
 	cfg := &Config{
 		AppEnv:         appEnv,
 		AppSecret:      getenv("APP_SECRET", "dev-secret-change-me"),
-		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080"),
+		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3104,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3104,http://127.0.0.1:3200"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
 		SMTPAddr:       getenv("SMTP_ADDR", ""),
 		SMTPUser:       getenv("SMTP_USER", ""),
 		SMTPPassword:   getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:       getenv("SMTP_FROM", ""),
+		TrialApplicationEmail: strings.TrimSpace(getenv(
+			"TRIAL_APPLICATION_EMAIL",
+			getenv("SMTP_FROM", ""),
+		)),
 
 		DatabaseURL:         getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
 		RedisURL:            getenv("REDIS_URL", "redis://localhost:6379/0"),

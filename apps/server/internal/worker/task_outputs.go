@@ -23,6 +23,7 @@ type taskOutputCollector struct {
 	newKeys           []string
 	newIndexes        map[int]struct{}
 	completionClaimID string
+	leaseOwner        string
 }
 
 func newClaimedTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task, claimID string) *taskOutputCollector {
@@ -39,10 +40,14 @@ func newTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task) *t
 	if size < 1 {
 		size = 1
 	}
+	leaseOwner := ""
+	if task.LeaseOwner != nil {
+		leaseOwner = *task.LeaseOwner
+	}
 	collector := &taskOutputCollector{
 		w: w, ctx: ctx, task: task,
 		outputSlots: make([]string, size), thumbnailSlots: make([]string, size),
-		newIndexes: make(map[int]struct{}),
+		newIndexes: make(map[int]struct{}), leaseOwner: leaseOwner,
 	}
 	copy(collector.outputSlots, task.OutputKeys)
 	copy(collector.thumbnailSlots, task.ThumbnailKeys)
@@ -73,6 +78,10 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 
 	startedAt := time.Now()
 	processed := c.w.applyMaskEditComposite(c.ctx, c.task, []string{encoded})
+	if len(processed) == 1 {
+		encoded = processed[0]
+	}
+	processed = c.w.applyPreservedSourceCanvas(c.ctx, c.task, []string{encoded})
 	if len(processed) == 1 {
 		encoded = processed[0]
 	}
@@ -113,6 +122,15 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		// Claimed async completions use attempt-unique keys. A stale lease holder
 		// can then clean up only its own objects, never the winning result.
 		objectIndex += "-" + c.completionClaimID
+	} else if c.leaseOwner != "" {
+		// Sync workers also use attempt-unique keys. Lease fencing protects the
+		// database row; unique keys additionally stop stale uploads from replacing
+		// the winning object's bytes in storage.
+		token := c.leaseOwner
+		if len(token) > 36 {
+			token = token[len(token)-36:]
+		}
+		objectIndex += "-" + token
 	}
 	key := fmt.Sprintf("tasks/%s/%s/original/%s.%s", c.task.UserID, c.task.ID, objectIndex, ext)
 	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%s.jpg", c.task.UserID, c.task.ID, objectIndex)
@@ -151,7 +169,11 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
 	var persistErr error
 	if c.completionClaimID == "" {
-		persistErr = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+		if c.leaseOwner == "" {
+			persistErr = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+		} else {
+			persistErr = store.SetTaskPartialOutputsOwned(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.leaseOwner)
+		}
 	} else {
 		persistErr = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
 	}
@@ -191,7 +213,11 @@ func (c *taskOutputCollector) cleanup() {
 	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
 	c.mu.Unlock()
 	if c.completionClaimID == "" {
-		_ = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+		if c.leaseOwner == "" {
+			_ = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+		} else {
+			_ = store.SetTaskPartialOutputsOwned(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.leaseOwner)
+		}
 	} else {
 		_ = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
 	}

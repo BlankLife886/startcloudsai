@@ -202,6 +202,7 @@ type imageTask struct {
 	Error     string           `json:"error"`
 	ErrorCode string           `json:"error_code"`
 	Data      []map[string]any `json:"data"`
+	Results   []map[string]any `json:"results"`
 }
 
 type imageTaskList struct {
@@ -210,9 +211,11 @@ type imageTaskList struct {
 }
 
 type ImageTaskPollResult struct {
-	Images  []string
-	Pending bool
-	Err     error
+	Images          []string
+	Pending         bool
+	Missing         bool
+	ExplicitFailure bool
+	Err             error
 }
 
 func parseImageTask(body []byte) (imageTask, error) {
@@ -332,10 +335,18 @@ func imageTaskError(task imageTask) error {
 	return &UpstreamError{Message: truncate(message, 2000), StatusCode: http.StatusBadGateway}
 }
 
+func imageTaskResults(task imageTask) []map[string]any {
+	if len(task.Data) > 0 {
+		return task.Data
+	}
+	return task.Results
+}
+
 func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expected int) ([]string, bool, error) {
 	status := strings.ToLower(strings.TrimSpace(task.Status))
-	if len(task.Data) > 0 && (status == "success" || status == "error" || len(task.Data) >= expected) {
-		images, err := c.taskImagesB64(ctx, task.Data)
+	results := imageTaskResults(task)
+	if len(results) > 0 && (status == "success" || status == "error" || len(results) >= expected) {
+		images, err := c.taskImagesB64(ctx, results)
 		if err != nil {
 			return nil, true, err
 		}
@@ -371,7 +382,7 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 	if err != nil {
 		return nil, err
 	}
-	bestData := task.Data
+	bestData := imageTaskResults(task)
 	if images, done, err := c.completedTaskImages(taskCtx, task, expected); done {
 		return images, err
 	}
@@ -418,8 +429,8 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 				return recoverBest(err)
 			}
 			lastPollError = nil
-			if len(task.Data) > len(bestData) {
-				bestData = task.Data
+			if results := imageTaskResults(task); len(results) > len(bestData) {
+				bestData = results
 			}
 			if images, done, err := c.completedTaskImages(taskCtx, task, expected); done {
 				if err != nil {
@@ -455,44 +466,166 @@ func (c *Client) PollImageTask(ctx context.Context, taskID string, expected int)
 	return result.Images, result.Pending, result.Err
 }
 
-// PollImageTasks fetches up to 100 task states in one upstream request.
-func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected map[string]int) map[string]ImageTaskPollResult {
-	results := make(map[string]ImageTaskPollResult, len(taskIDs))
-	if len(taskIDs) == 0 {
-		return results
+// PollImageTasksEach streams one batch response and emits each task before
+// decoding the next one. This keeps memory proportional to one task's images,
+// rather than retaining every completed image in the provider batch.
+func (c *Client) PollImageTasksEach(ctx context.Context, taskIDs []string, expected map[string]int, emit func(string, ImageTaskPollResult)) {
+	c.pollImageTasksEach(ctx, taskIDs, expected, nil, emit)
+}
+
+// PollImageTasksEachGuarded invokes beforeImages immediately before a terminal
+// task's image payload is downloaded or decoded. Returning false skips that
+// task, allowing workers to acquire a database completion claim only when the
+// task can actually produce a result.
+func (c *Client) PollImageTasksEachGuarded(ctx context.Context, taskIDs []string, expected map[string]int, beforeImages func(string) bool, emit func(string, ImageTaskPollResult)) {
+	c.pollImageTasksEach(ctx, taskIDs, expected, beforeImages, emit)
+}
+
+func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expected map[string]int, beforeImages func(string) bool, emit func(string, ImageTaskPollResult)) {
+	if len(taskIDs) == 0 || emit == nil {
+		return
 	}
 	if len(taskIDs) > 100 {
 		taskIDs = taskIDs[:100]
 	}
-	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(strings.Join(taskIDs, ","))
-	body, err := c.doRequest(ctx, http.MethodGet, statusPath, nil, asyncPollTimeout)
-	if err != nil {
-		for _, taskID := range taskIDs {
-			results[taskID] = ImageTaskPollResult{Err: err}
-		}
-		return results
-	}
-	var payload imageTaskList
-	if err := json.Unmarshal(body, &payload); err != nil {
-		pollErr := &UpstreamError{Message: "上游未返回有效的图片任务状态"}
-		for _, taskID := range taskIDs {
-			results[taskID] = ImageTaskPollResult{Err: pollErr}
-		}
-		return results
-	}
-	byID := make(map[string]imageTask, len(payload.Items))
-	for _, task := range payload.Items {
-		byID[task.ID] = task
-	}
+	requested := make(map[string]struct{}, len(taskIDs))
 	for _, taskID := range taskIDs {
-		task, ok := byID[taskID]
-		if !ok {
-			results[taskID] = ImageTaskPollResult{Pending: true}
+		requested[taskID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(taskIDs))
+	emitRemaining := func(result ImageTaskPollResult) {
+		for _, taskID := range taskIDs {
+			if _, ok := seen[taskID]; ok {
+				continue
+			}
+			seen[taskID] = struct{}{}
+			emit(taskID, result)
+		}
+	}
+
+	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(strings.Join(taskIDs, ","))
+	endpoint, err := c.endpointURL(statusPath)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: err})
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: err})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	// Persistence is deliberately performed while streaming the response. Give
+	// the bounded poll job enough time to apply backpressure without buffering
+	// the whole response in memory.
+	client := netguard.NewHTTPClient(10*time.Minute, c.AllowPrivate, false)
+	resp, err := client.Do(req)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err)}})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		if readErr != nil {
+			emitRemaining(ImageTaskPollResult{Err: &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", readErr)}})
+			return
+		}
+		emitRemaining(ImageTaskPollResult{Err: &UpstreamError{Message: errorMessage(body), StatusCode: resp.StatusCode}})
+		return
+	}
+
+	limited := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
+	decoder := json.NewDecoder(limited)
+	failDecode := func(decodeErr error) {
+		if limited.N <= 0 {
+			decodeErr = &UpstreamError{Message: "上游响应超过 64 MiB 限制", StatusCode: http.StatusBadGateway}
+		} else {
+			decodeErr = &UpstreamError{Message: "上游未返回有效的图片任务状态：" + truncate(decodeErr.Error(), 500)}
+		}
+		emitRemaining(ImageTaskPollResult{Err: decodeErr})
+	}
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		if err == nil {
+			err = errors.New("invalid response object")
+		}
+		failDecode(err)
+		return
+	}
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		if keyErr != nil {
+			failDecode(keyErr)
+			return
+		}
+		key, _ := keyToken.(string)
+		if key != "items" {
+			var discard json.RawMessage
+			if err := decoder.Decode(&discard); err != nil {
+				failDecode(err)
+				return
+			}
 			continue
 		}
-		images, done, taskErr := c.completedTaskImages(ctx, task, expected[taskID])
-		results[taskID] = ImageTaskPollResult{Images: images, Pending: !done, Err: taskErr}
+		arrayToken, arrayErr := decoder.Token()
+		if arrayErr != nil || arrayToken != json.Delim('[') {
+			if arrayErr == nil {
+				arrayErr = errors.New("invalid items array")
+			}
+			failDecode(arrayErr)
+			return
+		}
+		for decoder.More() {
+			var task imageTask
+			if err := decoder.Decode(&task); err != nil {
+				failDecode(err)
+				return
+			}
+			if _, wanted := requested[task.ID]; !wanted {
+				continue
+			}
+			seen[task.ID] = struct{}{}
+			if imageTaskNeedsCompletionClaim(task, expected[task.ID]) && beforeImages != nil && !beforeImages(task.ID) {
+				continue
+			}
+			images, done, taskErr := c.completedTaskImages(ctx, task, expected[task.ID])
+			emit(task.ID, ImageTaskPollResult{
+				Images: images, Pending: !done,
+				ExplicitFailure: strings.EqualFold(strings.TrimSpace(task.Status), "error"),
+				Err:             taskErr,
+			})
+		}
+		if _, err := decoder.Token(); err != nil {
+			failDecode(err)
+			return
+		}
 	}
+	if _, err := decoder.Token(); err != nil {
+		failDecode(err)
+		return
+	}
+	// A requested task omitted from items is not evidence of success or
+	// failure. Expose it as an explicit unknown/missing outcome so callers can
+	// apply a short consistency grace and then fail over without hanging.
+	emitRemaining(ImageTaskPollResult{Pending: true, Missing: true})
+}
+
+func imageTaskNeedsCompletionClaim(task imageTask, expected int) bool {
+	status := strings.ToLower(strings.TrimSpace(task.Status))
+	if status != "" && status != "queued" && status != "running" {
+		return true
+	}
+	results := imageTaskResults(task)
+	return len(results) > 0 && len(results) >= expected
+}
+
+// PollImageTasks fetches up to 100 task states in one upstream request.
+func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected map[string]int) map[string]ImageTaskPollResult {
+	results := make(map[string]ImageTaskPollResult, len(taskIDs))
+	c.PollImageTasksEach(ctx, taskIDs, expected, func(taskID string, result ImageTaskPollResult) {
+		results[taskID] = result
+	})
 	return results
 }
 
@@ -516,6 +649,10 @@ func imageEditPayload(prompt, model string, n int, inputImagesB64 []string, size
 	}
 	payload := imageGenerationPayload(prompt, model, n, size, options)
 	payload["images"] = images
+	switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+	case "low", "high":
+		payload["input_fidelity"] = fidelity
+	}
 	return payload
 }
 
@@ -556,6 +693,7 @@ func (c *Client) GenerateImages(ctx context.Context, prompt, model string, n int
 
 type ImageOptions struct {
 	Quality               string
+	InputFidelity         string
 	TransparentBackground bool
 	OutputFormat          string
 	ModerationLevel       string

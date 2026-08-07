@@ -16,6 +16,7 @@ export const FEATURE_TASK_TYPE_MAP = {
   'ai.optimize': 't2i',
   'ai.illustrationColoring': 'coloring',
   'ai.uiDesign': 'ui_design',
+  'ai.ecommerceDesign': 'ecommerce_design',
   'ai.ultraModelSheet': 'model_sheet',
   'ai.gameDesign': 'game_art',
   'ai.puzzle': 'puzzle',
@@ -69,6 +70,5 @@ export async function getFeatureUnitPriceCents(featureKey) {
 export function formatPriceCents(cents) {
   return formatPoints(cents)
 }
-
 
 export { formatPoints }

@@ -188,7 +188,7 @@ func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID, routeID, route
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypePollImageTask, payload),
-		asynq.MaxRetry(0), asynq.Timeout(2*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
+		asynq.MaxRetry(5), asynq.Timeout(10*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}
