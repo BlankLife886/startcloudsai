@@ -2,15 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
@@ -19,6 +22,10 @@ import (
 // 用户输入框限制为 2 万字；任务提示词还会附加站内处理指令和 Skills，
 // 因此服务端为编译后的完整提示词保留额外空间。
 const maxTaskPromptRunes = 40000
+
+// The model-specific capability check may impose a lower limit. This transport
+// bound must also cover the ecommerce workspace, which supports six references.
+const maxTaskInputImages = 6
 
 // outputURLsFor 返回站内受保护文件地址，避免把客户端是否能直连 R2
 // 变成任务结果能否展示的额外前提。
@@ -62,25 +69,31 @@ type taskCreateIn struct {
 	IdempotencyKey *string        `json:"idempotencyKey"`
 }
 
-func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, objectSize func(context.Context, string) (int64, error)) error {
-	if len(keys) > 4 {
-		return apperr.E("validation_error", "inputKeys: 最多允许 4 张参考图", 422)
+type taskImageInspector func(context.Context, string, int64) (int64, error)
+
+func validateTaskImageKeys(ctx context.Context, userID uuid.UUID, field string, keys []string, maxKeys int, maxObjectBytes, maxTotalBytes int64, inspect taskImageInspector, owned func(uuid.UUID, string) bool) error {
+	if len(keys) > maxKeys {
+		return apperr.E("validation_error", fmt.Sprintf("%s: 最多允许 %d 个图片对象", field, maxKeys), 422)
 	}
 	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
+	for i := range keys {
+		keys[i] = strings.TrimSpace(keys[i])
+		key := keys[i]
 		if len(key) > 512 {
-			return apperr.E("validation_error", "inputKeys: 文件键过长", 422)
+			return apperr.E("validation_error", field+": 文件键过长", 422)
 		}
 		if _, exists := seen[key]; exists {
-			return apperr.E("validation_error", "inputKeys: 不允许重复文件", 422)
+			return apperr.E("validation_error", field+": 不允许重复文件", 422)
 		}
 		seen[key] = struct{}{}
-		if !strings.HasPrefix(key, "uploads/"+userID.String()+"/") &&
-			!strings.HasPrefix(key, "tasks/"+userID.String()+"/") {
-			return apperr.E("validation_error", "inputKeys 只能引用自己的文件", 422)
+		if owned != nil && !owned(userID, key) {
+			return apperr.E("validation_error", field+" 只能引用自己的图片文件", 422)
 		}
 	}
-	// 对象大小并发查询：R2 HeadObject 逐个串行时，4 张参考图在跨境链路上会叠加数秒延迟。
+	if inspect == nil {
+		return apperr.E("validation_error", field+": 图片检查器不可用", 422)
+	}
+	// 对象检查并发执行，但上限由 maxKeys 固定，避免一次请求创建无界 goroutine。
 	sizes := make([]int64, len(keys))
 	sizeErrs := make([]error, len(keys))
 	var wg sync.WaitGroup
@@ -88,21 +101,84 @@ func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string,
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			sizes[i], sizeErrs[i] = objectSize(ctx, keys[i])
+			sizes[i], sizeErrs[i] = inspect(ctx, keys[i], maxObjectBytes)
 		}(i)
 	}
 	wg.Wait()
 	var totalInputBytes int64
 	for i := range keys {
 		if sizeErrs[i] != nil {
-			return apperr.E("validation_error", "inputKeys: 文件不存在", 422)
+			return apperr.E("validation_error", field+": 图片不存在、格式不支持或内容无法读取", 422)
 		}
 		totalInputBytes += sizes[i]
-		if sizes[i] <= 0 || sizes[i] > maxObjectBytes || totalInputBytes > 32<<20 {
-			return apperr.E("validation_error", "inputKeys: 图片累计大小超过限制", 422)
+		if sizes[i] <= 0 || sizes[i] > maxObjectBytes || totalInputBytes > maxTotalBytes {
+			return apperr.E("validation_error", field+": 图片累计大小超过限制", 422)
 		}
 	}
 	return nil
+}
+
+// validateTaskInputKeys remains a size-only helper for callers that only have
+// metadata available. Task creation uses validateTaskInputImages below so the
+// stored bytes are checked before any credit is frozen.
+func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, objectSize func(context.Context, string) (int64, error)) error {
+	return validateTaskImageKeys(ctx, userID, "inputKeys", keys, maxTaskInputImages, maxObjectBytes, 32<<20,
+		func(ctx context.Context, key string, _ int64) (int64, error) {
+			return objectSize(ctx, key)
+		}, func(userID uuid.UUID, key string) bool {
+			return strings.HasPrefix(key, "uploads/"+userID.String()+"/") ||
+				strings.HasPrefix(key, "tasks/"+userID.String()+"/")
+		})
+}
+
+func validateTaskInputImages(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, inspect taskImageInspector) error {
+	return validateTaskImageKeys(ctx, userID, "inputKeys", keys, maxTaskInputImages, maxObjectBytes, 32<<20, inspect, isOwnedTaskImageKey)
+}
+
+func taskImageParam(params map[string]any, key string) (string, bool, error) {
+	raw, exists := params[key]
+	if !exists || raw == nil {
+		return "", false, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", false, apperr.E("validation_error", key+": 必须是字符串", 422)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
+func taskMaskImageKeys(params map[string]any) ([]string, error) {
+	maskKey, hasMask, err := taskImageParam(params, "maskKey")
+	if err != nil {
+		return nil, err
+	}
+	baseKey, hasBase, err := taskImageParam(params, "maskBaseKey")
+	if err != nil {
+		return nil, err
+	}
+	maskRect, hasRect, err := taskImageParam(params, "maskRect")
+	if err != nil {
+		return nil, err
+	}
+	if hasMask != hasBase {
+		return nil, apperr.E("validation_error", "maskKey 和 maskBaseKey 必须同时提供", 422)
+	}
+	if hasRect && !hasMask {
+		return nil, apperr.E("validation_error", "maskRect 必须与 maskKey 和 maskBaseKey 同时提供", 422)
+	}
+	if hasRect {
+		if _, err := media.ParseMaskRect(maskRect); err != nil {
+			return nil, apperr.E("validation_error", "maskRect: 格式无效", 422)
+		}
+	}
+	if !hasMask {
+		return nil, nil
+	}
+	return []string{maskKey, baseKey}, nil
 }
 
 func (s *Server) createTask(c *gin.Context) {
@@ -136,22 +212,29 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "idempotencyKey: 长度不能超过 128", 422))
 		return
 	}
-	if err := validateTaskInputKeys(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, s.Storage.ObjectSize); err != nil {
+	inspectTaskImage := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
+		return s.inspectOwnedTaskImage(ctx, user.ID, key, maxBytes)
+	}
+	if err := validateTaskInputImages(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, inspectTaskImage); err != nil {
 		fail(c, err)
 		return
 	}
-	// 蒙版合成参数会被 Worker 直接按 key 读取存储，只允许引用自己的文件
-	for _, paramKey := range []string{"maskKey", "maskBaseKey"} {
-		raw, ok := body.Params[paramKey].(string)
-		if !ok || raw == "" {
-			continue
-		}
-		if len(raw) > 512 ||
-			(!strings.HasPrefix(raw, "uploads/"+user.ID.String()+"/") &&
-				!strings.HasPrefix(raw, "tasks/"+user.ID.String()+"/")) {
-			fail(c, apperr.E("validation_error", paramKey+" 只能引用自己的文件", 422))
-			return
-		}
+	maskKeys, err := taskMaskImageKeys(body.Params)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := validateTaskImageKeys(c.Request.Context(), user.ID, "maskKey/maskBaseKey", maskKeys, 2, s.Cfg.UploadMaxBytes, 32<<20, inspectTaskImage, isOwnedTaskImageKey); err != nil {
+		fail(c, err)
+		return
+	}
+	if len(maskKeys) == 2 {
+		body.Params["maskKey"] = maskKeys[0]
+		body.Params["maskBaseKey"] = maskKeys[1]
+	} else if body.Params != nil {
+		delete(body.Params, "maskKey")
+		delete(body.Params, "maskBaseKey")
+		delete(body.Params, "maskRect")
 	}
 
 	task, created, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{
@@ -347,33 +430,107 @@ func (s *Server) deleteTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	task, err := s.getOwnTask(c, user)
+	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if task.Status != "succeeded" && task.Status != "failed" && task.Status != "canceled" {
-		fail(c, apperr.E("task_not_cancelable", "仅已结束的任务可以删除", 400))
-		return
-	}
 	ctx := c.Request.Context()
-	keys := append([]string(nil), task.OutputKeys...)
-	keys = append(keys, task.ThumbnailKeys...)
-	if len(keys) > 0 {
-		if err := s.Storage.DeleteKeys(ctx, keys); err != nil {
-			fail(c, err)
-			return
-		}
-	}
+	var keys []string
+	var deletedTaskIDs []uuid.UUID
+	cascade := c.Query("cascade") == "true"
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if terr := store.DeleteSubmissionByTaskID(ctx, tx, task.ID); terr != nil {
-			return terr
+		root, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
+		if err != nil {
+			return err
 		}
-		return store.DeleteTask(ctx, tx, task.ID)
+		if root == nil {
+			return apperr.E("task_not_found", "任务不存在", 404)
+		}
+
+		tasks := []*store.Task{root}
+		seenIDs := []uuid.UUID{root.ID}
+		if cascade {
+			for index := 0; index < len(tasks); index++ {
+				parentKeys := append([]string(nil), tasks[index].OutputKeys...)
+				parentKeys = append(parentKeys, tasks[index].ThumbnailKeys...)
+				children, err := store.ListUserTasksReferencingInputKeysForUpdate(ctx, tx, user.ID, seenIDs, parentKeys)
+				if err != nil {
+					return err
+				}
+				for _, child := range children {
+					tasks = append(tasks, child)
+					seenIDs = append(seenIDs, child.ID)
+				}
+			}
+		}
+
+		remaining := make(map[uuid.UUID]*store.Task, len(tasks))
+		for _, task := range tasks {
+			if task.Status != "succeeded" && task.Status != "failed" && task.Status != "canceled" {
+				return apperr.E("task_not_cancelable", "仅已结束的任务可以删除", 400)
+			}
+			remaining[task.ID] = task
+		}
+
+		for len(remaining) > 0 {
+			deletedLeaf := false
+			for index := len(tasks) - 1; index >= 0; index-- {
+				task := tasks[index]
+				if _, ok := remaining[task.ID]; !ok {
+					continue
+				}
+				taskKeys := append([]string(nil), task.OutputKeys...)
+				taskKeys = append(taskKeys, task.ThumbnailKeys...)
+				referencingTasks, err := store.CountTasksReferencingInputKeys(ctx, tx, user.ID, task.ID, taskKeys)
+				if err != nil {
+					return err
+				}
+				if referencingTasks > 0 {
+					continue
+				}
+				if err := store.DeleteSubmissionByTaskID(ctx, tx, task.ID); err != nil {
+					return err
+				}
+				if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceTaskInput, task.ID); err != nil {
+					return err
+				}
+				if err := store.EnqueueObjectCleanup(ctx, tx, taskKeys); err != nil {
+					return err
+				}
+				if err := store.DeleteTask(ctx, tx, task.ID); err != nil {
+					return err
+				}
+				keys = append(keys, taskKeys...)
+				deletedTaskIDs = append(deletedTaskIDs, task.ID)
+				delete(remaining, task.ID)
+				deletedLeaf = true
+				break
+			}
+			if !deletedLeaf {
+				return apperr.E("task_in_use", "该任务产物仍被其他内容引用，无法删除", 409)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	respondNoContent(c)
+	if len(keys) > 0 && s.Storage != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
+		if cleanupErr == nil {
+			_, cleanupErr = store.DeleteObjectCleanupJobs(cleanupCtx, s.St.Pool, keys)
+		}
+		cancel()
+		if cleanupErr != nil {
+			log.Printf("task %s deleted from database but object cleanup failed: %v", taskID, cleanupErr)
+		}
+	}
+	ids := make([]string, 0, len(deletedTaskIDs))
+	for _, id := range deletedTaskIDs {
+		ids = append(ids, id.String())
+	}
+	ok(c, gin.H{"deletedTaskIds": ids})
 }

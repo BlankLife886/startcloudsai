@@ -133,7 +133,7 @@ cd apps/admin && npm ci && npm run build
 cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 ```
 
-用户端还提供图片处理验证脚本。Playwright 配置目前保留了旧 monorepo 启动命令，尚不能作为本仓库的有效测试入口；详见 [apps/web/README.md](apps/web/README.md)。
+用户端还提供图片处理验证脚本。`cd apps/web && npm run test:e2e` 会启动当前 Web Vite 服务并运行确定性的工作台冒烟测试；测试通过路由拦截提供登录、运行时模型、历史和商品库数据，不依赖真实图片上游。完整说明见 [apps/web/README.md](apps/web/README.md)。
 
 ## 文档索引
 

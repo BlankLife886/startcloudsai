@@ -5,6 +5,7 @@ import {
   buildEcommerceRevisionPrompt,
   ecommerceConsistencyProfile,
   ecommerceShotBlueprints,
+  listingShotBlueprintsFromCounts,
   prepareEcommerceInputFiles,
   supportedEcommerceModules,
 } from '../src/features/ecommerce/ecommerceTools.js'
@@ -33,6 +34,54 @@ assert.ok(listingPlan.every((item) => item.prompt.includes('商品身份锁')))
 assert.ok(listingPlan.every((item) => item.prompt.includes('商品身份角度 3')))
 assert.ok(listingPlan[0].prompt.includes('第 1/4 张'))
 assert.ok(listingPlan[3].prompt.includes('第 4/4 张'))
+
+const smartListingPlan = buildEcommerceGenerationPlan({
+  modeId: 'listing',
+  count: 7,
+  selectedModules: ['hero', 'selling', 'scene', 'mood', 'detail', 'spec', 'package'],
+  basePrompt: '商品：节日礼盒。',
+  referenceCount: 1,
+})
+assert.equal(smartListingPlan.length, 7)
+assert.deepEqual(
+  smartListingPlan.map((item) => item.viewId),
+  ['hero', 'selling', 'scene', 'mood', 'detail', 'spec', 'package'],
+)
+
+const clonePlan = buildEcommerceGenerationPlan({
+  modeId: 'clone',
+  count: 4,
+  basePrompt: '用新商品复刻参考视觉。',
+  referenceCount: 2,
+})
+assert.equal(clonePlan.length, 4)
+assert.ok(clonePlan.every((item) => item.prompt.includes('复刻分离锁')))
+assert.ok(clonePlan.every((item) => item.prompt.includes('爆款视觉参考')))
+assert.ok(clonePlan.every((item) => item.prompt.includes('商品身份')))
+
+const customListingShots = listingShotBlueprintsFromCounts({
+  white: 1,
+  scene: 3,
+  selling: 2,
+  other: 1,
+})
+assert.equal(customListingShots.length, 7)
+assert.deepEqual(
+  customListingShots.map((item) => item.id),
+  ['white-1', 'scene-1', 'scene-2', 'scene-3', 'selling-1', 'selling-2', 'other-1'],
+)
+const customListingPlan = buildEcommerceGenerationPlan({
+  modeId: 'listing',
+  count: 7,
+  shotBlueprints: customListingShots,
+  referenceCount: 1,
+})
+assert.equal(customListingPlan.length, 7)
+assert.equal(customListingPlan[2].viewLabel, '商品套图 · 场景图 2')
+
+const singleReferenceClone = ecommerceConsistencyProfile('clone', 1)
+assert.equal(singleReferenceClone.essentialReferenceCount, 1)
+assert.ok(singleReferenceClone.identityLock.includes('单参考复刻锁'))
 
 const detailPlan = buildEcommerceGenerationPlan({
   modeId: 'detail',
@@ -141,12 +190,7 @@ assert.deepEqual(
     essentialIdentityCount: 2,
     seriesAnchorApplied: true,
   }),
-  [
-    '商品身份',
-    '模特身份',
-    '系列视觉锚点（只继承布景、光线与版式）',
-    '补充角度',
-  ],
+  ['商品身份', '模特身份', '系列视觉锚点（只继承布景、光线与版式）', '补充角度'],
 )
 
 const reusedReferenceA = {
@@ -161,11 +205,28 @@ const reusedReferenceB = {
   name: 'history-b.png',
   lastModified: 2,
 }
-const preparedReferences = prepareEcommerceInputFiles(
-  [reusedReferenceA],
-  [reusedReferenceB],
-)
+const preparedReferences = prepareEcommerceInputFiles([reusedReferenceA], [reusedReferenceB])
 assert.equal(preparedReferences.next.length, 0)
 assert.equal(preparedReferences.duplicateCount, 1)
+
+const emptyReference = prepareEcommerceInputFiles(
+  [],
+  [{ name: 'empty.png', type: 'image/png', size: 0, lastModified: 3 }],
+)
+assert.equal(emptyReference.next.length, 0)
+assert.equal(emptyReference.invalidCount, 1)
+
+const mixedSizeReferences = prepareEcommerceInputFiles(
+  [],
+  [
+    { name: 'valid.png', type: 'image/png', size: 1024, lastModified: 4 },
+    { name: 'large.png', type: 'image/png', size: 11 * 1024 * 1024, lastModified: 5 },
+  ],
+)
+assert.deepEqual(
+  mixedSizeReferences.next.map((file) => file.name),
+  ['valid.png'],
+)
+assert.equal(mixedSizeReferences.oversizedCount, 1)
 
 console.log('ecommerce generation plan checks passed')

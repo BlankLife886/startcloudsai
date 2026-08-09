@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { useAppearanceStore } from '@/stores/appearance'
 import { createGrowthGroup, getGrowthPrograms, joinGrowthGroup } from '@/services/growthApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 
 const route = useRoute()
+const appearanceStore = useAppearanceStore()
 const loading = ref(true)
 const loadError = ref('')
 const growthData = ref(null)
@@ -38,12 +40,20 @@ const benefitMap = {
     description: '符合规则的失败任务自动退款，并按活动配置发放额外补偿。',
   },
   milestone: {
-    name: '越用越多',
-    category: '忠诚激励',
-    icon: 'bi-graph-up-arrow',
+    name: '用量计划',
+    category: '用量激励',
+    icon: 'bi-bar-chart-fill',
     tone: 'amber',
-    statement: '持续交付作品，逐步解锁更高的创作回馈。',
-    description: '本月成功交付数量达到里程碑后，自动获得对应积分奖励。',
+    statement: '本月交付越多，自动解锁越高阶的积分回馈。',
+    description: '按本月成功交付量解锁档位奖励，达标后积分自动到账。',
+  },
+  usage: {
+    name: '用量计划',
+    category: '用量激励',
+    icon: 'bi-bar-chart-fill',
+    tone: 'amber',
+    statement: '本月交付越多，自动解锁越高阶的积分回馈。',
+    description: '按本月成功交付量解锁档位奖励，达标后积分自动到账。',
   },
   suggestion: {
     name: '建议采纳',
@@ -126,7 +136,7 @@ onMounted(loadGrowth)
 </script>
 
 <template>
-  <main class="detail-page" :data-tone="benefit.tone">
+  <main class="detail-page" :class="{ 'is-dark': appearanceStore.isDark }" :data-tone="benefit.tone">
     <nav class="detail-nav" aria-label="创作激励导航">
       <RouterLink to="/incentive-plans" class="back-link"
         ><i class="bi bi-arrow-left"></i>返回创作激励</RouterLink
@@ -210,7 +220,10 @@ onMounted(loadGrowth)
           </p>
         </div>
 
-        <div v-else-if="programId === 'milestone'" class="detail-content metric-content">
+        <div
+          v-else-if="programId === 'milestone' || programId === 'usage'"
+          class="detail-content metric-content"
+        >
           <span>本月成功交付</span><strong>{{ rules.monthDeliveredUnits || 0 }} 张</strong>
           <div class="milestone-list">
             <div
@@ -223,6 +236,9 @@ onMounted(loadGrowth)
               ><i class="bi" :class="milestone.achieved ? 'bi-check-circle-fill' : 'bi-circle'"></i>
             </div>
           </div>
+          <RouterLink to="/incentive-plans/usage"
+            >打开用量计划<i class="bi bi-arrow-right"></i
+          ></RouterLink>
         </div>
 
         <div v-else class="detail-content metric-content">
@@ -251,10 +267,68 @@ onMounted(loadGrowth)
 <style scoped>
 .detail-page {
   --accent: #ff6f66;
+  --ink: #101827;
+  --muted: #68758a;
+  --muted-strong: #8a93a3;
+  --body: #4a5363;
+  --line: #eadfce;
+  --line-soft: #f0e6d8;
+  --orange: #f36b21;
+  --bg: #f7f4ef;
+  --surface: #ffffff;
+  --surface-soft: #fffaf3;
+  --surface-warm: #fff7ef;
+  --hero-bg: #fff9f0;
+  --visual-bg: #fff4e6;
+  --grid-line: rgb(16 24 39 / 8%);
+  --panel-fill: rgb(16 24 39 / 4%);
+  --panel-line: rgb(16 24 39 / 10%);
+  --progress-track: rgb(16 24 39 / 8%);
+  --cta-ink: #ffffff;
+  --cta-bg: #101827;
+  --cta-border: #101827;
+  --input-ink: #101827;
+  --input-bg: #ffffff;
+  --input-border: #eadfce;
+  --error: #d6453d;
+  --mark-base: #fff1e2;
+  --mark-border: rgb(16 24 39 / 8%);
+  --visual-muted: #8a93a3;
+  --visual-copy: #4a5363;
   min-width: 1080px;
   min-height: calc(100vh - var(--app-header-offset, 72px));
-  color: #f7f7f8;
-  background: #0b0c0f;
+  color: var(--ink);
+  background: var(--bg);
+}
+.detail-page.is-dark {
+  --ink: #f4eee6;
+  --muted: #a79c8f;
+  --muted-strong: #9d9da7;
+  --body: #d7d7dc;
+  --line: #3b342c;
+  --line-soft: #2f2922;
+  --orange: #ff8a3d;
+  --bg: #12100e;
+  --surface: #1c1915;
+  --surface-soft: #181511;
+  --surface-warm: #221c16;
+  --hero-bg: #1a1511;
+  --visual-bg: #1c1915;
+  --grid-line: rgb(255 255 255 / 7%);
+  --panel-fill: rgb(255 255 255 / 6%);
+  --panel-line: rgb(255 255 255 / 11%);
+  --progress-track: rgb(255 255 255 / 9%);
+  --cta-ink: #111214;
+  --cta-bg: #f6f6f7;
+  --cta-border: #ffffff;
+  --input-ink: #ffffff;
+  --input-bg: rgb(255 255 255 / 7%);
+  --input-border: rgb(255 255 255 / 15%);
+  --error: #ff9b96;
+  --mark-base: #221c16;
+  --mark-border: rgb(255 255 255 / 8%);
+  --visual-muted: #858690;
+  --visual-copy: #c2c2c9;
 }
 .detail-page[data-tone='violet'] {
   --accent: #8d7cff;
@@ -279,20 +353,20 @@ onMounted(loadGrowth)
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #aaaab3;
+  color: var(--muted);
   font-size: 13px;
   font-weight: 700;
   text-decoration: none;
 }
 .back-link:hover {
-  color: #fff;
+  color: var(--ink);
 }
 .detail-hero {
   display: grid;
   grid-template-columns: minmax(540px, 1fr) minmax(500px, 1fr);
   min-height: calc(100vh - var(--app-header-offset, 72px) - 68px);
-  background: #111214;
-  border-top: 1px solid rgb(255 255 255 / 7%);
+  background: var(--hero-bg);
+  border-top: 1px solid var(--grid-line);
 }
 .detail-copy {
   display: flex;
@@ -306,7 +380,7 @@ onMounted(loadGrowth)
   align-items: center;
   gap: 12px;
   margin: 0 0 22px;
-  color: #a8a8b2;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 800;
 }
@@ -334,16 +408,16 @@ onMounted(loadGrowth)
 }
 .detail-lead {
   margin: 20px 0 0;
-  color: #d7d7dc;
+  color: var(--body);
   font-size: 17px;
   line-height: 1.65;
 }
 .detail-content {
   margin-top: 32px;
-  color: #d7d7dc;
+  color: var(--body);
 }
 .detail-content > p {
-  color: #9d9da7;
+  color: var(--muted-strong);
   line-height: 1.7;
 }
 .detail-loading {
@@ -372,13 +446,13 @@ onMounted(loadGrowth)
 }
 .detail-error {
   margin-top: 28px;
-  color: #ff9b96;
+  color: var(--error);
 }
 .detail-error button {
   padding: 9px 14px;
-  color: #fff;
+  color: var(--ink);
   background: transparent;
-  border: 1px solid rgb(255 255 255 / 24%);
+  border: 1px solid var(--panel-line);
   border-radius: 8px;
 }
 .group-summary {
@@ -390,7 +464,7 @@ onMounted(loadGrowth)
   font-size: 27px;
 }
 .group-summary span {
-  color: #9d9da7;
+  color: var(--muted-strong);
   font-size: 12px;
 }
 .group-progress {
@@ -398,7 +472,7 @@ onMounted(loadGrowth)
   margin: 13px 0 20px;
   overflow: hidden;
   border-radius: 4px;
-  background: rgb(255 255 255 / 9%);
+  background: var(--progress-track);
 }
 .group-progress i {
   display: block;
@@ -411,13 +485,13 @@ onMounted(loadGrowth)
   align-items: center;
   gap: 12px;
   padding: 14px;
-  color: #fff;
-  background: rgb(255 255 255 / 6%);
-  border: 1px solid rgb(255 255 255 / 11%);
+  color: var(--ink);
+  background: var(--panel-fill);
+  border: 1px solid var(--panel-line);
   border-radius: 10px;
 }
 .group-code span {
-  color: #9d9da7;
+  color: var(--muted-strong);
   font-size: 12px;
 }
 .group-code strong {
@@ -436,9 +510,9 @@ onMounted(loadGrowth)
   align-items: center;
   justify-content: center;
   padding: 0 18px;
-  color: #111214;
-  background: #f6f6f7;
-  border: 1px solid #fff;
+  color: var(--cta-ink);
+  background: var(--cta-bg);
+  border: 1px solid var(--cta-border);
   border-radius: 10px;
   font: inherit;
   font-weight: 800;
@@ -453,9 +527,9 @@ onMounted(loadGrowth)
   min-width: 0;
   flex: 1;
   padding: 0 13px;
-  color: #fff;
-  background: rgb(255 255 255 / 7%);
-  border: 1px solid rgb(255 255 255 / 15%);
+  color: var(--input-ink);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
   border-radius: 10px 0 0 10px;
 }
 .group-actions form button {
@@ -470,7 +544,7 @@ onMounted(loadGrowth)
   align-items: flex-start;
 }
 .metric-content > span {
-  color: #9d9da7;
+  color: var(--muted-strong);
   font-size: 12px;
 }
 .metric-content > strong {
@@ -484,7 +558,7 @@ onMounted(loadGrowth)
 .milestone-list {
   width: 100%;
   margin-top: 18px;
-  border-top: 1px solid rgb(255 255 255 / 12%);
+  border-top: 1px solid var(--panel-line);
 }
 .milestone-list > div {
   display: grid;
@@ -492,11 +566,11 @@ onMounted(loadGrowth)
   gap: 12px;
   align-items: center;
   min-height: 45px;
-  border-bottom: 1px solid rgb(255 255 255 / 9%);
-  color: #9d9da7;
+  border-bottom: 1px solid var(--grid-line);
+  color: var(--muted-strong);
 }
 .milestone-list > div > strong {
-  color: #fff;
+  color: var(--ink);
   font-size: 13px;
 }
 .milestone-list .is-achieved i {
@@ -509,8 +583,8 @@ onMounted(loadGrowth)
   min-height: calc(100vh - var(--app-header-offset, 72px) - 68px);
   overflow: hidden;
   padding: 54px max(46px, calc((100vw - 1500px) / 2 + 36px)) 48px 54px;
-  background: #191a1f;
-  border-left: 1px solid rgb(255 255 255 / 8%);
+  background: var(--visual-bg);
+  border-left: 1px solid var(--grid-line);
 }
 .detail-visual::before,
 .detail-visual::after {
@@ -522,19 +596,19 @@ onMounted(loadGrowth)
   bottom: 0;
   left: 34%;
   width: 1px;
-  background: rgb(255 255 255 / 7%);
+  background: var(--grid-line);
 }
 .detail-visual::after {
   top: 43%;
   right: 0;
   left: 0;
   height: 1px;
-  background: rgb(255 255 255 / 7%);
+  background: var(--grid-line);
 }
 .detail-visual__index {
   position: relative;
   z-index: 2;
-  color: #858690;
+  color: var(--visual-muted);
   font-size: 11px;
   font-weight: 800;
 }
@@ -548,8 +622,8 @@ onMounted(loadGrowth)
   width: 220px;
   height: 220px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, #1f2025);
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, rgb(255 255 255 / 8%));
+  background: color-mix(in srgb, var(--accent) 10%, var(--mark-base));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--mark-border));
   border-radius: 50%;
   font-size: 76px;
 }
@@ -560,7 +634,7 @@ onMounted(loadGrowth)
   right: max(46px, calc((100vw - 1500px) / 2 + 36px));
   display: flex;
   gap: 18px;
-  color: #858690;
+  color: var(--visual-muted);
   font-size: 10px;
 }
 .detail-visual__copy {
@@ -572,7 +646,7 @@ onMounted(loadGrowth)
 }
 .detail-visual__copy small {
   display: block;
-  color: #aaaab3;
+  color: var(--muted);
   font-size: 10px;
   font-weight: 800;
 }
@@ -583,7 +657,7 @@ onMounted(loadGrowth)
 }
 .detail-visual__copy p {
   margin: 9px 0 0;
-  color: #c2c2c9;
+  color: var(--visual-copy);
   line-height: 1.65;
 }
 </style>

@@ -288,6 +288,12 @@ func (s *Server) importAssistantConversations(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "历史对话数量过多", 422))
 		return
 	}
+	for _, incoming := range body.Conversations {
+		if len(incoming.Messages) > assistantMessageLimit {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("单个对话最多导入 %d 条消息", assistantMessageLimit), 422))
+			return
+		}
+	}
 	existing, err := store.ListAssistantConversations(c.Request.Context(), s.St.Pool, user.ID, 1)
 	if err != nil {
 		fail(c, err)
@@ -320,12 +326,17 @@ func (s *Server) importAssistantConversations(c *gin.Context) {
 					metadata["pending"] = false
 					metadata["statusStage"] = "stopped"
 				}
-				_, err = store.InsertAssistantMessage(c.Request.Context(), tx, store.AssistantMessage{
+				importedMessage, insertErr := store.InsertAssistantMessage(c.Request.Context(), tx, store.AssistantMessage{
 					ID: parseAssistantUUID(assistantMapText(raw, "id")), ConversationID: conversation.ID,
 					Role: role, Content: content, Kind: assistantMessageKind(raw), Status: status,
 					Metadata: metadata, CreatedAt: parseAssistantTime(assistantMapText(raw, "createdAt")),
 				})
-				if err != nil {
+				if insertErr != nil {
+					return insertErr
+				}
+				if err := store.AddUserUploadReferences(c.Request.Context(), tx, user.ID,
+					store.UploadReferenceAssistantMsg, importedMessage.ID,
+					assistantUploadReferenceKeysFromMetadata(metadata, user.ID)); err != nil {
 					return err
 				}
 			}
@@ -539,6 +550,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	assistantMessageID := parseAssistantUUID(body.ClientAssistantMessageID)
 	now := time.Now().UTC()
 	references := sanitizeAssistantReferences(body.ReferenceImages, user.ID)
+	assistantUploadKeys := assistantUploadReferenceKeys(references, user.ID)
+	taskOutputReferenceKeys := assistantTaskOutputReferenceKeys(references, user.ID)
+	assistantOutputKeys := assistantOutputReferenceKeys(references, user.ID)
 	userMetadata := map[string]any{"referenceImages": references, "quoted": body.Quoted, "skill": body.Skill}
 	if sourceID := strings.TrimSpace(body.ProposalSourceMessageID); sourceID != "" {
 		if _, parseErr := uuid.Parse(sourceID); parseErr != nil {
@@ -625,6 +639,34 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if err := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); err != nil {
 			return err
 		}
+		objectReferenceKeys := append(append([]string(nil), taskOutputReferenceKeys...), assistantOutputKeys...)
+		if len(objectReferenceKeys) > 0 {
+			if err := store.LockObjectReferenceKeys(c.Request.Context(), tx, objectReferenceKeys); err != nil {
+				return err
+			}
+		}
+		if len(taskOutputReferenceKeys) > 0 {
+			referenced, err := store.LockTasksReferencingOutputKeys(c.Request.Context(), tx, user.ID, taskOutputReferenceKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range taskOutputReferenceKeys {
+				if _, ok := referenced[key]; !ok {
+					return apperr.E("validation_error", "referenceImages: 任务产物不存在或已删除", 422)
+				}
+			}
+		}
+		if len(assistantOutputKeys) > 0 {
+			referenced, err := store.LockAssistantOutputKeys(c.Request.Context(), tx, user.ID, assistantOutputKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range assistantOutputKeys {
+				if _, ok := referenced[key]; !ok {
+					return apperr.E("validation_error", "referenceImages: 助手图片不存在或已删除", 422)
+				}
+			}
+		}
 		active, err := store.ListActiveUserAssistantRuns(c.Request.Context(), tx, user.ID)
 		if err != nil {
 			return err
@@ -662,6 +704,15 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				return insertErr
 			}
 		}
+		if body.SourceUserMessageID != "" {
+			if err := store.ReplaceUserUploadReferences(c.Request.Context(), tx, user.ID,
+				store.UploadReferenceAssistantMsg, userMessageID, assistantUploadKeys); err != nil {
+				return err
+			}
+		} else if err := store.AddUserUploadReferences(c.Request.Context(), tx, user.ID,
+			store.UploadReferenceAssistantMsg, userMessageID, assistantUploadKeys); err != nil {
+			return err
+		}
 		assistantMetadata := make(map[string]any, len(params)+5)
 		for key, value := range params {
 			if key == "referenceImages" {
@@ -691,6 +742,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		})
 		if insertErr != nil {
 			return insertErr
+		}
+		if err := store.AddUserUploadReferences(c.Request.Context(), tx, user.ID,
+			store.UploadReferenceAssistantRun, run.ID, assistantUploadKeys); err != nil {
+			return err
 		}
 		if err := assistantbilling.Reserve(c.Request.Context(), tx, run); err != nil {
 			return err
@@ -817,27 +872,38 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		}
 		return
 	}
-	run, canceled, err := assistantbilling.CancelUser(c.Request.Context(), s.St, user.ID, id)
+	var canceled bool
+	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		var txErr error
+		run, canceled, txErr = assistantbilling.CancelUserTx(c.Request.Context(), tx, user.ID, id)
+		if txErr != nil || !canceled {
+			return txErr
+		}
+		message, messageErr := store.GetAssistantMessage(c.Request.Context(), tx, run.AssistantMessageID)
+		if messageErr != nil {
+			return messageErr
+		}
+		if message == nil {
+			return nil
+		}
+		metadata := assistantMessageMetadataWithoutOutputs(message)
+		metadata["pending"] = false
+		metadata["routing"] = false
+		metadata["statusStage"] = "stopped"
+		return store.ClearAssistantMessageOutputMetadata(c.Request.Context(), tx, run.UserID, message.ID,
+			"已停止生成", assistantResolvedMode(run), "stopped", metadata)
+	})
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	if canceled {
-		metadata := map[string]any{}
-		if message, _ := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); message != nil {
-			for key, value := range message.Metadata {
-				metadata[key] = value
-			}
-		}
-		metadata["pending"] = false
-		metadata["routing"] = false
-		metadata["statusStage"] = "stopped"
-		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID, "已停止生成",
-			assistantResolvedMode(run), "stopped", metadata)
 		assistantstream.Publish(c.Request.Context(), s.assistantStreamRedis(), id.String(), assistantstream.Event{
 			Kind: assistantResolvedMode(run), Stage: "stopped", Done: true, Status: "canceled",
 		})
-		s.Queue.CancelAssistantRun(id.String())
+		if s.Queue != nil {
+			s.Queue.CancelAssistantRun(id.String())
+		}
 	}
 	updated, _ := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
 	ok(c, gin.H{"run": assistantRunDict(updated), "canceled": canceled})
@@ -886,6 +952,26 @@ func assistantMessageDict(item *store.AssistantMessage) gin.H {
 	out["createdAt"] = isoValue(item.CreatedAt)
 	out["updatedAt"] = isoValue(item.UpdatedAt)
 	return out
+}
+
+func assistantMessageMetadataWithoutOutputs(message *store.AssistantMessage) map[string]any {
+	metadata := make(map[string]any)
+	if message == nil {
+		return metadata
+	}
+	for key, value := range message.Metadata {
+		metadata[key] = value
+	}
+	delete(metadata, "images")
+	if proposal, ok := metadata["proposal"].(map[string]any); ok {
+		proposalCopy := make(map[string]any, len(proposal))
+		for key, value := range proposal {
+			proposalCopy[key] = value
+		}
+		delete(proposalCopy, "images")
+		metadata["proposal"] = proposalCopy
+	}
+	return metadata
 }
 
 func assistantRunDict(item *store.AssistantRun) gin.H {
@@ -958,6 +1044,88 @@ func assistantImportMetadata(values map[string]any) map[string]any {
 		metadata[key] = value
 	}
 	return metadata
+}
+
+func assistantUploadReferenceKeys(items []map[string]any, userID uuid.UUID) []string {
+	prefix := "uploads/" + userID.String() + "/"
+	keys := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(assistantMapText(item, "fileKey"))
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func assistantTaskOutputReferenceKeys(items []map[string]any, userID uuid.UUID) []string {
+	keys := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(assistantMapText(item, "fileKey"))
+		if !isOwnedTaskOutputImageKey(userID, key) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func assistantOutputReferenceKeys(items []map[string]any, userID uuid.UUID) []string {
+	keys := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(assistantMapText(item, "fileKey"))
+		if !isOwnedAssistantOutputImageKey(userID, key) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func assistantUploadReferenceKeysFromMetadata(metadata map[string]any, userID uuid.UUID) []string {
+	refs := make([]map[string]any, 0, 4)
+	for _, value := range []any{metadata["referenceImages"], metadata["images"]} {
+		refs = append(refs, assistantReferenceItems(value)...)
+	}
+	if proposal, ok := metadata["proposal"].(map[string]any); ok {
+		for _, value := range []any{proposal["referenceImages"], proposal["images"]} {
+			refs = append(refs, assistantReferenceItems(value)...)
+		}
+	}
+	return assistantUploadReferenceKeys(refs, userID)
+}
+
+func assistantReferenceItems(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return items
+	case []any:
+		refs := make([]map[string]any, 0, len(items))
+		for _, raw := range items {
+			if item, ok := raw.(map[string]any); ok {
+				refs = append(refs, item)
+			}
+		}
+		return refs
+	default:
+		return nil
+	}
 }
 
 func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) []map[string]any {

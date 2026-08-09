@@ -17,6 +17,8 @@ const props = defineProps({
   glassMenu: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
   maxVisibleOptions: { type: Number, default: 0 },
+  // Teleported menus need a higher stack than host overlays (e.g. design-spec scrim).
+  menuZIndex: { type: Number, default: 1300 },
   menuPlacement: {
     type: String,
     default: 'top',
@@ -111,6 +113,7 @@ function updateMenuPosition() {
     bottom: opensDown.value ? 'auto' : `${Math.round(window.innerHeight - rect.top + 8)}px`,
     width: `${Math.round(menuWidth)}px`,
     maxHeight: `${Math.min(360, limitedHeight, Math.round(availableHeight))}px`,
+    zIndex: String(Math.max(1, Math.round(Number(props.menuZIndex) || 1300))),
   }
 }
 

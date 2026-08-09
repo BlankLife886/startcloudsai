@@ -17,15 +17,15 @@ import { useInsufficientCreditsPrompt } from '@/composables/useInsufficientCredi
 import { formatPoints, getFeatureUnitPriceCents } from '@/services/pricing'
 import { fetchAuthenticatedMediaBlob } from '@/services/authenticatedMedia'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
-import { normalizeGptImageOutputSize } from '@/services/aiImageOutputSize'
+import {
+  GPT_IMAGE_OUTPUT_LIMITS,
+  normalizeGptImageOutputSize,
+} from '@/services/aiImageOutputSize'
 import {
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
 } from '@/features/ai-shared/modelImageCapabilities'
-import {
-  mapConsistencyReferenceRoles,
-  orderConsistencyReferences,
-} from './referenceConsistency'
+import { mapConsistencyReferenceRoles, orderConsistencyReferences } from './referenceConsistency'
 
 const ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'waiting_provider'])
 const OUTPUT_GROUP_LIMIT = 4
@@ -51,17 +51,22 @@ export function useCreativeImageJob(options = {}) {
   const historyLoading = ref(false)
   const historyHydrated = ref(false)
   const historyHasMore = ref(false)
+  const historyError = ref('')
   const historyLoadingVariants = ref({})
   const historyHasMoreVariants = ref({})
   let historyCursors = {}
   let historyBatchAttemptTimes = new Map()
   let lastHistoryJobs = []
+  let historyAbortController = null
+  let activeRecoveryController = null
+  let disposed = false
   const outputJobIds = ref({})
   // outputs 始终保存可下载/编辑的原图；列表与胶片条通过此映射读取缩略图。
   const outputPreviewUrls = ref({})
   const outputGroups = ref({})
   const outputGroupIndexes = ref({})
   const outputGroupSizes = ref({})
+  const outputDevices = ref({})
   const outputAspectRatios = ref({})
   const outputTimings = ref({})
   const outputParents = ref({})
@@ -73,6 +78,7 @@ export function useCreativeImageJob(options = {}) {
   const generationTaskRemovalTimers = new Set()
   let controller = new AbortController()
   let cancelRequested = false
+  let maskedPreparationController = null
   const activeJobIds = new Set()
 
   async function requestJobCancellations(jobIds) {
@@ -111,6 +117,10 @@ export function useCreativeImageJob(options = {}) {
       outputGroupIndexes.value =
         parsed.indexes && typeof parsed.indexes === 'object' ? parsed.indexes : {}
       outputGroupSizes.value = parsed.sizes && typeof parsed.sizes === 'object' ? parsed.sizes : {}
+      outputDevices.value =
+        parsed.devices && typeof parsed.devices === 'object' ? parsed.devices : {}
+      outputParents.value =
+        parsed.parents && typeof parsed.parents === 'object' ? parsed.parents : {}
     } else {
       const legacy = JSON.parse(getScopedLocalItem(legacyGroupStoreKey) || '{}')
       if (legacy && typeof legacy === 'object') {
@@ -132,6 +142,7 @@ export function useCreativeImageJob(options = {}) {
     outputGroups.value = {}
     outputGroupIndexes.value = {}
     outputGroupSizes.value = {}
+    outputDevices.value = {}
   }
 
   function persistGroups() {
@@ -145,11 +156,24 @@ export function useCreativeImageJob(options = {}) {
         Math.max(0, Number(outputGroupIndexes.value[url]) || 0),
       ]),
     )
+    const devices = Object.fromEntries(
+      Object.keys(groups)
+        .map((url) => [url, String(outputDevices.value[url] || '').trim()])
+        .filter(([, deviceId]) => deviceId),
+    )
+    const parents = Object.fromEntries(
+      Object.keys(groups)
+        .map((url) => [url, String(outputParents.value[url] || '').trim()])
+        .filter(([, parent]) => parent),
+    )
     const retainedGroupIds = new Set(Object.values(groups))
     const sizes = Object.fromEntries(
       Object.entries(outputGroupSizes.value).filter(([groupId]) => retainedGroupIds.has(groupId)),
     )
-    setScopedLocalItem(groupStoreKey, JSON.stringify({ version: 2, groups, indexes, sizes }))
+    setScopedLocalItem(
+      groupStoreKey,
+      JSON.stringify({ version: 2, groups, indexes, sizes, devices, parents }),
+    )
   }
 
   function rememberOutputGroup(urls, groupId, options = {}) {
@@ -204,7 +228,26 @@ export function useCreativeImageJob(options = {}) {
       next[url] = parent
       changed = true
     }
-    if (changed) outputParents.value = next
+    if (changed) {
+      outputParents.value = next
+      persistGroups()
+    }
+  }
+
+  function rememberOutputDevice(urls, value) {
+    const deviceId = String(value || '').trim()
+    if (!deviceId) return
+    const next = { ...outputDevices.value }
+    let changed = false
+    for (const url of urls) {
+      if (!url || next[url] === deviceId) continue
+      next[url] = deviceId
+      changed = true
+    }
+    if (changed) {
+      outputDevices.value = next
+      persistGroups()
+    }
   }
 
   function readJobBatchMeta(job = {}) {
@@ -383,7 +426,11 @@ export function useCreativeImageJob(options = {}) {
     }
     if (changed) outputKinds.value = next
   }
-  const outputLongSide = Math.max(1024, Math.min(Number(options.outputLongSide) || 1536, 2048))
+  // 单任务可按需提高长边（如四宫格精修）；默认仍落在 1024–2048。
+  const outputLongSide = Math.max(
+    1024,
+    Math.min(Number(options.outputLongSide) || 1536, GPT_IMAGE_OUTPUT_LIMITS?.maxEdge || 3840),
+  )
 
   const models = computed(() => {
     const feature = runtimeConfigStore.getFeaturePayload(featureKey) || {}
@@ -459,7 +506,7 @@ export function useCreativeImageJob(options = {}) {
       ])
       if (!modelId.value) modelId.value = models.value[0]?.id || ''
       // 首屏先完成历史归组，再一次性开放画布；运行中任务会同步登记后继续后台轮询。
-      if (authStore.isAuthenticated) {
+      if (authStore.isAuthenticated && !disposed) {
         await loadHistory(initialHistoryLimit).catch(() => [])
         void resumeActiveJobs(lastHistoryJobs).catch(() => null)
       }
@@ -505,8 +552,15 @@ export function useCreativeImageJob(options = {}) {
       .map((part) => Number(part))
     const ratioW = Number.isFinite(rawW) && rawW > 0 ? rawW : 1
     const ratioH = Number.isFinite(rawH) && rawH > 0 ? rawH : 1
-    const width = ratioW >= ratioH ? outputLongSide : (outputLongSide * ratioW) / ratioH
-    const height = ratioW >= ratioH ? (outputLongSide * ratioH) / ratioW : outputLongSide
+    const longSide = Math.max(
+      1024,
+      Math.min(
+        Number(input.outputLongSide) || outputLongSide,
+        GPT_IMAGE_OUTPUT_LIMITS.maxEdge,
+      ),
+    )
+    const width = ratioW >= ratioH ? longSide : (longSide * ratioW) / ratioH
+    const height = ratioW >= ratioH ? (longSide * ratioH) / ratioW : longSide
     const normalized = normalizeGptImageOutputSize(width, height)
     return `${normalized.width}x${normalized.height}`
   }
@@ -529,6 +583,7 @@ export function useCreativeImageJob(options = {}) {
       referenceCount: sourceList.length,
       essentialIdentityCount: input.essentialReferenceCount,
       seriesAnchorApplied: input.seriesAnchorApplied === true,
+      seriesAnchorRole: input.seriesAnchorRole,
     })
     const promptWithReferenceRoles = [
       String(input.prompt || '').trim(),
@@ -565,6 +620,7 @@ export function useCreativeImageJob(options = {}) {
       quality: modelSettings.quality,
       inputFidelity: String(input.inputFidelity || ''),
       ...(input.platform ? { platform: String(input.platform) } : {}),
+      ...(input.deviceId ? { deviceId: String(input.deviceId) } : {}),
       iterationMode: input.iterationMode === true,
       parentOutputUrl: String(input.parentOutputUrl || ''),
       consistencyStrategy: String(input.consistencyStrategy || ''),
@@ -575,7 +631,9 @@ export function useCreativeImageJob(options = {}) {
       referenceCapacity: modelSettings.maxReferenceImages,
       consistencyDegraded:
         Math.max(0, Number(input.essentialReferenceCount) || 0) > sourceList.length ||
-        (String(input.consistencyStrategy || '').includes('sequential-anchor') &&
+        (['sequential-anchor', 'anchor-then-parallel'].some((strategy) =>
+          String(input.consistencyStrategy || '').includes(strategy),
+        ) &&
           Math.max(0, Number(input.batchIndex) || 0) > 0 &&
           input.seriesAnchorApplied !== true),
       seriesAnchorApplied: input.seriesAnchorApplied === true,
@@ -587,6 +645,12 @@ export function useCreativeImageJob(options = {}) {
       batchIndex: Math.max(0, Number(input.batchIndex) || 0),
       batchSize: Math.max(1, Number(input.batchSize) || count),
       batchCreatedAt: String(input.batchCreatedAt || ''),
+      ...(String(input.commerceProductId || '').trim()
+        ? { commerceProductId: String(input.commerceProductId).trim() }
+        : {}),
+      ...(input.commerceProductSnapshot && typeof input.commerceProductSnapshot === 'object'
+        ? { commerceProductSnapshot: input.commerceProductSnapshot }
+        : {}),
     }
     const jobKind = buildJobKind(input.kindVariant, sourceUrl ? 'edit' : 'generation')
     const response = await createServerAiJob({
@@ -647,6 +711,7 @@ export function useCreativeImageJob(options = {}) {
             size: input.batchSize,
             aspectRatio: modelSettings.aspectRatio,
             parentOutputUrl: input.parentOutputUrl,
+            deviceId: input.deviceId,
             activate: true,
             createdAt: response.job?.createdAt || input.batchCreatedAt,
             startedAt: partialJob?.startedAt,
@@ -678,19 +743,19 @@ export function useCreativeImageJob(options = {}) {
     }
   }
 
-  async function rehostInternalUrl(url) {
+  async function rehostInternalUrl(url, signal) {
     const trimmed = String(url || '').trim()
     if (!trimmed || !isInternalJobMediaUrl(trimmed)) return trimmed
     status.value = '正在准备参考图...'
-    const blob = await fetchAuthenticatedMediaBlob(trimmed, { cache: 'no-store' })
+    const blob = await fetchAuthenticatedMediaBlob(trimmed, { cache: 'no-store', signal })
     const file = new File([blob], `reference-${Date.now()}.png`, {
       type: blob.type || 'image/png',
     })
-    return uploadAiInputFile(file, { featureKey })
+    return uploadAiInputFile(file, { featureKey, signal })
   }
 
   // 支持多参考图：files + sourceUrls 全部归一成上游可访问的 URL 列表。
-  async function resolveSourceList(input = {}, model = selectedModel.value) {
+  async function resolveSourceList(input = {}, model = selectedModel.value, signal) {
     const uploadedFiles = []
     const files = Array.isArray(input.files)
       ? input.files.filter(Boolean)
@@ -704,13 +769,15 @@ export function useCreativeImageJob(options = {}) {
     if (localFiles.length) {
       status.value = '正在上传参考图...'
       uploadedFiles.push(
-        ...(await Promise.all(localFiles.map((file) => uploadAiInputFile(file, { featureKey })))),
+        ...(await Promise.all(
+          localFiles.map((file) => uploadAiInputFile(file, { featureKey, signal })),
+        )),
       )
     }
     if (sourceBackedFiles.length) {
       status.value = '正在准备参考图...'
       uploadedFiles.push(
-        ...(await Promise.all(sourceBackedFiles.map((url) => rehostInternalUrl(url)))),
+        ...(await Promise.all(sourceBackedFiles.map((url) => rehostInternalUrl(url, signal)))),
       )
     }
     const urls = Array.isArray(input.sourceUrls)
@@ -718,7 +785,7 @@ export function useCreativeImageJob(options = {}) {
       : input.sourceUrl
         ? [input.sourceUrl]
         : []
-    const resolvedUrls = await Promise.all(urls.map((url) => rehostInternalUrl(url)))
+    const resolvedUrls = await Promise.all(urls.map((url) => rehostInternalUrl(url, signal)))
     const externalSources = resolvedUrls.filter(Boolean)
     const limit = normalizeImageModelCapabilities(model || {}).maxReferenceImages
     const policy = input.referencePolicy || {}
@@ -766,12 +833,30 @@ export function useCreativeImageJob(options = {}) {
     outputTimings.value = next
   }
 
+  function ingestOutput(urls = [], meta = {}) {
+    const list = (Array.isArray(urls) ? urls : [urls]).map((item) => String(item || '').trim()).filter(Boolean)
+    if (!list.length) return []
+    prependOutputs(list, meta.jobId || '', meta.groupId || '', {
+      index: meta.index,
+      size: meta.size,
+      aspectRatio: meta.aspectRatio,
+      parentOutputUrl: meta.parentOutputUrl,
+      deviceId: meta.deviceId,
+      activate: meta.activate !== false,
+      createdAt: meta.createdAt,
+      startedAt: meta.startedAt,
+      finishedAt: meta.finishedAt,
+    })
+    return list
+  }
+
   function prependOutputs(nextOutputs, jobId = '', groupId = '', groupMeta = {}) {
     rememberOutputJob(nextOutputs, jobId)
     rememberOutputTiming(nextOutputs, groupMeta)
     rememberOutputGroup(nextOutputs, groupId || jobId, groupMeta)
     rememberOutputAspectRatio(nextOutputs, groupMeta.aspectRatio)
     rememberOutputParent(nextOutputs, groupMeta.parentOutputUrl)
+    rememberOutputDevice(nextOutputs, groupMeta.deviceId)
     if (groupId && Number.isFinite(Number(groupMeta.index))) {
       const key = `${groupId}:${Math.max(0, Number(groupMeta.index) || 0)}`
       const attemptedAt =
@@ -786,19 +871,22 @@ export function useCreativeImageJob(options = {}) {
     if (groupMeta.activate !== false) activeOutput.value = nextOutputs[0] || activeOutput.value
   }
 
-  async function deleteOutput(url) {
+  async function deleteOutput(url, options = {}) {
     const target = String(url || '').trim()
     if (!target) return false
     const jobId = outputJobIds.value[target] || ''
-    if (jobId) await deleteServerAiJob(jobId)
+    const deletion = jobId ? await deleteServerAiJob(jobId, options) : null
+    const deletedJobIds = new Set(deletion?.deletedTaskIds || (jobId ? [jobId] : []))
     // 同一任务可能有多张结果图，云端删除是按任务删除的，本地同步移除。
     const removed = jobId
-      ? outputs.value.filter((item) => outputJobIds.value[item] === jobId)
+      ? outputs.value.filter((item) => deletedJobIds.has(outputJobIds.value[item]))
       : [target]
     outputs.value = outputs.value.filter((item) => !removed.includes(item))
     const next = { ...outputJobIds.value }
     const nextGroups = { ...outputGroups.value }
     const nextGroupIndexes = { ...outputGroupIndexes.value }
+    const nextGroupSizes = { ...outputGroupSizes.value }
+    const nextDevices = { ...outputDevices.value }
     const nextAspectRatios = { ...outputAspectRatios.value }
     const nextTimings = { ...outputTimings.value }
     const nextParents = { ...outputParents.value }
@@ -808,15 +896,22 @@ export function useCreativeImageJob(options = {}) {
       delete next[item]
       delete nextGroups[item]
       delete nextGroupIndexes[item]
+      delete nextDevices[item]
       delete nextAspectRatios[item]
       delete nextTimings[item]
       delete nextParents[item]
       delete nextKinds[item]
       delete nextPreviewUrls[item]
     }
+    const removedGroupIds = new Set(removed.map((item) => outputGroups.value[item]).filter(Boolean))
+    for (const groupId of removedGroupIds) {
+      if (!Object.values(nextGroups).includes(groupId)) delete nextGroupSizes[groupId]
+    }
     outputJobIds.value = next
     outputGroups.value = nextGroups
     outputGroupIndexes.value = nextGroupIndexes
+    outputGroupSizes.value = nextGroupSizes
+    outputDevices.value = nextDevices
     outputAspectRatios.value = nextAspectRatios
     outputTimings.value = nextTimings
     outputParents.value = nextParents
@@ -892,6 +987,7 @@ export function useCreativeImageJob(options = {}) {
     }))
     const runContext = {
       controller: new AbortController(),
+      preparationController: new AbortController(),
       jobIds: new Set(),
       cancelRequested: false,
       continuingJobIds: new Set(),
@@ -941,6 +1037,7 @@ export function useCreativeImageJob(options = {}) {
           referencePolicy: batchOptions.referencePolicy,
         },
         model,
+        runContext.preparationController.signal,
       )
       if (!preserveBatchMeta) {
         batchRetryContexts.set(groupId, {
@@ -957,43 +1054,80 @@ export function useCreativeImageJob(options = {}) {
       const chainReferenceOutput = batchOptions.chainReferenceOutput === true
       let effectiveSourceList = sourceList
       let seriesAnchorSource = ''
-      const concurrency =
-        chainFirstOutput || chainReferenceOutput
-          ? 1
-          : Math.max(1, Math.min(Number(batchOptions.concurrency) || inputs.length, 4))
+      let releaseReferenceAnchor = () => {}
+      const referenceAnchorReady = chainReferenceOutput
+        ? new Promise((resolve) => {
+            releaseReferenceAnchor = resolve
+          })
+        : Promise.resolve()
+      const concurrency = chainFirstOutput
+        ? 1
+        : Math.max(1, Math.min(Number(batchOptions.concurrency) || inputs.length, 4))
       const worker = async () => {
         while (cursor < inputs.length && !runContext.cancelRequested) {
           const index = cursor
           cursor += 1
           const item = inputs[index]
           try {
+            if (chainReferenceOutput && index > 0) {
+              markProgress(index, 'pending', { message: '等待首张系列锚点' })
+              updateTaskStatus('正在生成首张系列锚点')
+              await referenceAnchorReady
+              if (runContext.cancelRequested) {
+                throw new DOMException('排队任务已取消', 'AbortError')
+              }
+            }
             markProgress(index, 'running')
             updateTaskStatus(
               `正在生成 ${item.viewLabel || `第 ${index + 1} 张`} · ${completedCount}/${inputs.length}`,
             )
+            // 支持每张任务自带参考图（如四宫格精修的象限切片）。
+            const itemHasOwnSources =
+              Boolean(String(item.sourceUrl || '').trim()) ||
+              (Array.isArray(item.sourceUrls) && item.sourceUrls.some(Boolean)) ||
+              (Array.isArray(item.files) && item.files.length) ||
+              Boolean(item.file)
+            const itemSourceList = itemHasOwnSources
+              ? await resolveSourceList(
+                  {
+                    files: item.files,
+                    file: item.file,
+                    sourceUrls: item.sourceUrls,
+                    sourceUrl: item.sourceUrl,
+                    prioritizeSourceUrls: item.prioritizeSourceUrls === true,
+                    referencePolicy: item.referencePolicy || batchOptions.referencePolicy,
+                  },
+                  model,
+                  runContext.preparationController.signal,
+                )
+              : effectiveSourceList
+            const seriesAnchorApplied = Boolean(
+              seriesAnchorSource && itemSourceList.includes(seriesAnchorSource),
+            )
             const result = await runImageJob(
               {
                 ...item,
-                seriesAnchorApplied: Boolean(
-                  seriesAnchorSource && effectiveSourceList.includes(seriesAnchorSource),
-                ),
+                seriesAnchorApplied,
               },
               model,
-              effectiveSourceList,
+              itemSourceList,
               updateTaskStatus,
               runContext,
             )
             results[index] = { ...item, jobId: result.jobId, outputs: result.outputs }
-            prependOutputs(result.outputs, result.jobId, groupId, {
-              index: item.batchIndex,
-              size: item.batchSize,
-              aspectRatio: item.aspectRatio,
-              parentOutputUrl: item.parentOutputUrl,
-              activate: generationTasks.value[0]?.id === taskId,
-              createdAt: result.createdAt,
-              startedAt: result.startedAt,
-              finishedAt: result.finishedAt,
-            })
+            if (item.suppressHistory !== true) {
+              prependOutputs(result.outputs, result.jobId, groupId, {
+                index: item.batchIndex,
+                size: item.batchSize,
+                aspectRatio: item.aspectRatio,
+                parentOutputUrl: item.parentOutputUrl,
+                deviceId: item.deviceId,
+                activate: generationTasks.value[0]?.id === taskId,
+                createdAt: result.createdAt,
+                startedAt: result.startedAt,
+                finishedAt: result.finishedAt,
+              })
+            }
             clearBatchFailure(groupId, item.batchIndex ?? index, { releaseContext: false })
             markProgress(index, 'done', {
               jobId: result.jobId,
@@ -1005,25 +1139,36 @@ export function useCreativeImageJob(options = {}) {
                   sourceUrl: result.outputs[0],
                 },
                 model,
+                runContext.preparationController.signal,
               ).catch(() => [])
             }
-            if (chainReferenceOutput && index === 0 && sourceList.length && result.outputs[0]) {
+            if (chainReferenceOutput && index === 0 && result.outputs[0]) {
               const anchorSources = await resolveSourceList(
                 { sourceUrl: result.outputs[0] },
                 model,
+                runContext.preparationController.signal,
               ).catch(() => [])
               seriesAnchorSource = anchorSources[0] || ''
               const maxReferences = Math.max(
                 1,
                 Number(normalizeImageModelCapabilities(model || {}).maxReferenceImages) || 1,
               )
-              effectiveSourceList = orderConsistencyReferences({
-                identitySources: sourceList,
-                anchorSources,
-                limit: maxReferences,
-                essentialIdentityCount: batchOptions.essentialReferenceCount,
-                strategy: 'identity-first',
-              })
+              // 无初始参考时，首张成功结果本身作为后续端的系列锚点（UI 多端对齐）。
+              effectiveSourceList = sourceList.length
+                ? orderConsistencyReferences({
+                    identitySources: sourceList,
+                    anchorSources,
+                    limit: maxReferences,
+                    essentialIdentityCount: batchOptions.essentialReferenceCount,
+                    strategy: 'identity-first',
+                  })
+                : Array.from(
+                    new Set(
+                      [seriesAnchorSource, ...anchorSources]
+                        .map((value) => String(value || '').trim())
+                        .filter(Boolean),
+                    ),
+                  ).slice(0, maxReferences)
               const retryContext = batchRetryContexts.get(groupId)
               if (retryContext) retryContext.sourceList = [...effectiveSourceList]
             }
@@ -1037,6 +1182,7 @@ export function useCreativeImageJob(options = {}) {
               rememberBatchFailure(groupId, item.batchIndex ?? index, failedItem, message)
             }
           } finally {
+            if (chainReferenceOutput && index === 0) releaseReferenceAnchor()
             completedCount += 1
             patchGenerationTask(taskId, {
               completedCount,
@@ -1050,6 +1196,9 @@ export function useCreativeImageJob(options = {}) {
       )
       const completedItems = results.filter(Boolean)
       const nextOutputs = completedItems.flatMap((item) => item.outputs)
+      const historyOutputs = completedItems
+        .filter((item) => item.suppressHistory !== true)
+        .flatMap((item) => item.outputs)
       if (runContext.cancelRequested) {
         const task = generationTasks.value.find((entry) => entry.id === taskId)
         const cancelledProgress = (task?.progress || progress).map((entry) =>
@@ -1072,8 +1221,10 @@ export function useCreativeImageJob(options = {}) {
         return { outputs: nextOutputs, items: completedItems, failures, groupId }
       }
       if (!nextOutputs.length) throw new Error(failures[0]?.message || '本次批量生成全部失败')
-      outputs.value = Array.from(new Set([...nextOutputs, ...outputs.value]))
-      if (generationTasks.value[0]?.id === taskId) activeOutput.value = nextOutputs[0]
+      if (historyOutputs.length) {
+        outputs.value = Array.from(new Set([...historyOutputs, ...outputs.value]))
+        if (generationTasks.value[0]?.id === taskId) activeOutput.value = historyOutputs[0]
+      }
       const finalStatus = failures.length
         ? `已完成 ${completedItems.length}/${inputs.length} 张`
         : `${inputs.length} 张全部生成完成`
@@ -1109,6 +1260,8 @@ export function useCreativeImageJob(options = {}) {
       error.value = failures.length ? '' : message
       return { outputs: [], items: [], failures, groupId }
     } finally {
+      // 生成结束或组件离开后，停止仍在进行的参考图/锚点准备，避免上传完成后回写已失效的任务。
+      runContext.preparationController.abort()
       generationRunContexts.delete(taskId)
       syncGenerationState()
       const removalTimer = window.setTimeout(() => {
@@ -1157,17 +1310,43 @@ export function useCreativeImageJob(options = {}) {
   }
 
   async function resumeActiveJobs(seedJobs = null) {
-    if (!authStore.isAuthenticated || running.value) return []
-    let candidates = Array.isArray(seedJobs) ? seedJobs : []
-    if (!candidates.length) {
-      const kinds = historyKindQueries()
+    if (disposed || !authStore.isAuthenticated || running.value) return []
+    const hasSeedJobs = Array.isArray(seedJobs)
+    let candidates = hasSeedJobs ? seedJobs : []
+    const recoveryController = new AbortController()
+    activeRecoveryController?.abort()
+    activeRecoveryController = recoveryController
+    const recoveryTimeout = window.setTimeout(() => recoveryController.abort(), 20_000)
+    let fetchedJobs = []
+    try {
+      // The API filters by task type, while kind variants are client-side
+      // metadata. Query both active task states once instead of repeating the
+      // same first page for every variant.
+      const recoveryKind = historyKindQueries()[0] || ''
       const responses = await Promise.all(
-        kinds.map((kind) => listServerAiJobs(12, { kind }).catch(() => null)),
+        ['queued', 'running'].map((status) =>
+          listServerAiJobs(100, {
+            kind: recoveryKind,
+            status,
+            signal: recoveryController.signal,
+          }).catch(() => null),
+        ),
       )
-      candidates = responses.flatMap((response) =>
+      fetchedJobs = responses.flatMap((response) =>
         Array.isArray(response?.jobs) ? response.jobs : [],
       )
+    } finally {
+      window.clearTimeout(recoveryTimeout)
+      if (activeRecoveryController === recoveryController) activeRecoveryController = null
     }
+    candidates = [...candidates, ...fetchedJobs]
+    const candidatesById = new Map()
+    for (const job of candidates) {
+      const jobId = String(job?.id || '').trim()
+      if (jobId) candidatesById.set(jobId, job)
+    }
+    candidates = [...candidatesById.values()]
+    if (disposed || running.value) return []
     const active = candidates.filter((job) =>
       ACTIVE_JOB_STATUSES.has(String(job?.status || '').toLowerCase()),
     )
@@ -1299,6 +1478,7 @@ export function useCreativeImageJob(options = {}) {
         .map((entry) => entry.jobId)
       generationRunContexts.set(task.id, {
         controller: new AbortController(),
+        preparationController: new AbortController(),
         jobIds: new Set(jobIds),
         cancelRequested: false,
         continuingJobIds: new Set(),
@@ -1358,6 +1538,11 @@ export function useCreativeImageJob(options = {}) {
                       completed.job?.input?.parentOutputUrl ||
                       completed.job?.params?.parentOutputUrl ||
                       entry.params.parentOutputUrl,
+                    deviceId:
+                      completed.job?.input?.deviceId ||
+                      completed.job?.params?.deviceId ||
+                      entry.params.deviceId ||
+                      entry.params.viewId,
                     activate: generationTasks.value[0]?.id === task.id,
                     createdAt: completed.job?.createdAt || entry.job?.createdAt,
                     startedAt: completed.job?.startedAt || entry.job?.startedAt,
@@ -1404,23 +1589,31 @@ export function useCreativeImageJob(options = {}) {
           const doneCount = progress.filter((item) => item.status === 'done').length
           const failedCount = progress.filter((item) => item.status === 'failed').length
           const cancelledCount = progress.filter((item) => item.status === 'cancelled').length
+          const pendingCount = progress.filter((item) => item.status === 'pending').length
           const finalState = failedCount
             ? doneCount
               ? 'partial'
               : 'failed'
             : cancelledCount && !doneCount
               ? 'cancelled'
-              : 'completed'
+              : pendingCount
+                ? doneCount || failedCount
+                  ? 'partial'
+                  : 'failed'
+                : 'completed'
+          const incompleteMessage = pendingCount
+            ? `，${pendingCount} 个后续任务尚未提交，请重新生成`
+            : ''
           patchGenerationTask(task.id, {
             state: finalState,
             status:
               finalState === 'completed'
                 ? `${doneCount} 张全部生成完成`
                 : finalState === 'partial'
-                  ? `已完成 ${doneCount}/${task.totalCount} 张`
+                  ? `已完成 ${doneCount}/${task.totalCount} 张${incompleteMessage}`
                   : finalState === 'cancelled'
-                    ? '任务已取消'
-                    : '任务生成失败',
+                    ? `任务已取消${incompleteMessage}`
+                    : `任务生成失败${incompleteMessage}`,
             finishedAt: new Date().toISOString(),
           })
           generationRunContexts.delete(task.id)
@@ -1591,6 +1784,23 @@ export function useCreativeImageJob(options = {}) {
     rememberBatchFailure(batch.id, batch.index, item, job?.error || job?.errorMessage || '生成失败')
   }
 
+  function isTileRefineIntermediateJob(job = {}) {
+    const params =
+      job?.input && typeof job.input === 'object'
+        ? job.input
+        : job?.params && typeof job.params === 'object'
+          ? job.params
+          : {}
+    const platform = String(params.platform || '')
+    const viewLabel = String(params.viewLabel || '')
+    const viewId = String(params.viewId || '')
+    return (
+      platform.includes('四宫格精修 ·') ||
+      /^精修[·・]/.test(viewLabel) ||
+      /^tile-/.test(viewId)
+    )
+  }
+
   function ingestHistoryJobs(jobs) {
     const inferredBatches = inferLegacyBatchMeta(jobs)
     const batchMetaOf = (job) => {
@@ -1641,7 +1851,9 @@ export function useCreativeImageJob(options = {}) {
         if (batch.id) clearBatchFailure(batch.id, batch.index)
         continue
       }
-      if (!['completed', 'done'].includes(jobStatus)) continue
+      if (!['completed', 'done', 'succeeded'].includes(jobStatus)) continue
+      // 四宫格精修的中间象限图不进入历史，只保留最终拼接成品。
+      if (isTileRefineIntermediateJob(job)) continue
       if (batch.id) clearBatchFailure(batch.id, batch.index, { releaseContext: false })
       const urls = resolveJobOutputUrls(job)
       rememberJobOutputPreviews(urls, job)
@@ -1668,6 +1880,7 @@ export function useCreativeImageJob(options = {}) {
             : {}
       rememberOutputAspectRatio(urls, params.aspectRatio)
       rememberOutputParent(urls, params.parentOutputUrl)
+      rememberOutputDevice(urls, params.deviceId || params.viewId)
       historyOutputs.push(...urls)
     }
     if (historyOutputs.length) {
@@ -1681,9 +1894,14 @@ export function useCreativeImageJob(options = {}) {
   function collectHistoryResponses(entries, responses) {
     const jobs = []
     let hasMore = false
+    let failedCount = 0
     responses.forEach((response, index) => {
       const entry = entries[index]
       if (!entry) return
+      if (response?.__historyRequestFailed) {
+        failedCount += 1
+        return
+      }
       if (Array.isArray(response?.jobs)) {
         const allowedKinds = new Set(
           String(entry.kind || '')
@@ -1708,7 +1926,7 @@ export function useCreativeImageJob(options = {}) {
         kindVariants.map((variant) => [variant, Boolean(historyCursors[variant])]),
       )
     }
-    return { jobs, hasMore }
+    return { jobs, hasMore, failedCount }
   }
 
   // 每个子类型拥有自己的 generation/edit 合并查询和分页游标。
@@ -1727,28 +1945,50 @@ export function useCreativeImageJob(options = {}) {
   }
 
   async function loadHistory(limit = 24) {
-    if (historyLoading.value) return []
+    if (disposed || historyLoading.value) return []
     if (!authStore.isAuthenticated) return []
     historyLoading.value = true
+    historyError.value = ''
     const entries = historyQueryEntries()
     historyLoadingVariants.value = Object.fromEntries(entries.map((entry) => [entry.key, true]))
+    historyAbortController?.abort()
+    const controller = new AbortController()
+    historyAbortController = controller
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 20_000)
     try {
       historyCursors = {}
       historyBatchAttemptTimes = new Map()
       const responses = await Promise.all(
-        entries.map((entry) => listServerAiJobs(limit, { kind: entry.kind }).catch(() => null)),
+        entries.map((entry) =>
+          listServerAiJobs(limit, { kind: entry.kind, signal: controller.signal }).catch(() => ({
+            __historyRequestFailed: true,
+          })),
+        ),
       )
-      const { jobs } = collectHistoryResponses(entries, responses)
+      if (disposed) return []
+      const { jobs, failedCount } = collectHistoryResponses(entries, responses)
+      if (failedCount) {
+        historyError.value = timedOut
+          ? '历史记录读取超时，请重试'
+          : failedCount === entries.length
+            ? '历史记录读取失败，请重试'
+            : `部分历史记录读取失败（${failedCount} 个分组），请重试`
+      }
       lastHistoryJobs = jobs
       return ingestHistoryJobs(jobs)
     } finally {
+      window.clearTimeout(timeout)
       historyLoading.value = false
       historyLoadingVariants.value = {}
     }
   }
 
   async function loadMoreHistory(limit = 24, loadOptions = {}) {
-    if (historyLoading.value || !historyHasMore.value) return []
+    if (disposed || historyLoading.value || !historyHasMore.value) return []
     if (!authStore.isAuthenticated) return []
     const requestedVariant = String(loadOptions?.kindVariant || '').trim()
     const entriesByKey = new Map(historyQueryEntries().map((entry) => [entry.key, entry]))
@@ -1758,19 +1998,43 @@ export function useCreativeImageJob(options = {}) {
       .filter((entry) => entry.kind)
     if (!pending.length) return []
     historyLoading.value = true
+    historyError.value = ''
     historyLoadingVariants.value = {
       ...historyLoadingVariants.value,
       ...Object.fromEntries(pending.map((entry) => [entry.key, true])),
     }
+    historyAbortController?.abort()
+    const controller = new AbortController()
+    historyAbortController = controller
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 20_000)
     try {
       const responses = await Promise.all(
         pending.map((entry) =>
-          listServerAiJobs(limit, { kind: entry.kind, cursor: entry.cursor }).catch(() => null),
+          listServerAiJobs(limit, {
+            kind: entry.kind,
+            cursor: entry.cursor,
+            signal: controller.signal,
+          }).catch(() => ({
+            __historyRequestFailed: true,
+          })),
         ),
       )
-      const { jobs } = collectHistoryResponses(pending, responses)
+      if (disposed) return []
+      const { jobs, failedCount } = collectHistoryResponses(pending, responses)
+      if (failedCount) {
+        historyError.value = timedOut
+          ? '更多历史读取超时，请重试'
+          : failedCount === pending.length
+            ? '更多历史读取失败，请重试'
+            : `部分历史记录读取失败（${failedCount} 个分组），请重试`
+      }
       return ingestHistoryJobs(jobs)
     } finally {
+      window.clearTimeout(timeout)
       historyLoading.value = false
       const nextLoadingVariants = { ...historyLoadingVariants.value }
       for (const entry of pending) delete nextLoadingVariants[entry.key]
@@ -1816,6 +2080,8 @@ export function useCreativeImageJob(options = {}) {
     }
     running.value = true
     cancelRequested = false
+    const preparationController = new AbortController()
+    maskedPreparationController = preparationController
     try {
       const sourceUrl = String(input.sourceUrl || '').trim()
       const sourceGroup = outputGroups.value[sourceUrl] || ''
@@ -1827,10 +2093,13 @@ export function useCreativeImageJob(options = {}) {
         nextGroupIndex + 1,
         Number(outputGroupSizes.value[sourceGroup]) || 0,
       )
-      const sourceList = await resolveSourceList({ sourceUrl })
+      const sourceList = await resolveSourceList({ sourceUrl }, model, preparationController.signal)
       if (!sourceList.length) throw new Error('没有可用于修正的原图')
       status.value = '正在上传蒙版...'
-      const maskUrl = await uploadAiInputFile(input.maskFile, { featureKey })
+      const maskUrl = await uploadAiInputFile(input.maskFile, {
+        featureKey,
+        signal: preparationController.signal,
+      })
       const result = await runImageJob(
         {
           prompt: `${prompt}\n只修改蒙版覆盖的区域，其余部分与原图保持完全一致（构图、比例、光照、材质不变）。`,
@@ -1840,11 +2109,20 @@ export function useCreativeImageJob(options = {}) {
           maskUrl,
           viewLabel: String(input.viewLabel || '局部修正'),
           outputMode: 'mask-edit',
+          iterationMode: true,
+          parentOutputUrl: sourceUrl,
           kindVariant: input.kindVariant,
           batchId: sourceGroup,
           batchIndex: nextGroupIndex,
           batchSize: nextGroupSize,
           batchCreatedAt: new Date().toISOString(),
+          commerceProductId: input.commerceProductId,
+          commerceProductSnapshot: input.commerceProductSnapshot,
+          consistencyStrategy:
+            input.consistencyStrategy || 'revision-anchor-with-original-identity',
+          consistencyProfile: input.consistencyProfile,
+          referenceRoles: input.referenceRoles,
+          essentialReferenceCount: input.essentialReferenceCount,
         },
         model,
         sourceList,
@@ -1860,6 +2138,7 @@ export function useCreativeImageJob(options = {}) {
         createdAt: result.createdAt,
         startedAt: result.startedAt,
         finishedAt: result.finishedAt,
+        parentOutputUrl: sourceUrl,
       })
       status.value = '修正完成'
       return result.outputs
@@ -1873,6 +2152,9 @@ export function useCreativeImageJob(options = {}) {
       error.value = sanitizeCreativeError(caught?.message || '局部修正失败')
       return []
     } finally {
+      if (maskedPreparationController === preparationController) {
+        maskedPreparationController = null
+      }
       running.value = false
     }
   }
@@ -1885,6 +2167,7 @@ export function useCreativeImageJob(options = {}) {
     if (targetTask && runContext) {
       if (runContext.cancelRequested) return
       runContext.cancelRequested = true
+      runContext.preparationController.abort()
       patchGenerationTask(targetTask.id, {
         state: 'cancelling',
         status: '正在确认可取消的排队任务…',
@@ -1904,6 +2187,7 @@ export function useCreativeImageJob(options = {}) {
     if (!running.value || cancelling.value) return
     cancelling.value = true
     cancelRequested = true
+    maskedPreparationController?.abort()
     status.value = '正在确认可取消的排队任务…'
     const jobIds = [...activeJobIds]
     try {
@@ -1917,8 +2201,15 @@ export function useCreativeImageJob(options = {}) {
   }
 
   onBeforeUnmount(() => {
+    disposed = true
     controller.abort()
-    generationRunContexts.forEach((runContext) => runContext.controller.abort())
+    historyAbortController?.abort()
+    activeRecoveryController?.abort()
+    generationRunContexts.forEach((runContext) => {
+      runContext.controller.abort()
+      runContext.preparationController?.abort()
+    })
+    maskedPreparationController?.abort()
     generationRunContexts.clear()
     generationTaskRemovalTimers.forEach((timer) => window.clearTimeout(timer))
     generationTaskRemovalTimers.clear()
@@ -1938,6 +2229,7 @@ export function useCreativeImageJob(options = {}) {
     historyLoading,
     historyHydrated,
     historyHasMore,
+    historyError,
     historyLoadingVariants,
     historyHasMoreVariants,
     outputs,
@@ -1947,6 +2239,7 @@ export function useCreativeImageJob(options = {}) {
     outputGroups,
     outputGroupIndexes,
     outputGroupSizes,
+    outputDevices,
     outputAspectRatios,
     outputTimings,
     outputParents,
@@ -1961,6 +2254,7 @@ export function useCreativeImageJob(options = {}) {
     retryBatchItem,
     deleteBatchFailure,
     generateMaskedEdit,
+    ingestOutput,
     cancel,
     loadHistory,
     loadMoreHistory,

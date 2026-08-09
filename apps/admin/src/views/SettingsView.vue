@@ -464,7 +464,7 @@ onMounted(load);
           <div class="growth-subsection">
             <header>
               <div>
-                <strong>越用越多里程碑</strong>
+                <strong>用量计划档位</strong>
                 <small>按自然月累计成功交付图片数，达标自动发放</small>
               </div>
               <div class="growth-subsection__actions">

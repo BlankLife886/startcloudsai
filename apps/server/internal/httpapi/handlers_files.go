@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,6 +46,112 @@ func sniffImage(data []byte) (string, string) {
 		return "", ""
 	}
 	return ext, contentType
+}
+
+func isOwnedUserUploadImageKey(userID uuid.UUID, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	prefix := "uploads/" + userID.String() + "/"
+	for _, directory := range []string{"original/", "thumb/"} {
+		if !strings.HasPrefix(key, prefix+directory) {
+			continue
+		}
+		name := strings.TrimPrefix(key, prefix+directory)
+		return name != "" && !strings.Contains(name, "/")
+	}
+	return false
+}
+
+func isOwnedTaskOutputImageKey(userID uuid.UUID, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 512 || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	prefix := "tasks/" + userID.String() + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
+	if len(parts) != 3 || (parts[1] != "original" && parts[1] != "thumb") || parts[2] == "" {
+		return false
+	}
+	_, err := uuid.Parse(parts[0])
+	return err == nil
+}
+
+func isOwnedAssistantOutputImageKey(userID uuid.UUID, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 512 || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	prefix := "tasks/" + userID.String() + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
+	if len(parts) != 3 || parts[0] != "assistant" || parts[2] == "" {
+		return false
+	}
+	_, err := uuid.Parse(parts[1])
+	return err == nil
+}
+
+func isOwnedTaskImageKey(userID uuid.UUID, key string) bool {
+	return isOwnedUserUploadImageKey(userID, key) ||
+		isOwnedTaskOutputImageKey(userID, key) ||
+		isOwnedAssistantOutputImageKey(userID, key)
+}
+
+// inspectOwnedUserUploadImage verifies the stored bytes instead of trusting a
+// client-provided content type or a key-shaped path.
+func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, string, error) {
+	key = strings.TrimSpace(key)
+	if !isOwnedUserUploadImageKey(userID, key) {
+		return 0, "", fmt.Errorf("object key is not an owned upload image")
+	}
+	data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
+	if err != nil {
+		return 0, "", err
+	}
+	return inspectUserUploadImageData(data)
+}
+
+// inspectOwnedTaskImage verifies both user uploads and task output images.
+// Task input validation must inspect bytes because a key-shaped path alone is
+// not evidence that the object is an image or that its contents are complete.
+func (s *Server) inspectOwnedTaskImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, error) {
+	key = strings.TrimSpace(key)
+	if !isOwnedTaskImageKey(userID, key) {
+		return 0, fmt.Errorf("object key is not an owned task image")
+	}
+	data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
+	if err != nil {
+		return 0, err
+	}
+	size, _, err := inspectUserUploadImageData(data)
+	return size, err
+}
+
+func inspectUserUploadImageData(data []byte) (int64, string, error) {
+	_, contentType := sniffImage(data)
+	if contentType == "" {
+		return 0, "", fmt.Errorf("object is not a supported image")
+	}
+	if _, _, err := media.Dimensions(data); err != nil {
+		return 0, "", err
+	}
+	return int64(len(data)), contentType, nil
+}
+
+func (s *Server) cleanupUploadedObjectKeys(keys []string) {
+	if len(keys) == 0 || s.Storage == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = s.Storage.DeleteKeys(cleanupCtx, keys)
 }
 
 func (s *Server) upload(c *gin.Context) {
@@ -100,6 +208,11 @@ func (s *Server) upload(c *gin.Context) {
 			fail(c, err)
 			return
 		}
+		if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, []string{key}); err != nil {
+			s.cleanupUploadedObjectKeys([]string{key})
+			fail(c, err)
+			return
+		}
 		respondCreated(c, gin.H{
 			"key": key, "url": "/api/v1/files/" + key,
 			"contentType": contentType, "sizeBytes": len(data),
@@ -134,10 +247,13 @@ func (s *Server) upload(c *gin.Context) {
 		uploaded = append(uploaded, result.key)
 	}
 	if uploadErr != nil {
-		if len(uploaded) > 0 {
-			_ = s.Storage.DeleteKeys(c.Request.Context(), uploaded)
-		}
+		s.cleanupUploadedObjectKeys(uploaded)
 		fail(c, uploadErr)
+		return
+	}
+	if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, []string{key, thumbnailKey}); err != nil {
+		s.cleanupUploadedObjectKeys([]string{key, thumbnailKey})
+		fail(c, err)
 		return
 	}
 	respondCreated(c, gin.H{

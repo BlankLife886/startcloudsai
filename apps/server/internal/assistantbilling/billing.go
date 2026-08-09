@@ -110,17 +110,26 @@ func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode s
 func Fail(ctx context.Context, st *store.Store, id uuid.UUID, code, message string) (bool, error) {
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
-		run, err := store.GetAssistantRunForUpdate(ctx, tx, id)
-		if err != nil || run == nil {
-			return err
-		}
-		changed, err = store.FailAssistantRun(ctx, tx, id, code, message)
-		if err != nil || !changed {
-			return err
-		}
-		return release(ctx, tx, run, "AI 助手失败，费用已退回")
+		var err error
+		changed, err = FailTx(ctx, tx, id, code, message)
+		return err
 	})
 	return changed, err
+}
+
+func FailTx(ctx context.Context, q store.Q, id uuid.UUID, code, message string) (bool, error) {
+	run, err := store.GetAssistantRunForUpdate(ctx, q, id)
+	if err != nil || run == nil {
+		return false, err
+	}
+	changed, err := store.FailAssistantRun(ctx, q, id, code, message)
+	if err != nil || !changed {
+		return changed, err
+	}
+	if err := release(ctx, q, run, "AI 助手失败，费用已退回"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func CancelUser(ctx context.Context, st *store.Store, userID, id uuid.UUID) (*store.AssistantRun, bool, error) {
@@ -154,17 +163,25 @@ func CancelAdminQueued(ctx context.Context, st *store.Store, id uuid.UUID) (*sto
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		run, err = store.GetAssistantRunForUpdate(ctx, tx, id)
-		if err != nil || run == nil {
-			return err
-		}
-		changed, err = store.AdminCancelAssistantRun(ctx, tx, id)
-		if err != nil || !changed {
-			return err
-		}
-		return release(ctx, tx, run, "AI 助手已被管理员取消，费用已退回")
+		run, changed, err = CancelAdminQueuedTx(ctx, tx, id)
+		return err
 	})
 	return run, changed, err
+}
+
+func CancelAdminQueuedTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.AssistantRun, bool, error) {
+	run, err := store.GetAssistantRunForUpdate(ctx, q, id)
+	if err != nil || run == nil {
+		return run, false, err
+	}
+	changed, err := store.AdminCancelAssistantRun(ctx, q, id)
+	if err != nil || !changed {
+		return run, changed, err
+	}
+	if err := release(ctx, q, run, "AI 助手已被管理员取消，费用已退回"); err != nil {
+		return run, false, err
+	}
+	return run, true, nil
 }
 
 func ForceFailAdmin(ctx context.Context, st *store.Store, id uuid.UUID) (*store.AssistantRun, bool, error) {
@@ -172,17 +189,25 @@ func ForceFailAdmin(ctx context.Context, st *store.Store, id uuid.UUID) (*store.
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		run, err = store.GetAssistantRunForUpdate(ctx, tx, id)
-		if err != nil || run == nil {
-			return err
-		}
-		changed, err = store.AdminForceFailAssistantRun(ctx, tx, id)
-		if err != nil || !changed {
-			return err
-		}
-		return release(ctx, tx, run, "AI 助手被管理员终止，费用已退回")
+		run, changed, err = ForceFailAdminTx(ctx, tx, id)
+		return err
 	})
 	return run, changed, err
+}
+
+func ForceFailAdminTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.AssistantRun, bool, error) {
+	run, err := store.GetAssistantRunForUpdate(ctx, q, id)
+	if err != nil || run == nil {
+		return run, false, err
+	}
+	changed, err := store.AdminForceFailAssistantRun(ctx, q, id)
+	if err != nil || !changed {
+		return run, changed, err
+	}
+	if err := release(ctx, q, run, "AI 助手被管理员终止，费用已退回"); err != nil {
+		return run, false, err
+	}
+	return run, true, nil
 }
 
 // Requeue refreezes the same maximum amount under a new billing generation.

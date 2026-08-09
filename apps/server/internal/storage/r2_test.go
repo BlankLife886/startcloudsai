@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	appconfig "github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -71,5 +73,17 @@ func TestValidateConfigRejectsIncompleteConfig(t *testing.T) {
 		if !strings.Contains(err.Error(), key) {
 			t.Fatalf("error %q does not mention %s", err, key)
 		}
+	}
+}
+
+func TestSummarizeDeleteObjectErrorsTreatsMissingObjectsAsSuccess(t *testing.T) {
+	if err := summarizeDeleteObjectErrors([]types.Error{{Code: aws.String("NoSuchKey")}}); err != nil {
+		t.Fatalf("missing object should be idempotent: %v", err)
+	}
+	err := summarizeDeleteObjectErrors([]types.Error{{
+		Code: aws.String("AccessDenied"), Key: aws.String("tasks/user/task/original/0.png"), Message: aws.String("denied"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "AccessDenied") || !strings.Contains(err.Error(), "tasks/user/task/original/0.png") {
+		t.Fatalf("unexpected delete error = %v", err)
 	}
 }

@@ -46,6 +46,8 @@ const (
 	typeExpireTrialCampaigns = "cron:expire_trial_campaigns"
 	typeSyncPromptSources    = "cron:sync_prompt_sources"
 	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
+	typeCleanupUserUploads   = "cron:cleanup_user_uploads"
+	typeCleanupObjectJobs    = "cron:cleanup_object_jobs"
 
 	taskCompletionLease      = 5 * time.Minute
 	taskLease                = 2 * time.Minute
@@ -54,6 +56,12 @@ const (
 	upstreamAttemptPollLease = 2 * time.Minute
 	staleQueuedMinutes       = 2
 	maxTaskFailureRetries    = 100
+	maxUpstreamMessageRunes  = 2000
+	userUploadRetention      = 7 * 24 * time.Hour
+	userUploadCleanupLimit   = 500
+	maxTaskImageObjectBytes  = 20 << 20
+	objectCleanupLimit       = 100
+	objectCleanupRetryDelay  = 5 * time.Minute
 )
 
 var errTaskProviderUnavailable = errors.New("task provider unavailable")
@@ -143,6 +151,8 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeExpireTrialCampaigns, w.handleExpireTrialCampaigns)
 	mux.HandleFunc(typeSyncPromptSources, w.handleSyncPromptSources)
 	mux.HandleFunc(typeBackfillPromptCovers, w.handleBackfillPromptCovers)
+	mux.HandleFunc(typeCleanupUserUploads, w.handleCleanupUserUploads)
+	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -209,6 +219,8 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 1m", Task: asynq.NewTask(typeExpireTrialCampaigns, nil, asynq.MaxRetry(3))},
 		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 10m", Task: asynq.NewTask(typeBackfillPromptCovers, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupUserUploads, nil, asynq.MaxRetry(3))},
+		{Cronspec: "@every 5m", Task: asynq.NewTask(typeCleanupObjectJobs, nil, asynq.MaxRetry(3))},
 	}, nil
 }
 
@@ -388,6 +400,17 @@ func selectExecutionCandidateExcluding(candidates []modelconfig.Selection, runni
 	return selected, selected != nil
 }
 
+func (w *Worker) loadTaskImageBytes(ctx context.Context, key string) ([]byte, error) {
+	data, err := w.Storage.GetBytesLimit(ctx, key, maxTaskImageObjectBytes)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := media.Dimensions(data); err != nil {
+		return nil, fmt.Errorf("task input %q is not a valid image: %w", key, err)
+	}
+	return data, nil
+}
+
 func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([][]byte, error) {
 	images := make([][]byte, len(inputKeys))
 	errs := make([]error, len(inputKeys))
@@ -396,7 +419,7 @@ func (w *Worker) loadInputImageBytes(ctx context.Context, inputKeys []string) ([
 		wg.Add(1)
 		go func(index int, key string) {
 			defer wg.Done()
-			images[index], errs[index] = w.Storage.GetBytes(ctx, key)
+			images[index], errs[index] = w.loadTaskImageBytes(ctx, key)
 		}(index, key)
 	}
 	wg.Wait()
@@ -678,6 +701,9 @@ func (w *Worker) createCRUNImageTasks(ctx context.Context, task *store.Task, cli
 	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 	aspectRatio := normalizeCRUNAspectRatio(task.Params, size)
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(task.Params), aspectRatio)
+	if _, err := w.loadInputImageBytes(ctx, task.InputKeys); err != nil {
+		return nil, err
+	}
 	references := make([]string, 0, len(task.InputKeys))
 	for _, key := range task.InputKeys {
 		presigned, presignErr := w.Storage.PresignGet(ctx, key)
@@ -716,6 +742,9 @@ func (w *Worker) createCRUNBackgroundRemovalTask(ctx context.Context, task *stor
 	}
 	if len(task.InputKeys) != 1 {
 		return "", errors.New("background removal requires exactly one input image")
+	}
+	if _, err := w.loadTaskImageBytes(ctx, task.InputKeys[0]); err != nil {
+		return "", err
 	}
 	imageURL, err := w.Storage.PresignGet(ctx, task.InputKeys[0])
 	if err != nil {
@@ -966,73 +995,67 @@ func taskParamBool(params map[string]any, keys ...string) bool {
 // applyMaskEditComposite 局部编辑 crop-and-stitch 的贴回阶段：
 // 上游只编辑了蒙版外扩后的裁剪图，这里把结果羽化混合回整图，
 // 蒙版未选中的像素保持与原图一致。参数缺失时原样返回（非局部编辑任务）。
-func (w *Worker) applyMaskEditComposite(ctx context.Context, task *store.Task, imagesB64 []string) []string {
+func (w *Worker) applyMaskEditComposite(ctx context.Context, task *store.Task, imagesB64 []string) ([]string, error) {
+	if task == nil {
+		return nil, errors.New("task is nil")
+	}
 	maskKey := taskParamString(task.Params, "maskKey")
 	baseKey := taskParamString(task.Params, "maskBaseKey")
 	rectRaw := taskParamString(task.Params, "maskRect")
 	if maskKey == "" || baseKey == "" || rectRaw == "" {
-		return imagesB64
+		return imagesB64, nil
 	}
 	rect, err := media.ParseMaskRect(rectRaw)
 	if err != nil {
-		log.Printf("task %s mask composite skipped: bad rect %q: %v", task.ID, rectRaw, err)
-		return imagesB64
+		return nil, fmt.Errorf("bad mask rect %q: %w", rectRaw, err)
 	}
-	baseData, err := w.Storage.GetBytes(ctx, baseKey)
+	baseData, err := w.loadTaskImageBytes(ctx, baseKey)
 	if err != nil {
-		log.Printf("task %s mask composite skipped: load base: %v", task.ID, err)
-		return imagesB64
+		return nil, fmt.Errorf("load mask base: %w", err)
 	}
-	maskData, err := w.Storage.GetBytes(ctx, maskKey)
+	maskData, err := w.loadTaskImageBytes(ctx, maskKey)
 	if err != nil {
-		log.Printf("task %s mask composite skipped: load mask: %v", task.ID, err)
-		return imagesB64
+		return nil, fmt.Errorf("load mask: %w", err)
 	}
 	out := make([]string, 0, len(imagesB64))
 	for i, b64 := range imagesB64 {
 		resultData, derr := base64.StdEncoding.DecodeString(b64)
 		if derr != nil {
-			log.Printf("task %s mask composite output %d: bad base64: %v", task.ID, i, derr)
-			out = append(out, b64)
-			continue
+			return nil, fmt.Errorf("output %d has invalid base64: %w", i, derr)
 		}
 		merged, cerr := media.CompositeMaskedEdit(baseData, maskData, resultData, rect)
 		if cerr != nil {
-			log.Printf("task %s mask composite output %d failed, keep raw: %v", task.ID, i, cerr)
-			out = append(out, b64)
-			continue
+			return nil, fmt.Errorf("composite output %d: %w", i, cerr)
 		}
 		out = append(out, base64.StdEncoding.EncodeToString(merged))
 	}
-	return out
+	return out, nil
 }
 
-func (w *Worker) applyPreservedSourceCanvas(ctx context.Context, task *store.Task, imagesB64 []string) []string {
-	if !taskParamBool(task.Params, "preserveSourceCanvas") || len(task.InputKeys) == 0 {
-		return imagesB64
+func (w *Worker) applyPreservedSourceCanvas(ctx context.Context, task *store.Task, imagesB64 []string) ([]string, error) {
+	if task == nil {
+		return nil, errors.New("task is nil")
 	}
-	sourceData, err := w.Storage.GetBytes(ctx, task.InputKeys[0])
+	if !taskParamBool(task.Params, "preserveSourceCanvas") || len(task.InputKeys) == 0 {
+		return imagesB64, nil
+	}
+	sourceData, err := w.loadTaskImageBytes(ctx, task.InputKeys[0])
 	if err != nil {
-		log.Printf("task %s source canvas restore skipped: %v", task.ID, err)
-		return imagesB64
+		return nil, fmt.Errorf("load source canvas: %w", err)
 	}
 	out := make([]string, 0, len(imagesB64))
 	for index, encoded := range imagesB64 {
 		resultData, decodeErr := base64.StdEncoding.DecodeString(encoded)
 		if decodeErr != nil {
-			log.Printf("task %s source canvas output %d: bad base64: %v", task.ID, index, decodeErr)
-			out = append(out, encoded)
-			continue
+			return nil, fmt.Errorf("output %d has invalid base64: %w", index, decodeErr)
 		}
 		merged, mergeErr := media.CompositePreservedCanvas(sourceData, resultData)
 		if mergeErr != nil {
-			log.Printf("task %s source canvas output %d restore failed: %v", task.ID, index, mergeErr)
-			out = append(out, encoded)
-			continue
+			return nil, fmt.Errorf("restore output %d: %w", index, mergeErr)
 		}
 		out = append(out, base64.StdEncoding.EncodeToString(merged))
 	}
-	return out
+	return out, nil
 }
 
 func (w *Worker) markFailedOwned(ctx context.Context, taskID uuid.UUID, errorCode, errorMessage, owner string) error {
@@ -1100,6 +1123,9 @@ func sanitizeUpstreamMessage(msg string) string {
 	}
 	if cleaned == "" {
 		return "生成服务返回错误，请稍后重试"
+	}
+	if runes := []rune(cleaned); len(runes) > maxUpstreamMessageRunes {
+		cleaned = string(runes[:maxUpstreamMessageRunes])
 	}
 	return cleaned
 }
@@ -1306,8 +1332,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	outputKeys, thumbnailKeys := collector.completed()
 	logTaskStage(taskID.String(), "upstream", upstreamStartedAt,
 		"provider=%s model=%s returned=%d persisted=%d", provider, model, len(imagesB64), len(outputKeys))
+	var outputProcessingErr *taskOutputProcessingError
 	if callErr != nil {
-		if len(outputKeys) > 0 {
+		if errors.As(callErr, &outputProcessingErr) {
+			// A post-processing failure must never be hidden by an earlier partial
+			// image. Remove this attempt's objects before the task is refunded.
+			collector.cleanup()
+			outputKeys, thumbnailKeys = collector.completed()
+		} else if len(outputKeys) > 0 {
 			log.Printf("task %s upstream ended after partial success (%d/%d): %v", taskID, len(outputKeys), task.Count, callErr)
 			callErr = nil
 		}
@@ -1317,17 +1349,21 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		var upErr *c2a.UpstreamError
 		var subErr *sub2api.UpstreamError
 		var crunErr *crun.UpstreamError
-		switch {
-		case errors.As(callErr, &netErr):
-			errorCode, errorMessage = "upstream_unreachable", "生成服务暂时不可用，请稍后重试"
-		case errors.As(callErr, &upErr):
-			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(upErr.Message)
-		case errors.As(callErr, &subErr):
-			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(subErr.Message)
-		case errors.As(callErr, &crunErr):
-			errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(crunErr.Message)
-		default:
-			errorCode, errorMessage = "internal_error", "任务执行失败，请稍后重试"
+		if outputProcessingErr != nil {
+			errorCode, errorMessage = "image_processing_error", "图片处理失败，请重试"
+		} else {
+			switch {
+			case errors.As(callErr, &netErr):
+				errorCode, errorMessage = "upstream_unreachable", "生成服务暂时不可用，请稍后重试"
+			case errors.As(callErr, &upErr):
+				errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(upErr.Message)
+			case errors.As(callErr, &subErr):
+				errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(subErr.Message)
+			case errors.As(callErr, &crunErr):
+				errorCode, errorMessage = "upstream_error", sanitizeUpstreamMessage(crunErr.Message)
+			default:
+				errorCode, errorMessage = "internal_error", "任务执行失败，请稍后重试"
+			}
 		}
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
 	}
@@ -1366,11 +1402,15 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			})
 		}()
 		if storeErr == nil {
-			if succeeded != nil {
-				// M4：通知在主事务提交后尽力而为
-				taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
-				w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
+			if succeeded == nil {
+				// Another owner (for example an admin cancellation) won the
+				// terminal transition. The uploaded attempt is no longer live.
+				collector.cleanup()
+				return nil
 			}
+			// M4：通知在主事务提交后尽力而为
+			taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
+			w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
 			w.publishTaskEvent(ctx, task, taskstream.Event{
 				Stage: "complete", Status: "succeeded", ImageCount: len(outputKeys), Done: true,
 			})
@@ -2017,7 +2057,12 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 	collector := newClaimedTaskOutputCollector(w, ctx, task, claimID)
 	if err := deliverEncodedImages(images, collector.persist); err != nil {
 		collector.cleanup()
-		return w.markFailedClaimed(ctx, task.ID, "storage_error", "图片保存失败，请重试", claimID)
+		errorCode, errorMessage := "storage_error", "图片保存失败，请重试"
+		var outputProcessingErr *taskOutputProcessingError
+		if errors.As(err, &outputProcessingErr) {
+			errorCode, errorMessage = "image_processing_error", "图片处理失败，请重试"
+		}
+		return w.markFailedClaimed(ctx, task.ID, errorCode, errorMessage, claimID)
 	}
 	outputKeys, thumbnailKeys := collector.completed()
 	if len(outputKeys) == 0 {
@@ -2128,6 +2173,168 @@ func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error
 	}
 	if n > 0 || adminN > 0 || auditN > 0 {
 		log.Printf("cleaned %d user sessions, %d admin sessions and %d audit logs", n, adminN, auditN)
+	}
+	return nil
+}
+
+func userUploadObjectOwner(key string) (uuid.UUID, bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 4 || parts[0] != "uploads" || (parts[2] != "original" && parts[2] != "thumb") || parts[3] == "" {
+		return uuid.Nil, false
+	}
+	owner, err := uuid.Parse(parts[1])
+	return owner, err == nil
+}
+
+// handleCleanupObjectJobs retries task/assistant objects after their database
+// owner has gone away. The job rows remain locked while the bounded R2 delete
+// runs, so cleanup workers cannot process the same job concurrently; task and
+// assistant reference creation serializes against the owning rows and the
+// candidate query rechecks the broader durable reference set before deletion.
+func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) error {
+	if w.Storage == nil {
+		return errors.New("object storage is not configured")
+	}
+	tx, err := w.St.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	now := time.Now().UTC()
+	keys, err := store.LockReadyObjectCleanupJobs(ctx, tx, now, objectCleanupLimit)
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return tx.Commit(ctx)
+	}
+	if err := w.Storage.DeleteKeys(ctx, keys); err != nil {
+		if recordErr := store.RecordObjectCleanupFailure(ctx, tx, keys, err.Error(), now.Add(objectCleanupRetryDelay)); recordErr != nil {
+			return fmt.Errorf("delete task objects: %v; record retry: %w", err, recordErr)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return commitErr
+		}
+		return err
+	}
+	deleted, err := store.DeleteObjectCleanupJobs(ctx, tx, keys)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if deleted > 0 {
+		log.Printf("cleaned %d task/assistant objects", deleted)
+	}
+	return nil
+}
+
+// handleCleanupUserUploads removes objects that have survived the grace
+// period without a durable database reference. The database transaction holds
+// row locks while R2 deletion runs, so a concurrent reference either commits
+// first or observes the object as deleted and fails instead of creating a
+// dangling reference.
+func (w *Worker) handleCleanupUserUploads(ctx context.Context, _ *asynq.Task) error {
+	if w.Storage == nil {
+		return errors.New("object storage is not configured")
+	}
+	cutoff := time.Now().UTC().Add(-userUploadRetention)
+	tx, err := w.St.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	cursor, err := store.GetUserUploadCleanupCursor(ctx, tx)
+	if err != nil {
+		return err
+	}
+	objects, nextCursor, done, err := w.Storage.ListObjectsPage(ctx, "uploads/", cursor, userUploadCleanupLimit)
+	if err != nil {
+		return err
+	}
+	databaseKeys, err := store.ListUnreferencedUserUploadObjects(ctx, tx, cutoff, userUploadCleanupLimit)
+	if err != nil {
+		return err
+	}
+	if done {
+		nextCursor = ""
+	}
+	registrations := make([]store.UserUploadObject, 0, len(objects))
+	keys := make([]string, 0, len(objects))
+	orphanKeys := make([]string, 0)
+	candidateObjects := make([]store.UserUploadObject, 0, len(objects))
+	ownerIDs := make([]uuid.UUID, 0, len(objects))
+	ownerIDSet := make(map[uuid.UUID]struct{}, len(objects))
+	seenKeys := make(map[string]struct{}, len(objects)+len(databaseKeys))
+	for _, object := range objects {
+		if object.LastModified.IsZero() || object.LastModified.After(cutoff) {
+			continue
+		}
+		owner, ok := userUploadObjectOwner(object.Key)
+		if !ok {
+			continue
+		}
+		candidate := store.UserUploadObject{
+			Key: object.Key, UserID: owner, CreatedAt: object.LastModified,
+		}
+		candidateObjects = append(candidateObjects, candidate)
+		if _, exists := seenKeys[object.Key]; !exists {
+			seenKeys[object.Key] = struct{}{}
+			keys = append(keys, object.Key)
+		}
+		if _, exists := ownerIDSet[owner]; !exists {
+			ownerIDSet[owner] = struct{}{}
+			ownerIDs = append(ownerIDs, owner)
+		}
+	}
+	for _, key := range databaseKeys {
+		if _, exists := seenKeys[key]; exists {
+			continue
+		}
+		seenKeys[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	existingOwners, err := store.LockExistingUserUploadOwners(ctx, tx, ownerIDs)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidateObjects {
+		if _, exists := existingOwners[candidate.UserID]; !exists {
+			orphanKeys = append(orphanKeys, candidate.Key)
+			continue
+		}
+		registrations = append(registrations, candidate)
+	}
+	if err := store.RegisterUserUploadObjectsAt(ctx, tx, registrations); err != nil {
+		return err
+	}
+	claimed, err := store.ClaimUnreferencedUserUploadObjects(ctx, tx, keys, cutoff)
+	if err != nil {
+		return err
+	}
+	deleteKeys := append(append([]string(nil), orphanKeys...), claimed...)
+	if len(deleteKeys) == 0 {
+		if err := store.SetUserUploadCleanupCursor(ctx, tx, nextCursor); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if err := w.Storage.DeleteKeys(ctx, deleteKeys); err != nil {
+		return err
+	}
+	deleted, err := store.MarkUserUploadObjectsDeleted(ctx, tx, claimed)
+	if err != nil {
+		return err
+	}
+	if err := store.SetUserUploadCleanupCursor(ctx, tx, nextCursor); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if deleted > 0 {
+		log.Printf("cleaned %d unreferenced user upload objects", deleted)
 	}
 	return nil
 }

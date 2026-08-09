@@ -1,35 +1,41 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
+import { useAppearanceStore } from '@/stores/appearance'
 import { getCheckinState, claimDailyCheckin } from '@/services/checkinApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
+import coinArt from '@/assets/incentives/suggestion-coin.png'
 
-const appearanceStore = useAppearanceStore()
 const authStore = useAuthStore()
+const appearanceStore = useAppearanceStore()
 const { applyWalletSnapshot, refreshWalletBalance } = useClientWalletBalance()
 
 const loading = ref(true)
 const claiming = ref(false)
 const loadError = ref('')
 const state = ref(null)
+const claimBurst = ref(false)
 const weekLabels = ['日', '一', '二', '三', '四', '五', '六']
 
 const rewardItems = computed(() => (Array.isArray(state.value?.rewards) ? state.value.rewards : []))
 const todayChecked = computed(() => state.value?.todayChecked === true)
 const activityEnabled = computed(() => state.value?.enabled !== false)
-const claimReward = computed(() => Number(state.value?.claimRewardCents || 0))
-const activeCycleDay = computed(() => Number(state.value?.claimCycleDay || 1))
+const claimReward = computed(() => Math.max(0, Number(state.value?.claimRewardCents || 0)))
+const nextReward = computed(() => Math.max(0, Number(state.value?.nextRewardCents || 0)))
+const activeCycleDay = computed(() => Math.max(1, Number(state.value?.claimCycleDay || 1)))
+const completedCycleDay = computed(() =>
+  todayChecked.value ? Number(state.value?.todayRecord?.cycleDay || activeCycleDay.value) : 0,
+)
 const displayName = computed(
   () => authStore.user?.username || authStore.user?.email?.split('@')[0] || '创作者',
 )
 
 const calendarDays = computed(() => {
   const monthValue = String(state.value?.month || '')
-  const [year, month] = monthValue.split('-').map(Number)
+  const [year, month] = monthValue.split('-').map((part) => Number(part))
   if (!year || !month) return []
   const recordMap = new Map(
     (state.value?.monthRecords || []).map((record) => [String(record.date), record]),
@@ -52,7 +58,25 @@ const calendarDays = computed(() => {
 
 const monthTitle = computed(() => {
   const [year, month] = String(state.value?.month || '').split('-')
-  return year && month ? `${year} 年 ${Number(month)} 月` : '本月签到'
+  if (!year || !month) return '本月签到'
+  return `${year} 年 ${Number(month)} 月`
+})
+
+const progressPercent = computed(() => {
+  const done = todayChecked.value ? completedCycleDay.value : Math.max(0, activeCycleDay.value - 1)
+  return Math.min(100, Math.max(0, (done / 7) * 100))
+})
+
+const statusLabel = computed(() => {
+  if (!activityEnabled.value) return '活动暂停'
+  if (todayChecked.value) return '今日已签到'
+  return '今日可领取'
+})
+
+const statusDetail = computed(() => {
+  if (!activityEnabled.value) return '签到活动暂未开放，稍后再来'
+  if (todayChecked.value) return `明日可领 ${formatPoints(nextReward.value)}，继续保持连续`
+  return `签到即可领取 ${formatPoints(claimReward.value)}，连续越多奖励越高`
 })
 
 async function load() {
@@ -84,9 +108,17 @@ async function claim() {
       })
     }
     await refreshWalletBalance({ force: true }).catch(() => null)
-    if (result?.alreadyChecked) notificationService.info('今天已经签到过了')
-    else
+    if (result?.alreadyChecked) {
+      notificationService.info('今天已经签到过了')
+    } else {
+      claimBurst.value = false
+      await nextTick()
+      claimBurst.value = true
       notificationService.success(`签到成功，获得 ${formatPoints(result?.claimedRewardCents || 0)}`)
+      window.setTimeout(() => {
+        claimBurst.value = false
+      }, 1200)
+    }
   } catch (error) {
     notificationService.error(error?.message || '签到失败，请稍后重试')
   } finally {
@@ -98,928 +130,934 @@ onMounted(load)
 </script>
 
 <template>
-  <div
-    class="checkin-page"
-    :class="{ 'is-dark': appearanceStore.isDark, 'is-light': !appearanceStore.isDark }"
-  >
-    <div class="checkin-atmosphere" aria-hidden="true"><span></span><span></span><span></span></div>
+  <main class="ck" :class="{ 'is-dark': appearanceStore.isDark }">
+    <div class="ck-glow" aria-hidden="true"></div>
 
-    <main class="checkin-shell">
-      <header class="checkin-header">
-        <div>
-          <p><i class="bi bi-stars"></i> DAILY CREATOR REWARDS</p>
-          <h1>每日签到</h1>
-          <span>把每一次回来，都变成下一次创作的能量。</span>
-        </div>
-        <div class="checkin-user-chip">
-          <span>{{ displayName.slice(0, 1).toUpperCase() }}</span>
-          <div>
-            <strong>{{ displayName }}</strong
-            ><small>{{ authStore.user?.email }}</small>
-          </div>
-        </div>
-      </header>
+    <div v-if="loading" class="ck-state" aria-live="polite">
+      <span></span><span></span><span></span>
+      <p>正在读取签到状态…</p>
+    </div>
 
-      <div v-if="loading" class="checkin-loading" aria-live="polite">
-        <span></span><span></span><span></span>
-      </div>
-      <section v-else-if="loadError" class="checkin-error">
-        <i class="bi bi-cloud-slash"></i>
-        <h2>签到活动加载失败</h2>
-        <p>{{ loadError }}</p>
-        <button type="button" @click="load">重新加载</button>
-      </section>
+    <section v-else-if="loadError" class="ck-state is-error">
+      <i class="bi bi-cloud-slash" aria-hidden="true"></i>
+      <h1>签到活动加载失败</h1>
+      <p>{{ loadError }}</p>
+      <button type="button" class="ck-btn is-primary" @click="load">重新加载</button>
+    </section>
 
-      <template v-else-if="state">
-        <section class="checkin-hero">
-          <div class="checkin-hero__copy">
-            <span class="checkin-live" :class="{ 'is-off': !activityEnabled }">
-              <i></i>{{ activityEnabled ? '活动进行中' : '活动已暂停' }}
-            </span>
-            <h2>{{ state.campaignTitle }}</h2>
-            <p>连续签到奖励逐日提升，第 7 天可领取本周期最高奖励。</p>
-            <div class="checkin-metrics">
-              <div>
-                <span>连续签到</span><strong>{{ state.currentStreak }}</strong
-                ><small>天</small>
-              </div>
-              <div>
-                <span>本月获得</span><strong>{{ state.monthRewardCents }}</strong
-                ><small>积分</small>
-              </div>
-              <div>
-                <span>累计签到</span><strong>{{ state.totalCheckins }}</strong
-                ><small>次</small>
-              </div>
+    <template v-else-if="state">
+      <section class="ck-hero">
+        <div class="ck-hero__copy">
+          <p class="ck-kicker">
+            <i class="bi bi-calendar2-check" aria-hidden="true"></i>
+            DAILY CHECK-IN
+          </p>
+          <h1>{{ state.campaignTitle || '每日签到' }}</h1>
+          <p class="ck-lead">连续签到领取创作积分，第 7 天解锁里程碑奖励，周期完成后自动重置。</p>
+
+          <div class="ck-status" :data-tone="!activityEnabled ? 'off' : todayChecked ? 'done' : 'ready'">
+            <i aria-hidden="true"></i>
+            <div>
+              <strong>{{ statusLabel }}</strong>
+              <small>{{ statusDetail }}</small>
             </div>
           </div>
 
-          <div class="checkin-action-card" :class="{ 'is-claimed': todayChecked }">
-            <div class="checkin-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
-            <div class="checkin-action-card__date">{{ state.today }}</div>
+          <div class="ck-hero__actions">
             <button
               type="button"
-              class="checkin-button"
+              class="ck-btn is-claim"
+              :class="{ 'is-claimed': todayChecked, 'is-burst': claimBurst }"
               :disabled="claiming || todayChecked || !activityEnabled"
               @click="claim"
             >
-              <span class="checkin-button__icon">
-                <i class="bi" :class="todayChecked ? 'bi-check-lg' : 'bi-calendar-check'"></i>
+              <i
+                class="bi"
+                :class="
+                  todayChecked ? 'bi-check2-circle' : claiming ? 'bi-arrow-repeat ck-spin' : 'bi-gift-fill'
+                "
+                aria-hidden="true"
+              ></i>
+              <span>
+                <strong>{{
+                  todayChecked ? '今日已签到' : claiming ? '签到中…' : '立即签到'
+                }}</strong>
+                <small v-if="activityEnabled">
+                  {{
+                    todayChecked
+                      ? `明日 +${formatPoints(nextReward, { withUnit: false })} 积分`
+                      : `领取 +${formatPoints(claimReward, { withUnit: false })} 积分`
+                  }}
+                </small>
+                <small v-else>等待活动重新开放</small>
               </span>
-              <strong>{{
-                todayChecked ? '今日已签到' : claiming ? '正在签到…' : '立即签到'
-              }}</strong>
-              <small v-if="activityEnabled">
-                {{
-                  todayChecked ? `明日 +${state.nextRewardCents} 积分` : `领取 ${claimReward} 积分`
-                }}
-              </small>
-              <small v-else>等待活动重新开放</small>
             </button>
+            <RouterLink class="ck-btn is-ghost" to="/wallet">查看钱包</RouterLink>
+            <RouterLink class="ck-btn is-ghost" to="/studio">去创作</RouterLink>
           </div>
-        </section>
 
-        <section class="reward-board">
+          <div class="ck-metrics" aria-label="签到数据">
+            <article>
+              <small>连续签到</small>
+              <strong>{{ state.currentStreak }}<em>天</em></strong>
+            </article>
+            <article>
+              <small>本月积分</small>
+              <strong>{{ formatPoints(state.monthRewardCents, { withUnit: false }) }}<em>分</em></strong>
+            </article>
+            <article>
+              <small>累计签到</small>
+              <strong>{{ state.totalCheckins }}<em>次</em></strong>
+            </article>
+          </div>
+        </div>
+
+        <aside class="ck-hero__visual" aria-hidden="true">
+          <div class="ck-orb"></div>
+          <img :src="coinArt" alt="" loading="lazy" />
+          <div class="ck-hero__badge">
+            <span>DAY {{ String(activeCycleDay).padStart(2, '0') }}</span>
+            <strong>/ 07</strong>
+          </div>
+        </aside>
+      </section>
+
+      <section class="ck-body">
+        <section class="ck-panel ck-streak" aria-labelledby="ck-streak-title">
           <header>
             <div>
-              <span>7 DAY REWARD LOOP</span>
-              <h2>连续签到奖励</h2>
+              <h2 id="ck-streak-title">7 日奖励轨迹</h2>
+              <p>每天递增，第 7 天为里程碑；完成后重新从第 1 天开始。</p>
             </div>
-            <p>完成第 7 天后，奖励周期重新开始，连续天数仍会保留。</p>
+            <span>{{ todayChecked ? `已完成 D${completedCycleDay}` : `当前 D${activeCycleDay}` }}</span>
           </header>
-          <div class="reward-track">
+
+          <div class="ck-track" role="list">
             <article
               v-for="reward in rewardItems"
               :key="reward.day"
+              role="listitem"
               :class="{
-                'is-active': reward.day === activeCycleDay,
-                'is-done': todayChecked && reward.day <= state.todayRecord?.cycleDay,
+                'is-active': !todayChecked && reward.day === activeCycleDay,
+                'is-done': reward.day <= completedCycleDay,
                 'is-milestone': reward.milestone,
               }"
             >
-              <span>DAY {{ String(reward.day).padStart(2, '0') }}</span>
-              <div>
-                <i class="bi" :class="reward.milestone ? 'bi-gem' : 'bi-lightning-charge-fill'"></i>
-              </div>
-              <strong>+{{ reward.rewardCents }}</strong>
-              <small>积分</small>
-              <em v-if="reward.milestone">里程碑</em>
+              <span class="ck-track__day">D{{ reward.day }}</span>
+              <strong>+{{ formatPoints(reward.rewardCents, { withUnit: false }) }}</strong>
+              <small>{{ reward.milestone ? '里程碑' : '积分' }}</small>
               <i
-                v-if="todayChecked && reward.day === state.todayRecord?.cycleDay"
-                class="bi bi-check-circle-fill reward-check"
+                v-if="reward.day <= completedCycleDay"
+                class="bi bi-check-lg"
+                aria-hidden="true"
               ></i>
             </article>
           </div>
-          <div class="reward-progress">
-            <span
-              :style="{
-                width: `${Math.min(100, ((activeCycleDay - (todayChecked ? 0 : 1)) / 7) * 100)}%`,
+
+          <div class="ck-progress" aria-hidden="true">
+            <span :style="{ width: `${progressPercent}%` }"></span>
+          </div>
+
+          <ul class="ck-tips">
+            <li><i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>连续天数越高，单日奖励越高</li>
+            <li><i class="bi bi-arrow-repeat" aria-hidden="true"></i>中断后从第 1 天重新累计</li>
+            <li><i class="bi bi-wallet2" aria-hidden="true"></i>积分自动入账，可直接用于创作</li>
+          </ul>
+        </section>
+
+        <section class="ck-panel ck-calendar" aria-labelledby="ck-calendar-title">
+          <header>
+            <div>
+              <h2 id="ck-calendar-title">{{ monthTitle }}</h2>
+              <p>本月已签到 {{ state.monthRecords?.length || 0 }} 天</p>
+            </div>
+            <span class="ck-user" :title="authStore.user?.email || displayName">
+              <em>{{ displayName.slice(0, 1).toUpperCase() }}</em>
+              {{ displayName }}
+            </span>
+          </header>
+
+          <div class="ck-week" aria-hidden="true">
+            <span v-for="label in weekLabels" :key="label">{{ label }}</span>
+          </div>
+          <div class="ck-grid">
+            <div
+              v-for="cell in calendarDays"
+              :key="cell.key"
+              class="ck-day"
+              :class="{
+                'is-checked': cell.record,
+                'is-today': cell.today,
+                'is-empty': !cell.day,
               }"
-            ></span>
-          </div>
-        </section>
-
-        <section class="checkin-lower-grid">
-          <div class="calendar-card">
-            <header>
-              <div>
-                <span>MONTHLY FOOTPRINT</span>
-                <h2>{{ monthTitle }}</h2>
-              </div>
-              <strong>{{ state.monthRecords?.length || 0 }} 天已签到</strong>
-            </header>
-            <div class="calendar-week">
-              <span v-for="label in weekLabels" :key="label">{{ label }}</span>
-            </div>
-            <div class="calendar-grid">
-              <div
-                v-for="cell in calendarDays"
-                :key="cell.key"
-                class="calendar-day"
-                :class="{
-                  'is-checked': cell.record,
-                  'is-today': cell.today,
-                  'is-empty': !cell.day,
-                }"
-              >
-                <template v-if="cell.day">
-                  <span>{{ cell.day }}</span>
-                  <i v-if="cell.record" class="bi bi-check-lg"></i>
-                  <small v-if="cell.record">+{{ cell.record.rewardCents }}</small>
-                </template>
-              </div>
+            >
+              <template v-if="cell.day">{{ cell.day }}</template>
             </div>
           </div>
-
-          <aside class="retention-card">
-            <div class="retention-card__mark"><i class="bi bi-rocket-takeoff"></i></div>
-            <span>KEEP CREATING</span>
-            <h2>积分不只是奖励，<br />也是下一张作品。</h2>
-            <p>签到积分会直接进入钱包，可用于文生图、设计稿、角色设定与更多创作工具。</p>
-            <div class="tomorrow-reward">
-              <div>
-                <small>{{ todayChecked ? '明日签到' : '今日签到' }}</small
-                ><strong>+{{ todayChecked ? state.nextRewardCents : claimReward }} 积分</strong>
-              </div>
-              <i class="bi bi-arrow-up-right"></i>
-            </div>
-            <div class="retention-actions">
-              <RouterLink to="/studio">开始创作</RouterLink>
-              <RouterLink to="/wallet">查看钱包</RouterLink>
-            </div>
-          </aside>
         </section>
-      </template>
-    </main>
-  </div>
+      </section>
+
+      <footer class="ck-foot">
+        <p>签到积分自动入账钱包，可用于全部 AI 创作工作台。</p>
+        <div>
+          <RouterLink to="/incentive-plans">创作激励</RouterLink>
+          <RouterLink to="/pricing">创作价格</RouterLink>
+        </div>
+      </footer>
+    </template>
+  </main>
 </template>
 
 <style scoped>
-.checkin-page {
-  --ck-text: #1a1825;
-  --ck-muted: rgb(26 24 37 / 57%);
-  --ck-line: rgb(26 24 37 / 10%);
-  --ck-card: rgb(255 255 255 / 88%);
+.ck {
+  --ink: #1f2430;
+  --muted: #6f7a8c;
+  --line: #eadfce;
+  --orange: #f27021;
+  --orange-deep: #c45a10;
+  --bg: #f7f4ef;
+  --surface: #ffffff;
+  --soft: #fff6eb;
+  --hero-a: rgb(255 186 110 / 38%);
+  --hero-b: rgb(255 220 170 / 34%);
+  --hero-c: #fff9f0;
+  --hero-d: #ffe9cf;
+  --hero-e: #fff6ea;
+  --card-shadow: 0 16px 40px rgb(70 45 15 / 8%);
+  --track: #fffaf4;
+  --day-bg: #faf6f0;
+  --done: #22c55e;
   position: relative;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 34px clamp(16px, 3vw, 38px) 84px;
-  overflow: clip;
-  color: var(--ck-text);
-  background: linear-gradient(180deg, #f7f3ff 0%, #eef3ff 52%, #f8fafc 100%);
+  isolation: isolate;
+  width: 100%;
+  min-height: calc(100dvh - var(--app-header-offset, 72px));
+  padding: 28px clamp(20px, 3.5vw, 56px) 40px;
+  overflow-x: clip;
+  color: var(--ink);
+  background: var(--bg);
 }
-.checkin-page.is-dark {
-  --ck-text: #f7f4ff;
-  --ck-muted: rgb(247 244 255 / 58%);
-  --ck-line: rgb(255 255 255 / 12%);
-  --ck-card: rgb(25 22 37 / 90%);
-  background: linear-gradient(180deg, #120f1e, #161426 52%, #0f1018);
+
+.ck.is-dark {
+  --ink: #f4eee6;
+  --muted: #a79c8f;
+  --line: #3b342c;
+  --orange: #ff8a3d;
+  --orange-deep: #ffb06a;
+  --bg: #12100e;
+  --surface: #1c1915;
+  --soft: #221c16;
+  --hero-a: rgb(255 138 61 / 18%);
+  --hero-b: rgb(255 176 96 / 12%);
+  --hero-c: #1a1511;
+  --hero-d: #241c15;
+  --hero-e: #17130f;
+  --card-shadow: 0 20px 48px rgb(0 0 0 / 32%);
+  --track: #221c16;
+  --day-bg: #181511;
+  --done: #34d399;
 }
-.checkin-atmosphere {
+
+.ck-glow {
   position: absolute;
   inset: 0;
+  z-index: -1;
   pointer-events: none;
-}
-.checkin-atmosphere span {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(2px);
-}
-.checkin-atmosphere span:nth-child(1) {
-  top: -390px;
-  left: -210px;
-  width: 680px;
-  height: 680px;
-  background: rgb(139 92 246 / 18%);
-}
-.checkin-atmosphere span:nth-child(2) {
-  top: -420px;
-  right: -180px;
-  width: 700px;
-  height: 700px;
-  background: rgb(56 189 248 / 13%);
-}
-.checkin-atmosphere span:nth-child(3) {
-  top: 520px;
-  left: 40%;
-  width: 380px;
-  height: 380px;
-  background: rgb(251 191 36 / 7%);
-}
-.checkin-shell {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  gap: 20px;
-  width: min(1240px, 100%);
-  margin: 0 auto;
-}
-.checkin-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 0 4px 4px;
-}
-.checkin-header p {
-  margin: 0 0 8px;
-  color: #725bff;
-  font:
-    800 0.66rem/1 ui-monospace,
-    monospace;
-  letter-spacing: 0.14em;
-}
-.checkin-header p i {
-  margin-right: 7px;
-}
-.checkin-header h1 {
-  margin: 0;
-  font-size: clamp(2rem, 3vw, 2.65rem);
-  letter-spacing: -0.055em;
-}
-.checkin-header > div > span {
-  display: block;
-  margin-top: 8px;
-  color: var(--ck-muted);
-  font-size: 0.86rem;
-}
-.checkin-user-chip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  max-width: 270px;
-  padding: 8px 13px 8px 8px;
-  border: 1px solid var(--ck-line);
-  border-radius: 999px;
-  background: var(--ck-card);
-  backdrop-filter: blur(14px);
-}
-.checkin-user-chip > span {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  color: #fff;
-  background: linear-gradient(135deg, #6552f4, #b54fd7);
-  font-weight: 800;
-}
-.checkin-user-chip strong,
-.checkin-user-chip small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.checkin-user-chip strong {
-  font-size: 0.76rem;
-}
-.checkin-user-chip small {
-  max-width: 185px;
-  margin-top: 2px;
-  color: var(--ck-muted);
-  font-size: 0.62rem;
-}
-.checkin-hero {
-  display: grid;
-  grid-template-columns: 1.32fr 0.68fr;
-  min-height: 430px;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 13%);
-  border-radius: 30px;
-  color: #fff;
   background:
-    radial-gradient(circle at 5% 0%, rgb(139 92 246 / 42%), transparent 36%),
-    radial-gradient(circle at 82% 110%, rgb(236 72 153 / 25%), transparent 42%),
-    linear-gradient(145deg, #171226, #0b0c12 75%);
-  box-shadow: 0 34px 75px rgb(45 32 90 / 20%);
+    radial-gradient(circle at 10% 0%, var(--hero-a), transparent 30%),
+    radial-gradient(circle at 90% 8%, var(--hero-b), transparent 26%);
 }
-.checkin-hero__copy {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: clamp(34px, 5vw, 68px);
+
+.ck-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.75fr);
+  gap: 22px;
+  align-items: stretch;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 88% 12%, var(--hero-a), transparent 28%),
+    radial-gradient(circle at 8% 0%, var(--hero-b), transparent 26%),
+    linear-gradient(125deg, var(--hero-c) 0%, var(--hero-d) 46%, var(--hero-e) 100%);
+  box-shadow: var(--card-shadow);
 }
-.checkin-live {
+
+.ck-hero__copy {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ck-kicker {
   display: inline-flex;
   align-items: center;
-  align-self: flex-start;
   gap: 7px;
-  padding: 7px 11px;
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 999px;
-  color: #c4b5fd;
-  background: rgb(255 255 255 / 5%);
-  font-size: 0.66rem;
-  font-weight: 750;
+  width: fit-content;
+  margin: 0;
+  color: var(--orange);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.14em;
 }
-.checkin-live i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 0 4px rgb(34 197 94 / 13%);
+
+.ck-hero h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
 }
-.checkin-live.is-off i {
-  background: #94a3b8;
-  box-shadow: none;
+
+.ck-lead {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--muted);
+  font-size: 0.98rem;
+  line-height: 1.65;
 }
-.checkin-hero__copy h2 {
-  max-width: 650px;
-  margin: 24px 0 0;
-  font-size: clamp(2.5rem, 5vw, 4.7rem);
-  line-height: 1.02;
-  letter-spacing: -0.07em;
-}
-.checkin-hero__copy > p {
-  max-width: 520px;
-  margin: 20px 0 0;
-  color: rgb(255 255 255 / 57%);
-  font-size: 0.88rem;
-  line-height: 1.75;
-}
-.checkin-metrics {
-  display: flex;
-  gap: 35px;
-  margin-top: 42px;
-}
-.checkin-metrics > div {
-  position: relative;
-}
-.checkin-metrics > div + div::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -18px;
-  width: 1px;
-  content: '';
-  background: rgb(255 255 255 / 12%);
-}
-.checkin-metrics span {
-  display: block;
-  margin-bottom: 5px;
-  color: rgb(255 255 255 / 45%);
-  font-size: 0.64rem;
-}
-.checkin-metrics strong {
-  font-size: 1.65rem;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-.checkin-metrics small {
-  margin-left: 4px;
-  color: #c4b5fd;
-  font-size: 0.64rem;
-}
-.checkin-action-card {
-  position: relative;
+
+.ck-status {
   display: grid;
-  place-items: center;
-  min-height: 430px;
-  overflow: hidden;
-  background: linear-gradient(145deg, rgb(255 255 255 / 6%), rgb(255 255 255 / 1%));
-  border-left: 1px solid rgb(255 255 255 / 8%);
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
 }
-.checkin-action-card__date {
-  position: absolute;
-  top: 30px;
-  right: 30px;
-  color: rgb(255 255 255 / 42%);
-  font:
-    700 0.62rem ui-monospace,
-    monospace;
-}
-.checkin-orbit {
-  position: absolute;
-  width: 340px;
-  height: 340px;
-  border: 1px solid rgb(196 181 253 / 13%);
+
+.ck-status > i {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
   border-radius: 50%;
-  box-shadow:
-    0 0 0 35px rgb(196 181 253 / 3%),
-    0 0 0 70px rgb(196 181 253 / 2%);
-  animation: orbit-float 6s ease-in-out infinite;
+  background: var(--muted);
 }
-.checkin-orbit i {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #c4b5fd;
-  box-shadow: 0 0 18px #a78bfa;
+
+.ck-status[data-tone='ready'] > i {
+  background: var(--orange);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--orange) 18%, transparent);
+  animation: ck-pulse 1.6s ease-out infinite;
 }
-.checkin-orbit i:nth-child(1) {
-  top: 24px;
-  left: 80px;
+
+.ck-status[data-tone='done'] > i {
+  background: var(--done);
 }
-.checkin-orbit i:nth-child(2) {
-  right: 10px;
-  bottom: 110px;
+
+.ck-status strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 850;
 }
-.checkin-orbit i:nth-child(3) {
-  bottom: 24px;
-  left: 65px;
+
+.ck-status small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
-.checkin-button {
-  position: relative;
-  z-index: 1;
+
+.ck-hero__actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.ck-btn {
+  display: inline-flex;
   align-items: center;
-  flex-direction: column;
-  width: 190px;
-  height: 190px;
-  color: #1a1427;
-  border: 0;
-  border-radius: 50%;
-  background: linear-gradient(145deg, #f9a8d4, #c4b5fd 53%, #a5f3fc);
-  box-shadow:
-    0 25px 70px rgb(168 85 247 / 35%),
-    inset 0 1px 1px rgb(255 255 255 / 75%);
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: none;
   cursor: pointer;
   transition:
-    transform 180ms ease,
-    box-shadow 180ms ease;
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    opacity 160ms ease;
 }
-.checkin-button:hover:not(:disabled) {
-  transform: translateY(-4px) scale(1.02);
-  box-shadow: 0 34px 80px rgb(168 85 247 / 45%);
+
+.ck-btn.is-claim {
+  min-width: 210px;
+  color: #fff;
+  background: linear-gradient(135deg, #ff9a45 0%, var(--orange) 55%, #e45a12 100%);
+  box-shadow: 0 14px 32px rgb(242 112 33 / 28%);
 }
-.checkin-button:disabled {
+
+.ck-btn.is-claim span {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.ck-btn.is-claim strong {
+  font-size: 0.98rem;
+}
+
+.ck-btn.is-claim small {
+  font-size: 0.72rem;
+  font-weight: 650;
+  opacity: 0.9;
+}
+
+.ck-btn.is-claim.is-claimed {
+  background: linear-gradient(135deg, #58d39a, #2fb978 60%, #1f9e66);
+  box-shadow: 0 14px 32px rgb(47 185 120 / 24%);
+}
+
+.ck-btn.is-claim.is-burst {
+  animation: ck-burst 700ms ease;
+}
+
+.ck-btn.is-ghost {
+  color: var(--orange-deep);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border-color: color-mix(in srgb, var(--orange) 35%, var(--line));
+}
+
+.ck-btn.is-primary {
+  color: #fff;
+  background: var(--orange);
+}
+
+.ck-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.ck-btn:disabled {
   cursor: default;
+  opacity: 0.72;
+  transform: none;
 }
-.checkin-button__icon {
+
+.ck-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.ck-metrics article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.ck-metrics small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.ck-metrics strong {
+  font-size: 1.45rem;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ck-metrics em {
+  margin-left: 3px;
+  color: var(--orange);
+  font-style: normal;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.ck-hero__visual {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
-  margin-top: 33px;
+  min-height: 280px;
+  overflow: hidden;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.ck-orb {
+  position: absolute;
+  width: 220px;
+  height: 220px;
   border-radius: 50%;
-  background: rgb(255 255 255 / 55%);
-  font-size: 1.2rem;
+  background: radial-gradient(circle, rgb(255 186 100 / 45%), transparent 68%);
+  filter: blur(4px);
 }
-.checkin-button strong {
-  margin-top: 12px;
-  font-size: 1rem;
+
+.ck-hero__visual img {
+  position: relative;
+  z-index: 1;
+  width: min(72%, 220px);
+  filter: drop-shadow(0 18px 28px rgb(242 112 33 / 22%));
+  animation: ck-float 4.5s ease-in-out infinite;
 }
-.checkin-button small {
-  margin-top: 5px;
-  font-size: 0.64rem;
-  opacity: 0.62;
+
+.ck.is-dark .ck-hero__visual img {
+  mix-blend-mode: normal;
 }
-.checkin-action-card.is-claimed .checkin-button {
-  background: linear-gradient(145deg, #bbf7d0, #a7f3d0 50%, #bfdbfe);
+
+.ck-hero__badge {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: #fff;
+  background: color-mix(in srgb, var(--orange) 92%, #000);
+  font-size: 0.78rem;
+  font-weight: 850;
 }
-.reward-board,
-.calendar-card {
-  padding: clamp(24px, 4vw, 38px);
-  border: 1px solid var(--ck-line);
-  border-radius: 25px;
-  background: var(--ck-card);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 18px 45px rgb(44 31 86 / 7%);
+
+.ck-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  max-width: 1180px;
+  margin: 18px auto 0;
 }
-.reward-board > header,
-.calendar-card > header {
+
+.ck-panel {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.ck-panel > header {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
-.reward-board header span,
-.calendar-card header span,
-.retention-card > span {
-  color: #725bff;
-  font:
-    800 0.62rem ui-monospace,
-    monospace;
-  letter-spacing: 0.13em;
-}
-.reward-board header h2,
-.calendar-card header h2 {
-  margin: 7px 0 0;
-  font-size: 1.35rem;
-}
-.reward-board header p {
-  max-width: 470px;
+
+.ck-panel h2 {
   margin: 0;
-  color: var(--ck-muted);
-  font-size: 0.72rem;
-  line-height: 1.6;
-  text-align: right;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
 }
-.reward-track {
+
+.ck-panel header p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.ck-panel header > span:not(.ck-user) {
+  color: var(--orange);
+  font-size: 0.78rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.ck-track {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 10px;
-  margin-top: 25px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
 }
-.reward-track article {
+
+.ck-track article {
   position: relative;
   display: grid;
+  gap: 4px;
   place-items: center;
-  min-height: 156px;
-  padding: 13px 8px;
-  border: 1px solid var(--ck-line);
+  min-height: 96px;
+  padding: 12px 6px 10px;
+  border: 1px solid var(--line);
   border-radius: 16px;
-  background: rgb(255 255 255 / 32%);
-  transition: 160ms ease;
+  background: var(--track);
+  text-align: center;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
 }
-.is-dark .reward-track article {
-  background: rgb(255 255 255 / 3%);
+
+.ck-track__day {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
 }
-.reward-track article.is-active {
-  border-color: rgb(114 91 255 / 55%);
-  background: rgb(114 91 255 / 9%);
-  transform: translateY(-3px);
-  box-shadow: 0 13px 28px rgb(114 91 255 / 12%);
+
+.ck-track article > strong {
+  font-size: 1.05rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
 }
-.reward-track article.is-milestone {
+
+.ck-track article > small {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.ck-track article > i {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: var(--done);
+  font-size: 0.82rem;
+}
+
+.ck-track article.is-active {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--line));
+  background: color-mix(in srgb, var(--orange) 12%, var(--surface));
+  box-shadow: 0 10px 24px rgb(242 112 33 / 12%);
+  transform: translateY(-2px);
+}
+
+.ck-track article.is-done:not(.is-active) {
+  color: color-mix(in srgb, var(--ink) 78%, var(--orange));
+}
+
+.ck-track article.is-milestone {
   color: #fff;
   border-color: transparent;
-  background: linear-gradient(145deg, #6d54f6, #a24be8);
+  background: linear-gradient(145deg, #ff9a45, var(--orange));
 }
-.reward-track article > span {
-  color: var(--ck-muted);
-  font:
-    750 0.55rem ui-monospace,
-    monospace;
+
+.ck-track article.is-milestone .ck-track__day,
+.ck-track article.is-milestone > small {
+  color: rgb(255 255 255 / 78%);
 }
-.reward-track article.is-milestone > span,
-.reward-track article.is-milestone > small {
-  color: rgb(255 255 255 / 68%);
-}
-.reward-track article > div {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  margin: 10px 0 6px;
-  color: #735fff;
-  border-radius: 12px;
-  background: rgb(114 91 255 / 10%);
-}
-.reward-track article.is-milestone > div {
+
+.ck-track article.is-milestone > i {
   color: #fff;
-  background: rgb(255 255 255 / 15%);
 }
-.reward-track article > strong {
-  font-size: 1rem;
-}
-.reward-track article > small {
-  margin-top: 2px;
-  color: var(--ck-muted);
-  font-size: 0.57rem;
-}
-.reward-track article > em {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  padding: 3px 5px;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 17%);
-  font-size: 0.5rem;
-  font-style: normal;
-}
-.reward-check {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  color: #22c55e;
-}
-.reward-progress {
-  height: 4px;
-  margin-top: 18px;
+
+.ck-progress {
+  height: 6px;
+  margin-top: 16px;
   overflow: hidden;
-  border-radius: 99px;
-  background: var(--ck-line);
+  border-radius: 999px;
+  background: var(--line);
 }
-.reward-progress span {
+
+.ck-progress span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #6d54f6, #d946ef);
-  transition: width 400ms ease;
+  background: linear-gradient(90deg, #ffb15a, var(--orange));
+  transition: width 360ms ease;
 }
-.checkin-lower-grid {
+
+.ck-tips {
   display: grid;
-  grid-template-columns: 1.35fr 0.65fr;
-  gap: 20px;
-}
-.calendar-card header > strong {
-  color: var(--ck-muted);
-  font-size: 0.68rem;
-}
-.calendar-week,
-.calendar-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 7px;
-}
-.calendar-week {
-  margin-top: 24px;
-}
-.calendar-week span {
-  color: var(--ck-muted);
-  font-size: 0.6rem;
-  text-align: center;
-}
-.calendar-grid {
-  margin-top: 8px;
-}
-.calendar-day {
-  position: relative;
-  display: grid;
-  place-items: center;
-  min-height: 62px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  color: var(--ck-muted);
-  background: rgb(125 110 190 / 4%);
-  font-size: 0.7rem;
-}
-.calendar-day.is-empty {
-  background: transparent;
-}
-.calendar-day.is-checked {
-  color: #fff;
-  background: linear-gradient(145deg, #7560f5, #a64be4);
-  box-shadow: 0 8px 16px rgb(117 96 245 / 17%);
-}
-.calendar-day.is-today {
-  border-color: #7c66ff;
-}
-.calendar-day i {
-  position: absolute;
-  top: 6px;
-  right: 7px;
-  font-size: 0.55rem;
-}
-.calendar-day small {
-  font-size: 0.5rem;
-  opacity: 0.72;
-}
-.retention-card {
-  position: relative;
-  overflow: hidden;
-  padding: clamp(27px, 4vw, 40px);
-  color: #fff;
-  border-radius: 25px;
-  background:
-    radial-gradient(circle at 100% 0%, rgb(236 72 153 / 30%), transparent 40%),
-    linear-gradient(145deg, #171326, #0b0c12);
-  box-shadow: 0 20px 48px rgb(30 24 54 / 18%);
-}
-.retention-card::after {
-  position: absolute;
-  right: -80px;
-  bottom: -110px;
-  width: 270px;
-  height: 270px;
-  content: '';
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 50%;
-  box-shadow:
-    0 0 0 35px rgb(255 255 255 / 3%),
-    0 0 0 70px rgb(255 255 255 / 2%);
-}
-.retention-card__mark {
-  display: grid;
-  place-items: center;
-  width: 50px;
-  height: 50px;
-  margin-bottom: 36px;
-  color: #1a1427;
-  border-radius: 15px;
-  background: linear-gradient(135deg, #f9a8d4, #c4b5fd);
-  font-size: 1.15rem;
-}
-.retention-card h2 {
-  margin: 14px 0 0;
-  font-size: clamp(1.7rem, 3vw, 2.35rem);
-  line-height: 1.16;
-  letter-spacing: -0.05em;
-}
-.retention-card > p {
+  gap: 10px;
   margin: 18px 0 0;
-  color: rgb(255 255 255 / 52%);
-  font-size: 0.75rem;
-  line-height: 1.75;
+  padding: 14px 16px;
+  list-style: none;
+  border: 1px dashed color-mix(in srgb, var(--orange) 28%, var(--line));
+  border-radius: 16px;
+  background: var(--soft);
 }
-.tomorrow-reward {
-  position: relative;
-  z-index: 1;
+
+.ck-tips li {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 28px;
-  padding: 15px;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 14px;
-  background: rgb(255 255 255 / 5%);
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
-.tomorrow-reward small,
-.tomorrow-reward strong {
-  display: block;
+
+.ck-tips i {
+  color: var(--orange);
+  font-size: 0.95rem;
 }
-.tomorrow-reward small {
-  color: rgb(255 255 255 / 45%);
-  font-size: 0.6rem;
-}
-.tomorrow-reward strong {
-  margin-top: 4px;
-  font-size: 0.9rem;
-}
-.tomorrow-reward > i {
-  color: #c4b5fd;
-}
-.retention-actions {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  gap: 9px;
-  margin-top: 20px;
-}
-.retention-actions a {
+
+.ck-user {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 38px;
-  padding: 0 14px;
-  color: #171326;
-  border-radius: 10px;
-  background: #fff;
-  font-size: 0.72rem;
+  gap: 8px;
+  max-width: 180px;
+  min-height: 36px;
+  padding: 0 12px 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 0.74rem;
+  font-weight: 750;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ck-user em {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(140deg, #f7b267, #ef7b45);
+  font-style: normal;
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+
+.ck-week,
+.ck-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ck-week {
+  margin-bottom: 8px;
+}
+
+.ck-week span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ck-day {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  color: var(--muted);
+  background: var(--day-bg);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.ck-day.is-empty {
+  background: transparent;
+}
+
+.ck-day.is-checked {
+  color: #fff;
+  background: linear-gradient(145deg, #ff9a45, var(--orange));
+  box-shadow: 0 8px 16px rgb(242 112 33 / 18%);
+}
+
+.ck-day.is-today:not(.is-checked) {
+  color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--orange) 55%, var(--line));
+}
+
+.ck-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 1180px;
+  margin: 18px auto 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.ck-foot a {
+  margin-left: 14px;
+  color: var(--orange-deep);
   font-weight: 750;
   text-decoration: none;
 }
-.retention-actions a + a {
-  color: #fff;
-  border: 1px solid rgb(255 255 255 / 14%);
-  background: transparent;
-}
-.checkin-loading,
-.checkin-error {
+
+.ck-state {
   display: grid;
   place-items: center;
-  min-height: 520px;
-  border: 1px solid var(--ck-line);
-  border-radius: 28px;
-  background: var(--ck-card);
+  align-content: center;
+  gap: 10px;
+  max-width: 1180px;
+  min-height: 420px;
+  margin: 0 auto;
+  padding: 40px 24px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--surface);
+  text-align: center;
+  box-shadow: var(--card-shadow);
 }
-.checkin-loading {
+
+.ck-state:not(.is-error) {
   display: flex;
-  justify-content: center;
-  gap: 8px;
+  flex-direction: column;
 }
-.checkin-loading span {
+
+.ck-state span {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #725bff;
-  animation: pulse 800ms ease-in-out infinite alternate;
+  background: var(--orange);
+  animation: ck-bounce 720ms ease-in-out infinite alternate;
 }
-.checkin-loading span:nth-child(2) {
-  animation-delay: 140ms;
+
+.ck-state span + span {
+  margin-left: 8px;
 }
-.checkin-loading span:nth-child(3) {
-  animation-delay: 280ms;
+
+.ck-state span:nth-child(2) {
+  animation-delay: 120ms;
 }
-.checkin-error {
-  align-content: center;
-  text-align: center;
+.ck-state span:nth-child(3) {
+  animation-delay: 240ms;
 }
-.checkin-error > i {
-  color: #725bff;
+
+.ck-state p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.ck-state.is-error i {
+  color: var(--orange);
   font-size: 2rem;
 }
-.checkin-error h2 {
-  margin: 15px 0 0;
+
+.ck-state.is-error h1 {
+  margin: 0;
+  font-size: 1.3rem;
 }
-.checkin-error p {
-  margin: 7px 0 0;
-  color: var(--ck-muted);
+
+.ck-spin {
+  animation: ck-spin 0.85s linear infinite;
 }
-.checkin-error button {
-  margin-top: 17px;
-  padding: 10px 15px;
-  border: 1px solid var(--ck-line);
-  border-radius: 10px;
-  color: var(--ck-text);
-  background: var(--ck-card);
+
+@keyframes ck-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
-@keyframes pulse {
+
+@keyframes ck-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 35%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 10px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes ck-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes ck-burst {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes ck-bounce {
   to {
     transform: translateY(-5px);
     opacity: 0.45;
   }
 }
-@keyframes orbit-float {
-  50% {
-    transform: rotate(5deg) scale(1.03);
-  }
-}
-@media (max-width: 950px) {
-  .checkin-hero,
-  .checkin-lower-grid {
+
+@media (max-width: 980px) {
+  .ck-hero,
+  .ck-body {
     grid-template-columns: 1fr;
   }
-  .checkin-action-card {
-    min-height: 340px;
-    border-top: 1px solid rgb(255 255 255 / 8%);
-    border-left: 0;
+
+  .ck-hero__visual {
+    min-height: 220px;
   }
-  .reward-track {
-    grid-template-columns: repeat(4, 1fr);
+
+  .ck-track {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
-  .checkin-hero__copy h2 {
-    font-size: 3rem;
+
+  .ck-track article:nth-child(n + 5) {
+    grid-column: span 1;
   }
 }
-@media (max-width: 620px) {
-  .checkin-page {
-    padding: 22px 12px 58px;
+
+@media (max-width: 640px) {
+  .ck {
+    padding: 18px 14px 28px;
   }
-  .checkin-header {
-    align-items: flex-start;
-    flex-direction: column;
+
+  .ck-hero {
+    padding: 20px;
+    border-radius: 22px;
   }
-  .checkin-user-chip {
-    max-width: 100%;
+
+  .ck-metrics,
+  .ck-track {
+    grid-template-columns: 1fr 1fr;
   }
-  .checkin-hero {
-    border-radius: 23px;
+
+  .ck-track article:last-child {
+    grid-column: 1 / -1;
   }
-  .checkin-hero__copy {
-    padding: 30px 22px;
-  }
-  .checkin-hero__copy h2 {
-    font-size: 2.55rem;
-  }
-  .checkin-metrics {
-    justify-content: space-between;
-    gap: 18px;
-  }
-  .checkin-metrics > div + div::before {
-    left: -10px;
-  }
-  .checkin-action-card {
-    min-height: 320px;
-  }
-  .checkin-button {
-    width: 168px;
-    height: 168px;
-  }
-  .checkin-button__icon {
-    margin-top: 26px;
-  }
-  .reward-board,
-  .calendar-card,
-  .retention-card {
-    padding: 22px 16px;
-    border-radius: 20px;
-  }
-  .reward-board > header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .reward-board header p {
-    text-align: left;
-  }
-  .reward-track {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .reward-track article {
-    min-height: 135px;
-  }
-  .calendar-day {
-    min-height: 48px;
-  }
-  .retention-actions {
-    flex-direction: column;
-  }
-  .retention-actions a {
+
+  .ck-btn.is-claim,
+  .ck-btn.is-ghost {
     width: 100%;
-    box-sizing: border-box;
+  }
+
+  .ck-hero__actions {
+    display: grid;
+  }
+
+  .ck-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ck-foot a {
+    margin-left: 0;
+    margin-right: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ck-hero__visual img,
+  .ck-status[data-tone='ready'] > i,
+  .ck-btn.is-claim.is-burst,
+  .ck-spin,
+  .ck-state span {
+    animation: none !important;
   }
 }
 </style>

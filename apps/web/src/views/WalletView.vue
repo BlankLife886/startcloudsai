@@ -1,7 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { useAppearanceStore } from '@/stores/appearance'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getWallet, listWalletLedger, redeemWalletCode } from '@/services/meApi'
 import { claimTrialAccessReward, getTrialAccessApplication } from '@/services/trialAccessApi'
@@ -9,11 +8,9 @@ import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
 import { useClientWalletBalance, WALLET_UPDATED_EVENT } from '@/composables/useClientWalletBalance'
-import ProfileSectionShell from '@/components/profile/ProfileSectionShell.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
-const appearanceStore = useAppearanceStore()
 const { refreshWalletBalance, applyWalletSnapshot } = useClientWalletBalance()
 
 const wallet = ref(null)
@@ -50,6 +47,10 @@ const normalFrozenCents = computed(() =>
 const trialFrozenCents = computed(() => Number(wallet.value?.trialFrozenCents ?? 0))
 const availableCents = computed(() => Math.max(0, balanceCents.value))
 const totalCents = computed(() => availableCents.value + Math.max(0, frozenCents.value))
+const trialFeatureLabel = computed(() => trialApplication.value?.feature?.label || '体验')
+const showTrialReward = computed(
+  () => trialApplication.value?.status === 'approved' && trialApplication.value?.rewardCents,
+)
 
 const TASK_TYPE_LABELS = {
   t2i: '文生图',
@@ -132,7 +133,7 @@ function ledgerPresentation(entry) {
         badge: '成功',
         amount: `-${formatPoints(settledCost)}`,
         amountTone: 'spend',
-        description: `本次实际扣除 ${formatPoints(settledCost)}；费用从提交时的预扣中结算，没有重复扣费。`,
+        description: `实际扣除 ${formatPoints(settledCost)}，从预扣中结算。`,
         meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
       }
     }
@@ -142,9 +143,9 @@ function ledgerPresentation(entry) {
         tone: 'refund',
         title: taskLabel,
         badge: status === 'canceled' ? '已取消并退款' : '失败已退款',
-        amount: '净支出 0 积分',
+        amount: '净支出 0',
         amountTone: 'income',
-        description: `预扣的 ${formatPoints(taskCost)} 已全部退回，本次没有产生费用。`,
+        description: `预扣 ${formatPoints(taskCost)} 已全部退回。`,
         meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
       }
     }
@@ -155,7 +156,7 @@ function ledgerPresentation(entry) {
       badge: taskStatus || '处理中',
       amount: `冻结 ${formatPoints(taskCost)}`,
       amountTone: 'neutral',
-      description: `当前暂时冻结 ${formatPoints(taskCost)}；任务成功后结算，失败或取消会自动退回。`,
+      description: `暂时冻结 ${formatPoints(taskCost)}；成功结算，失败退回。`,
       meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
     }
   }
@@ -168,7 +169,7 @@ function ledgerPresentation(entry) {
       badge: taskStatus || '处理中',
       amount: `-${formatPoints(amount)}`,
       amountTone: 'spend',
-      description: `提交时暂时冻结 ${formatPoints(amount)}；成功后从这笔预扣结算，失败会自动退回。`,
+      description: `提交时冻结 ${formatPoints(amount)}。`,
       meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
     }
   }
@@ -180,7 +181,7 @@ function ledgerPresentation(entry) {
       badge: '已结算',
       amount: '未再次扣费',
       amountTone: 'neutral',
-      description: `已从此前预扣的 ${formatPoints(taskCost)} 中结算，本条记录没有再次扣除积分。`,
+      description: `已从预扣 ${formatPoints(taskCost)} 中结算。`,
       meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
     }
   }
@@ -192,7 +193,7 @@ function ledgerPresentation(entry) {
       badge: taskStatus || '已退款',
       amount: `+${formatPoints(amount)}`,
       amountTone: 'income',
-      description: `任务失败、取消或未完整交付，${formatPoints(amount)} 已退回可用余额。`,
+      description: `${formatPoints(amount)} 已退回可用余额。`,
       meta: [taskMeta, balanceLabel].filter(Boolean).join(' · '),
     }
   }
@@ -398,109 +399,112 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    class="ps-page"
-    :class="{ 'is-light': !appearanceStore.isDark, 'is-dark': appearanceStore.isDark }"
-  >
-    <div class="ps-atmosphere" aria-hidden="true">
-      <div class="ps-atmosphere__wash"></div>
-    </div>
-
-    <ProfileSectionShell title="钱包" description="余额、兑换码入账与资金明细。">
-      <template #actions>
+  <main class="wallet">
+    <header class="wallet-top">
+      <div>
+        <h1>钱包</h1>
+        <p>余额、兑换入账与资金明细</p>
+      </div>
+      <div class="wallet-top__actions">
         <button
           type="button"
-          class="ps-btn is-ghost"
-          :disabled="walletLoading || ledgerLoading"
+          class="wallet-btn is-ghost"
+          :disabled="walletLoading || ledgerLoading || trialLoading"
           @click="refreshAll"
         >
-          <i class="bi bi-arrow-repeat" :class="{ spin: walletLoading || ledgerLoading }"></i>
+          <i
+            class="bi bi-arrow-repeat"
+            :class="{ spin: walletLoading || ledgerLoading || trialLoading }"
+            aria-hidden="true"
+          ></i>
           刷新
         </button>
-      </template>
-
-      <div v-if="walletLoading && !walletLoaded" class="ps-skel" aria-hidden="true">
-        <div class="ps-skel__card"></div>
-        <div v-for="n in 4" :key="n" class="ps-skel__row"></div>
+        <RouterLink class="wallet-btn is-primary" to="/pricing">查看价格</RouterLink>
       </div>
+    </header>
 
-      <div v-else-if="walletError && !wallet" class="ps-empty is-error">
-        <strong>钱包加载失败</strong>
-        <p>{{ walletError }}</p>
-        <button type="button" class="ps-btn is-ghost" @click="loadWallet()">重试</button>
-      </div>
+    <div v-if="walletLoading && !walletLoaded" class="wallet-skel" aria-hidden="true">
+      <div class="wallet-skel__hero"></div>
+      <div class="wallet-skel__side"></div>
+      <div v-for="n in 4" :key="n" class="wallet-skel__row"></div>
+    </div>
 
-      <template v-else>
-        <div class="ps-wallet-hero">
-          <div>
-            <span class="ps-wallet-hero__label">可用余额</span>
-            <strong class="ps-wallet-hero__amount">{{ formatPoints(availableCents) }}</strong>
-            <div class="ps-wallet-hero__meta">
-              <span>账户总额 {{ formatPoints(totalCents) }}</span>
-              <span v-if="frozenCents > 0" class="is-frozen">
-                冻结 {{ formatPoints(frozenCents) }}
-              </span>
-            </div>
-            <dl class="ps-wallet-buckets">
-              <div>
-                <dt>普通积分</dt>
-                <dd>{{ formatPoints(normalBalanceCents) }}</dd>
-                <small v-if="normalFrozenCents">冻结 {{ formatPoints(normalFrozenCents) }}</small>
-              </div>
-              <div class="is-trial">
-                <dt>{{ trialApplication?.feature?.label || '功能' }}体验积分</dt>
-                <dd>{{ formatPoints(trialBalanceCents) }}</dd>
-                <small v-if="trialFrozenCents">冻结 {{ formatPoints(trialFrozenCents) }}</small>
-                <small v-else-if="trialBalanceCents > 0">仅用于对应功能任务</small>
-              </div>
-            </dl>
-          </div>
-          <RouterLink class="ps-btn is-primary" to="/pricing">去充值</RouterLink>
-        </div>
+    <section v-else-if="walletError && !wallet" class="wallet-error">
+      <i class="bi bi-cloud-slash" aria-hidden="true"></i>
+      <strong>钱包加载失败</strong>
+      <p>{{ walletError }}</p>
+      <button type="button" class="wallet-btn is-ghost" @click="loadWallet">重试</button>
+    </section>
 
-        <div class="ps-redeem">
-          <div class="ps-redeem__head">
-            <h3>兑换码</h3>
-            <p>持有兑换码可在此入账，格式 SC-XXXX-XXXX-XXXX。</p>
-          </div>
-          <form class="ps-redeem__form" @submit.prevent="submitRedeem">
-            <input
-              :value="redeemCode"
-              type="text"
-              class="ps-redeem__input"
-              placeholder="SC-XXXX-XXXX-XXXX"
-              maxlength="20"
-              autocomplete="off"
-              spellcheck="false"
-              aria-label="兑换码"
-              @input="onRedeemInput"
-            />
-            <button type="submit" class="ps-btn is-primary" :disabled="redeeming">
-              {{ redeeming ? '兑换中…' : '兑换' }}
-            </button>
-          </form>
-
-          <div
-            v-if="trialApplication?.status === 'approved' && trialApplication.rewardCents"
-            class="ps-trial-code"
-            :class="{
-              'is-used': trialApplication.rewardStatus === 'redeemed',
-            }"
-          >
-            <span class="ps-trial-code__icon" aria-hidden="true">
-              <i class="bi bi-stars"></i>
+    <template v-else>
+      <section class="wallet-stage">
+        <article class="wallet-balance">
+          <span class="wallet-balance__label">可用余额</span>
+          <strong>{{ formatPoints(availableCents) }}</strong>
+          <div class="wallet-balance__meta">
+            <span>账户总额 {{ formatPoints(totalCents) }}</span>
+            <span v-if="frozenCents > 0" class="is-frozen">
+              冻结 {{ formatPoints(frozenCents) }}
             </span>
-            <div class="ps-trial-code__copy">
-              <div>
-                <strong>{{ trialApplication.feature?.label || '功能' }}体验积分礼包</strong>
-                <em v-if="trialApplication.rewardStatus === 'redeemed'">已领取</em>
-                <em v-else>{{ formatPoints(trialApplication.rewardCents || 0) }}</em>
-              </div>
+          </div>
+
+          <div class="wallet-buckets">
+            <div>
+              <small>普通积分</small>
+              <b>{{ formatPoints(normalBalanceCents) }}</b>
+              <em v-if="normalFrozenCents">冻结 {{ formatPoints(normalFrozenCents) }}</em>
+            </div>
+            <div class="is-trial">
+              <small>{{ trialFeatureLabel }}体验积分</small>
+              <b>{{ formatPoints(trialBalanceCents) }}</b>
+              <em v-if="trialFrozenCents">冻结 {{ formatPoints(trialFrozenCents) }}</em>
+              <em v-else-if="trialBalanceCents > 0">仅限对应功能</em>
+            </div>
+          </div>
+
+          <div class="wallet-balance__links">
+            <RouterLink to="/check-in">每日签到</RouterLink>
+            <RouterLink to="/incentive-plans">创作激励</RouterLink>
+            <RouterLink to="/text-to-image">去创作</RouterLink>
+          </div>
+        </article>
+
+        <div class="wallet-actions">
+          <article class="wallet-panel">
+            <header>
+              <h2>兑换码入账</h2>
+              <p>格式 SC-XXXX-XXXX-XXXX</p>
+            </header>
+            <form class="wallet-redeem" @submit.prevent="submitRedeem">
+              <input
+                :value="redeemCode"
+                type="text"
+                placeholder="SC-XXXX-XXXX-XXXX"
+                maxlength="20"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="兑换码"
+                @input="onRedeemInput"
+              />
+              <button type="submit" class="wallet-btn is-primary" :disabled="redeeming">
+                {{ redeeming ? '兑换中…' : '兑换' }}
+              </button>
+            </form>
+          </article>
+
+          <article
+            v-if="showTrialReward"
+            class="wallet-trial"
+            :class="{ 'is-used': trialApplication.rewardStatus === 'redeemed' }"
+          >
+            <span class="wallet-trial__icon" aria-hidden="true"><i class="bi bi-gift"></i></span>
+            <div>
+              <strong>{{ trialFeatureLabel }}体验积分礼包</strong>
               <p>
                 {{
                   trialApplication.rewardStatus === 'redeemed'
-                    ? `积分已到账，仅用于${trialApplication.feature?.label || '获批功能'}`
-                    : `领取后仅用于${trialApplication.feature?.label || '获批功能'}`
+                    ? `已到账，仅用于${trialFeatureLabel}`
+                    : `领取后仅用于${trialFeatureLabel}`
                 }}
               </p>
               <small>
@@ -511,562 +515,644 @@ onBeforeUnmount(() => {
                 }}
               </small>
             </div>
-            <div class="ps-trial-code__actions">
-              <button
-                v-if="trialApplication.rewardStatus !== 'redeemed'"
-                type="button"
-                class="ps-btn is-primary"
-                :disabled="redeeming"
-                @click="claimTrialReward"
-              >
-                {{ redeeming ? '领取中…' : '立即领取' }}
-              </button>
-            </div>
-          </div>
-          <p v-else-if="trialError" class="ps-trial-error">{{ trialError }}</p>
-        </div>
-
-        <div class="ps-ledger">
-          <div class="ps-ledger__head">
-            <h3>账本明细</h3>
-            <span v-if="ledgerError" class="ps-ledger__error">{{ ledgerError }}</span>
-          </div>
-
-          <div v-if="ledgerLoading && !ledger.length" class="ps-skel" aria-hidden="true">
-            <div v-for="n in 5" :key="n" class="ps-skel__row"></div>
-          </div>
-
-          <ul v-else-if="ledgerRows.length" class="ps-ledger-list">
-            <li
-              v-for="entry in ledgerRows"
-              :key="entry.id"
-              :class="`is-${entry.presentation.tone}`"
+            <em v-if="trialApplication.rewardStatus === 'redeemed'">已领取</em>
+            <button
+              v-else
+              type="button"
+              class="wallet-btn is-light"
+              :disabled="redeeming"
+              @click="claimTrialReward"
             >
-              <span class="ps-ledger__icon" aria-hidden="true">
-                <i class="bi" :class="entry.presentation.icon"></i>
-              </span>
-              <div class="ps-ledger__body">
-                <div class="ps-ledger__main">
-                  <strong>{{ entry.presentation.title }}</strong>
-                  <span class="ps-ledger__badge">{{ entry.presentation.badge }}</span>
-                  <span v-if="entry.creditBucket === 'trial'" class="ps-ledger__bucket is-trial">
-                    体验积分
-                  </span>
-                  <span v-else-if="entry.creditBucket === 'mixed'" class="ps-ledger__bucket">
-                    混合积分
-                  </span>
-                </div>
-                <p>{{ entry.presentation.description }}</p>
-                <small>
-                  {{ formatTime(entry.createdAt) }}
-                  <template v-if="entry.presentation.meta">
-                    · {{ entry.presentation.meta }}
-                  </template>
-                </small>
-              </div>
-              <strong class="ps-ledger__amount" :class="`is-${entry.presentation.amountTone}`">
-                {{ entry.presentation.amount }}
-              </strong>
-            </li>
-          </ul>
-
-          <p v-else-if="!ledgerLoading" class="ps-empty-inline">暂无余额变动记录。</p>
-
-          <button
-            v-if="ledgerCursor"
-            type="button"
-            class="ps-btn is-ghost ps-more"
-            :disabled="ledgerLoading"
-            @click="loadLedger({ append: true })"
-          >
-            {{ ledgerLoading ? '加载中…' : '加载更多' }}
-          </button>
+              {{ redeeming ? '领取中…' : `领取 ${formatPoints(trialApplication.rewardCents || 0)}` }}
+            </button>
+          </article>
+          <p v-else-if="trialError" class="wallet-trial-error">{{ trialError }}</p>
         </div>
-      </template>
-    </ProfileSectionShell>
-  </div>
+      </section>
+
+      <section class="wallet-ledger">
+        <header>
+          <div>
+            <h2>账本明细</h2>
+            <p>任务冻结、结算与入账记录</p>
+          </div>
+          <span v-if="ledgerError" class="wallet-ledger__error">{{ ledgerError }}</span>
+        </header>
+
+        <div v-if="ledgerLoading && !ledger.length" class="wallet-skel is-inline" aria-hidden="true">
+          <div v-for="n in 5" :key="n" class="wallet-skel__row"></div>
+        </div>
+
+        <ul v-else-if="ledgerRows.length" class="wallet-ledger__list">
+          <li
+            v-for="entry in ledgerRows"
+            :key="entry.id"
+            :class="`is-${entry.presentation.tone}`"
+          >
+            <span class="wallet-ledger__icon" aria-hidden="true">
+              <i class="bi" :class="entry.presentation.icon"></i>
+            </span>
+            <div class="wallet-ledger__body">
+              <div class="wallet-ledger__main">
+                <strong>{{ entry.presentation.title }}</strong>
+                <span>{{ entry.presentation.badge }}</span>
+                <span v-if="entry.creditBucket === 'trial'" class="is-trial">体验积分</span>
+                <span v-else-if="entry.creditBucket === 'mixed'">混合积分</span>
+              </div>
+              <p>{{ entry.presentation.description }}</p>
+              <small>
+                {{ formatTime(entry.createdAt) }}
+                <template v-if="entry.presentation.meta">
+                  · {{ entry.presentation.meta }}
+                </template>
+              </small>
+            </div>
+            <b :class="`is-${entry.presentation.amountTone}`">{{ entry.presentation.amount }}</b>
+          </li>
+        </ul>
+
+        <p v-else-if="!ledgerLoading" class="wallet-empty">暂无余额变动记录</p>
+
+        <button
+          v-if="ledgerCursor"
+          type="button"
+          class="wallet-btn is-ghost wallet-more"
+          :disabled="ledgerLoading"
+          @click="loadLedger({ append: true })"
+        >
+          {{ ledgerLoading ? '加载中…' : '加载更多' }}
+        </button>
+      </section>
+    </template>
+  </main>
 </template>
 
 <style scoped>
-.ps-page {
-  --ps-text: #1c1a27;
-  --ps-muted: rgba(28, 26, 39, 0.58);
-  --ps-line: rgba(28, 26, 39, 0.1);
-  --ps-surface: rgba(255, 255, 255, 0.82);
-  --ps-card: rgba(255, 255, 255, 0.94);
-  --ps-accent: #6b5cff;
-  --ps-shadow: 0 18px 40px rgba(40, 30, 80, 0.07);
-  position: relative;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 28px clamp(16px, 3vw, 36px) 72px;
-  color: var(--ps-text);
-  overflow: clip;
-}
-
-.ps-page.is-dark {
-  --ps-text: #f4f2ff;
-  --ps-muted: rgba(244, 242, 255, 0.62);
-  --ps-line: rgba(244, 242, 255, 0.12);
-  --ps-surface: rgba(24, 22, 36, 0.78);
-  --ps-card: rgba(32, 28, 48, 0.92);
-  --ps-accent: #a99dff;
-  --ps-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-}
-
-.ps-atmosphere {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.ps-atmosphere__wash {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(167, 139, 250, 0.22), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(125, 211, 252, 0.16), transparent 50%),
-    linear-gradient(180deg, #f6f3ff 0%, #eef2ff 48%, #f8fafc 100%);
-}
-
-.ps-page.is-dark .ps-atmosphere__wash {
-  background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(99, 102, 241, 0.28), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(56, 189, 248, 0.14), transparent 50%),
-    linear-gradient(180deg, #120f1c 0%, #161325 48%, #101018 100%);
-}
-
-.ps-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--ps-line);
-  background: #fff;
-  color: var(--ps-text);
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 700;
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.ps-page.is-dark .ps-btn {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.ps-btn.is-primary {
-  border-color: transparent;
-  background: var(--ps-accent);
-  color: #fff;
-}
-
-.ps-btn.is-ghost:hover:not(:disabled) {
-  border-color: rgba(107, 92, 255, 0.35);
-  color: var(--ps-accent);
-}
-
-.ps-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ps-more {
+.wallet {
+  --ink: #1f2430;
+  --muted: #6f7a8c;
+  --line: #ebe3d8;
+  --orange: #f27021;
+  --card: #fff;
   width: 100%;
-  margin-top: 14px;
+  min-height: calc(100vh - var(--app-header-offset, 72px));
+  padding: 20px 0 48px;
+  overflow-x: clip;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 10% 0%, rgb(255 210 150 / 32%), transparent 30%),
+    radial-gradient(circle at 92% 6%, rgb(255 186 120 / 16%), transparent 26%),
+    linear-gradient(180deg, #fffaf3 0%, #f6f3ee 46%, #f3f4f7 100%);
 }
 
-.ps-skel {
-  display: grid;
-  gap: 10px;
+.wallet-top,
+.wallet-stage,
+.wallet-ledger,
+.wallet-error,
+.wallet-skel {
+  width: min(1120px, calc(100% - 40px));
+  margin-inline: auto;
 }
 
-.ps-skel__card {
-  height: 120px;
-  border-radius: 18px;
-  background: rgba(28, 26, 39, 0.05);
-}
-
-.ps-skel__row {
-  height: 64px;
-  border-radius: 14px;
-  background: rgba(28, 26, 39, 0.05);
-}
-
-.ps-empty {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  padding: 48px 16px;
-  text-align: center;
-  color: var(--ps-muted);
-}
-
-.ps-empty strong {
-  color: var(--ps-text);
-}
-
-.ps-empty-inline {
-  margin: 12px 0 0;
-  color: var(--ps-muted);
-  font-size: 0.86rem;
-  text-align: center;
-}
-
-.ps-wallet-hero {
+.wallet-top {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
-  padding: 18px;
-  border-radius: 20px;
-  background: linear-gradient(135deg, rgba(107, 92, 255, 0.14), rgba(125, 211, 252, 0.1));
-  border: 1px solid var(--ps-line);
-  margin-bottom: 14px;
+  margin-bottom: 18px;
 }
 
-.ps-wallet-hero__label {
-  display: block;
-  color: var(--ps-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.ps-wallet-hero__amount {
-  display: block;
-  margin-top: 6px;
-  font-size: clamp(1.6rem, 3vw, 2.1rem);
-  font-weight: 800;
+.wallet-top h1 {
+  margin: 0;
+  font-size: clamp(1.7rem, 2.8vw, 2.2rem);
+  font-weight: 850;
   letter-spacing: -0.03em;
 }
 
-.ps-wallet-hero__meta {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-  color: var(--ps-muted);
-  font-size: 0.78rem;
-}
-
-.ps-wallet-hero__meta .is-frozen {
-  color: #d97706;
-}
-
-.ps-wallet-buckets {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
-  gap: 8px;
-  margin: 14px 0 0;
-}
-
-.ps-wallet-buckets > div {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--ps-line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.42);
-}
-
-.ps-page.is-dark .ps-wallet-buckets > div {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.ps-wallet-buckets dt,
-.ps-wallet-buckets small {
-  color: var(--ps-muted);
-  font-size: 0.7rem;
-}
-
-.ps-wallet-buckets dd {
-  margin: 4px 0 0;
-  font-size: 1rem;
-  font-weight: 760;
-  font-variant-numeric: tabular-nums;
-}
-
-.ps-wallet-buckets .is-trial dd {
-  color: #5b4ce0;
-}
-
-.ps-redeem,
-.ps-ledger {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--ps-line);
-}
-
-.ps-redeem__head h3,
-.ps-ledger__head h3 {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-.ps-redeem__head p {
+.wallet-top p {
   margin: 6px 0 0;
-  color: var(--ps-muted);
-  font-size: 0.8rem;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
-.ps-redeem__form {
+.wallet-top__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
-  flex-wrap: wrap;
 }
 
-.ps-redeem__input {
-  flex: 1;
-  min-width: 180px;
-  height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--ps-line);
-  border-radius: 12px;
-  background: var(--ps-card);
-  color: var(--ps-text);
-  font: inherit;
-  letter-spacing: 0.04em;
-}
-
-.ps-trial-code {
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+.wallet-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 14px;
-  margin-top: 16px;
-  padding: 15px;
-  color: #fff;
-  background: #176f60;
-  border-radius: 8px;
-  box-shadow: 0 14px 30px rgba(16, 104, 87, 0.18);
-}
-
-.ps-trial-code.is-used {
-  filter: saturate(0.48);
-}
-
-.ps-trial-code__icon {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  color: #176f60;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 8px;
-  font-size: 1.1rem;
-}
-
-.ps-trial-code__copy {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.ps-trial-code__copy > div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex-wrap: wrap;
-}
-
-.ps-trial-code__copy strong {
-  font-size: 0.84rem;
-}
-
-.ps-trial-code__copy em {
-  padding: 2px 8px;
-  color: #155f51;
-  background: rgba(255, 255, 255, 0.9);
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: 0.66rem;
-  font-style: normal;
-  font-weight: 800;
-}
-
-.ps-trial-code__copy p {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
   font-size: 0.78rem;
-  line-height: 1.45;
+  font-weight: 750;
+  text-decoration: none;
+  cursor: pointer;
 }
 
-.ps-trial-code__copy small {
-  color: rgba(255, 255, 255, 0.64);
-  font-size: 0.68rem;
-}
-
-.ps-trial-code__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.ps-trial-code .ps-btn.is-ghost {
+.wallet-btn.is-primary {
   color: #fff;
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: var(--orange);
+  background: var(--orange);
 }
 
-.ps-trial-code .ps-btn.is-primary {
-  color: #155f51;
+.wallet-btn.is-ghost:hover:not(:disabled) {
+  border-color: #f2b27a;
+  color: #c45a10;
+}
+
+.wallet-btn.is-light {
+  color: #9a4b12;
+  border-color: transparent;
   background: #fff;
 }
 
-.ps-trial-error {
-  margin: 12px 0 0;
-  color: #ef4444;
+.wallet-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wallet-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.wallet-balance,
+.wallet-panel,
+.wallet-trial,
+.wallet-ledger {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 12px 32px rgb(60 45 20 / 6%);
+}
+
+.wallet-balance {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(255 186 120 / 28%), transparent 42%),
+    linear-gradient(160deg, #fff8ef 0%, #fff 70%);
+}
+
+.wallet-balance__label {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.wallet-balance > strong {
+  font-size: clamp(2rem, 3.4vw, 2.6rem);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.wallet-balance__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
   font-size: 0.76rem;
 }
 
-@media (max-width: 640px) {
-  .ps-trial-code {
-    grid-template-columns: 40px minmax(0, 1fr);
-  }
-
-  .ps-trial-code__actions {
-    grid-column: 1 / -1;
-  }
-
-  .ps-trial-code__actions .ps-btn {
-    flex: 1;
-  }
+.wallet-balance__meta .is-frozen {
+  color: #b45309;
 }
 
-.ps-ledger__head {
+.wallet-buckets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.wallet-buckets > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #f0e4d4;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 78%);
+}
+
+.wallet-buckets small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.wallet-buckets b {
+  font-size: 1.05rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-buckets em {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-style: normal;
+}
+
+.wallet-buckets .is-trial b {
+  color: #c45a10;
+}
+
+.wallet-balance__links {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.wallet-balance__links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #f0d7bc;
+  border-radius: 999px;
+  color: #b85a12;
+  background: rgb(255 255 255 / 80%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.wallet-actions {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.wallet-panel {
+  padding: 20px;
+}
+
+.wallet-panel header h2,
+.wallet-ledger header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 850;
+}
+
+.wallet-panel header p,
+.wallet-ledger header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.wallet-redeem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.wallet-redeem input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: #fffaf4;
+  font: inherit;
+  letter-spacing: 0.04em;
+  outline: none;
+}
+
+.wallet-redeem input:focus {
+  border-color: #f2b27a;
+  box-shadow: 0 0 0 3px rgb(242 112 33 / 10%);
+}
+
+.wallet-trial {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  color: #fff;
+  border: 0;
+  background: linear-gradient(145deg, #2f9f7f, #1d7a62);
+  box-shadow: 0 14px 30px rgb(29 122 98 / 18%);
+}
+
+.wallet-trial.is-used {
+  filter: saturate(0.55);
+}
+
+.wallet-trial__icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 12px;
+  color: #1d7a62;
+  background: #fff;
+  font-size: 1.15rem;
+}
+
+.wallet-trial strong {
+  display: block;
+  font-size: 0.88rem;
+}
+
+.wallet-trial p {
+  margin: 4px 0 0;
+  color: rgb(255 255 255 / 88%);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.wallet-trial small {
+  display: block;
+  margin-top: 4px;
+  color: rgb(255 255 255 / 62%);
+  font-size: 0.66rem;
+}
+
+.wallet-trial > em {
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: #1d7a62;
+  background: #fff;
+  font-style: normal;
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.wallet-trial-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.74rem;
+}
+
+.wallet-ledger {
+  padding: 20px;
+}
+
+.wallet-ledger > header {
+  display: flex;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
-.ps-ledger__error {
-  color: #ef4444;
-  font-size: 0.76rem;
+.wallet-ledger__error {
+  color: #dc2626;
+  font-size: 0.74rem;
 }
 
-.ps-ledger-list {
+.wallet-ledger__list {
+  display: grid;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
-  display: grid;
-  gap: 8px;
 }
 
-.ps-ledger-list li {
+.wallet-ledger__list > li {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
   padding: 12px;
-  border: 1px solid var(--ps-line);
-  border-radius: 16px;
-  background: var(--ps-card);
+  border: 1px solid #f0e8dc;
+  border-radius: 14px;
+  background: #fffaf6;
 }
 
-.ps-ledger__icon {
-  width: 40px;
-  height: 40px;
+.wallet-ledger__icon {
   display: grid;
+  width: 42px;
+  height: 42px;
   place-items: center;
   border-radius: 12px;
-  background: rgba(28, 26, 39, 0.06);
-  color: var(--ps-muted);
+  color: var(--muted);
+  background: #f3eee6;
+  font-size: 1.05rem;
 }
 
-.ps-ledger-list li.is-pending .ps-ledger__icon {
-  background: rgba(245, 158, 11, 0.14);
+.wallet-ledger__list > li.is-pending .wallet-ledger__icon {
   color: #d97706;
+  background: #fff7ed;
 }
 
-.ps-ledger-list li.is-settled .ps-ledger__icon,
-.ps-ledger-list li.is-income .ps-ledger__icon {
-  background: rgba(34, 197, 94, 0.12);
+.wallet-ledger__list > li.is-settled .wallet-ledger__icon,
+.wallet-ledger__list > li.is-income .wallet-ledger__icon {
   color: #16a34a;
+  background: #ecfdf5;
 }
 
-.ps-ledger-list li.is-refund .ps-ledger__icon {
-  background: rgba(56, 189, 248, 0.14);
+.wallet-ledger__list > li.is-refund .wallet-ledger__icon {
   color: #0284c7;
+  background: #e0f2fe;
 }
 
-.ps-ledger__body {
+.wallet-ledger__list > li.is-spend .wallet-ledger__icon {
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.wallet-ledger__body {
   min-width: 0;
 }
 
-.ps-ledger__main {
+.wallet-ledger__main {
   display: flex;
-  gap: 8px;
-  align-items: center;
   flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 
-.ps-ledger__badge {
+.wallet-ledger__main strong {
+  font-size: 0.88rem;
+}
+
+.wallet-ledger__main span {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(28, 26, 39, 0.06);
-  font-size: 0.68rem;
+  color: var(--muted);
+  background: #f1ebe3;
+  font-size: 0.64rem;
   font-weight: 700;
 }
 
-.ps-ledger__bucket {
-  padding: 2px 7px;
-  color: #6b5cff;
-  border: 1px solid rgba(107, 92, 255, 0.22);
-  border-radius: 4px;
-  font-size: 0.65rem;
-  font-weight: 700;
-}
-
-.ps-ledger__bucket.is-trial {
+.wallet-ledger__main span.is-trial {
   color: #14705e;
-  border-color: rgba(20, 112, 94, 0.24);
+  background: #dcf5ee;
 }
 
-.ps-ledger__body p {
-  margin: 4px 0 0;
-  color: var(--ps-muted);
-  font-size: 0.78rem;
+.wallet-ledger__body p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
   line-height: 1.45;
 }
 
-.ps-ledger__body small {
+.wallet-ledger__body small {
   display: block;
   margin-top: 4px;
-  color: var(--ps-muted);
-  font-size: 0.7rem;
+  color: rgb(111 122 140 / 78%);
+  font-size: 0.66rem;
 }
 
-.ps-ledger__amount {
-  font-size: 0.86rem;
-  font-weight: 800;
+.wallet-ledger__list > li > b {
+  font-size: 0.84rem;
+  font-weight: 850;
   white-space: nowrap;
 }
 
-.ps-ledger__amount.is-income {
+.wallet-ledger__list > li > b.is-income {
   color: #16a34a;
 }
 
-.ps-ledger__amount.is-spend {
-  color: #ef4444;
+.wallet-ledger__list > li > b.is-spend {
+  color: #dc2626;
 }
 
-.ps-ledger__amount.is-neutral {
-  color: var(--ps-muted);
+.wallet-ledger__list > li > b.is-neutral {
+  color: var(--muted);
+}
+
+.wallet-more {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.wallet-empty {
+  margin: 8px 0 0;
+  padding: 28px 12px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.wallet-error {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 320px;
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: #fff;
+  text-align: center;
+}
+
+.wallet-error i {
+  color: var(--orange);
+  font-size: 1.8rem;
+}
+
+.wallet-error p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.wallet-skel {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 14px;
+}
+
+.wallet-skel.is-inline {
+  display: grid;
+  grid-template-columns: 1fr;
+  width: 100%;
+  margin: 0;
+}
+
+.wallet-skel__hero,
+.wallet-skel__side,
+.wallet-skel__row {
+  border-radius: 16px;
+  background: linear-gradient(90deg, #fff 25%, #fff6eb 50%, #fff 75%);
+  background-size: 200% 100%;
+  animation: wallet-shimmer 1.2s linear infinite;
+}
+
+.wallet-skel__hero {
+  min-height: 260px;
+}
+
+.wallet-skel__side {
+  min-height: 180px;
+}
+
+.wallet-skel__row {
+  grid-column: 1 / -1;
+  height: 72px;
 }
 
 .spin {
-  animation: ps-spin 0.9s linear infinite;
+  animation: wallet-spin 0.9s linear infinite;
 }
 
-@keyframes ps-spin {
+@keyframes wallet-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes wallet-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .wallet-stage,
+  .wallet-skel {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .wallet-top,
+  .wallet-stage,
+  .wallet-ledger,
+  .wallet-error,
+  .wallet-skel {
+    width: calc(100% - 24px);
+  }
+  .wallet-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .wallet-top__actions {
+    width: 100%;
+  }
+  .wallet-top__actions .wallet-btn {
+    flex: 1;
+  }
+  .wallet-buckets,
+  .wallet-redeem,
+  .wallet-trial {
+    grid-template-columns: 1fr;
+  }
+  .wallet-ledger__list > li {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .wallet-ledger__list > li > b {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 </style>

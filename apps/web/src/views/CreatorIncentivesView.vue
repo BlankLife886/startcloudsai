@@ -1,5 +1,9 @@
 <script setup>
 import { RouterLink } from 'vue-router'
+import { useAppearanceStore } from '@/stores/appearance'
+import trophyArt from '@/assets/incentives/rewards-trophy.png'
+
+const appearanceStore = useAppearanceStore()
 
 const benefits = [
   {
@@ -30,13 +34,13 @@ const benefits = [
     action: '查看保障',
   },
   {
-    id: 'milestone',
-    name: '越用越多',
-    category: '忠诚激励',
-    icon: 'bi-graph-up-arrow',
+    id: 'usage',
+    name: '用量计划',
+    category: '用量激励',
+    icon: 'bi-bar-chart-fill',
     tone: 'amber',
-    description: '本月成功交付数量达到里程碑后，自动获得对应积分奖励。',
-    action: '查看进度',
+    description: '按本月成功交付量解锁档位奖励，达标后积分自动到账。',
+    action: '查看计划',
   },
   {
     id: 'suggestion',
@@ -58,7 +62,7 @@ const assurances = [
 </script>
 
 <template>
-  <main class="rewards-page">
+  <main class="rewards-page" :class="{ 'is-dark': appearanceStore.isDark }">
     <section class="rewards-hero">
       <div class="rewards-hero__copy">
         <p>CREATOR REWARDS</p>
@@ -72,7 +76,9 @@ const assurances = [
         </div>
       </div>
 
-      <div class="rewards-hero__asset" aria-hidden="true"></div>
+      <div class="rewards-hero__asset" aria-hidden="true">
+        <img :src="trophyArt" alt="" loading="lazy" />
+      </div>
     </section>
 
     <section id="reward-plans" class="benefit-grid" aria-label="创作激励计划">
@@ -114,12 +120,56 @@ const assurances = [
   --ink: #101827;
   --muted: #68758a;
   --orange: #f36b21;
+  --line: #e9edf2;
+  --line-soft: #edf0f3;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-soft: #fffaf3;
+  --surface-warm: #fff4e9;
+  --hero-a: rgb(255 209 145 / 40%);
+  --hero-b: rgb(255 224 186 / 44%);
+  --hero-c: #fffbf5;
+  --hero-d: #fff4e6;
+  --hero-e: #ffe8cd;
+  --hero-line: #f4e8d8;
+  --body: #56647a;
+  --card-shadow: 0 8px 20px rgb(28 48 78 / 7%);
+  --card-shadow-hover: 0 13px 28px rgb(28 48 78 / 11%);
+  --assurance-line: #e8ecf1;
+  --assure-blue-bg: #eaf6fd;
+  --assure-green-bg: #eaf8f1;
+  --assure-violet-bg: #f1edfc;
   width: 100%;
   min-width: 1180px;
   min-height: calc(100vh - var(--app-header-offset, 72px));
   padding: 12px 0 20px;
   color: var(--ink);
-  background: #fff;
+  background: var(--bg);
+}
+
+.rewards-page.is-dark {
+  --ink: #f4eee6;
+  --muted: #a79c8f;
+  --orange: #ff8a3d;
+  --line: #3b342c;
+  --line-soft: #2f2922;
+  --bg: #12100e;
+  --surface: #1c1915;
+  --surface-soft: #181511;
+  --surface-warm: #221c16;
+  --hero-a: rgb(255 138 61 / 18%);
+  --hero-b: rgb(255 176 96 / 12%);
+  --hero-c: #1a1511;
+  --hero-d: #241c15;
+  --hero-e: #17130f;
+  --hero-line: #332c24;
+  --body: #cfc4b6;
+  --card-shadow: 0 8px 20px rgb(0 0 0 / 28%);
+  --card-shadow-hover: 0 13px 28px rgb(0 0 0 / 32%);
+  --assurance-line: #3b342c;
+  --assure-blue-bg: color-mix(in srgb, #2e9fdf 16%, #1c1915);
+  --assure-green-bg: color-mix(in srgb, #39b978 16%, #1c1915);
+  --assure-violet-bg: color-mix(in srgb, #8d62e5 16%, #1c1915);
 }
 
 .rewards-hero {
@@ -130,9 +180,12 @@ const assurances = [
   align-items: center;
   margin: 0 auto;
   overflow: hidden;
-  background: #fff9f3;
-  border: 1px solid #f2eee9;
-  border-radius: 8px;
+  background:
+    radial-gradient(circle at 86% 8%, var(--hero-a), transparent 40%),
+    radial-gradient(circle at 58% 96%, var(--hero-b), transparent 44%),
+    linear-gradient(102deg, var(--hero-c) 0%, var(--hero-d) 55%, var(--hero-e) 100%);
+  border: 1px solid var(--hero-line);
+  border-radius: 12px;
 }
 .rewards-hero__copy {
   padding: 34px 40px 30px 112px;
@@ -153,7 +206,7 @@ const assurances = [
 .rewards-hero__copy > span {
   display: block;
   margin-top: 17px;
-  color: #56647a;
+  color: var(--body);
   font-size: 14px;
 }
 .rewards-hero__actions {
@@ -179,11 +232,21 @@ const assurances = [
 }
 .rewards-hero__actions a.is-secondary {
   color: var(--orange);
-  background: #fff;
+  background: var(--surface);
 }
 .rewards-hero__asset {
+  display: grid;
   width: 100%;
   height: 270px;
+  align-items: center;
+  justify-items: center;
+}
+.rewards-hero__asset img {
+  width: min(92%, 480px);
+  mix-blend-mode: multiply;
+}
+.rewards-page.is-dark .rewards-hero__asset img {
+  mix-blend-mode: normal;
 }
 
 .benefit-grid {
@@ -208,10 +271,10 @@ const assurances = [
   overflow: hidden;
   color: var(--ink);
   text-decoration: none;
-  background: #fff;
-  border: 1px solid #e9edf2;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: 0 8px 20px rgb(28 48 78 / 7%);
+  box-shadow: var(--card-shadow);
   transition:
     border-color 160ms ease,
     box-shadow 160ms ease,
@@ -222,8 +285,8 @@ const assurances = [
 }
 .benefit-card:hover {
   color: var(--ink);
-  border-color: color-mix(in srgb, var(--accent) 36%, #e9edf2);
-  box-shadow: 0 13px 28px rgb(28 48 78 / 11%);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  box-shadow: var(--card-shadow-hover);
   transform: translateY(-2px);
 }
 .benefit-card[data-tone='violet'] {
@@ -241,6 +304,21 @@ const assurances = [
 .benefit-card[data-tone='green'] {
   --accent: #29b968;
   --soft: #eaf9ef;
+}
+.rewards-page.is-dark .benefit-card {
+  --soft: color-mix(in srgb, #ff4f86 14%, #1c1915);
+}
+.rewards-page.is-dark .benefit-card[data-tone='violet'] {
+  --soft: color-mix(in srgb, #825dff 14%, #1c1915);
+}
+.rewards-page.is-dark .benefit-card[data-tone='teal'] {
+  --soft: color-mix(in srgb, #0ebdb7 14%, #1c1915);
+}
+.rewards-page.is-dark .benefit-card[data-tone='amber'] {
+  --soft: color-mix(in srgb, #f28a13 14%, #1c1915);
+}
+.rewards-page.is-dark .benefit-card[data-tone='green'] {
+  --soft: color-mix(in srgb, #29b968 14%, #1c1915);
 }
 .benefit-card__number {
   position: absolute;
@@ -301,7 +379,7 @@ const assurances = [
   margin-top: 14px;
   padding-top: 15px;
   color: var(--accent);
-  border-top: 1px solid #edf0f3;
+  border-top: 1px solid var(--line-soft);
   font-size: 12px;
 }
 .benefit-card > strong i {
@@ -314,17 +392,17 @@ const assurances = [
   min-height: 82px;
   grid-template-columns: repeat(4, 1fr);
   margin: 24px auto 0;
-  background: #fff;
-  border: 1px solid #e8ecf1;
+  background: var(--surface);
+  border: 1px solid var(--assurance-line);
   border-radius: 8px;
-  box-shadow: 0 8px 20px rgb(28 48 78 / 7%);
+  box-shadow: var(--card-shadow);
 }
 .reward-assurances > div {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 14px;
-  border-right: 1px solid #e8ecf1;
+  border-right: 1px solid var(--assurance-line);
 }
 .reward-assurances > div:last-child {
   border-right: 0;
@@ -335,21 +413,21 @@ const assurances = [
   height: 48px;
   place-items: center;
   color: var(--orange);
-  background: #fff4e9;
+  background: var(--surface-warm);
   border-radius: 50%;
   font-size: 22px;
 }
 .reward-assurances > div:nth-child(2) > span {
   color: #2e9fdf;
-  background: #eaf6fd;
+  background: var(--assure-blue-bg);
 }
 .reward-assurances > div:nth-child(3) > span {
   color: #39b978;
-  background: #eaf8f1;
+  background: var(--assure-green-bg);
 }
 .reward-assurances > div:nth-child(4) > span {
   color: #8d62e5;
-  background: #f1edfc;
+  background: var(--assure-violet-bg);
 }
 .reward-assurances p {
   display: flex;

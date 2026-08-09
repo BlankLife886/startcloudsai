@@ -13,6 +13,25 @@ const RATIO_OPTIONS = T2I_ASPECT_OPTIONS.map((item) => option(item.value, item.l
 const RESOLUTION_OPTIONS = T2I_RESOLUTION_OPTIONS.map((item) => option(item.value, item.label))
 const QUALITY_OPTIONS = T2I_QUALITY_OPTIONS.map((item) => option(item.value, item.label))
 const COUNT_OPTIONS = T2I_COUNT_OPTIONS.map((item) => option(item.value, item.label))
+const ASSISTANT_RATIO_OPTIONS = [
+  option('auto', '自动'),
+  option('1:1', '1:1'),
+  option('2:3', '2:3'),
+  option('3:2', '3:2'),
+  option('3:4', '3:4'),
+  option('4:3', '4:3'),
+  option('4:5', '4:5'),
+  option('5:4', '5:4'),
+  option('9:16', '9:16'),
+  option('16:9', '16:9'),
+  option('9:21', '9:21'),
+  option('21:9', '21:9'),
+]
+const ASSISTANT_RESOLUTION_OPTIONS = [
+  option('1K', '标清 1K'),
+  option('2K', '高清 2K'),
+  option('4K', '超清 4K'),
+]
 
 const FIELD_META = {
   skill: { key: 'skill', label: 'Skill', icon: 'bi-lightning-charge-fill' },
@@ -33,40 +52,22 @@ const PROFILES = {
       skill: 'agent',
       ratio: 'auto',
       resolution: '1K',
-      quality: 'high',
-      count: 1,
+      count: 2,
       model: '',
-      material: '',
     },
     fields(config) {
       return config.skill === 'image'
-        ? ['skill', 'ratio', 'resolution', 'count', 'model', 'material']
-        : ['skill', 'model', 'material']
+        ? ['skill', 'model', 'ratio', 'resolution', 'count']
+        : ['skill', 'model']
+    },
+    fieldMeta: {
+      skill: { label: '创作类型', icon: 'bi-magic' },
     },
     options: {
-      skill: [
-        option('agent', 'Agent 模式'),
-        option('image', '图片生成'),
-        option('剧情短片', '剧情短片'),
-        option('电商套图', '电商套图'),
-        option('海报设计', '海报设计'),
-        option('品牌设计', '品牌设计'),
-      ],
-      ratio: RATIO_OPTIONS,
-      resolution: RESOLUTION_OPTIONS.filter((item) => ['1K', '2K', '4K'].includes(item.value)),
-      quality: QUALITY_OPTIONS,
+      skill: [option('agent', 'Agent 模式'), option('image', '图片生成')],
+      ratio: ASSISTANT_RATIO_OPTIONS,
+      resolution: ASSISTANT_RESOLUTION_OPTIONS,
       count: COUNT_OPTIONS,
-      material: materialOptions([
-        option('assistant-plan', '方案拆解', {
-          prompt: '请先拆解目标、约束和交付步骤，再给出可执行方案。',
-        }),
-        option('assistant-creative', '创意发散', {
-          prompt: '围绕核心目标提供三个差异明显、可直接执行的创意方向。',
-        }),
-        option('assistant-refine', '专业润色', {
-          prompt: '保持原意不变，补齐专业细节、结构和明确的交付标准。',
-        }),
-      ]),
     },
   },
   t2i: {
@@ -77,9 +78,8 @@ const PROFILES = {
       quality: 'high',
       count: 1,
       model: '',
-      material: '',
     },
-    fields: () => ['skill', 'ratio', 'resolution', 'quality', 'count', 'model', 'material'],
+    fields: () => ['skill', 'ratio', 'resolution', 'quality', 'count', 'model'],
     options: {
       skill: [
         option('none', '不启用 Skill'),
@@ -89,17 +89,6 @@ const PROFILES = {
       resolution: RESOLUTION_OPTIONS,
       quality: QUALITY_OPTIONS,
       count: COUNT_OPTIONS,
-      material: materialOptions([
-        option('t2i-photo', '商业摄影', {
-          prompt: '商业摄影，真实材质，受控布光，主体完整，画面干净，无文字和水印。',
-        }),
-        option('t2i-cinematic', '电影镜头', {
-          prompt: '电影级镜头语言，明确景别与主光方向，空间层次清晰，色彩统一。',
-        }),
-        option('t2i-illustration', '精致插画', {
-          prompt: '精致商业插画，轮廓清楚，配色统一，细节完整，构图稳定。',
-        }),
-      ]),
     },
   },
   coloring: {
@@ -134,7 +123,7 @@ const PROFILES = {
   },
   ui: {
     defaults: { skill: 'landing', device: 'web', count: 1, model: '', material: '' },
-    fields: () => ['skill', 'device', 'count', 'model', 'material'],
+    fields: () => ['skill', 'device', 'model', 'material'],
     options: {
       skill: [
         option('landing', '落地页'),
@@ -148,8 +137,13 @@ const PROFILES = {
         option('onboarding', '引导页'),
         option('custom', '自定义'),
       ],
-      device: [option('web', 'Web 网页'), option('tablet', '平板')],
-      count: COUNT_OPTIONS,
+      device: [
+        option('web', '电脑端'),
+        option('phone', '手机端'),
+        option('tablet', '平板'),
+        option('miniapp', '小程序'),
+        option('tv', '智能电视'),
+      ],
       material: materialOptions([
         option('ui-saas', 'SaaS 产品', { prompt: '专业 SaaS 产品界面，强调任务效率、数据层级与稳定布局。' }),
         option('ui-commerce', '电商转化', { prompt: '电商转化界面，突出商品、价格、规格选择和购买路径。' }),
@@ -266,6 +260,7 @@ export function studioLaunchFields(toolId = '', config = {}) {
   const profile = studioLaunchProfile(toolId)
   return profile.fields(config).map((key) => ({
     ...FIELD_META[key],
+    ...(profile.fieldMeta?.[key] || {}),
     options:
       typeof profile.options[key] === 'function'
         ? profile.options[key](config)

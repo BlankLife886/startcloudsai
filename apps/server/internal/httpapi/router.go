@@ -197,6 +197,14 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/tasks/:id", s.patchTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
 
+	// AI ecommerce product workspace
+	api.GET("/commerce/products", s.listEcommerceProducts)
+	api.POST("/commerce/products", s.createEcommerceProduct)
+	api.GET("/commerce/products/:id", s.getEcommerceProduct)
+	api.PATCH("/commerce/products/:id", s.updateEcommerceProduct)
+	api.DELETE("/commerce/products/:id", s.deleteEcommerceProduct)
+	api.POST("/commerce/product-briefs", s.generateEcommerceProductBrief)
+
 	// canvas projects
 	api.GET("/canvas-projects", s.listCanvasProjects)
 	api.POST("/canvas-projects", s.createCanvasProject)

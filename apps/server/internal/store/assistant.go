@@ -85,8 +85,134 @@ func TouchAssistantConversation(ctx context.Context, q Q, userID, id uuid.UUID, 
 }
 
 func DeleteUserAssistantConversation(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
+	keys, err := listAssistantOutputKeys(ctx, q, userID, "conversation.id = $2", id)
+	if err != nil {
+		return false, err
+	}
+	if err := EnqueueObjectCleanup(ctx, q, keys); err != nil {
+		return false, err
+	}
+	if err := DeleteAssistantUploadReferencesForConversation(ctx, q, userID, id); err != nil {
+		return false, err
+	}
 	tag, err := q.Exec(ctx, `DELETE FROM assistant_conversations WHERE id = $1 AND user_id = $2`, id, userID)
 	return tag.RowsAffected() > 0, err
+}
+
+func listAssistantOutputKeys(ctx context.Context, q Q, userID uuid.UUID, condition string, args ...any) ([]string, error) {
+	values := make([]any, 0, len(args)+1)
+	values = append(values, userID)
+	values = append(values, args...)
+	return listAssistantOutputKeysWithCondition(ctx, q, "conversation.user_id = $1 AND "+condition, values...)
+}
+
+func listAssistantOutputKeysWithCondition(ctx context.Context, q Q, condition string, args ...any) ([]string, error) {
+	query := `
+		SELECT image.value->>'fileKey'
+		FROM assistant_messages message
+		JOIN assistant_conversations conversation ON conversation.id = message.conversation_id
+		CROSS JOIN LATERAL jsonb_array_elements(
+				(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+					THEN message.metadata->'images' ELSE '[]'::jsonb END)
+				|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+					THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+		) AS image(value)
+		WHERE ` + condition + `
+		  AND COALESCE(image.value->>'fileKey', '') <> ''`
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make([]string, 0)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// EnqueueAssistantMessageOutputCleanup records generated objects before the
+// message metadata is replaced or the message is removed. Callers that also
+// update the message should pass a transaction so the queue entry and metadata
+// change become visible together.
+func EnqueueAssistantMessageOutputCleanup(ctx context.Context, q Q, userID, messageID uuid.UUID) error {
+	keys, err := listAssistantOutputKeys(ctx, q, userID, "message.id = $2", messageID)
+	if err != nil {
+		return err
+	}
+	if err := LockObjectReferenceKeys(ctx, q, keys); err != nil {
+		return err
+	}
+	return EnqueueObjectCleanup(ctx, q, keys)
+}
+
+// ClearAssistantMessageOutputMetadata queues generated objects and then
+// replaces the message metadata. Keeping both operations in one transaction
+// prevents the cleanup worker from deleting an object while the old metadata
+// is still visible, or from losing the cleanup record after metadata removal.
+func ClearAssistantMessageOutputMetadata(ctx context.Context, q Q, userID, messageID uuid.UUID, content, kind, status string, metadata map[string]any) error {
+	if err := EnqueueAssistantMessageOutputCleanup(ctx, q, userID, messageID); err != nil {
+		return err
+	}
+	return UpdateAssistantMessage(ctx, q, messageID, content, kind, status, metadata)
+}
+
+// LockAssistantOutputKeys verifies and locks assistant image messages while a
+// caller records a new reference to one of their generated files. This keeps
+// assistant output cleanup serialized with reference creation.
+func LockAssistantOutputKeys(ctx context.Context, q Q, userID uuid.UUID, keys []string) (map[string]struct{}, error) {
+	referenced := make(map[string]struct{}, len(keys))
+	if len(keys) == 0 {
+		return referenced, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT image.value->>'fileKey'
+		FROM assistant_messages message
+		JOIN assistant_conversations conversation ON conversation.id = message.conversation_id
+		CROSS JOIN LATERAL jsonb_array_elements(
+				(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+					THEN message.metadata->'images' ELSE '[]'::jsonb END)
+				|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+					THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+		) AS image(value)
+		WHERE conversation.user_id = $1
+		  AND image.value->>'fileKey' = ANY($2::text[])
+		FOR SHARE OF message`, userID, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		referenced[key] = struct{}{}
+	}
+	return referenced, rows.Err()
+}
+
+func assistantOutputCleanupKeysForWindow(ctx context.Context, q Q, conversationID, messageID uuid.UUID, includeSource bool) ([]string, error) {
+	condition := `message.conversation_id = $1 AND message.id <> $2 AND message.created_at >= (
+			SELECT source.created_at FROM assistant_messages source
+			WHERE source.id = $2 AND source.conversation_id = $1
+		)`
+	if includeSource {
+		condition = `message.conversation_id = $1 AND message.created_at >= (
+			SELECT source.created_at FROM assistant_messages source
+			WHERE source.id = $2 AND source.conversation_id = $1
+		)`
+	}
+	return listAssistantOutputKeysWithCondition(ctx, q, condition, conversationID, messageID)
 }
 
 func InsertAssistantMessage(ctx context.Context, q Q, item AssistantMessage) (*AssistantMessage, error) {
@@ -140,14 +266,34 @@ func UpdateAssistantMessage(ctx context.Context, q Q, id uuid.UUID, content, kin
 }
 
 func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
-	_, err := q.Exec(ctx, `DELETE FROM assistant_messages WHERE conversation_id = $1 AND id <> $2 AND
+	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, false)
+	if err != nil {
+		return err
+	}
+	if err := EnqueueObjectCleanup(ctx, q, keys); err != nil {
+		return err
+	}
+	if err := DeleteAssistantUploadReferencesAfter(ctx, q, conversationID, messageID); err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `DELETE FROM assistant_messages WHERE conversation_id = $1 AND id <> $2 AND
 		created_at >= (SELECT created_at FROM assistant_messages WHERE id = $2 AND conversation_id = $1)`,
 		conversationID, messageID)
 	return err
 }
 
 func DeleteAssistantMessagesFrom(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
-	_, err := q.Exec(ctx, `DELETE FROM assistant_messages WHERE conversation_id = $1 AND
+	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, true)
+	if err != nil {
+		return err
+	}
+	if err := EnqueueObjectCleanup(ctx, q, keys); err != nil {
+		return err
+	}
+	if err := DeleteAssistantUploadReferencesFrom(ctx, q, conversationID, messageID); err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `DELETE FROM assistant_messages WHERE conversation_id = $1 AND
 		created_at >= (SELECT created_at FROM assistant_messages WHERE id = $2 AND conversation_id = $1)`,
 		conversationID, messageID)
 	return err
@@ -160,6 +306,12 @@ func UpdateAssistantUserMessage(ctx context.Context, q Q, id uuid.UUID, content 
 }
 
 func DeleteUserAssistantMessage(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
+	if err := EnqueueAssistantMessageOutputCleanup(ctx, q, userID, id); err != nil {
+		return false, err
+	}
+	if err := DeleteAssistantUploadReferencesForMessage(ctx, q, userID, id); err != nil {
+		return false, err
+	}
 	tag, err := q.Exec(ctx, `DELETE FROM assistant_messages message USING assistant_conversations conversation
 		WHERE message.id = $1 AND message.conversation_id = conversation.id AND conversation.user_id = $2`, id, userID)
 	return tag.RowsAffected() > 0, err

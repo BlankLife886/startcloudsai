@@ -105,7 +105,8 @@ const historyLink = { to: '/history', label: '历史记录', icon: 'bi-clock-his
 
 const shareLink = { to: '/share', label: '社区', icon: 'bi-images' }
 
-const pricingLink = { to: '/pricing', label: '价格', icon: 'bi-credit-card-2-front-fill' }
+const pricingLink = { to: '/pricing', label: '创作价格', icon: 'bi-credit-card-2-front-fill' }
+const isPricingRoute = computed(() => isRouteActive('/pricing'))
 
 const incentivesLink = { to: '/incentive-plans', label: '创作激励', icon: 'bi-gift' }
 
@@ -209,7 +210,7 @@ const dropdownGroupDefs = {
   },
 }
 
-/** 顶栏顺序：首页 → 创作台 → 智能画布 → AI 电商 → 图片设计 → 提示词 → 社区 → 历史 → 价格 → 创作激励 → 工具 */
+/** 顶栏顺序：首页 → 创作台 → 智能画布 → AI 电商 → 图片设计 → 提示词 → 社区 → 历史 → 创作价格 → 创作激励 → 工具 */
 const NAV_ORDER = [
   { type: 'home' },
   { type: 'link', link: studioLink },
@@ -266,9 +267,9 @@ const loginRoute = computed(() => ({
   },
 }))
 const trialButtonLabel = computed(() => {
-  if (localeStore.locale === 'en') return 'Get trial access'
-  if (localeStore.locale === 'zh-TW') return '取得體驗資格'
-  return '获取体验资格'
+  if (localeStore.locale === 'en') return 'Apply for trial'
+  if (localeStore.locale === 'zh-TW') return '申請體驗'
+  return '申请体验'
 })
 const profileRoute = { name: 'profile' }
 
@@ -288,6 +289,10 @@ const accountAvatarUrl = computed(
 const accountMenuOpen = computed(() => activeDropdown.value === 'account')
 const accountLoggingOut = ref(false)
 
+function onAccountAvatarError(event) {
+  event.target.src = '/brand/avatar-placeholder.svg'
+}
+
 function toggleAccountMenu() {
   if (profileDisabled.value) return
   const next = activeDropdown.value === 'account' ? '' : 'account'
@@ -297,6 +302,14 @@ function toggleAccountMenu() {
     prefetchRoute('/pricing')
     void refreshWalletBalance({ force: false })
   }
+}
+
+function handleAccountClusterClick(event) {
+  if (profileDisabled.value) {
+    handleDisabledLinkClick(event)
+    return
+  }
+  toggleAccountMenu()
 }
 
 function openRedeemDialog() {
@@ -437,7 +450,7 @@ function getFirstNavigableLink(links = []) {
 function handleGroupPrimaryClick(group, event) {
   if (
     typeof window !== 'undefined' &&
-    window.matchMedia('(max-width: 760px)').matches &&
+    window.matchMedia('(max-width: 1080px)').matches &&
     (group.commerceMega || group.mega)
   ) {
     openDropdown(group.name)
@@ -688,6 +701,7 @@ onBeforeUnmount(() => {
       'nav-compact': settingsStore.settings.sidebar_compact,
       'nav-motion-off': !settingsStore.getSetting('sidebar_animation_effect', true),
       'is-dark': appearanceStore.isDark,
+      'is-pricing': isPricingRoute,
       'is-scrolled': isScrolled,
       'is-mobile-open': mobileNavOpen,
     }"
@@ -804,51 +818,46 @@ onBeforeUnmount(() => {
                   :aria-label="group.label"
                 >
                   <div class="commerce-menu-group__visual" aria-hidden="true">
-                    <img
-                      src="/ecommerce/ecommerce-menu-preview-v1.webp"
-                      alt=""
-                      width="1024"
-                      height="1536"
-                    />
-                    <span><i class="bi bi-stars"></i>{{ group.label }}</span>
+                    <img :src="group.cover" alt="" loading="lazy" decoding="async" />
+                    <div class="commerce-menu-group__caption">
+                      <strong>
+                        <i class="bi bi-stars" aria-hidden="true"></i>
+                        {{ group.label }}
+                      </strong>
+                      <small>{{ group.description }}</small>
+                    </div>
                   </div>
-                  <div class="commerce-menu-group__content">
-                    <div class="commerce-menu-group__heading">
-                      <h3>{{ group.label }}</h3>
-                      <p>{{ group.description }}</p>
-                    </div>
-                    <div class="commerce-menu-grid">
-                      <RouterLink
-                        v-for="link in group.items.filter(isLinkVisible)"
-                        :key="link.to"
-                        :to="link.to"
-                        class="commerce-menu-card"
-                        :class="{
-                          active: isCommerceLinkActive(link),
-                          disabled: isLinkDisabled(link),
-                        }"
-                        :aria-disabled="isLinkDisabled(link)"
-                        :title="isLinkDisabled(link) ? linkDisabledReason(link) : link.label"
-                        role="menuitem"
-                        @click="
-                          isLinkDisabled(link) ? handleDisabledLinkClick($event) : closeMenu()
-                        "
-                        @focus="prefetchRoute(link.to)"
-                        @pointerenter="prefetchRoute(link.to)"
-                      >
-                        <span class="commerce-menu-card__icon" aria-hidden="true">
-                          <i class="bi" :class="link.icon"></i>
-                        </span>
-                        <span class="commerce-menu-card__copy">
-                          <strong>{{ link.label }}</strong>
-                          <small>{{ link.tagline }}</small>
-                        </span>
-                        <i
-                          class="bi bi-arrow-right-short commerce-menu-card__arrow"
-                          aria-hidden="true"
-                        ></i>
-                      </RouterLink>
-                    </div>
+                  <div class="commerce-menu-grid">
+                    <RouterLink
+                      v-for="link in group.items.filter(isLinkVisible)"
+                      :key="link.to"
+                      :to="link.to"
+                      class="commerce-menu-card"
+                      :class="{
+                        active: isCommerceLinkActive(link),
+                        disabled: isLinkDisabled(link),
+                      }"
+                      :aria-disabled="isLinkDisabled(link)"
+                      :title="isLinkDisabled(link) ? linkDisabledReason(link) : link.label"
+                      role="menuitem"
+                      @click="
+                        isLinkDisabled(link) ? handleDisabledLinkClick($event) : closeMenu()
+                      "
+                      @focus="prefetchRoute(link.to)"
+                      @pointerenter="prefetchRoute(link.to)"
+                    >
+                      <span class="commerce-menu-card__icon" aria-hidden="true">
+                        <i class="bi" :class="link.icon"></i>
+                      </span>
+                      <span class="commerce-menu-card__copy">
+                        <strong>{{ link.label }}</strong>
+                        <small>{{ link.tagline }}</small>
+                      </span>
+                      <i
+                        class="bi bi-chevron-right commerce-menu-card__arrow"
+                        aria-hidden="true"
+                      ></i>
+                    </RouterLink>
                   </div>
                 </section>
               </div>
@@ -948,8 +957,10 @@ onBeforeUnmount(() => {
               @focus="prefetchRoute('/check-in')"
               @pointerenter="prefetchRoute('/check-in')"
             >
-              <i class="bi bi-calendar-check" aria-hidden="true"></i>
-              <span>签到</span>
+              <span class="nav-checkin-btn__icon" aria-hidden="true">
+                <i class="bi bi-calendar-check"></i>
+              </span>
+              <span class="nav-checkin-btn__label">签到</span>
             </router-link>
             <button
               v-if="trialCampaignAvailable"
@@ -982,36 +993,6 @@ onBeforeUnmount(() => {
             </router-link>
 
             <template v-else-if="authStore.isAuthenticated">
-              <button type="button" class="nav-redeem-btn" title="兑换码" @click="openRedeemDialog">
-                <i class="bi bi-ticket-perforated" aria-hidden="true"></i>
-                <span>兑换</span>
-              </button>
-
-              <router-link
-                v-if="isLinkVisible(pricingLink)"
-                :to="pricingLink.to"
-                class="nav-credits-chip"
-                :class="{ disabled: isLinkDisabled(pricingLink) }"
-                :aria-disabled="isLinkDisabled(pricingLink)"
-                :title="isLinkDisabled(pricingLink) ? linkDisabledReason(pricingLink) : '积分余额'"
-                @click="isLinkDisabled(pricingLink) ? handleDisabledLinkClick($event) : closeMenu()"
-                @focus="prefetchRoute('/pricing')"
-                @pointerenter="prefetchRoute('/pricing')"
-              >
-                <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
-                <span>{{ balanceNumberDisplay }}</span>
-              </router-link>
-              <button
-                v-else
-                type="button"
-                class="nav-credits-chip"
-                title="积分余额"
-                @click="openRedeemDialog"
-              >
-                <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
-                <span>{{ balanceNumberDisplay }}</span>
-              </button>
-
               <LocaleSwitcher class="nav-locale-switch" />
               <NavNotificationsMenu @open-trial="openTrialDialog" />
 
@@ -1023,7 +1004,7 @@ onBeforeUnmount(() => {
               >
                 <button
                   type="button"
-                  class="account-chip"
+                  class="account-cluster"
                   :class="{
                     disabled: profileDisabled,
                     active: accountMenuOpen || isRouteActive('/profile'),
@@ -1032,16 +1013,31 @@ onBeforeUnmount(() => {
                   aria-haspopup="menu"
                   :aria-disabled="profileDisabled"
                   :title="profileDisabled ? linkDisabledReason({ to: '/profile' }) : '个人中心'"
-                  @click="profileDisabled ? handleDisabledLinkClick($event) : toggleAccountMenu()"
+                  @click="handleAccountClusterClick"
                   @focus="prefetchRoute('/profile')"
                   @pointerenter="prefetchRoute('/profile')"
                 >
-                  <img
-                    class="account-chip__avatar"
-                    :src="accountAvatarUrl"
-                    alt=""
-                    @error="$event.target.src = '/brand/avatar-placeholder.svg'"
-                  />
+                  <span class="account-cluster__credits">
+                    <span class="account-cluster__icon" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="currentColor">
+                        <path
+                          d="M9.15 1.08 3.42 8.55c-.22.29 0 .72.36.72h3.35l-1.2 5.55c-.12.54.53.9.84.46l5.73-7.47c.22-.29 0-.72-.36-.72H8.79l1.2-5.55c.12-.54-.53-.9-.84-.46Z"
+                        />
+                      </svg>
+                    </span>
+                    <span class="account-cluster__value">{{ balanceNumberDisplay }}</span>
+                  </span>
+
+                  <span class="account-cluster__divider" aria-hidden="true"></span>
+
+                  <span class="account-chip" aria-hidden="true">
+                    <img
+                      class="account-chip__avatar"
+                      :src="accountAvatarUrl"
+                      alt=""
+                      @error="onAccountAvatarError"
+                    />
+                  </span>
                 </button>
 
                 <Transition name="account-menu">
@@ -1056,7 +1052,7 @@ onBeforeUnmount(() => {
                         class="account-menu__avatar"
                         :src="accountAvatarUrl"
                         alt=""
-                        @error="$event.target.src = '/brand/avatar-placeholder.svg'"
+                        @error="onAccountAvatarError"
                       />
                       <div class="account-menu__copy">
                         <strong>{{ accountDisplayName }}</strong>
@@ -1164,6 +1160,19 @@ onBeforeUnmount(() => {
                   </div>
                 </Transition>
               </div>
+
+              <div v-else class="account-cluster" title="积分余额">
+                <span class="account-cluster__credits">
+                  <span class="account-cluster__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" fill="currentColor">
+                      <path
+                        d="M9.15 1.08 3.42 8.55c-.22.29 0 .72.36.72h3.35l-1.2 5.55c-.12.54.53.9.84.46l5.73-7.47c.22-.29 0-.72-.36-.72H8.79l1.2-5.55c.12-.54-.53-.9-.84-.46Z"
+                      />
+                    </svg>
+                  </span>
+                  <span class="account-cluster__value">{{ balanceNumberDisplay }}</span>
+                </span>
+              </div>
             </template>
           </div>
         </div>
@@ -1257,6 +1266,28 @@ onBeforeUnmount(() => {
   --nav-muted: rgba(255, 255, 255, 0.52);
   --nav-on-accent: #12101c;
   --nav-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
+}
+
+/* 创作价格页：导航强调色跟页面橙暖色同步 */
+.site-header.is-pricing {
+  --nav-accent: #ef6a1a;
+  --nav-accent-soft: rgba(239, 106, 26, 0.12);
+  --nav-accent-mid: rgba(239, 106, 26, 0.18);
+  --nav-line-strong: rgba(239, 106, 26, 0.36);
+  --nav-shadow: 0 10px 28px rgba(120, 60, 10, 0.1);
+}
+
+.site-header.is-pricing.is-dark {
+  --nav-accent: #ff8a3d;
+  --nav-accent-soft: rgba(255, 138, 61, 0.16);
+  --nav-accent-mid: rgba(255, 138, 61, 0.24);
+  --nav-line-strong: rgba(255, 138, 61, 0.48);
+  --nav-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
+}
+
+.site-header.is-pricing .nav-link.active,
+.site-header.is-pricing .nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label {
+  color: var(--nav-accent);
 }
 
 .site-header.is-dark.is-scrolled {
@@ -1642,15 +1673,70 @@ onBeforeUnmount(() => {
 }
 
 .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
+  --cm-bg: #ffffff;
+  --cm-border: rgb(21 22 31 / 10%);
+  --cm-shadow: 0 24px 60px rgb(28 36 48 / 14%);
+  --cm-divider: rgb(21 22 31 / 8%);
+  --cm-visual-bg: #eef2f4;
+  --cm-visual-ring: rgb(21 22 31 / 8%);
+  --cm-visual-scrim: linear-gradient(
+    180deg,
+    rgb(12 18 22 / 4%) 0%,
+    rgb(12 18 22 / 18%) 42%,
+    rgb(12 18 22 / 78%) 100%
+  );
+  --cm-caption: #fff;
+  --cm-caption-muted: rgb(255 255 255 / 82%);
+  --cm-accent: #0f9d8a;
+  --cm-card-bg: #f5f7f8;
+  --cm-card-border: rgb(21 22 31 / 7%);
+  --cm-card-hover: #eef6f4;
+  --cm-card-hover-border: rgb(15 157 138 / 28%);
+  --cm-card-text: #171b22;
+  --cm-card-muted: #667085;
+  --cm-icon: #0f9d8a;
+  --cm-icon-bg: rgb(15 157 138 / 12%);
+  --cm-arrow: rgb(23 27 34 / 28%);
+  --cm-arrow-hover: rgb(23 27 34 / 55%);
+
   top: calc(100% + 12px);
-  width: min(1040px, calc(100vw - 32px));
-  padding: 16px;
+  width: min(1120px, calc(100vw - 32px));
+  display: grid;
   gap: 12px;
-  border: 0;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 20px 56px rgb(18 20 28 / 14%);
+  padding: 14px;
+  border: 1px solid var(--cm-border);
+  border-radius: 18px;
+  background: var(--cm-bg);
+  box-shadow: var(--cm-shadow);
   transform: translate3d(-36%, -8px, 0);
+}
+
+.site-header.is-dark .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
+  --cm-bg: #121214;
+  --cm-border: #2a2a32;
+  --cm-shadow: 0 28px 72px rgb(0 0 0 / 52%);
+  --cm-divider: rgb(255 255 255 / 7%);
+  --cm-visual-bg: #1a1a1f;
+  --cm-visual-ring: rgb(255 255 255 / 8%);
+  --cm-visual-scrim: linear-gradient(
+    180deg,
+    rgb(8 8 10 / 6%) 0%,
+    rgb(8 8 10 / 22%) 46%,
+    rgb(8 8 10 / 88%) 100%
+  );
+  --cm-caption: #fff;
+  --cm-caption-muted: rgb(255 255 255 / 76%);
+  --cm-accent: #7ee0d0;
+  --cm-card-bg: #1c1c22;
+  --cm-card-border: rgb(255 255 255 / 6%);
+  --cm-card-hover: #26262e;
+  --cm-card-hover-border: rgb(110 210 190 / 28%);
+  --cm-card-text: rgb(255 255 255 / 94%);
+  --cm-card-muted: rgb(255 255 255 / 48%);
+  --cm-icon: #7ee0d0;
+  --cm-icon-bg: rgb(70 170 150 / 14%);
+  --cm-arrow: rgb(255 255 255 / 26%);
+  --cm-arrow-hover: rgb(255 255 255 / 62%);
 }
 
 .nav-dropdown.nav-dropdown--commerce.open .commerce-mega-menu {
@@ -1668,96 +1754,94 @@ onBeforeUnmount(() => {
 .commerce-menu-group {
   display: grid;
   min-width: 0;
-  grid-template-columns: 176px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(0, 1fr);
   align-items: stretch;
-  gap: 16px;
+  gap: 12px;
 }
 
 .commerce-menu-group + .commerce-menu-group {
   padding-top: 12px;
-  border-top: 1px solid #eceef1;
+  border-top: 1px solid var(--cm-divider);
 }
 
 .commerce-menu-group__visual {
   position: relative;
-  min-height: 94px;
+  min-height: 128px;
   overflow: hidden;
-  background: #eef0f6;
-  border-radius: 8px;
+  background: var(--cm-visual-bg);
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px var(--cm-visual-ring);
+}
+
+.commerce-menu-group.is-image .commerce-menu-group__visual {
+  min-height: 212px;
 }
 
 .commerce-menu-group__visual img {
   position: absolute;
-  inset: 0 auto auto 0;
+  inset: 0;
   display: block;
   width: 100%;
-  height: 300%;
-  max-width: none;
+  height: 100%;
   object-fit: cover;
+  object-position: center 18%;
 }
 
 .commerce-menu-group.is-create .commerce-menu-group__visual img {
-  transform: translateY(-33.333%);
+  object-position: center 42%;
 }
 
 .commerce-menu-group.is-image .commerce-menu-group__visual img {
-  transform: translateY(-66.666%);
+  object-position: center 58%;
 }
 
 .commerce-menu-group__visual::after {
   position: absolute;
-  inset: 40% 0 0;
+  inset: 0;
   content: '';
-  background: linear-gradient(to bottom, transparent, rgb(16 18 28 / 68%));
+  background: var(--cm-visual-scrim);
 }
 
-.commerce-menu-group__visual > span {
+.commerce-menu-group__caption {
   position: absolute;
   z-index: 1;
-  right: 10px;
-  bottom: 9px;
-  left: 10px;
-  display: flex;
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  display: grid;
+  gap: 5px;
+  color: var(--cm-caption);
+}
+
+.commerce-menu-group__caption strong {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: 760;
-  text-shadow: 0 1px 8px rgb(0 0 0 / 32%);
+  font-size: 1.2rem;
+  font-weight: 860;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-shadow: 0 2px 14px rgb(0 0 0 / 45%);
 }
 
-.commerce-menu-group__content {
-  min-width: 0;
+.commerce-menu-group__caption strong .bi {
+  color: var(--cm-accent);
+  font-size: 0.92rem;
 }
 
-.commerce-menu-group__heading {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 9px;
-  margin: 1px 0 8px;
-}
-
-.commerce-menu-group h3 {
-  margin: 0;
-  color: #22252a;
-  font-size: 0.78rem;
-  font-weight: 780;
-  white-space: nowrap;
-}
-
-.commerce-menu-group__heading p {
-  margin: 0;
-  overflow: hidden;
-  color: #8a9099;
-  font-size: 0.64rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.commerce-menu-group__caption small {
+  color: var(--cm-caption-muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-shadow: 0 1px 10px rgb(0 0 0 / 40%);
 }
 
 .commerce-menu-grid {
   display: grid;
-  gap: 7px;
+  gap: 8px;
+  align-content: stretch;
+  height: 100%;
+  grid-auto-rows: 1fr;
 }
 
 .commerce-menu-group.is-model .commerce-menu-grid {
@@ -1776,53 +1860,55 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   min-width: 0;
-  min-height: 54px;
-  grid-template-columns: 34px minmax(0, 1fr) 14px;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: 40px minmax(0, 1fr) 12px;
   align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  color: #24272c;
-  background: #f7f8f9;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  gap: 10px;
+  padding: 12px 12px 12px 11px;
+  color: var(--cm-card-text);
+  background: var(--cm-card-bg);
+  border: 1px solid var(--cm-card-border);
+  border-radius: 12px;
   text-decoration: none;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease,
+    color 140ms ease;
 }
 
 .commerce-menu-card:hover,
 .commerce-menu-card:focus-visible,
 .commerce-menu-card.active {
-  color: #15171a;
-  background: #f0f4ff;
-  border-color: #dbe5ff;
+  color: var(--cm-card-text);
+  background: var(--cm-card-hover);
+  border-color: var(--cm-card-hover-border);
   outline: none;
+  transform: translateY(-1px);
 }
 
 .commerce-menu-card__icon {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   place-items: center;
-  color: #315fbc;
-  background: #e8efff;
-  border-radius: 6px;
-  font-size: 0.94rem;
-}
-
-.commerce-menu-card:nth-child(2n) .commerce-menu-card__icon {
-  color: #267a6a;
-  background: #e3f4ef;
+  color: var(--cm-icon);
+  background: var(--cm-icon-bg);
+  border-radius: 10px;
+  font-size: 1.05rem;
 }
 
 .commerce-menu-card__copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .commerce-menu-card__copy strong {
   overflow: hidden;
-  font-size: 0.76rem;
+  font-size: 0.84rem;
   font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1830,72 +1916,21 @@ onBeforeUnmount(() => {
 
 .commerce-menu-card__copy small {
   overflow: hidden;
-  color: #7b828c;
-  font-size: 0.6rem;
+  color: var(--cm-card-muted);
+  font-size: 0.66rem;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .commerce-menu-card__arrow {
-  color: #a9afb8;
-  font-size: 0.9rem;
+  color: var(--cm-arrow);
+  font-size: 0.8rem;
 }
 
-.site-header.is-dark .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
-  background: #18181d;
-  border: 1px solid #2d2d35;
-  box-shadow: 0 26px 64px rgb(0 0 0 / 45%);
-}
-
-.site-header.is-dark .commerce-menu-group + .commerce-menu-group {
-  border-color: rgb(255 255 255 / 8%);
-}
-
-.site-header.is-dark .commerce-menu-group h3,
-.site-header.is-dark .commerce-menu-card {
-  color: rgb(255 255 255 / 90%);
-}
-
-.site-header.is-dark .commerce-menu-group__heading p {
-  color: rgb(255 255 255 / 48%);
-}
-
-.site-header.is-dark .commerce-menu-card {
-  background: #222228;
-  border-color: transparent;
-}
-
-.site-header.is-dark .commerce-menu-card__copy small {
-  color: rgb(255 255 255 / 52%);
-}
-
-.site-header.is-dark .commerce-menu-card__icon {
-  color: #a9bfff;
-  background: rgb(102 132 225 / 16%);
-}
-
-.site-header.is-dark .commerce-menu-card:nth-child(2n) .commerce-menu-card__icon {
-  color: #83d8c4;
-  background: rgb(72 174 149 / 14%);
-}
-
-.site-header.is-dark .commerce-menu-card__arrow {
-  color: rgb(255 255 255 / 34%);
-}
-
-.site-header.is-dark .commerce-menu-group__visual {
-  background: #222228;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 7%);
-}
-
-.site-header.is-dark .commerce-menu-group__visual img {
-  filter: brightness(0.78) saturate(0.84);
-}
-
-.site-header.is-dark .commerce-menu-card:hover,
-.site-header.is-dark .commerce-menu-card.active {
-  background: #2b263d;
-  border-color: #514875;
+.commerce-menu-card:hover .commerce-menu-card__arrow,
+.commerce-menu-card.active .commerce-menu-card__arrow {
+  color: var(--cm-arrow-hover);
 }
 
 .nav-dropdown.nav-dropdown--mega {
@@ -2279,34 +2314,109 @@ onBeforeUnmount(() => {
   filter: none;
 }
 
-.nav-redeem-btn,
-.nav-credits-chip {
+.account-cluster {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 8px;
   height: 36px;
   min-height: 36px;
-  padding: 0 14px;
-  border: 1px solid rgba(21, 22, 31, 0.1);
+  padding: 3px 3px 3px 6px;
+  border: 1px solid rgb(230 186 90 / 55%);
   border-radius: 999px;
-  color: var(--nav-accent);
-  text-decoration: none;
+  color: inherit;
   font: inherit;
-  font-size: 0.82rem;
-  font-weight: 760;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfaff 100%);
-  box-shadow: 0 8px 20px rgb(45 42 83 / 10%);
+  background:
+    radial-gradient(circle at 14% 0%, rgb(255 255 255 / 55%), transparent 42%),
+    linear-gradient(118deg, #fff3c4 0%, #f6d06a 48%, #e8b034 100%);
+  box-shadow:
+    0 8px 20px rgb(196 140 24 / 22%),
+    inset 0 1px 0 rgb(255 255 255 / 55%);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-  white-space: nowrap;
-  line-height: 1;
-  box-sizing: border-box;
   transition:
     transform 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+.account-cluster:not(:has(.account-chip)) {
+  padding-right: 12px;
+}
+
+.account-menu:hover .account-cluster,
+.account-menu.open .account-cluster {
+  border-color: rgb(220 170 70 / 72%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 11px 24px rgb(196 140 24 / 28%),
+    inset 0 1px 0 rgb(255 255 255 / 65%);
+}
+
+.account-cluster__credits {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 2px 0 0;
+  color: #5c3d0a;
+  white-space: nowrap;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.account-cluster__icon {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff8e8;
+  background:
+    radial-gradient(circle at 32% 28%, #ffe9a8 0%, transparent 48%),
+    linear-gradient(155deg, #f0c14d 0%, #d49a1c 58%, #b87a12 100%);
+  box-shadow:
+    0 2px 6px rgb(168 110 12 / 28%),
+    inset 0 1px 0 rgb(255 255 255 / 45%);
+}
+
+.account-cluster__icon svg {
+  width: 11px;
+  height: 11px;
+  filter: drop-shadow(0 1px 0 rgb(96 56 4 / 25%));
+}
+
+.account-cluster__value {
+  min-width: 0;
+  padding-right: 2px;
+  color: #5c3d0a;
+  font-family: var(--nav-mono);
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.015em;
+  line-height: 1;
+  text-shadow: 0 1px 0 rgb(255 245 210 / 45%);
+}
+
+.account-cluster__divider {
+  width: 1px;
+  height: 16px;
+  flex: 0 0 auto;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgb(140 96 20 / 28%) 20%,
+    rgb(140 96 20 / 28%) 80%,
+    transparent
+  );
+}
+
+.account-cluster.disabled,
+.account-cluster.disabled:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .nav-trial-btn {
@@ -2339,28 +2449,65 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 7px;
   height: 36px;
   min-height: 36px;
-  padding: 0 13px;
-  color: #5b3a06;
-  background: linear-gradient(115deg, #fef3c7, #fde68a 58%, #f9a8d4);
-  border: 1px solid rgb(245 158 11 / 22%);
+  padding: 4px 12px 4px 4px;
+  color: #5c3d0a;
+  border: 1px solid rgb(232 176 88 / 48%);
   border-radius: 999px;
-  box-shadow: 0 8px 20px rgb(245 158 11 / 16%);
-  font-size: 0.78rem;
+  background:
+    radial-gradient(circle at 18% 0%, rgb(255 255 255 / 50%), transparent 42%),
+    linear-gradient(118deg, #fff6d6 0%, #ffe08a 48%, #ffc4d6 100%);
+  box-shadow: 0 8px 20px rgb(245 158 11 / 14%);
+  box-sizing: border-box;
+  font-size: 0.8rem;
   font-weight: 780;
   text-decoration: none;
   white-space: nowrap;
+  line-height: 1;
   transition:
     transform 150ms ease,
-    box-shadow 150ms ease;
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+.nav-checkin-btn__icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #fffaf0;
+  border: 1px solid rgb(255 255 255 / 58%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 24%, rgb(255 255 255 / 28%), transparent 46%),
+    linear-gradient(150deg, #f6c453 0%, #f0a020 52%, #e879a8 100%);
+  box-shadow: 0 2px 6px rgb(220 140 40 / 24%);
+  box-sizing: border-box;
+}
+
+.nav-checkin-btn__icon i {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.nav-checkin-btn__label {
+  padding-right: 2px;
+  color: #5c3d0a;
 }
 
 .nav-checkin-btn:hover {
-  color: #5b3a06;
+  color: #5c3d0a;
+  border-color: rgb(220 160 70 / 58%);
   transform: translateY(-1px);
-  box-shadow: 0 11px 25px rgb(245 158 11 / 23%);
+  box-shadow: 0 11px 24px rgb(245 158 11 / 22%);
+}
+
+.nav-checkin-btn:hover .nav-checkin-btn__icon {
+  border-color: rgb(255 255 255 / 72%);
+  box-shadow: 0 3px 8px rgb(220 140 40 / 30%);
 }
 
 .nav-trial-btn:hover {
@@ -2371,52 +2518,6 @@ onBeforeUnmount(() => {
 
 .nav-trial-btn i {
   font-size: 0.9rem;
-}
-
-.site-header.is-dark .nav-redeem-btn,
-.site-header.is-dark .nav-credits-chip {
-  background: #ffffff;
-  border-color: rgba(21, 22, 31, 0.1);
-  color: var(--nav-accent);
-}
-
-.nav-redeem-btn:hover,
-.nav-credits-chip:hover,
-.site-header.is-dark .nav-redeem-btn:hover,
-.site-header.is-dark .nav-credits-chip:hover {
-  border-color: color-mix(in srgb, var(--nav-accent) 45%, rgba(21, 22, 31, 0.12));
-  background: #ffffff;
-  color: var(--nav-accent);
-  transform: translateY(-1px);
-  box-shadow: 0 11px 25px rgb(45 42 83 / 15%);
-  filter: none;
-}
-
-.nav-redeem-btn i {
-  font-size: 0.92rem;
-  color: inherit;
-}
-
-.nav-credits-chip {
-  font-family: var(--nav-mono);
-  letter-spacing: 0.01em;
-}
-
-.nav-credits-chip i {
-  color: inherit;
-  font-size: 0.88rem;
-}
-
-.site-header.is-dark .nav-redeem-btn i,
-.site-header.is-dark .nav-credits-chip i {
-  color: inherit;
-}
-
-.nav-credits-chip.disabled,
-.nav-credits-chip.disabled:hover {
-  opacity: 0.5;
-  cursor: not-allowed;
-  filter: none;
 }
 
 .account-menu {
@@ -2437,44 +2538,34 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  min-height: 30px;
   padding: 0;
-  border: 1px solid var(--nav-line);
+  border: 2px solid rgb(255 255 255 / 88%);
   border-radius: 50%;
-  color: var(--nav-heading);
-  text-decoration: none;
-  background: rgba(255, 255, 255, 0.82);
-  cursor: pointer;
-  font: inherit;
+  background: linear-gradient(160deg, #f0c14d, #c9921c);
+  box-shadow:
+    0 2px 6px rgb(168 110 12 / 22%),
+    0 0 0 1px rgb(184 122 18 / 28%);
   line-height: 0;
-  appearance: none;
-  -webkit-appearance: none;
   overflow: hidden;
   box-sizing: border-box;
   vertical-align: middle;
+  pointer-events: none;
 }
 
-.site-header.is-dark .account-chip {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--nav-line);
-  color: var(--nav-heading);
+.account-cluster.active .account-chip,
+.account-cluster:hover .account-chip {
+  box-shadow:
+    0 3px 8px rgb(168 110 12 / 30%),
+    0 0 0 1px rgb(184 122 18 / 42%);
 }
 
-.account-chip:hover,
-.account-chip.active {
-  border-color: color-mix(in srgb, var(--nav-accent) 36%, var(--nav-line));
-  background: var(--nav-accent-soft);
-  box-shadow: none;
-}
-
-.account-chip.disabled,
-.account-chip.disabled:hover {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
+.account-cluster:focus-visible {
+  outline: 2px solid #d4a84a;
+  outline-offset: 2px;
 }
 
 .account-chip__avatar {
@@ -2651,12 +2742,29 @@ onBeforeUnmount(() => {
   --theme-dn-pad: 5px;
 }
 
-.nav-compact .nav-redeem-btn,
-.nav-compact .nav-credits-chip {
+.nav-compact .account-cluster {
   height: 32px;
   min-height: 32px;
-  padding: 0 12px;
-  font-size: 0.78rem;
+  gap: 6px;
+  padding: 2px 2px 2px 5px;
+}
+
+.nav-compact .account-cluster__icon {
+  width: 22px;
+  height: 22px;
+}
+
+.nav-compact .account-cluster__icon svg {
+  width: 10px;
+  height: 10px;
+}
+
+.nav-compact .account-cluster__value {
+  font-size: 0.76rem;
+}
+
+.nav-compact .account-cluster__divider {
+  height: 14px;
 }
 
 .nav-compact .nav-trial-btn {
@@ -2669,7 +2777,18 @@ onBeforeUnmount(() => {
 .nav-compact .nav-checkin-btn {
   height: 32px;
   min-height: 32px;
-  padding: 0 10px;
+  gap: 6px;
+  padding: 2px 10px 2px 2px;
+  font-size: 0.76rem;
+}
+
+.nav-compact .nav-checkin-btn__icon {
+  width: 22px;
+  height: 22px;
+}
+
+.nav-compact .nav-checkin-btn__icon i {
+  font-size: 0.74rem;
 }
 
 .nav-compact .nav-notify {
@@ -2688,10 +2807,10 @@ onBeforeUnmount(() => {
 }
 
 .nav-compact .account-chip {
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  min-height: 32px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
 }
 
 .nav-compact .account-login {
@@ -2705,10 +2824,10 @@ onBeforeUnmount(() => {
   .nav-checkin-btn {
     width: 36px;
     min-width: 36px;
-    padding: 0;
+    padding: 4px;
   }
 
-  .nav-checkin-btn span {
+  .nav-checkin-btn__label {
     display: none;
   }
 
@@ -2753,7 +2872,7 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1080px) {
   .site-header {
     z-index: 1100;
   }
@@ -2816,10 +2935,17 @@ onBeforeUnmount(() => {
   }
 
   .nav-locale-switch,
-  .nav-theme-switch,
-  .nav-redeem-btn,
-  .nav-credits-chip {
+  .nav-theme-switch {
     display: none !important;
+  }
+
+  .account-cluster__value {
+    display: none;
+  }
+
+  .account-cluster {
+    padding-left: 4px;
+    gap: 4px;
   }
 
   .nav-checkin-btn,
@@ -2830,12 +2956,17 @@ onBeforeUnmount(() => {
     min-width: 34px;
     height: 34px;
     min-height: 34px;
-    padding: 0;
+    padding: 3px;
   }
 
-  .nav-checkin-btn span,
+  .nav-checkin-btn__label,
   .nav-trial-btn span {
     display: none;
+  }
+
+  .nav-compact .nav-checkin-btn__icon {
+    width: 26px;
+    height: 26px;
   }
 
   .main-nav,
@@ -2941,25 +3072,23 @@ onBeforeUnmount(() => {
   }
 
   .commerce-menu-group {
-    display: block;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .commerce-menu-group + .commerce-menu-group {
     padding-top: 10px;
   }
 
-  .commerce-menu-group__visual {
+  .commerce-menu-group__visual,
+  .commerce-menu-group.is-image .commerce-menu-group__visual {
     width: 100%;
-    min-height: 96px;
-    margin-bottom: 10px;
+    min-height: 132px;
   }
 
-  .commerce-menu-group__content {
-    width: 100%;
-  }
-
-  .commerce-menu-group__heading {
-    margin-bottom: 7px;
+  .commerce-menu-group__caption strong {
+    font-size: 1.05rem;
   }
 
   .commerce-menu-group.is-model .commerce-menu-grid,

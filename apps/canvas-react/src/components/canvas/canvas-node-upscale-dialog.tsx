@@ -24,7 +24,8 @@ const defaultParams: CanvasImageUpscaleParams = {
     algorithm: "high",
 };
 
-export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void }) {
+export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm, mode = "upscale" }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void; mode?: "upscale" | "superResolve" }) {
+    const isSuperResolve = mode === "superResolve";
     const [params, setParams] = useState<CanvasImageUpscaleParams>(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
     const sourceLongEdge = image ? Math.max(image.width, image.height) : 0;
@@ -34,9 +35,9 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
 
     useEffect(() => {
         if (!open) return;
-        setParams(defaultParams);
+        setParams({ ...defaultParams, algorithm: isSuperResolve ? "high" : defaultParams.algorithm });
         setImage(null);
-    }, [dataUrl, open]);
+    }, [dataUrl, isSuperResolve, open]);
 
     useEffect(() => {
         if (!open) return;
@@ -53,7 +54,8 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
         <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={820} centered destroyOnHidden>
             <div className="space-y-5">
                 <div>
-                    <h2 className="text-xl font-semibold">图片放大</h2>
+                    <h2 className="text-xl font-semibold">{isSuperResolve ? "高清超分" : "图片放大"}</h2>
+                    <p className="mt-1 text-sm opacity-60">{isSuperResolve ? "使用分步高清插值生成更大尺寸的新节点，原图保持不变。" : "将图片放大到指定像素，并生成一个新的画布节点。"}</p>
                 </div>
                 <div className="grid gap-6 md:grid-cols-[minmax(260px,1fr)_360px]">
                     <div className="rounded-xl border p-4">
@@ -76,23 +78,25 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
                             />
                             {image && !canUpscale ? <div className="text-xs font-medium text-[#ef4444]">{reachedMax ? "图片已达到 4K，无需放大" : "图片已达到当前目标像素，无需放大"}</div> : null}
                         </div>
-                        <div className="space-y-2">
-                            <div className="font-medium opacity-75">放大算法</div>
-                            <Segmented
-                                block
-                                value={params.algorithm}
-                                options={algorithms.map((item) => ({
-                                    value: item.value,
-                                    label: (
-                                        <span className="flex min-h-12 flex-col justify-center text-left leading-5">
-                                            <span className="font-medium">{item.title}</span>
-                                            <span className="text-xs opacity-55">{item.description}</span>
-                                        </span>
-                                    ),
-                                }))}
-                                onChange={(value) => setParams((current) => ({ ...current, algorithm: value as ImageUpscaleAlgorithm }))}
-                            />
-                        </div>
+                        {!isSuperResolve ? (
+                            <div className="space-y-2">
+                                <div className="font-medium opacity-75">放大算法</div>
+                                <Segmented
+                                    block
+                                    value={params.algorithm}
+                                    options={algorithms.map((item) => ({
+                                        value: item.value,
+                                        label: (
+                                            <span className="flex min-h-12 flex-col justify-center text-left leading-5">
+                                                <span className="font-medium">{item.title}</span>
+                                                <span className="text-xs opacity-55">{item.description}</span>
+                                            </span>
+                                        ),
+                                    }))}
+                                    onChange={(value) => setParams((current) => ({ ...current, algorithm: value as ImageUpscaleAlgorithm }))}
+                                />
+                            </div>
+                        ) : null}
                         <div className="rounded-xl border px-4 py-3 text-sm">
                             <div className="flex items-center justify-between">
                                 <span className="opacity-60">输出尺寸</span>
@@ -102,8 +106,8 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
                     </div>
                 </div>
                 <div className="flex justify-end">
-                    <Button type="primary" size="large" icon={<ImagePlus className="size-4" />} disabled={!canUpscale} onClick={() => onConfirm(params)}>
-                        生成放大图
+                    <Button type="primary" size="large" icon={<ImagePlus className="size-4" />} disabled={!canUpscale} onClick={() => onConfirm({ ...params, algorithm: isSuperResolve ? "high" : params.algorithm })}>
+                        {isSuperResolve ? "生成高清图" : "生成放大图"}
                     </Button>
                 </div>
             </div>

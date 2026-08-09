@@ -1,35 +1,56 @@
 <script setup>
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { gsap } from 'gsap'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import WallevenImagePreview from '@/components/common/WallevenImagePreview.vue'
 import InsufficientCreditsDialog from '@/features/ai-shared/InsufficientCreditsDialog.vue'
+import DeleteHistoryConfirmDialog from '@/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue'
 import { useCreativeImageJob } from '@/features/creative-studios/useCreativeImageJob'
 import CommerceSelect from '@/features/ecommerce/CommerceSelect.vue'
+import CommerceProductLibrary from '@/components/ecommerce/CommerceProductLibrary.vue'
+import EcommerceBriefAssistantDialog from '@/components/ecommerce/EcommerceBriefAssistantDialog.vue'
 import {
   buildEcommerceGenerationPlan,
   buildEcommerceRevisionPrompt,
   ecommerceConsistencyProfile,
+  ECOMMERCE_DETAIL_MODULES,
   ECOMMERCE_MODULES,
   ECOMMERCE_MODES,
-  ECOMMERCE_RAIL_GROUPS,
   ECOMMERCE_REVISION_DIRECTIONS,
   ecommerceShotBlueprints,
   ecommerceModeById,
+  listingShotBlueprintsFromCounts,
   filterEcommerceOutputsByMode,
   prepareEcommerceInputFiles,
   supportedEcommerceModules,
 } from '@/features/ecommerce/ecommerceTools'
-import {
-  composePendingLaunchPrompt,
-  takePendingPrompt,
-} from '@/features/creator-hub/studioTools'
+import { composePendingLaunchPrompt, takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { normalizeImageModelCapabilities } from '@/features/ai-shared/modelImageCapabilities'
 import { fetchAuthenticatedMediaBlob } from '@/services/authenticatedMedia'
+import { generateCommerceProductBrief } from '@/services/ecommerceApi'
 import { listUserAssetGroups, listUserAssets } from '@/services/meApi'
+import { uploadFile } from '@/services/tasksApi'
 import notificationService from '@/services/notification'
 import { useAppearanceStore } from '@/stores/appearance'
+import {
+  animate,
+  cancelAnimations,
+  ms,
+  prefersReducedMotion,
+} from '@/lib/anime'
+import listingPreviewImage from '@/assets/ecommerce/listing-preview.webp'
+import detailPreviewImage from '@/assets/ecommerce/detail-preview.webp'
+import tryonPreviewImage from '@/assets/ecommerce/tryon-preview.webp'
+import clonePreviewImage from '@/assets/ecommerce/clone-preview.webp'
 
 const LocalMaskEditorDialog = defineAsyncComponent(
   () => import('@/features/ai-wallpaper/components/LocalMaskEditorDialog.vue'),
@@ -39,9 +60,42 @@ const route = useRoute()
 const router = useRouter()
 const appearanceStore = useAppearanceStore()
 
-const platformOptions = ['Amazon', '淘宝 / 天猫', '京东', 'TikTok Shop', 'Shopify', '独立站']
-const marketOptions = ['美国', '中国大陆', '英国', '日本', '德国', '法国']
-const languageOptions = ['英文', '简体中文', '日文', '德文', '法文', '西班牙文']
+const platformOptions = [
+  'Amazon',
+  '淘宝 / 天猫 / 1688',
+  'Temu',
+  'TikTok Shop',
+  '拼多多',
+  '抖音电商',
+  '京东',
+  'Shopify',
+  '独立站',
+]
+const marketOptions = [
+  '美国',
+  '欧洲',
+  '中国大陆',
+  '俄罗斯',
+  '东南亚',
+  '英国',
+  '日本',
+  '德国',
+  '法国',
+  '西班牙',
+]
+const languageOptions = [
+  '英文',
+  '简体中文',
+  '日文',
+  '韩文',
+  '德文',
+  '法文',
+  '西班牙文',
+  '葡萄牙文',
+  '印度尼西亚文',
+  '泰文',
+  '无文字',
+]
 const ratioOptions = [
   { value: '1:1', label: '1:1 方图' },
   { value: '4:5', label: '4:5 竖图' },
@@ -50,6 +104,15 @@ const ratioOptions = [
   { value: '9:16', label: '9:16 竖屏' },
 ]
 const sceneOptions = ['纯色影棚', '家居生活', '自然户外', '都市街景', '科技空间', '节日氛围']
+const tryonSceneOptions = [
+  '纯色棚拍',
+  '都市街头',
+  '街角咖啡',
+  '自然草坪',
+  '度假海滩',
+  '温馨居家',
+  '艺术展馆',
+]
 const toneOptions = ['极简高级', '清新明亮', '真实自然', '轻奢质感', '潮流活力', '科技未来']
 const campaignOptions = ['新品首发', '日常种草', '限时促销', '节日活动', '品牌宣传']
 const apparelOptions = ['上装', '下装', '连衣裙', '连体服', '套装', '外套']
@@ -57,6 +120,26 @@ const modelOptions = ['东亚女性', '东亚男性', '欧美女性', '欧美男
 const poseOptions = ['正面站姿', '侧身展示', '半身特写', '生活方式', '坐姿展示']
 const accessoryOptions = ['包袋', '耳饰', '项链', '戒指', '腕表', '眼镜', '帽子']
 const shadowOptions = ['自然接触影', '柔和投影', '悬浮阴影', '长投影', '镜面倒影']
+const cloneTypeOptions = [
+  { value: 'product', label: '电商商品图', icon: 'bi-bag' },
+  { value: 'fashion', label: '服饰电商图', icon: 'bi-person-standing-dress' },
+  { value: 'campaign', label: '营销海报', icon: 'bi-megaphone' },
+  { value: 'social', label: '社媒图文', icon: 'bi-postcard' },
+  { value: 'creative', label: '创意海报', icon: 'bi-palette' },
+  { value: 'other', label: '其他', icon: 'bi-grid' },
+]
+const cloneFidelityOptions = [
+  {
+    value: 'style',
+    label: '参考风格',
+    description: '参考整体风格和结构，允许重构色彩与场景。',
+  },
+  {
+    value: 'high',
+    label: '高度复刻',
+    description: '保持视觉结构，重点替换商品和用户文案。',
+  },
+]
 const {
   creditsPrompt,
   modelId,
@@ -76,10 +159,12 @@ const {
   outputKinds,
   historyLoading,
   historyHasMore,
+  historyError,
   historyHasMoreVariants,
   initialize,
   generateBatch,
   generateMaskedEdit,
+  cancelling,
   cancel,
   loadHistory,
   loadMoreHistory,
@@ -99,6 +184,9 @@ const {
 const fileInput = ref(null)
 const commerceRoot = ref(null)
 const canvasPanel = ref(null)
+const commerceRailScroll = ref(null)
+const railAtStart = ref(true)
+const railAtEnd = ref(false)
 const inputFiles = ref([])
 const previews = ref([])
 const platform = ref('Amazon')
@@ -106,6 +194,14 @@ const market = ref('美国')
 const language = ref('英文')
 const productName = ref('')
 const sellingPoints = ref('')
+const briefAssistantOpen = ref(false)
+const briefAssistantBusy = ref(false)
+const briefAssistantError = ref('')
+const briefDraftName = ref('')
+const briefDraftSellingPoints = ref('')
+const briefGenerationAttempt = ref(0)
+const briefUploadKeys = new WeakMap()
+let briefAssistantController = null
 const selectedModules = ref(
   ECOMMERCE_MODULES.filter((item) => item.value !== 'angles').map((item) => item.value),
 )
@@ -125,6 +221,7 @@ const activeMobilePane = ref('settings')
 const revisionDirection = ref('precise')
 const revisionBrief = ref('')
 const revisionError = ref('')
+const revisionPanelOpen = ref(false)
 const workspaceView = ref('result')
 const historyScope = ref('current')
 const assets = ref([])
@@ -135,15 +232,31 @@ const assetsLoadingMore = ref(false)
 const assetsLoaded = ref(false)
 const assetsCursor = ref(null)
 const assetsError = ref('')
+const assetsErrorAppend = ref(false)
 const assetTotalCount = ref(0)
 const referenceImporting = ref('')
+const selectedProduct = ref(null)
+const applyingProduct = ref(false)
+const referenceDiagnostics = ref([])
+let referenceDiagnosticRun = 0
+let referenceImportController = null
+let assetsAbortController = null
+let disposed = false
+let railResizeObserver = null
 const previewOpen = ref(false)
 const previewSource = ref('')
 const maskEditorOpen = ref(false)
 const maskEditorSource = ref('')
 const loadedOutputs = ref(new Set())
+const removingOutputs = ref(new Set())
+const deleteCandidate = ref('')
 const textStabilityEnabled = ref(true)
+const listingStructureMode = ref('smart')
+const listingStructureCounts = ref({ white: 1, scene: 2, selling: 2, other: 2 })
+const cloneType = ref('product')
+const cloneFidelity = ref('style')
 let motionContext = null
+const railMotionTargets = new Set()
 
 const outputCountOptions = computed(() =>
   Array.from({ length: maxOutputCount.value }, (_, index) => ({
@@ -184,6 +297,46 @@ const generationLayoutClass = computed(() => {
 const previewGallery = computed(() =>
   currentGroupOutputs.value.length ? currentGroupOutputs.value : modeOutputs.value,
 )
+const modePreview = computed(() => {
+  if (activeMode.value.id === 'detail') {
+    return {
+      src: detailPreviewImage,
+      label: '详情页案例预览',
+      title: '从商品多角度图到完整详情视觉',
+      description: '上传商品多角度图，生成符合目标平台规范的完整详情页视觉。',
+      cta: '上传商品图开始',
+      tags: ['01 商品原图', '02 详情长图', '03 主视觉', '04 功能细节', '05 使用场景'],
+    }
+  }
+  if (['tryon', 'handheld', 'accessory'].includes(activeMode.value.id)) {
+    return {
+      src: tryonPreviewImage,
+      label: '服饰穿戴案例预览',
+      title: '同一服装、同一模特、同场景多姿势',
+      description: '上传服装并选择模特形象，生成同场景、多姿势的成套实拍图。',
+      cta: '上传服装开始',
+      tags: ['01 服装原图', '02 正面展示', '03 动态全身', '04 面料特写'],
+    }
+  }
+  if (activeMode.value.id === 'clone') {
+    return {
+      src: clonePreviewImage,
+      label: '爆款复刻案例预览',
+      title: '继承成熟视觉结构，替换为你的商品',
+      description: '上传爆款参考图，可选上传新商品，批量复刻构图、场景与视觉节奏。',
+      cta: '上传爆款参考图',
+      tags: ['01 爆款参考', '02 新商品', '03 场景迁移', '04 整套复刻'],
+    }
+  }
+  return {
+    src: listingPreviewImage,
+    label: '商品套图案例预览',
+    title: '一张商品图，生成统一完整的上架套图',
+    description: '上传商品图，生成符合目标平台规范的主图、场景、细节和卖点套图。',
+    cta: '上传商品图开始',
+    tags: ['01 合规主图', '02 场景展示', '03 模特场景', '04 细节说明', '05 卖点图'],
+  }
+})
 const generationAspectStyle = computed(() => {
   const [width, height] = String(aspectRatio.value)
     .split(':')
@@ -204,18 +357,17 @@ const consistencyCapacityError = computed(() => {
 })
 
 const activeMode = computed(() => ecommerceModeById(String(route.query.tool || 'detail')))
-const activeRailGroup = computed(
-  () =>
-    ECOMMERCE_RAIL_GROUPS.find((group) => group.modes.includes(activeMode.value.id)) ||
-    ECOMMERCE_RAIL_GROUPS[0],
-)
-const activeRailModes = computed(() =>
-  activeRailGroup.value.modes.map((modeId) => ecommerceModeById(modeId)),
-)
 const activeModeFields = computed(() => new Set(activeMode.value.fields || []))
+const activeModuleOptions = computed(() =>
+  activeMode.value.id === 'detail' ? ECOMMERCE_DETAIL_MODULES : ECOMMERCE_MODULES,
+)
 const selectedModuleDetails = computed(() =>
   supportedEcommerceModules(selectedModules.value, inputFiles.value.length),
 )
+const listingCustomBlueprints = computed(() =>
+  listingShotBlueprintsFromCounts(listingStructureCounts.value),
+)
+const listingCustomCount = computed(() => listingCustomBlueprints.value.length)
 const requiresBrief = computed(() =>
   ['listing', 'detail', 'campaign'].includes(activeMode.value.id),
 )
@@ -266,20 +418,29 @@ const canRevise = computed(
     revisionBrief.value.trim().length >= 4 &&
     Boolean(modelId.value) &&
     !consistencyCapacityError.value &&
+    !applyingProduct.value &&
+    !referenceImporting.value &&
     !running.value,
 )
 const canGenerate = computed(
   () =>
     inputFiles.value.length >= minimumFiles.value &&
-    (!requiresBrief.value || sellingPoints.value.trim().length >= 4) &&
     (!activeModeFields.value.has('modules') || selectedModuleDetails.value.length > 0) &&
+    (activeMode.value.id !== 'listing' ||
+      listingStructureMode.value !== 'custom' ||
+      listingCustomCount.value === 7) &&
     Boolean(modelId.value) &&
     !consistencyCapacityError.value &&
+    !applyingProduct.value &&
+    !referenceImporting.value &&
     !running.value,
 )
-const availableShotBlueprints = computed(() =>
-  ecommerceShotBlueprints(activeMode.value.id, selectedModules.value),
-)
+const availableShotBlueprints = computed(() => {
+  if (activeMode.value.id === 'listing' && listingStructureMode.value === 'custom') {
+    return listingCustomBlueprints.value
+  }
+  return ecommerceShotBlueprints(activeMode.value.id, selectedModules.value)
+})
 const maxOutputCount = computed(() =>
   Math.max(1, Math.min(activeMode.value.maxCount || 1, availableShotBlueprints.value.length || 1)),
 )
@@ -294,14 +455,135 @@ const readiness = computed(() => {
     const remaining = minimumFiles.value - inputFiles.value.length
     return { ready: false, label: `还需 ${remaining} 张参考图` }
   }
-  if (requiresBrief.value && sellingPoints.value.trim().length < 4) {
-    return { ready: false, label: '请补充核心卖点' }
-  }
   if (activeModeFields.value.has('modules') && !selectedModuleDetails.value.length) {
     return { ready: false, label: '请选择视觉模块' }
   }
+  if (
+    activeMode.value.id === 'listing' &&
+    listingStructureMode.value === 'custom' &&
+    listingCustomCount.value !== 7
+  ) {
+    return {
+      ready: false,
+      label:
+        listingCustomCount.value < 7
+          ? `还需分配 ${7 - listingCustomCount.value} 张套图`
+          : `请减少 ${listingCustomCount.value - 7} 张套图`,
+    }
+  }
+  if (requiresBrief.value && sellingPoints.value.trim().length < 4) {
+    return { ready: true, label: '可生成；补充核心卖点会更准确' }
+  }
   return { ready: true, label: '配置完成，可以生成' }
 })
+
+function setListingStructureMode(mode) {
+  listingStructureMode.value = mode
+  if (mode !== 'smart') return
+  selectedModules.value = ECOMMERCE_MODULES.filter((item) => item.value !== 'angles').map(
+    (item) => item.value,
+  )
+  outputCount.value = Math.min(7, activeMode.value.maxCount)
+}
+
+function adjustListingStructure(key, delta) {
+  const current = Number(listingStructureCounts.value[key]) || 0
+  const total = listingCustomCount.value
+  if (delta > 0 && total >= 7) return
+  const minimum = key === 'white' ? 1 : 0
+  const next = Math.max(minimum, Math.min(7, current + delta))
+  listingStructureCounts.value = { ...listingStructureCounts.value, [key]: next }
+}
+
+function internalReferenceKey(file) {
+  const source = String(file?.sourceUrl || '').trim()
+  if (!source) return ''
+  try {
+    const pathname = new URL(source, window.location.origin).pathname
+    const prefix = '/api/v1/files/'
+    return pathname.startsWith(prefix) ? decodeURIComponent(pathname.slice(prefix.length)) : ''
+  } catch {
+    return ''
+  }
+}
+
+async function productBriefInputKeys(signal) {
+  return Promise.all(
+    inputFiles.value.slice(0, 4).map(async (file) => {
+      const internalKey = internalReferenceKey(file)
+      if (internalKey) return internalKey
+      const cached = briefUploadKeys.get(file)
+      if (cached) return cached
+      const uploaded = await uploadFile(file, { signal })
+      briefUploadKeys.set(file, uploaded.key)
+      return uploaded.key
+    }),
+  )
+}
+
+function openProductBriefAssistant() {
+  if (!inputFiles.value.length) {
+    notificationService.info('请先上传商品参考图，再使用 AI 生成名称和卖点')
+    return
+  }
+  briefAssistantOpen.value = true
+  briefAssistantError.value = ''
+  briefDraftName.value = ''
+  briefDraftSellingPoints.value = ''
+  briefGenerationAttempt.value = 0
+  void generateProductBriefDraft()
+}
+
+async function generateProductBriefDraft() {
+  if (briefAssistantBusy.value || !inputFiles.value.length) return
+  briefAssistantController?.abort()
+  const controller = new AbortController()
+  briefAssistantController = controller
+  briefAssistantBusy.value = true
+  briefAssistantError.value = ''
+  try {
+    const inputKeys = await productBriefInputKeys(controller.signal)
+    const result = await generateCommerceProductBrief(
+      {
+        inputKeys,
+        platform: platform.value,
+        market: market.value,
+        language: language.value,
+        previousProductName: briefGenerationAttempt.value ? briefDraftName.value : '',
+        previousSellingPoints: briefGenerationAttempt.value
+          ? briefDraftSellingPoints.value
+          : '',
+      },
+      { signal: controller.signal },
+    )
+    if (controller.signal.aborted) return
+    briefDraftName.value = String(result?.productName || '').trim()
+    briefDraftSellingPoints.value = String(result?.sellingPoints || '').trim()
+    briefGenerationAttempt.value += 1
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      briefAssistantError.value = error?.message || 'AI 商品识别失败，请重试'
+    }
+  } finally {
+    if (briefAssistantController === controller) briefAssistantController = null
+    briefAssistantBusy.value = false
+  }
+}
+
+function closeProductBriefAssistant() {
+  if (briefAssistantBusy.value) return
+  briefAssistantOpen.value = false
+}
+
+function confirmProductBrief() {
+  const name = briefDraftName.value.trim()
+  const points = briefDraftSellingPoints.value.trim()
+  if (!name || !points) return
+  productName.value = name
+  sellingPoints.value = points
+  briefAssistantOpen.value = false
+  notificationService.success('AI 生成内容已填入，可继续编辑')
+}
 
 watch(
   activeMode,
@@ -311,15 +593,27 @@ watch(
       router.replace({ path: '/ecommerce-design', query: { tool: mode.id } })
     }
     aspectRatio.value = mode.ratio
-    outputCount.value = Math.min(outputCount.value, mode.maxCount)
+    outputCount.value =
+      mode.id === 'listing' && listingStructureMode.value === 'smart'
+        ? Math.min(7, mode.maxCount)
+        : Math.min(outputCount.value, mode.maxCount)
     if (mode.maxCount > 1 && outputCount.value < 1) outputCount.value = 1
     localError.value = ''
+    if (mode.id === 'tryon' && !tryonSceneOptions.includes(sceneStyle.value)) {
+      sceneStyle.value = tryonSceneOptions[0]
+    }
   },
   { immediate: true },
 )
 
 watch(maxOutputCount, (maximum) => {
   if (outputCount.value > maximum) outputCount.value = maximum
+})
+
+watch(listingCustomCount, (count) => {
+  if (activeMode.value.id === 'listing' && listingStructureMode.value === 'custom') {
+    outputCount.value = count
+  }
 })
 
 watch(currentOutput, () => {
@@ -350,6 +644,125 @@ function setActiveMode(mode) {
   workspaceView.value = 'result'
 }
 
+function railMotionEnabled() {
+  return (
+    !disposed
+    && !prefersReducedMotion()
+    && !document.documentElement.classList.contains('settings-no-animations')
+  )
+}
+
+function updateRailEdgeState(event) {
+  const scroll = event?.currentTarget || commerceRailScroll.value
+  if (!scroll) return
+  const maxScroll = Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+  railAtStart.value = scroll.scrollTop <= 2
+  railAtEnd.value = maxScroll <= 2 || scroll.scrollTop >= maxScroll - 2
+}
+
+function scrollActiveRailIntoView({ smooth = true } = {}) {
+  const scroll = commerceRailScroll.value
+  if (!scroll) return
+  const active = scroll.querySelector('button.active')
+  if (!active) return
+  const reduceMotion =
+    prefersReducedMotion() || document.documentElement.classList.contains('settings-no-animations')
+  active.scrollIntoView({
+    block: 'nearest',
+    inline: 'nearest',
+    behavior: smooth && !reduceMotion ? 'smooth' : 'auto',
+  })
+  requestAnimationFrame(() => updateRailEdgeState())
+}
+
+function railIconFromEvent(event) {
+  return event?.currentTarget?.querySelector?.('.commerce-rail__icon') || null
+}
+
+function animateRailTabHover(event, entering) {
+  const icon = railIconFromEvent(event)
+  if (!icon || !railMotionEnabled()) return
+  railMotionTargets.add(icon)
+  cancelAnimations(icon)
+  animate(icon, {
+    scale: entering ? 1.04 : 1,
+    translateY: entering ? -0.5 : 0,
+    duration: ms(entering ? 0.2 : 0.16),
+    ease: 'outQuad',
+    onComplete: () => {
+      if (entering) return
+      icon.style.removeProperty('transform')
+      icon.style.removeProperty('translate')
+      icon.style.removeProperty('scale')
+      railMotionTargets.delete(icon)
+    },
+  })
+}
+
+function selectRailMode(mode, event) {
+  const icon = railIconFromEvent(event)
+  if (icon && railMotionEnabled()) {
+    railMotionTargets.add(icon)
+    cancelAnimations(icon)
+    animate(icon, {
+      scale: [
+        { to: 0.95, duration: ms(0.08), ease: 'inQuad' },
+        { to: 1.04, duration: ms(0.14), ease: 'outBack(1.4)' },
+        { to: 1, duration: ms(0.16), ease: 'outQuad' },
+      ],
+      onComplete: () => {
+        icon.style.removeProperty('transform')
+        icon.style.removeProperty('scale')
+        railMotionTargets.delete(icon)
+      },
+    })
+  }
+  setActiveMode(mode)
+}
+
+async function applyCommerceProduct(product) {
+  if (!product || running.value || applyingProduct.value) return
+  applyingProduct.value = true
+  selectedProduct.value = product
+  try {
+    releasePreviews()
+    inputFiles.value = []
+    previews.value = []
+    referenceDiagnosticRun += 1
+    referenceDiagnostics.value = []
+    productName.value = product.title || ''
+    sellingPoints.value = product.sellingPoints || ''
+    if (product.platform) platform.value = product.platform
+    if (product.market) market.value = product.market
+    if (product.language) language.value = product.language
+    const productAssets = Array.isArray(product.assets) ? product.assets.slice(0, 6) : []
+    let importedCount = 0
+    for (const asset of productAssets) {
+      const imported = await useRemoteImageAsReference({
+        id: `product:${product.id}:${asset.id}`,
+        url: asset.url,
+        title: asset.title || product.title,
+        origin: 'product',
+      })
+      if (disposed) return
+      if (imported) importedCount += 1
+    }
+    if (!importedCount) {
+      selectedProduct.value = null
+      notificationService.error('商品参考图读取失败，请重试')
+      return
+    }
+    if (importedCount < productAssets.length) {
+      notificationService.warning(`已载入 ${importedCount}/${productAssets.length} 张商品参考图`)
+    }
+    workspaceView.value = 'result'
+    activeMobilePane.value = 'settings'
+    notificationService.success(`已载入商品「${product.title}」，可以开始生成`)
+  } finally {
+    applyingProduct.value = false
+  }
+}
+
 function outputTimestamp(url) {
   const timing = outputTimings.value[url] || {}
   return Date.parse(timing.finishedAt || timing.startedAt || timing.createdAt || '') || 0
@@ -377,7 +790,35 @@ function outputMode(url) {
   return ecommerceModeById(outputModeId(url))
 }
 
+function commerceProductSnapshot(product) {
+  if (!product?.id) return null
+  return {
+    id: product.id,
+    sku: product.sku || '',
+    title: product.title || '',
+    brand: product.brand || '',
+    category: product.category || '',
+    sellingPoints: product.sellingPoints || '',
+    targetAudience: product.targetAudience || '',
+    material: product.material || '',
+    color: product.color || '',
+    dimensions: product.dimensions || '',
+    platform: product.platform || '',
+    market: product.market || '',
+    language: product.language || '',
+    assetIds: Array.isArray(product.assetIds) ? [...product.assetIds] : [],
+    protectedElements: Array.isArray(product.protectedElements)
+      ? [...product.protectedElements]
+      : [],
+  }
+}
+
 async function openWorkspaceView(view) {
+  if (disposed) return
+  if (running.value && view !== 'result') {
+    notificationService.info('任务生成中，请先停止任务后再切换工作区')
+    return
+  }
   workspaceView.value = view
   activeMobilePane.value = 'canvas'
   if (view === 'assets' && !assetsLoaded.value) await loadAssetsWorkspace()
@@ -403,26 +844,34 @@ function safeReferenceName(value, fallback) {
 }
 
 async function useRemoteImageAsReference({ id, url, title, origin }) {
-  if (running.value || referenceImporting.value) return
+  if (disposed || running.value || referenceImporting.value) return false
   if (inputFiles.value.length >= 6) {
     notificationService.info('参考图已达 6 张上限，请先移除一张')
-    return
+    return false
   }
   const source = String(url || '').trim()
   if (!source) {
     notificationService.error('这张图片暂时无法读取')
-    return
+    return false
   }
   referenceImporting.value = String(id || source)
+  const controller = new AbortController()
+  referenceImportController = controller
+  const timeout = window.setTimeout(() => controller.abort(), 20_000)
   try {
-    const blob = await fetchAuthenticatedMediaBlob(source, { cache: 'no-store' })
-    const extension = blob.type.includes('png')
-      ? 'png'
-      : blob.type.includes('webp')
-        ? 'webp'
-        : 'jpg'
+    const blob = await fetchAuthenticatedMediaBlob(source, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (disposed) return false
+    const blobType = String(blob.type || '').toLowerCase()
+    if (blobType && !['image/png', 'image/jpeg', 'image/webp'].includes(blobType)) {
+      throw new Error('读取到的不是支持的商品图片')
+    }
+    const fileType = blobType || 'image/jpeg'
+    const extension = fileType.includes('png') ? 'png' : fileType.includes('webp') ? 'webp' : 'jpg'
     const filename = `${safeReferenceName(title, origin === 'history' ? '电商历史' : '个人素材')}-${Date.now()}.${extension}`
-    const file = new File([blob], filename, { type: blob.type, lastModified: Date.now() })
+    const file = new File([blob], filename, { type: fileType, lastModified: Date.now() })
     // 保留站内原始地址。提交时可直接复用已有对象 key，避免下载后再上传
     // 导致额外压缩、R2 写入失败以及参考图在进入模型前失真。
     Object.defineProperty(file, 'sourceUrl', {
@@ -430,15 +879,22 @@ async function useRemoteImageAsReference({ id, url, title, origin }) {
       configurable: true,
     })
     const before = inputFiles.value.length
-    addFiles([file])
+    addFiles([file], { preserveProduct: origin === 'product' })
     if (inputFiles.value.length > before) {
       workspaceView.value = 'result'
       activeMobilePane.value = 'settings'
       notificationService.success('已加入当前任务参考图')
+      return true
     }
+    return false
   } catch (error) {
-    notificationService.error(error?.message || '参考图读取失败')
+    notificationService.error(
+      error?.name === 'AbortError' ? '参考图读取超时，请重试' : error?.message || '参考图读取失败',
+    )
+    return false
   } finally {
+    window.clearTimeout(timeout)
+    if (referenceImportController === controller) referenceImportController = null
     referenceImporting.value = ''
   }
 }
@@ -462,6 +918,7 @@ function useAssetAsReference(asset) {
 }
 
 async function loadAssetsWorkspace({ append = false } = {}) {
+  if (disposed) return
   if (append) {
     if (assetsLoadingMore.value || !assetsCursor.value) return
     assetsLoadingMore.value = true
@@ -469,19 +926,31 @@ async function loadAssetsWorkspace({ append = false } = {}) {
     if (assetsLoading.value) return
     assetsLoading.value = true
     assetsError.value = ''
+    assetsErrorAppend.value = false
   }
+  assetsAbortController?.abort()
+  briefAssistantController?.abort()
+  const controller = new AbortController()
+  assetsAbortController = controller
+  let timedOut = false
+  const timeout = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, 20_000)
   try {
     const requests = [
       listUserAssets({
         limit: 24,
         cursor: append ? assetsCursor.value || '' : '',
         groupId: assetFilter.value,
+        signal: controller.signal,
       }),
     ]
     if (!append && !assetGroups.value.length) {
-      requests.push(listUserAssetGroups().catch(() => null))
+      requests.push(listUserAssetGroups({ signal: controller.signal }).catch(() => null))
     }
     const [assetResult, groupResult] = await Promise.all(requests)
+    if (disposed) return
     assets.value = append ? [...assets.value, ...assetResult.items] : assetResult.items
     assetsCursor.value = assetResult.nextCursor
     if (groupResult) {
@@ -489,12 +958,22 @@ async function loadAssetsWorkspace({ append = false } = {}) {
       assetTotalCount.value = groupResult.totalAssetCount
     }
     assetsLoaded.value = true
+    assetsError.value = ''
+    assetsErrorAppend.value = false
   } catch (error) {
-    assetsError.value = error?.message || '素材库读取失败'
+    if (disposed) return
+    if (error?.name === 'AbortError' && !timedOut) return
+    assetsError.value = timedOut ? '素材库读取超时，请重试' : error?.message || '素材库读取失败'
+    assetsErrorAppend.value = append
   } finally {
+    window.clearTimeout(timeout)
     assetsLoading.value = false
     assetsLoadingMore.value = false
   }
+}
+
+function retryAssetsLoad() {
+  return assetsErrorAppend.value ? loadAssetsWorkspace({ append: true }) : refreshAssets()
 }
 
 function selectAssetFilter(filter) {
@@ -524,8 +1003,61 @@ function releasePreviews() {
   previews.value.forEach((item) => URL.revokeObjectURL(item.url))
 }
 
-function addFiles(fileList) {
-  if (running.value) return
+function inspectReferenceFile(file, index) {
+  return new Promise((resolve) => {
+    const source = URL.createObjectURL(file)
+    const image = new Image()
+    let timer = 0
+    let settled = false
+    const finish = (width = 0, height = 0) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      URL.revokeObjectURL(source)
+      const longSide = Math.max(width, height)
+      const issues = []
+      if (!width || !height) {
+        issues.push('无法读取尺寸')
+      } else if (longSide < 512) {
+        issues.push('分辨率过低')
+      } else if (longSide < 1024) {
+        issues.push('建议使用更高清原图')
+      }
+      resolve({
+        index,
+        name: file.name || `参考图 ${index + 1}`,
+        width,
+        height,
+        level: issues.some((item) => item === '分辨率过低')
+          ? 'error'
+          : issues.length
+            ? 'warn'
+            : 'ok',
+        message: issues.join('、') || `${width} × ${height}`,
+      })
+    }
+    timer = window.setTimeout(() => finish(), 8000)
+    image.onload = () => finish(image.naturalWidth || 0, image.naturalHeight || 0)
+    image.onerror = () => finish()
+    image.src = source
+  })
+}
+
+async function refreshReferenceDiagnostics() {
+  const run = ++referenceDiagnosticRun
+  const files = [...inputFiles.value]
+  if (!files.length) {
+    referenceDiagnostics.value = []
+    return
+  }
+  const diagnostics = await Promise.all(
+    files.map((file, index) => inspectReferenceFile(file, index)),
+  )
+  if (!disposed && run === referenceDiagnosticRun) referenceDiagnostics.value = diagnostics
+}
+
+function addFiles(fileList, { preserveProduct = false } = {}) {
+  if (disposed || running.value) return
   localError.value = ''
   const prepared = prepareEcommerceInputFiles(inputFiles.value, fileList)
   if (prepared.invalidCount && !prepared.next.length) {
@@ -533,15 +1065,21 @@ function addFiles(fileList) {
     return
   }
   if (prepared.oversized) {
-    localError.value = '单张商品图不能超过 10MB'
-    return
+    notificationService.warning(
+      prepared.oversizedCount > 1
+        ? `已忽略 ${prepared.oversizedCount} 张超过 10MB 的图片`
+        : '已忽略超过 10MB 的图片',
+    )
   }
   const next = prepared.next
+  if (!next.length) return
+  if (!preserveProduct && !applyingProduct.value && next.length) selectedProduct.value = null
   inputFiles.value = [...inputFiles.value, ...next]
   previews.value = [
     ...previews.value,
     ...next.map((file) => ({ file, url: URL.createObjectURL(file) })),
   ]
+  void refreshReferenceDiagnostics()
   if (prepared.invalidCount) notificationService.info('已忽略不支持的文件')
   if (prepared.duplicateCount) notificationService.info('已忽略重复图片')
   if (prepared.overflowCount) notificationService.info('同一任务最多上传 6 张图片')
@@ -563,41 +1101,16 @@ function removeFile(index) {
   if (preview?.url) URL.revokeObjectURL(preview.url)
   inputFiles.value = inputFiles.value.filter((_, at) => at !== index)
   previews.value = previews.value.filter((_, at) => at !== index)
+  selectedProduct.value = null
+  void refreshReferenceDiagnostics()
 }
 
 function referenceLabel(index) {
   return activeMode.value.referenceLabels?.[index] || `角度 ${index + 1}`
 }
 
-function resetTask() {
-  if (running.value) {
-    notificationService.info('请先停止当前生成任务')
-    return
-  }
-  releasePreviews()
-  inputFiles.value = []
-  previews.value = []
-  productName.value = ''
-  sellingPoints.value = ''
-  selectedModules.value = ECOMMERCE_MODULES.filter((item) => item.value !== 'angles').map(
-    (item) => item.value,
-  )
-  sceneStyle.value = sceneOptions[0]
-  visualTone.value = toneOptions[0]
-  campaignGoal.value = campaignOptions[0]
-  apparelType.value = apparelOptions[0]
-  modelProfile.value = modelOptions[0]
-  modelPose.value = poseOptions[0]
-  accessoryType.value = accessoryOptions[0]
-  shadowStyle.value = shadowOptions[0]
-  aspectRatio.value = activeMode.value.ratio
-  outputCount.value = 1
-  localError.value = ''
-  revisionDirection.value = 'precise'
-  revisionBrief.value = ''
-  revisionError.value = ''
-  workspaceView.value = 'result'
-  if (fileInput.value) fileInput.value.value = ''
+function clearSelectedProduct() {
+  selectedProduct.value = null
 }
 
 const assembledPrompt = computed(() => {
@@ -605,7 +1118,20 @@ const assembledPrompt = computed(() => {
   const lines = [
     `任务：${activeMode.value.label}。${activeMode.value.prompt}`,
     `商品名称：${productName.value.trim() || '根据商品图片准确识别，不虚构品牌和型号'}。`,
+    selectedProduct.value?.brand
+      ? `商品品牌：${selectedProduct.value.brand}。不得替换或虚构品牌。`
+      : '',
+    selectedProduct.value?.category ? `商品类目：${selectedProduct.value.category}。` : '',
+    selectedProduct.value?.targetAudience
+      ? `目标人群：${selectedProduct.value.targetAudience}。`
+      : '',
+    selectedProduct.value?.material ? `商品材质：${selectedProduct.value.material}。` : '',
+    selectedProduct.value?.color ? `商品颜色：${selectedProduct.value.color}。` : '',
+    selectedProduct.value?.dimensions ? `商品规格：${selectedProduct.value.dimensions}。` : '',
     sellingPoints.value.trim() ? `商品卖点与要求：${sellingPoints.value.trim()}。` : '',
+    selectedProduct.value?.protectedElements?.length
+      ? `商品必须保持的细节：${selectedProduct.value.protectedElements.join('、')}。这些细节优先于创意变化。`
+      : '',
     activeModeFields.value.has('platform') ? `适配平台：${platform.value}。` : '',
     activeModeFields.value.has('market') ? `目标市场：${market.value}。` : '',
     activeModeFields.value.has('language')
@@ -618,6 +1144,12 @@ const assembledPrompt = computed(() => {
     activeModeFields.value.has('pose') ? `模特姿态：${modelPose.value}。` : '',
     activeModeFields.value.has('accessory') ? `饰品类型：${accessoryType.value}。` : '',
     activeModeFields.value.has('shadow') ? `阴影类型：${shadowStyle.value}。` : '',
+    activeMode.value.id === 'clone'
+      ? `复刻类型：${cloneTypeOptions.find((item) => item.value === cloneType.value)?.label || '电商商品图'}。`
+      : '',
+    activeMode.value.id === 'clone'
+      ? `复刻程度：${cloneFidelity.value === 'high' ? '高度复刻视觉结构并替换商品与文案' : '参考整体风格并重构场景'}。`
+      : '',
     activeModeFields.value.has('tone') ? `视觉风格：${visualTone.value}。` : '',
     activeModeFields.value.has('modules') ? `需要包含的视觉模块：${modules}。` : '',
     textStabilityEnabled.value
@@ -636,6 +1168,10 @@ const generationPlan = computed(() =>
     selectedModules: selectedModuleDetails.value.map((item) => item.value),
     basePrompt: assembledPrompt.value,
     referenceCount: inputFiles.value.length,
+    shotBlueprints:
+      activeMode.value.id === 'listing' && listingStructureMode.value === 'custom'
+        ? listingCustomBlueprints.value
+        : null,
   }),
 )
 const revisionBusinessPrompt = computed(() =>
@@ -657,10 +1193,6 @@ async function generate() {
         : '请先上传商品图片'
     return
   }
-  if (requiresBrief.value && sellingPoints.value.trim().length < 4) {
-    localError.value = '请填写商品卖点与要求'
-    return
-  }
   if (activeModeFields.value.has('modules') && !selectedModules.value.length) {
     localError.value = '请至少选择一个视觉模块'
     return
@@ -673,15 +1205,17 @@ async function generate() {
     platform: `${platform.value} · ${market.value} · ${language.value}`,
     quality: 'high',
     inputFidelity: 'high',
-    consistencyStrategy: 'identity-first-sequential-anchor',
+    consistencyStrategy: 'identity-first-anchor-then-parallel',
     consistencyProfile: consistencyProfile.value.id,
+    commerceProductId: selectedProduct.value?.id || '',
+    commerceProductSnapshot: commerceProductSnapshot(selectedProduct.value),
     referenceRoles: consistencyProfile.value.roles,
     essentialReferenceCount: consistencyProfile.value.essentialReferenceCount,
     preserveSourceCanvas: activeMode.value.id === 'outpaint',
   }))
   const result = await generateBatch(generationItems, {
     files: inputFiles.value,
-    concurrency: 1,
+    concurrency: Math.min(generationItems.length, 4),
     chainReferenceOutput: generationItems.length > 1,
     essentialReferenceCount: consistencyProfile.value.essentialReferenceCount,
     referencePolicy: {
@@ -733,6 +1267,8 @@ async function reviseCurrentOutput() {
         parentOutputUrl: parentOutput,
         consistencyStrategy: 'revision-anchor-with-original-identity',
         consistencyProfile: consistencyProfile.value.id,
+        commerceProductId: selectedProduct.value?.id || '',
+        commerceProductSnapshot: commerceProductSnapshot(selectedProduct.value),
         referenceRoles: ['当前成品', ...consistencyProfile.value.roles],
         essentialReferenceCount: consistencyProfile.value.essentialReferenceCount,
         batchIndex: currentOutputIndex.value,
@@ -763,31 +1299,92 @@ async function reviseCurrentOutput() {
 
 async function downloadOutput(url) {
   if (!url) return
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 30_000)
   try {
-    const blob = await fetchAuthenticatedMediaBlob(url, { cache: 'no-store' })
+    const blob = await fetchAuthenticatedMediaBlob(url, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
     const objectUrl = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = objectUrl
+    anchor.rel = 'noopener'
+    anchor.style.display = 'none'
     const extension = blob.type.includes('png')
       ? 'png'
       : blob.type.includes('webp')
         ? 'webp'
         : 'jpg'
     anchor.download = `ecommerce-${activeMode.value.id}-${Date.now()}.${extension}`
-    anchor.click()
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+    document.body.appendChild(anchor)
+    try {
+      anchor.click()
+    } finally {
+      anchor.remove()
+    }
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
   } catch (error) {
-    notificationService.error(error?.message || '下载失败')
+    notificationService.error(
+      error?.name === 'AbortError' ? '下载超时，请重试' : error?.message || '下载失败',
+    )
+  } finally {
+    window.clearTimeout(timeout)
   }
 }
 
-async function removeOutput(url) {
+function requestOutputRemoval(url) {
+  const target = String(url || '').trim()
+  if (!target || removingOutputs.value.has(target)) return
+  deleteCandidate.value = target
+}
+
+function closeOutputRemoval() {
+  if (!removingOutputs.value.has(deleteCandidate.value)) deleteCandidate.value = ''
+}
+
+async function confirmOutputRemoval() {
+  const removed = await removeOutput(deleteCandidate.value, { cascade: true })
+  if (removed) deleteCandidate.value = ''
+}
+
+async function removeOutput(url, options = {}) {
+  const target = String(url || '').trim()
+  if (!target || removingOutputs.value.has(target)) return false
+  removingOutputs.value = new Set([...removingOutputs.value, target])
   try {
-    await deleteOutput(url)
+    await deleteOutput(target, options)
     notificationService.success('生成记录已删除')
+    return true
   } catch (error) {
-    notificationService.error(error?.message || '删除失败')
+    notificationService.error(historyDeleteErrorMessage(error))
+    return false
+  } finally {
+    const next = new Set(removingOutputs.value)
+    next.delete(target)
+    removingOutputs.value = next
   }
+}
+
+function historyDeleteErrorMessage(error) {
+  const code = String(error?.code || '').trim()
+  const status = Number(error?.status || 0)
+  if (code === 'task_in_use') {
+    return '这张图片已被后续版本使用，请先删除最新版本，再按版本倒序删除。'
+  }
+  if (code === 'task_not_cancelable') {
+    return '任务仍在生成中，暂时不能删除。请先停止生成，或等待任务完成后再删除。'
+  }
+  if (code === 'task_not_found' || status === 404) {
+    return '这条历史记录已经不存在，请刷新历史列表。'
+  }
+  if (code === 'auth_required' || status === 401) {
+    return '登录状态已失效，请重新登录后再删除。'
+  }
+  if (code === 'network_error' || status === 0) {
+    return '网络连接失败，记录未删除，请检查网络后重试。'
+  }
+  return '暂时无法删除这条记录，记录已保留，请稍后重试。'
 }
 
 function markOutputLoaded(url) {
@@ -840,6 +1437,12 @@ async function submitMaskEdit(payload) {
     quality: 'high',
     viewLabel: `${currentShotLabel.value} · 局部修正`,
     kindVariant: activeMode.value.id,
+    commerceProductId: selectedProduct.value?.id || '',
+    commerceProductSnapshot: commerceProductSnapshot(selectedProduct.value),
+    consistencyStrategy: 'revision-anchor-with-original-identity',
+    consistencyProfile: consistencyProfile.value.id,
+    referenceRoles: ['当前成品', ...consistencyProfile.value.roles],
+    essentialReferenceCount: consistencyProfile.value.essentialReferenceCount,
   })
   if (generated?.length) {
     activeOutput.value = generated[0]
@@ -848,7 +1451,8 @@ async function submitMaskEdit(payload) {
 }
 
 function runScopedMotion(callback) {
-  if (!motionContext || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  if (disposed || !motionContext || window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+    return
   motionContext.add(callback)
 }
 
@@ -856,13 +1460,45 @@ function animateCanvasView() {
   nextTick(() => {
     const target = canvasPanel.value?.firstElementChild
     if (!target) return
-    runScopedMotion(() =>
+    runScopedMotion(() => {
       gsap.fromTo(
         target,
-        { autoAlpha: 0, y: 14, scale: 0.992 },
-        { autoAlpha: 1, y: 0, scale: 1, duration: 0.52, ease: 'power3.out', clearProps: 'transform,opacity,visibility' },
-      ),
-    )
+        { opacity: 0, y: 14, scale: 0.988 },
+        {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.42,
+          ease: 'power3.out',
+          clearProps: 'transform,opacity',
+        },
+      )
+      const stageImage = target.querySelector?.('.showcase-demo__stage img')
+      if (stageImage) {
+        gsap.fromTo(
+          stageImage,
+          { scale: 1.05 },
+          { scale: 1, duration: 0.8, ease: 'power2.out', clearProps: 'transform' },
+        )
+      }
+      const tags = target.querySelectorAll?.('.showcase-demo__tag')
+      if (tags?.length) {
+        gsap.fromTo(
+          tags,
+          { opacity: 0, y: 6, scale: 0.96 },
+          {
+            opacity: 1,
+            y: 0,
+            scale: 1,
+            duration: 0.32,
+            stagger: 0.045,
+            delay: 0.1,
+            ease: 'power2.out',
+            clearProps: 'transform,opacity',
+          },
+        )
+      }
+    })
   })
 }
 
@@ -873,6 +1509,7 @@ async function initializeWorkspace() {
     await router.replace({ path: '/ecommerce-design', query: { tool: launchConfig.skill } })
   }
   await initialize()
+  if (disposed) return
   const launchPrompt = composePendingLaunchPrompt(pending, 1200)
   if (launchPrompt) sellingPoints.value = launchPrompt
   if (ratioOptions.some((item) => item.value === launchConfig.ratio)) {
@@ -888,7 +1525,10 @@ async function initializeWorkspace() {
 }
 
 watch(workspaceView, animateCanvasView)
-watch(activeMode, animateCanvasView)
+watch(activeMode, () => {
+  animateCanvasView()
+  nextTick(() => scrollActiveRailIntoView({ smooth: true }))
+})
 watch(
   () => previews.value.length,
   (nextLength, previousLength) => {
@@ -900,15 +1540,15 @@ watch(
       runScopedMotion(() =>
         gsap.fromTo(
           added,
-          { autoAlpha: 0, y: 10, scale: 0.9 },
+          { opacity: 0, y: 10, scale: 0.9 },
           {
-            autoAlpha: 1,
+            opacity: 1,
             y: 0,
             scale: 1,
-            duration: 0.48,
-            stagger: 0.06,
+            duration: 0.4,
+            stagger: 0.05,
             ease: 'back.out(1.45)',
-            clearProps: 'transform,opacity,visibility',
+            clearProps: 'transform,opacity',
           },
         ),
       )
@@ -925,15 +1565,15 @@ watch(
       runScopedMotion(() =>
         gsap.fromTo(
           cards,
-          { autoAlpha: 0, y: 18, scale: 0.965 },
+          { opacity: 0, y: 14, scale: 0.97 },
           {
-            autoAlpha: 1,
+            opacity: 1,
             y: 0,
             scale: 1,
-            duration: 0.58,
-            stagger: 0.08,
+            duration: 0.45,
+            stagger: 0.06,
             ease: 'back.out(1.25)',
-            clearProps: 'transform,opacity,visibility',
+            clearProps: 'transform,opacity',
           },
         ),
       )
@@ -943,69 +1583,129 @@ watch(
 
 onMounted(async () => {
   await nextTick()
+  if (disposed) return
+  updateRailEdgeState()
+  scrollActiveRailIntoView({ smooth: false })
+  if (typeof ResizeObserver !== 'undefined' && commerceRailScroll.value) {
+    railResizeObserver = new ResizeObserver(() => {
+      if (disposed) return
+      updateRailEdgeState()
+    })
+    railResizeObserver.observe(commerceRailScroll.value)
+  }
   if (commerceRoot.value && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     motionContext = gsap.context(() => {
+      // Opacity-only on atmosphere so layout panels never stay visibility:hidden.
+      gsap.fromTo(
+        '.commerce-atmosphere__glow',
+        { opacity: 0, scale: 0.94 },
+        { opacity: 1, scale: 1, duration: 0.7, stagger: 0.08, ease: 'power2.out' },
+      )
       gsap.fromTo(
         ['.commerce-header', '.commerce-rail', '.commerce-settings', '.commerce-canvas'],
-        { autoAlpha: 0, y: 10 },
+        { opacity: 0, y: 12 },
         {
-          autoAlpha: 1,
+          opacity: 1,
           y: 0,
-          duration: 0.58,
-          stagger: 0.055,
+          duration: 0.42,
+          stagger: 0.04,
           ease: 'power3.out',
-          clearProps: 'transform,opacity,visibility',
+          clearProps: 'transform,opacity',
+        },
+      )
+      gsap.fromTo(
+        '.commerce-rail__scroll > button, .commerce-rail__scroll > a',
+        { opacity: 0, y: 6 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.28,
+          stagger: 0.018,
+          delay: 0.1,
+          ease: 'power2.out',
+          clearProps: 'transform,opacity',
         },
       )
     }, commerceRoot.value)
   }
   await initializeWorkspace()
+  if (!disposed) {
+    await nextTick()
+    scrollActiveRailIntoView({ smooth: false })
+    updateRailEdgeState()
+  }
 })
 onBeforeUnmount(() => {
+  disposed = true
+  railResizeObserver?.disconnect()
+  railResizeObserver = null
   motionContext?.revert()
   motionContext = null
+  cancelAnimations([...railMotionTargets])
+  railMotionTargets.clear()
+  referenceImportController?.abort()
+  assetsAbortController?.abort()
   releasePreviews()
 })
 </script>
 
 <template>
   <main ref="commerceRoot" class="commerce-studio">
+    <div class="commerce-atmosphere" aria-hidden="true">
+      <span class="commerce-atmosphere__glow commerce-atmosphere__glow--a"></span>
+      <span class="commerce-atmosphere__glow commerce-atmosphere__glow--b"></span>
+      <span class="commerce-atmosphere__grain"></span>
+    </div>
+
     <header class="commerce-header">
-      <div class="commerce-workspace-title">
-        <span class="commerce-workspace-title__icon" aria-hidden="true">
-          <i class="bi bi-bag-check-fill"></i>
+      <div class="commerce-header__brand">
+        <span class="commerce-header__badge" aria-hidden="true">
+          <i class="bi" :class="activeMode.icon"></i>
         </span>
-        <span
-          ><strong>AI 电商设计</strong><small>{{ activeMode.label }}</small></span
-        >
+        <div class="commerce-header__copy">
+          <em>AI 电商</em>
+          <strong>{{ activeMode.label }}</strong>
+        </div>
       </div>
-      <button type="button" class="commerce-new" :disabled="running" @click="resetTask">
-        <i class="bi bi-plus-lg"></i><span>新建任务</span>
-      </button>
-      <span class="commerce-current-mode">
-        <i class="bi" :class="activeMode.icon"></i>{{ activeMode.label }}
-      </span>
-      <div class="commerce-header__actions">
+      <div class="commerce-header__actions" role="tablist" aria-label="工作区">
         <button
           type="button"
+          role="tab"
           :class="{ active: workspaceView === 'result' }"
+          :aria-selected="workspaceView === 'result'"
           @click="openWorkspaceView('result')"
         >
           <i class="bi bi-easel2"></i>生成结果
         </button>
         <button
           type="button"
+          role="tab"
           :class="{ active: workspaceView === 'history' }"
+          :aria-selected="workspaceView === 'history'"
+          :disabled="running"
           @click="openWorkspaceView('history')"
         >
           <i class="bi bi-clock-history"></i>电商历史
         </button>
         <button
           type="button"
+          role="tab"
           :class="{ active: workspaceView === 'assets' }"
+          :aria-selected="workspaceView === 'assets'"
+          :disabled="running"
           @click="openWorkspaceView('assets')"
         >
           <i class="bi bi-collection"></i>资产与素材
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :class="{ active: workspaceView === 'products' }"
+          :aria-selected="workspaceView === 'products'"
+          :disabled="running"
+          @click="openWorkspaceView('products')"
+        >
+          <i class="bi bi-box-seam"></i>商品库
         </button>
         <span class="commerce-cost"><i class="bi bi-coin"></i>{{ costLabel }}</span>
       </div>
@@ -1014,50 +1714,112 @@ onBeforeUnmount(() => {
     <div class="mobile-pane-switch" role="tablist" aria-label="工作区切换">
       <button
         type="button"
+        role="tab"
         :class="{ active: activeMobilePane === 'settings' }"
+        :aria-selected="activeMobilePane === 'settings'"
         @click="activeMobilePane = 'settings'"
       >
         参数设置
       </button>
       <button
         type="button"
+        role="tab"
         :class="{ active: activeMobilePane === 'canvas' && workspaceView === 'result' }"
+        :aria-selected="activeMobilePane === 'canvas' && workspaceView === 'result'"
         @click="openWorkspaceView('result')"
       >
         生成结果
       </button>
       <button
         type="button"
+        role="tab"
         :class="{ active: activeMobilePane === 'canvas' && workspaceView === 'history' }"
+        :aria-selected="activeMobilePane === 'canvas' && workspaceView === 'history'"
+        :disabled="running"
         @click="openWorkspaceView('history')"
       >
         历史
       </button>
       <button
         type="button"
+        role="tab"
         :class="{ active: activeMobilePane === 'canvas' && workspaceView === 'assets' }"
+        :aria-selected="activeMobilePane === 'canvas' && workspaceView === 'assets'"
+        :disabled="running"
         @click="openWorkspaceView('assets')"
       >
         素材
       </button>
+      <button
+        type="button"
+        role="tab"
+        :class="{ active: activeMobilePane === 'canvas' && workspaceView === 'products' }"
+        :aria-selected="activeMobilePane === 'canvas' && workspaceView === 'products'"
+        :disabled="running"
+        @click="openWorkspaceView('products')"
+      >
+        商品库
+      </button>
     </div>
 
+    <nav
+      v-if="activeMobilePane === 'settings'"
+      class="mobile-tool-switch"
+      aria-label="选择电商设计工具"
+    >
+      <button
+        v-for="mode in ECOMMERCE_MODES"
+        :key="mode.id"
+        type="button"
+        :class="{ active: mode.id === activeMode.id }"
+        :disabled="running"
+        @click="setActiveMode(mode)"
+      >
+        <i class="bi" :class="mode.icon"></i>
+        <span>{{ mode.shortLabel || mode.label }}</span>
+      </button>
+    </nav>
+
     <div class="commerce-layout">
-      <nav class="commerce-rail" aria-label="电商设计工具">
-        <button
-          v-for="group in ECOMMERCE_RAIL_GROUPS"
-          :key="group.id"
-          type="button"
-          :class="{ active: group.modes.includes(activeMode.id) }"
-          :title="group.label"
-          :disabled="running"
-          @click="setActiveMode(ecommerceModeById(group.mode))"
-        >
-          <i class="bi" :class="group.icon"></i><span>{{ group.label }}</span>
-        </button>
-        <RouterLink to="/tools/background-remove" title="智能抠图">
-          <i class="bi bi-person-bounding-box"></i><span>智能抠图</span>
-        </RouterLink>
+      <nav
+        class="commerce-rail"
+        :class="{ 'is-at-start': railAtStart, 'is-at-end': railAtEnd }"
+        aria-label="电商设计工具"
+      >
+        <div ref="commerceRailScroll" class="commerce-rail__scroll" @scroll="updateRailEdgeState">
+          <button
+            v-for="mode in ECOMMERCE_MODES"
+            :key="mode.id"
+            type="button"
+            :class="{ active: mode.id === activeMode.id }"
+            :aria-label="mode.label"
+            :aria-current="mode.id === activeMode.id ? 'page' : undefined"
+            :title="`${mode.label}：${mode.tagline}`"
+            :disabled="running"
+            @mouseenter="animateRailTabHover($event, true)"
+            @mouseleave="animateRailTabHover($event, false)"
+            @click="selectRailMode(mode, $event)"
+          >
+            <span class="commerce-rail__icon" aria-hidden="true">
+              <i class="bi" :class="mode.icon"></i>
+            </span>
+            <span class="commerce-rail__label">{{ mode.shortLabel || mode.label }}</span>
+          </button>
+          <div class="commerce-rail__rule" aria-hidden="true"></div>
+          <RouterLink
+            to="/tools/background-remove"
+            class="commerce-rail__external"
+            title="智能抠图"
+            aria-label="智能抠图"
+            @mouseenter="animateRailTabHover($event, true)"
+            @mouseleave="animateRailTabHover($event, false)"
+          >
+            <span class="commerce-rail__icon" aria-hidden="true">
+              <i class="bi bi-person-bounding-box"></i>
+            </span>
+            <span class="commerce-rail__label">智能抠图</span>
+          </RouterLink>
+        </div>
       </nav>
 
       <aside
@@ -1066,13 +1828,15 @@ onBeforeUnmount(() => {
       >
         <div class="settings-scroll">
           <section class="settings-section">
-            <h2>
-              {{ activeMode.uploadTitle || '商品原图' }}
-              <i
-                class="bi bi-question-circle"
-                :title="activeMode.uploadHint || '同一商品可上传多个角度'"
-              ></i>
-            </h2>
+            <div class="settings-heading settings-heading--source">
+              <h2>
+                {{ activeMode.uploadTitle || '商品原图' }}
+                <i
+                  class="bi bi-question-circle"
+                  :title="activeMode.uploadHint || '同一商品可上传多个角度'"
+                ></i>
+              </h2>
+            </div>
             <div
               class="product-upload"
               :class="{
@@ -1092,6 +1856,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     title="移除图片"
+                    :aria-label="`移除${referenceLabel(index)}参考图`"
                     :disabled="running"
                     @click="removeFile(index)"
                   >
@@ -1103,6 +1868,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="upload-add"
                   title="继续添加"
+                  aria-label="继续添加参考图"
                   :disabled="running"
                   @click="fileInput?.click()"
                 >
@@ -1128,35 +1894,68 @@ onBeforeUnmount(() => {
                 @change="onFileChange"
               />
             </div>
+            <div v-if="activeMode.referenceLabels?.length" class="upload-role-guide">
+              <span v-for="(label, index) in activeMode.referenceLabels.slice(0, 2)" :key="label">
+                <b>{{ index + 1 }}</b>
+                <span
+                  ><strong>{{ label }}</strong
+                  ><small>{{ index < minimumFiles ? '必填' : '可选' }}</small></span
+                >
+              </span>
+            </div>
           </section>
+
+          <div v-if="referenceDiagnostics.length" class="reference-diagnostics" aria-live="polite">
+            <div class="reference-diagnostics__header">
+              <span><i class="bi bi-shield-check"></i>素材预检</span>
+              <small>生成前检查</small>
+            </div>
+            <div class="reference-diagnostics__list">
+              <span
+                v-for="item in referenceDiagnostics"
+                :key="`${item.index}-${item.name}`"
+                :class="item.level"
+                :title="item.name"
+              >
+                <i
+                  class="bi"
+                  :class="
+                    item.level === 'ok'
+                      ? 'bi-check-circle-fill'
+                      : item.level === 'error'
+                        ? 'bi-exclamation-octagon-fill'
+                        : 'bi-exclamation-triangle-fill'
+                  "
+                ></i>
+                {{ referenceLabel(item.index) }} · {{ item.message }}
+              </span>
+            </div>
+          </div>
+
+          <button
+            v-if="selectedProduct"
+            type="button"
+            class="selected-product-context"
+            @click="openWorkspaceView('products')"
+          >
+            <span><i class="bi bi-box-seam"></i></span>
+            <span>
+              <small>当前商品</small>
+              <strong>{{ selectedProduct.title }}</strong>
+            </span>
+            <i class="bi bi-chevron-right"></i>
+          </button>
 
           <section class="settings-section">
             <div class="settings-heading">
               <h2>生成设置</h2>
-              <span>{{ activeRailGroup.label }}</span>
             </div>
             <div
-              v-if="activeRailModes.length > 1"
-              class="mode-switch"
-              role="tablist"
-              :aria-label="`${activeRailGroup.label}工具`"
-            >
-              <button
-                v-for="mode in activeRailModes"
-                :key="mode.id"
-                type="button"
-                role="tab"
-                :aria-selected="mode.id === activeMode.id"
-                :class="{ active: mode.id === activeMode.id }"
-                :disabled="running"
-                @click="setActiveMode(mode)"
-              >
-                <i class="bi" :class="mode.icon"></i>
-                <span>{{ mode.shortLabel || mode.label }}</span>
-              </button>
-            </div>
-            <div
-              v-if="activeModeFields.has('platform') || activeModeFields.has('market')"
+              v-if="
+                activeModeFields.has('platform') ||
+                activeModeFields.has('market') ||
+                activeModeFields.has('language')
+              "
               class="select-row"
             >
               <label v-if="activeModeFields.has('platform')"
@@ -1166,8 +1965,7 @@ onBeforeUnmount(() => {
                   :options="platformOptions"
                   aria-label="选择电商平台"
                   :disabled="running"
-                /></label
-              >
+              /></label>
               <label v-if="activeModeFields.has('market')"
                 ><span>市场</span
                 ><CommerceSelect
@@ -1175,8 +1973,7 @@ onBeforeUnmount(() => {
                   :options="marketOptions"
                   aria-label="选择目标市场"
                   :disabled="running"
-                /></label
-              >
+              /></label>
               <label v-if="activeModeFields.has('language')"
                 ><span>语言</span
                 ><CommerceSelect
@@ -1184,8 +1981,7 @@ onBeforeUnmount(() => {
                   :options="languageOptions"
                   aria-label="选择文案语言"
                   :disabled="running"
-                /></label
-              >
+              /></label>
             </div>
             <div class="select-row select-row--output">
               <label>
@@ -1197,7 +1993,7 @@ onBeforeUnmount(() => {
                   :disabled="running"
                 />
               </label>
-              <label v-if="maxOutputCount > 1">
+              <label v-if="maxOutputCount > 1 && activeMode.id !== 'listing'">
                 <span>生成张数</span>
                 <CommerceSelect
                   v-model="outputCount"
@@ -1230,43 +2026,139 @@ onBeforeUnmount(() => {
               "
               class="select-row select-row--creative"
             >
-              <label v-if="activeModeFields.has('scene')">
+              <label v-if="activeModeFields.has('scene') && activeMode.id !== 'tryon'">
                 <span>场景方向</span>
-                <CommerceSelect v-model="sceneStyle" :options="sceneOptions" aria-label="选择场景方向" :disabled="running" />
+                <CommerceSelect
+                  v-model="sceneStyle"
+                  :options="sceneOptions"
+                  aria-label="选择场景方向"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('campaign')">
                 <span>营销目标</span>
-                <CommerceSelect v-model="campaignGoal" :options="campaignOptions" aria-label="选择营销目标" :disabled="running" />
+                <CommerceSelect
+                  v-model="campaignGoal"
+                  :options="campaignOptions"
+                  aria-label="选择营销目标"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('tone')">
                 <span>视觉风格</span>
-                <CommerceSelect v-model="visualTone" :options="toneOptions" aria-label="选择视觉风格" :disabled="running" />
+                <CommerceSelect
+                  v-model="visualTone"
+                  :options="toneOptions"
+                  aria-label="选择视觉风格"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('apparel')">
                 <span>服装类型</span>
-                <CommerceSelect v-model="apparelType" :options="apparelOptions" aria-label="选择服装类型" :disabled="running" />
+                <CommerceSelect
+                  v-model="apparelType"
+                  :options="apparelOptions"
+                  aria-label="选择服装类型"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('model')">
                 <span>模特人群</span>
-                <CommerceSelect v-model="modelProfile" :options="modelOptions" aria-label="选择模特人群" :disabled="running" />
+                <CommerceSelect
+                  v-model="modelProfile"
+                  :options="modelOptions"
+                  aria-label="选择模特人群"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('pose')">
                 <span>模特姿态</span>
-                <CommerceSelect v-model="modelPose" :options="poseOptions" aria-label="选择模特姿态" :disabled="running" />
+                <CommerceSelect
+                  v-model="modelPose"
+                  :options="poseOptions"
+                  aria-label="选择模特姿态"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('accessory')">
                 <span>饰品类型</span>
-                <CommerceSelect v-model="accessoryType" :options="accessoryOptions" aria-label="选择饰品类型" :disabled="running" />
+                <CommerceSelect
+                  v-model="accessoryType"
+                  :options="accessoryOptions"
+                  aria-label="选择饰品类型"
+                  :disabled="running"
+                />
               </label>
               <label v-if="activeModeFields.has('shadow')">
                 <span>阴影类型</span>
-                <CommerceSelect v-model="shadowStyle" :options="shadowOptions" aria-label="选择阴影类型" :disabled="running" />
+                <CommerceSelect
+                  v-model="shadowStyle"
+                  :options="shadowOptions"
+                  aria-label="选择阴影类型"
+                  :disabled="running"
+                />
               </label>
             </div>
           </section>
 
+          <section v-if="activeMode.id === 'tryon'" class="settings-section tryon-scene-section">
+            <h2>拍摄场景</h2>
+            <div class="choice-chip-grid">
+              <button
+                v-for="item in tryonSceneOptions"
+                :key="item"
+                type="button"
+                :class="{ active: sceneStyle === item }"
+                @click="sceneStyle = item"
+              >
+                <i class="bi bi-check-lg"></i>{{ item }}
+              </button>
+            </div>
+          </section>
+
+          <section v-if="activeMode.id === 'clone'" class="settings-section clone-settings-section">
+            <h2>复刻类型</h2>
+            <div class="clone-type-grid">
+              <button
+                v-for="item in cloneTypeOptions"
+                :key="item.value"
+                type="button"
+                :class="{ active: cloneType === item.value }"
+                @click="cloneType = item.value"
+              >
+                <i class="bi" :class="item.icon"></i>{{ item.label }}
+              </button>
+            </div>
+            <h2 class="clone-subheading">复刻程度</h2>
+            <div class="clone-fidelity-grid">
+              <button
+                v-for="item in cloneFidelityOptions"
+                :key="item.value"
+                type="button"
+                :class="{ active: cloneFidelity === item.value }"
+                @click="cloneFidelity = item.value"
+              >
+                <span class="structure-mode-check"><i class="bi bi-check-lg"></i></span>
+                <span
+                  ><strong>{{ item.label }}</strong
+                  ><small>{{ item.description }}</small></span
+                >
+              </button>
+            </div>
+          </section>
+
           <section class="settings-section">
-            <h2>{{ requiresBrief ? '商品卖点与要求' : '补充要求' }}</h2>
+            <div class="settings-heading settings-heading--brief">
+              <h2>{{ requiresBrief ? '商品卖点与要求' : '补充要求' }}</h2>
+              <button
+                type="button"
+                class="brief-organize"
+                title="识别商品图片并生成名称和卖点"
+                @click="openProductBriefAssistant"
+              >
+                <i class="bi bi-stars"></i>AI 生成
+              </button>
+            </div>
             <label class="text-field">
               <span>{{ subjectNameLabel }}</span>
               <input v-model="productName" maxlength="60" :placeholder="subjectNamePlaceholder" />
@@ -1301,10 +2193,84 @@ onBeforeUnmount(() => {
             </button>
           </section>
 
-          <section v-if="activeModeFields.has('modules')" class="settings-section modules-section">
+          <section
+            v-if="activeMode.id === 'listing'"
+            class="settings-section listing-structure-section"
+          >
+            <h2>套图结构配置</h2>
+            <div class="structure-mode-grid">
+              <button
+                type="button"
+                :class="{ active: listingStructureMode === 'smart' }"
+                @click="setListingStructureMode('smart')"
+              >
+                <span class="structure-mode-check"><i class="bi bi-check-lg"></i></span>
+                <span
+                  ><strong>智能匹配</strong
+                  ><small>分析商品资料，自动组织 7 张高转化套图</small></span
+                >
+              </button>
+              <button
+                type="button"
+                :class="{ active: listingStructureMode === 'custom' }"
+                @click="setListingStructureMode('custom')"
+              >
+                <span class="structure-mode-check"><i class="bi bi-check-lg"></i></span>
+                <span
+                  ><strong>自定义配置</strong><small>自由选择图片类型和本次生成数量</small></span
+                >
+              </button>
+            </div>
+            <div v-if="listingStructureMode === 'custom'" class="listing-count-config">
+              <article
+                v-for="item in [
+                  { key: 'white', label: '白底图', hint: '平台合规主图，多角度展示商品' },
+                  { key: 'scene', label: '场景图', hint: '生活使用场景与人物搭配' },
+                  { key: 'selling', label: '卖点图', hint: '核心卖点与细节特写' },
+                  { key: 'other', label: '其他', hint: '规格、包装、细节智能匹配' },
+                ]"
+                :key="item.key"
+              >
+                <span
+                  ><strong>{{ item.label }}</strong
+                  ><small>{{ item.hint }}</small></span
+                >
+                <div class="listing-stepper" :aria-label="`${item.label}数量`">
+                  <button
+                    type="button"
+                    :aria-label="`减少${item.label}`"
+                    :disabled="listingStructureCounts[item.key] <= (item.key === 'white' ? 1 : 0)"
+                    @click="adjustListingStructure(item.key, -1)"
+                  >
+                    <i class="bi bi-dash"></i>
+                  </button>
+                  <b>{{ listingStructureCounts[item.key] }}</b>
+                  <button
+                    type="button"
+                    :aria-label="`增加${item.label}`"
+                    :disabled="listingCustomCount >= 7"
+                    @click="adjustListingStructure(item.key, 1)"
+                  >
+                    <i class="bi bi-plus"></i>
+                  </button>
+                </div>
+              </article>
+              <footer>
+                <span>已分配 {{ listingCustomCount }}/7 张</span>
+                <strong :class="{ ready: listingCustomCount === 7 }">
+                  {{ listingCustomCount === 7 ? '结构完整' : '需要分配满 7 张' }}
+                </strong>
+              </footer>
+            </div>
+          </section>
+
+          <section
+            v-if="activeModeFields.has('modules') && activeMode.id !== 'listing'"
+            class="settings-section modules-section"
+          >
             <h2>视觉模块 <small>多选</small></h2>
             <div class="module-grid">
-              <label v-for="item in ECOMMERCE_MODULES" :key="item.value">
+              <label v-for="item in activeModuleOptions" :key="item.value">
                 <input
                   v-model="selectedModules"
                   type="checkbox"
@@ -1327,7 +2293,9 @@ onBeforeUnmount(() => {
           <section class="settings-section shot-plan-section">
             <div class="settings-heading">
               <h2>本次出图结构</h2>
-              <span>{{ generationPlan.length }} 张 · 顺序生成</span>
+              <span>
+                {{ generationPlan.length }} 张{{ generationPlan.length > 1 ? ' · 首张后并行' : '' }}
+              </span>
             </div>
             <ol class="shot-plan-list">
               <li v-for="(item, index) in generationPlan" :key="item.viewId">
@@ -1340,7 +2308,7 @@ onBeforeUnmount(() => {
             </ol>
             <p v-if="generationPlan.length > 1" class="series-lock-note">
               <i class="bi bi-link-45deg"></i>
-              首张结果将锁定后续图片的色彩、光线和版式语言
+              首张锁定系列视觉后，其余图片并行生成
             </p>
           </section>
         </div>
@@ -1359,17 +2327,26 @@ onBeforeUnmount(() => {
             </span>
             <strong>{{ costLabel }}</strong>
           </div>
-          <button v-if="running" type="button" class="cancel-button" @click="cancel()">
-            <i class="bi bi-stop-circle"></i>停止生成
+          <button
+            v-if="running"
+            type="button"
+            class="cancel-button"
+            :disabled="cancelling"
+            :aria-label="cancelling ? '正在停止生成' : '停止生成'"
+            @click="cancel()"
+          >
+            <i class="bi" :class="cancelling ? 'bi-arrow-repeat is-spinning' : 'bi-stop-circle'"></i
+            >{{ cancelling ? '停止中' : '停止生成' }}
           </button>
           <button
             v-else
             type="button"
             class="generate-button"
             :disabled="!canGenerate"
+            :title="readiness.label"
             @click="generate"
           >
-            <i class="bi bi-stars"></i>生成{{ activeMode.label }}
+            <i class="bi bi-stars"></i>一键生成{{ activeMode.label }}（{{ actualOutputCount }}张）
           </button>
         </footer>
       </aside>
@@ -1379,7 +2356,16 @@ onBeforeUnmount(() => {
         class="commerce-canvas"
         :class="{ 'is-mobile-hidden': activeMobilePane !== 'canvas' }"
       >
-        <section v-if="workspaceView === 'history'" class="workspace-library">
+        <CommerceProductLibrary
+          v-if="workspaceView === 'products'"
+          :selected-product-id="selectedProduct?.id || ''"
+          :busy="applyingProduct"
+          @select="applyCommerceProduct"
+          @clear-product="clearSelectedProduct"
+          @close="openWorkspaceView('result')"
+        />
+
+        <section v-else-if="workspaceView === 'history'" class="workspace-library">
           <header class="workspace-library__header">
             <div>
               <span class="workspace-library__icon"><i class="bi bi-clock-history"></i></span>
@@ -1392,14 +2378,18 @@ onBeforeUnmount(() => {
               <div class="workspace-segment" role="tablist" aria-label="历史范围">
                 <button
                   type="button"
+                  role="tab"
                   :class="{ active: historyScope === 'current' }"
+                  :aria-selected="historyScope === 'current'"
                   @click="historyScope = 'current'"
                 >
                   当前工具
                 </button>
                 <button
                   type="button"
+                  role="tab"
                   :class="{ active: historyScope === 'all' }"
+                  :aria-selected="historyScope === 'all'"
                   @click="historyScope = 'all'"
                 >
                   全部电商
@@ -1409,6 +2399,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="workspace-icon-button"
                 title="刷新历史"
+                aria-label="刷新历史"
                 :disabled="historyLoading"
                 @click="loadHistory(12)"
               >
@@ -1418,6 +2409,12 @@ onBeforeUnmount(() => {
           </header>
 
           <div class="workspace-library__body">
+            <div v-if="historyError" class="workspace-library__inline-error" role="alert">
+              <span><i class="bi bi-exclamation-circle"></i>{{ historyError }}</span>
+              <button type="button" @click="loadHistory(12)">
+                <i class="bi bi-arrow-clockwise"></i>重试
+              </button>
+            </div>
             <div v-if="historyLoading && !visibleHistoryOutputs.length" class="asset-skeleton-grid">
               <span v-for="index in 8" :key="index"></span>
             </div>
@@ -1461,10 +2458,25 @@ onBeforeUnmount(() => {
                     ></i>
                     作为参考
                   </button>
+                  <button
+                    type="button"
+                    class="danger"
+                    :disabled="removingOutputs.has(output)"
+                    :aria-label="`删除${outputMode(output).shortLabel || outputMode(output).label}历史记录`"
+                    @click="requestOutputRemoval(output)"
+                  >
+                    <i
+                      class="bi"
+                      :class="
+                        removingOutputs.has(output) ? 'bi-arrow-repeat is-spinning' : 'bi-trash3'
+                      "
+                    ></i>
+                    删除
+                  </button>
                 </div>
               </article>
             </div>
-            <div v-else class="workspace-empty">
+            <div v-else-if="!historyError" class="workspace-empty">
               <span><i class="bi bi-clock-history"></i></span>
               <strong
                 >还没有{{ historyScope === 'current' ? activeMode.label : '电商' }}记录</strong
@@ -1500,6 +2512,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="workspace-icon-button"
                 title="刷新素材"
+                aria-label="刷新素材"
                 :disabled="assetsLoading || assetsLoadingMore"
                 @click="refreshAssets"
               >
@@ -1535,6 +2548,17 @@ onBeforeUnmount(() => {
                 @click="selectAssetFilter(group.id)"
               >
                 {{ group.name }} <small>{{ group.assetCount }}</small>
+              </button>
+            </div>
+
+            <div
+              v-if="assetsError && assets.length"
+              class="workspace-library__inline-error"
+              role="alert"
+            >
+              <span><i class="bi bi-exclamation-circle"></i>{{ assetsError }}</span>
+              <button type="button" @click="retryAssetsLoad">
+                <i class="bi bi-arrow-clockwise"></i>重试
               </button>
             </div>
 
@@ -1616,7 +2640,18 @@ onBeforeUnmount(() => {
               <strong>{{ status || '正在生成电商设计' }}</strong>
               <span>正在锁定商品主体、文字与系列视觉</span>
             </div>
-            <button type="button" @click="cancel()"><i class="bi bi-stop-circle"></i>停止</button>
+            <button
+              type="button"
+              :disabled="cancelling"
+              :aria-label="cancelling ? '正在停止生成' : '停止生成'"
+              @click="cancel()"
+            >
+              <i
+                class="bi"
+                :class="cancelling ? 'bi-arrow-repeat is-spinning' : 'bi-stop-circle'"
+              ></i
+              >{{ cancelling ? '停止中' : '停止' }}
+            </button>
           </header>
           <div class="generation-skeletons" :class="generationLayoutClass">
             <article
@@ -1646,23 +2681,34 @@ onBeforeUnmount(() => {
             </div>
             <div class="result-header-actions">
               <span class="version-badge">V{{ currentVersionNumber }}</span>
-              <button type="button" title="放大查看细节" @click="openOutputPreview(currentOutput)">
+              <button
+                type="button"
+                title="放大查看细节"
+                aria-label="放大查看当前结果"
+                @click="openOutputPreview(currentOutput)"
+              >
                 <i class="bi bi-arrows-fullscreen"></i>
               </button>
               <button
                 type="button"
                 title="局部编辑"
+                aria-label="局部编辑当前结果"
                 :disabled="running"
                 @click="openLocalEditor(currentOutput)"
               >
                 <i class="bi bi-brush"></i>
               </button>
-              <button type="button" title="下载当前结果" @click="downloadOutput(currentOutput)">
+              <button
+                type="button"
+                title="下载当前结果"
+                aria-label="下载当前结果"
+                @click="downloadOutput(currentOutput)"
+              >
                 <i class="bi bi-download"></i>
               </button>
             </div>
           </header>
-          <div class="result-main">
+          <div class="result-main" :class="{ 'revision-is-open': revisionPanelOpen }">
             <div
               class="result-stage"
               :class="resultLayoutClass"
@@ -1674,163 +2720,205 @@ onBeforeUnmount(() => {
                 class="result-image-card"
                 :class="{ active: output === currentOutput, loaded: loadedOutputs.has(output) }"
                 :style="{
-                  aspectRatio: String(outputAspectRatios[output] || aspectRatio).replace(':', ' / '),
+                  aspectRatio: String(outputAspectRatios[output] || aspectRatio).replace(
+                    ':',
+                    ' / ',
+                  ),
                 }"
-                role="button"
-                tabindex="0"
-                :aria-label="`查看第 ${index + 1} 张结果细节`"
-                @click="activeOutput = output"
-                @dblclick="openOutputPreview(output)"
-                @keydown.enter="openOutputPreview(output)"
               >
-                <span v-if="!loadedOutputs.has(output)" class="result-image-skeleton"></span>
-                <AuthenticatedImage
-                  :src="output"
-                  :alt="`${activeMode.label}第 ${index + 1} 张生成结果`"
-                  :max-dimension="1600"
-                  @load="markOutputLoaded(output)"
-                />
-                <span class="result-image-index">{{ String(index + 1).padStart(2, '0') }}</span>
-                <span class="result-image-tools">
-                  <button type="button" title="放大" @click.stop="openOutputPreview(output)">
-                    <i class="bi bi-arrows-fullscreen"></i>
-                  </button>
-                  <button type="button" title="局部编辑" @click.stop="openLocalEditor(output)">
-                    <i class="bi bi-brush"></i>
-                  </button>
-                </span>
+                <button
+                  type="button"
+                  class="result-image-hit-area"
+                  :aria-label="`查看第 ${index + 1} 张结果细节`"
+                  @click="activeOutput = output"
+                  @dblclick="openOutputPreview(output)"
+                >
+                  <span v-if="!loadedOutputs.has(output)" class="result-image-skeleton"></span>
+                  <AuthenticatedImage
+                    :src="output"
+                    :alt="`${activeMode.label}第 ${index + 1} 张生成结果`"
+                    :max-dimension="1600"
+                    @load="markOutputLoaded(output)"
+                  />
+                  <span class="result-image-index">{{ String(index + 1).padStart(2, '0') }}</span>
+                </button>
               </article>
             </div>
-            <aside class="revision-panel" aria-label="继续调整当前成品">
+            <aside
+              class="revision-panel"
+              :class="{ open: revisionPanelOpen }"
+              aria-label="继续调整当前成品"
+            >
               <header>
-                <span><i class="bi bi-sliders2"></i></span>
-                <div>
+                <button
+                  type="button"
+                  class="revision-panel__toggle"
+                  :title="revisionPanelOpen ? '收起连续优化' : '继续优化当前成品'"
+                  :aria-label="revisionPanelOpen ? '收起连续优化' : '展开连续优化'"
+                  :aria-expanded="revisionPanelOpen"
+                  @click="revisionPanelOpen = !revisionPanelOpen"
+                >
+                  <i :class="revisionPanelOpen ? 'bi bi-chevron-right' : 'bi bi-sliders2'"></i>
+                </button>
+                <div class="revision-panel__title">
                   <small>连续优化</small>
                   <strong>继续调整当前成品</strong>
                 </div>
               </header>
-              <p>只描述这一轮需要改变的内容，未提及部分会继续锁定。</p>
-              <div class="version-lineage" aria-label="当前版本链">
-                <span
-                  v-for="version in currentVersionNumber"
-                  :key="version"
-                  :class="{ active: version === currentVersionNumber }"
+              <div v-show="revisionPanelOpen" class="revision-panel__body">
+                <p>只描述这一轮需要改变的内容，未提及部分会继续锁定。</p>
+                <div class="version-lineage" aria-label="当前版本链">
+                  <span
+                    v-for="version in currentVersionNumber"
+                    :key="version"
+                    :class="{ active: version === currentVersionNumber }"
+                  >
+                    V{{ version }}
+                  </span>
+                </div>
+                <label class="revision-field">
+                  <span>调整方向</span>
+                  <CommerceSelect
+                    v-model="revisionDirection"
+                    :options="ECOMMERCE_REVISION_DIRECTIONS"
+                    aria-label="选择调整方向"
+                    :disabled="running"
+                  />
+                </label>
+                <label class="revision-field revision-field--brief">
+                  <span>本轮只修改</span>
+                  <textarea
+                    v-model="revisionBrief"
+                    maxlength="600"
+                    placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
+                  ></textarea>
+                  <small>{{ revisionBrief.length }}/600</small>
+                </label>
+                <p v-if="revisionError || generationError" class="revision-error" role="alert">
+                  {{ revisionError || generationError }}
+                </p>
+                <div class="revision-submit-meta">
+                  <span><i class="bi bi-shield-check"></i>上一版本会保留</span>
+                  <strong>{{ revisionCostLabel }}</strong>
+                </div>
+                <button
+                  type="button"
+                  class="revision-submit"
+                  :disabled="!canRevise"
+                  @click="reviseCurrentOutput"
                 >
-                  V{{ version }}
-                </span>
+                  <i class="bi bi-arrow-repeat"></i>
+                  生成 V{{ currentVersionNumber + 1 }}
+                </button>
               </div>
-              <label class="revision-field">
-                <span>调整方向</span>
-                <CommerceSelect
-                  v-model="revisionDirection"
-                  :options="ECOMMERCE_REVISION_DIRECTIONS"
-                  aria-label="选择调整方向"
-                  :disabled="running"
-                />
-              </label>
-              <label class="revision-field revision-field--brief">
-                <span>本轮只修改</span>
-                <textarea
-                  v-model="revisionBrief"
-                  maxlength="600"
-                  placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
-                ></textarea>
-                <small>{{ revisionBrief.length }}/600</small>
-              </label>
-              <p v-if="revisionError || generationError" class="revision-error" role="alert">
-                {{ revisionError || generationError }}
-              </p>
-              <div class="revision-submit-meta">
-                <span><i class="bi bi-shield-check"></i>上一版本会保留</span>
-                <strong>{{ revisionCostLabel }}</strong>
-              </div>
-              <button
-                type="button"
-                class="revision-submit"
-                :disabled="!canRevise"
-                @click="reviseCurrentOutput"
-              >
-                <i class="bi bi-arrow-repeat"></i>
-                生成 V{{ currentVersionNumber + 1 }}
-              </button>
             </aside>
           </div>
-          <div class="result-strip" aria-label="生成历史">
-            <button
+          <div class="result-strip" role="list" aria-label="生成历史">
+            <div
               v-for="output in modeOutputs"
               :key="output"
-              type="button"
-              :class="{ active: output === currentOutput }"
-              @click="activeOutput = output"
-              @mouseenter="previewResultOnHover(output)"
+              class="result-strip__item"
+              role="listitem"
             >
-              <AuthenticatedImage
-                :src="outputPreviewUrls[output] || output"
-                alt=""
-                :max-dimension="180"
-              />
-              <span class="result-shot-index">
-                {{ String((outputGroupIndexes[output] || 0) + 1).padStart(2, '0') }} · V{{
-                  outputVersion(output)
-                }}
-              </span>
-              <span class="result-delete" title="删除" @click.stop="removeOutput(output)"
-                ><i class="bi bi-trash3"></i
-              ></span>
-            </button>
+              <button
+                type="button"
+                class="result-strip__select"
+                :class="{ active: output === currentOutput }"
+                :aria-label="`查看第 ${(outputGroupIndexes[output] || 0) + 1} 张结果，第 ${outputVersion(output)} 版`"
+                @click="activeOutput = output"
+                @mouseenter="previewResultOnHover(output)"
+              >
+                <AuthenticatedImage
+                  :src="outputPreviewUrls[output] || output"
+                  alt=""
+                  :max-dimension="180"
+                />
+                <span class="result-shot-index">
+                  {{ String((outputGroupIndexes[output] || 0) + 1).padStart(2, '0') }} · V{{
+                    outputVersion(output)
+                  }}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="result-delete"
+                title="删除结果"
+                :aria-label="`删除第 ${(outputGroupIndexes[output] || 0) + 1} 张结果，第 ${outputVersion(output)} 版`"
+                :disabled="removingOutputs.has(output)"
+                @click="requestOutputRemoval(output)"
+              >
+                <i
+                  class="bi"
+                  :class="removingOutputs.has(output) ? 'bi-arrow-repeat is-spinning' : 'bi-trash3'"
+                ></i>
+              </button>
+            </div>
           </div>
         </div>
 
         <div v-else class="canvas-empty">
           <div class="canvas-intro">
             <div>
-              <p class="canvas-kicker">{{ activeMode.tagline }}</p>
               <h1>{{ activeMode.label }}</h1>
-              <p>{{ activeMode.description }}</p>
-            </div>
-            <div class="canvas-facts" aria-label="当前任务配置">
-              <span><i class="bi bi-grid-1x2"></i>{{ activeRailGroup.label }}</span>
-              <span><i class="bi bi-aspect-ratio"></i>{{ aspectRatio }}</span>
-              <span><i class="bi bi-images"></i>{{ actualOutputCount }} 张</span>
+              <p>{{ modePreview.description }}</p>
             </div>
           </div>
-          <div class="canvas-flow">
-            <button
-              type="button"
-              class="canvas-source"
-              :class="{ 'has-images': previews.length }"
-              :disabled="running"
-              @click="fileInput?.click()"
-            >
-              <template v-if="previews.length">
-                <img v-for="item in previews.slice(0, 3)" :key="item.url" :src="item.url" alt="" />
-              </template>
-              <template v-else>
-                <i class="bi bi-cloud-arrow-up"></i>
-                <strong>上传参考图</strong>
-                <small>{{ activeMode.uploadHint || '最多 6 张' }}</small>
-              </template>
-            </button>
-            <i class="canvas-flow__arrow bi bi-arrow-right" aria-hidden="true"></i>
-            <div class="canvas-target">
-              <header>
-                <span><i class="bi" :class="activeMode.icon"></i></span>
-                <div>
-                  <small>本次将生成</small><strong>{{ actualOutputCount }} 张成品</strong>
+          <div class="canvas-showcase" :class="{ 'is-demo': !previews.length }">
+            <div v-if="!previews.length" class="showcase-demo" :class="`is-${activeMode.id}`">
+              <div class="showcase-demo__stage">
+                <img :src="modePreview.src" :alt="modePreview.label" />
+                <span
+                  v-for="(tag, index) in modePreview.tags"
+                  :key="tag"
+                  class="showcase-demo__tag"
+                  :class="`tag-${index + 1}`"
+                >
+                  {{ tag }}
+                </span>
+              </div>
+              <div class="showcase-demo__caption">
+                <div class="showcase-demo__caption-copy">
+                  <span><i class="bi bi-stars"></i>{{ modePreview.label }}</span>
+                  <strong>{{ modePreview.title }}</strong>
                 </div>
-                <b>{{ aspectRatio }}</b>
-              </header>
-              <ol>
-                <li v-for="(item, index) in generationPlan" :key="item.viewId">
-                  <span>{{ String(index + 1).padStart(2, '0') }}</span>
-                  <strong>{{ item.viewLabel.split(' · ').pop() }}</strong>
-                  <i class="bi bi-check2"></i>
-                </li>
-              </ol>
-              <footer v-if="generationPlan.length > 1">
-                <i class="bi bi-link-45deg"></i>统一商品、色彩、光线与版式
-              </footer>
+                <button type="button" :disabled="running" @click="fileInput?.click()">
+                  <i class="bi bi-cloud-arrow-up"></i>
+                  {{ modePreview.cta }}
+                </button>
+              </div>
             </div>
+            <template v-else>
+              <button
+                type="button"
+                class="showcase-product has-images"
+                :disabled="running"
+                @click="fileInput?.click()"
+              >
+                <img :src="previews[0].url" :alt="`${activeMode.label}商品参考图`" />
+                <span><i class="bi bi-arrow-repeat"></i>更换商品图</span>
+              </button>
+              <span class="showcase-flow-arrow" aria-hidden="true"
+                ><i class="bi bi-arrow-right"></i
+              ></span>
+              <div
+                class="showcase-output-grid"
+                :class="{ 'is-single': generationPlan.length === 1 }"
+              >
+                <article
+                  v-for="(item, index) in generationPlan.slice(0, 5)"
+                  :key="item.viewId"
+                  :class="{ featured: index === 0 }"
+                >
+                  <span>{{ String(index + 1).padStart(2, '0') }}</span>
+                  <i class="bi" :class="item.icon || activeMode.icon"></i>
+                  <strong>{{ item.viewLabel.split(' · ').pop() }}</strong>
+                  <small>{{ index === 0 ? `${platform} · ${aspectRatio}` : '系列视觉统一' }}</small>
+                </article>
+                <span v-if="generationPlan.length > 5" class="showcase-more">
+                  +{{ generationPlan.length - 5 }} 张
+                </span>
+              </div>
+            </template>
           </div>
         </div>
       </section>
@@ -1842,6 +2930,30 @@ onBeforeUnmount(() => {
       :available="creditsPrompt.availableCredits.value"
       :light="!appearanceStore.isDark"
       @close="creditsPrompt.closePrompt"
+    />
+
+    <EcommerceBriefAssistantDialog
+      v-model:product-name="briefDraftName"
+      v-model:selling-points="briefDraftSellingPoints"
+      :open="briefAssistantOpen"
+      :busy="briefAssistantBusy"
+      :error="briefAssistantError"
+      :light="!appearanceStore.isDark"
+      @close="closeProductBriefAssistant"
+      @regenerate="generateProductBriefDraft"
+      @confirm="confirmProductBrief"
+    />
+
+    <DeleteHistoryConfirmDialog
+      :open="Boolean(deleteCandidate)"
+      heading="删除这条记录及后续结果？"
+      description="将删除这张图片；如果其他结果由它继续生成，也会一并删除。删除后无法恢复。"
+      confirm-label="确认删除"
+      busy-label="删除中…"
+      :busy="removingOutputs.has(deleteCandidate)"
+      :light="!appearanceStore.isDark"
+      @close="closeOutputRemoval"
+      @confirm="confirmOutputRemoval"
     />
 
     <LocalMaskEditorDialog
@@ -1871,24 +2983,43 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .commerce-studio {
-  --commerce-line: #e4e3ec;
-  --commerce-panel: #fff;
-  --commerce-canvas: #f7f7ff;
-  --commerce-soft: #f4f4f8;
-  --commerce-soft-strong: #eeeef5;
-  --commerce-ink: #151a2d;
-  --commerce-muted: #79809a;
-  --commerce-accent: #6a4fe0;
-  --commerce-accent-ink: #563cc8;
-  --commerce-accent-soft: #f0ecff;
-  --commerce-accent-line: #d9d1ff;
+  --commerce-line: rgb(40 32 72 / 9%);
+  --commerce-panel: rgb(255 255 255 / 86%);
+  --commerce-canvas: #f3f1f8;
+  --commerce-soft: color-mix(in srgb, #6d5cff 7%, #f4f2fb);
+  --commerce-soft-strong: color-mix(in srgb, #6d5cff 12%, #ebe7f8);
+  --commerce-ink: #17131f;
+  --commerce-muted: #6f6880;
+  --commerce-accent: #6d5cff;
+  --commerce-accent-ink: #5340d8;
+  --commerce-accent-soft: rgb(109 92 255 / 12%);
+  --commerce-accent-line: rgb(109 92 255 / 28%);
   --commerce-success: #1f7a4d;
-  --commerce-warning: #8a5b18;
-  --commerce-shadow-control: 0 2px 8px rgb(36 28 73 / 8%);
-  --commerce-shadow-footer: 0 -8px 22px rgb(31 42 58 / 4%);
-  --commerce-shadow-panel: 0 14px 36px rgb(32 28 62 / 6%);
-  --commerce-shadow-result: 0 15px 38px rgb(27 37 52 / 12%);
-  --commerce-shadow-card: 0 8px 24px rgb(31 36 55 / 4%);
+  --commerce-warning: #9a6418;
+  --commerce-shadow-control: 0 4px 14px rgb(58 51 112 / 8%);
+  --commerce-shadow-footer: 0 -12px 32px rgb(58 51 112 / 7%);
+  --commerce-shadow-panel: 0 18px 44px rgb(48 36 96 / 12%);
+  --commerce-shadow-result: 0 22px 48px rgb(38 32 80 / 16%);
+  --commerce-shadow-card: 0 12px 30px rgb(58 51 112 / 10%);
+  --commerce-settings-surface: rgb(255 255 255 / 82%);
+  --commerce-settings-control: rgb(245 243 252 / 88%);
+  --commerce-settings-line: rgb(48 40 84 / 9%);
+  --commerce-settings-primary: var(--commerce-accent);
+  --commerce-settings-primary-ink: #fff;
+  --commerce-settings-radius: 20px;
+  --commerce-settings-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --commerce-display: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
+  --commerce-sans: 'PingFang SC', 'Noto Sans SC', 'Segoe UI', sans-serif;
+  --commerce-rail-fade: #f3f1f8;
+  --commerce-panel-solid: #ffffff;
+  --commerce-cost-bg: color-mix(in srgb, var(--commerce-warning) 12%, #fff);
+  --commerce-section-fill: color-mix(in srgb, #fff 58%, transparent);
+  --commerce-showcase-dock: color-mix(in srgb, #fff 96%, transparent);
+  --commerce-canvas-panel: color-mix(in srgb, #fff 48%, transparent);
+  --commerce-showcase-card: color-mix(in srgb, #fff 78%, transparent);
+  --commerce-footer-fill: color-mix(in srgb, var(--commerce-settings-surface) 92%, #fff);
+  position: relative;
+  isolation: isolate;
   color-scheme: light;
   display: flex;
   width: 100%;
@@ -1898,7 +3029,44 @@ onBeforeUnmount(() => {
   overflow: hidden;
   color: var(--commerce-ink);
   background: var(--commerce-canvas);
+  font-family: var(--commerce-sans);
   flex-direction: column;
+}
+.commerce-atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.commerce-atmosphere__glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(8px);
+}
+.commerce-atmosphere__glow--a {
+  top: -18%;
+  left: -8%;
+  width: 46vw;
+  height: 46vw;
+  background: radial-gradient(circle, rgb(109 92 255 / 22%), transparent 68%);
+}
+.commerce-atmosphere__glow--b {
+  right: -10%;
+  bottom: -22%;
+  width: 42vw;
+  height: 42vw;
+  background: radial-gradient(circle, rgb(56 189 168 / 16%), transparent 70%);
+}
+.commerce-atmosphere__grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.commerce-studio > :not(.commerce-atmosphere) {
+  position: relative;
+  z-index: 1;
 }
 .commerce-studio button,
 .commerce-studio a {
@@ -1926,50 +3094,60 @@ onBeforeUnmount(() => {
 }
 .commerce-header {
   display: flex;
-  min-height: 52px;
+  min-height: 60px;
   align-items: center;
-  gap: 12px;
-  padding: 0 16px;
+  gap: 16px;
+  margin: 10px 10px 0;
+  padding: 0 14px 0 12px;
   background: var(--commerce-panel);
-  border-bottom: 1px solid var(--commerce-line);
-  flex: 0 0 52px;
+  border: 1px solid var(--commerce-line);
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgb(48 36 96 / 6%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+  flex: 0 0 60px;
 }
-.commerce-workspace-title {
-  display: flex;
-  min-width: 178px;
-  align-items: center;
-  gap: 9px;
-  color: var(--commerce-ink);
-}
-.commerce-workspace-title__icon {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
-  place-items: center;
-  color: var(--commerce-accent-ink);
-  background: var(--commerce-accent-soft);
-  border-radius: 7px;
-  font-size: 14px;
-}
-.commerce-workspace-title > span:last-child {
+.commerce-header__brand {
   display: flex;
   min-width: 0;
-  flex-direction: column;
+  align-items: center;
+  gap: 10px;
 }
-.commerce-workspace-title strong {
-  font-size: 15px;
-  line-height: 1.1;
+.commerce-header__badge {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: #fff;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 30% 24%, rgb(255 255 255 / 28%), transparent 46%),
+    linear-gradient(145deg, #6d5cff, #8b5cf6 58%, #14b8a6);
+  box-shadow: 0 8px 18px rgb(109 92 255 / 24%);
+  font-size: 1rem;
 }
-.commerce-workspace-title small {
-  margin-top: 3px;
-  overflow: hidden;
+.commerce-header__copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.commerce-header__copy em {
   color: var(--commerce-muted);
-  font-size: 10px;
+  font-family: var(--commerce-settings-mono);
+  font-size: 0.58rem;
+  font-style: normal;
+  font-weight: 740;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.commerce-header__copy strong {
+  overflow: hidden;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.commerce-new,
 .commerce-header__actions a,
 .commerce-header__actions button,
 .commerce-cost {
@@ -1977,11 +3155,11 @@ onBeforeUnmount(() => {
   height: 34px;
   align-items: center;
   gap: 7px;
-  padding: 0 13px;
-  color: var(--commerce-ink);
-  background: var(--commerce-soft);
+  padding: 0 12px;
+  color: var(--commerce-muted);
+  background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
   text-decoration: none;
@@ -1989,81 +3167,204 @@ onBeforeUnmount(() => {
 .commerce-header__actions button {
   cursor: pointer;
 }
+.commerce-header__actions button:hover:not(:disabled) {
+  color: var(--commerce-ink);
+  background: var(--commerce-soft);
+}
 .commerce-header__actions button.active {
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
-}
-.commerce-new:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-.commerce-current-mode {
-  display: inline-flex;
-  height: 28px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  color: var(--commerce-muted);
-  background: var(--commerce-soft);
-  border: 1px solid var(--commerce-line);
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--commerce-accent-line);
 }
 .commerce-header__actions {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 4px;
   margin-left: auto;
+  padding: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--commerce-soft) 70%, transparent);
 }
 .commerce-cost {
   color: var(--commerce-warning);
-  background: color-mix(in srgb, var(--commerce-warning) 10%, var(--commerce-panel));
+  background: var(--commerce-cost-bg);
+  margin-left: 4px;
 }
 .commerce-layout {
   display: grid;
   min-height: 0;
-  grid-template-columns: 72px clamp(348px, 22vw, 404px) minmax(0, 1fr);
+  grid-template-columns: 92px clamp(388px, 25vw, 438px) minmax(0, 1fr);
   flex: 1 1 auto;
   overflow: hidden;
 }
 .commerce-rail {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
-  padding-top: 13px;
+  padding: 0;
+  overflow: hidden;
+  background: var(--commerce-panel);
+  border: 1px solid var(--commerce-line);
+  border-radius: 18px;
+  box-shadow: 0 12px 30px rgb(48 36 96 / 6%);
+  margin: 8px 6px 8px 8px;
+  align-self: stretch;
+  flex-direction: column;
+  -webkit-backdrop-filter: blur(16px) saturate(118%);
+  backdrop-filter: blur(16px) saturate(118%);
+}
+.commerce-rail::before,
+.commerce-rail::after {
+  position: absolute;
+  right: 1px;
+  left: 1px;
+  z-index: 4;
+  height: 36px;
+  content: '';
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+.commerce-rail::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--commerce-rail-fade) 12%, transparent 100%);
+  border-radius: 17px 17px 0 0;
+}
+.commerce-rail::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--commerce-rail-fade) 12%, transparent 100%);
+  border-radius: 0 0 17px 17px;
+}
+.commerce-rail.is-at-start::before,
+.commerce-rail.is-at-end::after {
+  opacity: 0;
+}
+.commerce-rail__scroll {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 8px;
   overflow-x: hidden;
   overflow-y: auto;
-  background: var(--commerce-panel);
-  border-right: 1px solid var(--commerce-line);
-  flex-direction: column;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: auto;
+  align-content: start;
+  gap: 8px;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.commerce-rail__scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.commerce-rail__rule {
+  height: 1px;
+  min-height: 1px;
+  margin: 2px 10px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--commerce-line) 90%, transparent),
+    transparent
+  );
 }
 .commerce-rail a,
 .commerce-rail button {
+  position: relative;
   display: flex;
-  min-height: 59px;
+  min-width: 0;
+  min-height: 64px;
   width: 100%;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 3px;
+  padding: 8px 4px 7px;
+  overflow: hidden;
   color: var(--commerce-muted);
   text-decoration: none;
   flex-direction: column;
-  font-size: 10px;
-  border: 0;
+  font-size: 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
   background: transparent;
   cursor: pointer;
 }
-.commerce-rail a i,
-.commerce-rail button i {
-  font-size: 19px;
+.commerce-rail__icon {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  color: var(--commerce-muted);
+  opacity: 0.3;
+  pointer-events: none;
+  border-radius: 10px;
+  background: transparent;
+  transform: none;
+  transition:
+    color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.commerce-rail__icon i {
+  font-size: 18px;
+  line-height: 1;
+}
+.commerce-rail__label {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  padding: 0 2px;
+  overflow: hidden;
+  color: var(--commerce-ink);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commerce-rail a:hover,
+.commerce-rail button:not(:disabled):hover {
+  color: var(--commerce-ink);
+  background: var(--commerce-soft-strong);
+  box-shadow: none;
+}
+.commerce-rail a:hover .commerce-rail__icon,
+.commerce-rail button:not(:disabled):hover .commerce-rail__icon {
+  color: var(--commerce-accent-ink);
+  opacity: 0.42;
 }
 .commerce-rail a.active,
 .commerce-rail button.active {
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
-  border-right: 3px solid var(--commerce-accent);
+  border-color: transparent;
+  box-shadow: none;
+  font-weight: 700;
+}
+.commerce-rail a.active .commerce-rail__label,
+.commerce-rail button.active .commerce-rail__label {
+  color: var(--commerce-accent-ink);
+}
+.commerce-rail a.active .commerce-rail__icon,
+.commerce-rail button.active .commerce-rail__icon {
+  color: #fff;
+  opacity: 1;
+  background: linear-gradient(145deg, #6d5cff, #14b8a6);
+  box-shadow: 0 6px 14px rgb(109 92 255 / 26%);
+}
+.commerce-rail__external {
+  color: var(--commerce-muted);
+}
+.commerce-rail__external .commerce-rail__label {
+  color: var(--commerce-muted);
 }
 .commerce-rail button:disabled {
   cursor: not-allowed;
@@ -2075,8 +3376,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--commerce-panel);
-  border-right: 1px solid var(--commerce-line);
   flex-direction: column;
 }
 .settings-scroll {
@@ -2102,8 +3401,8 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 .product-upload {
-  min-height: 124px;
-  padding: 10px;
+  min-height: 88px;
+  padding: 6px;
   background: color-mix(in srgb, var(--commerce-soft) 52%, transparent);
   border: 1px dashed color-mix(in srgb, var(--commerce-muted) 32%, transparent);
   border-radius: 9px;
@@ -2122,6 +3421,104 @@ onBeforeUnmount(() => {
 .product-upload.is-disabled {
   pointer-events: none;
   opacity: 0.58;
+}
+.selected-product-context {
+  display: grid;
+  width: 100%;
+  min-height: 40px;
+  grid-template-columns: 28px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  color: var(--commerce-ink);
+  text-align: left;
+  background: var(--commerce-accent-soft);
+  border: 1px solid var(--commerce-accent-line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.selected-product-context > span:first-child {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-panel);
+  border-radius: 7px;
+}
+.selected-product-context > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.selected-product-context small {
+  color: var(--commerce-muted);
+  font-size: 9px;
+}
+.selected-product-context strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selected-product-context > i {
+  color: var(--commerce-muted);
+  font-size: 11px;
+}
+.reference-diagnostics {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 7px 8px;
+  background: color-mix(in srgb, var(--commerce-soft) 72%, transparent);
+  border: 1px solid var(--commerce-line);
+  border-radius: 8px;
+}
+.reference-diagnostics__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--commerce-accent-ink);
+  font-size: 10px;
+  font-weight: 750;
+}
+.reference-diagnostics__header span,
+.reference-diagnostics__header small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.reference-diagnostics__header small {
+  color: var(--commerce-muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+.reference-diagnostics__list {
+  display: grid;
+  gap: 4px;
+}
+.reference-diagnostics__list span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--commerce-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-diagnostics__list span.ok {
+  color: var(--commerce-success);
+}
+.reference-diagnostics__list span.warn {
+  color: var(--commerce-warning);
+}
+.reference-diagnostics__list span.error {
+  color: #c24343;
 }
 .upload-empty {
   display: flex;
@@ -2151,6 +3548,49 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
+}
+.upload-role-guide {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 8px;
+}
+.upload-role-guide > span {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  color: var(--commerce-muted);
+  background: var(--commerce-soft);
+  border-radius: var(--commerce-settings-radius);
+}
+.upload-role-guide b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-radius: 5px;
+  font-size: 9px;
+}
+.upload-role-guide > span > span {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 5px;
+}
+.upload-role-guide strong,
+.upload-role-guide small {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-role-guide strong {
+  color: var(--commerce-ink);
 }
 .upload-grid figure,
 .upload-add {
@@ -2294,6 +3734,220 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
 }
+.settings-heading--source,
+.settings-heading--brief {
+  margin-bottom: 12px;
+}
+.brief-organize {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-panel);
+  border: 1px solid var(--commerce-accent-line);
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.brief-organize:hover {
+  background: var(--commerce-accent-soft);
+}
+.structure-mode-grid {
+  display: grid;
+  gap: 9px;
+}
+.structure-mode-grid > button {
+  display: grid;
+  width: 100%;
+  min-height: 72px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 14px;
+  color: var(--commerce-ink);
+  text-align: left;
+  background: var(--commerce-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.structure-mode-grid > button.active {
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent);
+}
+.structure-mode-check {
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  color: transparent;
+  background: var(--commerce-panel);
+  border: 1px solid color-mix(in srgb, var(--commerce-muted) 35%, transparent);
+  border-radius: 5px;
+  font-size: 11px;
+}
+.structure-mode-grid > button.active .structure-mode-check {
+  color: #fff;
+  background: var(--commerce-accent);
+  border-color: var(--commerce-accent);
+}
+.structure-mode-grid > button > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+.structure-mode-grid strong {
+  font-size: 12px;
+}
+.structure-mode-grid small {
+  color: var(--commerce-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.listing-count-config {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 9px;
+  background: var(--commerce-soft);
+  border: 1px solid var(--commerce-line);
+  border-radius: 8px;
+}
+.listing-count-config article {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: var(--commerce-panel);
+  border-radius: var(--commerce-settings-radius);
+}
+.listing-count-config article > span,
+.clone-fidelity-grid button > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.listing-count-config article strong,
+.clone-fidelity-grid strong {
+  font-size: 11px;
+}
+.listing-count-config article small,
+.clone-fidelity-grid small {
+  color: var(--commerce-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+.listing-stepper {
+  display: grid;
+  grid-template-columns: 26px 24px 26px;
+  align-items: center;
+  overflow: hidden;
+  background: var(--commerce-soft);
+  border: 1px solid var(--commerce-line);
+  border-radius: 6px;
+}
+.listing-stepper button {
+  display: grid;
+  width: 26px;
+  height: 28px;
+  place-items: center;
+  color: var(--commerce-ink);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.listing-stepper button:disabled {
+  cursor: not-allowed;
+  opacity: 0.28;
+}
+.listing-stepper b {
+  color: var(--commerce-ink);
+  font-size: 11px;
+  text-align: center;
+}
+.listing-count-config > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 0;
+  color: var(--commerce-muted);
+  font-size: 9px;
+}
+.listing-count-config > footer strong.ready {
+  color: var(--commerce-success);
+}
+.choice-chip-grid,
+.clone-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.choice-chip-grid button,
+.clone-type-grid button {
+  display: flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px;
+  color: var(--commerce-muted);
+  background: var(--commerce-soft);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.choice-chip-grid button i {
+  display: none;
+}
+.choice-chip-grid button.active,
+.clone-type-grid button.active {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent-line);
+}
+.choice-chip-grid button.active i {
+  display: inline;
+}
+.clone-subheading {
+  margin-top: 18px !important;
+}
+.clone-fidelity-grid {
+  display: grid;
+  gap: 8px;
+}
+.clone-fidelity-grid button {
+  display: grid;
+  min-height: 64px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 12px;
+  color: var(--commerce-ink);
+  text-align: left;
+  background: var(--commerce-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.clone-fidelity-grid button.active {
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent);
+}
+.clone-fidelity-grid button.active .structure-mode-check {
+  color: #fff;
+  background: var(--commerce-accent);
+  border-color: var(--commerce-accent);
+}
 .mode-switch {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
@@ -2355,12 +4009,12 @@ onBeforeUnmount(() => {
 .text-stability-control {
   display: grid;
   width: 100%;
-  min-height: 58px;
-  grid-template-columns: 32px minmax(0, 1fr) 36px;
+  min-height: 44px;
+  grid-template-columns: 28px minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 9px 11px;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 9px;
   color: var(--commerce-ink);
   background: var(--commerce-soft);
   border: 1px solid transparent;
@@ -2381,12 +4035,13 @@ onBeforeUnmount(() => {
 }
 .text-stability-control > span:first-child {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   color: var(--commerce-accent-ink);
   background: var(--commerce-panel);
-  border-radius: 8px;
+  border-radius: 7px;
+  font-size: 12px;
 }
 .text-stability-control > span:nth-child(2) {
   display: flex;
@@ -2433,15 +4088,15 @@ onBeforeUnmount(() => {
 .module-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  gap: 6px;
 }
 .module-grid label {
   position: relative;
   display: flex;
-  min-height: 68px;
+  min-height: 52px;
   align-items: flex-start;
-  gap: 9px;
-  padding: 13px 11px;
+  gap: 7px;
+  padding: 8px 9px;
   background: var(--commerce-soft);
   border: 1px solid transparent;
   border-radius: 8px;
@@ -2545,7 +4200,7 @@ onBeforeUnmount(() => {
   min-height: 94px;
   padding: 10px 18px;
   background: var(--commerce-panel);
-  border-top: 1px solid var(--commerce-line);
+  border-top: 0;
   box-shadow: var(--commerce-shadow-footer);
   flex: 0 0 auto;
 }
@@ -2610,12 +4265,280 @@ onBeforeUnmount(() => {
   color: #b73636;
   background: color-mix(in srgb, #b73636 10%, var(--commerce-panel));
 }
+.cancel-button:disabled,
+.generation-status button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+/* High-contrast editorial treatment for the settings tool surface. */
+.commerce-settings {
+  margin: 8px 8px 8px 0;
+  overflow: hidden;
+  background: var(--commerce-settings-surface);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: var(--commerce-settings-radius);
+  box-shadow: 0 16px 40px rgb(48 36 96 / 8%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+.settings-scroll {
+  padding: 12px 12px 18px;
+  background: transparent;
+  counter-reset: commerce-step;
+}
+.settings-section + .settings-section {
+  margin-top: 10px;
+}
+.settings-section {
+  padding: 10px 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--commerce-settings-line) 80%, transparent);
+  border-radius: 14px;
+  background: var(--commerce-section-fill);
+}
+.settings-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: var(--commerce-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+.settings-section h2::before {
+  counter-increment: commerce-step;
+  content: counter(commerce-step, decimal-leading-zero);
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  color: var(--commerce-accent-ink);
+  border-radius: 6px;
+  background: var(--commerce-accent-soft);
+  font-family: var(--commerce-settings-mono);
+  font-size: 0.56rem;
+  font-weight: 780;
+}
+.settings-section h2 > i,
+.settings-section h2 > small {
+  color: var(--commerce-muted);
+  font-size: 10px;
+}
+.settings-heading {
+  margin-bottom: 8px;
+}
+.settings-heading > span {
+  padding: 3px 6px;
+  color: var(--commerce-muted);
+  background: var(--commerce-settings-control);
+  border: 0;
+  border-radius: 5px;
+  font-size: 9px;
+}
+.product-upload {
+  min-height: 88px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--commerce-settings-control) 64%, transparent);
+  border-color: var(--commerce-settings-line);
+  border-style: solid;
+  border-radius: var(--commerce-settings-radius);
+  box-shadow: none;
+}
+.upload-empty {
+  height: 76px;
+}
+.upload-empty i {
+  margin-bottom: 2px;
+  color: var(--commerce-accent);
+  font-size: 20px;
+}
+.upload-empty strong {
+  color: var(--commerce-ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+.upload-empty small {
+  margin-top: 3px;
+  color: var(--commerce-muted);
+  font-size: 9px;
+}
+.upload-grid {
+  gap: 6px;
+}
+.upload-role-guide {
+  gap: 6px;
+  margin-top: 6px;
+}
+.upload-role-guide > span {
+  min-height: 34px;
+  padding: 6px 8px;
+  color: var(--commerce-muted);
+  background: color-mix(in srgb, var(--commerce-settings-control) 68%, transparent);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: var(--commerce-settings-radius);
+  font-size: 10px;
+}
+.upload-role-guide b {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  font-family: var(--commerce-settings-mono);
+}
+.select-row {
+  gap: 8px;
+}
+.select-row + .select-row {
+  margin-top: 8px;
+}
+.select-row label,
+.wide-select,
+.text-field {
+  gap: 4px;
+}
+.select-row label > span,
+.wide-select > span,
+.text-field > span {
+  color: var(--commerce-muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+.commerce-settings :deep(.commerce-select-trigger) {
+  height: 34px;
+  padding: 0 10px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border-color: transparent;
+  border-radius: 12px;
+  font-size: 11px;
+}
+.commerce-settings :deep(.commerce-select-trigger:hover:not(:disabled)) {
+  background: var(--commerce-settings-surface);
+  border-color: color-mix(in srgb, var(--commerce-ink) 26%, var(--commerce-settings-line));
+}
+.commerce-settings :deep(.commerce-select-trigger:focus-visible),
+.commerce-settings :deep(.commerce-select-trigger.is-open) {
+  border-color: var(--commerce-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--commerce-accent) 14%, transparent);
+}
+.text-field input,
+.text-field textarea {
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border-color: transparent;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.text-field textarea {
+  min-height: 72px;
+}
+.text-field + .text-field {
+  margin-top: 8px;
+}
+.choice-chip-grid button,
+.clone-type-grid button,
+.clone-fidelity-grid button,
+.structure-mode-grid > button,
+.module-grid label,
+.shot-plan-list li,
+.text-stability-control,
+.listing-count-config {
+  background: var(--commerce-settings-control);
+  border-color: var(--commerce-settings-line);
+}
+.choice-chip-grid button,
+.clone-type-grid button {
+  min-height: 34px;
+  color: var(--commerce-muted);
+  border-radius: 8px;
+  font-size: 11px;
+}
+.choice-chip-grid button.active,
+.clone-type-grid button.active,
+.clone-fidelity-grid button.active,
+.structure-mode-grid > button.active,
+.module-grid label:has(input:checked),
+.text-stability-control.active {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent);
+  box-shadow: none;
+}
+.mode-switch {
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 8px;
+}
+.mode-switch button {
+  min-height: 32px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+.mode-switch button.active {
+  background: var(--commerce-settings-control);
+  border-color: transparent;
+  box-shadow: none;
+}
+.shot-plan-list {
+  gap: 6px;
+}
+.shot-plan-list li {
+  min-height: 0;
+  padding: 8px 9px;
+}
+.generate-bar {
+  min-height: 0;
+  padding: 10px 12px 12px;
+  background: var(--commerce-footer-fill);
+  border-top: 1px solid color-mix(in srgb, var(--commerce-settings-line) 72%, transparent);
+  border-radius: var(--commerce-settings-radius) var(--commerce-settings-radius) 0 0;
+  box-shadow: var(--commerce-shadow-footer);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+.generate-meta {
+  margin-bottom: 6px;
+  font-family: var(--commerce-settings-mono);
+  font-size: 9px;
+}
+.generate-button {
+  height: 42px;
+  color: var(--commerce-settings-primary-ink);
+  background:
+    radial-gradient(circle at 28% 20%, rgb(255 255 255 / 24%), transparent 42%),
+    linear-gradient(135deg, #6d5cff, #7c5cff 48%, #14b8a6);
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 10px 22px rgb(109 92 255 / 24%);
+  font-size: 12px;
+  font-weight: 800;
+}
+.generate-button:hover:not(:disabled) {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+}
+.generate-button:disabled {
+  box-shadow: none;
+  filter: grayscale(0.15);
+}
+.cancel-button {
+  height: 42px;
+  border-radius: 12px;
+  font-size: 12px;
+}
 .commerce-canvas {
   position: relative;
   min-width: 0;
   min-height: 0;
+  margin: 8px 10px 8px 0;
   overflow: hidden;
-  background: var(--commerce-canvas);
+  background: var(--commerce-canvas-panel);
+  border: 1px solid var(--commerce-line);
+  border-radius: 20px;
+  box-shadow: 0 16px 40px rgb(48 36 96 / 7%);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
 }
 .canvas-empty,
 .canvas-status {
@@ -2628,62 +4551,410 @@ onBeforeUnmount(() => {
 }
 .canvas-empty {
   justify-content: flex-start;
-  padding: clamp(28px, 4vh, 44px) 32px 36px;
+  padding: clamp(22px, 3.4vh, 36px) 28px 28px;
   overflow: auto;
   overscroll-behavior: contain;
 }
 .canvas-intro {
   display: flex;
-  width: min(1080px, calc(100% - 48px));
+  width: min(1080px, calc(100% - 36px));
   min-width: 0;
-  align-items: flex-end;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
   gap: 28px;
-  padding: 0 2px 22px;
-  border-bottom: 1px solid var(--commerce-line);
+  padding: 0 2px 18px;
+  text-align: center;
 }
 .canvas-intro > div:first-child {
   min-width: 0;
 }
-.canvas-kicker {
-  margin: 0 0 10px;
-  color: var(--commerce-accent);
-  font-size: 10px;
-  font-weight: 850;
-}
 .canvas-intro h1 {
   margin: 0;
-  font-size: 42px;
-  font-weight: 850;
+  font-family: var(--commerce-display);
+  font-size: clamp(2rem, 3.4vw, 2.7rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 1.12;
 }
-.canvas-intro > div:first-child > p:not(.canvas-kicker) {
-  max-width: 680px;
-  margin: 11px 0 0;
+.canvas-intro > div:first-child > p {
+  max-width: 640px;
+  margin: 10px auto 0;
   color: var(--commerce-muted);
   font-size: 14px;
   line-height: 1.55;
 }
-.canvas-facts {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  margin: 0;
+.canvas-intro > div:first-child > p strong {
+  color: var(--commerce-accent-ink);
+  font-weight: 750;
 }
-.canvas-facts span {
+.canvas-showcase {
+  display: grid;
+  width: min(980px, calc(100% - 36px));
+  min-height: clamp(360px, 49vh, 470px);
+  grid-template-columns: minmax(260px, 0.95fr) 54px minmax(390px, 1.35fr);
+  align-items: center;
+  gap: 18px;
+  margin-top: 4px;
+  padding: 22px;
+  background: var(--commerce-showcase-card);
+  border: 1px solid var(--commerce-line);
+  border-radius: 22px;
+  box-shadow: var(--commerce-shadow-panel);
+}
+.canvas-showcase.is-demo {
+  display: block;
+  width: min(720px, calc(100% - 48px));
+  min-height: 0;
+  margin-top: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.showcase-demo {
+  position: relative;
+  display: grid;
+  width: 100%;
+  gap: 16px;
+  overflow: visible;
+  background: transparent;
+}
+.showcase-demo__stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1400 / 788;
+  overflow: hidden;
+  background: transparent;
+  border-radius: 20px;
+  box-shadow:
+    0 18px 48px rgb(48 36 96 / 16%),
+    0 4px 14px rgb(28 22 60 / 8%);
+  transform: translateY(0);
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.showcase-demo__stage:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 24px 56px rgb(48 36 96 / 20%),
+    0 8px 18px rgb(28 22 60 / 10%);
+}
+.showcase-demo__stage > img,
+.showcase-demo > img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transform-origin: 50% 50%;
+}
+.showcase-demo__tag {
+  position: absolute;
+  z-index: 2;
   display: inline-flex;
-  height: 25px;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  color: #27303c;
+  background: rgb(255 255 255 / 92%);
+  border: 1px solid rgb(220 225 232 / 88%);
+  border-radius: 999px;
+  box-shadow: 0 6px 16px rgb(27 37 52 / 12%);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+.showcase-demo__tag.tag-1 {
+  top: 12px;
+  left: 12px;
+}
+.showcase-demo__tag.tag-2 {
+  top: 12px;
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-inline: auto;
+}
+.showcase-demo__tag.tag-3 {
+  top: 12px;
+  right: 12px;
+}
+.showcase-demo__tag.tag-4 {
+  top: 52%;
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-inline: auto;
+}
+.showcase-demo__tag.tag-5 {
+  top: 52%;
+  right: 12px;
+}
+.showcase-demo.is-tryon .showcase-demo__tag,
+.showcase-demo.is-handheld .showcase-demo__tag,
+.showcase-demo.is-accessory .showcase-demo__tag {
+  top: 12px;
+  right: auto;
+  width: auto;
+  margin-inline: 0;
+}
+.showcase-demo.is-tryon .tag-1,
+.showcase-demo.is-handheld .tag-1,
+.showcase-demo.is-accessory .tag-1 {
+  left: 3%;
+}
+.showcase-demo.is-tryon .tag-2,
+.showcase-demo.is-handheld .tag-2,
+.showcase-demo.is-accessory .tag-2 {
+  left: 27%;
+  right: auto;
+}
+.showcase-demo.is-tryon .tag-3,
+.showcase-demo.is-handheld .tag-3,
+.showcase-demo.is-accessory .tag-3 {
+  left: 52%;
+  right: auto;
+}
+.showcase-demo.is-tryon .tag-4,
+.showcase-demo.is-handheld .tag-4,
+.showcase-demo.is-accessory .tag-4 {
+  left: 76%;
+  right: auto;
+}
+.showcase-demo.is-clone .tag-1 {
+  top: 12px;
+  left: 12px;
+}
+.showcase-demo.is-clone .tag-2 {
+  top: 12px;
+  left: auto;
+  right: 12px;
+  width: auto;
+  margin-inline: 0;
+}
+.showcase-demo.is-clone .tag-3 {
+  top: auto;
+  bottom: 14px;
+  left: 12px;
+  right: auto;
+  width: auto;
+  margin-inline: 0;
+}
+.showcase-demo.is-clone .tag-4 {
+  top: auto;
+  bottom: 14px;
+  left: auto;
+  right: 12px;
+  width: auto;
+  margin-inline: 0;
+}
+.showcase-demo__caption {
+  position: static;
+  display: flex;
+  min-height: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+  border-top: 0;
+}
+.showcase-demo__caption-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.showcase-demo__caption span,
+.showcase-demo__caption-copy > span {
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
-  color: var(--commerce-muted);
-  background: color-mix(in srgb, var(--commerce-panel) 82%, transparent);
-  border: 1px solid var(--commerce-line);
+  color: var(--commerce-accent-ink);
+  font-size: 9px;
+  font-weight: 800;
+}
+.showcase-demo__caption strong,
+.showcase-demo__caption-copy > strong {
+  overflow: hidden;
+  color: var(--commerce-ink);
+  font-size: 14px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.showcase-demo__caption > button {
+  display: inline-flex;
+  height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 16px;
+  color: #fff;
+  background:
+    radial-gradient(circle at 28% 22%, rgb(255 255 255 / 26%), transparent 46%),
+    linear-gradient(135deg, #6d5cff, #14b8a6);
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 10px 22px rgb(109 92 255 / 24%);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.showcase-demo__caption > button:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+.showcase-product {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--commerce-ink);
+  background: #f8f9fb;
+  border: 1px dashed #cbd2dc;
+  border-radius: 8px;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+}
+.showcase-product.has-images {
+  background: #fff;
+  border-style: solid;
+}
+.showcase-product > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.showcase-product > span:not(.showcase-product__empty) {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: #fff;
+  background: rgb(20 24 31 / 74%);
   border-radius: 6px;
   font-size: 10px;
   font-weight: 700;
+}
+.showcase-product__empty {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  color: var(--commerce-accent);
+  background: var(--commerce-accent-soft);
+  border-radius: 8px;
+  font-size: 22px;
+}
+.showcase-product strong {
+  font-size: 14px;
+}
+.showcase-product small {
+  max-width: 220px;
+  color: var(--commerce-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+.showcase-flow-arrow {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-radius: 50%;
+  font-size: 18px;
+}
+.showcase-output-grid {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  height: 100%;
+  min-height: 320px;
+  grid-template-columns: 1.15fr 1fr;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.showcase-output-grid article {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  justify-content: flex-end;
+  gap: 5px;
+  padding: 12px;
+  overflow: hidden;
+  color: var(--commerce-ink);
+  background: #f0f3f7;
+  border: 1px solid var(--commerce-line);
+  border-radius: 8px;
+  flex-direction: column;
+}
+.showcase-output-grid article.featured {
+  grid-row: 1 / -1;
+  justify-content: center;
+  align-items: center;
+  background: #f8fafc;
+  text-align: center;
+}
+.showcase-output-grid article > span {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  color: var(--commerce-accent-ink);
+  font-size: 9px;
+  font-weight: 850;
+}
+.showcase-output-grid article > i {
+  color: var(--commerce-accent);
+  font-size: 18px;
+}
+.showcase-output-grid article.featured > i {
+  font-size: 42px;
+}
+.showcase-output-grid article strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.showcase-output-grid article small {
+  overflow: hidden;
+  color: var(--commerce-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.showcase-output-grid.is-single article.featured {
+  grid-column: 1 / -1;
+}
+.showcase-more {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  padding: 4px 7px;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
 }
 .canvas-flow {
   display: grid;
@@ -3048,7 +5319,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   padding: 0 22px;
   background: color-mix(in srgb, var(--commerce-panel) 86%, transparent);
-  border-bottom: 1px solid var(--commerce-line);
+  border-bottom: 0;
 }
 .result-workspace > header div {
   display: flex;
@@ -3068,9 +5339,9 @@ onBeforeUnmount(() => {
   height: 34px;
   place-items: center;
   color: var(--commerce-ink);
-  background: var(--commerce-panel);
-  border: 1px solid var(--commerce-line);
-  border-radius: 7px;
+  background: var(--commerce-soft);
+  border: 0;
+  border-radius: 8px;
 }
 .result-header-actions {
   display: flex;
@@ -3084,8 +5355,8 @@ onBeforeUnmount(() => {
   padding: 0 8px;
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
-  border: 1px solid var(--commerce-accent-line);
-  border-radius: 6px;
+  border: 0;
+  border-radius: 8px;
   font-size: 10px;
   font-weight: 800;
 }
@@ -3093,8 +5364,12 @@ onBeforeUnmount(() => {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: minmax(0, 1fr) clamp(304px, 22vw, 344px);
+  grid-template-columns: minmax(0, 1fr) 64px;
   overflow: hidden;
+  transition: grid-template-columns 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.result-main.revision-is-open {
+  grid-template-columns: minmax(0, 1fr) clamp(304px, 22vw, 344px);
 }
 .result-stage {
   display: grid;
@@ -3107,6 +5382,14 @@ onBeforeUnmount(() => {
 }
 .result-stage.is-single {
   grid-template-columns: minmax(240px, min(760px, 100%));
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.result-stage.is-single .result-image-card {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto !important;
 }
 .result-stage.is-double {
   grid-template-columns: repeat(2, minmax(180px, 1fr));
@@ -3130,11 +5413,9 @@ onBeforeUnmount(() => {
   padding: 0;
   overflow: hidden;
   background: var(--commerce-soft);
-  border: 1px solid var(--commerce-line);
-  border-radius: 14px;
+  border: 0;
+  border-radius: 8px;
   box-shadow: var(--commerce-shadow-result);
-  outline: none;
-  cursor: zoom-in;
   will-change: transform;
   transition:
     border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -3142,10 +5423,29 @@ onBeforeUnmount(() => {
     transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .result-image-card:hover,
-.result-image-card:focus-visible {
+.result-image-card:focus-within {
   border-color: var(--commerce-accent-line);
   box-shadow: 0 22px 52px color-mix(in srgb, var(--commerce-accent) 18%, transparent);
   transform: translateY(-4px);
+}
+.result-image-hit-area {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  cursor: zoom-in;
+  font: inherit;
+  text-align: inherit;
+}
+.result-image-hit-area:focus-visible {
+  outline: 2px solid var(--commerce-accent);
+  outline-offset: -3px;
 }
 .result-image-card.active {
   border-color: var(--commerce-accent);
@@ -3163,13 +5463,8 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  transition: transform 700ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
-}
-.result-image-card:hover :deep(img),
-.result-image-card:focus-visible :deep(img) {
-  transform: scale(1.045) translateY(-0.6%);
+  object-fit: contain;
+  object-position: center;
 }
 .result-image-skeleton {
   position: absolute;
@@ -3205,69 +5500,49 @@ onBeforeUnmount(() => {
   font-weight: 800;
   backdrop-filter: blur(10px);
 }
-.result-image-tools {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 3;
-  display: flex;
-  gap: 6px;
-  opacity: 0;
-  transform: translateY(8px);
-  transition:
-    opacity 220ms ease,
-    transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.result-image-card:hover .result-image-tools,
-.result-image-card:focus-within .result-image-tools {
-  opacity: 1;
-  transform: translateY(0);
-}
-.result-image-tools button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  color: #fff;
-  background: rgb(16 18 24 / 72%);
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 9px;
-  backdrop-filter: blur(12px);
-}
-.result-image-tools button:hover {
-  background: var(--commerce-accent);
-}
 .revision-panel {
   display: flex;
   min-width: 0;
   min-height: 0;
-  padding: 22px 20px 18px;
+  padding: 14px 12px;
   overflow-y: auto;
   background: var(--commerce-panel);
-  border-left: 1px solid var(--commerce-line);
+  border-left: 0;
+  box-shadow: -10px 0 28px rgb(58 51 112 / 5%);
   flex-direction: column;
 }
+.revision-panel.open {
+  padding: 22px 20px 18px;
+}
 .revision-panel > header {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 10px;
 }
-.revision-panel > header > span {
+.revision-panel__toggle {
   display: grid;
   width: 38px;
   height: 38px;
+  flex: 0 0 38px;
   place-items: center;
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
+  border: 0;
   border-radius: 8px;
   font-size: 16px;
 }
-.revision-panel > header > div {
+.revision-panel__toggle:hover {
+  background: color-mix(in srgb, var(--commerce-accent) 18%, var(--commerce-panel));
+}
+.revision-panel__title {
   display: flex;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
+}
+.revision-panel:not(.open) .revision-panel__title {
+  display: none;
 }
 .revision-panel > header small {
   color: var(--commerce-muted);
@@ -3277,7 +5552,13 @@ onBeforeUnmount(() => {
   color: var(--commerce-ink);
   font-size: 14px;
 }
-.revision-panel > p:not(.revision-error) {
+.revision-panel__body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.revision-panel__body > p:not(.revision-error) {
   margin: 13px 0 12px;
   color: var(--commerce-muted);
   font-size: 10px;
@@ -3421,21 +5702,28 @@ onBeforeUnmount(() => {
   background: var(--commerce-panel);
   border-top: 1px solid var(--commerce-line);
 }
-.result-strip > button {
+.result-strip__item {
   position: relative;
   width: 66px;
   height: 66px;
   flex: 0 0 auto;
+}
+.result-strip__select {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
   padding: 3px;
   overflow: hidden;
   background: var(--commerce-soft);
   border: 2px solid transparent;
   border-radius: 7px;
 }
-.result-strip > button.active {
+.result-strip__select.active {
   border-color: var(--commerce-accent);
 }
-.result-strip > button:hover {
+.result-strip__select:hover,
+.result-strip__select:focus-visible {
   border-color: var(--commerce-accent-line);
   transform: translateY(-2px);
 }
@@ -3446,7 +5734,8 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.result-strip > button:hover :deep(img) {
+.result-strip__select:hover :deep(img),
+.result-strip__select:focus-visible :deep(img) {
   transform: scale(1.06);
 }
 .result-shot-index {
@@ -3468,17 +5757,33 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 3px;
   right: 3px;
-  display: none;
+  display: grid;
   width: 21px;
   height: 21px;
   place-items: center;
+  padding: 0;
   color: #fff;
   background: rgb(20 22 25 / 72%);
+  border: 1px solid rgb(255 255 255 / 20%);
   border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
   font-size: 10px;
 }
-.result-strip > button:hover .result-delete {
-  display: grid;
+.result-strip__item:hover .result-delete,
+.result-strip__item:focus-within .result-delete,
+.result-delete:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.result-delete:hover,
+.result-delete:focus-visible {
+  background: #d94a4a;
+  outline: none;
+}
+.result-delete:disabled {
+  cursor: wait;
+  opacity: 1;
 }
 .workspace-library {
   display: grid;
@@ -3497,7 +5802,8 @@ onBeforeUnmount(() => {
   gap: 18px;
   padding: 0 24px;
   background: color-mix(in srgb, var(--commerce-panel) 92%, transparent);
-  border-bottom: 1px solid var(--commerce-line);
+  border-bottom: 0;
+  box-shadow: 0 6px 22px rgb(58 51 112 / 4%);
 }
 .workspace-library__header > div,
 .workspace-library__header > div > span:last-child {
@@ -3543,8 +5849,8 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, minmax(82px, 1fr));
   padding: 3px;
   background: var(--commerce-soft);
-  border: 1px solid var(--commerce-line);
-  border-radius: 7px;
+  border: 0;
+  border-radius: 8px;
 }
 .workspace-segment button {
   height: 29px;
@@ -3568,9 +5874,9 @@ onBeforeUnmount(() => {
   flex: 0 0 34px;
   place-items: center;
   color: var(--commerce-ink);
-  background: var(--commerce-panel);
-  border: 1px solid var(--commerce-line);
-  border-radius: 7px;
+  background: var(--commerce-soft);
+  border: 0;
+  border-radius: 8px;
 }
 .workspace-icon-button:disabled {
   opacity: 0.45;
@@ -3590,8 +5896,8 @@ onBeforeUnmount(() => {
   padding: 0 11px;
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
-  border: 1px solid var(--commerce-accent-line);
-  border-radius: 7px;
+  border: 0;
+  border-radius: 8px;
   font-size: 10px;
   font-weight: 750;
   text-decoration: none;
@@ -3603,6 +5909,42 @@ onBeforeUnmount(() => {
   padding: 20px 24px 28px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+.workspace-library__inline-error {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 9px 11px;
+  color: #b73636;
+  background: color-mix(in srgb, #b73636 8%, var(--commerce-panel));
+  border: 1px solid color-mix(in srgb, #b73636 22%, var(--commerce-line));
+  border-radius: 7px;
+  font-size: 10px;
+}
+.workspace-library__inline-error > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-library__inline-error button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  color: #b73636;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, #b73636 28%, var(--commerce-line));
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 750;
 }
 .asset-filter-bar {
   display: flex;
@@ -3622,8 +5964,9 @@ onBeforeUnmount(() => {
   padding: 0 11px;
   color: var(--commerce-muted);
   background: var(--commerce-panel);
-  border: 1px solid var(--commerce-line);
-  border-radius: 6px;
+  background: var(--commerce-soft);
+  border: 0;
+  border-radius: 8px;
   font-size: 10px;
   font-weight: 700;
 }
@@ -3646,7 +5989,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: hidden;
   background: var(--commerce-panel);
-  border: 1px solid var(--commerce-line);
+  border: 0;
   border-radius: 8px;
   box-shadow: var(--commerce-shadow-card);
 }
@@ -3714,7 +6057,7 @@ onBeforeUnmount(() => {
 }
 .asset-card__actions {
   display: grid;
-  grid-template-columns: 0.8fr 1.2fr;
+  grid-template-columns: 0.75fr 1.15fr 0.75fr;
   gap: 7px;
   padding: 0 10px 10px;
 }
@@ -3739,6 +6082,14 @@ onBeforeUnmount(() => {
 .asset-card__actions button.primary {
   color: var(--commerce-accent-ink);
   background: var(--commerce-accent-soft);
+}
+.asset-card__actions button.danger {
+  color: #b73636;
+  background: color-mix(in srgb, #b73636 8%, var(--commerce-panel));
+}
+.asset-card__actions button.danger:hover:not(:disabled) {
+  color: #fff;
+  background: #c94747;
 }
 .asset-card__actions button:disabled,
 .asset-card__media:disabled {
@@ -3809,9 +6160,9 @@ onBeforeUnmount(() => {
   margin: 22px auto 0;
   padding: 0 16px;
   color: var(--commerce-ink);
-  background: var(--commerce-panel);
-  border: 1px solid var(--commerce-line);
-  border-radius: 7px;
+  background: var(--commerce-soft);
+  border: 0;
+  border-radius: 8px;
   font-size: 10px;
   font-weight: 750;
 }
@@ -3819,6 +6170,9 @@ onBeforeUnmount(() => {
   animation: commerce-spin 0.8s linear infinite;
 }
 .mobile-pane-switch {
+  display: none;
+}
+.mobile-tool-switch {
   display: none;
 }
 @keyframes commerce-spin {
@@ -3883,25 +6237,82 @@ onBeforeUnmount(() => {
   }
 }
 :global(html.color-scheme-dark .commerce-studio) {
-  --commerce-line: #303039;
-  --commerce-panel: #17171c;
-  --commerce-canvas: #101014;
-  --commerce-soft: #222228;
-  --commerce-soft-strong: #2a2a32;
-  --commerce-ink: #f1f1f5;
-  --commerce-muted: #a5a4b1;
-  --commerce-accent: #9b87f5;
-  --commerce-accent-ink: #c8bcff;
-  --commerce-accent-soft: #2c263f;
-  --commerce-accent-line: #514875;
+  --commerce-line: rgb(255 255 255 / 10%);
+  --commerce-panel: rgb(22 20 34 / 88%);
+  --commerce-canvas: #0c0a12;
+  --commerce-soft: #1a1726;
+  --commerce-soft-strong: #242033;
+  --commerce-ink: rgb(255 255 255 / 94%);
+  --commerce-muted: rgb(255 255 255 / 56%);
+  --commerce-accent: #8b7bff;
+  --commerce-accent-ink: #aa9fff;
+  --commerce-accent-soft: rgb(109 92 255 / 18%);
+  --commerce-accent-line: rgb(139 123 255 / 34%);
   --commerce-success: #70c697;
   --commerce-warning: #e5bd78;
-  --commerce-shadow-control: 0 2px 10px rgb(0 0 0 / 22%);
-  --commerce-shadow-footer: 0 -10px 28px rgb(0 0 0 / 20%);
-  --commerce-shadow-panel: 0 16px 40px rgb(0 0 0 / 24%);
-  --commerce-shadow-result: 0 18px 44px rgb(0 0 0 / 38%);
-  --commerce-shadow-card: 0 10px 28px rgb(0 0 0 / 20%);
+  --commerce-shadow-control: 0 3px 14px rgb(0 0 0 / 28%);
+  --commerce-shadow-footer: 0 -10px 30px rgb(0 0 0 / 26%);
+  --commerce-shadow-panel: 0 16px 42px rgb(0 0 0 / 34%);
+  --commerce-shadow-result: 0 20px 48px rgb(0 0 0 / 44%);
+  --commerce-shadow-card: 0 12px 32px rgb(0 0 0 / 30%);
+  --commerce-settings-surface: rgb(22 20 34 / 90%);
+  --commerce-settings-control: rgb(40 37 54 / 78%);
+  --commerce-settings-line: rgb(255 255 255 / 9%);
+  --commerce-settings-primary: var(--commerce-accent);
+  --commerce-settings-primary-ink: #fff;
+  --commerce-rail-fade: #12101c;
+  --commerce-panel-solid: #161222;
+  --commerce-cost-bg: color-mix(in srgb, var(--commerce-warning) 18%, #1a1726);
+  --commerce-section-fill: color-mix(in srgb, #1a1726 78%, transparent);
+  --commerce-showcase-dock: color-mix(in srgb, #161222 96%, transparent);
+  --commerce-canvas-panel: color-mix(in srgb, #161222 62%, transparent);
+  --commerce-showcase-card: color-mix(in srgb, #1a1726 82%, transparent);
+  --commerce-footer-fill: color-mix(in srgb, var(--commerce-settings-surface) 94%, #12101c);
   color-scheme: dark;
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-atmosphere__glow--a) {
+  background: radial-gradient(circle, rgb(124 92 255 / 28%), transparent 68%);
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-atmosphere__glow--b) {
+  background: radial-gradient(circle, rgb(45 212 191 / 14%), transparent 70%);
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-atmosphere__grain) {
+  opacity: 0.05;
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-header),
+:global(html.color-scheme-dark .commerce-studio .commerce-rail),
+:global(html.color-scheme-dark .commerce-studio .commerce-settings),
+:global(html.color-scheme-dark .commerce-studio .commerce-canvas) {
+  box-shadow: 0 14px 36px rgb(0 0 0 / 34%);
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-header__actions) {
+  background: color-mix(in srgb, #1a1726 80%, transparent);
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-rail__external .commerce-rail__label) {
+  color: rgb(255 255 255 / 62%);
+}
+:global(html.color-scheme-dark .commerce-studio .commerce-rail a.active .commerce-rail__icon),
+:global(html.color-scheme-dark .commerce-studio .commerce-rail button.active .commerce-rail__icon) {
+  box-shadow: 0 8px 18px rgb(0 0 0 / 36%);
+}
+:global(html.color-scheme-dark .commerce-studio .generate-button:hover:not(:disabled)) {
+  filter: brightness(1.08);
+}
+:global(html.color-scheme-dark .commerce-studio .showcase-demo__stage) {
+  box-shadow:
+    0 20px 52px rgb(0 0 0 / 48%),
+    0 4px 16px rgb(0 0 0 / 28%);
+}
+:global(html.color-scheme-dark .commerce-studio .showcase-demo__stage:hover) {
+  box-shadow:
+    0 26px 60px rgb(0 0 0 / 56%),
+    0 8px 20px rgb(0 0 0 / 32%);
+}
+:global(html.color-scheme-dark .commerce-studio .showcase-demo__tag) {
+  color: rgb(255 255 255 / 92%);
+  background: rgb(22 20 34 / 82%);
+  border-color: rgb(255 255 255 / 12%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 32%);
 }
 :global(html.color-scheme-dark .commerce-studio .settings-scroll),
 :global(html.color-scheme-dark .commerce-studio .revision-panel),
@@ -3910,14 +6321,17 @@ onBeforeUnmount(() => {
 :global(html.color-scheme-dark .commerce-studio .result-strip) {
   scrollbar-color: #4b4a56 transparent;
 }
+:global(html.color-scheme-dark .commerce-studio .commerce-settings) {
+  box-shadow: none;
+}
 :global(html.color-scheme-dark .commerce-studio input),
 :global(html.color-scheme-dark .commerce-studio textarea),
 :global(html.color-scheme-dark .commerce-studio select) {
   caret-color: var(--commerce-accent-ink);
 }
 :global(html.color-scheme-dark .commerce-studio .product-upload) {
-  background: color-mix(in srgb, var(--commerce-soft) 72%, transparent);
-  border-color: #44434e;
+  background: color-mix(in srgb, var(--commerce-settings-control) 72%, transparent);
+  border-color: var(--commerce-settings-line);
 }
 :global(html.color-scheme-dark .commerce-studio .canvas-source),
 :global(html.color-scheme-dark .commerce-studio .canvas-target),
@@ -3925,18 +6339,21 @@ onBeforeUnmount(() => {
   border-color: #32313a;
 }
 :global(html.color-scheme-dark .commerce-studio .result-stage) {
-  background: #111116;
+  background: var(--commerce-canvas);
 }
 :global(html.color-scheme-dark .commerce-studio .result-strip),
 :global(html.color-scheme-dark .commerce-studio .workspace-library__header),
 :global(html.color-scheme-dark .commerce-studio .result-workspace > header) {
-  background: #18181e;
+  background: var(--commerce-panel);
 }
 :global(html.color-scheme-dark .commerce-studio .result-stage img) {
   box-shadow: var(--commerce-shadow-result);
 }
 :global(html.color-scheme-dark .commerce-studio .asset-card__media) {
   background: #1d1d23;
+}
+:global(html.color-scheme-dark .commerce-studio .showcase-demo__caption-copy > strong) {
+  color: var(--commerce-ink);
 }
 :global(html.color-scheme-dark .commerce-studio .mobile-pane-switch button) {
   color: var(--commerce-muted);
@@ -3946,13 +6363,30 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 1120px) and (min-width: 861px) {
   .commerce-layout {
-    grid-template-columns: 66px clamp(326px, 34vw, 370px) minmax(0, 1fr);
+    grid-template-columns: 82px clamp(326px, 34vw, 370px) minmax(0, 1fr);
   }
-  .commerce-workspace-title {
-    min-width: 162px;
+  .commerce-rail {
+    margin: 6px 4px 6px 6px;
   }
-  .commerce-current-mode {
-    display: none;
+  .commerce-rail__scroll {
+    padding: 8px 6px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .commerce-rail a,
+  .commerce-rail button {
+    min-height: 58px;
+    padding: 6px 3px 6px;
+  }
+  .commerce-rail__icon {
+    width: 24px;
+    height: 24px;
+  }
+  .commerce-rail__icon i {
+    font-size: 16px;
+  }
+  .commerce-rail__label {
+    font-size: 10px;
   }
   .commerce-header__actions button {
     width: 34px;
@@ -3968,6 +6402,15 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(120px, 0.75fr) 32px minmax(150px, 1fr);
     gap: 12px;
   }
+  .canvas-showcase {
+    width: calc(100% - 28px);
+    grid-template-columns: minmax(170px, 0.8fr) 36px minmax(250px, 1.2fr);
+    gap: 10px;
+    padding: 16px;
+  }
+  .canvas-showcase.is-demo {
+    width: calc(100% - 28px);
+  }
   .result-main {
     display: block;
     overflow-y: auto;
@@ -3976,10 +6419,24 @@ onBeforeUnmount(() => {
     min-height: 430px;
   }
   .revision-panel {
-    min-height: 390px;
+    min-height: 62px;
+    padding: 12px 18px;
     overflow: visible;
     border-top: 1px solid var(--commerce-line);
     border-left: 0;
+  }
+  .revision-panel.open {
+    min-height: 390px;
+    padding: 18px 20px;
+  }
+  .revision-panel:not(.open) > header {
+    justify-content: flex-start;
+  }
+  .revision-panel:not(.open) .revision-panel__title {
+    display: flex;
+  }
+  .revision-panel:not(.open) .revision-panel__title small {
+    display: none;
   }
 }
 @media (max-width: 860px) {
@@ -3989,32 +6446,28 @@ onBeforeUnmount(() => {
     min-height: 0;
     overflow: hidden;
   }
+  .commerce-atmosphere__glow--a,
+  .commerce-atmosphere__glow--b {
+    opacity: 0.55;
+  }
   .commerce-header {
-    z-index: 20;
-    min-height: 50px;
-    padding: 0 12px;
-    flex: 0 0 50px;
-  }
-  .commerce-workspace-title {
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-  .commerce-workspace-title__icon {
-    width: 28px;
-    height: 28px;
-    flex-basis: 28px;
-  }
-  .commerce-workspace-title small,
-  .commerce-header__actions,
-  .commerce-current-mode,
-  .commerce-new span {
     display: none;
+  }
+  .commerce-header__actions {
+    display: none;
+  }
+  .commerce-settings,
+  .commerce-canvas {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
   .mobile-pane-switch {
     z-index: 19;
     display: grid;
     height: 44px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     padding: 4px;
     background: var(--commerce-panel);
     border-bottom: 1px solid var(--commerce-line);
@@ -4031,6 +6484,53 @@ onBeforeUnmount(() => {
   .mobile-pane-switch button.active {
     background: var(--commerce-accent-soft);
     color: var(--commerce-accent);
+  }
+  .mobile-tool-switch {
+    display: grid;
+    min-height: 94px;
+    grid-auto-columns: 88px;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(2, 40px);
+    align-items: stretch;
+    gap: 5px;
+    padding: 5px 10px 4px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    background: var(--commerce-panel);
+    border-bottom: 1px solid var(--commerce-line);
+    scrollbar-width: thin;
+    flex: 0 0 94px;
+  }
+  .mobile-tool-switch button {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 5px;
+    padding: 0 8px;
+    color: var(--commerce-muted);
+    background: var(--commerce-soft);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .mobile-tool-switch button i {
+    color: var(--commerce-muted);
+    font-size: 14px;
+  }
+  .mobile-tool-switch button.active {
+    color: var(--commerce-accent-ink);
+    background: var(--commerce-accent-soft);
+    border-color: var(--commerce-accent-line);
+  }
+  .mobile-tool-switch button.active i {
+    color: var(--commerce-accent);
+  }
+  .mobile-tool-switch button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
   .commerce-layout {
     display: block;
@@ -4049,6 +6549,11 @@ onBeforeUnmount(() => {
     min-height: 0;
     border-right: 0;
   }
+  .commerce-settings {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
   .is-mobile-hidden {
     display: none;
   }
@@ -4059,6 +6564,7 @@ onBeforeUnmount(() => {
   .generate-bar {
     position: relative;
     padding: 9px 16px max(9px, env(safe-area-inset-bottom));
+    border-radius: 0;
   }
   .canvas-empty {
     justify-content: flex-start;
@@ -4071,9 +6577,70 @@ onBeforeUnmount(() => {
     gap: 16px;
     padding-bottom: 18px;
   }
-  .canvas-facts {
+  .canvas-showcase {
+    width: 100%;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 18px;
+    padding: 14px;
+  }
+  .canvas-showcase.is-demo {
+    width: 100%;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  .showcase-demo__stage {
+    aspect-ratio: 1400 / 788;
+  }
+  .showcase-demo__caption {
+    position: static;
+    min-height: 0;
     flex-wrap: wrap;
-    justify-content: flex-start;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  .showcase-demo__tag {
+    min-height: 20px;
+    padding: 0 7px;
+    font-size: 9px;
+  }
+  .showcase-demo__tag.tag-1,
+  .showcase-demo__tag.tag-2,
+  .showcase-demo__tag.tag-3 {
+    top: 8px;
+  }
+  .showcase-demo__tag.tag-1 {
+    left: 8px;
+  }
+  .showcase-demo__tag.tag-3 {
+    right: 8px;
+  }
+  .showcase-demo__caption > strong {
+    white-space: normal;
+  }
+  .showcase-demo__caption > button {
+    width: 100%;
+    grid-row: auto;
+    grid-column: auto;
+    margin-top: 5px;
+  }
+  .showcase-product {
+    min-height: 240px;
+  }
+  .showcase-flow-arrow {
+    width: 36px;
+    height: 36px;
+    margin: -2px auto;
+    transform: rotate(90deg);
+  }
+  .showcase-output-grid {
+    min-height: 360px;
   }
   .canvas-flow {
     width: min(480px, 100%);
@@ -4095,7 +6662,7 @@ onBeforeUnmount(() => {
   .canvas-empty h1 {
     font-size: 29px;
   }
-  .canvas-intro > div:first-child > p:not(.canvas-kicker) {
+  .canvas-intro > div:first-child > p {
     max-width: 310px;
     text-align: left;
   }
@@ -4115,10 +6682,6 @@ onBeforeUnmount(() => {
   }
   .result-image-card {
     border-radius: 11px;
-  }
-  .result-image-tools {
-    opacity: 1;
-    transform: none;
   }
   .canvas-generation {
     padding: 18px 14px 22px;
@@ -4150,10 +6713,21 @@ onBeforeUnmount(() => {
     gap: 9px;
   }
   .revision-panel {
-    min-height: 410px;
+    min-height: 62px;
+    padding: 12px 14px;
     overflow: visible;
     border-top: 1px solid var(--commerce-line);
     border-left: 0;
+  }
+  .revision-panel.open {
+    min-height: 410px;
+    padding: 18px 16px;
+  }
+  .revision-panel:not(.open) .revision-panel__title {
+    display: flex;
+  }
+  .revision-panel:not(.open) .revision-panel__title small {
+    display: none;
   }
   .workspace-library {
     grid-template-rows: 64px minmax(0, 1fr);
@@ -4175,11 +6749,6 @@ onBeforeUnmount(() => {
   }
 }
 @media (max-width: 480px) {
-  .commerce-new {
-    width: 34px;
-    padding: 0;
-    justify-content: center;
-  }
   .canvas-flow {
     gap: 10px;
   }
@@ -4196,14 +6765,6 @@ onBeforeUnmount(() => {
   .result-image-index {
     top: 6px;
     left: 6px;
-  }
-  .result-image-tools {
-    right: 6px;
-    bottom: 6px;
-  }
-  .result-image-tools button {
-    width: 30px;
-    height: 30px;
   }
   .generation-skeletons {
     gap: 8px;

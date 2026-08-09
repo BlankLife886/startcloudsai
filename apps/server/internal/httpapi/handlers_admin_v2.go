@@ -294,10 +294,7 @@ func adminAssistantRunDict(run *store.AssistantRun) gin.H {
 }
 
 func assistantAdminMetadata(message *store.AssistantMessage, run *store.AssistantRun, stage, errorMessage string) map[string]any {
-	metadata := make(map[string]any, len(message.Metadata)+5)
-	for key, value := range message.Metadata {
-		metadata[key] = value
-	}
+	metadata := assistantMessageMetadataWithoutOutputs(message)
 	metadata["runId"] = run.ID.String()
 	metadata["statusStage"] = stage
 	metadata["pending"] = stage == "queued"
@@ -339,8 +336,10 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 			return err
 		}
 		if message != nil {
+			if err := store.EnqueueAssistantMessageOutputCleanup(ctx, tx, run.UserID, message.ID); err != nil {
+				return err
+			}
 			metadata := assistantAdminMetadata(message, run, "queued", "")
-			delete(metadata, "images")
 			if err := store.UpdateAssistantMessage(ctx, tx, message.ID, "", run.Mode, "queued", metadata); err != nil {
 				return err
 			}
@@ -365,7 +364,25 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 }
 
 func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, changed, err := assistantbilling.CancelAdminQueued(ctx, s.St, id)
+	var run *store.AssistantRun
+	var changed bool
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		run, changed, txErr = assistantbilling.CancelAdminQueuedTx(ctx, tx, id)
+		if txErr != nil || !changed || run == nil {
+			return txErr
+		}
+		message, messageErr := store.GetAssistantMessage(ctx, tx, run.AssistantMessageID)
+		if messageErr != nil || message == nil {
+			return messageErr
+		}
+		content := message.Content
+		if content == "" {
+			content = "已停止生成"
+		}
+		return store.ClearAssistantMessageOutputMetadata(ctx, tx, run.UserID, message.ID, content,
+			message.Kind, "stopped", assistantAdminMetadata(message, run, "stopped", ""))
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -375,20 +392,32 @@ func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*st
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
 	}
-	s.Queue.CancelAssistantRun(id.String())
-	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
-		content := message.Content
-		if content == "" {
-			content = "已停止生成"
-		}
-		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "stopped",
-			assistantAdminMetadata(message, run, "stopped", ""))
+	if s.Queue != nil {
+		s.Queue.CancelAssistantRun(id.String())
 	}
 	return store.GetAssistantRun(ctx, s.St.Pool, id)
 }
 
 func (s *Server) adminForceFailAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, changed, err := assistantbilling.ForceFailAdmin(ctx, s.St, id)
+	var run *store.AssistantRun
+	var changed bool
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		run, changed, txErr = assistantbilling.ForceFailAdminTx(ctx, tx, id)
+		if txErr != nil || !changed || run == nil {
+			return txErr
+		}
+		message, messageErr := store.GetAssistantMessage(ctx, tx, run.AssistantMessageID)
+		if messageErr != nil || message == nil {
+			return messageErr
+		}
+		content := message.Content
+		if content == "" {
+			content = "管理员已终止任务"
+		}
+		return store.ClearAssistantMessageOutputMetadata(ctx, tx, run.UserID, message.ID, content,
+			message.Kind, "failed", assistantAdminMetadata(message, run, "failed", "管理员强制终止任务"))
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -398,14 +427,8 @@ func (s *Server) adminForceFailAssistantRun(ctx context.Context, id uuid.UUID) (
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)
 	}
-	s.Queue.CancelAssistantRun(id.String())
-	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
-		content := message.Content
-		if content == "" {
-			content = "管理员已终止任务"
-		}
-		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "failed",
-			assistantAdminMetadata(message, run, "failed", "管理员强制终止任务"))
+	if s.Queue != nil {
+		s.Queue.CancelAssistantRun(id.String())
 	}
 	return store.GetAssistantRun(ctx, s.St.Pool, id)
 }

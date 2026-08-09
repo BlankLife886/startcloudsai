@@ -144,28 +144,25 @@ onBeforeUnmount(() => {
   height: 36px;
   min-height: 36px;
   padding: 0;
-  border: 1px solid rgba(21, 22, 31, 0.1);
+  border: 1px solid rgb(255 255 255 / 22%);
   border-radius: 50%;
-  color: var(--locale-accent);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfaff 100%);
-  box-shadow: 0 8px 20px rgb(45 42 83 / 10%);
+  color: #fff;
+  background:
+    radial-gradient(circle at 22% 0%, rgb(255 255 255 / 28%), transparent 48%),
+    linear-gradient(145deg, #5f4bf3, #8b5cf6 62%, #c052d5);
+  box-shadow: 0 8px 22px rgb(109 92 255 / 24%);
   box-sizing: border-box;
   cursor: pointer;
   transition:
     transform 150ms var(--locale-ease),
-    background 140ms var(--locale-ease),
-    color 140ms var(--locale-ease),
-    border-color 140ms var(--locale-ease),
     box-shadow 150ms var(--locale-ease);
 }
 
 .locale-switcher__trigger:hover,
 .locale-switcher.is-open .locale-switcher__trigger {
-  color: var(--locale-accent);
-  background: #ffffff;
-  border-color: color-mix(in srgb, var(--locale-accent) 45%, var(--locale-line));
+  color: #fff;
   transform: translateY(-1px);
-  box-shadow: 0 11px 25px rgb(45 42 83 / 15%);
+  box-shadow: 0 11px 26px rgb(109 92 255 / 32%);
 }
 
 .locale-switcher__trigger:active {
@@ -173,15 +170,8 @@ onBeforeUnmount(() => {
 }
 
 .locale-switcher__trigger:focus-visible {
-  outline: 2px solid var(--locale-accent);
+  outline: 2px solid #8b5cf6;
   outline-offset: 2px;
-}
-
-:global(html.color-scheme-dark) .locale-switcher__trigger,
-:global(html.color-scheme-dark) .locale-switcher__trigger:hover,
-:global(html.color-scheme-dark) .locale-switcher.is-open .locale-switcher__trigger {
-  background: #ffffff;
-  color: var(--locale-accent);
 }
 
 .locale-switcher__face {

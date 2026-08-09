@@ -58,6 +58,14 @@ func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
 	return nilOnNoRows(t, err)
 }
 
+// GetTaskForUpdate serializes terminal task transitions with output writers.
+// Workers that are already uploading may finish the storage operation, but
+// their conditional reference update will be fenced after this lock commits.
+func GetTaskForUpdate(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 FOR UPDATE`, id))
+	return nilOnNoRows(t, err)
+}
+
 func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Task, error) {
 	out := make(map[uuid.UUID]*Task, len(ids))
 	if len(ids) == 0 {
@@ -81,6 +89,188 @@ func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Ta
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2`, id, userID))
 	return nilOnNoRows(t, err)
+}
+
+// GetUserTaskForUpdate serializes terminal-task deletion with new references.
+func GetUserTaskForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID))
+	return nilOnNoRows(t, err)
+}
+
+// LockTasksReferencingOutputKeys keeps parent rows alive while a new task
+// records one of their outputs as an input. Task deletion takes the matching
+// FOR UPDATE lock, so one side either observes the reference or observes that
+// the parent has already gone away.
+func LockTasksReferencingOutputKeys(ctx context.Context, q Q, userID uuid.UUID, keys []string) (map[string]struct{}, error) {
+	referenced := make(map[string]struct{}, len(keys))
+	if len(keys) == 0 {
+		return referenced, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id, output_keys, thumbnail_keys
+		FROM tasks
+		WHERE user_id = $1
+		  AND (
+			EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(COALESCE(output_keys, '[]'::jsonb)) AS output_key(value)
+				WHERE output_key.value = ANY($2::text[])
+			)
+			OR EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(COALESCE(thumbnail_keys, '[]'::jsonb)) AS thumbnail_key(value)
+				WHERE thumbnail_key.value = ANY($2::text[])
+			)
+		  )
+		ORDER BY id
+		FOR SHARE`, userID, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var outputKeys []string
+		var thumbnailKeys []string
+		if err := rows.Scan(&id, &outputKeys, &thumbnailKeys); err != nil {
+			return nil, err
+		}
+		for _, key := range outputKeys {
+			for _, want := range keys {
+				if key == want {
+					referenced[key] = struct{}{}
+				}
+			}
+		}
+		for _, key := range thumbnailKeys {
+			for _, want := range keys {
+				if key == want {
+					referenced[key] = struct{}{}
+				}
+			}
+		}
+	}
+	return referenced, rows.Err()
+}
+
+// CountTasksReferencingInputKeys prevents deleting an output that a later
+// task still uses as a reference image (for example, a revision in a version
+// chain).
+func CountTasksReferencingInputKeys(ctx context.Context, q Q, userID, excludeID uuid.UUID, keys []string) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := q.QueryRow(ctx, `
+		SELECT
+			(
+				SELECT count(*)
+				FROM tasks task
+				WHERE task.user_id = $1 AND task.id <> $2
+				  AND (
+					EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements_text(
+							CASE WHEN jsonb_typeof(task.input_keys) = 'array'
+								THEN task.input_keys ELSE '[]'::jsonb END
+						) AS input_key(value)
+						WHERE input_key.value = ANY($3::text[])
+					)
+					OR task.params->>'maskKey' = ANY($3::text[])
+					OR task.params->>'maskBaseKey' = ANY($3::text[])
+				  )
+			)
+			+ (
+				SELECT count(*)
+				FROM assistant_messages message
+				JOIN assistant_conversations conversation ON conversation.id = message.conversation_id
+				WHERE conversation.user_id = $1
+				  AND (
+					EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements(
+							CASE WHEN jsonb_typeof(message.metadata->'referenceImages') = 'array'
+								THEN message.metadata->'referenceImages' ELSE '[]'::jsonb END
+						) AS reference(value)
+						WHERE reference.value->>'fileKey' = ANY($3::text[])
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements(
+							CASE WHEN jsonb_typeof(message.metadata->'proposal'->'referenceImages') = 'array'
+								THEN message.metadata->'proposal'->'referenceImages' ELSE '[]'::jsonb END
+						) AS proposal_reference(value)
+						WHERE proposal_reference.value->>'fileKey' = ANY($3::text[])
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements(
+							CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+								THEN message.metadata->'images' ELSE '[]'::jsonb END
+						) AS image(value)
+						WHERE image.value->>'fileKey' = ANY($3::text[])
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements(
+							CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+								THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END
+						) AS proposal_image(value)
+						WHERE proposal_image.value->>'fileKey' = ANY($3::text[])
+					)
+				  )
+			)
+			+ (
+				SELECT count(*)
+				FROM assistant_runs run
+				WHERE run.user_id = $1
+				  AND EXISTS (
+					SELECT 1
+					FROM jsonb_array_elements(
+						CASE WHEN jsonb_typeof(run.params->'referenceImages') = 'array'
+							THEN run.params->'referenceImages' ELSE '[]'::jsonb END
+					) AS reference(value)
+					WHERE reference.value->>'fileKey' = ANY($3::text[])
+				  )
+			)`, userID, excludeID, keys).Scan(&count)
+	return count, err
+}
+
+// ListUserTasksReferencingInputKeysForUpdate returns direct task descendants and
+// locks them so cascade deletion cannot race with a new reference being recorded.
+func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID uuid.UUID, excludeIDs []uuid.UUID, keys []string) ([]*Task, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+taskCols+`
+		FROM tasks task
+		WHERE task.user_id = $1
+		  AND NOT (task.id = ANY($2::uuid[]))
+		  AND (
+			EXISTS (
+				SELECT 1
+				FROM jsonb_array_elements_text(
+					CASE WHEN jsonb_typeof(task.input_keys) = 'array'
+						THEN task.input_keys ELSE '[]'::jsonb END
+				) AS input_key(value)
+				WHERE input_key.value = ANY($3::text[])
+			)
+			OR task.params->>'maskKey' = ANY($3::text[])
+			OR task.params->>'maskBaseKey' = ANY($3::text[])
+		  )
+		ORDER BY task.created_at
+		FOR UPDATE`, userID, excludeIDs, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tasks []*Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
 }
 
 func GetTaskByIdemKey(ctx context.Context, q Q, userID uuid.UUID, key string) (*Task, error) {
@@ -306,12 +496,22 @@ const adminTaskSourceSQL = `
 			), '[]'::jsonb) AS input_keys,
 			COALESCE((
 				SELECT jsonb_agg(image->>'fileKey')
-				FROM jsonb_array_elements(COALESCE(message.metadata->'images', '[]'::jsonb)) image
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
 				WHERE COALESCE(image->>'fileKey', '') <> ''
 			), '[]'::jsonb) AS output_keys,
 			COALESCE((
 				SELECT jsonb_agg(image->>'fileKey')
-				FROM jsonb_array_elements(COALESCE(message.metadata->'images', '[]'::jsonb)) image
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
 				WHERE COALESCE(image->>'fileKey', '') <> ''
 			), '[]'::jsonb) AS thumbnail_keys,
 			0::bigint AS cost_cents, 1::integer AS work_units, NULL::text AS idempotency_key,
@@ -660,7 +860,55 @@ func SetTaskPartialOutputsOwned(ctx context.Context, q Q, id uuid.UUID, outputKe
 	return setTaskPartialOutputs(ctx, q, id, outputKeys, thumbnailKeys, "", owner)
 }
 
+// ClearTaskOutputsAndEnqueueCleanup detaches all output references from a
+// task that has already won a terminal state transition, and records the
+// objects for deletion in the same transaction. Callers should hold the task
+// row lock while deciding whether the transition won.
+func ClearTaskOutputsAndEnqueueCleanup(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string) error {
+	cleanupKeys := append(append([]string(nil), outputKeys...), thumbnailKeys...)
+	if err := LockObjectReferenceKeys(ctx, q, cleanupKeys); err != nil {
+		return err
+	}
+	if err := EnqueueObjectCleanup(ctx, q, cleanupKeys); err != nil {
+		return err
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE tasks SET output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb WHERE id = $1`, id)
+	return err
+}
+
+// ClearTaskPartialOutputsAndEnqueueCleanup atomically removes the references
+// owned by one output attempt and records those objects for deletion. The
+// object advisory locks match both reference writers and the cleanup worker,
+// so a new version cannot observe the old task reference after the cleanup
+// job becomes visible.
+func ClearTaskPartialOutputsAndEnqueueCleanup(ctx context.Context, st *Store, id uuid.UUID, outputKeys, thumbnailKeys, cleanupKeys []string, claimID, owner string) error {
+	if st == nil || st.Pool == nil {
+		return errors.New("store is required")
+	}
+	return st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := LockObjectReferenceKeys(ctx, tx, cleanupKeys); err != nil {
+			return err
+		}
+		if _, err := setTaskPartialOutputsIfWritable(ctx, tx, id, outputKeys, thumbnailKeys, claimID, owner); err != nil {
+			return err
+		}
+		return EnqueueObjectCleanup(ctx, tx, cleanupKeys)
+	})
+}
+
 func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID, owner string) error {
+	updated, err := setTaskPartialOutputsIfWritable(ctx, q, id, outputKeys, thumbnailKeys, claimID, owner)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("task %s is no longer running", id)
+	}
+	return nil
+}
+
+func setTaskPartialOutputsIfWritable(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string, claimID, owner string) (bool, error) {
 	if outputKeys == nil {
 		outputKeys = []string{}
 	}
@@ -670,16 +918,13 @@ func setTaskPartialOutputs(ctx context.Context, q Q, id uuid.UUID, outputKeys, t
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3
 		 WHERE id = $1 AND (($4 <> '' AND status IN ('queued','running')) OR ($4 = '' AND status = 'running'))
-		   AND ($4 = '' OR params->>'_completionClaimId' = $4)
+			   AND ($4 = '' OR params->>'_completionClaimId' = $4)
 		   AND ($5 = '' OR lease_owner = $5)`,
 		id, outputKeys, thumbnailKeys, claimID, owner)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("task %s is no longer running", id)
-	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // TryClaimTaskCompletion fences provider-level pollers before they download and

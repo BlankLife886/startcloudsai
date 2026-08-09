@@ -15,12 +15,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -110,8 +113,8 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	current, getErr := store.GetAssistantRun(context.Background(), w.St.Pool, runID)
 	if getErr == nil && current != nil {
 		if current.Status == "canceled" {
-			_ = store.UpdateAssistantMessage(context.Background(), w.St.Pool, run.AssistantMessageID,
-				"已停止生成", resolvedAssistantMode(run), "stopped", assistantMessageMetadata(run, nil, "stopped", ""))
+			_ = w.clearAssistantMessageOutputMetadata(run, "已停止生成", resolvedAssistantMode(run), "stopped",
+				assistantMessageMetadata(run, nil, "stopped", ""))
 			assistantstream.Publish(context.Background(), w.Stream, runID.String(),
 				assistantstream.Event{Done: true, Status: "canceled"})
 			return nil
@@ -121,24 +124,53 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 		}
 	}
 	message := sanitizeUpstreamMessage(err.Error())
-	failed, failErr := assistantbilling.Fail(context.Background(), w.St, runID, "assistant_run_failed", message)
+	failureCtx, cancelFailure := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelFailure()
+	var failed bool
+	var failedContent string
+	failErr := w.St.Tx(failureCtx, func(tx pgx.Tx) error {
+		var err error
+		failed, err = assistantbilling.FailTx(failureCtx, tx, runID, "assistant_run_failed", message)
+		if err != nil || !failed {
+			return err
+		}
+		if partial, partialErr := store.GetAssistantMessage(failureCtx, tx, run.AssistantMessageID); partialErr != nil {
+			return partialErr
+		} else if partial != nil && strings.TrimSpace(partial.Content) != "" &&
+			strings.TrimSpace(partial.Content) != strings.TrimSpace(message) {
+			failedContent = partial.Content
+		}
+		return w.clearAssistantMessageOutputMetadataTx(failureCtx, tx, run, failedContent,
+			resolvedAssistantMode(run), "failed", assistantMessageMetadata(run, nil, "failed", message))
+	})
 	if failErr != nil {
 		return failErr
 	}
 	if !failed {
 		return nil
 	}
-	failedContent := ""
-	if partial, partialErr := store.GetAssistantMessage(context.Background(), w.St.Pool, run.AssistantMessageID); partialErr == nil && partial != nil && strings.TrimSpace(partial.Content) != "" {
-		if strings.TrimSpace(partial.Content) != strings.TrimSpace(message) {
-			failedContent = partial.Content
-		}
-	}
-	_ = store.UpdateAssistantMessage(context.Background(), w.St.Pool, run.AssistantMessageID,
-		failedContent, resolvedAssistantMode(run), "failed", assistantMessageMetadata(run, nil, "failed", message))
 	assistantstream.Publish(context.Background(), w.Stream, runID.String(),
 		assistantstream.Event{Done: true, Status: "failed"})
 	return nil
+}
+
+func (w *Worker) clearAssistantMessageOutputMetadata(run *store.AssistantRun, content, kind, status string, metadata map[string]any) error {
+	if w == nil || w.St == nil || run == nil {
+		return errors.New("assistant output cleanup store is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return w.St.Tx(ctx, func(tx pgx.Tx) error {
+		return w.clearAssistantMessageOutputMetadataTx(ctx, tx, run, content, kind, status, metadata)
+	})
+}
+
+func (w *Worker) clearAssistantMessageOutputMetadataTx(ctx context.Context, q store.Q, run *store.AssistantRun, content, kind, status string, metadata map[string]any) error {
+	if w == nil || w.St == nil || run == nil {
+		return errors.New("assistant output cleanup store is unavailable")
+	}
+	return store.ClearAssistantMessageOutputMetadata(ctx, q, run.UserID, run.AssistantMessageID,
+		content, kind, status, metadata)
 }
 
 func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRun) error {
@@ -1327,7 +1359,16 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 }
 
 func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.AssistantRun, index, count int, data []byte, revisedPrompt string) (map[string]any, error) {
+	if len(data) == 0 || len(data) > assistantOutputLimit {
+		return nil, errors.New("上游图片超过大小限制")
+	}
 	contentType, ext := assistantImageType(data)
+	if contentType == "" || ext == "" {
+		return nil, errors.New("上游返回了不支持的图片格式")
+	}
+	if _, _, err := media.Dimensions(data); err != nil {
+		return nil, fmt.Errorf("上游返回的图片无法读取: %w", err)
+	}
 	key := fmt.Sprintf("tasks/%s/assistant/%s/%d.%s", run.UserID, run.ID, index+1, ext)
 	if err := w.Storage.UploadBytes(ctx, key, data, contentType); err != nil {
 		return nil, err
@@ -1346,6 +1387,34 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 	return stored, nil
 }
 
+func assistantImageOutputKeys(images []map[string]any) []string {
+	keys := make([]string, 0, len(images))
+	seen := make(map[string]struct{}, len(images))
+	for _, image := range images {
+		key := strings.TrimSpace(assistantMapString(image, "fileKey"))
+		if !strings.HasPrefix(key, "tasks/") {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (w *Worker) enqueueAssistantOutputCleanup(keys []string) {
+	if w == nil || w.St == nil || len(keys) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := store.EnqueueObjectCleanup(ctx, w.St.Pool, keys); err != nil {
+		log.Printf("assistant output cleanup enqueue failed: %v", err)
+	}
+}
+
 func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.AssistantRun, storedByIndex []map[string]any, expected, actual int) error {
 	stored := compactAssistantImages(storedByIndex)
 	content := "图片已生成"
@@ -1354,6 +1423,7 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 	}
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "image", "complete",
 		assistantMessageMetadata(run, stored, "complete", "")); err != nil {
+		w.enqueueAssistantOutputCleanup(assistantImageOutputKeys(stored))
 		return err
 	}
 	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "image")
@@ -1491,6 +1561,7 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 		storedByIndex[index] = stored
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
 			assistantMessageMetadata(run, compactAssistantImages(storedByIndex), "generating-image", "")); err != nil {
+			w.enqueueAssistantOutputCleanup([]string{assistantMapString(stored, "fileKey")})
 			return err
 		}
 		return nil
@@ -1501,9 +1572,10 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 	return w.completeAssistantImageRun(ctx, run, storedByIndex, count, actual)
 }
 
-func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.AssistantRun) ([]string, error) {
+func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.AssistantRun) ([]string, []string, error) {
 	items, _ := run.Params["referenceImages"].([]any)
 	urls := make([]string, 0, len(items))
+	temporaryKeys := make([]string, 0, len(items))
 	for index, raw := range items {
 		item, _ := raw.(map[string]any)
 		key := assistantMapString(item, "fileKey")
@@ -1514,7 +1586,7 @@ func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.Assi
 		if key != "" {
 			presigned, err := w.Storage.PresignGet(ctx, key)
 			if err != nil {
-				return nil, err
+				return nil, temporaryKeys, err
 			}
 			urls = append(urls, presigned)
 			continue
@@ -1526,20 +1598,21 @@ func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.Assi
 		if strings.HasPrefix(value, "data:image/") {
 			data, contentType, ext, err := downloadAssistantImage(ctx, value)
 			if err != nil {
-				return nil, err
+				return nil, temporaryKeys, err
 			}
 			key = fmt.Sprintf("tasks/%s/assistant/%s/crun-input/%d.%s", run.UserID, run.ID, index+1, ext)
 			if err := w.Storage.UploadBytes(ctx, key, data, contentType); err != nil {
-				return nil, err
+				return nil, temporaryKeys, err
 			}
+			temporaryKeys = append(temporaryKeys, key)
 			presigned, err := w.Storage.PresignGet(ctx, key)
 			if err != nil {
-				return nil, err
+				return nil, temporaryKeys, err
 			}
 			urls = append(urls, presigned)
 		}
 	}
-	return urls, nil
+	return urls, temporaryKeys, nil
 }
 
 func (w *Worker) executeAssistantImageCRUN(ctx context.Context, run *store.AssistantRun) error {
@@ -1552,7 +1625,10 @@ func (w *Worker) executeAssistantImageCRUN(ctx context.Context, run *store.Assis
 
 func (w *Worker) executeAssistantImageCRUNClient(ctx context.Context, run *store.AssistantRun, client *crun.Client) error {
 	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
-	references, err := w.crunAssistantReferenceURLs(ctx, run)
+	references, temporaryKeys, err := w.crunAssistantReferenceURLs(ctx, run)
+	if len(temporaryKeys) > 0 {
+		defer w.enqueueAssistantOutputCleanup(temporaryKeys)
+	}
 	if err != nil {
 		return err
 	}
@@ -1591,8 +1667,12 @@ func (w *Worker) executeAssistantImageCRUNClient(ctx context.Context, run *store
 			return err
 		}
 		storedByIndex[index] = stored
-		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
-			assistantMessageMetadata(run, compactAssistantImages(storedByIndex), "generating-image", ""))
+		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
+			assistantMessageMetadata(run, compactAssistantImages(storedByIndex), "generating-image", "")); err != nil {
+			w.enqueueAssistantOutputCleanup([]string{assistantMapString(stored, "fileKey")})
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -1625,6 +1705,7 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 		partial := compactAssistantImages(storedByIndex)
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
 			assistantMessageMetadata(run, partial, "generating-image", "")); err != nil {
+			w.enqueueAssistantOutputCleanup([]string{assistantMapString(stored, "fileKey")})
 			return err
 		}
 		return nil
@@ -1671,11 +1752,28 @@ func (w *Worker) loadAssistantReferences(ctx context.Context, params map[string]
 			if err != nil {
 				return nil, err
 			}
-			contentType := http.DetectContentType(data)
+			contentType, _ := assistantImageType(data)
+			if contentType == "" {
+				return nil, fmt.Errorf("assistant reference %q is not a supported image", key)
+			}
+			if _, _, err := media.Dimensions(data); err != nil {
+				return nil, fmt.Errorf("assistant reference %q cannot be decoded: %w", key, err)
+			}
 			out = append(out, "data:"+contentType+";base64,"+base64.StdEncoding.EncodeToString(data))
 			continue
 		}
-		if strings.HasPrefix(value, "data:image/") || strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
+		if strings.HasPrefix(value, "data:image/") {
+			data, contentType, _, err := downloadAssistantImage(ctx, value)
+			if err != nil {
+				return nil, err
+			}
+			if len(data) > 16<<20 {
+				return nil, errors.New("assistant reference image exceeds 16 MiB")
+			}
+			out = append(out, "data:"+contentType+";base64,"+base64.StdEncoding.EncodeToString(data))
+			continue
+		}
+		if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
 			out = append(out, value)
 		}
 	}
@@ -1751,13 +1849,22 @@ func downloadAssistantImage(ctx context.Context, source string) ([]byte, string,
 			return nil, "", "", err
 		}
 		contentType, ext := assistantImageType(data)
+		if contentType == "" || ext == "" {
+			return nil, "", "", errors.New("unsupported image data URL")
+		}
+		if _, _, err := media.Dimensions(data); err != nil {
+			return nil, "", "", fmt.Errorf("invalid image data URL: %w", err)
+		}
 		return data, contentType, ext, nil
+	}
+	if err := netguard.ValidateURL(source, false, false); err != nil {
+		return nil, "", "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return nil, "", "", err
 	}
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	resp, err := netguard.NewHTTPClient(90*time.Second, false, false).Do(req)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -1770,17 +1877,16 @@ func downloadAssistantImage(ctx context.Context, source string) ([]byte, string,
 		return nil, "", "", errors.New("generated image is unavailable or too large")
 	}
 	contentType, ext := assistantImageType(data)
+	if contentType == "" || ext == "" {
+		return nil, "", "", errors.New("downloaded data is not a supported image")
+	}
+	if _, _, err := media.Dimensions(data); err != nil {
+		return nil, "", "", fmt.Errorf("downloaded image cannot be decoded: %w", err)
+	}
 	return data, contentType, ext, nil
 }
 
 func assistantImageType(data []byte) (string, string) {
-	contentType := http.DetectContentType(data)
-	switch contentType {
-	case "image/jpeg":
-		return contentType, "jpg"
-	case "image/webp":
-		return contentType, "webp"
-	default:
-		return "image/png", "png"
-	}
+	ext, contentType := media.Detect(data)
+	return contentType, ext
 }

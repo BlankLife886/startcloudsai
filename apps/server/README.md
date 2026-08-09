@@ -16,7 +16,7 @@ internal/
 ├── promptsync/          # JSON/Markdown/HTML 提示词源同步
 ├── redemption/          # 兑换码生成与兑换
 ├── settings/            # app_settings 读写
-├── storage/             # Cloudflare R2 上传、删除、读取与可选预签名
+├── storage/             # Cloudflare R2 上传、列举、删除、读取与可选预签名
 ├── store/               # pgx 数据访问、事务和 Goose 迁移
 ├── subscription/        # 历史订阅数据兼容（当前无支付入口）
 ├── taskflow/            # 提交、状态机、计费与 Asynq 入队
@@ -71,7 +71,7 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - 任务提交时冻结费用，成功时结算，失败/取消时释放；失败任务重入队会重新冻结同额费用，并使用代数后缀区分账本幂等键。
 - Asynq payload 只包含 `task_id`，队列层 `MaxRetry(0)`；同一个业务 ID 也作为 chatgpt2api 异步图片任务的 `client_task_id`。Worker 通过 `/api/image-tasks` 轮询并回收已生成图片，单次轮询遇到网络错误或 408/425/429/5xx 时会在总超时内继续查询。旧上游缺少异步端点时才回退 OpenAI 同步图片接口。
 - Worker 启动时会把上一个进程遗留的 `running` 任务恢复为 `queued`，并使用新的 Asynq 恢复记录接管同一个上游任务；不会重新生成或重复扣费。已归档的旧 Asynq TaskID 不会再造成“看似入队成功、实际没有待执行任务”。每 10 分钟也会接管超时的孤儿任务和补投滞留队列。
-- Worker 每小时清理过期 session 和超期审计日志，每 30 分钟扫描到期的提示词数据源。
+- Worker 每小时清理过期 session、超期审计日志和无引用的普通上传对象，每 30 分钟扫描到期的提示词数据源，每 5 分钟重试任务/助手产物的对象清理作业。
 - 用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码认证。`POST /api/v1/auth/session` 会在同一事务内验证验证码，并为首次邮箱自动创建用户、钱包、初始积分和 session；已有用户直接创建 session。Gmail 点号、加号标签和 Googlemail 地址统一规范化。不提供用户密码或第三方 OAuth 登录。用户 Cookie 为 `sc_session`，有效期 30 天。
 - 管理员使用独立账号、密码和 `sc_admin_session`；不使用管理员密钥。管理员与用户的账号表、密码、会话和 Cookie 均不能交叉访问。
 - `create-admin` 只创建或更新 `admin_accounts`，不会创建普通用户或钱包；更新密码时会撤销该管理员的全部旧会话。
@@ -80,6 +80,6 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - `/api/v1/assistant/*` 使用服务端保存的 Sub2API Key 代理流式对话和图片生成，浏览器不会取得该 Key；当前只要求用户已登录，不从站内钱包重复扣费。
 - 数据库中的 C2A API Key 使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密；启动时会自动迁移旧明文值。
 - 生产环境的登录与兑换限流保存在 Redis；开发和测试环境使用进程内限流。
-- Worker 对每张上游原图同时保存原图和最长边 512px 的 JPEG 缩略图；列表返回站内缩略图 URL，需要查看时再使用站内原图 URL。`GET /api/v1/files/*` 完成权限校验后由 API 代理读取 R2，浏览器不再直接依赖 R2 网络可达性。
+- Worker 对每张上游原图同时保存原图和最长边 512px 的 JPEG 缩略图；列表返回站内缩略图 URL，需要查看时再使用站内原图 URL。普通上传对象会登记业务引用，超过 7 天仍无引用的对象由 Worker 扫描 R2 后回收。`GET /api/v1/files/*` 完成权限校验后由 API 代理读取 R2，浏览器不再直接依赖 R2 网络可达性。
 
 完整接口见 [../../docs/API_CONTRACT.md](../../docs/API_CONTRACT.md)，数据模型见 [../../docs/DATABASE.md](../../docs/DATABASE.md)。

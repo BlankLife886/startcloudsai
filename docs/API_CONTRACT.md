@@ -86,7 +86,7 @@
 | GET    | `/api/v1/me/assets`                   | 个人素材 cursor 分页；可选 `groupId=all\|ungrouped\|{uuid}`；列表返回 `thumbnailUrl`、`groupId`，原图地址为 `url`                                                                                                  |
 | POST   | `/api/v1/me/assets`                   | 保存 `{title,fileKey,thumbnailKey,contentType,groupId?}`；仅允许本人上传、原图不超过 10MB、每账号最多 200 项                                                                                                      |
 | PATCH  | `/api/v1/me/assets/{id}`              | 更新 `{title?,groupId?}`；`groupId: null` 表示移出分组                                                                                                                                                           |
-| DELETE | `/api/v1/me/assets/{id}`              | 删除自己的素材记录、原图与缩略图                                                                                                                                                                                 |
+| DELETE | `/api/v1/me/assets/{id}`              | 删除自己的素材记录、原图与缩略图；被任意状态的商品引用时返回 409 `asset_in_use`                                                                                                                                        |
 | GET    | `/api/v1/me/asset-groups`             | 返回 `{items,ungroupedCount,totalAssetCount}`；分组含 `assetCount`                                                                                                                                               |
 | POST   | `/api/v1/me/asset-groups`             | 创建 `{name,sort?}`；名称 1-64 字、同用户唯一，最多 50 组                                                                                                                                                         |
 | PATCH  | `/api/v1/me/asset-groups/{id}`        | 更新 `{name?,sort?}`                                                                                                                                                                                             |
@@ -146,9 +146,23 @@ task 主要字段：
 
 费用按 `count * taskPrices[type]` 计算。`idempotencyKey` 在同一用户内唯一，客户端重试提交时应复用。成功任务的 `outputKeys`/`originalUrls` 指向原图，`thumbnailKeys`/`thumbnailUrls` 指向最长边 512px 的 JPEG 缩略图；`outputUrls` 为兼容字段，优先返回缩略图。
 
+## AI 电商商品库
+
+商品库用于保存可重复使用的 SKU 资料和真实商品参考图，不涉及套餐、订单或支付。接口均要求当前用户登录；商品、素材和生成任务按用户隔离。
+
+| 方法   | 路径                              | 说明                                                                 |
+| ------ | --------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/api/v1/commerce/products`       | 商品 cursor 列表；支持 `q` 搜索商品名、SKU、品牌和类目，`status=active\|archived` |
+| POST   | `/api/v1/commerce/products`       | 创建商品；至少需要 `title` 和 1-6 个本人 `assetIds`                   |
+| GET    | `/api/v1/commerce/products/{id}`  | 读取商品资料及关联素材 URL                                            |
+| PATCH  | `/api/v1/commerce/products/{id}`  | 更新商品字段；未提交的字段保留原值                                    |
+| DELETE | `/api/v1/commerce/products/{id}`  | 删除商品记录；不会删除个人素材                                        |
+
+商品字段包括 `sku`、`title`、`brand`、`category`、`sellingPoints`、`targetAudience`、`material`、`color`、`dimensions`、`platform`、`market`、`language`、`protectedElements` 和 `assetIds`。同一用户的非空 SKU 不区分大小写重复。商品被带入 `/ecommerce-design` 后，生成任务会在 `params.commerceProductId` 与 `params.commerceProductSnapshot` 中保存商品关联和生成时快照，避免后续修改商品资料影响历史任务解释。
+
 ## 智能画布
 
-画布项目完全归属当前用户，服务端保存与具体图编辑器无关的 JSON 文档。服务端兼容版本 1（旧通用节点）和版本 2（TapCanvas 业务节点），最多包含 5000 个节点和 10000 条连线，单次请求体上限为 5 MB。
+画布项目完全归属当前用户，服务端保存与具体图编辑器无关的 JSON 文档。服务端兼容版本 1（旧通用节点）、版本 2（TapCanvas 业务节点）和版本 3（React 画布节点），最多包含 5000 个节点和 10000 条连线，单次请求体上限为 5 MB。
 
 | 方法   | 路径                           | 说明                                                                 |
 | ------ | ------------------------------ | -------------------------------------------------------------------- |
@@ -158,13 +172,13 @@ task 主要字段：
 | PATCH  | `/api/v1/canvas-projects/{id}` | 更新 `{title?,document?,revision}`；成功后 revision 加 1              |
 | DELETE | `/api/v1/canvas-projects/{id}` | 删除项目，成功返回 204                                                |
 
-`PATCH` 使用乐观锁。客户端必须提交最后读取到的 `revision`；版本落后时返回 HTTP 409 `revision_conflict`，不得静默覆盖云端版本。document 必须包含 `version:1`、`nodes:[]`、`edges:[]`，可选的 `viewport` 必须是对象。
+`PATCH` 使用乐观锁。客户端必须提交最后读取到的 `revision`；版本落后时返回 HTTP 409 `revision_conflict`，不得静默覆盖云端版本。document 必须包含 `nodes:[]` 和 `version`；版本 1、2 使用 `edges:[]`，版本 3 使用 `connections:[]`。可选的 `viewport` 必须是对象。省略 document 时服务端创建空的版本 2 文档。
 
 ## 上传与文件
 
 | 方法 | 路径                  | 说明                                                                                                                                                |
 | ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST | `/api/v1/uploads`        | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP；同步生成 512px JPEG 缩略图，返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` |
+| POST | `/api/v1/uploads`        | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP 图片和 MP4/WebM 视频；图片返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` 并同步生成 512px JPEG 缩略图，视频返回 `{key,url,contentType,sizeBytes}`；未被业务引用的上传对象保留 7 天后由 Worker 回收 |
 | GET  | `/api/v1/files/{key...}` | 校验访问权限后由 API 代理读取 R2 并直接返回文件（`200`，私有缓存 1 小时）；客户端无需直连对象存储                                                   |
 
 用户只能读取属于自己的 `uploads/`、`tasks/` key；已审核画廊资源公开；管理员可读取任意业务 key。网关请求体上限为 20 MB，应用层限制仍是 15 MB。
@@ -373,7 +387,7 @@ settings 请求/响应：
 | --------- | ----------------------------------------------------------------------------------------------- |
 | 鉴权      | `auth_required`, `admin_required`, `invalid_credentials`, `rate_limited`                        |
 | 参数/资源 | `validation_error`, `not_found`, `email_exists`, `registration_required`, `registration_closed` |
-| 任务      | `insufficient_balance`, `user_task_limit`, `task_not_found`, `task_not_cancelable`              |
+| 任务      | `insufficient_balance`, `user_task_limit`, `task_not_found`, `task_not_cancelable`, `task_in_use` |
 | 文件      | `upload_too_large`, `unsupported_file`                                                          |
 | 投稿      | `submission_not_allowed`, `submission_disabled`, `submission_daily_limit`, `submission_banned`  |
 | 反馈      | `feedback_daily_limit`                                                                        |

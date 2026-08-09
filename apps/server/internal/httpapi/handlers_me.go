@@ -81,6 +81,15 @@ func (s *Server) patchProfile(c *gin.Context) {
 			fail(c, apperr.E("validation_error", "avatarUrl: 仅允许使用自己上传的站内图片", 422))
 			return
 		}
+		key := strings.TrimPrefix(avatar, "/api/v1/files/")
+		if _, _, err := s.inspectOwnedUserUploadImage(c.Request.Context(), user.ID, key, maxUserAssetImageBytes); err != nil {
+			fail(c, apperr.E("validation_error", "avatarUrl: 文件不存在或不是有效图片", 422))
+			return
+		}
+	}
+	avatarUploadKey := ""
+	if body.AvatarURL.Valid && body.AvatarURL.Value != "" {
+		avatarUploadKey = strings.TrimPrefix(strings.TrimSpace(body.AvatarURL.Value), "/api/v1/files/")
 	}
 
 	var username *string
@@ -123,7 +132,14 @@ func (s *Server) patchProfile(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		return store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil)
+		if err := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil); err != nil {
+			return err
+		}
+		if !body.AvatarURL.Valid {
+			return nil
+		}
+		return store.ReplaceUserUploadReferences(ctx, tx, user.ID, store.UploadReferenceUserAvatar, user.ID,
+			[]string{avatarUploadKey})
 	})
 	if err != nil {
 		fail(c, err)

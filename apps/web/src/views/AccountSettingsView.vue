@@ -1,17 +1,14 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
 import { updateProfile } from '@/services/meApi'
 import { uploadFile } from '@/services/tasksApi'
 import notificationService from '@/services/notification'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
-import ProfileSectionShell from '@/components/profile/ProfileSectionShell.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
-const appearanceStore = useAppearanceStore()
 
 const profileForm = reactive({
   username: '',
@@ -178,130 +175,133 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div
-    class="ps-page"
-    :class="{ 'is-light': !appearanceStore.isDark, 'is-dark': appearanceStore.isDark }"
-  >
-    <div class="ps-atmosphere" aria-hidden="true">
-      <div class="ps-atmosphere__wash"></div>
-    </div>
+  <main class="account">
+    <header class="account-top">
+      <div>
+        <h1>账号设置</h1>
+        <p>公开资料、创作偏好与账号信息</p>
+      </div>
+      <div class="account-top__meta">
+        <span :class="{ 'is-dirty': profileDirty }">
+          <i class="bi" :class="profileDirty ? 'bi-circle-fill' : 'bi-check2-circle'"></i>
+          {{ profileDirty ? '有未保存修改' : '资料已同步' }}
+        </span>
+        <button
+          type="button"
+          class="account-btn is-primary"
+          :disabled="!profileCanSave"
+          @click="saveProfile"
+        >
+          {{ profileForm.saving ? '保存中…' : '保存资料' }}
+        </button>
+      </div>
+    </header>
 
-    <ProfileSectionShell title="账号设置" description="管理公开资料、创作偏好和账号安全。">
-      <div class="ps-account-forms">
-        <form class="ps-account-form" @submit.prevent="saveProfile">
-          <h3><i class="bi bi-person-vcard"></i> 个人资料</h3>
-          <div class="ps-avatar-editor">
+    <div class="account-stage">
+      <form class="account-panel account-profile" @submit.prevent="saveProfile">
+        <div class="account-avatar">
+          <button
+            type="button"
+            class="account-avatar__preview"
+            :disabled="profileForm.avatarUploading"
+            aria-label="更换头像"
+            @click="avatarInput?.click()"
+          >
+            <img
+              v-if="authStore.user?.avatarUrl"
+              :src="authStore.user.avatarUrl"
+              alt="头像"
+              loading="eager"
+              decoding="async"
+            />
+            <img
+              v-else
+              src="/brand/avatar-placeholder.svg"
+              alt="头像"
+              loading="eager"
+              decoding="async"
+            />
+            <span>
+              <i
+                class="bi"
+                :class="profileForm.avatarUploading ? 'bi-arrow-repeat spin' : 'bi-camera'"
+              ></i>
+            </span>
+          </button>
+          <div>
+            <strong>{{ authStore.displayName }}</strong>
+            <p data-no-translate>{{ authStore.user?.email }}</p>
             <button
               type="button"
-              class="ps-avatar-editor__preview"
+              class="account-btn is-ghost"
               :disabled="profileForm.avatarUploading"
-              aria-label="更换头像"
               @click="avatarInput?.click()"
             >
-              <img
-                v-if="authStore.user?.avatarUrl"
-                :src="authStore.user.avatarUrl"
-                alt="头像"
-                loading="eager"
-                decoding="async"
-              />
-              <img
-                v-else
-                src="/brand/avatar-placeholder.svg"
-                alt="头像"
-                loading="eager"
-                decoding="async"
-              />
+              {{ profileForm.avatarUploading ? '上传中…' : '更换头像' }}
             </button>
-            <div>
-              <strong>{{ authStore.displayName }}</strong>
-              <p data-no-translate>{{ authStore.user?.email }}</p>
-              <button
-                type="button"
-                class="ps-btn is-ghost"
-                :disabled="profileForm.avatarUploading"
-                @click="avatarInput?.click()"
-              >
-                <i
-                  class="bi"
-                  :class="profileForm.avatarUploading ? 'bi-arrow-repeat spin' : 'bi-camera'"
-                ></i>
-                {{ profileForm.avatarUploading ? '上传中…' : '更换头像' }}
-              </button>
-            </div>
+          </div>
+          <input
+            ref="avatarInput"
+            class="account-avatar__input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            @change="onAvatarSelected"
+          />
+        </div>
+
+        <div class="account-fields">
+          <label>
+            <span>昵称</span>
             <input
-              ref="avatarInput"
-              class="ps-avatar-input"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              @change="onAvatarSelected"
+              v-model="profileForm.username"
+              maxlength="64"
+              placeholder="展示名称"
+              :aria-invalid="Boolean(usernameError)"
             />
-          </div>
+          </label>
+          <label>
+            <span>所在地</span>
+            <input
+              v-model="profileForm.location"
+              maxlength="80"
+              placeholder="上海 / Remote"
+            />
+          </label>
+          <label class="is-wide">
+            <span>个人网站</span>
+            <input
+              v-model="profileForm.websiteUrl"
+              maxlength="300"
+              inputmode="url"
+              placeholder="https://example.com"
+              :aria-invalid="Boolean(websiteError)"
+            />
+          </label>
+          <p v-if="websiteError" class="account-error is-wide">{{ websiteError }}</p>
+          <label class="is-wide account-bio">
+            <span>个人简介 <em>{{ profileForm.bio.length }}/280</em></span>
+            <textarea
+              v-model="profileForm.bio"
+              maxlength="280"
+              rows="3"
+              placeholder="创作方向、擅长风格或正在进行的项目…"
+            ></textarea>
+          </label>
+        </div>
+      </form>
 
-          <div class="ps-profile-grid">
-            <label>
-              <span>昵称</span>
-              <input
-                v-model="profileForm.username"
-                maxlength="64"
-                placeholder="你希望展示的名字"
-                :aria-invalid="Boolean(usernameError)"
-              />
-            </label>
-            <label>
-              <span>所在地</span>
-              <input
-                v-model="profileForm.location"
-                maxlength="80"
-                placeholder="例如：上海 / Remote"
-              />
-            </label>
-            <label class="is-wide">
-              <span>个人网站</span>
-              <input
-                v-model="profileForm.websiteUrl"
-                maxlength="300"
-                inputmode="url"
-                placeholder="https://example.com"
-                :aria-invalid="Boolean(websiteError)"
-              />
-            </label>
-            <p v-if="websiteError" class="ps-field-error is-wide">{{ websiteError }}</p>
-            <label class="is-wide">
-              <span>个人简介 <em>{{ profileForm.bio.length }}/280</em></span>
-              <textarea
-                v-model="profileForm.bio"
-                maxlength="280"
-                rows="5"
-                placeholder="介绍你的创作方向、擅长风格或正在进行的项目…"
-              ></textarea>
-            </label>
-          </div>
-
-          <div class="ps-form-footer">
-            <span :class="{ 'is-dirty': profileDirty }">
-              <i class="bi" :class="profileDirty ? 'bi-circle-fill' : 'bi-check2-circle'"></i>
-              {{ profileDirty ? '有未保存的修改' : '资料已是最新状态' }}
-            </span>
-            <button type="submit" class="ps-btn is-primary" :disabled="!profileCanSave">
-              {{ profileForm.saving ? '保存中…' : '保存个人资料' }}
-            </button>
-          </div>
-        </form>
-
-        <section class="ps-account-form">
-          <h3><i class="bi bi-sliders2"></i> 创作偏好</h3>
-          <p class="ps-preference-intro">
-            调整生成流程中的确认方式。余额不足、预算超限等安全拦截始终保留。
-          </p>
-          <label class="ps-preference-row" :class="{ 'is-saving': preferenceSaving }">
-            <span class="ps-preference-copy">
+      <aside class="account-side">
+        <section class="account-panel">
+          <h2>创作偏好</h2>
+          <p>余额不足、预算超限等安全拦截始终保留。</p>
+          <label class="account-switch" :class="{ 'is-saving': preferenceSaving }">
+            <span>
               <strong>生成前费用确认</strong>
               <small>
                 {{
                   requireCostConfirm
-                    ? '每次提交付费生成前显示费用明细'
-                    : '校验通过后直接提交生成任务'
+                    ? '提交前显示费用明细'
+                    : '校验通过后直接提交'
                 }}
               </small>
             </span>
@@ -312,20 +312,20 @@ onMounted(async () => {
               aria-label="生成前费用确认"
               @change="setCostConfirmPreference($event.target.checked)"
             />
-            <span class="ps-preference-switch" aria-hidden="true"><i></i></span>
+            <i aria-hidden="true"><em></em></i>
           </label>
-          <div class="ps-preference-state">
+          <small class="account-sync">
             <i
               class="bi"
               :class="preferenceSaving ? 'bi-arrow-repeat spin' : 'bi-check2-circle'"
             ></i>
-            {{ preferenceSaving ? '正在保存账号偏好…' : '已同步到当前账号' }}
-          </div>
+            {{ preferenceSaving ? '正在保存…' : '已同步到当前账号' }}
+          </small>
         </section>
 
-        <section class="ps-account-form">
-          <h3><i class="bi bi-fingerprint"></i> 账号信息</h3>
-          <dl class="ps-identity">
+        <section class="account-panel account-identity">
+          <h2>账号信息</h2>
+          <dl>
             <div>
               <dt>登录邮箱</dt>
               <dd data-no-translate>{{ authStore.user?.email || '—' }}</dd>
@@ -340,155 +340,195 @@ onMounted(async () => {
             </div>
           </dl>
         </section>
-      </div>
-    </ProfileSectionShell>
-  </div>
+      </aside>
+    </div>
+  </main>
 </template>
 
 <style scoped>
-.ps-page {
-  --ps-text: #1c1a27;
-  --ps-muted: rgba(28, 26, 39, 0.58);
-  --ps-line: rgba(28, 26, 39, 0.1);
-  --ps-surface: rgba(255, 255, 255, 0.82);
-  --ps-card: rgba(255, 255, 255, 0.96);
-  --ps-accent: #6b5cff;
-  --ps-shadow: 0 18px 40px rgba(40, 30, 80, 0.07);
-  position: relative;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 28px clamp(16px, 3vw, 36px) 72px;
-  color: var(--ps-text);
-  overflow: clip;
-}
-
-.ps-page.is-dark {
-  --ps-text: #f4f2ff;
-  --ps-muted: rgba(244, 242, 255, 0.62);
-  --ps-line: rgba(244, 242, 255, 0.12);
-  --ps-surface: rgba(24, 22, 36, 0.78);
-  --ps-card: rgba(32, 28, 48, 0.92);
-  --ps-accent: #a99dff;
-  --ps-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-}
-
-.ps-atmosphere {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.ps-atmosphere__wash {
-  position: absolute;
-  inset: 0;
+.account {
+  --ink: #1f2430;
+  --muted: #6f7a8c;
+  --line: #ebe3d8;
+  --orange: #f27021;
+  --card: rgb(255 255 255 / 94%);
+  box-sizing: border-box;
+  width: 100%;
+  height: calc(100dvh - var(--app-header-offset, 72px));
+  max-height: calc(100dvh - var(--app-header-offset, 72px));
+  padding: 16px 0 18px;
+  overflow: hidden;
+  color: var(--ink);
   background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(167, 139, 250, 0.22), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(125, 211, 252, 0.16), transparent 50%),
-    linear-gradient(180deg, #f6f3ff 0%, #eef2ff 48%, #f8fafc 100%);
+    radial-gradient(circle at 8% 0%, rgb(255 210 150 / 34%), transparent 28%),
+    radial-gradient(circle at 96% 8%, rgb(255 186 120 / 16%), transparent 24%),
+    linear-gradient(180deg, #fffaf3 0%, #f6f3ee 48%, #f3f4f7 100%);
 }
 
-.ps-page.is-dark .ps-atmosphere__wash {
-  background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(99, 102, 241, 0.28), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(56, 189, 248, 0.14), transparent 50%),
-    linear-gradient(180deg, #120f1c 0%, #161325 48%, #101018 100%);
+.account-top,
+.account-stage {
+  width: min(1120px, calc(100% - 32px));
+  margin-inline: auto;
 }
 
-.ps-btn {
+.account-top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex: none;
+}
+
+.account-top h1 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2.2vw, 1.85rem);
+  font-weight: 850;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.account-top p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.account-top__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-top__meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.account-top__meta > span.is-dirty {
+  color: #b45309;
+}
+
+.account-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
+  min-height: 34px;
   padding: 0 14px;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  border: 1px solid var(--ps-line);
+  color: var(--ink);
   background: #fff;
-  color: var(--ps-text);
   font: inherit;
-  font-size: 0.82rem;
-  font-weight: 700;
+  font-size: 0.76rem;
+  font-weight: 750;
   cursor: pointer;
 }
 
-.ps-page.is-dark .ps-btn {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.ps-btn.is-primary {
-  border-color: transparent;
-  background: var(--ps-accent);
+.account-btn.is-primary {
   color: #fff;
+  border-color: var(--orange);
+  background: var(--orange);
 }
 
-.ps-btn.is-ghost:hover:not(:disabled) {
-  border-color: rgba(107, 92, 255, 0.35);
-  color: var(--ps-accent);
+.account-btn.is-ghost {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 0.72rem;
 }
 
-.ps-btn:disabled {
-  opacity: 0.5;
+.account-btn:disabled {
+  opacity: 0.48;
   cursor: not-allowed;
 }
 
-.ps-account-forms {
+.account-stage {
   display: grid;
-  gap: 14px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.75fr);
+  gap: 12px;
+  height: calc(100% - 58px);
+  min-height: 0;
 }
 
-.ps-account-form {
+.account-panel {
+  min-height: 0;
   padding: 16px;
-  border: 1px solid var(--ps-line);
+  border: 1px solid var(--line);
   border-radius: 18px;
-  background: var(--ps-card);
+  background: var(--card);
+  box-shadow: 0 10px 28px rgb(60 45 20 / 5%);
 }
 
-.ps-account-form h3 {
-  margin: 0 0 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.95rem;
+.account-profile {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(255 186 120 / 22%), transparent 40%),
+    var(--card);
 }
 
-.ps-avatar-editor {
+.account-avatar {
   display: flex;
-  gap: 14px;
   align-items: center;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
 }
 
-.ps-avatar-editor__preview {
-  width: 72px;
-  height: 72px;
+.account-avatar__preview {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex: none;
   padding: 0;
   border: 0;
   border-radius: 50%;
   overflow: hidden;
   cursor: pointer;
-  background: rgba(28, 26, 39, 0.06);
+  background: #f3ebe1;
 }
 
-.ps-avatar-editor__preview img {
+.account-avatar__preview img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.account-avatar__preview > span {
+  position: absolute;
+  inset: auto 0 0;
+  display: grid;
+  place-items: center;
+  height: 22px;
+  color: #fff;
+  background: rgb(31 36 48 / 55%);
+  font-size: 0.72rem;
+}
+
+.account-avatar strong {
   display: block;
+  font-size: 0.92rem;
+  font-weight: 800;
 }
 
-.ps-avatar-editor strong {
-  display: block;
-  font-size: 0.95rem;
+.account-avatar p {
+  margin: 2px 0 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
 }
 
-.ps-avatar-editor p {
-  margin: 4px 0 10px;
-  color: var(--ps-muted);
-  font-size: 0.78rem;
-}
-
-.ps-avatar-input {
+.account-avatar__input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -496,194 +536,261 @@ onMounted(async () => {
   pointer-events: none;
 }
 
-.ps-profile-grid {
+.account-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
 }
 
-.ps-profile-grid label {
+.account-fields label {
   display: grid;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
 }
 
-.ps-profile-grid .is-wide {
+.account-fields .is-wide,
+.account-error.is-wide {
   grid-column: 1 / -1;
 }
 
-.ps-profile-grid span {
-  font-size: 0.74rem;
+.account-fields span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.7rem;
   font-weight: 700;
-  color: var(--ps-muted);
 }
 
-.ps-profile-grid em {
+.account-fields em {
   font-style: normal;
   font-weight: 600;
 }
 
-.ps-profile-grid input,
-.ps-profile-grid textarea {
+.account-fields input,
+.account-fields textarea {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--ps-line);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--ps-text);
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  background: #fffaf4;
   font: inherit;
-}
-
-.ps-field-error {
-  margin: 0;
-  color: #ef4444;
-  font-size: 0.76rem;
-}
-
-.ps-form-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-
-.ps-form-footer span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ps-muted);
-  font-size: 0.78rem;
-}
-
-.ps-form-footer span.is-dirty {
-  color: #d97706;
-}
-
-.ps-preference-intro {
-  margin: 0 0 12px;
-  color: var(--ps-muted);
   font-size: 0.84rem;
-  line-height: 1.5;
+  outline: none;
 }
 
-.ps-preference-row {
+.account-fields input:focus,
+.account-fields textarea:focus {
+  border-color: #f2b27a;
+  box-shadow: 0 0 0 3px rgb(242 112 33 / 10%);
+}
+
+.account-bio {
+  min-height: 0;
+}
+
+.account-bio textarea {
+  resize: none;
+  min-height: 72px;
+  height: 100%;
+  max-height: 120px;
+}
+
+.account-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.72rem;
+}
+
+.account-side {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+}
+
+.account-side h2 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 850;
+}
+
+.account-side > .account-panel > p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.account-switch {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   padding: 12px;
   border-radius: 14px;
-  background: rgba(28, 26, 39, 0.03);
+  background: #fff7ef;
   cursor: pointer;
 }
 
-.ps-page.is-dark .ps-preference-row {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.ps-preference-copy {
+.account-switch span {
   display: grid;
-  gap: 4px;
+  gap: 3px;
+  min-width: 0;
 }
 
-.ps-preference-copy small {
-  color: var(--ps-muted);
-  font-size: 0.76rem;
+.account-switch strong {
+  font-size: 0.82rem;
 }
 
-.ps-preference-row input {
+.account-switch small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.account-switch input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
 
-.ps-preference-switch {
-  width: 44px;
-  height: 26px;
-  border-radius: 999px;
-  background: rgba(28, 26, 39, 0.16);
+.account-switch > i {
   position: relative;
+  display: block;
+  width: 42px;
+  height: 24px;
   flex: none;
+  border-radius: 999px;
+  background: #d7cfc4;
 }
 
-.ps-preference-switch i {
+.account-switch > i em {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
   transition: transform 160ms ease;
 }
 
-.ps-preference-row input:checked + .ps-preference-switch {
-  background: var(--ps-accent);
+.account-switch input:checked + i {
+  background: var(--orange);
 }
 
-.ps-preference-row input:checked + .ps-preference-switch i {
+.account-switch input:checked + i em {
   transform: translateX(18px);
 }
 
-.ps-preference-state {
+.account-sync {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin-top: 10px;
-  color: var(--ps-muted);
-  font-size: 0.76rem;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
-.ps-identity {
+.account-identity {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.account-identity dl {
+  display: grid;
+  gap: 0;
   margin: 0;
-  display: grid;
-  gap: 10px;
 }
 
-.ps-identity > div {
+.account-identity dl > div {
   display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
-  gap: 10px;
+  gap: 2px;
   padding: 10px 0;
-  border-bottom: 1px solid var(--ps-line);
+  border-bottom: 1px solid #f0e8dc;
 }
 
-.ps-identity > div:last-child {
+.account-identity dl > div:last-child {
   border-bottom: 0;
+  padding-bottom: 0;
 }
 
-.ps-identity dt {
-  color: var(--ps-muted);
-  font-size: 0.78rem;
+.account-identity dt {
+  color: var(--muted);
+  font-size: 0.68rem;
   font-weight: 700;
 }
 
-.ps-identity dd {
+.account-identity dd {
   margin: 0;
-  font-size: 0.86rem;
-  word-break: break-all;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .spin {
-  animation: ps-spin 0.9s linear infinite;
+  animation: account-spin 0.9s linear infinite;
 }
 
-@keyframes ps-spin {
+@keyframes account-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-@media (max-width: 720px) {
-  .ps-profile-grid {
+@media (max-width: 900px) {
+  .account {
+    height: calc(100dvh - var(--app-header-offset, 72px));
+    overflow: hidden;
+  }
+
+  .account-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1.2fr) minmax(0, 0.9fr);
+  }
+
+  .account-side {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .account-top,
+  .account-stage {
+    width: calc(100% - 20px);
+  }
+
+  .account-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-top__meta {
+    justify-content: space-between;
+  }
+
+  .account-fields {
     grid-template-columns: 1fr;
   }
 
-  .ps-identity > div {
+  .account-side {
     grid-template-columns: 1fr;
-    gap: 4px;
+    grid-template-rows: auto auto;
+  }
+
+  .account-bio textarea {
+    max-height: 84px;
   }
 }
 </style>

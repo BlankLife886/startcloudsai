@@ -1,17 +1,23 @@
 package httpapi
 
 import (
+	"context"
+	"log"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
 const maxUserAssets = 200
+
+const maxUserAssetImageBytes = 10 << 20
 
 type createUserAssetIn struct {
 	Title        string `json:"title"`
@@ -60,7 +66,7 @@ func userAssetGroupDict(group *store.UserAssetGroup) gin.H {
 	}
 }
 
-func (s *Server) resolveOwnedAssetGroup(c *gin.Context, userID uuid.UUID, raw string) (*uuid.UUID, error) {
+func (s *Server) resolveOwnedAssetGroup(c *gin.Context, q store.Q, userID uuid.UUID, raw string) (*uuid.UUID, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
@@ -69,7 +75,7 @@ func (s *Server) resolveOwnedAssetGroup(c *gin.Context, userID uuid.UUID, raw st
 	if err != nil {
 		return nil, apperr.E("validation_error", "groupId 无效", 422)
 	}
-	group, err := store.GetUserAssetGroup(c.Request.Context(), s.St.Pool, userID, id)
+	group, err := store.GetUserAssetGroupForShare(c.Request.Context(), q, userID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -138,35 +144,40 @@ func (s *Server) createUserAsset(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "素材只能引用自己的上传文件", 422))
 		return
 	}
-	groupID, err := s.resolveOwnedAssetGroup(c, user.ID, body.GroupID)
-	if err != nil {
-		fail(c, err)
+	ctx := c.Request.Context()
+	size, contentType, err := s.inspectOwnedUserUploadImage(ctx, user.ID, body.FileKey, maxUserAssetImageBytes)
+	if err != nil || size <= 0 {
+		fail(c, apperr.E("validation_error", "素材文件不存在、不是有效图片或超过 10MB", 422))
 		return
 	}
-	count, err := store.CountUserAssets(c.Request.Context(), s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
+	if _, _, err := s.inspectOwnedUserUploadImage(ctx, user.ID, body.ThumbnailKey, maxUserAssetImageBytes); err != nil {
+		fail(c, apperr.E("validation_error", "素材缩略图不存在或不是有效图片", 422))
 		return
 	}
-	if count >= maxUserAssets {
-		fail(c, apperr.E("asset_limit_reached", "素材库最多保存 200 项", 409))
-		return
-	}
-	size, err := s.Storage.ObjectSize(c.Request.Context(), body.FileKey)
-	if err != nil || size <= 0 || size > 10<<20 {
-		fail(c, apperr.E("validation_error", "素材文件不存在或超过 10MB", 422))
-		return
-	}
-	if _, err := s.Storage.ObjectSize(c.Request.Context(), body.ThumbnailKey); err != nil {
-		fail(c, apperr.E("validation_error", "素材缩略图不存在", 422))
-		return
-	}
-	contentType := strings.TrimSpace(body.ContentType)
-	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
-		contentType = "image/jpeg"
-	}
-	asset, err := store.InsertUserAsset(c.Request.Context(), s.St.Pool, user.ID, body.Title,
-		body.FileKey, body.ThumbnailKey, contentType, size, groupID)
+	var asset *store.UserAsset
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockUserAssetCreation(ctx, tx, user.ID); err != nil {
+			return err
+		}
+		groupID, err := s.resolveOwnedAssetGroup(c, tx, user.ID, body.GroupID)
+		if err != nil {
+			return err
+		}
+		count, err := store.CountUserAssets(ctx, tx, user.ID)
+		if err != nil {
+			return err
+		}
+		if count >= maxUserAssets {
+			return apperr.E("asset_limit_reached", "素材库最多保存 200 项", 409)
+		}
+		asset, err = store.InsertUserAsset(ctx, tx, user.ID, body.Title,
+			body.FileKey, body.ThumbnailKey, contentType, size, groupID)
+		if err != nil {
+			return err
+		}
+		return store.AddUserUploadReferences(ctx, tx, user.ID, store.UploadReferenceUserAsset, asset.ID,
+			[]string{asset.FileKey, asset.ThumbnailKey})
+	})
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("asset_exists", "该素材已经添加", 409))
@@ -198,44 +209,50 @@ func (s *Server) updateUserAsset(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "至少提供 title 或 groupId", 422))
 		return
 	}
-	asset, err := store.GetUserAsset(c.Request.Context(), s.St.Pool, user.ID, id)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if asset == nil {
-		fail(c, apperr.E("not_found", "素材不存在", 404))
-		return
-	}
-
-	title := asset.Title
-	if body.Title.Set {
-		if !body.Title.Valid {
-			fail(c, apperr.E("validation_error", "title 不能为空", 422))
-			return
+	ctx := c.Request.Context()
+	var updated *store.UserAsset
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		asset, err := store.GetUserAssetForUpdate(ctx, tx, user.ID, id)
+		if err != nil {
+			return err
 		}
-		title = strings.TrimSpace(body.Title.Value)
-		if title == "" || utf8.RuneCountInString(title) > 120 {
-			fail(c, apperr.E("validation_error", "title: 长度须在 1-120 之间", 422))
-			return
+		if asset == nil {
+			return apperr.E("not_found", "素材不存在", 404)
 		}
-	}
 
-	groupID := asset.GroupID
-	if body.GroupID.Set {
-		if !body.GroupID.Valid || strings.TrimSpace(body.GroupID.Value) == "" {
-			groupID = nil
-		} else {
-			resolved, resolveErr := s.resolveOwnedAssetGroup(c, user.ID, body.GroupID.Value)
-			if resolveErr != nil {
-				fail(c, resolveErr)
-				return
+		title := asset.Title
+		if body.Title.Set {
+			if !body.Title.Valid {
+				return apperr.E("validation_error", "title 不能为空", 422)
 			}
-			groupID = resolved
+			title = strings.TrimSpace(body.Title.Value)
+			if title == "" || utf8.RuneCountInString(title) > 120 {
+				return apperr.E("validation_error", "title: 长度须在 1-120 之间", 422)
+			}
 		}
-	}
 
-	updated, err := store.UpdateUserAsset(c.Request.Context(), s.St.Pool, user.ID, id, title, groupID)
+		groupID := asset.GroupID
+		if body.GroupID.Set {
+			if !body.GroupID.Valid || strings.TrimSpace(body.GroupID.Value) == "" {
+				groupID = nil
+			} else {
+				resolved, resolveErr := s.resolveOwnedAssetGroup(c, tx, user.ID, body.GroupID.Value)
+				if resolveErr != nil {
+					return resolveErr
+				}
+				groupID = resolved
+			}
+		}
+
+		updated, err = store.UpdateUserAsset(ctx, tx, user.ID, id, title, groupID)
+		if err != nil {
+			return err
+		}
+		if updated == nil {
+			return apperr.E("not_found", "素材不存在", 404)
+		}
+		return nil
+	})
 	if err != nil {
 		fail(c, err)
 		return
@@ -254,23 +271,40 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	asset, err := store.GetUserAsset(c.Request.Context(), s.St.Pool, user.ID, id)
+	ctx := c.Request.Context()
+	var keys []string
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		asset, err := store.GetUserAssetForUpdate(ctx, tx, user.ID, id)
+		if err != nil {
+			return err
+		}
+		if asset == nil {
+			return apperr.E("not_found", "素材不存在", 404)
+		}
+		productCount, err := store.CountEcommerceProductsUsingAsset(ctx, tx, user.ID, id)
+		if err != nil {
+			return err
+		}
+		if productCount > 0 {
+			return apperr.E("asset_in_use", "该素材仍被商品引用，请先移除商品关联", 409)
+		}
+		keys = []string{asset.FileKey, asset.ThumbnailKey}
+		if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceUserAsset, asset.ID); err != nil {
+			return err
+		}
+		return store.DeleteUserAsset(ctx, tx, user.ID, id)
+	})
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if asset == nil {
-		fail(c, apperr.E("not_found", "素材不存在", 404))
-		return
-	}
-	ctx := c.Request.Context()
-	if err := s.Storage.DeleteKeys(ctx, []string{asset.FileKey, asset.ThumbnailKey}); err != nil {
-		fail(c, err)
-		return
-	}
-	if err := store.DeleteUserAsset(ctx, s.St.Pool, user.ID, id); err != nil {
-		fail(c, err)
-		return
+	if len(keys) > 0 {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
+		cancel()
+		if cleanupErr != nil {
+			log.Printf("asset %s deleted from database but object cleanup failed: %v", id, cleanupErr)
+		}
 	}
 	respondNoContent(c)
 }
@@ -323,20 +357,26 @@ func (s *Server) createUserAssetGroup(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "name: 长度须在 1-64 之间", 422))
 		return
 	}
-	count, err := store.CountUserAssetGroups(c.Request.Context(), s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if count >= store.MaxUserAssetGroups {
-		fail(c, apperr.E("asset_group_limit_reached", "最多创建 50 个分组", 409))
-		return
-	}
-	sort := int(count)
-	if body.Sort != nil {
-		sort = *body.Sort
-	}
-	group, err := store.InsertUserAssetGroup(c.Request.Context(), s.St.Pool, user.ID, name, sort)
+	ctx := c.Request.Context()
+	var group *store.UserAssetGroup
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockUserAssetGroupCreation(ctx, tx, user.ID); err != nil {
+			return err
+		}
+		count, err := store.CountUserAssetGroups(ctx, tx, user.ID)
+		if err != nil {
+			return err
+		}
+		if count >= store.MaxUserAssetGroups {
+			return apperr.E("asset_group_limit_reached", "最多创建 50 个分组", 409)
+		}
+		sort := int(count)
+		if body.Sort != nil {
+			sort = *body.Sort
+		}
+		group, err = store.InsertUserAssetGroup(ctx, tx, user.ID, name, sort)
+		return err
+	})
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("asset_group_exists", "分组名称已存在", 409))
@@ -369,36 +409,42 @@ func (s *Server) updateUserAssetGroup(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "至少提供 name 或 sort", 422))
 		return
 	}
-	group, err := store.GetUserAssetGroup(c.Request.Context(), s.St.Pool, user.ID, id)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if group == nil {
-		fail(c, apperr.E("not_found", "分组不存在", 404))
-		return
-	}
-	name := group.Name
-	if body.Name.Set {
-		if !body.Name.Valid {
-			fail(c, apperr.E("validation_error", "name 不能为空", 422))
-			return
+	ctx := c.Request.Context()
+	var updated *store.UserAssetGroup
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		group, err := store.GetUserAssetGroupForUpdate(ctx, tx, user.ID, id)
+		if err != nil {
+			return err
 		}
-		name = store.NormalizeAssetGroupName(body.Name.Value)
-		if name == "" || utf8.RuneCountInString(name) > 64 {
-			fail(c, apperr.E("validation_error", "name: 长度须在 1-64 之间", 422))
-			return
+		if group == nil {
+			return apperr.E("not_found", "分组不存在", 404)
 		}
-	}
-	sort := group.Sort
-	if body.Sort.Set {
-		if !body.Sort.Valid {
-			fail(c, apperr.E("validation_error", "sort 不能为空", 422))
-			return
+		name := group.Name
+		if body.Name.Set {
+			if !body.Name.Valid {
+				return apperr.E("validation_error", "name 不能为空", 422)
+			}
+			name = store.NormalizeAssetGroupName(body.Name.Value)
+			if name == "" || utf8.RuneCountInString(name) > 64 {
+				return apperr.E("validation_error", "name: 长度须在 1-64 之间", 422)
+			}
 		}
-		sort = body.Sort.Value
-	}
-	updated, err := store.UpdateUserAssetGroup(c.Request.Context(), s.St.Pool, user.ID, id, name, sort)
+		sort := group.Sort
+		if body.Sort.Set {
+			if !body.Sort.Valid {
+				return apperr.E("validation_error", "sort 不能为空", 422)
+			}
+			sort = body.Sort.Value
+		}
+		updated, err = store.UpdateUserAssetGroup(ctx, tx, user.ID, id, name, sort)
+		if err != nil {
+			return err
+		}
+		if updated == nil {
+			return apperr.E("not_found", "分组不存在", 404)
+		}
+		return nil
+	})
 	if err != nil {
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("asset_group_exists", "分组名称已存在", 409))

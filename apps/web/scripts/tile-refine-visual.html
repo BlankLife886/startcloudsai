@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tile Precision Refine Visual QA</title>
+  </head>
+  <body>
+    <pre id="log">booting…</pre>
+    <script type="module">
+      import {
+        extractQuadrantTileFiles,
+        stitchQuadrantTiles,
+        planQuadrantTiles,
+      } from '../src/features/design-workshop/tilePrecisionRefine.js'
+
+      const logEl = document.getElementById('log')
+      const log = (msg) => {
+        logEl.textContent += `\n${msg}`
+        console.log(msg)
+      }
+
+      function canvasFromImage(image, w, h, paint) {
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d', { alpha: false })
+        ctx.imageSmoothingEnabled = false
+        ctx.drawImage(image, 0, 0, w, h)
+        if (typeof paint === 'function') paint(ctx, w, h)
+        return canvas
+      }
+
+      async function canvasToBlob(canvas) {
+        return new Promise((resolve, reject) => {
+          canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))), 'image/png')
+        })
+      }
+
+      /** Simulate GPT drift: shift content + stamp alien text into overlap (ghost source). */
+      function paintDivergent(ctx, w, h, tile) {
+        const shiftX = tile.col === 1 ? 6 : tile.col === 0 ? -4 : 0
+        const shiftY = tile.row === 1 ? 8 : -3
+        const snap = ctx.getImageData(0, 0, w, h)
+        ctx.fillStyle = '#f3f4f6'
+        ctx.fillRect(0, 0, w, h)
+        const tmp = document.createElement('canvas')
+        tmp.width = w
+        tmp.height = h
+        tmp.getContext('2d').putImageData(snap, 0, 0)
+        ctx.drawImage(tmp, shiftX, shiftY)
+        // Alien title in upper overlap of bottom tiles — classic ghost failure mode.
+        if (tile.row === 1) {
+          ctx.fillStyle = 'rgba(20,20,30,0.92)'
+          ctx.font = `700 ${Math.max(18, Math.round(h * 0.035))}px sans-serif`
+          ctx.fillText('待办事项', Math.round(w * 0.18), Math.round(h * 0.08))
+        }
+      }
+
+      /** Clean dashboard-style source with small glyphs — avoids reusing stitched artifacts. */
+      async function makeSyntheticSource(w = 1536, h = 819) {
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d', { alpha: false })
+        ctx.fillStyle = '#f6f7fb'
+        ctx.fillRect(0, 0, w, h)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, Math.round(w * 0.14), h)
+        ctx.fillStyle = '#e74c3c'
+        ctx.fillRect(12, 40, Math.round(w * 0.14) - 24, 34)
+        ctx.fillStyle = '#1f2430'
+        ctx.font = '700 22px sans-serif'
+        ctx.fillText('数据仪表盘 Dashboard', Math.round(w * 0.16), 44)
+        const cardW = Math.round(w * 0.155)
+        for (let i = 0; i < 5; i += 1) {
+          const x = Math.round(w * 0.16) + i * (cardW + 14)
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(x, 70, cardW, 92)
+          ctx.strokeStyle = '#e3e6ef'
+          ctx.strokeRect(x + 0.5, 70.5, cardW - 1, 91)
+          ctx.fillStyle = '#8a90a4'
+          ctx.font = '600 13px sans-serif'
+          ctx.fillText(['今日销售额', '今日订单数', '新增客户', '库存车辆', '进厂台次'][i], x + 14, 92)
+          ctx.fillStyle = '#141821'
+          ctx.font = '800 26px sans-serif'
+          ctx.fillText(['¥1,234,567', '128', '86', '632', '45'][i], x + 14, 126)
+          ctx.fillStyle = '#e74c3c'
+          ctx.font = '600 11px sans-serif'
+          ctx.fillText('较昨日 +12.6%', x + 14, 150)
+        }
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(Math.round(w * 0.16), 190, Math.round(w * 0.5), 300)
+        ctx.fillStyle = '#141821'
+        ctx.font = '700 16px sans-serif'
+        ctx.fillText('销售趋势 Sales Trend', Math.round(w * 0.17), 218)
+        ctx.strokeStyle = '#e74c3c'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        for (let i = 0; i <= 40; i += 1) {
+          const px = Math.round(w * 0.17) + i * Math.round(w * 0.011)
+          const py = 400 - Math.round(60 * Math.sin(i / 4) + 30 * Math.sin(i / 1.7))
+          if (i === 0) ctx.moveTo(px, py)
+          else ctx.lineTo(px, py)
+        }
+        ctx.stroke()
+        ctx.lineWidth = 1
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(Math.round(w * 0.68), 190, Math.round(w * 0.29), 300)
+        ctx.fillStyle = '#141821'
+        ctx.fillText('渠道销售占比', Math.round(w * 0.69), 218)
+        const cx = Math.round(w * 0.76)
+        const colors = ['#e74c3c', '#3498db', '#f39c12', '#2ecc71', '#9b59b6']
+        let angle = 0
+        for (let i = 0; i < colors.length; i += 1) {
+          ctx.fillStyle = colors[i]
+          ctx.beginPath()
+          ctx.moveTo(cx, 340)
+          ctx.arc(cx, 340, 78, angle, angle + Math.PI * 0.4)
+          ctx.closePath()
+          ctx.fill()
+          angle += Math.PI * 0.4
+          ctx.font = '600 12px sans-serif'
+          ctx.fillText(`线上渠道 ${i + 1} · ${(28.4 - i * 4).toFixed(1)}%`, Math.round(w * 0.86), 260 + i * 26)
+        }
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(Math.round(w * 0.16), 510, Math.round(w * 0.81), 280)
+        ctx.fillStyle = '#141821'
+        ctx.font = '700 16px sans-serif'
+        ctx.fillText('最新订单 Latest Orders', Math.round(w * 0.17), 540)
+        ctx.font = '500 12px sans-serif'
+        for (let r = 0; r < 6; r += 1) {
+          const y = 570 + r * 34
+          ctx.fillStyle = r % 2 ? '#fafbfe' : '#ffffff'
+          ctx.fillRect(Math.round(w * 0.17), y - 14, Math.round(w * 0.79), 28)
+          ctx.fillStyle = '#3c4356'
+          ctx.fillText(`DD2025051500${r + 1}`, Math.round(w * 0.18), y + 4)
+          ctx.fillText('特斯拉 Model 3 后驱版', Math.round(w * 0.34), y + 4)
+          ctx.fillText(`¥${(235900 + r * 17000).toLocaleString()}`, Math.round(w * 0.55), y + 4)
+          ctx.fillStyle = '#e74c3c'
+          ctx.fillText(`待跟进 ${r + 2} 项`, Math.round(w * 0.68), y + 4)
+        }
+        return canvasToBlob(canvas)
+      }
+
+      window.__tileRefineVisual = {
+        async run(imageUrl, { mode = 'divergent' } = {}) {
+          logEl.textContent = `mode=${mode}`
+          const blob = imageUrl
+            ? await (await fetch(imageUrl)).blob()
+            : await makeSyntheticSource()
+          const extracted = await extractQuadrantTileFiles(blob)
+          log(
+            `source ${extracted.width}x${extracted.height} cross-cut overlap=${extracted.overlapX}x${extracted.overlapY}`,
+          )
+
+          const tileBlobs = []
+          const cropBlobs = []
+          for (const entry of extracted.files) {
+            const img = await createImageBitmap(entry.cropFile)
+            if (mode === 'identity') {
+              // Exact crop bytes → hard paste must reconstruct the source with 0 pixel error.
+              tileBlobs.push(entry.cropFile)
+            } else {
+              const painted = canvasFromImage(img, entry.tile.w, entry.tile.h, (ctx, w, h) =>
+                paintDivergent(ctx, w, h, entry.tile),
+              )
+              // Upscale 1.5× padded frame to mimic model output before unpad.
+              const dense = document.createElement('canvas')
+              dense.width = Math.round(entry.tile.pad.padW * 1.5)
+              dense.height = Math.round(entry.tile.pad.padH * 1.5)
+              const dctx = dense.getContext('2d')
+              dctx.imageSmoothingEnabled = true
+              dctx.imageSmoothingQuality = 'high'
+              const padCanvas = document.createElement('canvas')
+              padCanvas.width = entry.tile.pad.padW
+              padCanvas.height = entry.tile.pad.padH
+              const pctx = padCanvas.getContext('2d')
+              pctx.fillStyle = '#f3f4f6'
+              pctx.fillRect(0, 0, padCanvas.width, padCanvas.height)
+              pctx.drawImage(
+                painted,
+                0,
+                0,
+                entry.tile.w,
+                entry.tile.h,
+                entry.tile.pad.padX,
+                entry.tile.pad.padY,
+                entry.tile.w,
+                entry.tile.h,
+              )
+              dctx.drawImage(padCanvas, 0, 0, dense.width, dense.height)
+              tileBlobs.push(await canvasToBlob(dense))
+            }
+            cropBlobs.push(entry.cropFile)
+            img.close?.()
+            log(
+              `tile ${entry.tile.id} ${entry.tile.aspectLabel} @(${entry.tile.x},${entry.tile.y}) ${entry.tile.w}x${entry.tile.h}`,
+            )
+          }
+
+          const stitched = await stitchQuadrantTiles({
+            tiles: extracted.tiles,
+            tileImages: tileBlobs,
+            originalCrops: cropBlobs,
+            fullWidth: extracted.width,
+            fullHeight: extracted.height,
+          })
+
+          const objectUrl = URL.createObjectURL(stitched.blob)
+          const img = document.createElement('img')
+          img.src = objectUrl
+          img.style.maxWidth = '100%'
+          document.body.appendChild(img)
+
+          // Full-frame MAE vs source — identity must be exactly 0 after hard paste.
+          const sourceBitmap = await createImageBitmap(blob)
+          const probe = document.createElement('canvas')
+          probe.width = extracted.width
+          probe.height = extracted.height
+          const pctx = probe.getContext('2d', { alpha: false })
+          pctx.imageSmoothingEnabled = false
+          pctx.drawImage(sourceBitmap, 0, 0)
+          const stitchedBmp = await createImageBitmap(stitched.blob)
+          const sc = document.createElement('canvas')
+          sc.width = stitched.width
+          sc.height = stitched.height
+          const sctx = sc.getContext('2d', { alpha: false })
+          sctx.imageSmoothingEnabled = false
+          sctx.drawImage(stitchedBmp, 0, 0)
+          const a = pctx.getImageData(0, 0, extracted.width, extracted.height).data
+          const b = sctx.getImageData(0, 0, stitched.width, stitched.height).data
+          let mae = 0
+          let maxDelta = 0
+          const n = Math.min(a.length, b.length)
+          for (let i = 0; i < n; i += 4) {
+            const dr = Math.abs(a[i] - b[i])
+            const dg = Math.abs(a[i + 1] - b[i + 1])
+            const db = Math.abs(a[i + 2] - b[i + 2])
+            mae += (dr + dg + db) / 3
+            maxDelta = Math.max(maxDelta, dr, dg, db)
+          }
+          mae /= n / 4
+
+          const result = {
+            width: stitched.width,
+            height: stitched.height,
+            scale: stitched.scale,
+            shifts: stitched.shifts,
+            seamMae: Number(mae.toFixed(3)),
+            maxDelta,
+            sizeMatch:
+              stitched.width === extracted.width && stitched.height === extracted.height,
+            tiles: planQuadrantTiles(extracted.width, extracted.height).map((tile) => ({
+              id: tile.id,
+              x: tile.x,
+              y: tile.y,
+              aspectLabel: tile.aspectLabel,
+              w: tile.w,
+              h: tile.h,
+            })),
+            stitchedPngBase64: await blobToBase64(stitched.blob),
+          }
+          log(
+            `stitched ${result.width}x${result.height} scale=${result.scale} mae=${result.seamMae} maxDelta=${result.maxDelta}`,
+          )
+          window.__tileRefineLast = result
+          return result
+        },
+      }
+
+      function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '')
+          reader.onerror = reject
+          reader.readAsDataURL(blob)
+        })
+      }
+
+      window.dispatchEvent(new Event('tile-refine-ready'))
+      log('ready')
+    </script>
+  </body>
+</html>

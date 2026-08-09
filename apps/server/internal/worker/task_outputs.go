@@ -26,6 +26,17 @@ type taskOutputCollector struct {
 	leaseOwner        string
 }
 
+type taskOutputProcessingError struct {
+	stage string
+	err   error
+}
+
+func (e *taskOutputProcessingError) Error() string {
+	return fmt.Sprintf("task output %s: %v", e.stage, e.err)
+}
+
+func (e *taskOutputProcessingError) Unwrap() error { return e.err }
+
 func newClaimedTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task, claimID string) *taskOutputCollector {
 	collector := newTaskOutputCollector(w, ctx, task)
 	collector.completionClaimID = claimID
@@ -77,11 +88,17 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	c.mu.Unlock()
 
 	startedAt := time.Now()
-	processed := c.w.applyMaskEditComposite(c.ctx, c.task, []string{encoded})
+	processed, err := c.w.applyMaskEditComposite(c.ctx, c.task, []string{encoded})
+	if err != nil {
+		return &taskOutputProcessingError{stage: "mask composite", err: err}
+	}
 	if len(processed) == 1 {
 		encoded = processed[0]
 	}
-	processed = c.w.applyPreservedSourceCanvas(c.ctx, c.task, []string{encoded})
+	processed, err = c.w.applyPreservedSourceCanvas(c.ctx, c.task, []string{encoded})
+	if err != nil {
+		return &taskOutputProcessingError{stage: "source canvas restore", err: err}
+	}
 	if len(processed) == 1 {
 		encoded = processed[0]
 	}
@@ -157,7 +174,7 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	}
 	if uploadErr != nil {
 		if len(uploaded) > 0 {
-			_ = c.w.Storage.DeleteKeys(c.ctx, uploaded)
+			c.deleteUploadedKeys(uploaded)
 		}
 		return uploadErr
 	}
@@ -181,7 +198,7 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		c.outputSlots[index] = ""
 		c.thumbnailSlots[index] = ""
 		c.mu.Unlock()
-		_ = c.w.Storage.DeleteKeys(c.ctx, uploaded)
+		c.deleteUploadedKeys(uploaded)
 		return persistErr
 	}
 	c.newKeys = append(c.newKeys, uploaded...)
@@ -212,17 +229,46 @@ func (c *taskOutputCollector) cleanup() {
 	outputKeys := compactTaskKeys(c.outputSlots)
 	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
 	c.mu.Unlock()
-	if c.completionClaimID == "" {
-		if c.leaseOwner == "" {
-			_ = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
-		} else {
-			_ = store.SetTaskPartialOutputsOwned(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.leaseOwner)
-		}
-	} else {
-		_ = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
+	if c.w == nil || c.w.St == nil {
+		return
 	}
-	if len(keys) > 0 {
-		_ = c.w.Storage.DeleteKeys(c.ctx, keys)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := store.ClearTaskPartialOutputsAndEnqueueCleanup(cleanupCtx, c.w.St, c.task.ID,
+		outputKeys, thumbnailKeys, keys, c.completionClaimID, c.leaseOwner); err != nil {
+		log.Printf("task %s partial output cleanup transaction failed: %v", c.task.ID, err)
+	}
+}
+
+func (c *taskOutputCollector) enqueueCleanup(keys []string) {
+	if len(keys) == 0 || c.w == nil || c.w.St == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := store.EnqueueObjectCleanup(cleanupCtx, c.w.St.Pool, keys); err != nil {
+		log.Printf("task %s object cleanup enqueue failed: %v", c.task.ID, err)
+	}
+}
+
+func (c *taskOutputCollector) deleteUploadedKeys(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	c.enqueueCleanup(keys)
+	if c.w == nil || c.w.Storage == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.w.Storage.DeleteKeys(cleanupCtx, keys); err != nil {
+		log.Printf("task %s uploaded object cleanup failed: %v", c.task.ID, err)
+		return
+	}
+	if c.w.St != nil {
+		if _, err := store.DeleteObjectCleanupJobs(cleanupCtx, c.w.St.Pool, keys); err != nil {
+			log.Printf("task %s object cleanup job removal failed: %v", c.task.ID, err)
+		}
 	}
 }
 

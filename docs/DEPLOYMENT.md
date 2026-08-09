@@ -6,9 +6,10 @@
 - 服务器：`47.82.102.112`
 - 管理面板：宝塔面板
 - 运行方式：Docker Compose
-- 当前部署分支：`codex/product-experience-updates`
+- 当前发布分支：`codex/publish-current-project`
 - 项目目录：`/www/wwwroot/startcloudsai`
 - 本机网关：`127.0.0.1:8080`
+- 发布方式：本地生成源码包，通过宝塔网页面板手动上传；不使用 SSH 或服务器端 Git 拉取
 
 更换服务器或域名时，只需替换本文中的域名、IP 和项目目录。
 
@@ -103,18 +104,38 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 ## 3. 首次部署
 
-### 3.1 拉取代码
+### 3.1 生成并上传发布包
+
+在开发机确认目标提交已经推送后，从仓库根目录生成发布包：
+
+```bash
+./scripts/package-manual-deploy.sh
+```
+
+脚本会在 `.artifacts/deploy/` 生成：
+
+```text
+startcloudsai-<commit>.tar.gz
+startcloudsai-<commit>.tar.gz.sha256
+```
+
+发布包由 `git archive` 从当前提交生成，只包含已提交文件，不包含 `.env`、`.git`、依赖目录、构建目录或本地 QA 产物。提交号写在文件名中，用于上线记录和回滚定位。
+
+首次部署时，在宝塔“文件”页面完成以下操作：
+
+1. 进入 `/www/wwwroot`，上传发布包和对应的 `.sha256` 文件。
+2. 使用宝塔文件管理器解压发布包，确认目录名为 `startcloudsai`。
+3. 在 `startcloudsai` 中复制 `.env.example` 为 `.env`，按下文配置生产密钥。
+4. 将 `.env` 权限设置为 `600`。
+
+需要校验上传完整性时，在宝塔“终端”中执行：
 
 ```bash
 cd /www/wwwroot
-git clone -b codex/product-experience-updates \
-  https://github.com/BlankLife886/startcloudsai.git
-cd /www/wwwroot/startcloudsai
-cp .env.example .env
-chmod 600 .env
+sha256sum -c startcloudsai-<commit>.tar.gz.sha256
 ```
 
-仓库合并到 `main` 后，生产服务器可改为跟踪 `main`。切换前必须确认目标分支包含当前生产提交。
+宝塔终端是网页面板内的本地终端，不需要开放 SSH 端口。
 
 ### 3.2 生成密钥
 
@@ -467,32 +488,35 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 
 备份 `.env` 时必须加密或放在受限位置，权限设为 `600`。
 
-## 9. 更新发布
+## 9. 手动更新发布
 
 ### 9.1 更新前
 
 ```bash
 cd /www/wwwroot/startcloudsai
-git status --short
-git branch --show-current
-git rev-parse HEAD
 docker compose --env-file .env ps
 ```
 
-服务器仓库不应有手工代码修改。`.env` 被 Git 忽略，不会影响拉取。
+先按第 8 节完成数据库备份。然后在开发机执行打包脚本，并通过宝塔“文件”页面把新的发布包上传到 `/www/wwwroot`。
 
-先执行数据库备份，再更新：
+在宝塔文件管理器中完成以下替换：
+
+1. 将现有 `startcloudsai` 重命名为 `startcloudsai-backup-<旧commit>`，不要删除。
+2. 解压新发布包，确认新目录名称仍为 `startcloudsai`。
+3. 将旧目录中的 `.env` 复制到新目录，并保持权限为 `600`。
+4. 不要复制旧目录的源代码、`dist`、`node_modules` 或任何 `.git` 目录。
+
+随后在宝塔“终端”中执行：
 
 ```bash
-git fetch origin
-git pull --ff-only origin codex/product-experience-updates
+cd /www/wwwroot/startcloudsai
 docker compose --env-file .env up -d --build
 docker compose --env-file .env ps
 curl http://127.0.0.1:8080/api/v1/health
 curl https://starcloudisai.com/api/v1/health
 ```
 
-`server` 启动时自动执行数据库迁移。更新期间不要同时手动执行迁移。
+Compose 项目目录仍是 `startcloudsai`，所以会复用现有 PostgreSQL 和 Redis 数据卷。`server` 启动时自动执行数据库迁移；更新期间不要同时手动执行迁移，也不要执行 `docker compose down -v`。
 
 ### 9.2 只更新部分服务
 
@@ -518,23 +542,22 @@ docker compose --env-file .env up -d --force-recreate gateway
 
 ### 10.1 代码回滚
 
-先记录当前提交和目标提交。确认目标版本兼容当前数据库迁移后：
+确认旧版本兼容当前数据库迁移后，在宝塔文件管理器中：
+
+1. 将失败的新目录重命名为 `startcloudsai-failed-<新commit>`。
+2. 将更新前保留的 `startcloudsai-backup-<旧commit>` 重命名回 `startcloudsai`。
+3. 确认 `.env` 仍在恢复后的目录中。
+
+然后在宝塔“终端”中执行：
 
 ```bash
 cd /www/wwwroot/startcloudsai
-git checkout <已验证的旧提交>
 docker compose --env-file .env up -d --build
+docker compose --env-file .env ps
+curl http://127.0.0.1:8080/api/v1/health
 ```
 
-恢复到部署分支：
-
-```bash
-git checkout codex/product-experience-updates
-git pull --ff-only origin codex/product-experience-updates
-docker compose --env-file .env up -d --build
-```
-
-不要使用 `git reset --hard` 覆盖未确认的服务器文件。
+代码目录回滚不会撤销已经执行的数据库迁移。发生不兼容迁移时，必须结合更新前的数据库备份恢复。
 
 ### 10.2 数据库恢复
 
@@ -613,11 +636,10 @@ ALLOWED_ORIGINS=https://starcloudisai.com
 ### 11.8 更新后页面仍是旧版本
 
 ```bash
-git rev-parse HEAD
 docker compose --env-file .env up -d --build web admin gateway
 ```
 
-然后清除浏览器站点缓存或强制刷新。不要只重启旧前端容器。
+确认服务器上的发布包文件名对应预期提交，然后清除浏览器站点缓存或强制刷新。不要只重启旧前端容器。
 
 ## 12. 禁止操作
 
@@ -655,8 +677,7 @@ docker compose --env-file .env logs --tail=100 server worker gateway
 # 修改环境变量后重建
 docker compose --env-file .env up -d --force-recreate server worker gateway
 
-# 更新全部服务
-git pull --ff-only origin codex/product-experience-updates
+# 上传并解压新发布包、复制旧 .env 后更新全部服务
 docker compose --env-file .env up -d --build
 
 # 安全停止，保留数据

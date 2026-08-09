@@ -1,81 +1,33 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { TASK_TYPE_LABELS, TASK_UPDATE_EVENT, listTasks } from '@/services/tasksApi'
+import {
+  useClientNotifications,
+  NOTIFICATIONS_UPDATED_EVENT,
+} from '@/composables/useClientNotifications'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
   compact: { type: Boolean, default: false },
 })
 const authStore = useAuthStore()
+const {
+  unreadCount,
+  hasUnread,
+  badgeLabel,
+  previewItems,
+  previewLoading,
+  refreshUnreadCount,
+  refreshPreview,
+  markItemsRead,
+} = useClientNotifications()
 
 const open = ref(false)
-const activeTasks = ref([])
-const activeTasksLoading = ref(false)
 let closeTimer = null
-let taskPollTimer = null
-let activeTasksRequest = null
+let pollTimer = null
 const CLOSE_DELAY_MS = 120
-const TASK_POLL_MS = 12_000
+const POLL_MS = 20_000
 const rootRef = ref(null)
-const ACTIVE_TASK_STATUSES = new Set(['queued', 'running'])
-
-const previewList = computed(() => {
-  return [...activeTasks.value]
-    .filter((task) => ACTIVE_TASK_STATUSES.has(normalizeTaskStatus(task?.status)))
-    .sort((left, right) => taskTimestamp(right) - taskTimestamp(left))
-    .slice(0, 8)
-})
-const activeTaskCount = computed(() => activeTasks.value.length)
-const hasActiveTasks = computed(() => activeTaskCount.value > 0)
-const badgeLabel = computed(() =>
-  activeTaskCount.value > 99 ? '99+' : String(activeTaskCount.value || ''),
-)
-
-function normalizeTaskStatus(status) {
-  return String(status || '')
-    .trim()
-    .toLowerCase()
-}
-
-function taskTimestamp(task) {
-  const value = task?.startedAt || task?.createdAt || task?.updatedAt
-  const timestamp = Date.parse(value || '')
-  return Number.isFinite(timestamp) ? timestamp : 0
-}
-
-function taskTypeLabel(task) {
-  return TASK_TYPE_LABELS[String(task?.type || '')] || 'AI 创作'
-}
-
-function taskStatusLabel(task) {
-  return normalizeTaskStatus(task?.status) === 'running' ? '正在生成' : '排队等待'
-}
-
-function taskDescription(task) {
-  const prompt = String(task?.prompt || '').trim()
-  if (prompt) return prompt
-  const count = Math.max(1, Number(task?.count) || 1)
-  return count > 1 ? `本次将生成 ${count} 张图片` : '任务已提交，结果生成后会自动同步'
-}
-
-function formatTime(value) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const now = Date.now()
-  const diff = now - date.getTime()
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  return date.toLocaleString('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-}
 
 function clearCloseTimer() {
   if (closeTimer) {
@@ -87,7 +39,7 @@ function clearCloseTimer() {
 function openPanel() {
   clearCloseTimer()
   open.value = true
-  void refreshActiveTasks()
+  void refreshPreview({ limit: 8 })
 }
 
 function scheduleClose() {
@@ -128,103 +80,99 @@ function onEscape(event) {
   if (event.key === 'Escape' && open.value) closePanel()
 }
 
-function mergeActiveTask(task) {
-  const id = String(task?.id || '').trim()
-  if (!id) return
-  const status = normalizeTaskStatus(task?.status)
-  if (!ACTIVE_TASK_STATUSES.has(status)) {
-    activeTasks.value = activeTasks.value.filter((item) => String(item?.id) !== id)
-    return
-  }
-  const index = activeTasks.value.findIndex((item) => String(item?.id) === id)
-  if (index < 0) {
-    activeTasks.value = [task, ...activeTasks.value]
-    return
-  }
-  activeTasks.value = activeTasks.value.map((item, at) =>
-    at === index ? { ...item, ...task } : item,
-  )
+function formatTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const now = Date.now()
+  const diff = now - date.getTime()
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  return date.toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
-async function refreshActiveTasks() {
-  if (!authStore.isAuthenticated) {
-    activeTasks.value = []
-    return []
+function kindIcon(item) {
+  const kind = String(item?.kind || '').toLowerCase()
+  const title = String(item?.title || '')
+  if (kind === 'trial_access') return 'bi-patch-check'
+  if (kind.includes('redeem') || title.includes('兑换')) return 'bi-ticket-perforated'
+  if (
+    kind.includes('wallet') ||
+    title.includes('入账') ||
+    title.includes('积分') ||
+    title.includes('充值')
+  ) {
+    return 'bi-wallet2'
   }
-  if (activeTasksRequest) return activeTasksRequest
-  activeTasksLoading.value = true
-  const request = Promise.all([
-    listTasks({ status: 'queued', limit: 8 }),
-    listTasks({ status: 'running', limit: 8 }),
-  ])
-    .then(([queued, running]) => {
-      if (!authStore.isAuthenticated) {
-        activeTasks.value = []
-        return []
-      }
-      const unique = new Map()
-      for (const task of [...(running.items || []), ...(queued.items || [])]) {
-        if (task?.id) unique.set(String(task.id), task)
-      }
-      activeTasks.value = [...unique.values()]
-      return activeTasks.value
-    })
-    .catch(() => activeTasks.value)
-    .finally(() => {
-      activeTasksLoading.value = false
-      if (activeTasksRequest === request) activeTasksRequest = null
-    })
-  activeTasksRequest = request
-  return request
+  if (kind.includes('task') || title.includes('任务') || title.includes('生成')) {
+    return 'bi-stars'
+  }
+  if (kind.includes('gallery') || title.includes('投稿') || title.includes('审核')) {
+    return 'bi-send-check'
+  }
+  if (kind.includes('system') || title.includes('公告')) return 'bi-megaphone'
+  return 'bi-bell'
 }
 
-function pollActiveTasks() {
+async function openItem(item) {
+  if (item?.id && !item.readAt) {
+    await markItemsRead([item.id]).catch(() => null)
+  }
+  closePanel()
+}
+
+function pollNotifications() {
   if (document.visibilityState !== 'visible') return
-  void refreshActiveTasks()
+  void refreshUnreadCount()
+  if (open.value) void refreshPreview({ limit: 8 })
 }
 
-function startTaskPolling() {
-  if (taskPollTimer) window.clearInterval(taskPollTimer)
-  taskPollTimer = null
+function startPolling() {
+  if (pollTimer) window.clearInterval(pollTimer)
+  pollTimer = null
   if (!authStore.isAuthenticated) return
-  taskPollTimer = window.setInterval(pollActiveTasks, TASK_POLL_MS)
-}
-
-function handleRealtimeTaskUpdate(event) {
-  if (!event?.detail?.task) return
-  mergeActiveTask(event.detail.task)
+  pollTimer = window.setInterval(pollNotifications, POLL_MS)
 }
 
 watch(open, (isOpen) => {
-  if (isOpen) void refreshActiveTasks()
+  if (isOpen) void refreshPreview({ limit: 8 })
 })
 
 watch(
   () => authStore.isAuthenticated,
-  () => {
-    startTaskPolling()
-    pollActiveTasks()
+  (authed) => {
+    startPolling()
+    if (authed) {
+      void refreshUnreadCount()
+    }
   },
 )
 
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('keydown', onEscape)
-  window.addEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
-  window.addEventListener('focus', pollActiveTasks)
-  document.addEventListener('visibilitychange', pollActiveTasks)
-  startTaskPolling()
-  void refreshActiveTasks()
+  window.addEventListener(NOTIFICATIONS_UPDATED_EVENT, pollNotifications)
+  window.addEventListener('focus', pollNotifications)
+  document.addEventListener('visibilitychange', pollNotifications)
+  startPolling()
+  void refreshUnreadCount()
 })
 
 onBeforeUnmount(() => {
   clearCloseTimer()
-  if (taskPollTimer) window.clearInterval(taskPollTimer)
+  if (pollTimer) window.clearInterval(pollTimer)
   document.removeEventListener('click', onDocumentClick)
   document.removeEventListener('keydown', onEscape)
-  document.removeEventListener('visibilitychange', pollActiveTasks)
-  window.removeEventListener('focus', pollActiveTasks)
-  window.removeEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
+  document.removeEventListener('visibilitychange', pollNotifications)
+  window.removeEventListener('focus', pollNotifications)
+  window.removeEventListener(NOTIFICATIONS_UPDATED_EVENT, pollNotifications)
 })
 </script>
 
@@ -232,7 +180,7 @@ onBeforeUnmount(() => {
   <div
     ref="rootRef"
     class="nav-notify"
-    :class="{ open, compact: props.compact, 'has-unread': hasActiveTasks }"
+    :class="{ open, compact: props.compact, 'has-unread': hasUnread }"
     @mouseenter="openPanel"
     @mouseleave="scheduleClose"
     @focusin="openPanel"
@@ -248,7 +196,7 @@ onBeforeUnmount(() => {
       @click.stop="togglePanel"
     >
       <i class="bi bi-bell" aria-hidden="true"></i>
-      <em v-if="hasActiveTasks" class="nav-notify__badge">{{ badgeLabel }}</em>
+      <em v-if="hasUnread" class="nav-notify__badge">{{ badgeLabel }}</em>
     </button>
 
     <Transition name="nav-notify-panel">
@@ -256,50 +204,54 @@ onBeforeUnmount(() => {
         v-if="open"
         class="nav-notify__panel"
         role="dialog"
-        aria-label="进行中的任务"
+        aria-label="通知预览"
         @click.stop
       >
         <header class="nav-notify__head">
           <div>
-            <strong>进行中的任务</strong>
-            <small v-if="hasActiveTasks">{{ activeTaskCount }} 个任务正在处理</small>
-            <small v-else>没有正在处理的任务</small>
+            <strong>通知</strong>
+            <small v-if="unreadCount > 0">{{ unreadCount }} 条未读</small>
+            <small v-else>暂无未读</small>
           </div>
-          <span v-if="hasActiveTasks" class="nav-notify__live"><i></i>实时更新</span>
         </header>
 
-        <div v-if="activeTasksLoading && !previewList.length" class="nav-notify__loading">
-          正在读取任务…
+        <div v-if="previewLoading && !previewItems.length" class="nav-notify__loading">
+          正在读取通知…
         </div>
 
-        <ul v-else-if="previewList.length" class="nav-notify__list">
-          <li v-for="item in previewList" :key="item.id" class="is-unread">
-            <span
-              class="nav-notify__dot"
-              :class="`is-${normalizeTaskStatus(item.status)}`"
-              aria-hidden="true"
-            ></span>
-            <div>
-              <div class="nav-notify__task-title">
-                <strong>{{ taskTypeLabel(item) }}</strong>
-                <em>{{ taskStatusLabel(item) }}</em>
+        <ul v-else-if="previewItems.length" class="nav-notify__list">
+          <li
+            v-for="item in previewItems"
+            :key="item.id"
+            :class="{ 'is-unread': !item.readAt }"
+          >
+            <RouterLink
+              class="nav-notify__item"
+              to="/notifications"
+              @click="openItem(item)"
+            >
+              <span class="nav-notify__icon" aria-hidden="true">
+                <i class="bi" :class="kindIcon(item)"></i>
+              </span>
+              <div>
+                <strong>{{ item.title || '通知' }}</strong>
+                <p v-if="item.body">{{ item.body }}</p>
+                <div class="nav-notify__meta">
+                  <small>{{ formatTime(item.createdAt) }}</small>
+                  <small v-if="!item.readAt">未读</small>
+                </div>
               </div>
-              <p>{{ taskDescription(item) }}</p>
-              <div class="nav-notify__meta">
-                <small>{{ formatTime(item.createdAt) }}</small>
-                <small v-if="Number(item.count) > 1">{{ item.count }} 张</small>
-              </div>
-            </div>
+            </RouterLink>
           </li>
         </ul>
 
         <div v-else class="nav-notify__empty">
-          <i class="bi bi-check2-circle" aria-hidden="true"></i>
-          <p>暂无进行中的任务</p>
+          <i class="bi bi-bell" aria-hidden="true"></i>
+          <p>暂无新通知</p>
         </div>
 
         <footer class="nav-notify__foot">
-          <RouterLink to="/history" @click="closePanel">查看任务历史</RouterLink>
+          <RouterLink to="/notifications" @click="closePanel">查看全部通知</RouterLink>
         </footer>
       </div>
     </Transition>
@@ -369,14 +321,15 @@ onBeforeUnmount(() => {
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
+  z-index: 80;
   width: min(360px, calc(100vw - 24px));
-  border-radius: 18px;
+  overflow: hidden;
   border: 1px solid rgba(28, 26, 39, 0.1);
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 22px 48px rgba(28, 22, 60, 0.16);
   backdrop-filter: blur(16px);
-  overflow: hidden;
-  z-index: 80;
+  color: #1c1a27;
 }
 
 .nav-notify__head {
@@ -402,235 +355,133 @@ onBeforeUnmount(() => {
   font-size: 0.72rem;
 }
 
-.nav-notify__live {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 24px;
-  padding: 0 8px;
-  color: #167a65;
-  background: rgba(22, 122, 101, 0.08);
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 750;
-  white-space: nowrap;
-}
-
-.nav-notify__live i {
-  width: 6px;
-  height: 6px;
-  background: #1aa382;
-  border-radius: 50%;
-  box-shadow: 0 0 0 4px rgba(26, 163, 130, 0.12);
-  animation: nav-notify-live 1.4s ease-in-out infinite;
-}
-
-.nav-notify__mark {
-  border: 0;
-  background: transparent;
-  color: #6b5cff;
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 2px 0;
-  white-space: nowrap;
-}
-
-.nav-notify__mark:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.nav-notify__list {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-  max-height: min(420px, 55vh);
-  overflow: auto;
-}
-
-.nav-notify__list li {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  padding: 10px;
-  border-radius: 12px;
-  background: transparent;
-}
-
-.nav-notify__list li.is-unread {
-  background: rgba(107, 92, 255, 0.08);
-}
-
-.nav-notify__dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: rgba(28, 26, 39, 0.18);
-}
-
-.nav-notify__list li.is-unread .nav-notify__dot {
-  background: #6b5cff;
-}
-
-.nav-notify__dot.is-running {
-  background: #19a57f !important;
-  box-shadow: 0 0 0 4px rgba(25, 165, 127, 0.11);
-  animation: nav-notify-live 1.4s ease-in-out infinite;
-}
-
-.nav-notify__dot.is-queued {
-  background: #7a68ef !important;
-  box-shadow: 0 0 0 4px rgba(122, 104, 239, 0.1);
-}
-
-.nav-notify__task-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.nav-notify__task-title strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nav-notify__task-title em {
-  flex: 0 0 auto;
-  color: #167a65;
-  font-size: 0.66rem;
-  font-style: normal;
-  font-weight: 750;
-}
-
-.nav-notify__list strong {
-  display: block;
-  font-size: 0.8rem;
-  font-weight: 750;
-  color: #1c1a27;
-  line-height: 1.35;
-}
-
-.nav-notify__list p {
-  margin: 4px 0 0;
-  color: rgba(28, 26, 39, 0.58);
-  font-size: 0.74rem;
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.nav-notify__list small {
-  display: block;
-  color: rgba(28, 26, 39, 0.45);
-  font-size: 0.68rem;
-}
-
-.nav-notify__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 7px;
-}
-
-.nav-notify__meta button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  color: #167a65;
-  background: transparent;
-  border: 0;
-  font: inherit;
-  font-size: 0.69rem;
-  font-weight: 750;
-  cursor: pointer;
-}
-
-.nav-notify__empty,
-.nav-notify__loading {
+.nav-notify__loading,
+.nav-notify__empty {
   display: grid;
   place-items: center;
-  gap: 6px;
-  padding: 36px 16px;
+  gap: 8px;
+  min-height: 140px;
+  padding: 24px 16px;
   color: rgba(28, 26, 39, 0.5);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   text-align: center;
 }
 
 .nav-notify__empty i {
-  font-size: 1.25rem;
-  color: #6b5cff;
+  font-size: 1.4rem;
+  color: var(--nav-accent, #5b4dff);
+  opacity: 0.75;
 }
 
-.nav-notify__empty p {
+.nav-notify__list {
+  display: grid;
+  gap: 6px;
+  max-height: min(420px, 55vh);
   margin: 0;
+  padding: 8px;
+  overflow: auto;
+  list-style: none;
+}
+
+.nav-notify__list > li {
+  border-radius: 12px;
+}
+
+.nav-notify__item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 12px;
+  transition: background 140ms ease;
+}
+
+.nav-notify__item:hover {
+  background: rgba(28, 26, 39, 0.04);
+}
+
+.nav-notify__list > li.is-unread .nav-notify__item {
+  background: rgba(107, 92, 255, 0.08);
+}
+
+.nav-notify__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: #5b4dff;
+  background: rgba(107, 92, 255, 0.12);
+  font-size: 0.95rem;
+}
+
+.nav-notify__item strong {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 750;
+  line-height: 1.35;
+  color: #1c1a27;
+}
+
+.nav-notify__item p {
+  display: -webkit-box;
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: rgba(28, 26, 39, 0.58);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.nav-notify__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.nav-notify__meta small {
+  color: rgba(28, 26, 39, 0.42);
+  font-size: 0.64rem;
+}
+
+.nav-notify__list > li.is-unread .nav-notify__meta small:last-child {
+  color: #5b4dff;
+  font-weight: 700;
 }
 
 .nav-notify__foot {
-  padding: 10px 14px 14px;
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 12px;
   border-top: 1px solid rgba(28, 26, 39, 0.08);
 }
 
 .nav-notify__foot a {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 34px;
-  border-radius: 999px;
-  background: rgba(107, 92, 255, 0.1);
   color: #5b4dff;
+  font-size: 0.74rem;
+  font-weight: 700;
   text-decoration: none;
-  font-size: 0.78rem;
-  font-weight: 750;
 }
 
 .nav-notify__foot a:hover {
-  background: rgba(107, 92, 255, 0.16);
+  text-decoration: underline;
 }
 
 .nav-notify-panel-enter-active,
 .nav-notify-panel-leave-active {
   transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 
 .nav-notify-panel-enter-from,
 .nav-notify-panel-leave-to {
   opacity: 0;
   transform: translateY(-6px);
-}
-
-@keyframes nav-notify-live {
-  0%,
-  100% {
-    opacity: 0.58;
-    transform: scale(0.86);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .nav-notify__live i,
-  .nav-notify__dot.is-running {
-    animation: none;
-  }
 }
 
 .nav-notify.compact {

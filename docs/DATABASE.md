@@ -1,6 +1,6 @@
 # 数据库设计
 
-数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00057`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
+数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00063`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
 
 ## 全局约定
 
@@ -126,13 +126,27 @@
 
 持久化助手对话运行状态、请求参数和最终路由结果。`reserved_cents` 是本代最大预留，`cost_cents` 是成功后的真实结算额且受 `cost_cents <= reserved_cents` 约束，`billing_generation` 在后台重试时递增。Agent 将对话总价与可能的图片总价同时快照进 `params`，Worker 根据最终 `resolved_mode` 选择真实费用。终态更新和钱包结算/退回必须位于同一事务。
 
+### `object_cleanup_jobs`
+
+任务和助手产物使用 `tasks/` 前缀的 R2 object key。任务删除、失败重试、助手消息/对话裁剪以及部分输出清理时，会在删除数据库所有者或清空产物引用的同一事务中登记待清理 key；`object_key` 唯一，重复登记幂等。`next_attempt_at`、`attempts` 和 `last_error` 保存外部对象存储失败后的持久化重试状态。
+
+Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务输入/输出/缩略图、蒙版、助手消息和运行参数、画廊投稿、提示词封面以及画布文档引用。仍被引用的 key 会留在队列中，删除成功后移除作业，失败则延迟 5 分钟重试。迁移文件为 `00063_object_cleanup_jobs.sql`；该队列只处理 `tasks/` 对象，普通 `uploads/` 对象由 `user_upload_objects` / `user_upload_references` 的回收流程负责。
+
 ### `user_assets`
 
 用户个人素材库记录。每行保存所属 `user_id`、可选 `group_id`、标题、原图 `file_key`、512px JPEG `thumbnail_key`、内容类型、原图字节数与创建时间；`(user_id, file_key)` 唯一，删除用户时级联删除记录。API 同时校验 object key 必须属于当前用户的 `uploads/{user_id}/` 前缀，并将每账号素材数量限制为 200 项。删除素材时先删除数据库记录，再尽力删除对应原图和缩略图对象。
 
+### `user_upload_objects` / `user_upload_references`
+
+普通 `/api/v1/uploads` 产生的 R2 对象先登记到 `user_upload_objects`，业务事务再通过 `user_upload_references` 建立引用。当前引用类型包括任务输入/蒙版、个人素材、头像、助手消息和助手运行。一个对象可以被多个业务记录共享，只有最后一个引用删除后才进入回收候选；Worker 扫描 R2 中超过 7 天且没有引用的 `uploads/{user_id}/original|thumb/` 对象，在数据库行锁保护下删除 R2 对象并写入 `deleted_at`。迁移 `00062` 会从现有素材、头像、任务和助手 JSONB 数据回填历史引用；进程在 R2 上传成功后、数据库登记前崩溃的对象由后续扫描发现并回收。
+
 ### `user_asset_groups`
 
 个人素材分组。每行保存 `user_id`、名称（同用户大小写不敏感唯一）、排序与时间戳；最多 50 组。删除分组时，关联素材的 `group_id` 置空（`ON DELETE SET NULL`）。
+
+### `ecommerce_products`
+
+商品级业务资料和参考图索引。每行归属一个用户，保存 SKU、商品名称、品牌、类目、卖点、目标人群、材质、颜色、规格、默认平台/市场/语言，以及 1-6 个 `user_assets.id` 的 JSON 数组。`protected_elements` 保存必须保持的 Logo、文字、按钮、刻度等商品事实约束；它们会在进入 AI 电商工作台时加入生成提示和任务快照。商品状态为 `active|archived`，同一用户的非空 SKU 大小写不敏感唯一；删除商品不会删除被引用的个人素材。
 
 ## 画廊与通知
 

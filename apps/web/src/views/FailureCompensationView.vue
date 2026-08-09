@@ -1,9 +1,11 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import { useAppearanceStore } from '@/stores/appearance'
 import { getGrowthPrograms } from '@/services/growthApi'
 import { formatPoints } from '@/services/billingApi'
 
+const appearanceStore = useAppearanceStore()
 const loading = ref(true)
 const loadError = ref('')
 const growthData = ref(null)
@@ -76,7 +78,7 @@ onMounted(loadGrowth)
 </script>
 
 <template>
-  <main class="compensation-page">
+  <main class="compensation-page" :class="{ 'is-dark': appearanceStore.isDark }">
     <section class="compensation-panel">
       <div class="compensation-hero">
         <div class="compensation-hero__copy">
@@ -157,19 +159,46 @@ onMounted(loadGrowth)
   --ink: #20242b;
   --muted: #6e7683;
   --orange: #f4761c;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --hero: #fff9f3;
+  --line: #e7e9ed;
+  --line-soft: #edf0f3;
+  --soft: #fff1df;
+  --soft-2: #fff1e5;
+  --ghost-text: #333942;
+  --ghost-border: #f0b483;
+  --card-shadow: 0 7px 18px rgb(41 51 67 / 6%);
+  --assurance-icon: #89919d;
   width: 100%;
   min-width: 1180px;
   min-height: calc(100vh - var(--app-header-offset, 72px));
   padding: 14px 0 22px;
   color: var(--ink);
-  background: #f6f7f9;
+  background: var(--bg);
+}
+.compensation-page.is-dark {
+  --ink: #f4eee6;
+  --muted: #a79c8f;
+  --orange: #ff8a3d;
+  --bg: #12100e;
+  --surface: #1c1915;
+  --hero: #1a1511;
+  --line: #3b342c;
+  --line-soft: #2f2922;
+  --soft: rgb(255 138 61 / 16%);
+  --soft-2: rgb(255 138 61 / 14%);
+  --ghost-text: #f4eee6;
+  --ghost-border: rgb(255 138 61 / 35%);
+  --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
+  --assurance-icon: #8a8278;
 }
 .compensation-panel {
   width: calc(100% - 120px);
   margin: 0 auto;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #e7e9ed;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 .compensation-hero {
@@ -177,7 +206,7 @@ onMounted(loadGrowth)
   min-height: 385px;
   grid-template-columns: minmax(620px, 1fr) minmax(600px, 1fr);
   align-items: center;
-  background: #fff9f3;
+  background: var(--hero);
 }
 .compensation-hero__copy {
   padding: 48px 40px 44px 150px;
@@ -217,8 +246,9 @@ onMounted(loadGrowth)
   text-decoration: none;
 }
 .compensation-hero__copy a + a {
-  color: #333942;
-  background: #fff;
+  color: var(--ghost-text);
+  background: var(--surface);
+  border-color: var(--ghost-border);
 }
 .compensation-hero__asset {
   width: 100%;
@@ -251,8 +281,8 @@ onMounted(loadGrowth)
 .compensation-benefits header button {
   padding: 7px 12px;
   color: var(--orange);
-  background: #fff;
-  border: 1px solid #f0b483;
+  background: var(--surface);
+  border: 1px solid var(--ghost-border);
   border-radius: 6px;
 }
 .compensation-loading {
@@ -280,10 +310,10 @@ onMounted(loadGrowth)
   grid-template-columns: 145px 1fr auto;
   align-items: center;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #edf0f3;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
   border-radius: 7px;
-  box-shadow: 0 7px 18px rgb(41 51 67 / 6%);
+  box-shadow: var(--card-shadow);
 }
 .compensation-value {
   display: flex;
@@ -293,7 +323,7 @@ onMounted(loadGrowth)
   flex-direction: column;
   gap: 8px;
   color: var(--orange);
-  background: #fff1df;
+  background: var(--soft);
 }
 .compensation-value i {
   font-size: 22px;
@@ -332,8 +362,8 @@ onMounted(loadGrowth)
   min-height: 96px;
   grid-template-columns: repeat(4, 1fr);
   margin: 16px auto 0;
-  background: #fff;
-  border: 1px solid #e4e7eb;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 .help-strip a {
@@ -343,7 +373,7 @@ onMounted(loadGrowth)
   gap: 14px;
   color: var(--ink);
   text-decoration: none;
-  border-right: 1px solid #e8ebef;
+  border-right: 1px solid var(--line);
 }
 .help-strip a:last-child {
   border-right: 0;
@@ -354,7 +384,7 @@ onMounted(loadGrowth)
   height: 48px;
   place-items: center;
   color: var(--orange);
-  background: #fff1e5;
+  background: var(--soft-2);
   border-radius: 50%;
   font-size: 21px;
 }
@@ -379,8 +409,8 @@ onMounted(loadGrowth)
   min-height: 76px;
   grid-template-columns: repeat(4, 1fr);
   margin: 14px auto 0;
-  background: #fff;
-  border: 1px solid #eceef1;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 .assurance-strip > div {
@@ -390,7 +420,7 @@ onMounted(loadGrowth)
   gap: 13px;
 }
 .assurance-strip > div > i {
-  color: #89919d;
+  color: var(--assurance-icon);
   font-size: 22px;
 }
 .assurance-strip strong {

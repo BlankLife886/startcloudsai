@@ -1,38 +1,28 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, toRaw } from 'vue'
+import {
+  deleteMusicTrack,
+  listMusicTracks,
+  putMusicTracks,
+} from '@/services/musicLibraryStorage'
 
 const STORAGE_KEY = 'starclouds-music-player'
-const LOCAL_TRACK_LIMIT = 50
+/** Soft cap for local playlist + IndexedDB footprint. */
+export const LOCAL_TRACK_LIMIT = 20
 
-export const DEFAULT_MUSIC_TRACKS = Object.freeze([
-  {
-    id: 'default-cloud-drift',
-    source: 'default',
-    title: '云端漫游',
-    artist: '星空云绘',
-    url: '/music/cloud-drift.m4a',
-    tone: 'violet',
-  },
-  {
-    id: 'default-midnight-canvas',
-    source: 'default',
-    title: '午夜画布',
-    artist: '星空云绘',
-    url: '/music/midnight-canvas.m4a',
-    tone: 'blue',
-  },
-  {
-    id: 'default-pixel-sunrise',
-    source: 'default',
-    title: '像素晨光',
-    artist: '星空云绘',
-    url: '/music/pixel-sunrise.m4a',
-    tone: 'coral',
-  },
-])
+const EMPTY_TRACK = Object.freeze({
+  id: '',
+  source: 'local',
+  title: '未选择歌曲',
+  artist: '添加本地音乐开始播放',
+  url: '',
+  tone: 'violet',
+})
 
 let audio = null
 let localSequence = 0
+let hydratePromise = null
+let libraryReady = false
 
 function readPreferences() {
   if (typeof localStorage === 'undefined') return {}
@@ -61,14 +51,53 @@ function isAudioFile(file) {
   return /\.(aac|flac|m4a|mp3|ogg|wav|webm)$/i.test(String(file?.name || ''))
 }
 
+function scheduleIdle(task) {
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => task(), { timeout: 2500 })
+    return
+  }
+  setTimeout(task, 0)
+}
+
+function trackFromRecord(record, index = 0) {
+  const blob = record.blob
+  return {
+    id: record.id,
+    source: 'local',
+    title: record.title || '本地歌曲',
+    artist: record.artist || '本地音乐',
+    url: typeof URL !== 'undefined' && blob ? URL.createObjectURL(blob) : '',
+    fileKey: record.fileKey || '',
+    tone: record.tone || ['mint', 'coral', 'blue', 'violet'][index % 4],
+    blob,
+  }
+}
+
+function toPlainBlob(value) {
+  const raw = toRaw(value)
+  if (!raw) return null
+  if (typeof Blob !== 'undefined' && raw instanceof Blob) return raw
+  return raw
+}
+
+function toStoredRecord(track, order) {
+  const blob = toPlainBlob(track.blob)
+  return {
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    tone: track.tone,
+    fileKey: track.fileKey,
+    order,
+    mimeType: blob?.type || '',
+    blob,
+  }
+}
+
 export const useMusicPlayerStore = defineStore('music-player', () => {
   const preferences = readPreferences()
-  const tracks = ref([...DEFAULT_MUSIC_TRACKS])
-  const currentTrackId = ref(
-    DEFAULT_MUSIC_TRACKS.some((track) => track.id === preferences.trackId)
-      ? preferences.trackId
-      : DEFAULT_MUSIC_TRACKS[0].id,
-  )
+  const tracks = ref([])
+  const currentTrackId = ref(String(preferences.currentTrackId || ''))
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
@@ -84,24 +113,36 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
       tracks.value.findIndex((track) => track.id === currentTrackId.value),
     ),
   )
-  const currentTrack = computed(() => tracks.value[currentIndex.value] || tracks.value[0])
-  const defaultTracks = computed(() => tracks.value.filter((track) => track.source === 'default'))
+  const currentTrack = computed(() => {
+    if (!tracks.value.length) return EMPTY_TRACK
+    return tracks.value.find((track) => track.id === currentTrackId.value) || tracks.value[0]
+  })
   const localTracks = computed(() => tracks.value.filter((track) => track.source === 'local'))
+  const hasTracks = computed(() => tracks.value.length > 0)
+  const trackLimit = LOCAL_TRACK_LIMIT
+  const canAddTracks = computed(() => localTracks.value.length < LOCAL_TRACK_LIMIT)
 
   function persist() {
     writePreferences({
-      trackId:
-        currentTrack.value?.source === 'default'
-          ? currentTrackId.value
-          : DEFAULT_MUSIC_TRACKS[0].id,
       volume: volume.value,
       loopMode: loopMode.value,
+      currentTrackId: currentTrackId.value || '',
     })
   }
 
   function syncAudioSource() {
+    if (!audio) return
     const track = currentTrack.value
-    if (!audio || !track) return
+    if (!track?.url) {
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      delete audio.dataset.trackId
+      currentTime.value = 0
+      duration.value = 0
+      isPlaying.value = false
+      return
+    }
     if (audio.dataset.trackId === track.id) return
     audio.pause()
     audio.src = track.url
@@ -136,9 +177,10 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
     })
     audio.addEventListener('error', () => {
       isPlaying.value = false
-      errorMessage.value = '歌曲无法播放，请切换歌曲或重新选择本地文件'
+      errorMessage.value = '歌曲无法播放，请重新选择本地文件'
     })
     audio.addEventListener('ended', () => {
+      if (!tracks.value.length) return
       if (loopMode.value === 'one') {
         audio.currentTime = 0
         void audio.play().catch(() => {})
@@ -150,13 +192,59 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
     return audio
   }
 
+  async function hydrateLibrary() {
+    if (libraryReady) return
+    if (hydratePromise) return hydratePromise
+
+    hydratePromise = (async () => {
+      try {
+        const records = await listMusicTracks()
+        if (!tracks.value.length && records.length) {
+          const limited = records.slice(0, LOCAL_TRACK_LIMIT)
+          tracks.value = limited.map((record, index) => trackFromRecord(record, index))
+          if (records.length > LOCAL_TRACK_LIMIT) {
+            for (const extra of records.slice(LOCAL_TRACK_LIMIT)) {
+              void deleteMusicTrack(extra.id)
+            }
+          }
+          if (
+            !currentTrackId.value ||
+            !tracks.value.some((track) => track.id === currentTrackId.value)
+          ) {
+            currentTrackId.value = tracks.value[0].id
+          }
+          persist()
+          syncAudioSource()
+        }
+      } catch {
+        /* local library is optional */
+      } finally {
+        libraryReady = true
+      }
+    })()
+
+    return hydratePromise
+  }
+
   function prepare() {
     ensureAudio()
+    // Idle hydrate keeps first paint / main business paths off the critical path.
+    scheduleIdle(() => {
+      void hydrateLibrary()
+    })
   }
 
   async function play(trackId) {
+    await hydrateLibrary()
+    if (!tracks.value.length) {
+      errorMessage.value = '请先添加本地歌曲'
+      return false
+    }
     if (trackId && tracks.value.some((track) => track.id === trackId)) {
       currentTrackId.value = trackId
+    }
+    if (!currentTrackId.value || !tracks.value.some((track) => track.id === currentTrackId.value)) {
+      currentTrackId.value = tracks.value[0].id
     }
     const player = ensureAudio()
     if (!player) {
@@ -190,6 +278,7 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
   }
 
   async function selectTrack(id, autoplay = true) {
+    await hydrateLibrary()
     if (!tracks.value.some((track) => track.id === id)) return
     const changed = currentTrackId.value !== id
     currentTrackId.value = id
@@ -210,11 +299,15 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
   }
 
   async function next(autoplay = isPlaying.value) {
+    await hydrateLibrary()
+    if (!tracks.value.length) return
     const track = tracks.value[resolveNextIndex(1)]
     if (track) await selectTrack(track.id, autoplay)
   }
 
   async function previous() {
+    await hydrateLibrary()
+    if (!tracks.value.length) return
     const player = ensureAudio()
     if (player && player.currentTime > 4) {
       seek(0)
@@ -226,7 +319,7 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
 
   function seek(seconds) {
     const player = ensureAudio()
-    if (!player) return
+    if (!player || !tracks.value.length) return
     const nextTime = Math.min(duration.value || 0, Math.max(0, Number(seconds) || 0))
     player.currentTime = nextTime
     currentTime.value = nextTime
@@ -244,51 +337,95 @@ export const useMusicPlayerStore = defineStore('music-player', () => {
     persist()
   }
 
-  function importLocalFiles(fileList) {
+  async function importLocalFiles(fileList) {
     if (typeof URL === 'undefined') return 0
+    // Caller must snapshot FileList first; hydrate is async and can outlive the input.
+    const files = Array.isArray(fileList) ? fileList : Array.from(fileList || [])
+    await hydrateLibrary()
+    if (!canAddTracks.value) {
+      errorMessage.value = `播放列表最多 ${LOCAL_TRACK_LIMIT} 首，请先移除部分歌曲`
+      return 0
+    }
+
     const existing = new Set(localTracks.value.map((track) => track.fileKey))
     const available = Math.max(0, LOCAL_TRACK_LIMIT - localTracks.value.length)
-    const imported = Array.from(fileList || [])
+    const candidates = files
       .filter(isAudioFile)
       .filter((file) => !existing.has(`${file.name}:${file.size}:${file.lastModified}`))
-      .slice(0, available)
-      .map((file, index) => ({
+    const imported = candidates.slice(0, available).map((file, index) => {
+      const blob = toPlainBlob(file)
+      return {
         id: `local-${Date.now()}-${localSequence++}-${index}`,
         source: 'local',
         title: titleFromFile(file.name),
         artist: '本地音乐',
-        url: URL.createObjectURL(file),
+        url: blob ? URL.createObjectURL(blob) : '',
         fileKey: `${file.name}:${file.size}:${file.lastModified}`,
         tone: ['mint', 'coral', 'blue', 'violet'][index % 4],
-      }))
+        blob,
+      }
+    })
 
-    if (!imported.length) return 0
+    if (!imported.length) {
+      errorMessage.value = candidates.length
+        ? `播放列表最多 ${LOCAL_TRACK_LIMIT} 首`
+        : files.length
+          ? '未识别到可添加的音频文件'
+          : '未选择文件'
+      return 0
+    }
+
+    const orderBase = Date.now()
     tracks.value.push(...imported)
-    errorMessage.value = ''
-    void selectTrack(imported[0].id, true)
+    errorMessage.value =
+      candidates.length > imported.length
+        ? `已添加 ${imported.length} 首，播放列表上限为 ${LOCAL_TRACK_LIMIT} 首`
+        : ''
+    void putMusicTracks(imported.map((track, index) => toStoredRecord(track, orderBase + index)))
+    // Autoplay may be blocked after the async hydrate await; adding still succeeded.
+    await selectTrack(imported[0].id, false)
+    try {
+      const player = ensureAudio()
+      if (player) await player.play()
+    } catch (error) {
+      if (error?.name !== 'NotAllowedError') {
+        errorMessage.value = '歌曲加载失败，可点击播放重试'
+      }
+    }
     return imported.length
   }
 
-  function removeLocalTrack(id) {
+  async function removeLocalTrack(id) {
+    await hydrateLibrary()
     const track = tracks.value.find((item) => item.id === id && item.source === 'local')
     if (!track) return
     const wasCurrent = currentTrackId.value === id
     if (wasCurrent) pause()
-    URL.revokeObjectURL(track.url)
+    if (track.url) URL.revokeObjectURL(track.url)
     tracks.value = tracks.value.filter((item) => item.id !== id)
-    if (wasCurrent) {
-      currentTrackId.value = DEFAULT_MUSIC_TRACKS[0].id
-      syncAudioSource()
+    void deleteMusicTrack(id)
+    if (!wasCurrent) {
       persist()
+      return
     }
+    if (tracks.value.length) {
+      currentTrackId.value = tracks.value[0].id
+      syncAudioSource()
+    } else {
+      currentTrackId.value = ''
+      syncAudioSource()
+    }
+    persist()
   }
 
   return {
     tracks,
     currentTrackId,
     currentTrack,
-    defaultTracks,
     localTracks,
+    hasTracks,
+    trackLimit,
+    canAddTracks,
     isPlaying,
     currentTime,
     duration,

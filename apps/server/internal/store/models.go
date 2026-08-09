@@ -56,6 +56,30 @@ type UserAsset struct {
 
 func (a *UserAsset) CursorKey() (time.Time, uuid.UUID) { return a.CreatedAt, a.ID }
 
+type EcommerceProduct struct {
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	SKU               string
+	Title             string
+	Brand             string
+	Category          string
+	SellingPoints     string
+	TargetAudience    string
+	Material          string
+	Color             string
+	Dimensions        string
+	Platform          string
+	Market            string
+	Language          string
+	AssetIDs          []string
+	ProtectedElements []string
+	Status            string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (p *EcommerceProduct) CursorKey() (time.Time, uuid.UUID) { return p.UpdatedAt, p.ID }
+
 type UserAssetGroup struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID

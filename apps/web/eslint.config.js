@@ -35,6 +35,18 @@ export default defineConfig([
       ],
     },
   },
+  {
+    // Node CLI/test scripts (may also embed browser code via page.evaluate).
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      ...browserLanguageOptions,
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+        ...globals.es2026,
+      },
+    },
+  },
   ...pluginVue.configs['flat/essential'],
   {
     files: ['**/*.vue'],

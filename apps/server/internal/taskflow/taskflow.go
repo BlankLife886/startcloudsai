@@ -101,6 +101,16 @@ type CreateInput struct {
 	IdempotencyKey *string
 }
 
+func taskUploadReferenceKeys(inputKeys []string, params map[string]any) []string {
+	keys := append([]string(nil), inputKeys...)
+	for _, paramKey := range []string{"maskKey", "maskBaseKey"} {
+		if key, ok := params[paramKey].(string); ok {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 func authorizeTrialFeature(ctx context.Context, q store.Q, userID uuid.UUID, feature trialfeature.Feature) error {
 	if feature.Key == "" {
 		return nil
@@ -121,6 +131,82 @@ func authorizeTrialFeature(ctx context.Context, q store.Q, userID uuid.UUID, fea
 	}
 	if !allowed {
 		return apperr.E("trial_feature_access_required", fmt.Sprintf("「%s」正在内测，请先申请并通过体验资格审核", feature.Label), 403)
+	}
+	return nil
+}
+
+func taskOutputParentID(userID uuid.UUID, key string) (uuid.UUID, bool) {
+	prefix := "tasks/" + userID.String() + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return uuid.Nil, false
+	}
+	rest := strings.TrimPrefix(key, prefix)
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	id, err := uuid.Parse(rest)
+	return id, err == nil
+}
+
+func isAssistantOutputKey(userID uuid.UUID, key string) bool {
+	prefix := "tasks/" + userID.String() + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
+	if len(parts) != 3 || parts[0] != "assistant" || parts[2] == "" {
+		return false
+	}
+	_, err := uuid.Parse(parts[1])
+	return err == nil
+}
+
+// validateAndLockTaskInputReferences serializes task version chains with
+// deletion. Current task outputs carry their task UUID in the object key;
+// assistant output keys are checked against their message rows, while legacy
+// task-shaped keys remain compatible for older stored data.
+func validateAndLockTaskInputReferences(ctx context.Context, q store.Q, userID uuid.UUID, keys []string) error {
+	if err := store.LockObjectReferenceKeys(ctx, q, keys); err != nil {
+		return err
+	}
+	parentPrefix := "tasks/" + userID.String() + "/"
+	taskKeys := make([]string, 0, len(keys))
+	strictKeys := make(map[string]struct{})
+	assistantKeys := make([]string, 0)
+	for _, key := range keys {
+		if !strings.HasPrefix(key, parentPrefix) {
+			continue
+		}
+		if isAssistantOutputKey(userID, key) {
+			assistantKeys = append(assistantKeys, key)
+			continue
+		}
+		taskKeys = append(taskKeys, key)
+		if _, ok := taskOutputParentID(userID, key); ok {
+			strictKeys[key] = struct{}{}
+		}
+	}
+	if len(taskKeys) > 0 {
+		referenced, err := store.LockTasksReferencingOutputKeys(ctx, q, userID, taskKeys)
+		if err != nil {
+			return err
+		}
+		for key := range strictKeys {
+			if _, ok := referenced[key]; !ok {
+				return apperr.E("validation_error", "inputKeys 引用的任务不存在或已删除", 422)
+			}
+		}
+	}
+	if len(assistantKeys) > 0 {
+		referenced, err := store.LockAssistantOutputKeys(ctx, q, userID, assistantKeys)
+		if err != nil {
+			return err
+		}
+		for _, key := range assistantKeys {
+			if _, ok := referenced[key]; !ok {
+				return apperr.E("validation_error", "inputKeys 引用的助手图片不存在或已删除", 422)
+			}
+		}
 	}
 	return nil
 }
@@ -155,8 +241,15 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			}
 			if existing != nil {
 				task = existing
+				if err := store.AddUserUploadReferences(ctx, tx, userID, store.UploadReferenceTaskInput,
+					existing.ID, taskUploadReferenceKeys(existing.InputKeys, existing.Params)); err != nil {
+					return err
+				}
 				return nil
 			}
+		}
+		if err := validateAndLockTaskInputReferences(ctx, tx, userID, taskUploadReferenceKeys(in.InputKeys, in.Params)); err != nil {
+			return err
 		}
 		if err := authorizeTrialFeature(ctx, tx, userID, taskFeature); err != nil {
 			return err
@@ -370,6 +463,10 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err != nil {
 			return err
 		}
+		if err := store.AddUserUploadReferences(ctx, tx, userID, store.UploadReferenceTaskInput,
+			task.ID, taskUploadReferenceKeys(in.InputKeys, params)); err != nil {
+			return err
+		}
 		if costCents > 0 {
 			if err := store.LockTrialCampaignLifecycleShared(ctx, tx); err != nil {
 				return err
@@ -413,9 +510,9 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		var t *store.Task
 		var err error
 		if owner != nil {
-			t, err = store.GetUserTask(ctx, tx, *owner, taskID)
+			t, err = store.GetUserTaskForUpdate(ctx, tx, *owner, taskID)
 		} else {
-			t, err = store.GetTask(ctx, tx, taskID)
+			t, err = store.GetTaskForUpdate(ctx, tx, taskID)
 		}
 		if err != nil {
 			return err
@@ -429,6 +526,9 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		}
 		if !ok {
 			return apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
+		}
+		if err := store.ClearTaskOutputsAndEnqueueCleanup(ctx, tx, taskID, t.OutputKeys, t.ThumbnailKeys); err != nil {
+			return err
 		}
 		if t.CostCents > 0 {
 			if _, err := wallet.ReleaseForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("任务取消解冻")); err != nil {
@@ -453,7 +553,7 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
-		t, err := store.GetTask(ctx, tx, taskID)
+		t, err := store.GetTaskForUpdate(ctx, tx, taskID)
 		if err != nil {
 			return err
 		}
@@ -466,6 +566,9 @@ func ForceFailTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*sto
 		}
 		if !won {
 			return apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)
+		}
+		if err := store.ClearTaskOutputsAndEnqueueCleanup(ctx, tx, taskID, t.OutputKeys, t.ThumbnailKeys); err != nil {
+			return err
 		}
 		task, err = store.GetTask(ctx, tx, taskID)
 		return err
@@ -626,6 +729,11 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 		}
 		if t == nil {
 			return apperr.E("task_not_found", "任务不存在", 404)
+		}
+		cleanupKeys := append([]string(nil), t.OutputKeys...)
+		cleanupKeys = append(cleanupKeys, t.ThumbnailKeys...)
+		if err := store.EnqueueObjectCleanup(ctx, tx, cleanupKeys); err != nil {
+			return err
 		}
 		ok, err := store.RequeueTask(ctx, tx, taskID)
 		if err != nil {

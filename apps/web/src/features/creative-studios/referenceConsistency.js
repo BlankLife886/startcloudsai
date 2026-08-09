@@ -53,6 +53,7 @@ export function mapConsistencyReferenceRoles({
   referenceCount = 0,
   essentialIdentityCount = 1,
   seriesAnchorApplied = false,
+  seriesAnchorRole = '',
 } = {}) {
   const mapped = Array.from(roles || [])
     .map((role) => String(role || '').trim())
@@ -62,7 +63,9 @@ export function mapConsistencyReferenceRoles({
       mapped.length,
       Math.max(0, Number(essentialIdentityCount) || 0),
     )
-    mapped.splice(anchorIndex, 0, '系列视觉锚点（只继承布景、光线与版式）')
+    const anchorLabel =
+      String(seriesAnchorRole || '').trim() || '系列视觉锚点（只继承布景、光线与版式）'
+    mapped.splice(anchorIndex, 0, anchorLabel)
   }
   return Array.from({ length: Math.max(0, Number(referenceCount) || 0) }, (_, index) => {
     return mapped[index] || `补充身份参考 ${index + 1}`

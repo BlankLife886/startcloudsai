@@ -243,7 +243,17 @@ export async function removeImageBackground(sourceUrl, publicModelKey, options =
     idempotencyKey: String(options.idempotencyKey || '').trim() || crypto.randomUUID(),
   })
   invalidateStudioCreditSnapshot()
-  const completed = await waitForTask(task.id)
+  if (typeof options.onUpdate === 'function') {
+    try {
+      options.onUpdate(task)
+    } catch {
+      /* ignore UI callback errors */
+    }
+  }
+  const completed = await waitForTask(task.id, {
+    onUpdate: options.onUpdate,
+    signal: options.signal,
+  })
   return {
     task: completed,
     job: taskToLegacyJob(completed),
@@ -326,9 +336,9 @@ function legacyResultFromTask(task = {}) {
 // ---------------------------------------------------------------------------
 
 /** 上传参考图，返回可展示 URL（内部登记 URL→key 供 createServerAiJob 使用）。 */
-export async function uploadAiInputFile(file, _options = {}) {
+export async function uploadAiInputFile(file, options = {}) {
   if (!file) throw new Error('请先选择一张图片')
-  const uploaded = await uploadFile(file)
+  const uploaded = await uploadFile(file, { signal: options?.signal })
   registerUrlKey(uploaded.url, uploaded.key)
   return uploaded.url
 }
@@ -406,8 +416,10 @@ export async function listServerAiJobs(limit = 30, options = {}) {
   const type = kind ? mapJobKindToTaskType(kind.split(',')[0]) : ''
   const { items, nextCursor } = await listTasks({
     type,
+    status: String(options.status || '').trim(),
     limit,
     cursor: String(options.cursor || '').trim(),
+    signal: options.signal,
   })
   let jobs = items.map((task) => taskToLegacyJob(task))
   if (options.excludeFailed) {
@@ -432,9 +444,9 @@ export async function getServerAiJobResult(jobId, options = {}) {
   return { job: taskToLegacyJob(task), result: legacyResultFromTask(task) }
 }
 
-export async function deleteServerAiJob(jobId) {
-  await deleteTask(jobId)
-  return { deleted: true }
+export async function deleteServerAiJob(jobId, options = {}) {
+  const result = await deleteTask(jobId, options)
+  return { deleted: true, deletedTaskIds: result?.deletedTaskIds || [jobId] }
 }
 
 /** 新契约任务由服务端队列自动执行，run 是无操作占位。 */

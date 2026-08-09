@@ -25,7 +25,7 @@ npm run test:coloring-upload-compression
 npm run test:task-concurrency
 ```
 
-`playwright.config.js` 仍引用旧 monorepo 的 `@walleven/*` pnpm filter，当前 `tests/e2e` 也只有 helper；在重建 web/API/admin 的测试启动器和实际 spec 前，`npm run test:e2e` 不是可用的验证命令。`npm run build` 输出到 `VITE_BUILD_OUT_DIR`，未设置时为 `dist/`。
+`npm run test:e2e` 会启动当前 Web Vite 服务并运行 `tests/e2e` 下的工作台冒烟测试；测试通过路由拦截提供确定性的登录、运行时模型、历史和商品库数据，不依赖真实图片上游。`npm run build` 输出到 `VITE_BUILD_OUT_DIR`，未设置时为 `dist/`。
 
 ## 页面
 

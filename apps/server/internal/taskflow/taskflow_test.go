@@ -336,6 +336,57 @@ func TestCreateTaskIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestCreateTaskRejectsDeletedTaskOutputReference(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	parentID := uuid.New()
+	outputKey := fmt.Sprintf("tasks/%s/%s/original/0.png", user.ID, parentID)
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO tasks (id, user_id, type, prompt, status, output_keys, cost_cents)
+		VALUES ($1, $2, 't2i', 'parent', 'succeeded', jsonb_build_array($3::text), 0)`,
+		parentID, user.ID, outputKey); err != nil {
+		t.Fatalf("insert parent task: %v", err)
+	}
+	if err := store.DeleteTask(ctx, st.Pool, parentID); err != nil {
+		t.Fatalf("delete parent task: %v", err)
+	}
+
+	_, created, err := taskflow.CreateTask(ctx, st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "child", Count: 1, InputKeys: []string{outputKey},
+	})
+	if created {
+		t.Fatal("task referencing a deleted output must not be created")
+	}
+	mustAppErr(t, err, "validation_error")
+}
+
+func TestCreateTaskRejectsDeletedMaskTaskOutputReference(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	parentID := uuid.New()
+	outputKey := fmt.Sprintf("tasks/%s/%s/original/0.png", user.ID, parentID)
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO tasks (id, user_id, type, prompt, status, output_keys, cost_cents)
+		VALUES ($1, $2, 't2i', 'parent', 'succeeded', jsonb_build_array($3::text), 0)`,
+		parentID, user.ID, outputKey); err != nil {
+		t.Fatalf("insert parent task: %v", err)
+	}
+	if err := store.DeleteTask(ctx, st.Pool, parentID); err != nil {
+		t.Fatalf("delete parent task: %v", err)
+	}
+
+	_, created, err := taskflow.CreateTask(ctx, st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "child", Count: 1,
+		Params: map[string]any{"maskKey": outputKey, "maskBaseKey": outputKey},
+	})
+	if created {
+		t.Fatal("task referencing a deleted mask output must not be created")
+	}
+	mustAppErr(t, err, "validation_error")
+}
+
 func TestUserTaskLimit(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 10000)
@@ -716,6 +767,13 @@ func TestCancelOnlyQueued(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	outputKey := fmt.Sprintf("tasks/%s/%s/original/0.png", user.ID, task.ID)
+	thumbnailKey := fmt.Sprintf("tasks/%s/%s/thumb/0.jpg", user.ID, task.ID)
+	if _, err := st.Pool.Exec(ctx, `UPDATE tasks
+		SET output_keys = jsonb_build_array($2::text), thumbnail_keys = jsonb_build_array($3::text)
+		WHERE id = $1`, task.ID, outputKey, thumbnailKey); err != nil {
+		t.Fatalf("set cancel outputs: %v", err)
+	}
 
 	canceled, err := taskflow.CancelTask(ctx, st, user.ID, task.ID)
 	if err != nil {
@@ -723,6 +781,17 @@ func TestCancelOnlyQueued(t *testing.T) {
 	}
 	if canceled.Status != "canceled" {
 		t.Fatalf("status = %s, want canceled", canceled.Status)
+	}
+	if len(canceled.OutputKeys) != 0 || len(canceled.ThumbnailKeys) != 0 {
+		t.Fatalf("canceled outputs = %#v / %#v, want empty", canceled.OutputKeys, canceled.ThumbnailKeys)
+	}
+	var cleanupJobs int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM object_cleanup_jobs WHERE object_key = ANY($1::text[])`, []string{outputKey, thumbnailKey}).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("count cleanup jobs: %v", err)
+	}
+	if cleanupJobs != 2 {
+		t.Fatalf("cleanup jobs = %d, want 2", cleanupJobs)
 	}
 	w := getWallet(t, st, user.ID)
 	if w.BalanceCents != 100 || w.FrozenCents != 0 {

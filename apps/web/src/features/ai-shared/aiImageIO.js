@@ -124,8 +124,10 @@ function normalizeScaleSteps(values) {
 
 /** 上传输入图 blob，返回可展示/可下发的 URL（内部走 /api/v1/uploads）。 */
 export async function uploadAiTempBlob(blob, { signal } = {}) {
-  const file = new File([blob], `ai-input-${Date.now()}.jpg`, {
-    type: blob.type || 'image/jpeg',
+  const type = String(blob?.type || 'image/png').toLowerCase()
+  const ext = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg'
+  const file = new File([blob], `ai-temp-${Date.now()}.${ext}`, {
+    type: type.includes('image/') ? type : 'image/png',
   })
   const { registerUploadedUrl } = await import('@/services/aiWallpaper').catch(() => ({}))
   const uploaded = await uploadFile(file, { signal })

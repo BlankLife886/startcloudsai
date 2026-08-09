@@ -211,6 +211,67 @@ func (s *Storage) ObjectSize(ctx context.Context, key string) (int64, error) {
 	return *out.ContentLength, nil
 }
 
+type ObjectInfo struct {
+	Key          string
+	Size         int64
+	LastModified time.Time
+}
+
+// ListObjects returns at most limit objects under prefix. Callers use this for
+// bounded maintenance scans, so it deliberately does not expose pagination
+// tokens to business code.
+func (s *Storage) ListObjects(ctx context.Context, prefix string, limit int) ([]ObjectInfo, error) {
+	items, _, _, err := s.ListObjectsPage(ctx, prefix, "", limit)
+	return items, err
+}
+
+// ListObjectsPage returns one lexicographically ordered page and the last key
+// as a durable cursor. Using StartAfter instead of exposing provider tokens
+// lets the worker resume after a process restart.
+func (s *Storage) ListObjectsPage(ctx context.Context, prefix, startAfter string, limit int) ([]ObjectInfo, string, bool, error) {
+	if limit <= 0 {
+		return []ObjectInfo{}, "", true, nil
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	items := make([]ObjectInfo, 0, limit)
+	pageSize := int32(limit)
+	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+		StartAfter: func() *string {
+			if startAfter == "" {
+				return nil
+			}
+			return aws.String(startAfter)
+		}(),
+		MaxKeys: &pageSize,
+	})
+	if err != nil {
+		return nil, "", false, err
+	}
+	for _, object := range out.Contents {
+		if object.Key == nil || *object.Key == "" {
+			continue
+		}
+		item := ObjectInfo{Key: *object.Key}
+		if object.Size != nil {
+			item.Size = *object.Size
+		}
+		if object.LastModified != nil {
+			item.LastModified = object.LastModified.UTC()
+		}
+		items = append(items, item)
+	}
+	lastKey := ""
+	if len(items) > 0 {
+		lastKey = items[len(items)-1].Key
+	}
+	truncated := out.IsTruncated != nil && *out.IsTruncated
+	return items, lastKey, !truncated, nil
+}
+
 func (s *Storage) DeleteKeys(ctx context.Context, keys []string) error {
 	for i := 0; i < len(keys); i += 1000 {
 		end := i + 1000
@@ -221,15 +282,51 @@ func (s *Storage) DeleteKeys(ctx context.Context, keys []string) error {
 		for _, k := range keys[i:end] {
 			objects = append(objects, types.ObjectIdentifier{Key: aws.String(k)})
 		}
-		_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(s.bucket),
 			Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)},
 		})
 		if err != nil {
 			return err
 		}
+		if err := summarizeDeleteObjectErrors(out.Errors); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func summarizeDeleteObjectErrors(items []types.Error) error {
+	if len(items) == 0 {
+		return nil
+	}
+	failures := make([]string, 0, len(items))
+	for _, item := range items {
+		code := strings.TrimSpace(aws.ToString(item.Code))
+		if strings.EqualFold(code, "NoSuchKey") || strings.EqualFold(code, "NotFound") {
+			continue
+		}
+		key := strings.TrimSpace(aws.ToString(item.Key))
+		message := strings.TrimSpace(aws.ToString(item.Message))
+		entry := code
+		if entry == "" {
+			entry = "unknown error"
+		}
+		if key != "" {
+			entry += " for " + key
+		}
+		if message != "" {
+			entry += ": " + message
+		}
+		failures = append(failures, entry)
+		if len(failures) >= 8 {
+			break
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	return fmt.Errorf("object deletion failed: %s", strings.Join(failures, "; "))
 }
 
 // PresignGet 生成短期可读 URL（本地签名计算，不发网络请求）。

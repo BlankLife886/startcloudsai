@@ -1,10 +1,15 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import { useAppearanceStore } from '@/stores/appearance'
 import { submitFeedback } from '@/services/feedbackApi'
 import { getGrowthPrograms } from '@/services/growthApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
+import giftArt from '@/assets/incentives/suggestion-gift.png'
+import coinArt from '@/assets/incentives/suggestion-coin.png'
+
+const appearanceStore = useAppearanceStore()
 
 const suggestionTypes = [
   { value: 'feature', label: '新功能建议' },
@@ -70,7 +75,7 @@ onMounted(loadRewardRule)
 </script>
 
 <template>
-  <main class="suggestion-page">
+  <main class="suggestion-page" :class="{ 'is-dark': appearanceStore.isDark }">
     <section class="suggestion-hero">
       <span class="suggestion-hero__glow" aria-hidden="true"></span>
       <div class="suggestion-shell suggestion-hero__inner">
@@ -79,7 +84,9 @@ onMounted(loadRewardRule)
           <p>让真实、有价值的产品建议获得清晰回报。</p>
 
           <div class="reward-banner">
-            <div class="reward-banner__asset" aria-hidden="true"></div>
+            <div class="reward-banner__asset" aria-hidden="true">
+              <img :src="coinArt" alt="" loading="lazy" />
+            </div>
             <div class="reward-banner__copy">
               <span>单次奖励上限</span>
               <strong>{{ rewardLabel }} <small>积分</small></strong>
@@ -87,7 +94,9 @@ onMounted(loadRewardRule)
             </div>
           </div>
         </div>
-        <div class="suggestion-hero__asset" aria-hidden="true"></div>
+        <div class="suggestion-hero__asset" aria-hidden="true">
+          <img :src="giftArt" alt="" loading="lazy" />
+        </div>
       </div>
     </section>
 
@@ -175,12 +184,59 @@ onMounted(loadRewardRule)
 
 <style scoped>
 .suggestion-page {
+  --ink: #202225;
+  --muted: #53565b;
+  --muted-soft: #8a8f96;
+  --muted-strong: #b2b7c0;
+  --line: #f0f0f0;
+  --line-input: #dce1e7;
   --orange: #ff7a16;
+  --orange-hover: #f36d08;
+  --bg: #f8f8f8;
+  --surface: #ffffff;
+  --cream: #fffaf3;
+  --hero-a: rgb(255 219 135 / 45%);
+  --hero-b: #ffffff;
+  --hero-c: #fffaf3;
+  --hero-d: #fff1d2;
+  --hero-glow: rgb(255 240 198 / 40%);
+  --reward-bg: rgb(255 246 218 / 78%);
+  --card-shadow: 0 8px 28px rgb(31 35 43 / 5%);
+  --focus-ring: rgb(255 122 22 / 9%);
+  --select-icon: #9aa1aa;
+  --process-line: #ffd7a7;
+  --process-muted: #8f949c;
+  --img-blend: multiply;
   min-width: 1120px;
   min-height: 100vh;
   overflow: hidden;
-  color: #202225;
-  background: #f8f8f8;
+  color: var(--ink);
+  background: var(--bg);
+}
+.suggestion-page.is-dark {
+  --ink: #f4eee6;
+  --muted: #a79c8f;
+  --muted-soft: #8a8278;
+  --muted-strong: #5a5248;
+  --line: #3b342c;
+  --line-input: #3b342c;
+  --orange: #ff8a3d;
+  --orange-hover: #ffb06a;
+  --bg: #12100e;
+  --surface: #1c1915;
+  --cream: #1c1814;
+  --hero-a: rgb(255 138 61 / 18%);
+  --hero-b: #1a1511;
+  --hero-c: #241c15;
+  --hero-d: #17130f;
+  --hero-glow: rgb(255 138 61 / 12%);
+  --reward-bg: rgb(255 138 61 / 12%);
+  --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
+  --focus-ring: rgb(255 138 61 / 18%);
+  --select-icon: #a79c8f;
+  --process-line: #5a4030;
+  --process-muted: #8a8278;
+  --img-blend: normal;
 }
 .suggestion-shell,
 .suggestion-workspace {
@@ -192,8 +248,8 @@ onMounted(loadRewardRule)
   height: 440px;
   overflow: hidden;
   background:
-    radial-gradient(circle at 76% 12%, rgb(255 219 135 / 45%), transparent 29%),
-    linear-gradient(108deg, #fff 0%, #fffaf3 54%, #fff1d2 100%);
+    radial-gradient(circle at 76% 12%, var(--hero-a), transparent 29%),
+    linear-gradient(108deg, var(--hero-b) 0%, var(--hero-c) 54%, var(--hero-d) 100%);
 }
 .suggestion-hero__glow {
   position: absolute;
@@ -201,7 +257,7 @@ onMounted(loadRewardRule)
   right: 86px;
   width: 540px;
   height: 340px;
-  background: rgb(255 240 198 / 40%);
+  background: var(--hero-glow);
   border-radius: 50%;
 }
 .suggestion-hero__inner {
@@ -238,12 +294,18 @@ onMounted(loadRewardRule)
   grid-template-columns: 174px 1fr;
   align-items: center;
   margin-top: 28px;
-  background: rgb(255 246 218 / 78%);
+  background: var(--reward-bg);
   border-radius: 17px;
 }
 .reward-banner__asset {
+  display: grid;
   width: 100%;
   height: 100%;
+  place-items: center;
+}
+.reward-banner__asset img {
+  width: 96px;
+  mix-blend-mode: var(--img-blend);
 }
 .reward-banner__copy {
   display: flex;
@@ -266,12 +328,22 @@ onMounted(loadRewardRule)
 }
 .reward-banner__copy > p {
   margin: 11px 0 0;
-  color: #53565b;
+  color: var(--muted);
   font-size: 16px;
 }
 .suggestion-hero__asset {
   position: relative;
   z-index: 1;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+}
+.suggestion-hero__asset img {
+  width: min(88%, 470px);
+  margin-top: 26px;
+  mix-blend-mode: var(--img-blend);
+  -webkit-mask-image: radial-gradient(82% 88% at 50% 52%, #000 60%, transparent 99%);
+  mask-image: radial-gradient(82% 88% at 50% 52%, #000 60%, transparent 99%);
 }
 .suggestion-workspace {
   position: relative;
@@ -284,10 +356,10 @@ onMounted(loadRewardRule)
 }
 .suggestion-card {
   height: 483px;
-  background: #fff;
-  border: 1px solid #f0f0f0;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 16px;
-  box-shadow: 0 8px 28px rgb(31 35 43 / 5%);
+  box-shadow: var(--card-shadow);
 }
 .suggestion-card h2 {
   position: relative;
@@ -331,9 +403,9 @@ onMounted(loadRewardRule)
 .suggestion-control textarea,
 .suggestion-control select {
   width: 100%;
-  color: #222;
-  background: #fff;
-  border: 1px solid #dce1e7;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-input);
   border-radius: 9px;
   outline: none;
   font: inherit;
@@ -343,7 +415,7 @@ onMounted(loadRewardRule)
 .suggestion-control textarea:focus,
 .suggestion-control select:focus {
   border-color: var(--orange);
-  box-shadow: 0 0 0 3px rgb(255 122 22 / 9%);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .suggestion-control input {
   height: 45px;
@@ -363,14 +435,14 @@ onMounted(loadRewardRule)
   position: absolute;
   right: 15px;
   bottom: 12px;
-  color: #b2b7c0;
+  color: var(--muted-strong);
   font-size: 14px;
 }
 .suggestion-control--select > i {
   position: absolute;
   top: 50%;
   right: 17px;
-  color: #9aa1aa;
+  color: var(--select-icon);
   pointer-events: none;
   transform: translateY(-50%);
 }
@@ -383,7 +455,7 @@ onMounted(loadRewardRule)
 }
 .suggestion-submit-row p {
   margin: 0;
-  color: #8a8f96;
+  color: var(--muted-soft);
   font-size: 14px;
 }
 .suggestion-submit-row a {
@@ -403,7 +475,7 @@ onMounted(loadRewardRule)
   font-weight: 800;
 }
 .suggestion-submit-row button:hover:not(:disabled) {
-  background: #f36d08;
+  background: var(--orange-hover);
 }
 .suggestion-submit-row button:disabled {
   cursor: not-allowed;
@@ -434,7 +506,7 @@ onMounted(loadRewardRule)
   bottom: 0;
   left: 28px;
   width: 2px;
-  background: repeating-linear-gradient(#ffd7a7 0 5px, transparent 5px 10px);
+  background: repeating-linear-gradient(var(--process-line) 0 5px, transparent 5px 10px);
   content: '';
 }
 .process-icon {
@@ -457,7 +529,7 @@ onMounted(loadRewardRule)
   place-items: center;
   margin-top: 4px;
   color: var(--step);
-  background: color-mix(in srgb, var(--step) 11%, #fff);
+  background: color-mix(in srgb, var(--step) 11%, var(--surface));
   border-radius: 50%;
   font-size: 16px;
   font-weight: 850;
@@ -472,7 +544,7 @@ onMounted(loadRewardRule)
   font-size: 20px;
 }
 .suggestion-process li small {
-  color: #8f949c;
+  color: var(--process-muted);
   font-size: 15px;
 }
 .suggestion-process li.is-blue {
@@ -524,6 +596,10 @@ onMounted(loadRewardRule)
     height: 154px;
     grid-template-columns: 30px 1fr;
     margin-top: 35px;
+  }
+  .reward-banner__asset img,
+  .suggestion-hero__asset img {
+    display: none;
   }
   .reward-banner__copy > strong {
     font-size: 42px;

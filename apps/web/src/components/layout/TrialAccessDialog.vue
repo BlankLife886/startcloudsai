@@ -197,7 +197,7 @@ const OCCUPATION_GROUPS = [
 const copy = computed(() => {
   if (isEnglish.value) {
     return {
-      title: 'Get trial access',
+      title: 'Apply for trial',
       eyebrow: 'EARLY CREATOR PROGRAM',
       intro: 'Tell us how you create. Approved applicants can claim trial credits with one click.',
       stepOne: 'Create or sign in to your account',
@@ -267,7 +267,7 @@ const copy = computed(() => {
     }
   }
   return {
-    title: localize('获取体验资格', '取得體驗資格'),
+    title: localize('申请体验', '申請體驗'),
     eyebrow: 'EARLY CREATOR PROGRAM',
     intro: localize(
       '告诉我们你的创作方式。审核通过后，可一键领取体验积分。',
@@ -2470,7 +2470,14 @@ onBeforeUnmount(() => {
 
 .occupation-picker-enter-active,
 .occupation-picker-leave-active {
-  transition: opacity 120ms ease;
+  transition: opacity 160ms ease;
+}
+
+.occupation-picker-enter-active .occupation-picker,
+.occupation-picker-leave-active .occupation-picker {
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease;
 }
 
 .occupation-picker-enter-from,
@@ -2478,14 +2485,95 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-.trial-dialog-enter-active,
+.occupation-picker-enter-from .occupation-picker,
+.occupation-picker-leave-to .occupation-picker {
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+}
+
+.trial-dialog-enter-active {
+  transition: opacity 280ms ease;
+}
+
 .trial-dialog-leave-active {
-  transition: opacity 140ms ease;
+  transition: opacity 200ms ease;
+}
+
+.trial-dialog-enter-active .trial-dialog {
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 280ms ease;
+}
+
+.trial-dialog-leave-active .trial-dialog {
+  transition:
+    transform 220ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 180ms ease;
 }
 
 .trial-dialog-enter-from,
 .trial-dialog-leave-to {
   opacity: 0;
+}
+
+.trial-dialog-enter-from .trial-dialog {
+  opacity: 0;
+  transform: translateY(22px) scale(0.94);
+}
+
+.trial-dialog-leave-to .trial-dialog {
+  opacity: 0;
+  transform: translateY(12px) scale(0.97);
+}
+
+.trial-dialog-enter-active .trial-dialog__mark {
+  animation: trial-dialog-pop 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.trial-dialog-enter-active .trial-dialog__eyebrow {
+  animation: trial-dialog-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) 40ms both;
+}
+
+.trial-dialog-enter-active .trial-dialog__story h2 {
+  animation: trial-dialog-rise 460ms cubic-bezier(0.22, 1, 0.36, 1) 70ms both;
+}
+
+.trial-dialog-enter-active .trial-dialog__intro {
+  animation: trial-dialog-rise 460ms cubic-bezier(0.22, 1, 0.36, 1) 110ms both;
+}
+
+.trial-dialog-enter-active .trial-dialog__campaign {
+  animation: trial-dialog-rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
+}
+
+.trial-dialog-enter-active .trial-dialog__steps {
+  animation: trial-dialog-rise 500ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both;
+}
+
+.trial-dialog-enter-active .trial-dialog__content {
+  animation: trial-dialog-rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
+}
+
+@keyframes trial-dialog-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.72) rotate(-8deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes trial-dialog-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (min-width: 781px) and (max-height: 760px) {
@@ -2541,6 +2629,14 @@ onBeforeUnmount(() => {
   .trial-dialog-layer {
     align-items: end;
     padding: 12px;
+  }
+
+  .trial-dialog-enter-from .trial-dialog {
+    transform: translateY(36px);
+  }
+
+  .trial-dialog-leave-to .trial-dialog {
+    transform: translateY(24px);
   }
 
   .trial-dialog {
@@ -2634,9 +2730,30 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .trial-dialog-enter-active,
   .trial-dialog-leave-active,
+  .trial-dialog-enter-active .trial-dialog,
+  .trial-dialog-leave-active .trial-dialog,
   .occupation-picker-enter-active,
-  .occupation-picker-leave-active {
+  .occupation-picker-leave-active,
+  .occupation-picker-enter-active .occupation-picker,
+  .occupation-picker-leave-active .occupation-picker {
     transition-duration: 0.001ms;
+  }
+
+  .trial-dialog-enter-active .trial-dialog__mark,
+  .trial-dialog-enter-active .trial-dialog__eyebrow,
+  .trial-dialog-enter-active .trial-dialog__story h2,
+  .trial-dialog-enter-active .trial-dialog__intro,
+  .trial-dialog-enter-active .trial-dialog__campaign,
+  .trial-dialog-enter-active .trial-dialog__steps,
+  .trial-dialog-enter-active .trial-dialog__content {
+    animation: none;
+  }
+
+  .trial-dialog-enter-from .trial-dialog,
+  .trial-dialog-leave-to .trial-dialog,
+  .occupation-picker-enter-from .occupation-picker,
+  .occupation-picker-leave-to .occupation-picker {
+    transform: none;
   }
 }
 </style>

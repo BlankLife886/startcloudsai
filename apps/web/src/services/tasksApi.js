@@ -325,8 +325,10 @@ export async function cancelTask(id) {
 }
 
 /** 删除终态任务记录（同时删除产物）。 */
-export async function deleteTask(id) {
-  return apiDelete(`/tasks/${encodeURIComponent(id)}`, { fallbackMessage: '任务删除失败' })
+export async function deleteTask(id, { cascade = false } = {}) {
+  return apiDelete(`/tasks/${encodeURIComponent(id)}${cascade ? '?cascade=true' : ''}`, {
+    fallbackMessage: '任务删除失败',
+  })
 }
 
 /**

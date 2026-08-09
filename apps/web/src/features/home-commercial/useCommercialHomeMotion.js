@@ -87,6 +87,7 @@ export function useCommercialHomeMotion(rootRef) {
               duration: 0.62,
               delay: (index % 4) * 0.035,
               ease: 'power3.out',
+              immediateRender: false,
               clearProps: 'transform,visibility,willChange',
               scrollTrigger: { trigger: node, start: 'top 90%', once: true },
             },
@@ -102,6 +103,7 @@ export function useCommercialHomeMotion(rootRef) {
               y: 0,
               ease: 'none',
               stagger: 0.035,
+              immediateRender: false,
               scrollTrigger: {
                 trigger: narrativeRoot,
                 start: 'top 86%',
@@ -129,6 +131,7 @@ export function useCommercialHomeMotion(rootRef) {
               scaleX: 1,
               ease: 'back.out(1.24)',
               stagger: 0.025,
+              immediateRender: false,
               scrollTrigger: {
                 trigger: floatRoot,
                 start: 'top 92%',

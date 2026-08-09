@@ -14,6 +14,16 @@ const userAssetGroupCols = `id, user_id, name, sort, created_at, updated_at`
 
 const MaxUserAssetGroups = 50
 
+func LockUserAssetCreation(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 3))`, userID.String())
+	return err
+}
+
+func LockUserAssetGroupCreation(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 4))`, userID.String())
+	return err
+}
+
 func scanUserAsset(row pgx.Row) (*UserAsset, error) {
 	var asset UserAsset
 	err := row.Scan(&asset.ID, &asset.UserID, &asset.GroupID, &asset.Title, &asset.FileKey, &asset.ThumbnailKey,
@@ -83,6 +93,43 @@ func GetUserAsset(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAsset, e
 	return nilOnNoRows(asset, err)
 }
 
+func GetUserAssetForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAsset, error) {
+	asset, err := scanUserAsset(q.QueryRow(ctx,
+		`SELECT `+userAssetCols+` FROM user_assets WHERE user_id = $1 AND id = $2 FOR UPDATE`, userID, id))
+	return nilOnNoRows(asset, err)
+}
+
+func GetUserAssetsByIDs(ctx context.Context, q Q, userID uuid.UUID, ids []uuid.UUID) ([]*UserAsset, error) {
+	return getUserAssetsByIDs(ctx, q, userID, ids, "")
+}
+
+// GetUserAssetsByIDsForShare keeps referenced assets alive while a product
+// transaction validates and stores their IDs.
+func GetUserAssetsByIDsForShare(ctx context.Context, q Q, userID uuid.UUID, ids []uuid.UUID) ([]*UserAsset, error) {
+	return getUserAssetsByIDs(ctx, q, userID, ids, " FOR SHARE")
+}
+
+func getUserAssetsByIDs(ctx context.Context, q Q, userID uuid.UUID, ids []uuid.UUID, lockClause string) ([]*UserAsset, error) {
+	if len(ids) == 0 {
+		return []*UserAsset{}, nil
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+userAssetCols+` FROM user_assets WHERE user_id = $1 AND id = ANY($2::uuid[])`+lockClause, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*UserAsset, 0, len(ids))
+	for rows.Next() {
+		asset, scanErr := scanUserAsset(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, asset)
+	}
+	return items, rows.Err()
+}
+
 func UpdateUserAsset(ctx context.Context, q Q, userID, id uuid.UUID, title string, groupID *uuid.UUID) (*UserAsset, error) {
 	asset, err := scanUserAsset(q.QueryRow(ctx,
 		`UPDATE user_assets SET title = $3, group_id = $4
@@ -148,6 +195,18 @@ func ListUserAssetGroups(ctx context.Context, q Q, userID uuid.UUID) ([]*UserAss
 func GetUserAssetGroup(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAssetGroup, error) {
 	group, err := scanUserAssetGroup(q.QueryRow(ctx,
 		`SELECT `+userAssetGroupCols+` FROM user_asset_groups WHERE user_id = $1 AND id = $2`, userID, id))
+	return nilOnNoRows(group, err)
+}
+
+func GetUserAssetGroupForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAssetGroup, error) {
+	group, err := scanUserAssetGroup(q.QueryRow(ctx,
+		`SELECT `+userAssetGroupCols+` FROM user_asset_groups WHERE user_id = $1 AND id = $2 FOR UPDATE`, userID, id))
+	return nilOnNoRows(group, err)
+}
+
+func GetUserAssetGroupForShare(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAssetGroup, error) {
+	group, err := scanUserAssetGroup(q.QueryRow(ctx,
+		`SELECT `+userAssetGroupCols+` FROM user_asset_groups WHERE user_id = $1 AND id = $2 FOR SHARE`, userID, id))
 	return nilOnNoRows(group, err)
 }
 

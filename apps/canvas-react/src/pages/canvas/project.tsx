@@ -1767,30 +1767,38 @@ function InfiniteCanvasPage() {
         [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest],
     );
 
-    const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
-        if (!node.metadata?.content) return;
-        setUpscaleNodeId(null);
-        const upscaled = await upscaleDataUrl(node.metadata.content, params);
-        const image = await uploadImage(upscaled);
-        const size = fitNodeSize(image.width, image.height);
-        const childId = nanoid();
-        const child: CanvasNodeData = {
-            id: childId,
-            type: CanvasNodeType.Image,
-            title: "Upscaled Image",
-            position: { x: node.position.x + node.width + 96, y: node.position.y },
-            width: size.width,
-            height: size.height,
-            metadata: {
-                ...imageMetadata(image),
-                prompt: node.metadata?.prompt,
-            },
-        };
-        setNodes((prev) => [...prev, child]);
-        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-    }, []);
+    const upscaleImageNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasImageUpscaleParams, title = "Upscaled Image") => {
+            if (!node.metadata?.content) return;
+            setUpscaleNodeId(null);
+            try {
+                const upscaled = await upscaleDataUrl(node.metadata.content, params);
+                const image = await uploadImage(upscaled);
+                const size = fitNodeSize(image.width, image.height);
+                const childId = nanoid();
+                const child: CanvasNodeData = {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title,
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: size.width,
+                    height: size.height,
+                    metadata: {
+                        ...imageMetadata(image),
+                        prompt: node.metadata?.prompt,
+                    },
+                };
+                setNodes((prev) => [...prev, child]);
+                setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+                setSelectedNodeIds(new Set([childId]));
+                setDialogNodeId(childId);
+                message.success(title === "高清超分结果" ? "高清超分结果已生成" : "放大图已生成");
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "图片放大失败，请重试");
+            }
+        },
+        [message],
+    );
 
     const removeBackgroundFromImageNode = useCallback(
         async (node: CanvasNodeData) => {
@@ -3069,9 +3077,18 @@ function InfiniteCanvasPage() {
                     <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />
                 ) : null}
 
-                <Modal title="AI 超分" open={Boolean(superResolveNode?.metadata?.content)} centered footer={null} onCancel={() => setSuperResolveNodeId(null)}>
-                    <div className="py-8 text-center text-base font-medium">暂未实现</div>
-                </Modal>
+                {superResolveNode?.metadata?.content ? (
+                    <CanvasNodeUpscaleDialog
+                        dataUrl={superResolveNode.metadata.content}
+                        open={Boolean(superResolveNode)}
+                        mode="superResolve"
+                        onClose={() => setSuperResolveNodeId(null)}
+                        onConfirm={(params) => {
+                            setSuperResolveNodeId(null);
+                            void upscaleImageNode(superResolveNode, params, "高清超分结果");
+                        }}
+                    />
+                ) : null}
 
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
 

@@ -24,7 +24,7 @@ import TypeLine from '@/features/home-commercial/components/TypeLine.vue'
 import { translateClientText } from '@/i18n/clientTranslations'
 import notificationService from '@/services/notification'
 import { fetchAssistantConfig } from '@/services/assistantApi'
-import { listPromptLibrary } from '@/services/promptLibrary'
+import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
 import { ECOMMERCE_MODES } from '@/features/ecommerce/ecommerceTools'
 import '@/features/creator-hub/studio-hub.css'
 
@@ -34,13 +34,18 @@ const localeStore = useLocaleStore()
 const runtimeConfigStore = useRuntimeConfigStore()
 
 const rootRef = ref(null)
+const composerRef = ref(null)
 const draftPrompt = ref('')
-const selectedToolId = ref('t2i')
+const selectedToolId = ref('assistant')
+const activeComposerPanel = ref('')
+const composerPopoverStyle = ref({})
+let activeComposerTrigger = null
 const launchConfigs = reactive(
   Object.fromEntries(STUDIO_TOOLS.map((tool) => [tool.id, studioLaunchDefaults(tool.id)])),
 )
 const assistantLaunchModels = ref({ conversation: [], image: [] })
 const promptMaterialOptions = ref({})
+const promptMaterialsLoading = ref({})
 const voiceSupported = ref(false)
 const voiceListening = ref(false)
 const voiceError = ref('')
@@ -95,6 +100,10 @@ function onUserScrollIntent() {
 
 function onUserKeyScrollIntent(event) {
   const key = String(event?.key || '')
+  if (key === 'Escape') {
+    closeComposerPanel()
+    return
+  }
   if (!['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(key)) return
   onUserScrollIntent()
 }
@@ -189,6 +198,9 @@ const selectedLaunchModel = computed(
 )
 
 function supportedFieldOptions(field) {
+  if (selectedTool.value?.id === 'puzzle' && field.key === 'resolution') {
+    return field.options
+  }
   if (field.key === 'model') {
     return [
       { value: '', label: launchModelOptions.value.length ? '自动匹配' : '默认模型' },
@@ -241,10 +253,19 @@ const composerFields = computed(() =>
   }),
 )
 
+const composerPromptItems = computed(
+  () => promptMaterialOptions.value[selectedTool.value?.id] || [],
+)
+
 function selectedComposerOption(key, value) {
   return composerFields.value
     .find((field) => field.key === key)
     ?.options.find((item) => String(item.value) === String(value))
+}
+
+function composerFieldLabel(field) {
+  if (selectedTool.value?.id === 't2i' && field.key === 'skill') return 'Skill'
+  return selectedComposerOption(field.key, selectedLaunchConfig.value[field.key])?.label || field.label
 }
 
 function normalizeSelectedLaunchConfig() {
@@ -277,8 +298,7 @@ function applyPromptMaterial(nextValue) {
   appliedMaterialPrompts.set(toolId, next)
 }
 
-function onLaunchFieldChange(field, event) {
-  const raw = event.target.value
+function setLaunchFieldValue(field, raw) {
   const sample = field.options.find((item) => String(item.value) === String(raw))?.value
   selectedLaunchConfig.value[field.key] = sample ?? raw
   if (field.key === 'material') applyPromptMaterial(selectedLaunchConfig.value.material)
@@ -297,6 +317,96 @@ function onLaunchFieldChange(field, event) {
     selectedLaunchConfig.value.ratio = gameDefaults[selectedLaunchConfig.value.skill] || '1:1'
   }
   nextTick(normalizeSelectedLaunchConfig)
+}
+
+function selectLaunchFieldOption(field, value) {
+  setLaunchFieldValue(field, value)
+  closeComposerPanel()
+}
+
+function useComposerPrompt(item) {
+  const prompt = String(item?.prompt || '').trim()
+  if (!prompt) return
+  draftPrompt.value = prompt
+  if (item.id) void recordPromptEngagement(item.id, 'use', true).catch(() => null)
+  closeComposerPanel()
+}
+
+function positionComposerPanel(panel, trigger) {
+  const composer = composerRef.value
+  if (!composer || !trigger) return
+  const composerRect = composer.getBoundingClientRect()
+  const triggerRect = trigger.getBoundingClientRect()
+  const panelWidth = panel === 'tools' ? 440 : panel === 'prompts' ? 420 : 680
+  const boundary = 16
+  const preferredLeft = triggerRect.left - composerRect.left - 1
+  const maxLeft = Math.max(boundary, composerRect.width - panelWidth - boundary)
+  composerPopoverStyle.value = {
+    left: `${Math.min(Math.max(preferredLeft, boundary), maxLeft)}px`,
+    top: `${triggerRect.bottom - composerRect.top + 4}px`,
+  }
+}
+
+function toggleComposerPanel(panel, event) {
+  const trigger = event?.currentTarget || null
+  if (activeComposerPanel.value === panel && activeComposerTrigger === trigger) {
+    closeComposerPanel()
+    return
+  }
+  activeComposerTrigger = trigger
+  activeComposerPanel.value = panel
+  positionComposerPanel(panel, trigger)
+  nextTick(() => {
+    const popover = composerRef.value?.querySelector('.studio-composer__popover')
+    if (!popover) return
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    popover.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' })
+  })
+}
+
+function toggleComposerField(field, event) {
+  const panel = `field:${field.key}`
+  const trigger = event?.currentTarget || null
+  if (activeComposerPanel.value === panel && activeComposerTrigger === trigger) {
+    closeComposerPanel()
+    return
+  }
+  activeComposerTrigger = trigger
+  activeComposerPanel.value = panel
+}
+
+function togglePromptLibrary(event) {
+  toggleComposerPanel('prompts', event)
+  if (activeComposerPanel.value === 'prompts') {
+    void loadPromptMaterials(selectedTool.value?.id)
+  }
+}
+
+function closeComposerPanel() {
+  activeComposerPanel.value = ''
+  activeComposerTrigger = null
+}
+
+function selectComposerTool(toolId) {
+  selectedToolId.value = toolId
+  closeComposerPanel()
+}
+
+function onComposerDocumentPointerDown(event) {
+  if (!activeComposerPanel.value) return
+  if (
+    event.target.closest?.(
+      '.studio-composer__popover, .studio-composer__field-wrap, .studio-composer__control.is-workflow, .studio-composer__control.is-library',
+    )
+  ) {
+    return
+  }
+  closeComposerPanel()
+}
+
+function onComposerViewportChange() {
+  if (activeComposerPanel.value !== 'tools' || !activeComposerTrigger) return
+  positionComposerPanel(activeComposerPanel.value, activeComposerTrigger)
 }
 
 async function loadAssistantLaunchModels() {
@@ -319,6 +429,7 @@ async function loadPromptMaterials(toolId) {
   const tool = STUDIO_TOOLS.find((item) => item.id === toolId)
   if (!tool?.taskType || loadedPromptMaterialTools.has(toolId)) return
   loadedPromptMaterialTools.add(toolId)
+  promptMaterialsLoading.value = { ...promptMaterialsLoading.value, [toolId]: true }
   try {
     const response = await listPromptLibrary(tool.taskType, { pageNumber: 1, pageSize: 8 })
     promptMaterialOptions.value = {
@@ -326,6 +437,7 @@ async function loadPromptMaterials(toolId) {
       [toolId]: (response.items || [])
         .filter((item) => item?.prompt)
         .map((item) => ({
+          id: item.id,
           value: `library:${item.id}`,
           label: item.title || item.label || '提示词素材',
           prompt: String(item.prompt || '').trim(),
@@ -333,6 +445,8 @@ async function loadPromptMaterials(toolId) {
     }
   } catch {
     promptMaterialOptions.value = { ...promptMaterialOptions.value, [toolId]: [] }
+  } finally {
+    promptMaterialsLoading.value = { ...promptMaterialsLoading.value, [toolId]: false }
   }
 }
 
@@ -402,8 +516,9 @@ function setupVoiceInput() {
 watch(
   composerTools,
   (tools) => {
+    if (!tools.length) return
     if (!tools.some((tool) => tool.id === selectedToolId.value)) {
-      selectedToolId.value = tools[0]?.id || 't2i'
+      selectedToolId.value = tools[0].id
     }
   },
   { immediate: true },
@@ -510,8 +625,10 @@ watch(
 
 watch(
   selectedToolId,
-  (toolId) => {
+  async (toolId) => {
     void loadPromptMaterials(toolId)
+    await nextTick()
+    normalizeSelectedLaunchConfig()
   },
   { immediate: true },
 )
@@ -527,6 +644,8 @@ onMounted(async () => {
   window.addEventListener('wheel', onUserScrollIntent, { passive: true })
   window.addEventListener('touchmove', onUserScrollIntent, { passive: true })
   window.addEventListener('keydown', onUserKeyScrollIntent, { passive: true })
+  window.addEventListener('pointerdown', onComposerDocumentPointerDown)
+  window.addEventListener('resize', onComposerViewportChange)
 
   await Promise.all([
     runtimeConfigStore.loadRuntimeConfig().catch(() => null),
@@ -547,6 +666,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('wheel', onUserScrollIntent)
   window.removeEventListener('touchmove', onUserScrollIntent)
   window.removeEventListener('keydown', onUserKeyScrollIntent)
+  window.removeEventListener('pointerdown', onComposerDocumentPointerDown)
+  window.removeEventListener('resize', onComposerViewportChange)
 })
 </script>
 
@@ -566,63 +687,204 @@ onBeforeUnmount(() => {
           <TypeLine :texts="leadLines" :typing-speed="42" :pause-duration="2200" />
         </div>
 
-        <form class="studio-composer" data-studio-enter @submit.prevent="startCreate">
-          <textarea
-            v-model="draftPrompt"
-            class="studio-composer__input"
-            rows="3"
-            maxlength="2000"
-            :placeholder="composerPlaceholder"
-          />
-          <button
-            type="button"
-            class="studio-composer__voice"
-            :class="{ 'is-listening': voiceListening }"
-            :disabled="!voiceSupported"
-            :title="voiceSupported ? (voiceListening ? '停止语音输入' : '语音输入') : '当前浏览器不支持语音输入'"
-            :aria-label="voiceListening ? '停止语音输入' : '语音输入'"
-            :aria-pressed="voiceListening"
-            @click="toggleVoiceInput"
-          >
-            <i class="bi" :class="voiceListening ? 'bi-stop-fill' : 'bi-mic-fill'" aria-hidden="true"></i>
-          </button>
-          <span v-if="voiceListening" class="studio-composer__voice-status">正在聆听</span>
+        <form
+          ref="composerRef"
+          class="studio-composer"
+          :class="{ 'has-open-panel': activeComposerPanel }"
+          data-studio-enter
+          @submit.prevent="startCreate"
+        >
+          <div class="studio-composer__prompt">
+            <textarea
+              v-model="draftPrompt"
+              class="studio-composer__input"
+              rows="4"
+              maxlength="2000"
+              :placeholder="composerPlaceholder"
+              aria-label="创作描述"
+            />
 
-          <div class="studio-composer__params" aria-label="创作参数">
-            <label v-for="field in composerFields" :key="`${selectedToolId}-${field.key}`" class="studio-composer__param">
-              <i class="bi" :class="field.icon" aria-hidden="true"></i>
-              <span>{{ field.label }}</span>
-              <select
-                :value="selectedLaunchConfig[field.key]"
-                :aria-label="field.label"
-                @change="onLaunchFieldChange(field, $event)"
-              >
-                <option v-for="item in field.options" :key="String(item.value)" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-          <div class="studio-composer__bar">
-            <div class="studio-composer__tools" role="tablist" aria-label="创作工具">
-              <button
-                v-for="tool in composerTools"
-                :key="tool.id"
-                type="button"
-                class="studio-composer__tool"
-                :class="{ 'is-active': selectedToolId === tool.id }"
-                role="tab"
-                :aria-selected="selectedToolId === tool.id"
-                @click="selectedToolId = tool.id"
-              >
-                {{ tool.label }}
-              </button>
+            <div class="studio-composer__dock">
+              <div class="studio-composer__controls">
+                <button
+                  type="button"
+                  class="studio-composer__control is-workflow"
+                  :aria-expanded="activeComposerPanel === 'tools'"
+                  @click="toggleComposerPanel('tools', $event)"
+                >
+                  <i class="bi" :class="selectedTool?.icon || 'bi-stars'" aria-hidden="true"></i>
+                  <span>{{ selectedTool?.label }}</span>
+                  <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                </button>
+
+                <div
+                  v-for="field in composerFields"
+                  :key="`inline-${selectedToolId}-${field.key}`"
+                  class="studio-composer__field-wrap"
+                >
+                  <button
+                    type="button"
+                    class="studio-composer__control studio-composer__inline-field"
+                    :class="`is-${field.key}`"
+                    :title="field.label"
+                    :aria-label="field.label"
+                    :aria-expanded="activeComposerPanel === `field:${field.key}`"
+                    aria-haspopup="listbox"
+                    @click="toggleComposerField(field, $event)"
+                  >
+                    <i class="bi" :class="field.icon" aria-hidden="true"></i>
+                    <span>{{ composerFieldLabel(field) }}</span>
+                    <i
+                      class="bi"
+                      :class="activeComposerPanel === `field:${field.key}` ? 'bi-chevron-up' : 'bi-chevron-down'"
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+
+                  <Transition name="studio-field-menu">
+                    <div
+                      v-if="activeComposerPanel === `field:${field.key}`"
+                      class="studio-composer__field-menu"
+                      role="listbox"
+                      :aria-label="field.label"
+                    >
+                      <button
+                        v-for="item in field.options"
+                        :key="String(item.value)"
+                        type="button"
+                        role="option"
+                        :aria-selected="String(item.value) === String(selectedLaunchConfig[field.key])"
+                        :class="{
+                          'is-selected': String(item.value) === String(selectedLaunchConfig[field.key]),
+                        }"
+                        @click="selectLaunchFieldOption(field, item.value)"
+                      >
+                        <span>{{ item.label }}</span>
+                        <i
+                          v-if="String(item.value) === String(selectedLaunchConfig[field.key])"
+                          class="bi bi-check2"
+                          aria-hidden="true"
+                        ></i>
+                      </button>
+                    </div>
+                  </Transition>
+                </div>
+
+                <button
+                  type="button"
+                  class="studio-composer__control is-icon is-library"
+                  title="提示词库"
+                  aria-label="提示词库"
+                  :aria-expanded="activeComposerPanel === 'prompts'"
+                  @click="togglePromptLibrary($event)"
+                >
+                  <i class="bi bi-journal-text" aria-hidden="true"></i>
+                </button>
+
+              </div>
+
+              <div class="studio-composer__commit">
+                <span v-if="voiceListening" class="studio-composer__voice-status">正在聆听</span>
+                <span class="studio-composer__count" :class="{ 'is-visible': draftPrompt.length }">
+                  {{ draftPrompt.length }} / 2000
+                </span>
+                <button
+                  type="button"
+                  class="studio-composer__control is-icon studio-composer__voice"
+                  :class="{ 'is-listening': voiceListening }"
+                  :disabled="!voiceSupported"
+                  :title="voiceSupported ? (voiceListening ? '停止语音输入' : '语音输入') : '当前浏览器不支持语音输入'"
+                  :aria-label="voiceListening ? '停止语音输入' : '语音输入'"
+                  :aria-pressed="voiceListening"
+                  @click="toggleVoiceInput"
+                >
+                  <i class="bi" :class="voiceListening ? 'bi-stop-fill' : 'bi-mic-fill'" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="submit"
+                  class="studio-composer__submit"
+                  :disabled="!selectedTool"
+                  title="开始创作"
+                  aria-label="开始创作"
+                >
+                  <i class="bi bi-arrow-up" aria-hidden="true"></i>
+                </button>
+              </div>
             </div>
-            <button type="submit" class="studio-composer__submit" :disabled="!selectedTool">
-              <i class="bi bi-stars" aria-hidden="true"></i>
-              开始创作
-            </button>
           </div>
+
+          <Transition name="studio-composer-pop">
+            <div
+              v-if="activeComposerPanel === 'tools'"
+              class="studio-composer__popover studio-composer__popover--tools"
+              :style="composerPopoverStyle"
+              role="menu"
+              aria-label="选择创作工具"
+              @pointerdown.stop
+            >
+              <div class="studio-composer__popover-head">
+                <span>选择创作工具</span>
+                <button type="button" title="关闭" aria-label="关闭" @click="closeComposerPanel">
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </div>
+              <div class="studio-composer__tool-menu">
+                <button
+                  v-for="tool in composerTools"
+                  :key="tool.id"
+                  type="button"
+                  :class="{ 'is-active': selectedToolId === tool.id }"
+                  role="menuitem"
+                  @click="selectComposerTool(tool.id)"
+                >
+                  <i class="bi" :class="tool.icon" aria-hidden="true"></i>
+                  <span>
+                    <strong>{{ tool.label }}</strong>
+                    <small>{{ tool.tagline }}</small>
+                  </span>
+                  <i v-if="selectedToolId === tool.id" class="bi bi-check2" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+          </Transition>
+
+          <Transition name="studio-composer-pop">
+            <div
+              v-if="activeComposerPanel === 'prompts'"
+              class="studio-composer__popover studio-composer__popover--prompts"
+              :style="composerPopoverStyle"
+              role="dialog"
+              aria-label="提示词库"
+              @pointerdown.stop
+            >
+              <div class="studio-composer__popover-head">
+                <span>{{ selectedTool?.label }}提示词</span>
+                <button type="button" title="关闭" aria-label="关闭" @click="closeComposerPanel">
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </div>
+
+              <div
+                v-if="promptMaterialsLoading[selectedToolId]"
+                class="studio-composer__prompt-empty"
+              >
+                正在加载提示词…
+              </div>
+              <div v-else-if="composerPromptItems.length" class="studio-composer__prompt-menu">
+                <button
+                  v-for="item in composerPromptItems"
+                  :key="item.value"
+                  type="button"
+                  @click="useComposerPrompt(item)"
+                >
+                  <strong>{{ item.label }}</strong>
+                  <span>{{ item.prompt }}</span>
+                </button>
+              </div>
+              <div v-else class="studio-composer__prompt-empty">当前工具暂无可用提示词</div>
+            </div>
+          </Transition>
+
         </form>
       </header>
 

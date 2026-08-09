@@ -3,7 +3,7 @@ import { BookOpen, Keyboard, Puzzle, Settings2 } from "lucide-react";
 import { Tooltip } from "antd";
 
 import { GitHubLink } from "@/components/layout/github-link";
-import { VersionReleaseModal } from "@/components/layout/version-release-modal";
+import { VersionReleaseTrigger } from "@/components/layout/version-release-trigger";
 import { DOCS_URL } from "@/constant/env";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -63,7 +63,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
                     </button>
                 )
             ) : null}
-            <VersionReleaseModal
+            <VersionReleaseTrigger
                 className={
                     rail
                         ? "flex size-8 shrink-0 items-center justify-center rounded-full text-stone-500 transition hover:bg-white/70 hover:text-stone-950 hover:shadow-[inset_0_1px_0_rgba(255,255,255,.9),0_2px_8px_rgba(28,25,23,.08)] dark:text-stone-300 dark:hover:bg-white/10 dark:hover:text-white dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,.12)]"

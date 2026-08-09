@@ -10,11 +10,43 @@ import AspectRatioSelect from '@/features/ai-wallpaper/components/AspectRatioSel
 import { useCreativeImageJob } from '@/features/creative-studios/useCreativeImageJob'
 import { useStudioMotion } from '@/features/creative-studios/useStudioMotion'
 import AiDesignCanvas from '@/features/design-workshop/components/AiDesignCanvas.vue'
+import DesignVersionDrawer from '@/features/design-workshop/components/DesignVersionDrawer.vue'
 import {
   ACTIVE_DESIGN_ANALYSIS_KEY,
   ACTIVE_DESIGN_ANALYSIS_VERSION,
 } from '@/features/design-workshop/aiDesignDocument'
-import { downloadAuthenticatedMedia } from '@/services/authenticatedMedia'
+import {
+  DESIGN_DEVICE_OPTIONS,
+  getDesignDevice,
+  normalizeSelectedDeviceIds,
+} from '@/features/design-workshop/designDevices'
+import {
+  UI_SERIES_ANCHOR_ROLE,
+  buildContentConsistencyLock,
+  buildDeviceAdaptationBlock,
+  metricsForDeviceOption,
+  orderDevicesForConsistency,
+} from '@/features/design-workshop/multiDeviceConsistency'
+import {
+  buildTileRefinePrompt,
+  extractQuadrantTileFiles,
+  resolveTileOutputLongSide,
+  stitchQuadrantTiles,
+} from '@/features/design-workshop/tilePrecisionRefine'
+import { uploadAiTempBlob } from '@/features/ai-shared/aiImageIO'
+import { deleteServerAiJob, uploadAiInputFile } from '@/services/aiWallpaper'
+import {
+  buildVersionForest,
+  canIterate,
+  collectDescendants,
+  collectOutputUrls,
+  findNodeByOutput,
+  pickCarrier,
+} from '@/features/design-workshop/versionTree'
+import {
+  downloadAuthenticatedMedia,
+  fetchAuthenticatedMediaBlob,
+} from '@/services/authenticatedMedia'
 import { fetchAssistantConfig } from '@/services/assistantApi'
 import {
   getScopedLocalItem,
@@ -22,6 +54,7 @@ import {
   setScopedLocalItem,
 } from '@/services/scopedLocalStorage'
 import { readImageFile } from '@/features/design-workshop/imageWorkshop'
+import notificationService from '@/services/notification'
 import {
   DESIGN_QUALITY_REVIEW_MODES,
   auditAiDesignQuality,
@@ -41,6 +74,7 @@ const DESIGN_SPEC_VERSION = 2
 const EDITABLE_HISTORY_KEY = 'ui-editable-document-history-v1'
 const ANALYSIS_MODEL_KEY = 'ui-design-analysis-model-v1'
 const QUALITY_AUDIT_HISTORY_KEY = 'ui-design-quality-audits-v4'
+const TILE_REFINE_FINALS_KEY = 'ui-design-tile-refine-finals-v1'
 const ACTIVE_ANALYSIS_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 function readStoredActiveAnalysisSession() {
@@ -61,22 +95,7 @@ function readStoredActiveAnalysisSession() {
   return null
 }
 
-const DEVICE_OPTIONS = [
-  {
-    id: 'web',
-    label: 'Web 网页',
-    icon: 'bi-window-fullscreen',
-    ratio: '16:9',
-    prompt: '桌面端网页界面（1440px 宽度、12 列栅格）',
-  },
-  {
-    id: 'tablet',
-    label: '平板',
-    icon: 'bi-tablet-landscape',
-    ratio: '4:3',
-    prompt: '平板端界面（横屏布局、支持双栏结构）',
-  },
-]
+const DEVICE_OPTIONS = DESIGN_DEVICE_OPTIONS
 
 const PAGE_TYPE_OPTIONS = [
   {
@@ -369,8 +388,17 @@ const RADIUS_OPTIONS = [
 ]
 
 const RESPONSIVE_OPTIONS = [
-  { id: 'adaptive', label: '自适应', prompt: '同时定义桌面、宽屏和平板的布局重排策略' },
-  { id: 'desktop-first', label: '桌面优先', prompt: '桌面端信息完整，窄屏逐级收敛并保留核心操作' },
+  {
+    id: 'adaptive',
+    label: '自适应',
+    prompt:
+      '按断点重排：桌面多栏/侧栏，平板双栏，手机与小程序单列+底部或顶栏导航，电视大卡片焦点流；内容与模块集合保持一致',
+  },
+  {
+    id: 'desktop-first',
+    label: '桌面优先',
+    prompt: '桌面端信息完整，平板收敛为双栏，手机/小程序单列保留核心操作与同一套文案数据',
+  },
 ]
 
 const COMPONENT_STATE_OPTIONS = [
@@ -413,7 +441,6 @@ const BRAND_COLOR_OPTIONS = [
   { value: '#18181b', label: '经典黑', swatch: '#18181b', description: '高端与极简品牌' },
 ]
 
-const COUNT_OPTIONS = [1, 2, 3, 4]
 const QUALITY_DIMENSION_LABELS = {
   hierarchy: '层级',
   layout: '布局',
@@ -445,14 +472,21 @@ const {
   running,
   cancelling,
   historyLoading,
+  historyHasMore,
+  historyError,
   outputs,
   activeOutput,
   outputJobIds,
   outputGroups,
   outputGroupIndexes,
   outputParents,
+  outputDevices,
+  batchProgress,
+  generationTasks,
   initialize,
-  generate: generateImage,
+  generateBatch,
+  deleteOutput,
+  loadMoreHistory,
   cancel: cancelGeneration,
   formatCostEstimate,
 } = useCreativeImageJob({
@@ -461,6 +495,7 @@ const {
   jobKindPrefix: 'ui-design',
   preferOriginalOutputs: true,
   outputLongSide: 2048,
+  initialHistoryLimit: 24,
 })
 
 const modelSelectOptions = computed(() =>
@@ -546,6 +581,8 @@ const qualityTrigger = ref(null)
 const qualityDialogRef = ref(null)
 const qualityCloseButton = ref(null)
 const fileInput = ref(null)
+const composerDragging = ref(false)
+let composerDragDepth = 0
 const briefField = ref(null)
 const pageTypePickerTrigger = ref(null)
 const stylePickerTrigger = ref(null)
@@ -553,7 +590,9 @@ const brandPickerTrigger = ref(null)
 const specificationTrigger = ref(null)
 const brief = ref('')
 const iterationBrief = ref('')
-const deviceId = ref('web')
+const selectedDeviceIds = ref(['web'])
+const viewDeviceId = ref('web')
+const generatingDeviceIds = ref([])
 const pageTypeId = ref('landing')
 const customPageType = ref('')
 const styleId = ref('minimal')
@@ -567,10 +606,17 @@ const typographyId = ref('neutral')
 const radiusId = ref('medium')
 const responsiveId = ref('adaptive')
 const componentStates = ref(COMPONENT_STATE_OPTIONS.map((item) => item.id))
-const imageCount = ref(1)
-const inputFile = ref(null)
-const sourcePreview = ref('')
+const MAX_REFERENCE_IMAGES = 6
+const referenceImages = ref([])
 const iterationSource = ref('')
+const tileRefinePhase = ref('') // '', preparing, generating, stitching, done
+const tileRefineError = ref('')
+/** url -> true：标记四宫格精修成品，便于舞台角标识别 */
+const tileRefineOutputs = ref({})
+/** 原稿 url -> 最新精修成品条目（结果只走弹窗，不进版本抽屉） */
+const tileRefineBySource = ref({})
+const tileRefineDialogOpen = ref(false)
+const tileRefineDialogEntry = ref(null)
 const localError = ref('')
 const mediaError = ref('')
 const promptPreviewOpen = ref(false)
@@ -599,13 +645,52 @@ const editableDocumentId = ref('')
 const editableResumeSession = ref(readStoredActiveAnalysisSession())
 const editableSeedFindings = ref(null)
 const tabletPane = ref('controls')
-const historyMode = ref('images')
-const expandedVersionFamilyId = ref('')
+const versionDrawerOpen = ref(false)
+const versionDrawerFocusId = ref('')
+const versionDeleting = ref(false)
+const historyViewport = ref(null)
+const historyPage = ref(0)
+const historyPageSize = ref(4)
 const editableHistory = ref([])
+const HISTORY_CARD_WIDTH = 236
+
+function shortDeviceLabel(label = '') {
+  return String(label || '')
+    .replace(/^智能/, '')
+    .replace(/端$/, '')
+    .trim()
+}
+
+function collectMajorDevices(major) {
+  const ids = new Set()
+  const walk = (node) => {
+    if (!node) return
+    for (const [deviceId, url] of Object.entries(node.carriers || {})) {
+      if (url) ids.add(deviceId)
+    }
+    for (const child of node.children || []) walk(child)
+  }
+  walk(major)
+  const order = new Map(DESIGN_DEVICE_OPTIONS.map((item, index) => [item.id, index]))
+  return [...ids]
+    .map((id) => getDesignDevice(id))
+    .filter(Boolean)
+    .sort((a, b) => (order.get(a.id) ?? 99) - (order.get(b.id) ?? 99))
+    .map((device) => ({
+      id: device.id,
+      label: device.label,
+      shortLabel: shortDeviceLabel(device.label),
+      icon: device.icon,
+      ratio: device.ratio,
+    }))
+}
+const HISTORY_CARD_GAP = 8
 let qualityAuditController = null
 let regionReviewController = null
 let regionSelectionStart = null
 let suppressArtboardClick = false
+let historyResizeObserver = null
+let historyLoadQueued = false
 
 function hasOption(options, id) {
   return options.some((item) => item.id === id)
@@ -699,7 +784,12 @@ try {
   const saved = JSON.parse(getScopedLocalItem(SETTINGS_KEY) || 'null')
   if (saved && typeof saved === 'object') {
     if (typeof saved.brief === 'string') brief.value = saved.brief
-    if (hasOption(DEVICE_OPTIONS, saved.deviceId)) deviceId.value = saved.deviceId
+    if (Array.isArray(saved.selectedDeviceIds) || saved.deviceId) {
+      selectedDeviceIds.value = normalizeSelectedDeviceIds(
+        saved.selectedDeviceIds || saved.deviceId,
+      )
+      viewDeviceId.value = selectedDeviceIds.value[0]
+    }
     if (hasOption(PAGE_TYPE_OPTIONS, saved.pageTypeId)) pageTypeId.value = saved.pageTypeId
     if (typeof saved.customPageType === 'string') customPageType.value = saved.customPageType
     if (hasOption(STYLE_OPTIONS, saved.styleId)) styleId.value = saved.styleId
@@ -721,9 +811,11 @@ try {
       if (Number(saved.designSpecVersion || 0) < DESIGN_SPEC_VERSION) {
         restoredStates.push('interaction', 'success')
       }
-      componentStates.value = [...new Set(restoredStates)]
+      const nextStates = [...new Set(restoredStates)]
+      componentStates.value = nextStates.length
+        ? nextStates
+        : COMPONENT_STATE_OPTIONS.map((item) => item.id)
     }
-    if (COUNT_OPTIONS.includes(saved.imageCount)) imageCount.value = saved.imageCount
   }
 } catch {
   // Ignore a damaged local draft and keep production defaults.
@@ -733,15 +825,16 @@ try {
   const savedHistory = JSON.parse(getScopedLocalItem(EDITABLE_HISTORY_KEY) || '[]')
   if (Array.isArray(savedHistory) && savedHistory.length) {
     editableHistory.value = savedHistory.filter((item) => item?.referenceImage).slice(0, 12)
-    if (editableHistory.value.length) historyMode.value = 'editable'
   }
 } catch {
   // Ignore a damaged history index; generated image history remains available.
 }
 
-const device = computed(
-  () => DEVICE_OPTIONS.find((item) => item.id === deviceId.value) || DEVICE_OPTIONS[0],
+const selectedDevices = computed(() =>
+  selectedDeviceIds.value.map((id) => getDesignDevice(id)).filter(Boolean),
 )
+const viewDevice = computed(() => getDesignDevice(viewDeviceId.value))
+const device = computed(() => viewDevice.value)
 const pageType = computed(
   () => PAGE_TYPE_OPTIONS.find((item) => item.id === pageTypeId.value) || PAGE_TYPE_OPTIONS[0],
 )
@@ -769,8 +862,16 @@ const radiusOption = computed(
 const responsiveOption = computed(
   () => RESPONSIVE_OPTIONS.find((item) => item.id === responsiveId.value) || RESPONSIVE_OPTIONS[0],
 )
-const hasReference = computed(() => Boolean(inputFile.value || iterationSource.value))
+const hasReference = computed(
+  () => referenceImages.value.length > 0 || Boolean(iterationSource.value),
+)
 const isIteration = computed(() => Boolean(iterationSource.value))
+const canAddReferences = computed(
+  () => !isIteration.value && referenceImages.value.length < MAX_REFERENCE_IMAGES,
+)
+const referenceSlotsLeft = computed(() =>
+  Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.value.length),
+)
 const briefInput = computed({
   get: () => (isIteration.value ? iterationBrief.value : brief.value),
   set: (value) => {
@@ -779,9 +880,15 @@ const briefInput = computed({
   },
 })
 const generateActionLabel = computed(() =>
-  isIteration.value ? '生成迭代稿' : inputFile.value ? '参考图重绘' : '生成设计稿',
+  isIteration.value
+    ? '生成迭代稿'
+    : referenceImages.value.length
+      ? '参考图重绘'
+      : '生成设计稿',
 )
-const costLabel = computed(() => formatCostEstimate(imageCount.value))
+const costLabel = computed(() =>
+  formatCostEstimate(Math.max(1, isIteration.value ? 1 : selectedDeviceIds.value.length)),
+)
 const costDisplay = computed(() => {
   const text = String(costLabel.value || '').trim()
   const value = text.replace(/^预计\s*/, '')
@@ -796,112 +903,318 @@ const costDisplay = computed(() => {
   if (perImage) return { price: perImage[1], detail: perImage[2] }
   return { price: value, detail: '' }
 })
-const versionGroups = computed(() => {
-  const groups = []
-  const byId = new Map()
-  const groupIdByOutput = new Map()
-  for (const output of outputs.value) {
-    const id = outputGroups.value[output] || outputJobIds.value[output] || `single:${output}`
-    let group = byId.get(id)
-    if (!group) {
-      group = { id, outputs: [] }
-      byId.set(id, group)
-      groups.push(group)
-    }
-    group.outputs.push(output)
-    groupIdByOutput.set(output, id)
-  }
-  for (const group of groups) {
-    group.outputs.sort(
-      (a, b) =>
-        (Number(outputGroupIndexes.value[a]) || 0) - (Number(outputGroupIndexes.value[b]) || 0),
-    )
-    const parentOutput = group.outputs.map((output) => outputParents.value[output]).find(Boolean)
-    const parentId = groupIdByOutput.get(parentOutput) || ''
-    group.parentId = parentId && parentId !== group.id ? parentId : ''
-  }
-  return groups
-})
-const versionMetaByOutput = computed(() => {
-  const metadata = {}
-  const groups = versionGroups.value
-  const byId = new Map(groups.map((group) => [group.id, group]))
-  const childrenByParent = new Map()
-  for (const group of groups) {
-    if (!group.parentId || !byId.has(group.parentId)) continue
-    const children = childrenByParent.get(group.parentId) || []
-    children.push(group)
-    childrenByParent.set(group.parentId, children)
-  }
-  const labels = new Map()
-  const assignChildren = (parentId, parentLabel, lineage = new Set()) => {
-    if (lineage.has(parentId)) return
-    const nextLineage = new Set(lineage).add(parentId)
-    const children = [...(childrenByParent.get(parentId) || [])].reverse()
-    children.forEach((child, index) => {
-      const label = `${parentLabel}.${index + 1}`
-      labels.set(child.id, label)
-      assignChildren(child.id, label, nextLineage)
-    })
-  }
-  const roots = groups.filter((group) => !group.parentId || !byId.has(group.parentId)).reverse()
-  roots.forEach((group, index) => {
-    const label = `V${index + 1}`
-    labels.set(group.id, label)
-    assignChildren(group.id, label)
-  })
-  groups.forEach((group) => {
-    const version = labels.get(group.id) || 'V?'
-    group.outputs.forEach((output, outputIndex) => {
-      const variant = group.outputs.length > 1 ? String.fromCharCode(65 + outputIndex) : ''
-      metadata[output] = {
-        version,
-        variant,
-        label: variant ? `${version}-${variant}` : version,
-      }
-    })
-  })
-  return metadata
-})
-const activeVersionLabel = computed(
-  () => versionMetaByOutput.value[activeOutput.value]?.label || '',
+const versionTreeModel = computed(() =>
+  buildVersionForest({
+    outputs: outputs.value,
+    outputGroups: outputGroups.value,
+    outputGroupIndexes: outputGroupIndexes.value,
+    outputParents: outputParents.value,
+    outputDevices: outputDevices.value,
+    analysisEntries: editableHistory.value,
+  }),
 )
-const versionFamilies = computed(() => {
-  const groups = versionGroups.value
-  const byId = new Map(groups.map((group) => [group.id, group]))
-  const childrenByParent = new Map()
-  groups.forEach((group) => {
-    if (!group.parentId || !byId.has(group.parentId)) return
-    childrenByParent.set(group.parentId, [
-      ...(childrenByParent.get(group.parentId) || []),
-      group,
-    ])
-  })
-  const collectGroups = (group, lineage = new Set()) => {
-    if (lineage.has(group.id)) return []
-    const nextLineage = new Set(lineage).add(group.id)
-    const children = [...(childrenByParent.get(group.id) || [])].reverse()
-    return [group, ...children.flatMap((child) => collectGroups(child, nextLineage))]
-  }
-  return groups
-    .filter((group) => !group.parentId || !byId.has(group.parentId))
-    .reverse()
-    .map((root) => {
-      const familyGroups = collectGroups(root)
+const versionForest = computed(() => versionTreeModel.value.forest)
+const versionNodeById = computed(() => versionTreeModel.value.nodeById)
+const versionMetaByOutput = computed(() => versionTreeModel.value.metaByOutput)
+const versionMajors = computed(() =>
+  versionForest.value.map((major) => {
+    const devices = collectMajorDevices(major)
+    return {
+      id: major.id,
+      label: major.label,
+      cover: pickCarrier(major, viewDeviceId.value) || major.cover,
+      versionCount: 1 + major.descendantCount,
+      analyzedInTree: major.analyzedInTree,
+      devices,
+      deviceCount: devices.length,
+    }
+  }),
+)
+const historyPageCount = computed(() =>
+  Math.max(1, Math.ceil(versionMajors.value.length / Math.max(1, historyPageSize.value))),
+)
+const pagedVersionMajors = computed(() => {
+  const size = Math.max(1, historyPageSize.value)
+  const start = historyPage.value * size
+  return versionMajors.value.slice(start, start + size)
+})
+const canPrevHistoryPage = computed(() => historyPage.value > 0)
+const canNextHistoryPage = computed(
+  () => historyPage.value < historyPageCount.value - 1 || historyHasMore.value,
+)
+const activeVersionNode = computed(() =>
+  findNodeByOutput(versionForest.value, activeOutput.value, versionNodeById.value),
+)
+const activeVersionLabel = computed(
+  () => versionMetaByOutput.value[activeOutput.value]?.label || activeVersionNode.value?.label || '',
+)
+const isActiveTileRefine = computed(
+  () =>
+    Boolean(tileRefineOutputs.value[activeOutput.value]) ||
+    String(activeVersionNode.value?.id || '').includes('tile-refine'),
+)
+const canIterateActive = computed(() => canIterate(activeVersionNode.value))
+const iterationDevice = computed(() => {
+  if (!isIteration.value) return null
+  const carriers = activeVersionNode.value?.carriers || {}
+  const deviceId =
+    Object.entries(carriers).find(([, url]) => url === iterationSource.value)?.[0] ||
+    viewDeviceId.value
+  return getDesignDevice(deviceId)
+})
+const iterationTargetLabel = computed(() => {
+  const version = activeVersionLabel.value || '当前版本'
+  const device = iterationDevice.value
+  if (!device) return version
+  return `${version} · ${device.label}`
+})
+
+watch(isIteration, (iterating) => {
+  if (!iterating) return
+  pageTypePickerOpen.value = false
+  activeConfigPanel.value = ''
+})
+
+const activeBatchProgress = computed(() => {
+  const activeTask = generationTasks.value.find(
+    (task) => task.state === 'running' || task.state === 'cancelling',
+  )
+  return activeTask?.progress?.length ? activeTask.progress : batchProgress.value
+})
+
+const canvasDeviceSlots = computed(() => {
+  if (running.value && generatingDeviceIds.value.length) {
+    return generatingDeviceIds.value.map((deviceId, index) => {
+      const device = getDesignDevice(deviceId)
+      const progress = activeBatchProgress.value[index] || {}
+      const url = Array.isArray(progress.outputs) ? progress.outputs[0] || '' : ''
       return {
-        id: root.id,
-        label: versionMetaByOutput.value[root.outputs[0]]?.version || 'V?',
-        cover: root.outputs[0] || '',
-        groups: familyGroups,
-        outputs: familyGroups.flatMap((group) => group.outputs),
-        iterationCount: Math.max(0, familyGroups.length - 1),
+        deviceId,
+        label: device.label,
+        ratio: device.ratio,
+        icon: device.icon,
+        status: progress.status || (url ? 'done' : 'pending'),
+        url,
+        message: progress.message || '',
+      }
+    })
+  }
+  const carriers = activeVersionNode.value?.carriers || {}
+  const order = new Map(DESIGN_DEVICE_OPTIONS.map((item, index) => [item.id, index]))
+  return Object.entries(carriers)
+    .filter(([, url]) => url)
+    .sort(
+      ([a], [b]) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map(([deviceId, url]) => {
+      const device = getDesignDevice(deviceId)
+      return {
+        deviceId,
+        label: device.label,
+        ratio: device.ratio,
+        icon: device.icon,
+        status: 'done',
+        url,
+        message: '',
       }
     })
 })
-function toggleVersionFamily(family) {
-  expandedVersionFamilyId.value = expandedVersionFamilyId.value === family.id ? '' : family.id
-  if (expandedVersionFamilyId.value && family.cover) selectOutput(family.cover)
+
+const showMultiDeviceLoading = computed(
+  () => running.value && generatingDeviceIds.value.length > 1,
+)
+const showDeviceRail = computed(
+  () => !running.value && canvasDeviceSlots.value.length > 1,
+)
+
+function slotFrameStyle(slot) {
+  const [width = 16, height = 9] = String(slot?.ratio || '16:9')
+    .split(':')
+    .map(Number)
+  return { aspectRatio: `${width} / ${Math.max(1, height)}` }
 }
+
+function selectCarrier(slot) {
+  if (!slot?.url) return
+  viewDeviceId.value = slot.deviceId
+  selectOutput(slot.url)
+}
+
+function toggleDeviceSelection(id) {
+  const current = [...selectedDeviceIds.value]
+  const index = current.indexOf(id)
+  if (index >= 0) {
+    if (current.length === 1) return
+    current.splice(index, 1)
+  } else {
+    current.push(id)
+  }
+  selectedDeviceIds.value = normalizeSelectedDeviceIds(current)
+  if (!selectedDeviceIds.value.includes(viewDeviceId.value)) {
+    viewDeviceId.value = selectedDeviceIds.value[0]
+  }
+}
+
+function majorRootOf(node) {
+  let cursor = node
+  while (cursor?.parentId && versionNodeById.value.get(cursor.parentId)) {
+    cursor = versionNodeById.value.get(cursor.parentId)
+  }
+  return cursor || null
+}
+
+function isMajorActive(majorId) {
+  const root = majorRootOf(activeVersionNode.value)
+  return Boolean(root?.id && root.id === majorId)
+}
+
+function selectMajorOnCanvas(majorId) {
+  const node = versionNodeById.value.get(majorId)
+  if (!node) return
+  selectVersionNode(node)
+}
+
+function openVersionDrawer(majorId = '') {
+  // versionMajors 已是最新在前；无指定时聚焦当前大版本，否则最新大版本。
+  const fallback =
+    majorRootOf(activeVersionNode.value)?.id || versionMajors.value[0]?.id || ''
+  versionDrawerFocusId.value = majorId || fallback
+  versionDrawerOpen.value = true
+  void requestMoreHistory()
+}
+
+async function requestMoreHistory() {
+  if (!historyHasMore.value || historyLoading.value || historyLoadQueued) return []
+  historyLoadQueued = true
+  try {
+    return await loadMoreHistory(24)
+  } catch (error) {
+    notificationService.error(error?.message || historyError.value || '历史记录加载失败')
+    return []
+  } finally {
+    historyLoadQueued = false
+  }
+}
+
+function updateHistoryPageSize() {
+  const width = historyViewport.value?.clientWidth || 0
+  if (!width) return
+  const next = Math.max(
+    1,
+    Math.floor((width + HISTORY_CARD_GAP) / (HISTORY_CARD_WIDTH + HISTORY_CARD_GAP)),
+  )
+  if (next !== historyPageSize.value) historyPageSize.value = next
+  if (historyPage.value > historyPageCount.value - 1) {
+    historyPage.value = Math.max(0, historyPageCount.value - 1)
+  }
+}
+
+function setupHistoryViewportObserver() {
+  historyResizeObserver?.disconnect()
+  historyResizeObserver = null
+  const target = historyViewport.value
+  if (!target || typeof ResizeObserver === 'undefined') {
+    updateHistoryPageSize()
+    return
+  }
+  historyResizeObserver = new ResizeObserver(() => updateHistoryPageSize())
+  historyResizeObserver.observe(target)
+  updateHistoryPageSize()
+}
+
+function goPrevHistoryPage() {
+  if (!canPrevHistoryPage.value) return
+  historyPage.value -= 1
+}
+
+async function goNextHistoryPage() {
+  if (historyPage.value < historyPageCount.value - 1) {
+    historyPage.value += 1
+    return
+  }
+  if (!historyHasMore.value) return
+  await requestMoreHistory()
+  await nextTick()
+  if (historyPage.value < historyPageCount.value - 1) historyPage.value += 1
+}
+
+function selectVersionNode(node, preferredDeviceId = '') {
+  const url = pickCarrier(node, preferredDeviceId || viewDeviceId.value)
+  if (!url) return
+  const deviceId = Object.entries(node.carriers || {}).find(([, value]) => value === url)?.[0]
+  if (deviceId) viewDeviceId.value = deviceId
+  selectOutput(url)
+}
+
+function iterateFromNode(node) {
+  if (!canIterate(node)) {
+    localError.value = '已达最终版本（Vn.n.n），请新建大版本继续'
+    return
+  }
+  const url = pickCarrier(node, viewDeviceId.value)
+  if (!url) return
+  selectOutput(url)
+  iterateFromActive()
+  versionDrawerOpen.value = false
+}
+
+function analyzeVersionNode(node) {
+  const url = pickCarrier(node, viewDeviceId.value)
+  if (!url) return
+  selectOutput(url)
+  if (node.analysis?.id) {
+    openEditableHistory(node.analysis)
+  } else {
+    editableResumeSession.value = null
+    editableDocumentId.value = ''
+    openEditableCanvas()
+  }
+  versionDrawerOpen.value = false
+}
+
+async function deleteVersionNodes(nodes) {
+  const targets = nodes.flatMap((node) => collectDescendants(node))
+  const urls = collectOutputUrls(targets)
+  if (!urls.length) return
+  versionDeleting.value = true
+  try {
+    const uniqueJobUrls = []
+    const seenJobs = new Set()
+    for (const url of urls) {
+      const jobId = outputJobIds.value[url] || url
+      if (seenJobs.has(jobId)) continue
+      seenJobs.add(jobId)
+      uniqueJobUrls.push(url)
+    }
+    for (const url of uniqueJobUrls) {
+      await deleteOutput(url)
+    }
+    const removedUrls = new Set(urls)
+    const removedEntries = editableHistory.value.filter((entry) =>
+      removedUrls.has(entry?.referenceImage),
+    )
+    for (const entry of removedEntries) {
+      if (entry?.id) removeScopedLocalItem(entry.id)
+    }
+    editableHistory.value = editableHistory.value.filter(
+      (entry) => !removedUrls.has(entry?.referenceImage),
+    )
+    setScopedLocalItem(EDITABLE_HISTORY_KEY, JSON.stringify(editableHistory.value))
+    selectedIdsCleanupAfterDelete()
+    notificationService.success(`已删除 ${targets.length} 个版本`)
+  } catch (error) {
+    notificationService.error(error?.message || '删除版本失败')
+  } finally {
+    versionDeleting.value = false
+  }
+}
+
+function selectedIdsCleanupAfterDelete() {
+  if (!outputs.value.includes(activeOutput.value)) {
+    activeOutput.value = outputs.value[0] || ''
+  }
+}
+
 const activeQualityAuditKey = computed(() =>
   qualityAuditKey(activeOutput.value, qualityReviewMode.value),
 )
@@ -961,25 +1274,58 @@ function qualityAssetPreviewStyle(asset) {
     backgroundPosition: `${Math.max(0, Math.min(1, horizontal)) * 100}% ${Math.max(0, Math.min(1, vertical)) * 100}%`,
   }
 }
-const designMetrics = computed(() => {
-  const isTablet = deviceId.value === 'tablet'
-  const controlHeight = { compact: 32, balanced: 36, comfortable: 40 }[densityId.value] || 36
-  return {
-    columns: isTablet ? 8 : 12,
-    margin: isTablet ? 32 : 80,
-    gutter: 24,
-    spacing: '4 / 8',
-    controlHeight,
-    typeScale: '12 / 14 / 16 / 20 / 24 / 32',
-    radius: radiusOption.value.label.replace(/^[^\d]*/, ''),
-  }
-})
+function metricsForDevice(deviceOption) {
+  return metricsForDeviceOption(deviceOption, {
+    densityId: densityId.value,
+    radiusLabel: radiusOption.value.label,
+  })
+}
+
+const designMetrics = computed(() => metricsForDevice(device.value))
+const specificationSummary = computed(() =>
+  [
+    audienceOption.value.label,
+    goalOption.value.label,
+    densityOption.value.label,
+    radiusOption.value.label.replace(/\s+\d+px$/, ''),
+  ]
+    .filter(Boolean)
+    .join(' · '),
+)
 // 环境光随品牌主色变化：只做低透明度的氛围渲染，控件仍使用固定强调色。
 const ambientStyle = computed(() => ({ '--dws-brand': brandColor.value }))
 
-const assembledPrompt = computed(() => {
+function toggleComponentState(id) {
+  const current = componentStates.value
+  if (current.includes(id)) {
+    if (current.length <= 1) {
+      notificationService.info('至少保留一种组件状态')
+      return
+    }
+    componentStates.value = current.filter((item) => item !== id)
+    return
+  }
+  componentStates.value = [...current, id]
+}
+
+function resolvePageStructurePrompt() {
+  if (pageTypeId.value === 'custom') return customPageType.value.trim()
+  return pageType.value.prompt || ''
+}
+
+function buildAssembledPrompt(
+  deviceOption = device.value,
+  {
+    multiDevice = false,
+    isAnchor = false,
+    deviceLabels = [],
+  } = {},
+) {
   const lines = []
+  const metrics = metricsForDevice(deviceOption)
   const iterationText = iterationBrief.value.trim()
+  const pagePrompt = resolvePageStructurePrompt()
+
   if (isIteration.value) {
     lines.push('任务类型：基于参考图的受控 UI 迭代，不是重新设计整张页面。')
     lines.push(`本次唯一修改：${iterationText || '保持当前设计，仅提升文字和边缘清晰度'}。`)
@@ -990,48 +1336,80 @@ const assembledPrompt = computed(() => {
       '文字锁定：保留原图全部文案并逐字准确呈现，保持原有字号层级、字重、对齐和换行；文字边缘清晰锐利，不要乱码、伪文字、额外单词、随机标签、Logo 或水印。',
     )
     lines.push(
-      `输出要求：${device.value.label} ${device.value.ratio}，正视图，整张图就是设计稿本身，不要样机、透视、倾斜、拼贴或设计软件界面。`,
+      `输出要求：${deviceOption.label} ${deviceOption.ratio}，正视图，整张图就是设计稿本身，不要样机、透视、倾斜、拼贴或设计软件界面。`,
+    )
+    lines.push(
+      '多端同步：若同一版本存在其他设备稿，保持视觉系统、组件语言与文案一致，仅适配当前设备布局。',
     )
     return lines.join('\n')
   }
+
   const briefText = brief.value.trim()
-  if (inputFile.value) {
+  if (referenceImages.value.length) {
+    const count = referenceImages.value.length
     lines.push(
-      `基于提供的参考界面进行重新设计：${briefText || '在保持信息结构的前提下提升视觉质量'}。`,
+      count > 1
+        ? `基于提供的 ${count} 张参考界面进行重新设计：${briefText || '在保持信息结构与视觉系统的前提下提升视觉质量'}。多张参考图用于锁定同一产品/界面身份，请综合它们的结构、组件与视觉语言，不要把多张参考拼进同一张输出。`
+        : `基于提供的参考界面进行重新设计：${briefText || '在保持信息结构的前提下提升视觉质量'}。`,
     )
   } else {
     lines.push(`为「${briefText || '一款现代数字产品'}」设计一张高保真 UI 设计稿。`)
   }
-  lines.push(`设备载体：${device.value.prompt}。`)
-  if (pageTypeId.value === 'custom') {
-    const custom = customPageType.value.trim()
-    if (custom) lines.push(`页面结构：${custom}。`)
-  } else if (pageType.value.prompt) {
-    lines.push(`页面结构：${pageType.value.prompt}。`)
-  }
+
+  lines.push(
+    buildDeviceAdaptationBlock(deviceOption, {
+      navigationId: navigationId.value,
+      pageTypeId: pageTypeId.value,
+      pagePrompt,
+      multiDevice,
+      isAnchor,
+    }),
+  )
   lines.push(`目标用户：${audienceOption.value.prompt}。`)
   lines.push(`核心目标：${goalOption.value.prompt}。`)
-  lines.push(`导航与布局：${navigationOption.value.prompt}。${densityOption.value.prompt}。`)
+  lines.push(`信息密度：${densityOption.value.prompt}。`)
   lines.push(`视觉风格：${styleOption.value.prompt}。`)
   lines.push(
     `配色规范：品牌主色 ${brandColor.value}，${colorScheme.value === 'dark' ? '深色' : '浅色'}模式；建立 primary、surface、background、text、border、success、warning、error 语义色角色和完整中性色阶。同一语义只使用一种颜色，正文与背景对比度至少达到 WCAG AA。`,
   )
   lines.push(
-    `栅格与间距：基准画布采用 ${designMetrics.value.columns} 列栅格，左右安全边距 ${designMetrics.value.margin}px，列间距 ${designMetrics.value.gutter}px；以 4px 为最小单位、8px 为主要步进，只使用 4/8/12/16/24/32/40/48/64px 间距。所有边缘、基线和组件严格对齐，禁止随意留白。`,
+    `栅格与间距：基准画布采用 ${metrics.columns} 列栅格，左右安全边距 ${metrics.margin}px，列间距 ${metrics.gutter}px；以 4px 为最小单位、8px 为主要步进，只使用 4/8/12/16/24/32/40/48/64px 间距。所有边缘、基线和组件严格对齐，禁止随意留白。`,
   )
   lines.push(
-    `字体规范：${typographyOption.value.prompt}。使用 ${designMetrics.value.typeScale}px 字号阶梯，正文至少 14px，辅助文字至少 12px；标题、正文、标签分别限定字重和行高，单一层级保持一致，不使用模糊或无法辨认的伪文字。`,
+    `字体规范：${typographyOption.value.prompt}。使用 ${metrics.typeScale}px 字号阶梯，正文至少 14px，辅助文字至少 12px；标题、正文、标签分别限定字重和行高，单一层级保持一致，不使用模糊或无法辨认的伪文字。`,
   )
   lines.push(
-    `组件规范：${radiusOption.value.prompt}。按钮、输入框、下拉框统一为 ${designMetrics.value.controlHeight}px 高；图标采用 16/20/24px 尺寸；同类按钮保持相同内边距、圆角和图标位置。卡片只用于独立内容单元，不嵌套卡片。`,
+    `组件规范：${radiusOption.value.prompt}。按钮、输入框、下拉框统一为 ${metrics.controlHeight}px 高；图标采用 16/20/24px 尺寸；同类按钮保持相同内边距、圆角和图标位置。卡片只用于独立内容单元，不嵌套卡片。`,
   )
   const selectedStates = COMPONENT_STATE_OPTIONS.filter((item) =>
     componentStates.value.includes(item.id),
-  )
+  ).filter((item) => {
+    // 窄屏/电视不以 hover 为主；保留 focus / pressed 等可落地状态描述。
+    if (item.id !== 'interaction') return true
+    return !['phone', 'miniapp', 'tv'].includes(deviceOption?.id)
+  })
   if (selectedStates.length) {
-    lines.push(`组件状态：${selectedStates.map((item) => item.prompt).join('；')}。`)
+    const stateText = selectedStates.map((item) => item.prompt).join('；')
+    const touchExtra = ['phone', 'miniapp'].includes(deviceOption?.id)
+      ? '；触控态以 pressed / focus 为主，不要依赖 hover'
+      : deviceOption?.id === 'tv'
+        ? '；以遥控器 focus 态为主'
+        : ''
+    lines.push(`组件状态：${stateText}${touchExtra}。`)
   }
-  lines.push(`响应式策略：${responsiveOption.value.prompt}。`)
+  lines.push(
+    `响应式策略：${responsiveOption.value.prompt}。当前只渲染 ${deviceOption.label} 断点，按该断点完整表达，不要在一张图里拼多个断点。`,
+  )
+  if (multiDevice) {
+    lines.push(
+      buildContentConsistencyLock({
+        brief: briefText,
+        pageTypeLabel: pageType.value.label,
+        deviceLabels,
+        brandColor: brandColor.value,
+      }),
+    )
+  }
   lines.push(
     buildDesignQualityRules({
       pageType: pageTypeId.value,
@@ -1041,10 +1419,7 @@ const assembledPrompt = computed(() => {
     }),
   )
   lines.push(
-    '响应式断点：1440px 保持完整栅格，1024px 收紧边距并重排次要区域，768px 以下转为单列；导航、表格、工具栏和表单必须说明折叠、换行或横向滚动策略，核心操作始终可见。只输出当前所选设备的一张完整主界面，不要把多个断点拼在同一张图中。',
-  )
-  lines.push(
-    '交付检查：真实产品级完整页面，组件按原子、组合、模块、模板层级复用；明确正常、悬停、聚焦、按下、加载、空、错误、禁用和成功状态；内容不得溢出、遮挡、截断关键操作或出现错位，细节可直接用于开发交付。',
+    '交付检查：真实产品级完整页面，组件按原子、组合、模块、模板层级复用；内容不得溢出、遮挡、截断关键操作或出现错位，细节可直接用于开发交付。',
   )
   lines.push(
     '文字要求：只使用需求中明确出现或与产品直接相关的简短文案，逐字清晰准确；使用现代无衬线字体，中文接近 Noto Sans SC，英文与数字接近 Inter，不要乱码、伪文字、额外标签或随机字母。',
@@ -1053,10 +1428,13 @@ const assembledPrompt = computed(() => {
     '画面要求：整张图就是设计稿本身，铺满画布。不要设备样机外壳、不要透视和倾斜、不要多页拼贴、不要展示设计软件窗口、不要水印。',
   )
   return lines.join('\n')
-})
+}
+
+const assembledPrompt = computed(() => buildAssembledPrompt(device.value))
 
 const artboardStyle = computed(() => {
-  const [width = 16, height = 9] = device.value.ratio.split(':').map(Number)
+  const ratioText = String(device.value?.ratio || '16:9')
+  const [width = 16, height = 9] = ratioText.split(':').map(Number)
   const ratio = width / Math.max(1, height)
   return {
     aspectRatio: `${width} / ${height}`,
@@ -1076,8 +1454,8 @@ const regionSelectionStyle = computed(() => {
 
 const editableViewport = computed(() => {
   const background = colorScheme.value === 'dark' ? '#111217' : '#ffffff'
-  if (deviceId.value === 'tablet') return { width: 1024, height: 768, background }
-  return { width: 1440, height: 810, background }
+  const viewport = device.value.viewport || { width: 1440, height: 810 }
+  return { ...viewport, background }
 })
 const editableCanvasPrompt = computed(
   () => editableResumeSession.value?.prompt || assembledPrompt.value,
@@ -1100,6 +1478,7 @@ function restoreActiveAnalysisSession() {
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   await Promise.all([initialize(), loadAnalysisModels()])
+  restoreTileRefineFinals()
   restoreActiveAnalysisSession()
   const pending = takePendingPrompt('ui_design')
   if (pending) {
@@ -1107,9 +1486,11 @@ onMounted(async () => {
     const launchPrompt = composePendingLaunchPrompt(pending, 1000)
     if (launchPrompt) brief.value = launchPrompt
     if (hasOption(PAGE_TYPE_OPTIONS, launchConfig.skill)) pageTypeId.value = launchConfig.skill
-    if (hasOption(DEVICE_OPTIONS, launchConfig.device)) deviceId.value = launchConfig.device
-    if (COUNT_OPTIONS.includes(Number(launchConfig.count))) {
-      imageCount.value = Number(launchConfig.count)
+    if (launchConfig.devices || launchConfig.device) {
+      selectedDeviceIds.value = normalizeSelectedDeviceIds(
+        launchConfig.devices || launchConfig.device,
+      )
+      viewDeviceId.value = selectedDeviceIds.value[0]
     }
     if (launchConfig.model && models.value.some((model) => model.id === launchConfig.model)) {
       modelId.value = launchConfig.model
@@ -1122,6 +1503,8 @@ watch(activeOutput, (value) => {
   regionReviewController = null
   regionReviewLoading.value = false
   if (value) tabletPane.value = 'canvas'
+  const deviceFromMeta = versionMetaByOutput.value[value]?.deviceId
+  if (deviceFromMeta) viewDeviceId.value = deviceFromMeta
   qualityAudit.value =
     qualityAuditsByOutput.value[qualityAuditKey(value, qualityReviewMode.value)] || null
   selectedQualityIssueIds.value = qualityAudit.value?.issues.map((issue) => issue.id) || []
@@ -1147,9 +1530,37 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
+  historyResizeObserver?.disconnect()
+  historyResizeObserver = null
   qualityAuditController?.abort()
   regionReviewController?.abort()
 })
+
+watch(
+  [historyViewport, () => versionMajors.value.length, historyLoading],
+  async () => {
+    await nextTick()
+    setupHistoryViewportObserver()
+  },
+  { flush: 'post' },
+)
+
+watch(
+  [() => versionMajors.value.length, historyPageSize, historyHasMore, historyPage],
+  async () => {
+    if (historyPage.value > historyPageCount.value - 1) {
+      historyPage.value = Math.max(0, historyPageCount.value - 1)
+    }
+    // 翻到末页时预取更多历史，保证可继续下一页。
+    if (
+      historyHasMore.value &&
+      !historyLoading.value &&
+      historyPage.value >= Math.max(0, historyPageCount.value - 1)
+    ) {
+      await requestMoreHistory()
+    }
+  },
+)
 
 watch(analysisModelId, (value) => {
   if (value) setScopedLocalItem(ANALYSIS_MODEL_KEY, value)
@@ -1158,7 +1569,7 @@ watch(analysisModelId, (value) => {
 watch(
   [
     brief,
-    deviceId,
+    selectedDeviceIds,
     pageTypeId,
     customPageType,
     styleId,
@@ -1172,7 +1583,6 @@ watch(
     radiusId,
     responsiveId,
     componentStates,
-    imageCount,
   ],
   () => {
     setScopedLocalItem(
@@ -1180,7 +1590,8 @@ watch(
       JSON.stringify({
         designSpecVersion: DESIGN_SPEC_VERSION,
         brief: brief.value,
-        deviceId: deviceId.value,
+        selectedDeviceIds: selectedDeviceIds.value,
+        deviceId: selectedDeviceIds.value[0] || 'web',
         pageTypeId: pageTypeId.value,
         customPageType: customPageType.value,
         styleId: styleId.value,
@@ -1194,37 +1605,164 @@ watch(
         radiusId: radiusId.value,
         responsiveId: responsiveId.value,
         componentStates: componentStates.value,
-        imageCount: imageCount.value,
       }),
     )
   },
   { deep: true },
 )
 
-async function chooseFile(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-  inputFile.value = file
-  sourcePreview.value = await readImageFile(file)
-  iterationSource.value = ''
-  iterationBrief.value = ''
+function createReferenceId() {
+  return `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function applyReferenceFiles(files = [], { notify = false } = {}) {
+  const images = (Array.isArray(files) ? files : [files]).filter(
+    (file) => file && String(file.type || '').startsWith('image/'),
+  )
+  if (!images.length) {
+    localError.value = '请选择图片文件作为参考界面'
+    return 0
+  }
+  if (isIteration.value) {
+    iterationSource.value = ''
+    iterationBrief.value = ''
+  }
+  const slots = referenceSlotsLeft.value
+  if (slots <= 0) {
+    localError.value = `参考图最多 ${MAX_REFERENCE_IMAGES} 张`
+    notificationService.info(`参考图最多 ${MAX_REFERENCE_IMAGES} 张`)
+    return 0
+  }
+  const accepted = images.slice(0, slots)
+  const skipped = images.length - accepted.length
+  const next = [...referenceImages.value]
+  for (const file of accepted) {
+    next.push({
+      id: createReferenceId(),
+      file,
+      preview: await readImageFile(file),
+      name: file.name || `参考图 ${next.length + 1}`,
+    })
+  }
+  referenceImages.value = next
   localError.value = ''
+  if (notify) {
+    if (skipped > 0) {
+      notificationService.info(`已添加 ${accepted.length} 张，另有 ${skipped} 张超出 ${MAX_REFERENCE_IMAGES} 张上限`)
+    } else {
+      notificationService.success(
+        accepted.length > 1 ? `已添加 ${accepted.length} 张参考图` : '已添加参考图',
+      )
+    }
+  } else if (skipped > 0) {
+    localError.value = `最多 ${MAX_REFERENCE_IMAGES} 张，已忽略 ${skipped} 张`
+  }
+  return accepted.length
+}
+
+async function chooseFile(event) {
+  const files = [...(event.target.files || [])]
+  if (!files.length) return
+  await applyReferenceFiles(files)
+  event.target.value = ''
+}
+
+function extractClipboardImages(clipboardData) {
+  const fromItems = [...(clipboardData?.items || [])]
+    .filter((item) => item.kind === 'file' && item.type?.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+  if (fromItems.length) return fromItems
+  return [...(clipboardData?.files || [])].filter((file) => file.type?.startsWith('image/'))
+}
+
+async function handleBriefPaste(event) {
+  const files = extractClipboardImages(event.clipboardData)
+  if (!files.length) return
+  event.preventDefault()
+  await applyReferenceFiles(files, { notify: true })
+}
+
+function hasDraggedFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes('Files')
+}
+
+function onComposerDragEnter(event) {
+  if (!hasDraggedFiles(event)) return
+  event.preventDefault()
+  composerDragDepth += 1
+  composerDragging.value = true
+}
+
+function onComposerDragOver(event) {
+  if (!hasDraggedFiles(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onComposerDragLeave(event) {
+  if (!hasDraggedFiles(event)) return
+  event.preventDefault()
+  composerDragDepth = Math.max(0, composerDragDepth - 1)
+  if (!composerDragDepth) composerDragging.value = false
+}
+
+async function onComposerDrop(event) {
+  if (!hasDraggedFiles(event)) return
+  event.preventDefault()
+  composerDragDepth = 0
+  composerDragging.value = false
+  const files = [...(event.dataTransfer?.files || [])].filter((entry) =>
+    String(entry.type || '').startsWith('image/'),
+  )
+  if (!files.length) {
+    localError.value = '请拖入图片文件作为参考界面'
+    return
+  }
+  await applyReferenceFiles(files, { notify: true })
+}
+
+function removeReferenceImage(id) {
+  referenceImages.value = referenceImages.value.filter((item) => item.id !== id)
+  if (fileInput.value) fileInput.value.value = ''
 }
 
 function clearReference() {
-  inputFile.value = null
-  sourcePreview.value = ''
+  referenceImages.value = []
   iterationSource.value = ''
   iterationBrief.value = ''
   if (fileInput.value) fileInput.value.value = ''
 }
 
+function clearComposer() {
+  if (isIteration.value) {
+    clearReference()
+    iterationBrief.value = ''
+  } else {
+    referenceImages.value = []
+    brief.value = ''
+    if (fileInput.value) fileInput.value.value = ''
+  }
+  localError.value = ''
+  nextTick(() => briefField.value?.focus())
+}
+
+const canClearComposer = computed(
+  () =>
+    Boolean(briefInput.value?.trim()) ||
+    referenceImages.value.length > 0 ||
+    Boolean(iterationSource.value),
+)
+
 function iterateFromActive() {
   if (!activeOutput.value) return
+  if (!canIterateActive.value) {
+    localError.value = '已达最终版本（Vn.n.n），请清除迭代并新建大版本'
+    return
+  }
   iterationSource.value = activeOutput.value
   iterationBrief.value = ''
-  inputFile.value = null
-  sourcePreview.value = ''
+  referenceImages.value = []
   if (fileInput.value) fileInput.value.value = ''
   localError.value = ''
   tabletPane.value = 'controls'
@@ -1244,21 +1782,333 @@ async function generate() {
     localError.value = '请先描述产品和页面内容，或导入一张参考界面'
     return
   }
+  if (isIteration.value && !canIterateActive.value) {
+    localError.value = '已达最终版本（Vn.n.n），无法继续迭代'
+    return
+  }
   const iterationBase = iterationSource.value
+  const carriers = activeVersionNode.value?.carriers || {}
+  // 迭代只改当前成稿所在端，避免用电脑端比例去锁死手机端。
+  // 新建多端：宽屏母版优先，其余端继承视觉系统与文案数据。
+  const devices = iterationBase
+    ? [
+        getDesignDevice(
+          Object.entries(carriers).find(([, url]) => url === iterationBase)?.[0] ||
+            viewDeviceId.value,
+        ),
+      ].filter(Boolean)
+    : orderDevicesForConsistency(selectedDevices.value)
+  if (!devices.length) {
+    localError.value = '请至少选择一个设备载体'
+    return
+  }
+  const multiDevice = devices.length > 1
+  const deviceLabels = devices.map((item) => item.label)
+  generatingDeviceIds.value = devices.map((item) => item.id)
+  viewDeviceId.value = devices[0]?.id || viewDeviceId.value
   tabletPane.value = 'canvas'
-  const generated = await generateImage({
-    prompt: assembledPrompt.value,
-    file: inputFile.value,
-    sourceUrl: iterationBase,
-    parentOutputUrl: iterationBase,
-    aspectRatio: device.value.ratio,
-    platform: device.value.label,
-    iterationMode: Boolean(iterationBase),
-    quality: 'high',
-    count: imageCount.value,
-  })
-  if (generated?.length && iterationBase && iterationSource.value === iterationBase) {
-    clearReference()
+  const groupId = `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const referenceFiles = referenceImages.value.map((item) => item.file).filter(Boolean)
+  try {
+    const result = await generateBatch(
+      devices.map((item, index) => ({
+        prompt: buildAssembledPrompt(item, {
+          multiDevice,
+          isAnchor: index === 0,
+          deviceLabels,
+        }),
+        aspectRatio: item.ratio,
+        platform: item.label,
+        deviceId: item.id,
+        viewId: item.id,
+        viewLabel: item.label,
+        parentOutputUrl: iterationBase || '',
+        iterationMode: Boolean(iterationBase),
+        quality: 'high',
+        inputFidelity: multiDevice || Boolean(iterationBase) ? 'high' : '',
+        count: 1,
+        consistencyStrategy: multiDevice ? 'identity-first-anchor-then-parallel' : '',
+        referenceRoles: referenceFiles.length
+          ? referenceFiles.map((_, at) => (at === 0 ? '用户参考界面（身份）' : '补充参考界面'))
+          : [],
+        seriesAnchorRole: UI_SERIES_ANCHOR_ROLE,
+        essentialReferenceCount: referenceFiles.length ? 1 : 0,
+      })),
+      {
+        files: referenceFiles,
+        sourceUrl: iterationBase,
+        concurrency: Math.min(devices.length, 4),
+        // 新建多端：先出母版，再并行适配其余端并注入系列锚点。
+        chainReferenceOutput: multiDevice,
+        essentialReferenceCount: referenceFiles.length ? 1 : 0,
+        referencePolicy: referenceFiles.length
+          ? { strategy: 'identity-first', essentialIdentityCount: 1 }
+          : undefined,
+        groupId,
+      },
+    )
+    if (result?.outputs?.length && iterationBase && iterationSource.value === iterationBase) {
+      clearReference()
+    }
+  } finally {
+    generatingDeviceIds.value = []
+  }
+  await nextTick()
+  // 生成结束后优先展示当前查看端（或首个成功端），其余端通过右侧缩略图切换。
+  const preferred =
+    canvasDeviceSlots.value.find((slot) => slot.deviceId === viewDeviceId.value && slot.url) ||
+    canvasDeviceSlots.value.find((slot) => slot.url)
+  if (preferred?.url) selectCarrier(preferred)
+}
+
+const tileRefineBusy = computed(
+  () => Boolean(tileRefinePhase.value) && tileRefinePhase.value !== 'done',
+)
+const tileRefineCostLabel = computed(() => formatCostEstimate(4))
+const tileRefineProgress = computed(() => {
+  if (!tileRefineBusy.value) return []
+  return activeBatchProgress.value.length
+    ? activeBatchProgress.value
+    : [
+        { label: '左上', status: 'pending' },
+        { label: '右上', status: 'pending' },
+        { label: '左下', status: 'pending' },
+        { label: '右下', status: 'pending' },
+      ]
+})
+
+function shouldSkipTileRefineConfirm() {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('tileRefineAuto') === '1') return true
+    if (window.localStorage.getItem('dws.tileRefine.skipConfirm') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
+function readTileRefineFinals() {
+  try {
+    const raw = JSON.parse(getScopedLocalItem(TILE_REFINE_FINALS_KEY) || '[]')
+    return Array.isArray(raw) ? raw.filter((item) => item?.url) : []
+  } catch {
+    return []
+  }
+}
+
+function persistTileRefineFinal(entry) {
+  if (!entry?.url) return
+  const next = [entry, ...readTileRefineFinals().filter((item) => item.url !== entry.url)].slice(
+    0,
+    40,
+  )
+  setScopedLocalItem(TILE_REFINE_FINALS_KEY, JSON.stringify(next))
+}
+
+function restoreTileRefineFinals() {
+  const finals = readTileRefineFinals()
+  if (!finals.length) return
+  const marked = { ...tileRefineOutputs.value }
+  const bySource = { ...tileRefineBySource.value }
+  for (const entry of finals) {
+    marked[entry.url] = true
+    const source = String(entry.parentOutputUrl || '')
+    // finals 按最新在前存储，同一原稿只保留最新一次精修结果。
+    if (source && !bySource[source]) bySource[source] = entry
+  }
+  tileRefineOutputs.value = marked
+  tileRefineBySource.value = bySource
+}
+
+const activeTileRefineEntry = computed(
+  () => tileRefineBySource.value[String(activeOutput.value || '')] || null,
+)
+
+function handleTileRefineClick() {
+  if (tileRefineBusy.value) return
+  const existing = activeTileRefineEntry.value
+  if (existing) {
+    tileRefineDialogEntry.value = existing
+    tileRefineDialogOpen.value = true
+    return
+  }
+  runTilePrecisionRefine()
+}
+
+function rerunTileRefineFromDialog() {
+  const source = String(tileRefineDialogEntry.value?.parentOutputUrl || activeOutput.value || '')
+  tileRefineDialogOpen.value = false
+  runTilePrecisionRefine(source)
+}
+
+function applyTileRefineToCanvas() {
+  const entry = tileRefineDialogEntry.value
+  if (!entry?.url) return
+  tileRefineDialogOpen.value = false
+  if (entry.deviceId) viewDeviceId.value = entry.deviceId
+  activeOutput.value = entry.url
+  tabletPane.value = 'canvas'
+  mediaError.value = ''
+}
+
+async function runTilePrecisionRefine(sourceOverride = '') {
+  localError.value = ''
+  tileRefineError.value = ''
+  mediaError.value = ''
+  if (!(sourceOverride || activeOutput.value)) {
+    localError.value = '请先选择一张设计稿，再进行四宫格精修'
+    return
+  }
+  if (running.value || tileRefineBusy.value) {
+    localError.value = '请等待当前生成任务完成'
+    return
+  }
+  const skipConfirm = shouldSkipTileRefineConfirm()
+  if (!skipConfirm) {
+    const confirmed = window.confirm(
+      `四宫格精修会把当前设计稿十字切成左上/右上/左下/右下 4 块，并发生成后再按原坐标硬拼回 1 张完整图（尺寸与像素网格与原图一致）。\n\n预计消耗约 4 张图费用（${tileRefineCostLabel.value || '以服务端结算为准'}），耗时更长。是否继续？`,
+    )
+    if (!confirmed) return
+  }
+
+  const sourceUrl = String(sourceOverride || activeOutput.value)
+  const sourceDeviceId =
+    Object.entries(activeVersionNode.value?.carriers || {}).find(([, url]) => url === sourceUrl)?.[0] ||
+    viewDeviceId.value
+  const sourceDevice = getDesignDevice(sourceDeviceId)
+  const groupId = `tile-refine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  tabletPane.value = 'canvas'
+
+  try {
+    tileRefinePhase.value = 'preparing'
+    const sourceBlob = await fetchAuthenticatedMediaBlob(sourceUrl, { cache: 'no-store' })
+    if (!sourceBlob?.size) throw new Error('无法读取当前设计稿原图')
+    const extracted = await extractQuadrantTileFiles(sourceBlob)
+
+    const uploadedTiles = []
+    for (const entry of extracted.files) {
+      // Only send the padded quadrant crop. Full-page refs leak other zones into the tile
+      // and cause ghosted titles/charts after stitching.
+      const tileUrl = await uploadAiInputFile(entry.file)
+      uploadedTiles.push({ ...entry, tileUrl })
+    }
+
+    tileRefinePhase.value = 'generating'
+    const result = await generateBatch(
+      uploadedTiles.map((entry, index) => ({
+        prompt: buildTileRefinePrompt({
+          quadrantLabel: entry.tile.label,
+          aspectLabel: entry.tile.aspectLabel || entry.tile.aspectRatio,
+        }),
+        aspectRatio: entry.tile.aspectLabel || entry.tile.aspectRatio,
+        outputLongSide: resolveTileOutputLongSide(entry.tile),
+        platform: `${sourceDevice.label} · 四宫格精修 · ${entry.tile.label}`,
+        deviceId: sourceDeviceId,
+        viewId: `tile-${entry.tile.id}`,
+        viewLabel: `精修·${entry.tile.label}`,
+        parentOutputUrl: sourceUrl,
+        iterationMode: true,
+        quality: 'high',
+        inputFidelity: 'high',
+        count: 1,
+        suppressHistory: true,
+        sourceUrls: [entry.tileUrl],
+        prioritizeSourceUrls: true,
+        referenceRoles: ['当前象限切片（唯一精修对象，禁止补全切片外内容）'],
+        essentialReferenceCount: 1,
+        consistencyStrategy: 'revision-anchor-with-original-identity',
+        batchIndex: index,
+        batchSize: 4,
+      })),
+      {
+        concurrency: 4,
+        groupId,
+        referencePolicy: { strategy: 'identity-first', essentialIdentityCount: 1 },
+      },
+    )
+
+    // Prefer batchIndex match; fall back to progress order so merge never misses a tile.
+    const tileOutputs = Array.from({ length: 4 }, (_, index) => {
+      const match = (result?.items || []).find(
+        (item) => Number(item.batchIndex ?? -1) === index,
+      )
+      if (match?.outputs?.[0]) return match.outputs[0]
+      const progress = activeBatchProgress.value[index]
+      return Array.isArray(progress?.outputs) ? progress.outputs[0] || '' : ''
+    })
+    if (tileOutputs.filter(Boolean).length < 4) {
+      const cancelLike = (result?.failures || []).some((entry) =>
+        /取消|abort/i.test(String(entry?.message || '')),
+      )
+      if (cancelLike) {
+        tileRefinePhase.value = ''
+        notificationService.info('已停止四宫格精修')
+        return
+      }
+      const failed = result?.failures?.[0]?.message || '部分象限精修失败，无法合并'
+      throw new Error(failed)
+    }
+
+    tileRefinePhase.value = 'stitching'
+    const regeneratedBlobs = []
+    for (const url of tileOutputs) {
+      const blob = await fetchAuthenticatedMediaBlob(url, { cache: 'no-store' })
+      if (!blob?.size) throw new Error('精修结果读取失败，无法合并')
+      regeneratedBlobs.push(blob)
+    }
+
+    // 核心交付：4 象限无损拼成 1 张完整设计稿（中间象限图不展示）。
+    const stitched = await stitchQuadrantTiles({
+      tiles: extracted.tiles,
+      tileImages: regeneratedBlobs,
+      originalCrops: extracted.files.map((entry) => entry.cropFile),
+      fullWidth: extracted.width,
+      fullHeight: extracted.height,
+    })
+    if (!stitched?.file?.size) throw new Error('四宫格拼接失败，未生成合并图')
+    const stitchedUrl = await uploadAiTempBlob(stitched.file)
+    if (!stitchedUrl) throw new Error('合并图上传失败')
+
+    const finishedAt = new Date().toISOString()
+    const finalEntry = {
+      url: stitchedUrl,
+      parentOutputUrl: sourceUrl,
+      deviceId: sourceDeviceId,
+      aspectRatio: sourceDevice.ratio,
+      width: stitched.width,
+      height: stitched.height,
+      finishedAt,
+    }
+    persistTileRefineFinal(finalEntry)
+    tileRefineBySource.value = { ...tileRefineBySource.value, [sourceUrl]: finalEntry }
+    tileRefineOutputs.value = { ...tileRefineOutputs.value, [stitchedUrl]: true }
+
+    // 删除 4 张中间象限任务，避免历史里冒出四分之一图。
+    const intermediateJobIds = (result?.items || [])
+      .map((item) => String(item.jobId || '').trim())
+      .filter(Boolean)
+    await Promise.allSettled(intermediateJobIds.map((jobId) => deleteServerAiJob(jobId)))
+
+    // 结果只在弹窗展示（Beta），不进版本抽屉；用户可在弹窗内重新精修或应用到画布。
+    tileRefineDialogEntry.value = finalEntry
+    tileRefineDialogOpen.value = true
+    tileRefinePhase.value = 'done'
+    notificationService.success(
+      `四宫格精修完成：4 块已按原坐标硬拼为 ${stitched.width}×${stitched.height} 完整图`,
+    )
+    window.setTimeout(() => {
+      if (tileRefinePhase.value === 'done') tileRefinePhase.value = ''
+    }, 1600)
+  } catch (caught) {
+    if (caught?.name === 'AbortError') {
+      tileRefinePhase.value = ''
+      return
+    }
+    tileRefineError.value = caught?.message || '四宫格精修失败'
+    localError.value = tileRefineError.value
+    tileRefinePhase.value = ''
+    notificationService.error(tileRefineError.value)
   }
 }
 
@@ -1276,6 +2126,11 @@ function openEditableCanvas() {
   if (!activeOutput.value) {
     localError.value = '请先生成或选择一张设计稿，再分析其中的元素'
     tabletPane.value = 'canvas'
+    return
+  }
+  const existing = activeVersionNode.value?.analysis
+  if (existing?.id) {
+    openEditableHistory(existing)
     return
   }
   editableResumeSession.value = null
@@ -1331,6 +2186,21 @@ function handleGlobalKeydown(event) {
   if (qualityAuditOpen.value) {
     event.preventDefault()
     closeQualityAudit()
+    return
+  }
+  if (pageTypePickerOpen.value) {
+    event.preventDefault()
+    closePageTypePicker()
+    return
+  }
+  if (activeConfigPanel.value) {
+    event.preventDefault()
+    closeConfigPicker()
+    return
+  }
+  if (versionDrawerOpen.value) {
+    event.preventDefault()
+    versionDrawerOpen.value = false
     return
   }
   if (regionSelectionMode.value) {
@@ -1504,8 +2374,7 @@ function applyRegionReview() {
   if (!activeOutput.value || !prompt) return
   iterationSource.value = activeOutput.value
   iterationBrief.value = prompt
-  inputFile.value = null
-  sourcePreview.value = ''
+  referenceImages.value = []
   if (fileInput.value) fileInput.value.value = ''
   qualityAuditOpen.value = false
   tabletPane.value = 'controls'
@@ -1635,8 +2504,7 @@ function applyQualityAuditFixes() {
   if (!activeOutput.value || !prompt) return
   iterationSource.value = activeOutput.value
   iterationBrief.value = prompt
-  inputFile.value = null
-  sourcePreview.value = ''
+  referenceImages.value = []
   if (fileInput.value) fileInput.value.value = ''
   qualityAuditOpen.value = false
   tabletPane.value = 'controls'
@@ -1666,7 +2534,7 @@ function handleEditableDocumentSaved(entry) {
     entry,
     ...editableHistory.value.filter((item) => item?.id !== entry.id),
   ].slice(0, 12)
-  historyMode.value = 'editable'
+  setScopedLocalItem(EDITABLE_HISTORY_KEY, JSON.stringify(editableHistory.value))
 }
 
 function handleAnalysisSession(session) {
@@ -1727,11 +2595,12 @@ function formatEditableHistoryDate(value) {
           @click="tabletPane = 'canvas'"
         >
           <i class="bi bi-easel2" aria-hidden="true"></i><span>画布</span>
-          <em v-if="versionGroups.length">{{ versionGroups.length }}</em>
+          <em v-if="versionMajors.length">{{ versionMajors.length }}</em>
         </button>
       </nav>
 
       <aside class="dws-panel" data-studio-enter>
+        <div class="dws-panel-scroll">
         <section class="dws-engine">
           <span class="dws-engine-icon" aria-hidden="true">
             <i class="bi bi-cpu"></i>
@@ -1752,209 +2621,294 @@ function formatEditableHistoryDate(value) {
           </div>
         </section>
 
-        <section class="dws-block dws-reference-block">
-          <span class="dws-label">参考界面（可选）</span>
-          <div v-if="iterationSource" class="dws-reference is-iteration">
-            <AuthenticatedImage :src="iterationSource" alt="迭代基准版本" :max-dimension="240" />
-            <div>
-              <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
-              <span>仅修改明确描述的内容，其余保持不变</span>
-            </div>
-            <button type="button" aria-label="取消迭代" @click="clearReference">
-              <i class="bi bi-x-lg" aria-hidden="true"></i>
-            </button>
-          </div>
-          <div v-else-if="sourcePreview" class="dws-reference">
-            <img :src="sourcePreview" alt="参考界面预览" loading="eager" decoding="async" />
-            <div>
-              <strong data-no-translate>{{ inputFile?.name }}</strong>
-              <span>将基于此界面重新设计</span>
-            </div>
-            <button type="button" aria-label="移除参考图" @click="clearReference">
-              <i class="bi bi-x-lg" aria-hidden="true"></i>
-            </button>
-          </div>
-          <button v-else type="button" class="dws-upload" @click="fileInput?.click()">
-            <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
-            <span>导入界面截图或线框图重绘</span>
-          </button>
-          <input ref="fileInput" hidden type="file" accept="image/*" @change="chooseFile" />
-        </section>
-
-        <section class="dws-block">
-          <textarea
-            id="dws-brief"
-            ref="briefField"
-            v-model="briefInput"
-            rows="4"
-            maxlength="1000"
-            :aria-label="isIteration ? '本次迭代要求' : '产品与页面描述'"
-            :placeholder="
-              isIteration
-                ? '只描述需要修改的部分，例如：仅将主按钮改为蓝色，其余布局和文字保持不变'
-                : inputFile
-                  ? '描述要在参考界面基础上修改或强化的内容…'
+        <section class="dws-block dws-composer-block">
+          <div
+            class="dws-composer"
+            :class="{
+              'is-dragging': composerDragging,
+              'has-reference': hasReference,
+              'is-iteration': isIteration,
+            }"
+            @dragenter="onComposerDragEnter"
+            @dragover="onComposerDragOver"
+            @dragleave="onComposerDragLeave"
+            @drop="onComposerDrop"
+          >
+            <textarea
+              id="dws-brief"
+              ref="briefField"
+              v-model="briefInput"
+              rows="5"
+              maxlength="1000"
+              :aria-label="isIteration ? '本次迭代要求' : '产品与页面描述'"
+              :placeholder="
+                isIteration
+                  ? '只写需要改的地方，例如：主按钮改成蓝色，其余保持不变'
                   : '这是一个什么产品？页面上要有什么内容？'
-            "
-          ></textarea>
-        </section>
-
-        <section class="dws-block">
-          <span class="dws-label">设备载体</span>
-          <div class="dws-devices" role="group" aria-label="设备载体">
-            <button
-              v-for="item in DEVICE_OPTIONS"
-              :key="item.id"
-              type="button"
-              :class="{ 'is-on': deviceId === item.id }"
-              :aria-pressed="deviceId === item.id"
-              @click="deviceId = item.id"
-            >
-              <i class="bi" :class="item.icon" aria-hidden="true"></i>
-              <span>{{ item.label }}</span>
-              <small data-no-translate>{{ item.ratio }}</small>
-            </button>
-          </div>
-        </section>
-
-        <section class="dws-block dws-quick-settings">
-          <div class="dws-select-field">
-            <span class="dws-label">页面类型</span>
-            <button
-              ref="pageTypePickerTrigger"
-              type="button"
-              class="dws-page-type-trigger"
-              aria-haspopup="dialog"
-              :aria-expanded="pageTypePickerOpen"
-              aria-label="页面类型"
-              @click="pageTypePickerOpen ? closePageTypePicker() : openPageTypePicker()"
-            >
-              <i class="bi" :class="pageType.icon" aria-hidden="true"></i>
-              <span>{{ pageType.label }}</span>
-              <i class="bi bi-chevron-right" aria-hidden="true"></i>
-            </button>
-          </div>
-          <div class="dws-select-field">
-            <span class="dws-label">视觉风格</span>
-            <button
-              ref="stylePickerTrigger"
-              type="button"
-              class="dws-page-type-trigger"
-              aria-haspopup="dialog"
-              :aria-expanded="activeConfigPanel === 'style'"
-              aria-label="视觉风格"
-              @click="
-                activeConfigPanel === 'style'
-                  ? closeConfigPicker()
-                  : openConfigPicker('style', stylePickerTrigger)
               "
+              @paste="handleBriefPaste"
+            ></textarea>
+
+            <div
+              v-if="iterationSource || referenceImages.length"
+              class="dws-composer-media"
+              aria-label="参考内容"
             >
-              <i class="bi" :class="styleOption.icon" aria-hidden="true"></i>
-              <span>{{ styleOption.label }}</span>
-              <i class="bi bi-chevron-right" aria-hidden="true"></i>
-            </button>
+              <div v-if="iterationSource" class="dws-composer-iteration">
+                <AuthenticatedImage
+                  :src="iterationSource"
+                  alt="迭代基准版本"
+                  :max-dimension="240"
+                />
+                <div>
+                  <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
+                  <small>仅修改明确描述的内容</small>
+                </div>
+              </div>
+              <div v-else class="dws-composer-refs">
+                <article v-for="(item, index) in referenceImages" :key="item.id">
+                  <img :src="item.preview" :alt="item.name || `参考图 ${index + 1}`" />
+                  <button
+                    type="button"
+                    :aria-label="`移除参考图 ${index + 1}`"
+                    @click="removeReferenceImage(item.id)"
+                  >
+                    <i class="bi bi-x" aria-hidden="true"></i>
+                  </button>
+                </article>
+              </div>
+            </div>
+
+            <footer class="dws-composer-bar">
+              <button
+                type="button"
+                class="dws-composer-add"
+                :disabled="isIteration || !canAddReferences"
+                :title="
+                  isIteration
+                    ? '迭代模式使用当前版本作参考'
+                    : canAddReferences
+                      ? `添加参考图（${referenceImages.length}/${MAX_REFERENCE_IMAGES}）`
+                      : `参考图已满 ${MAX_REFERENCE_IMAGES} 张`
+                "
+                :aria-label="
+                  canAddReferences
+                    ? `添加参考图，还可添加 ${referenceSlotsLeft} 张`
+                    : `参考图已满 ${MAX_REFERENCE_IMAGES} 张`
+                "
+                @click="fileInput?.click()"
+              >
+                <i class="bi bi-plus-lg" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                class="dws-composer-clear"
+                :disabled="!canClearComposer"
+                title="清空内容"
+                aria-label="清空内容"
+                @click="clearComposer()"
+              >
+                <i class="bi bi-trash3" aria-hidden="true"></i>
+              </button>
+            </footer>
           </div>
           <input
-            v-if="pageTypeId === 'custom'"
-            v-model="customPageType"
-            class="dws-custom-structure"
-            type="text"
-            maxlength="120"
-            placeholder="描述页面结构，例如：顶部搜索栏 + 左侧筛选 + 卡片瀑布流"
-            aria-label="自定义页面结构"
+            ref="fileInput"
+            hidden
+            type="file"
+            accept="image/*"
+            multiple
+            @change="chooseFile"
           />
         </section>
 
-        <section class="dws-block dws-color-row">
-          <div class="dws-color-brand dws-select-field">
-            <span class="dws-label">品牌主色</span>
-            <button
-              ref="brandPickerTrigger"
-              type="button"
-              class="dws-page-type-trigger dws-brand-trigger"
-              aria-haspopup="dialog"
-              :aria-expanded="activeConfigPanel === 'brand'"
-              aria-label="品牌主色"
-              @click="
-                activeConfigPanel === 'brand'
-                  ? closeConfigPicker()
-                  : openConfigPicker('brand', brandPickerTrigger)
-              "
-            >
-              <i class="dws-brand-dot" :style="{ background: brandColor }" aria-hidden="true"></i>
-              <span>{{
-                BRAND_COLOR_OPTIONS.find((item) => item.value === brandColor)?.label
-              }}</span>
-              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+        <section v-if="isIteration" class="dws-block dws-iteration-guide" aria-live="polite">
+          <header>
+            <div>
+              <small>CONTROLLED ITERATION</small>
+              <strong>受控迭代进行中</strong>
+            </div>
+            <button type="button" class="dws-iteration-exit" @click="clearReference()">
+              退出迭代
             </button>
-          </div>
-          <div class="dws-color-scheme">
-            <span class="dws-label">明暗模式</span>
-            <div class="dws-scheme" role="group" aria-label="明暗模式">
-              <button
-                type="button"
-                :class="{ 'is-on': colorScheme === 'light' }"
-                :aria-pressed="colorScheme === 'light'"
-                @click="colorScheme = 'light'"
+          </header>
+          <ol>
+            <li>
+              <b>1</b>
+              <span
+                >基准成稿 <em data-no-translate>{{ iterationTargetLabel }}</em
+                >，只出这一端</span
               >
-                <i class="bi bi-sun" aria-hidden="true"></i>浅色
-              </button>
-              <button
-                type="button"
-                :class="{ 'is-on': colorScheme === 'dark' }"
-                :aria-pressed="colorScheme === 'dark'"
-                @click="colorScheme = 'dark'"
-              >
-                <i class="bi bi-moon-stars" aria-hidden="true"></i>深色
-              </button>
+            </li>
+            <li>
+              <b>2</b>
+              <span>在上方输入框写「只改什么」，例如：主按钮改成橙色</span>
+            </li>
+            <li>
+              <b>3</b>
+              <span>其余布局、配色、组件、文案全部锁定，不会按下方参数重做</span>
+            </li>
+          </ol>
+          <div class="dws-iteration-lock">
+            <i class="bi bi-lock-fill" aria-hidden="true"></i>
+            <div>
+              <strong>本次不生效</strong>
+              <small>设备多选、页面类型、视觉风格、品牌主色、明暗模式、设计规范</small>
             </div>
           </div>
-        </section>
-
-        <section class="dws-block dws-specification">
-          <button
-            ref="specificationTrigger"
-            type="button"
-            class="dws-specification-toggle"
-            aria-haspopup="dialog"
-            :aria-expanded="activeConfigPanel === 'specification'"
-            @click="
-              activeConfigPanel === 'specification'
-                ? closeConfigPicker()
-                : openConfigPicker('specification', specificationTrigger)
-            "
-          >
+          <div v-if="iterationDevice" class="dws-iteration-device">
+            <i class="bi" :class="iterationDevice.icon" aria-hidden="true"></i>
             <span>
-              <i class="bi bi-grid-3x3-gap" aria-hidden="true"></i>
-              <strong>设计规范</strong>
-              <small
-                >8pt · {{ designMetrics.columns }} 列 · {{ designMetrics.controlHeight }}px
-                控件</small
-              >
+              迭代输出：{{ iterationDevice.label }} ·
+              {{ iterationDevice.ratio }}
             </span>
-            <i class="bi bi-chevron-right" aria-hidden="true"></i>
-          </button>
-        </section>
-
-        <section class="dws-block dws-count-wrap">
-          <span class="dws-label">生成数量</span>
-          <div class="dws-count" role="group" aria-label="生成数量">
-            <button
-              v-for="count in COUNT_OPTIONS"
-              :key="count"
-              type="button"
-              :class="{ 'is-on': imageCount === count }"
-              :aria-pressed="imageCount === count"
-              @click="imageCount = count"
-            >
-              {{ count }}
-            </button>
           </div>
         </section>
+
+        <template v-else>
+          <section class="dws-block">
+            <span class="dws-label">设备载体 · 可多选同版生成</span>
+            <div class="dws-devices" role="group" aria-label="设备载体">
+              <button
+                v-for="item in DEVICE_OPTIONS"
+                :key="item.id"
+                type="button"
+                :class="{ 'is-on': selectedDeviceIds.includes(item.id) }"
+                :aria-pressed="selectedDeviceIds.includes(item.id)"
+                :title="`${item.label} ${item.ratio}`"
+                :aria-label="`${item.label} ${item.ratio}`"
+                @click="toggleDeviceSelection(item.id)"
+              >
+                <i class="bi" :class="item.icon" aria-hidden="true"></i>
+                <small data-no-translate>{{ item.ratio }}</small>
+              </button>
+            </div>
+          </section>
+
+          <section class="dws-block dws-quick-settings">
+            <div class="dws-select-field">
+              <span class="dws-label">页面类型</span>
+              <button
+                ref="pageTypePickerTrigger"
+                type="button"
+                class="dws-page-type-trigger"
+                aria-haspopup="dialog"
+                :aria-expanded="pageTypePickerOpen"
+                aria-label="页面类型"
+                @click="pageTypePickerOpen ? closePageTypePicker() : openPageTypePicker()"
+              >
+                <i class="bi" :class="pageType.icon" aria-hidden="true"></i>
+                <span>{{ pageType.label }}</span>
+                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div class="dws-select-field">
+              <span class="dws-label">视觉风格</span>
+              <button
+                ref="stylePickerTrigger"
+                type="button"
+                class="dws-page-type-trigger"
+                aria-haspopup="dialog"
+                :aria-expanded="activeConfigPanel === 'style'"
+                aria-label="视觉风格"
+                @click="
+                  activeConfigPanel === 'style'
+                    ? closeConfigPicker()
+                    : openConfigPicker('style', stylePickerTrigger)
+                "
+              >
+                <i class="bi" :class="styleOption.icon" aria-hidden="true"></i>
+                <span>{{ styleOption.label }}</span>
+                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+              </button>
+            </div>
+            <input
+              v-if="pageTypeId === 'custom'"
+              v-model="customPageType"
+              class="dws-custom-structure"
+              type="text"
+              maxlength="120"
+              placeholder="描述页面结构，例如：顶部搜索栏 + 左侧筛选 + 卡片瀑布流"
+              aria-label="自定义页面结构"
+            />
+          </section>
+
+          <section class="dws-block dws-color-row">
+            <div class="dws-color-brand dws-select-field">
+              <span class="dws-label">品牌主色</span>
+              <button
+                ref="brandPickerTrigger"
+                type="button"
+                class="dws-page-type-trigger dws-brand-trigger"
+                aria-haspopup="dialog"
+                :aria-expanded="activeConfigPanel === 'brand'"
+                aria-label="品牌主色"
+                @click="
+                  activeConfigPanel === 'brand'
+                    ? closeConfigPicker()
+                    : openConfigPicker('brand', brandPickerTrigger)
+                "
+              >
+                <i class="dws-brand-dot" :style="{ background: brandColor }" aria-hidden="true"></i>
+                <span>{{
+                  BRAND_COLOR_OPTIONS.find((item) => item.value === brandColor)?.label
+                }}</span>
+                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div class="dws-color-scheme">
+              <span class="dws-label">明暗模式</span>
+              <div class="dws-scheme" role="group" aria-label="明暗模式">
+                <button
+                  type="button"
+                  :class="{ 'is-on': colorScheme === 'light' }"
+                  :aria-pressed="colorScheme === 'light'"
+                  @click="colorScheme = 'light'"
+                >
+                  <i class="bi bi-sun" aria-hidden="true"></i>浅色
+                </button>
+                <button
+                  type="button"
+                  :class="{ 'is-on': colorScheme === 'dark' }"
+                  :aria-pressed="colorScheme === 'dark'"
+                  @click="colorScheme = 'dark'"
+                >
+                  <i class="bi bi-moon-stars" aria-hidden="true"></i>深色
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="dws-block dws-specification">
+            <button
+              ref="specificationTrigger"
+              type="button"
+              class="dws-specification-toggle"
+              aria-haspopup="dialog"
+              :aria-expanded="activeConfigPanel === 'specification'"
+              @click="
+                activeConfigPanel === 'specification'
+                  ? closeConfigPicker()
+                  : openConfigPicker('specification', specificationTrigger)
+              "
+            >
+              <span>
+                <i class="bi bi-sliders" aria-hidden="true"></i>
+                <strong>设计规范</strong>
+                <small>
+                  {{ designMetrics.columns }} 列 · {{ designMetrics.controlHeight }}px ·
+                  {{ specificationSummary }}
+                </small>
+              </span>
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
+          </section>
+        </template>
 
         <details class="dws-prompt-preview" :open="promptPreviewOpen">
           <summary @click.prevent="promptPreviewOpen = !promptPreviewOpen">
-            <i class="bi bi-braces" aria-hidden="true"></i>查看将要发送的完整提示词
+            <i class="bi bi-braces" aria-hidden="true"></i
+            >{{ isIteration ? '查看本次迭代将发送的提示词' : '查看将要发送的完整提示词' }}
             <i
               class="bi bi-chevron-down"
               :class="{ 'is-open': promptPreviewOpen }"
@@ -1968,12 +2922,13 @@ function formatEditableHistoryDate(value) {
           <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
           {{ localError || generationError }}
         </p>
+        </div>
 
         <div class="dws-generate-dock">
           <button
             class="dws-generate"
             type="button"
-            :disabled="running"
+            :disabled="running || tileRefineBusy"
             :aria-label="`${generateActionLabel}，${costLabel}`"
             @click="generate"
           >
@@ -1982,7 +2937,15 @@ function formatEditableHistoryDate(value) {
             </span>
             <span class="dws-generate-copy">
               <strong>{{ running ? status || '生成中…' : generateActionLabel }}</strong>
-              <small>{{ running ? '正在创建界面结构与视觉细节' : '预计扣费' }}</small>
+              <small>{{
+                running
+                  ? isIteration
+                    ? '正在按描述做局部修改'
+                    : '正在创建界面结构与视觉细节'
+                  : isIteration
+                    ? '只改描述内容 · 预计扣费'
+                    : '预计扣费'
+              }}</small>
             </span>
             <span v-if="costLabel" class="dws-generate-price">
               <strong>{{ costDisplay.price }}</strong>
@@ -1999,6 +2962,7 @@ function formatEditableHistoryDate(value) {
           <span>{{ device.label }}</span>
           <b>{{ device.ratio }}</b>
           <em v-if="activeVersionLabel">{{ activeVersionLabel }}</em>
+          <em v-if="isActiveTileRefine" class="is-tile-refine-tag">四宫格精修</em>
         </div>
 
         <div class="dws-stage-spec" data-no-translate aria-hidden="true">
@@ -2057,15 +3021,37 @@ function formatEditableHistoryDate(value) {
           </button>
           <button
             type="button"
-            :disabled="!activeOutput || running"
-            title="以当前版本为基础继续修改"
+            :disabled="!activeOutput || running || !canIterateActive || tileRefineBusy"
+            :title="
+              canIterateActive
+                ? '以当前版本为基础继续修改'
+                : '已达最终版本 Vn.n.n，请新建大版本'
+            "
             @click="iterateFromActive"
           >
             <i class="bi bi-arrow-repeat" aria-hidden="true"></i><span>迭代此版本</span>
           </button>
           <button
             type="button"
-            :disabled="!activeOutput"
+            class="is-tile-refine"
+            :disabled="!activeOutput || running || tileRefineBusy"
+            :title="
+              activeTileRefineEntry
+                ? '这张稿已精修过，点击查看结果或重新精修（Beta）'
+                : `十字切成 4 块并发生成，再按原坐标硬拼回整图（尺寸与像素网格对齐原图；Beta，约 ${tileRefineCostLabel}）`
+            "
+            @click="handleTileRefineClick"
+          >
+            <i
+              class="bi"
+              :class="tileRefineBusy ? 'bi-arrow-repeat spin' : 'bi-grid-3x3-gap'"
+              aria-hidden="true"
+            ></i>
+            <span>{{ tileRefineBusy ? '精修中' : activeTileRefineEntry ? '查看精修' : '四宫格精修' }}</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!activeOutput || tileRefineBusy"
             title="下载设计稿"
             @click="downloadActive"
           >
@@ -2073,281 +3059,431 @@ function formatEditableHistoryDate(value) {
           </button>
         </div>
 
-        <div class="dws-canvas">
-          <div
-            ref="artboardRef"
-            class="dws-artboard"
-            :class="{
-              'is-previewable': activeOutput && !running && !regionSelectionMode,
-              'is-region-selecting': regionSelectionMode,
-            }"
-            :style="artboardStyle"
-            :role="activeOutput && !running ? 'button' : undefined"
-            :tabindex="activeOutput && !running ? 0 : undefined"
-            :aria-label="activeOutput && !running ? '查看当前设计稿大图' : undefined"
-            @click="handleArtboardClick"
-            @keydown.enter.prevent="!regionSelectionMode && openActivePreview()"
-            @keydown.space.prevent="!regionSelectionMode && openActivePreview()"
-          >
-            <AuthenticatedImage
-              v-if="activeOutput"
-              data-studio-output
-              :src="activeOutput"
-              alt="UI 设计稿预览"
-              loading="eager"
-              :retry-count="2"
-              @error="mediaError = '图片加载失败，请切换版本或重新生成'"
-            />
-            <div v-else class="dws-empty">
-              <div class="dws-empty-sketch" aria-hidden="true">
-                <header><i></i><span></span><b></b><b></b></header>
+        <div
+          class="dws-canvas"
+          :class="{
+            'is-multi-loading': showMultiDeviceLoading,
+            'is-device-rail': showDeviceRail,
+            'is-tile-refine': tileRefineBusy,
+          }"
+        >
+          <div v-if="tileRefineBusy" class="dws-tile-refine" aria-live="polite">
+            <div class="dws-tile-refine-card">
+              <header>
+                <i class="bi bi-grid-3x3-gap" aria-hidden="true"></i>
                 <div>
-                  <aside><i></i><i></i><i></i><i></i></aside>
-                  <div class="dws-empty-content">
-                    <span class="is-hero"></span>
-                    <span class="is-copy"></span>
-                    <section><i></i><i></i><i></i></section>
-                  </div>
+                  <strong>{{
+                    tileRefinePhase === 'preparing'
+                      ? '正在精密切图…'
+                      : tileRefinePhase === 'stitching'
+                        ? '正在无损拼接四象限…'
+                        : '正在分象限高精度重绘…'
+                  }}</strong>
+                  <small>标准比例贴边 → 四路精修 → 对齐回裁 → 归属区防重影拼接</small>
                 </div>
-              </div>
-              <strong>画布等待第一稿</strong>
-              <span>{{ device.label }} · {{ device.ratio }} · {{ pageType.label }}</span>
-            </div>
-            <div
-              v-if="activeOutput && (regionSelectionMode || regionSelection)"
-              class="dws-region-layer"
-              :class="{ 'is-drawing': regionSelectionMode }"
-              @pointerdown.prevent="beginRegionSelection"
-              @pointermove.prevent="moveRegionSelection"
-              @pointerup.prevent="finishRegionSelection"
-              @pointercancel="cancelRegionSelectionPointer"
-            >
-              <span
-                v-if="regionSelectionMode"
-                class="dws-region-hint"
-                :class="{ 'is-error': regionReviewError }"
-                role="status"
-              >
-                <i
-                  class="bi"
-                  :class="regionReviewError ? 'bi-exclamation-circle' : 'bi-bounding-box-circles'"
-                  aria-hidden="true"
-                ></i
-                >{{ regionReviewError || '拖拽框选需要优化的区域' }}
-              </span>
-              <div v-if="regionSelection" class="dws-region-box" :style="regionSelectionStyle">
-                <i></i><i></i><i></i><i></i>
-                <button
-                  v-if="!regionSelectionMode"
-                  type="button"
-                  aria-label="清除框选区域"
-                  @pointerdown.stop
-                  @click.stop="clearRegionSelection"
+              </header>
+              <ul>
+                <li
+                  v-for="(item, index) in tileRefineProgress"
+                  :key="`tile-progress-${index}`"
+                  :class="`is-${item.status || 'pending'}`"
                 >
-                  <i class="bi bi-x" aria-hidden="true"></i>
-                </button>
-              </div>
-            </div>
-            <div
-              v-if="qualityMarkedIssues.length && !regionSelectionMode && !running"
-              class="dws-quality-marks"
-              aria-label="品质问题定位"
-            >
-              <button
-                v-for="(issue, index) in qualityMarkedIssues"
-                :key="issue.id"
-                type="button"
-                :class="[
-                  `is-${issue.severity}`,
-                  { 'is-active': activeQualityIssue?.id === issue.id },
-                ]"
-                :style="normalizedRegionStyle(issue.region)"
-                :aria-label="`定位问题 ${index + 1}：${issue.title}`"
-                @click.stop="openLocatedQualityIssue(issue.id)"
-              >
-                <b>{{ index + 1 }}</b
-                ><span>{{ issue.title }}</span>
-              </button>
-            </div>
-            <div v-if="running" class="dws-running" aria-live="polite">
-              <span class="dws-running-scan" aria-hidden="true"></span>
-              <i class="bi bi-stars" aria-hidden="true"></i>
-              <strong>{{ status || (cancelling ? '正在停止后续生成' : '正在生成设计稿…') }}</strong>
-              <span>{{
-                cancelling
-                  ? '排队任务会取消并退款，已开始任务继续完成'
-                  : '正在组织布局、组件与视觉层级'
-              }}</span>
+                  <i
+                    class="bi"
+                    :class="
+                      item.status === 'done'
+                        ? 'bi-check-circle-fill'
+                        : item.status === 'failed' || item.status === 'cancelled'
+                          ? 'bi-x-circle'
+                          : item.status === 'running'
+                            ? 'bi-arrow-repeat spin'
+                            : 'bi-circle'
+                    "
+                    aria-hidden="true"
+                  ></i>
+                  <span>{{ item.label || `象限 ${index + 1}` }}</span>
+                  <em>{{
+                    item.status === 'done'
+                      ? '完成'
+                      : item.status === 'failed'
+                        ? '失败'
+                        : item.status === 'running'
+                          ? '精修中'
+                          : item.status === 'cancelled'
+                            ? '已取消'
+                            : tileRefinePhase === 'stitching'
+                              ? '待拼接'
+                              : '排队'
+                  }}</em>
+                </li>
+              </ul>
               <button
                 type="button"
                 class="dws-running-cancel"
-                :disabled="cancelling"
-                :aria-busy="cancelling"
+                :disabled="cancelling || tileRefinePhase === 'stitching'"
                 @click="cancelGeneration()"
               >
-                <i
-                  class="bi"
-                  :class="cancelling ? 'bi-arrow-repeat spin' : 'bi-stop-fill'"
-                  aria-hidden="true"
-                ></i>
-                {{ cancelling ? '正在确认' : '停止后续生成' }}
+                {{ cancelling ? '正在停止…' : '停止精修' }}
               </button>
             </div>
           </div>
+
+          <div v-if="showMultiDeviceLoading" class="dws-multi-board" aria-live="polite">
+            <article
+              v-for="slot in canvasDeviceSlots"
+              :key="`loading-${slot.deviceId}`"
+              class="dws-multi-slot"
+              :class="[`is-${slot.status || 'pending'}`, { 'is-ready': Boolean(slot.url) }]"
+            >
+              <div class="dws-multi-frame" :style="slotFrameStyle(slot)">
+                <AuthenticatedImage
+                  v-if="slot.url"
+                  :src="slot.url"
+                  :alt="`${slot.label} 预览`"
+                  :max-dimension="720"
+                />
+                <div v-else class="dws-multi-loading">
+                  <span class="dws-running-scan" aria-hidden="true"></span>
+                  <i
+                    class="bi"
+                    :class="
+                      slot.status === 'failed'
+                        ? 'bi-exclamation-circle'
+                        : slot.status === 'cancelled'
+                          ? 'bi-stop-circle'
+                          : 'bi-arrow-repeat spin'
+                    "
+                    aria-hidden="true"
+                  ></i>
+                  <strong>
+                    {{
+                      slot.status === 'failed'
+                        ? '生成失败'
+                        : slot.status === 'cancelled'
+                          ? '已取消'
+                          : slot.status === 'running'
+                            ? '生成中…'
+                            : '排队中…'
+                    }}
+                  </strong>
+                  <small>{{ slot.message || `${slot.label} · ${slot.ratio}` }}</small>
+                </div>
+              </div>
+              <header>
+                <i class="bi" :class="slot.icon" aria-hidden="true"></i>
+                <span>{{ slot.label }}</span>
+                <em data-no-translate>{{ slot.ratio }}</em>
+              </header>
+            </article>
+            <button
+              type="button"
+              class="dws-running-cancel is-multi"
+              :disabled="cancelling"
+              :aria-busy="cancelling"
+              @click="cancelGeneration()"
+            >
+              <i
+                class="bi"
+                :class="cancelling ? 'bi-arrow-repeat spin' : 'bi-stop-fill'"
+                aria-hidden="true"
+              ></i>
+              {{ cancelling ? '正在确认' : '停止后续生成' }}
+            </button>
+          </div>
+
+          <template v-else>
+            <div
+              ref="artboardRef"
+              class="dws-artboard"
+              :class="{
+                'is-previewable': activeOutput && !running && !regionSelectionMode,
+                'is-region-selecting': regionSelectionMode,
+              }"
+              :style="artboardStyle"
+              :role="activeOutput && !running ? 'button' : undefined"
+              :tabindex="activeOutput && !running ? 0 : undefined"
+              :aria-label="activeOutput && !running ? '查看当前设计稿大图' : undefined"
+              @click="handleArtboardClick()"
+              @keydown.enter.prevent="!regionSelectionMode && openActivePreview()"
+              @keydown.space.prevent="!regionSelectionMode && openActivePreview()"
+            >
+              <div v-if="activeOutput" class="dws-artboard-stage">
+                <div class="dws-artboard-page">
+                  <AuthenticatedImage
+                    data-studio-output
+                    :src="activeOutput"
+                    alt="UI 设计稿预览"
+                    loading="eager"
+                    :retry-count="2"
+                    @error="mediaError = '图片加载失败，请切换版本或重新生成'"
+                  />
+                  <div
+                    v-if="regionSelectionMode || regionSelection"
+                    class="dws-region-layer"
+                    :class="{ 'is-drawing': regionSelectionMode }"
+                    @pointerdown.prevent="beginRegionSelection"
+                    @pointermove.prevent="moveRegionSelection"
+                    @pointerup.prevent="finishRegionSelection"
+                    @pointercancel="cancelRegionSelectionPointer"
+                  >
+                    <span
+                      v-if="regionSelectionMode"
+                      class="dws-region-hint"
+                      :class="{ 'is-error': regionReviewError }"
+                      role="status"
+                    >
+                      <i
+                        class="bi"
+                        :class="
+                          regionReviewError ? 'bi-exclamation-circle' : 'bi-bounding-box-circles'
+                        "
+                        aria-hidden="true"
+                      ></i
+                      >{{ regionReviewError || '拖拽框选需要优化的区域' }}
+                    </span>
+                    <div
+                      v-if="regionSelection"
+                      class="dws-region-box"
+                      :style="regionSelectionStyle"
+                    >
+                      <i></i><i></i><i></i><i></i>
+                      <button
+                        v-if="!regionSelectionMode"
+                        type="button"
+                        aria-label="清除框选区域"
+                        @pointerdown.stop
+                        @click.stop="clearRegionSelection"
+                      >
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    v-if="qualityMarkedIssues.length && !regionSelectionMode && !running"
+                    class="dws-quality-marks"
+                    aria-label="品质问题定位"
+                  >
+                    <button
+                      v-for="(issue, index) in qualityMarkedIssues"
+                      :key="issue.id"
+                      type="button"
+                      :class="[
+                        `is-${issue.severity}`,
+                        { 'is-active': activeQualityIssue?.id === issue.id },
+                      ]"
+                      :style="normalizedRegionStyle(issue.region)"
+                      :aria-label="`定位问题 ${index + 1}：${issue.title}`"
+                      @click.stop="openLocatedQualityIssue(issue.id)"
+                    >
+                      <b>{{ index + 1 }}</b
+                      ><span>{{ issue.title }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="dws-empty">
+                <div class="dws-empty-sketch" aria-hidden="true">
+                  <header><i></i><span></span><b></b><b></b></header>
+                  <div>
+                    <aside><i></i><i></i><i></i><i></i></aside>
+                    <div class="dws-empty-content">
+                      <span class="is-hero"></span>
+                      <span class="is-copy"></span>
+                      <section><i></i><i></i><i></i></section>
+                    </div>
+                  </div>
+                </div>
+                <strong>画布等待第一稿</strong>
+                <span
+                  >{{ device.label }} · {{ device.ratio }} · {{ pageType.label }}</span
+                >
+              </div>
+              <div v-if="running" class="dws-running" aria-live="polite">
+                <span class="dws-running-scan" aria-hidden="true"></span>
+                <i class="bi bi-stars" aria-hidden="true"></i>
+                <strong>{{
+                  status || (cancelling ? '正在停止后续生成' : '正在生成设计稿…')
+                }}</strong>
+                <span>{{
+                  cancelling
+                    ? '排队任务会取消并退款，已开始任务继续完成'
+                    : '正在组织布局、组件与视觉层级'
+                }}</span>
+                <button
+                  type="button"
+                  class="dws-running-cancel"
+                  :disabled="cancelling"
+                  :aria-busy="cancelling"
+                  @click="cancelGeneration()"
+                >
+                  <i
+                    class="bi"
+                    :class="cancelling ? 'bi-arrow-repeat spin' : 'bi-stop-fill'"
+                    aria-hidden="true"
+                  ></i>
+                  {{ cancelling ? '正在确认' : '停止后续生成' }}
+                </button>
+              </div>
+            </div>
+
+            <aside
+              v-if="showDeviceRail"
+              class="dws-device-rail"
+              aria-label="多端预览切换"
+            >
+              <button
+                v-for="slot in canvasDeviceSlots"
+                :key="`rail-${slot.deviceId}`"
+                type="button"
+                :class="{ 'is-on': activeOutput === slot.url || viewDeviceId === slot.deviceId }"
+                :aria-pressed="activeOutput === slot.url"
+                :title="`${slot.label} ${slot.ratio}`"
+                @click="selectCarrier(slot)"
+              >
+                <span class="dws-device-rail-thumb" :style="slotFrameStyle(slot)">
+                  <AuthenticatedImage
+                    v-if="slot.url"
+                    :src="slot.url"
+                    alt=""
+                    :max-dimension="240"
+                  />
+                  <i v-else class="bi" :class="slot.icon" aria-hidden="true"></i>
+                </span>
+                <span class="dws-device-rail-meta">
+                  <strong>{{ slot.label }}</strong>
+                  <small data-no-translate>{{ slot.ratio }}</small>
+                </span>
+              </button>
+            </aside>
+          </template>
         </div>
 
         <p v-if="mediaError" class="dws-error is-stage" role="alert">{{ mediaError }}</p>
 
         <footer
-          v-if="outputs.length || historyLoading || editableHistory.length"
+          v-if="versionMajors.length || historyLoading"
           class="dws-versions-wrap"
-          aria-label="历史记录"
+          aria-label="设计版本"
         >
-          <div class="dws-history-toolbar">
-            <div class="dws-history-heading">
-              <span>
-                <i class="bi bi-clock-history" aria-hidden="true"></i>
-                <strong>设计历史</strong>
-              </span>
-              <small>
-                {{ historyMode === 'images' ? '按版本展开迭代链' : '分析完成后自动更新' }}
-              </small>
-            </div>
-            <div class="dws-history-tabs" role="tablist" aria-label="设计历史分类">
-              <button
-                type="button"
-                role="tab"
-                :class="{ 'is-on': historyMode === 'images' }"
-                :aria-selected="historyMode === 'images'"
-                aria-controls="dws-generated-history"
-                @click="historyMode = 'images'"
-              >
-                <i class="bi bi-images" aria-hidden="true"></i>
-                <strong>版本</strong>
-                <em>{{ versionFamilies.length }}</em>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                :class="{ 'is-on': historyMode === 'editable' }"
-                :aria-selected="historyMode === 'editable'"
-                aria-controls="dws-analysis-history"
-                @click="historyMode = 'editable'"
-              >
-                <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
-                <strong>元素分析</strong>
-                <em>{{ editableHistory.length }}</em>
-              </button>
-            </div>
-          </div>
-          <div
-            v-if="historyMode === 'images'"
-            id="dws-generated-history"
-            class="dws-version-history"
-            role="tabpanel"
+          <button
+            type="button"
+            class="dws-history-page is-prev"
+            :disabled="!canPrevHistoryPage"
+            aria-label="上一页历史"
+            @click="goPrevHistoryPage()"
           >
-            <div class="dws-version-families" aria-label="版本列表">
+            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+          </button>
+          <div ref="historyViewport" class="dws-version-history">
+            <div class="dws-version-families" aria-label="大版本列表">
               <div
-                v-for="family in versionFamilies"
-                :key="family.id"
+                v-for="major in pagedVersionMajors"
+                :key="major.id"
                 class="dws-version-family"
+                :class="{ 'is-on': isMajorActive(major.id) }"
               >
                 <button
                   type="button"
-                  :class="{ 'is-on': expandedVersionFamilyId === family.id }"
-                  :aria-expanded="expandedVersionFamilyId === family.id"
-                  @click="toggleVersionFamily(family)"
+                  class="dws-family-main"
+                  :title="`在画布显示 ${major.label}`"
+                  :aria-label="`在画布显示 ${major.label}${
+                    major.devices.length
+                      ? `，${major.devices.map((item) => item.label).join('、')}`
+                      : ''
+                  }`"
+                  :aria-pressed="isMajorActive(major.id)"
+                  @click="selectMajorOnCanvas(major.id)"
                 >
                   <span class="dws-family-thumb">
-                    <AuthenticatedImage :src="family.cover" alt="" :max-dimension="320" />
+                    <AuthenticatedImage
+                      v-if="major.cover"
+                      :src="major.cover"
+                      alt=""
+                      :max-dimension="320"
+                    />
                   </span>
                   <span class="dws-family-meta">
-                    <strong data-no-translate>{{ family.label }}</strong>
-                    <small>{{ family.iterationCount }} 次迭代 · {{ family.outputs.length }} 张</small>
+                    <span class="dws-family-head">
+                      <strong data-no-translate>{{ major.label }}</strong>
+                      <span class="dws-family-tags">
+                        <em v-if="major.versionCount > 1">{{ major.versionCount }} 版</em>
+                        <em v-if="major.deviceCount > 1">{{ major.deviceCount }} 端</em>
+                        <em v-if="major.analyzedInTree" class="is-analyzed">已分析</em>
+                      </span>
+                    </span>
+                    <span
+                      v-if="major.devices.length"
+                      class="dws-family-devices"
+                      aria-hidden="true"
+                    >
+                      <i
+                        v-for="device in major.devices"
+                        :key="`${major.id}-${device.id}`"
+                        class="bi dws-family-device"
+                        :class="device.icon"
+                        :title="`${device.label} ${device.ratio}`"
+                      ></i>
+                    </span>
+                    <small v-else class="dws-family-empty-device">未标记设备</small>
                   </span>
-                  <i
-                    class="bi"
-                    :class="
-                      expandedVersionFamilyId === family.id
-                        ? 'bi-chevron-left'
-                        : 'bi-chevron-right'
-                    "
-                    aria-hidden="true"
-                  ></i>
                 </button>
-                <div
-                  v-if="expandedVersionFamilyId === family.id"
-                  class="dws-inline-iterations"
-                  :aria-label="`${family.label} 的全部迭代`"
+                <button
+                  type="button"
+                  class="dws-family-detail"
+                  :title="`打开 ${major.label} 侧边栏`"
+                  :aria-label="`打开 ${major.label} 侧边栏`"
+                  @click="openVersionDrawer(major.id)"
                 >
-                  <i class="bi bi-arrow-right-short" aria-hidden="true"></i>
-                  <button
-                    v-for="output in family.outputs"
-                    :key="output"
-                    type="button"
-                    :class="{ 'is-on': activeOutput === output }"
-                    :aria-pressed="activeOutput === output"
-                    :title="`切换到 ${versionMetaByOutput[output]?.label || '历史版本'}`"
-                    @click="selectOutput(output)"
-                  >
-                    <AuthenticatedImage :src="output" alt="" :max-dimension="240" />
-                    <em data-no-translate>{{ versionMetaByOutput[output]?.label }}</em>
-                  </button>
-                </div>
+                  <i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+                </button>
               </div>
             </div>
             <span
-              v-if="historyLoading && !versionFamilies.length"
+              v-if="historyLoading && !versionMajors.length"
               class="dws-versions-skeleton"
               aria-hidden="true"
             >
               <i></i><i></i><i></i>
             </span>
           </div>
-          <div
-            v-else
-            id="dws-analysis-history"
-            class="dws-editable-history"
-            role="tabpanel"
-          >
-            <template v-if="editableHistory.length">
-              <button
-                v-for="entry in editableHistory"
-                :key="entry.id"
-                type="button"
-                :title="`打开分析 ${entry.name || '设计稿元素分析'}`"
-                @click="openEditableHistory(entry)"
-              >
-                <span class="dws-editable-thumb">
-                  <AuthenticatedImage
-                    v-if="entry.referenceImage"
-                    :src="entry.referenceImage"
-                    alt=""
-                    :max-dimension="320"
-                  />
-                  <i v-else class="bi bi-bezier2" aria-hidden="true"></i>
-                </span>
-                <span class="dws-editable-meta">
-                  <strong>{{ entry.name || '设计稿元素分析' }}</strong>
-                  <small>
-                    {{ entry.nodeCount || 0 }} 个图层 ·
-                    {{ formatEditableHistoryDate(entry.updatedAt) }}
-                  </small>
-                </span>
-                <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
-              </button>
-            </template>
-            <div v-else class="dws-analysis-history-empty">
-              <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
-              <span>
-                <strong>暂无元素分析记录</strong>
-                <small>完成一次元素分析后，此处会立即更新</small>
-              </span>
-            </div>
+          <div class="dws-history-page-meta" aria-live="polite">
+            <strong>{{ historyPage + 1 }} / {{ historyPageCount }}{{ historyHasMore ? '+' : '' }}</strong>
+            <i
+              v-if="historyLoading"
+              class="bi bi-arrow-repeat spin"
+              aria-hidden="true"
+            ></i>
           </div>
+          <button
+            type="button"
+            class="dws-history-page is-next"
+            :disabled="!canNextHistoryPage || (historyLoading && historyPage >= historyPageCount - 1)"
+            aria-label="下一页历史"
+            @click="goNextHistoryPage()"
+          >
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          </button>
         </footer>
       </section>
     </div>
+
+    <DesignVersionDrawer
+      :open="versionDrawerOpen"
+      :forest="versionForest"
+      :focus-major-id="versionDrawerFocusId"
+      :active-output="activeOutput"
+      :active-node-id="activeVersionNode?.id || ''"
+      :is-light="!appearanceStore.isDark"
+      :deleting="versionDeleting"
+      :history-has-more="historyHasMore"
+      :history-loading="historyLoading"
+      @close="versionDrawerOpen = false"
+      @select-node="selectVersionNode"
+      @iterate-node="iterateFromNode"
+      @analyze-node="analyzeVersionNode"
+      @delete-nodes="deleteVersionNodes"
+      @load-more="requestMoreHistory"
+    />
 
     <Teleport to="body">
       <div
@@ -2495,28 +3631,36 @@ function formatEditableHistoryDate(value) {
 
           <div v-else class="dws-spec-editor">
             <div class="dws-spec-overview">
-              <span
-                ><i class="bi bi-grid-3x3-gap"></i><b>{{ designMetrics.columns }} 列</b
-                ><small>{{ designMetrics.margin }}px 边距</small></span
-              >
-              <span
-                ><i class="bi bi-distribute-vertical"></i><b>4 / 8pt</b
-                ><small>{{ designMetrics.gutter }}px 列距</small></span
-              >
-              <span
-                ><i class="bi bi-input-cursor-text"></i><b>{{ designMetrics.controlHeight }}px</b
-                ><small>控件高度</small></span
-              >
-              <span
-                ><i class="bi bi-bounding-box-circles"></i><b>{{ designMetrics.radius }}</b
-                ><small>组件圆角</small></span
-              >
+              <span>
+                <i class="bi bi-grid-3x3-gap" aria-hidden="true"></i>
+                <b>{{ designMetrics.columns }} 列</b>
+                <small>{{ designMetrics.margin }}px 边距</small>
+              </span>
+              <span>
+                <i class="bi bi-distribute-vertical" aria-hidden="true"></i>
+                <b>{{ designMetrics.spacing }}pt</b>
+                <small>{{ designMetrics.gutter }}px 列距</small>
+              </span>
+              <span>
+                <i class="bi bi-input-cursor-text" aria-hidden="true"></i>
+                <b>{{ designMetrics.controlHeight }}px</b>
+                <small>控件高度</small>
+              </span>
+              <span>
+                <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
+                <b>{{ designMetrics.radius }}</b>
+                <small>组件圆角</small>
+              </span>
             </div>
+
+            <p class="dws-spec-hint">
+              当前按「{{ device.label }} {{ device.ratio }}」计算栅格；多端生成时各端会自动适配列数与边距。
+            </p>
 
             <div class="dws-spec-grid">
               <div class="dws-select-field">
-                <span class="dws-label">目标用户</span
-                ><AspectRatioSelect
+                <span class="dws-label">目标用户</span>
+                <AspectRatioSelect
                   v-model="audienceId"
                   class="dws-control-select"
                   :options="AUDIENCE_SELECT_OPTIONS"
@@ -2526,12 +3670,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="目标用户"
                 />
               </div>
               <div class="dws-select-field">
-                <span class="dws-label">核心目标</span
-                ><AspectRatioSelect
+                <span class="dws-label">核心目标</span>
+                <AspectRatioSelect
                   v-model="goalId"
                   class="dws-control-select"
                   :options="GOAL_SELECT_OPTIONS"
@@ -2541,12 +3686,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="核心目标"
                 />
               </div>
               <div class="dws-select-field">
-                <span class="dws-label">导航结构</span
-                ><AspectRatioSelect
+                <span class="dws-label">导航结构</span>
+                <AspectRatioSelect
                   v-model="navigationId"
                   class="dws-control-select"
                   :options="NAVIGATION_SELECT_OPTIONS"
@@ -2556,12 +3702,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="导航结构"
                 />
               </div>
               <div class="dws-select-field">
-                <span class="dws-label">信息密度</span
-                ><AspectRatioSelect
+                <span class="dws-label">信息密度</span>
+                <AspectRatioSelect
                   v-model="densityId"
                   class="dws-control-select"
                   :options="DENSITY_SELECT_OPTIONS"
@@ -2571,12 +3718,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="信息密度"
                 />
               </div>
               <div class="dws-select-field">
-                <span class="dws-label">字体气质</span
-                ><AspectRatioSelect
+                <span class="dws-label">字体气质</span>
+                <AspectRatioSelect
                   v-model="typographyId"
                   class="dws-control-select"
                   :options="TYPOGRAPHY_SELECT_OPTIONS"
@@ -2586,12 +3734,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="字体气质"
                 />
               </div>
               <div class="dws-select-field">
-                <span class="dws-label">组件圆角</span
-                ><AspectRatioSelect
+                <span class="dws-label">组件圆角</span>
+                <AspectRatioSelect
                   v-model="radiusId"
                   class="dws-control-select"
                   :options="RADIUS_SELECT_OPTIONS"
@@ -2601,12 +3750,13 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="组件圆角"
                 />
               </div>
               <div class="dws-select-field is-wide">
-                <span class="dws-label">响应式策略</span
-                ><AspectRatioSelect
+                <span class="dws-label">响应式策略</span>
+                <AspectRatioSelect
                   v-model="responsiveId"
                   class="dws-control-select"
                   :options="RESPONSIVE_SELECT_OPTIONS"
@@ -2616,6 +3766,7 @@ function formatEditableHistoryDate(value) {
                   compact-menu
                   glass-menu
                   menu-placement="auto"
+                  :menu-z-index="2120"
                   aria-label="响应式策略"
                 />
               </div>
@@ -2630,18 +3781,15 @@ function formatEditableHistoryDate(value) {
                   type="button"
                   :class="{ 'is-on': componentStates.includes(item.id) }"
                   :aria-pressed="componentStates.includes(item.id)"
-                  @click="
-                    componentStates = componentStates.includes(item.id)
-                      ? componentStates.filter((id) => id !== item.id)
-                      : [...componentStates, item.id]
-                  "
+                  :title="item.prompt"
+                  @click="toggleComponentState(item.id)"
                 >
                   <i
                     class="bi"
                     :class="componentStates.includes(item.id) ? 'bi-check2' : 'bi-plus'"
                     aria-hidden="true"
-                  ></i
-                  >{{ item.label }}
+                  ></i>
+                  <span>{{ item.label }}</span>
                 </button>
               </div>
             </div>
@@ -2976,6 +4124,55 @@ function formatEditableHistoryDate(value) {
       </div>
     </Teleport>
 
+    <Teleport to="body">
+      <div
+        v-if="tileRefineDialogOpen && tileRefineDialogEntry"
+        class="dws-tile-result"
+        role="dialog"
+        aria-modal="true"
+        aria-label="四宫格精修结果"
+        @click.self="tileRefineDialogOpen = false"
+      >
+        <section class="dws-tile-result-card">
+          <header>
+            <div>
+              <strong>四宫格精修结果 <em>Beta</em></strong>
+              <small>
+                {{ tileRefineDialogEntry.width }}×{{ tileRefineDialogEntry.height }} ·
+                亚像素对齐 · 无缝合并为 1 张整图
+              </small>
+            </div>
+            <button type="button" aria-label="关闭" @click="tileRefineDialogOpen = false">
+              <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="dws-tile-result-stage">
+            <AuthenticatedImage
+              :src="tileRefineDialogEntry.url"
+              alt="四宫格精修合并结果"
+              loading="eager"
+              :retry-count="2"
+            />
+          </div>
+          <footer>
+            <button
+              type="button"
+              class="is-secondary"
+              :disabled="tileRefineBusy || running"
+              @click="rerunTileRefineFromDialog"
+            >
+              <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+              重新精修（约 {{ tileRefineCostLabel || '4 张图费用' }}）
+            </button>
+            <button type="button" class="is-primary" @click="applyTileRefineToCanvas">
+              <i class="bi bi-check2" aria-hidden="true"></i>
+              应用到画布
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
+
     <WallevenImagePreview
       :open="fullscreenOpen"
       :images="outputs"
@@ -3105,9 +4302,10 @@ function formatEditableHistoryDate(value) {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  align-self: start;
+  align-self: stretch;
   box-sizing: border-box;
-  overflow-y: auto;
+  overflow: hidden;
+  height: calc(100% - 24px);
   max-height: calc(100% - 24px);
   margin: 12px 0 12px 12px;
   padding: 20px 18px 0;
@@ -3116,10 +4314,18 @@ function formatEditableHistoryDate(value) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 24%), rgba(15, 16, 24, 0.58);
   box-shadow: 0 22px 64px rgba(0, 0, 0, 0.34);
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
   -webkit-backdrop-filter: blur(20px) saturate(120%);
   backdrop-filter: blur(20px) saturate(120%);
+}
+
+.dws-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 2px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
 
 .dws-block {
@@ -3130,8 +4336,127 @@ function formatEditableHistoryDate(value) {
   margin-top: 0;
 }
 
-.dws-reference-block {
+.dws-composer-block {
   margin-top: 0;
+}
+
+.dws-iteration-guide {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dws-accent) 28%, transparent);
+}
+
+.dws-iteration-guide > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dws-iteration-guide > header small {
+  display: block;
+  margin-bottom: 4px;
+  color: #bdb3ff;
+  font: 700 0.56rem/1 monospace;
+  letter-spacing: 0.06em;
+}
+
+.dws-iteration-guide > header strong {
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.dws-iteration-exit {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dws-ink);
+  font: 650 0.68rem/1 inherit;
+  cursor: pointer;
+}
+
+.dws-iteration-guide ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dws-iteration-guide li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--dws-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.dws-iteration-guide li b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dws-accent) 28%, transparent);
+  color: #efeaff;
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+
+.dws-iteration-guide li em {
+  color: var(--dws-ink);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.dws-iteration-lock,
+.dws-iteration-device {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.dws-iteration-lock i,
+.dws-iteration-device i {
+  margin-top: 1px;
+  color: #c7beff;
+  font-size: 0.9rem;
+}
+
+.dws-iteration-lock {
+  align-items: center;
+}
+
+.dws-iteration-lock strong,
+.dws-iteration-device span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.dws-iteration-lock small {
+  display: block;
+  margin-top: 3px;
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
+.dws-iteration-device {
+  align-items: center;
+  color: var(--dws-muted);
+  font-size: 0.7rem;
 }
 
 .dws-label {
@@ -3192,8 +4517,7 @@ function formatEditableHistoryDate(value) {
   color: #9e91ff;
 }
 
-/* 输入类：填充面，无边框，聚焦时才出现强调环 */
-.dws-block textarea,
+/* 输入类：填充面，无外描边 */
 .dws-custom-structure {
   width: 100%;
   box-sizing: border-box;
@@ -3203,32 +4527,214 @@ function formatEditableHistoryDate(value) {
   color: var(--dws-ink);
   font: inherit;
   outline: none;
-  transition:
-    background 0.15s ease,
-    box-shadow 0.15s ease;
+  box-shadow: none;
+  transition: background 0.15s ease;
 }
 
-.dws-block textarea {
-  padding: 12px 13px;
-  font-size: 0.83rem;
-  line-height: 1.6;
-  resize: vertical;
-}
-
-.dws-block textarea:hover,
-.dws-custom-structure:hover {
-  background: var(--dws-fill-hover);
-}
-
-.dws-block textarea:focus,
+.dws-custom-structure:hover,
 .dws-custom-structure:focus {
   background: var(--dws-fill-hover);
-  box-shadow: 0 0 0 1.5px rgba(109, 92, 255, 0.55);
+  box-shadow: none;
+  outline: none;
 }
 
-.dws-block textarea::placeholder,
 .dws-custom-structure::placeholder {
   color: var(--dws-faint);
+}
+
+/* 需求描述 + 参考图一体输入区：上输入、中参考、下 + / 清空 */
+.dws-composer {
+  display: flex;
+  flex-direction: column;
+  min-height: 196px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--dws-fill);
+  overflow: hidden;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dws-composer:focus-within {
+  background: color-mix(in srgb, var(--dws-accent) 5%, var(--dws-fill-hover));
+}
+
+.dws-composer.is-dragging {
+  background: color-mix(in srgb, var(--dws-accent) 9%, var(--dws-fill-hover));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--dws-accent) 42%, transparent);
+}
+
+.dws-composer textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 120px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 16px 16px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dws-ink);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  outline: none;
+  box-shadow: none;
+  resize: none;
+}
+
+.dws-composer textarea::placeholder {
+  color: var(--dws-faint);
+}
+
+.dws-composer-media {
+  padding: 0 12px 8px;
+}
+
+.dws-composer-iteration {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, transparent);
+}
+
+.dws-composer-iteration :deep(.authenticated-image) {
+  width: 48px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #111119;
+}
+
+.dws-composer-iteration strong,
+.dws-composer-iteration small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-composer-iteration strong {
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.dws-composer-iteration small {
+  margin-top: 3px;
+  color: var(--dws-faint);
+  font-size: 0.6rem;
+}
+
+.dws-composer-refs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.dws-composer-refs > article {
+  position: relative;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 52px;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #111119;
+}
+
+.dws-composer-refs > article img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dws-composer-refs > article > button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(12, 12, 18, 0.72);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dws-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 14px 14px;
+}
+
+.dws-composer-add,
+.dws-composer-clear {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.dws-composer-add {
+  width: 38px;
+  height: 38px;
+  border: 1.5px dashed color-mix(in srgb, var(--dws-accent) 48%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--dws-accent) 88%, var(--dws-ink));
+}
+
+.dws-composer-add i {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dws-composer-add:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dws-accent) 72%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 16%, transparent);
+  color: var(--dws-ink);
+}
+
+.dws-composer-clear {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dws-ink) 8%, transparent);
+  color: var(--dws-muted);
+}
+
+.dws-composer-clear i {
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.dws-composer-clear:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dws-ink) 13%, transparent);
+  color: var(--dws-ink);
+}
+
+.dws-composer-add:disabled,
+.dws-composer-clear:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .dws-custom-structure {
@@ -3776,6 +5282,8 @@ function formatEditableHistoryDate(value) {
 }
 
 .dws-spec-editor {
+  display: grid;
+  gap: 12px;
   padding: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -3784,46 +5292,88 @@ function formatEditableHistoryDate(value) {
 .dws-spec-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 7px;
-  margin-bottom: 16px;
+  gap: 8px;
 }
 
 .dws-spec-overview > span {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
   align-items: center;
   min-width: 0;
-  padding: 10px;
-  border-radius: 9px;
+  padding: 10px 10px 9px;
+  border-radius: 10px;
   background: var(--dws-fill);
 }
 
 .dws-spec-overview i {
   grid-row: 1 / span 2;
   color: #a99cff;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.dws-spec-overview b,
+.dws-spec-overview small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dws-spec-overview b {
-  font-size: 0.68rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .dws-spec-overview small {
   color: var(--dws-faint);
-  font-size: 0.56rem;
+  font-size: 0.58rem;
+  line-height: 1.2;
+}
+
+.dws-spec-hint {
+  margin: 0;
+  color: var(--dws-faint);
+  font-size: 0.66rem;
+  line-height: 1.45;
 }
 
 .dws-config-picker .dws-spec-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px 10px;
-  padding-top: 14px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .dws-config-picker .dws-spec-grid .is-wide {
   grid-column: span 3;
 }
 
+.dws-config-picker .dws-state-field {
+  margin-top: 2px;
+}
+
 .dws-config-picker .dws-state-options {
   grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dws-config-picker .dws-state-options button {
+  min-height: 34px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.dws-config-picker .dws-state-options button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dws-config-picker.is-light {
@@ -3849,6 +5399,10 @@ function formatEditableHistoryDate(value) {
 .dws-config-picker.is-light .dws-style-copy > i,
 .dws-config-picker.is-light .dws-spec-overview i {
   color: #6250e8;
+}
+
+.dws-config-picker.is-light .dws-state-options button.is-on {
+  color: #4e3bd0;
 }
 
 .dws-quality-layer {
@@ -4869,23 +6423,25 @@ function formatEditableHistoryDate(value) {
   margin-top: 0;
 }
 
-/* 选择类：等宽格子，选中为实色强调 */
+/* 设备载体：单行图标 + 尺寸 */
 .dws-devices {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 5px;
-  padding: 4px;
-  border-radius: calc(var(--dws-radius) + 3px);
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 3px;
+  border-radius: calc(var(--dws-radius) + 2px);
   background: var(--dws-fill-deep);
 }
 
 .dws-devices button {
   display: grid;
+  flex: 1 1 0;
   justify-items: center;
-  gap: 3px;
-  padding: 10px 2px 8px;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 2px 6px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--dws-muted);
   cursor: pointer;
@@ -4900,27 +6456,24 @@ function formatEditableHistoryDate(value) {
 }
 
 .dws-devices button i {
-  font-size: 1rem;
-}
-
-.dws-devices button span {
-  font-size: 0.68rem;
-  white-space: nowrap;
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .dws-devices button small {
   color: var(--dws-faint);
-  font: 600 0.6rem/1 monospace;
+  font: 600 0.54rem/1 monospace;
+  letter-spacing: -0.02em;
 }
 
 .dws-devices button.is-on {
   background: var(--dws-accent);
   color: #fff;
-  box-shadow: 0 6px 18px rgba(109, 92, 255, 0.35);
+  box-shadow: 0 4px 12px rgba(109, 92, 255, 0.28);
 }
 
 .dws-devices button.is-on small {
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.78);
 }
 
 /* 配色行：主色 + 明暗，同一行两列对齐 */
@@ -4998,7 +6551,9 @@ function formatEditableHistoryDate(value) {
 .dws-specification-toggle > span {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: center;
+  column-gap: 8px;
   min-width: 0;
   text-align: left;
 }
@@ -5006,6 +6561,16 @@ function formatEditableHistoryDate(value) {
 .dws-specification-toggle > span > i {
   grid-row: 1 / span 2;
   color: #a99cff;
+  font-size: 0.95rem;
+}
+
+.dws-specification-toggle strong,
+.dws-specification-toggle small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dws-specification-toggle strong {
@@ -5102,82 +6667,6 @@ function formatEditableHistoryDate(value) {
   font: 700 0.63rem/1 monospace;
 }
 
-/* 参考界面 */
-.dws-reference {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 11px;
-  padding: 9px;
-  border-radius: var(--dws-radius);
-  background: var(--dws-fill);
-}
-
-.dws-reference.is-iteration {
-  background: var(--dws-accent-soft);
-}
-
-.dws-reference img,
-.dws-reference :deep(.authenticated-image) {
-  width: 56px;
-  height: 42px;
-  border-radius: 8px;
-  object-fit: cover;
-}
-
-.dws-reference strong {
-  display: block;
-  overflow: hidden;
-  font-size: 0.74rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dws-reference span {
-  display: block;
-  margin-top: 3px;
-  color: var(--dws-faint);
-  font-size: 0.67rem;
-}
-
-.dws-reference > button {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--dws-muted);
-  cursor: pointer;
-}
-
-.dws-reference > button:hover {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
-}
-
-.dws-upload {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 48px;
-  border: 0;
-  border-radius: var(--dws-radius);
-  background: var(--dws-fill);
-  color: var(--dws-muted);
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
-}
-
-.dws-upload:hover {
-  background: var(--dws-fill-hover);
-  color: #cdc5ff;
-}
-
 .dws-count {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5260,14 +6749,15 @@ function formatEditableHistoryDate(value) {
   line-height: 1.5;
 }
 
-/* 生成按钮：吸底渐隐坞 */
+/* 生成按钮：固定在侧栏底部，上方内容单独滚动 */
 .dws-generate-dock {
-  position: sticky;
-  bottom: 0;
+  position: relative;
   z-index: 2;
-  margin: 14px -18px 0;
-  padding: 12px 18px 14px;
-  background: linear-gradient(180deg, transparent, rgba(10, 10, 16, 0.9) 34%);
+  flex: none;
+  margin: 0 -18px;
+  padding: 10px 18px 14px;
+  background: linear-gradient(180deg, transparent, rgba(10, 10, 16, 0.92) 28%);
+  border-top: 1px solid color-mix(in srgb, var(--dws-ink) 6%, transparent);
 }
 
 .dws-generate {
@@ -5407,6 +6897,11 @@ function formatEditableHistoryDate(value) {
   font: 700 0.64rem/1.3 monospace;
 }
 
+.dws-stage-meta em.is-tile-refine-tag {
+  background: rgba(109, 92, 255, 0.28);
+  color: #efeaff;
+}
+
 .dws-stage-spec {
   position: absolute;
   top: 55px;
@@ -5482,6 +6977,16 @@ function formatEditableHistoryDate(value) {
   color: #a7ead2;
 }
 
+.dws-stage-actions button.is-tile-refine {
+  background: rgba(109, 92, 255, 0.14);
+  color: #d5ceff;
+}
+
+.dws-stage-actions button.is-tile-refine:hover:not(:disabled) {
+  background: rgba(109, 92, 255, 0.24);
+  color: #efeaff;
+}
+
 .dws-stage-actions button.is-editor:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dws-accent) 34%, transparent);
   color: #fff;
@@ -5530,6 +7035,435 @@ function formatEditableHistoryDate(value) {
   padding: clamp(56px, 7vh, 76px) clamp(20px, 3vw, 44px) 16px;
 }
 
+.dws-canvas.is-device-rail {
+  grid-template-columns: minmax(0, 1fr) 108px;
+  align-items: center;
+  justify-items: center;
+  gap: 14px;
+  padding-right: 18px;
+}
+
+.dws-canvas.is-multi-loading {
+  place-items: stretch;
+  align-content: center;
+}
+
+.dws-canvas.is-tile-refine {
+  position: relative;
+}
+
+.dws-tile-refine {
+  position: absolute;
+  z-index: 12;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 8, 14, 0.55);
+  backdrop-filter: blur(8px);
+}
+
+.dws-tile-refine-card {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: rgba(18, 18, 26, 0.96);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.dws-tile-refine-card > header {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.dws-tile-refine-card > header > i {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(109, 92, 255, 0.24);
+  color: #cfc7ff;
+}
+
+.dws-tile-refine-card strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 750;
+}
+
+.dws-tile-refine-card small {
+  display: block;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.dws-tile-refine-card ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dws-tile-refine-card li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.72rem;
+}
+
+.dws-tile-refine-card li.is-done {
+  color: #9ef0c8;
+}
+
+.dws-tile-refine-card li.is-running {
+  color: #dcd6ff;
+}
+
+.dws-tile-refine-card li.is-failed,
+.dws-tile-refine-card li.is-cancelled {
+  color: #ffb0a8;
+}
+
+.dws-tile-refine-card li em {
+  font-style: normal;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.62rem;
+}
+
+.dws-tile-refine-card .dws-running-cancel {
+  justify-self: center;
+}
+
+.dws-tile-result {
+  position: fixed;
+  z-index: 240;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(6, 6, 12, 0.7);
+  backdrop-filter: blur(10px);
+}
+
+.dws-tile-result-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  width: min(880px, 100%);
+  max-height: min(88vh, 920px);
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  background: rgba(16, 16, 24, 0.97);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.dws-tile-result-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dws-tile-result-card > header strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.94rem;
+  font-weight: 750;
+}
+
+.dws-tile-result-card > header strong em {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(109, 92, 255, 0.26);
+  color: #d9d2ff;
+  font-style: normal;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dws-tile-result-card > header small {
+  display: block;
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.68rem;
+}
+
+.dws-tile-result-card > header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+
+.dws-tile-result-card > header > button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.dws-tile-result-stage {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.04) 0% 25%, transparent 0% 50%) 0 0 / 22px 22px,
+    rgba(10, 10, 16, 0.9);
+}
+
+.dws-tile-result-stage :deep(img),
+.dws-tile-result-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: min(64vh, 720px);
+  object-fit: contain;
+}
+
+.dws-tile-result-card > footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dws-tile-result-card > footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 11px;
+  font-size: 0.76rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dws-tile-result-card > footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dws-tile-result-card > footer button.is-secondary {
+  background: rgba(109, 92, 255, 0.16);
+  color: #d5ceff;
+}
+
+.dws-tile-result-card > footer button.is-secondary:hover:not(:disabled) {
+  background: rgba(109, 92, 255, 0.26);
+}
+
+.dws-tile-result-card > footer button.is-primary {
+  background: #6d5cff;
+  color: #fff;
+}
+
+.dws-tile-result-card > footer button.is-primary:hover {
+  background: #7f70ff;
+}
+
+.dws-multi-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-content: center;
+  gap: 14px;
+  width: min(100%, 1100px);
+  max-height: 100%;
+  margin: 0 auto;
+  overflow: auto;
+  padding: 4px 2px 8px;
+}
+
+.dws-multi-slot {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dws-multi-slot > header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dws-muted);
+  font-size: 0.66rem;
+}
+
+.dws-multi-slot > header em {
+  margin-left: auto;
+  color: var(--dws-faint);
+  font-style: normal;
+  font-family: monospace;
+  font-size: 0.58rem;
+}
+
+.dws-multi-frame {
+  position: relative;
+  width: 100%;
+  max-height: min(52vh, 420px);
+  border-radius: 12px;
+  background: #101018;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.dws-multi-frame :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dws-multi-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 16px;
+  color: rgba(255, 255, 255, 0.78);
+  text-align: center;
+  background: linear-gradient(180deg, rgba(18, 18, 28, 0.2), rgba(18, 18, 28, 0.72));
+}
+
+.dws-multi-loading i {
+  position: relative;
+  z-index: 1;
+  font-size: 1.1rem;
+  color: #b7aeff;
+}
+
+.dws-multi-loading strong,
+.dws-multi-loading small {
+  position: relative;
+  z-index: 1;
+}
+
+.dws-multi-loading strong {
+  font-size: 0.74rem;
+}
+
+.dws-multi-loading small {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.6rem;
+}
+
+.dws-multi-slot.is-failed .dws-multi-loading i {
+  color: #ff8f8f;
+}
+
+.dws-running-cancel.is-multi {
+  grid-column: 1 / -1;
+  justify-self: center;
+  margin-top: 4px;
+}
+
+.dws-device-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 108px;
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.dws-device-rail > button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-fill) 86%, transparent);
+  color: var(--dws-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.dws-device-rail > button:hover {
+  color: var(--dws-ink);
+  transform: translateY(-1px);
+}
+
+.dws-device-rail > button.is-on {
+  border-color: color-mix(in srgb, var(--dws-accent) 48%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  color: var(--dws-ink);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--dws-accent) 14%, transparent);
+}
+
+.dws-device-rail-thumb {
+  display: grid;
+  width: 100%;
+  place-items: center;
+  max-height: 96px;
+  border-radius: 8px;
+  background: #111119;
+  overflow: hidden;
+}
+
+.dws-device-rail-thumb :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dws-device-rail-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dws-device-rail-meta strong,
+.dws-device-rail-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-device-rail-meta strong {
+  font-size: 0.62rem;
+  font-weight: 650;
+}
+
+.dws-device-rail-meta small {
+  color: var(--dws-faint);
+  font-size: 0.54rem;
+  font-family: monospace;
+}
+
 .dws-artboard {
   position: relative;
   max-width: 100%;
@@ -5562,6 +7496,17 @@ function formatEditableHistoryDate(value) {
   box-shadow:
     0 0 0 2px rgba(114, 213, 177, 0.7),
     0 36px 100px rgba(0, 0, 0, 0.62);
+}
+
+.dws-artboard-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.dws-artboard-page {
+  position: absolute;
+  inset: 0;
 }
 
 .dws-artboard :deep(.authenticated-image) {
@@ -5946,97 +7891,120 @@ function formatEditableHistoryDate(value) {
 .dws-versions-wrap {
   position: relative;
   z-index: 4;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto 36px;
+  align-items: center;
+  gap: 8px;
   flex: 0 0 auto;
-  width: min(860px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 8px 0 14px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 16px 14px;
   border-top: 1px solid color-mix(in srgb, var(--dws-ink) 8%, transparent);
 }
 
-.dws-history-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 36px;
-  margin-bottom: 6px;
+.dws-history-page {
+  display: grid;
+  width: 36px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dws-fill) 82%, transparent);
+  color: var(--dws-ink);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease;
 }
 
-.dws-history-heading {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  min-width: 0;
-  color: var(--dws-muted);
+.dws-history-page:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dws-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
 }
 
-.dws-history-heading > span {
+.dws-history-page:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.dws-history-page-meta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-}
-
-.dws-history-heading i {
-  color: var(--dws-accent);
-  font-size: 0.72rem;
-}
-
-.dws-history-heading strong {
-  color: var(--dws-ink);
-  font-size: 0.68rem;
-  font-weight: 650;
-}
-
-.dws-history-heading small {
+  justify-content: center;
+  gap: 5px;
+  min-width: 44px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 78%, transparent);
   color: var(--dws-faint);
   font-size: 0.58rem;
+  white-space: nowrap;
+}
+
+.dws-history-page-meta strong {
+  color: var(--dws-muted);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
 }
 
 .dws-history-tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   flex: none;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--dws-fill) 78%, transparent);
+  gap: 6px;
+  width: 228px;
 }
 
 .dws-history-tabs button {
   display: inline-grid;
-  grid-template-columns: 16px auto auto;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
   align-items: center;
+  justify-items: start;
   gap: 6px;
-  min-height: 28px;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
   padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 82%, transparent);
   color: var(--dws-faint);
   cursor: pointer;
   transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
 }
 
 .dws-history-tabs button:hover:not(:disabled) {
   background: var(--dws-fill);
+  border-color: color-mix(in srgb, var(--dws-ink) 16%, transparent);
   color: var(--dws-ink);
+  transform: translateY(-1px);
 }
 
 .dws-history-tabs button.is-on {
   background: color-mix(in srgb, var(--dws-accent) 14%, var(--dws-fill));
+  border-color: color-mix(in srgb, var(--dws-accent) 46%, transparent);
   color: var(--dws-ink);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--dws-accent) 12%, transparent);
+  transform: translateY(-1px);
 }
 
 .dws-history-tabs button:disabled {
   cursor: default;
   opacity: 0.45;
+  transform: none;
 }
 
 .dws-history-tabs button > i {
   color: currentColor;
   font-size: 0.62rem;
+  transition: color 0.22s ease;
 }
 
 .dws-history-tabs button.is-on > i {
@@ -6044,9 +8012,12 @@ function formatEditableHistoryDate(value) {
 }
 
 .dws-history-tabs strong {
+  overflow: hidden;
   color: inherit;
   font-size: 0.6rem;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dws-history-tabs em {
@@ -6059,65 +8030,130 @@ function formatEditableHistoryDate(value) {
   background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
   color: #a99cff;
   font: 700 0.52rem/1 monospace;
+  transition:
+    background-color 0.22s ease,
+    color 0.22s ease;
+}
+
+.dws-history-tabs button.is-on em {
+  background: color-mix(in srgb, var(--dws-accent) 18%, transparent);
+}
+
+.dws-history-panel-enter-active,
+.dws-history-panel-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+
+.dws-history-panel-enter-from,
+.dws-history-panel-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.dws-history-panel-enter-to,
+.dws-history-panel-leave-from {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .dws-version-history {
   display: grid;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
 }
 
 .dws-version-families {
   display: flex;
-  justify-content: safe center;
-  gap: 6px;
-  padding: 2px 0 4px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 2px 0;
+  overflow: hidden;
 }
 
 .dws-version-family {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-}
-
-.dws-version-family > button {
   display: grid;
-  grid-template-columns: 54px minmax(86px, 1fr) 14px;
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 188px;
-  height: 48px;
-  padding: 4px 7px 4px 4px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--dws-fill) 74%, transparent);
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: stretch;
+  flex: 0 0 236px;
+  width: 236px;
+  max-width: 236px;
+  min-width: 0;
+  height: 64px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-fill) 88%, transparent);
   color: var(--dws-muted);
-  text-align: left;
-  cursor: pointer;
+  overflow: hidden;
   transition:
-    border-color 0.15s ease,
-    background-color 0.15s ease,
-    color 0.15s ease;
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 }
 
-.dws-version-family > button:hover,
-.dws-version-family > button.is-on {
-  background: var(--dws-fill);
+.dws-version-family:hover,
+.dws-version-family.is-on {
+  color: var(--dws-ink);
+  background: color-mix(in srgb, var(--dws-fill) 96%, var(--dws-accent) 5%);
+}
+
+.dws-version-family:hover {
+  transform: translateY(-1px);
+}
+
+.dws-version-family.is-on {
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--dws-accent) 14%, transparent);
+}
+
+.dws-family-main,
+.dws-family-detail {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.dws-family-main {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 4px 6px 6px;
+  text-align: left;
+}
+
+.dws-family-detail {
+  display: grid;
+  place-items: center;
+  color: var(--dws-muted);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.dws-family-detail:hover {
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
   color: var(--dws-ink);
 }
 
-.dws-version-family > button.is-on {
-  border-color: color-mix(in srgb, var(--dws-accent) 46%, transparent);
+.dws-family-detail > i {
+  font-size: 1.15rem;
+  line-height: 1;
 }
 
 .dws-family-thumb {
-  width: 54px;
-  height: 40px;
-  border-radius: 6px;
+  display: grid;
+  width: 70px;
+  height: 52px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
   background: #111119;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -6125,31 +8161,75 @@ function formatEditableHistoryDate(value) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border: 0;
+  box-shadow: none;
 }
 
 .dws-family-meta {
   display: grid;
-  gap: 3px;
+  gap: 6px;
+  min-width: 0;
+  align-content: center;
+}
+
+.dws-family-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
 }
 
-.dws-family-meta strong {
-  color: inherit;
-  font-size: 0.66rem;
+.dws-family-head strong {
+  flex: none;
+  color: var(--dws-ink);
+  font-size: 0.8rem;
   font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
 }
 
-.dws-family-meta small {
+.dws-family-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   overflow: hidden;
+}
+
+.dws-family-tags em {
+  flex: none;
   color: var(--dws-faint);
-  font-size: 0.54rem;
-  text-overflow: ellipsis;
+  font: 500 0.58rem/1 system-ui, sans-serif;
+  font-style: normal;
   white-space: nowrap;
 }
 
-.dws-version-family > button > i {
+.dws-family-tags em.is-analyzed {
+  color: color-mix(in srgb, var(--dws-accent) 72%, var(--dws-ink));
+}
+
+.dws-family-devices {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dws-family-device {
+  flex: none;
+  color: var(--dws-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.dws-version-family.is-on .dws-family-device {
+  color: var(--dws-ink);
+}
+
+.dws-family-empty-device {
   color: var(--dws-faint);
-  font-size: 0.62rem;
+  font-size: 0.58rem;
 }
 
 .dws-inline-iterations {
@@ -6216,8 +8296,8 @@ function formatEditableHistoryDate(value) {
 }
 
 .dws-versions-skeleton i {
-  width: 104px;
-  height: 66px;
+  width: 236px;
+  height: 62px;
   border-radius: 10px;
   background: linear-gradient(
     110deg,
@@ -6363,7 +8443,9 @@ function formatEditableHistoryDate(value) {
 .dws-specification-toggle:focus-visible,
 .dws-state-options button:focus-visible,
 .dws-count button:focus-visible,
-.dws-upload:focus-visible,
+.dws-composer-add:focus-visible,
+.dws-composer-clear:focus-visible,
+.dws-composer-refs > article > button:focus-visible,
 .dws-generate:focus-visible,
 .dws-stage-actions button:focus-visible,
 .dws-artboard.is-previewable:focus-visible,
@@ -6418,9 +8500,25 @@ function formatEditableHistoryDate(value) {
   .dws-artboard,
   .dws-page-type-picker,
   .dws-config-picker,
-  .dws-quality-dialog {
+  .dws-quality-dialog,
+  .dws-history-tabs button,
+  .dws-history-panel-enter-active,
+  .dws-history-panel-leave-active {
     transition: none;
     animation: none;
+  }
+
+  .dws-history-tabs button:hover:not(:disabled),
+  .dws-history-tabs button.is-on {
+    transform: none;
+  }
+
+  .dws-history-panel-enter-from,
+  .dws-history-panel-leave-to,
+  .dws-history-panel-enter-to,
+  .dws-history-panel-leave-from {
+    opacity: 1;
+    transform: none;
   }
 
   .dws-running-scan,
@@ -6432,6 +8530,8 @@ function formatEditableHistoryDate(value) {
     animation: none;
   }
 
+  .dws-version-family:hover,
+  .dws-editable-history > button:hover,
   .dws-inline-iterations button:hover {
     transform: none;
   }
@@ -6536,9 +8636,8 @@ function formatEditableHistoryDate(value) {
   }
 
   .dws-generate-dock {
-    position: sticky;
-    margin: 14px -16px 0;
-    padding: 12px 16px 14px;
+    margin: 0 -16px;
+    padding: 10px 16px 14px;
   }
 
   .dws-canvas {
@@ -6556,11 +8655,13 @@ function formatEditableHistoryDate(value) {
 
 @media (max-width: 767px) {
   .dws-history-tabs {
-    padding: 3px;
+    width: 212px;
+    gap: 5px;
   }
 
   .dws-history-tabs button {
-    width: auto;
+    min-height: 30px;
+    padding: 0 7px;
   }
 
   .dws-quality-layer {
@@ -6662,10 +8763,6 @@ function formatEditableHistoryDate(value) {
 }
 
 @media (max-width: 420px) {
-  .dws-history-heading small {
-    display: none;
-  }
-
   .dws-quality-header {
     grid-template-columns: minmax(0, 1fr) 34px 34px;
   }
@@ -6805,24 +8902,79 @@ function formatEditableHistoryDate(value) {
   color: var(--dws-ink);
 }
 
-.dws.is-light .dws-upload:hover,
-.dws.is-light .dws-empty-editor,
-.dws.is-light .dws-reference.is-iteration {
+.dws.is-light .dws-empty-editor {
   color: #6250e8;
 }
 
-.dws.is-light .dws-reference > button {
-  background: rgba(34, 36, 50, 0.06);
-  color: var(--dws-muted);
+.dws.is-light .dws-composer {
+  background: #eceef5;
 }
 
-.dws.is-light .dws-reference > button:hover {
-  background: rgba(34, 36, 50, 0.11);
-  color: var(--dws-ink);
+.dws.is-light .dws-composer:focus-within {
+  background: color-mix(in srgb, #6250e8 6%, #eceef5);
+}
+
+.dws.is-light .dws-composer.is-dragging {
+  background: color-mix(in srgb, #6250e8 9%, #eceef5);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #6250e8 40%, transparent);
+}
+
+.dws.is-light .dws-composer-iteration {
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+}
+
+.dws.is-light .dws-iteration-guide {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6250e8 22%, transparent);
+}
+
+.dws.is-light .dws-iteration-guide > header small {
+  color: #6250e8;
+}
+
+.dws.is-light .dws-iteration-exit {
+  background: rgba(35, 37, 52, 0.06);
+}
+
+.dws.is-light .dws-iteration-guide li b {
+  background: color-mix(in srgb, #6250e8 16%, transparent);
+  color: #4e3bd0;
+}
+
+.dws.is-light .dws-iteration-lock,
+.dws.is-light .dws-iteration-device {
+  background: rgba(35, 37, 52, 0.04);
+}
+
+.dws.is-light .dws-iteration-lock i,
+.dws.is-light .dws-iteration-device i {
+  color: #6250e8;
+}
+
+.dws.is-light .dws-composer-add {
+  border-color: color-mix(in srgb, #7b6cf0 55%, transparent);
+  background: color-mix(in srgb, #7b6cf0 10%, #ffffff);
+  color: #6b5ce6;
+}
+
+.dws.is-light .dws-composer-add:hover:not(:disabled) {
+  border-color: #6b5ce6;
+  background: color-mix(in srgb, #7b6cf0 14%, #ffffff);
+  color: #4e3bd0;
+}
+
+.dws.is-light .dws-composer-clear {
+  background: rgba(35, 37, 52, 0.07);
+  color: #8a8d9a;
+}
+
+.dws.is-light .dws-panel-scroll {
+  scrollbar-color: rgba(98, 80, 232, 0.28) transparent;
 }
 
 .dws.is-light .dws-generate-dock {
-  background: linear-gradient(180deg, transparent, rgba(243, 244, 248, 0.96) 34%);
+  background: linear-gradient(180deg, transparent, rgba(243, 244, 248, 0.98) 28%);
+  border-top-color: rgba(35, 37, 52, 0.06);
 }
 
 .dws.is-light .dws-stage-ambient {
@@ -6846,6 +8998,23 @@ function formatEditableHistoryDate(value) {
 .dws.is-light .dws-history-tabs em,
 .dws.is-light .dws-stage-actions button.is-editor {
   color: #6250e8;
+}
+
+.dws.is-light .dws-history-tabs button {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 4px 12px rgba(48, 44, 78, 0.05);
+}
+
+.dws.is-light .dws-history-tabs button:hover:not(:disabled) {
+  border-color: rgba(35, 37, 52, 0.16);
+  background: #ffffff;
+}
+
+.dws.is-light .dws-history-tabs button.is-on {
+  border-color: color-mix(in srgb, #6250e8 48%, transparent);
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+  box-shadow: 0 8px 18px rgba(98, 80, 232, 0.12);
 }
 
 .dws.is-light .dws-stage-actions button:hover:not(:disabled),
@@ -6903,12 +9072,49 @@ function formatEditableHistoryDate(value) {
   scrollbar-color: rgba(98, 80, 232, 0.3) transparent;
 }
 
+.dws.is-light .dws-version-family,
 .dws.is-light .dws-inline-iterations button,
 .dws.is-light .dws-editable-history > button {
-  border-color: rgba(35, 37, 52, 0.09);
+  border: 0;
   background: #ffffff;
   color: var(--dws-ink);
-  box-shadow: 0 7px 20px rgba(48, 44, 78, 0.07);
+  box-shadow: 0 8px 20px rgba(48, 44, 78, 0.07);
+}
+
+.dws.is-light .dws-version-family:hover {
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(48, 44, 78, 0.1);
+}
+
+.dws.is-light .dws-version-family.is-on {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
+  box-shadow: 0 10px 22px rgba(98, 80, 232, 0.12);
+}
+
+.dws.is-light .dws-history-page {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(48, 44, 78, 0.06);
+}
+
+.dws.is-light .dws-device-rail > button {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 6px 16px rgba(48, 44, 78, 0.07);
+}
+
+.dws.is-light .dws-device-rail > button.is-on {
+  border-color: color-mix(in srgb, #6250e8 48%, transparent);
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+}
+
+.dws.is-light .dws-multi-frame {
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(48, 44, 78, 0.12);
+}
+
+.dws.is-light .dws-family-detail:hover {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
 }
 
 .dws.is-light .dws-versions-skeleton i {

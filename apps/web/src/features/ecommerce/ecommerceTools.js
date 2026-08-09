@@ -1,3 +1,7 @@
+const tryonMenuCover = new URL('../../assets/ecommerce/tryon-preview.webp', import.meta.url).href
+const listingMenuCover = new URL('../../assets/ecommerce/listing-preview.webp', import.meta.url).href
+const detailMenuCover = new URL('../../assets/ecommerce/detail-preview.webp', import.meta.url).href
+
 export const ECOMMERCE_MODES = [
   {
     id: 'shoot',
@@ -20,10 +24,27 @@ export const ECOMMERCE_MODES = [
     description: '按目标平台生成统一风格的商品主图、卖点图和场景图。',
     icon: 'bi-images',
     ratio: '1:1',
-    maxCount: 4,
+    maxCount: 7,
     fields: ['platform', 'market', 'language', 'tone', 'modules'],
     prompt:
       '生成一套风格统一但构图各有侧重的商品 Listing 图片，覆盖纯净主图、核心卖点、使用场景和细节展示，适合连续上架使用。',
+  },
+  {
+    id: 'clone',
+    label: '爆款图复刻',
+    shortLabel: '爆款复刻',
+    tagline: '复用成熟视觉结构',
+    description: '参考爆款图的构图、光线和版式，用你的商品生成同类高转化视觉。',
+    uploadTitle: '爆款参考与商品原图',
+    uploadHint: '第 1 张爆款参考图，第 2 张为需替换的商品图',
+    referenceLabels: ['爆款参考', '商品原图'],
+    icon: 'bi-copy',
+    ratio: '1:1',
+    maxCount: 4,
+    minFiles: 1,
+    fields: ['language', 'tone'],
+    prompt:
+      '第一张参考图只定义构图、版式、色彩、光线和场景关系，第二张参考图定义必须保留的商品身份。用第二张商品替换参考图中的原商品，删除参考品牌和原文案；不得复制商标、人物身份或受保护的品牌元素。',
   },
   {
     id: 'detail',
@@ -102,7 +123,7 @@ export const ECOMMERCE_MODES = [
     icon: 'bi-person-standing-dress',
     ratio: '3:4',
     maxCount: 4,
-    fields: ['market', 'apparel', 'model', 'pose', 'tone'],
+    fields: ['market', 'apparel', 'model', 'pose', 'scene', 'tone'],
     prompt:
       '将参考服装准确穿到真人模特身上，保持服装款式、颜色、图案、剪裁、材质和垂坠感一致。若提供第二张模特图，保持该模特身份特征；否则根据所选人群生成自然模特。输出真实电商服装摄影，不改变服装设计。',
   },
@@ -216,12 +237,111 @@ export const ECOMMERCE_MODULES = [
     icon: 'bi-search',
     direction: '聚焦一处真实材质或工艺细节，保持纹理、Logo、接口和包装文字准确。',
   },
+  {
+    value: 'spec',
+    label: '规格参数图',
+    hint: '说明尺寸与参数',
+    icon: 'bi-rulers',
+    direction:
+      '清晰呈现用户已经提供的尺寸、容量或规格信息；没有可靠参数时保留信息区，不得虚构数值。',
+  },
+  {
+    value: 'package',
+    label: '包装清单图',
+    hint: '展示包装与配件',
+    icon: 'bi-box2-heart',
+    direction: '展示参考图中可以确认的商品、包装和随附配件；无法从参考图确认的物品不得补造。',
+  },
 ]
+
+const ECOMMERCE_DETAIL_ONLY_MODULES = [
+  {
+    value: 'brand',
+    label: '品牌故事图',
+    hint: '传达品牌理念',
+    icon: 'bi-book',
+    direction: '用克制的品牌叙事建立信任，只使用用户明确提供的品牌事实。',
+  },
+  {
+    value: 'comparison',
+    label: '效果对比图',
+    hint: '展示真实差异',
+    icon: 'bi-layout-split',
+    direction: '呈现有真实依据的使用前后或方案差异，不伪造实验数据和效果。',
+  },
+  {
+    value: 'process',
+    label: '工艺制作图',
+    hint: '展示制作过程',
+    icon: 'bi-tools',
+    direction: '展示用户已经确认的材料、工艺或制作步骤，不虚构认证和生产流程。',
+  },
+  {
+    value: 'series',
+    label: '系列展示图',
+    hint: '多色或多 SKU',
+    icon: 'bi-grid-3x3-gap',
+    direction: '仅展示参考资料中真实存在的颜色和 SKU，统一比例与陈列方式。',
+  },
+  {
+    value: 'ingredients',
+    label: '成分材质图',
+    hint: '说明配方或材质',
+    icon: 'bi-droplet',
+    direction: '清晰组织用户提供的成分、配方或材质信息，不增加未经确认的成分。',
+  },
+  {
+    value: 'service',
+    label: '售后保障图',
+    hint: '说明质保政策',
+    icon: 'bi-shield-check',
+    direction: '仅展示用户明确提供的质保、退换和服务政策，不虚构承诺。',
+  },
+  {
+    value: 'usage',
+    label: '使用建议图',
+    hint: '说明使用方法',
+    icon: 'bi-info-circle',
+    direction: '组织用户提供的使用步骤、维护方法和注意事项，表达清楚且不增加风险性建议。',
+  },
+]
+
+export const ECOMMERCE_DETAIL_MODULES = [...ECOMMERCE_MODULES, ...ECOMMERCE_DETAIL_ONLY_MODULES]
+
+const LISTING_STRUCTURE_BLUEPRINTS = {
+  white: {
+    label: '白底主图',
+    direction: '使用纯白或平台合规的干净背景，完整展示商品，不添加装饰、人物和无关文字。',
+  },
+  scene: {
+    label: '场景图',
+    direction: '展示商品的真实使用场景与目标人群关系，保持商品比例、光线和接触阴影可信。',
+  },
+  selling: {
+    label: '卖点图',
+    direction: '每张只突出一个真实核心卖点，信息层级清楚，不虚构参数、认证或效果。',
+  },
+  other: {
+    label: '补充信息图',
+    direction: '根据商品资料在细节、规格、包装清单和品牌氛围中选择最有价值的补充内容。',
+  },
+}
+
+export function listingShotBlueprintsFromCounts(counts = {}) {
+  return Object.entries(LISTING_STRUCTURE_BLUEPRINTS).flatMap(([key, blueprint]) => {
+    const count = Math.max(0, Math.min(7, Number(counts?.[key]) || 0))
+    return Array.from({ length: count }, (_, index) => ({
+      id: `${key}-${index + 1}`,
+      label: count > 1 ? `${blueprint.label} ${index + 1}` : blueprint.label,
+      direction: blueprint.direction,
+    }))
+  })
+}
 
 export function supportedEcommerceModules(selectedModules = [], referenceCount = 0) {
   const selected = new Set(Array.from(selectedModules || []))
   const hasMultiAngleEvidence = Math.max(0, Number(referenceCount) || 0) >= 2
-  return ECOMMERCE_MODULES.filter(
+  return ECOMMERCE_DETAIL_MODULES.filter(
     (item) => selected.has(item.value) && (item.value !== 'angles' || hasMultiAngleEvidence),
   )
 }
@@ -231,6 +351,7 @@ const ECOMMERCE_REFERENCE_ROLE_LABELS = {
   handheld: ['商品身份', '模特身份'],
   accessory: ['饰品身份', '模特身份'],
   backdrop: ['商品身份', '背景视觉'],
+  clone: ['爆款视觉参考', '商品身份'],
 }
 
 const ECOMMERCE_PERSON_MODES = new Set(['tryon', 'handheld', 'accessory'])
@@ -242,7 +363,9 @@ export function ecommerceConsistencyProfile(modeId, referenceCount = 1) {
     return ECOMMERCE_REFERENCE_ROLE_LABELS[id]?.[index] || `商品身份角度 ${index + 1}`
   })
   const hasPersonIdentity = ECOMMERCE_PERSON_MODES.has(id) && count >= 2
-  const essentialReferenceCount = ['tryon', 'handheld', 'accessory', 'backdrop'].includes(id)
+  const essentialReferenceCount = ['tryon', 'handheld', 'accessory', 'backdrop', 'clone'].includes(
+    id,
+  )
     ? Math.min(count, 2)
     : Math.min(count, 1)
 
@@ -260,6 +383,11 @@ export function ecommerceConsistencyProfile(modeId, referenceCount = 1) {
   } else if (id === 'backdrop') {
     identityLock =
       '分离参考锁：第一张只定义商品身份，第二张只定义背景的空间、材质、光线和色彩。严禁把背景参考中的商品、人物、文字或品牌复制到结果中。'
+  } else if (id === 'clone') {
+    identityLock =
+      count >= 2
+        ? '复刻分离锁：第一张只定义视觉结构、构图、版式、色彩和光线，第二张只定义新商品身份。必须彻底移除参考图中的原商品、原品牌、Logo、人物身份和原文案；新商品的造型、比例、颜色、材质、Logo 与包装文字以第二张参考图为准。'
+        : '单参考复刻锁：参考图定义视觉结构、构图、版式、色彩和光线。保留可确认的主体事实，但必须移除无法确认授权的品牌、Logo、水印和原文案，不得补造商品参数。'
   } else if (id === 'background') {
     identityLock =
       '背景编辑边界锁：商品区域视为不可编辑的原始像素层。商品的像素位置、边界框、角度、尺度、轮廓、内部纹理、颜色、反光、Logo、文字和全部部件必须与参考图逐像素对齐；禁止旋转、倾斜、缩放、位移、裁切、补画、重绘或重新打光。只允许修改商品轮廓以外的背景像素，并在接触边缘生成自然过渡。'
@@ -277,7 +405,7 @@ export function ecommerceConsistencyProfile(modeId, referenceCount = 1) {
   return {
     id: hasPersonIdentity
       ? 'product-person-identity'
-      : id === 'backdrop'
+      : id === 'backdrop' || id === 'clone'
         ? 'product-scene'
         : 'product',
     roles,
@@ -338,6 +466,12 @@ const DEFAULT_SHOT_BLUEPRINTS = {
     ['近景构图', '在同一场景中靠近商品展示材质，光源方向与第一张成品一致。'],
     ['投放构图', '在同一背景体系中预留广告信息安全区，不复制参考背景中的文字或品牌。'],
   ],
+  clone: [
+    ['结构复刻', '沿用爆款参考的视觉层级、主体占比和留白关系，用新商品完整替换原商品。'],
+    ['场景复刻', '延续参考图的场景逻辑、色彩和光线，但不得复制原品牌、人物身份或受保护文案。'],
+    ['卖点复刻', '复用参考图的信息层级，用用户提供的新商品卖点重写内容，不得沿用原商品事实。'],
+    ['投放复刻', '保持同套视觉语言，生成适合目标语言和投放版位的补充构图。'],
+  ],
 }
 
 function normalizeShot(shot, index) {
@@ -386,10 +520,13 @@ export function buildEcommerceGenerationPlan({
   selectedModules = [],
   basePrompt = '',
   referenceCount = 1,
+  shotBlueprints = null,
 } = {}) {
   const mode = ecommerceModeById(modeId)
   const consistency = ecommerceConsistencyProfile(mode.id, referenceCount)
-  const blueprints = ecommerceShotBlueprints(mode.id, selectedModules)
+  const blueprints = Array.isArray(shotBlueprints)
+    ? shotBlueprints.map(normalizeShot).filter(Boolean)
+    : ecommerceShotBlueprints(mode.id, selectedModules)
   const requestedCount = Math.max(1, Math.min(Number(count) || 1, mode.maxCount || 1))
   const shots = blueprints.slice(0, Math.min(requestedCount, blueprints.length || 1))
   const seriesLock =
@@ -482,10 +619,13 @@ export function prepareEcommerceInputFiles(existingFiles, incomingFiles, options
   const maxBytes = Math.max(1, Number(options.maxBytes || 10 * 1024 * 1024))
   const existing = Array.from(existingFiles || [])
   const incoming = Array.from(incomingFiles || [])
-  const accepted = incoming.filter((file) => ECOMMERCE_IMAGE_MIME_TYPES.has(file?.type))
+  const typed = incoming.filter((file) => ECOMMERCE_IMAGE_MIME_TYPES.has(file?.type))
+  const accepted = typed.filter((file) => Number(file?.size || 0) > 0)
+  const oversizedFiles = accepted.filter((file) => Number(file?.size || 0) > maxBytes)
+  const withinSize = accepted.filter((file) => Number(file?.size || 0) <= maxBytes)
   const existingKeys = new Set(existing.map(ecommerceReferenceKey))
   const unique = []
-  for (const file of accepted) {
+  for (const file of withinSize) {
     const key = ecommerceReferenceKey(file)
     if (existingKeys.has(key)) continue
     existingKeys.add(key)
@@ -496,9 +636,10 @@ export function prepareEcommerceInputFiles(existingFiles, incomingFiles, options
   return {
     next,
     invalidCount: incoming.length - accepted.length,
-    duplicateCount: accepted.length - unique.length,
+    duplicateCount: withinSize.length - unique.length,
     overflowCount: Math.max(0, unique.length - available),
-    oversized: next.find((file) => Number(file?.size || 0) > maxBytes) || null,
+    oversized: oversizedFiles[0] || null,
+    oversizedCount: oversizedFiles.length,
   }
 }
 
@@ -520,18 +661,21 @@ export const ECOMMERCE_MENU_GROUPS = [
     id: 'model',
     label: '服饰模特',
     description: '服装、商品与饰品的真人展示',
+    cover: tryonMenuCover,
     items: ['tryon', 'handheld', 'accessory'].map(menuItem),
   },
   {
     id: 'create',
     label: '商品设计',
     description: '从商品拍摄到详情页与营销素材',
+    cover: listingMenuCover,
     items: ['shoot', 'listing', 'detail', 'campaign'].map(menuItem),
   },
   {
     id: 'image',
     label: '图片处理',
     description: '背景、阴影、尺寸与清晰度处理',
+    cover: detailMenuCover,
     items: [
       menuItem('background'),
       menuItem('backdrop'),
@@ -570,31 +714,24 @@ export const ECOMMERCE_RAIL_GROUPS = [
   },
   {
     id: 'fashion',
-    label: '服饰模特',
+    label: '服饰穿戴',
     icon: 'bi-person-standing-dress',
     mode: 'tryon',
     modes: ['tryon', 'handheld', 'accessory'],
   },
   {
-    id: 'shoot',
-    label: '创意商拍',
-    icon: 'bi-camera-fill',
+    id: 'clone',
+    label: '爆款复刻',
+    icon: 'bi-copy',
+    mode: 'clone',
+    modes: ['clone'],
+  },
+  {
+    id: 'more',
+    label: '更多工具',
+    icon: 'bi-grid',
     mode: 'shoot',
-    modes: ['shoot'],
-  },
-  {
-    id: 'campaign',
-    label: '营销设计',
-    icon: 'bi-megaphone-fill',
-    mode: 'campaign',
-    modes: ['campaign'],
-  },
-  {
-    id: 'image',
-    label: '图片处理',
-    icon: 'bi-sliders2',
-    mode: 'background',
-    modes: ['background', 'backdrop', 'shadow', 'outpaint', 'enhance'],
+    modes: ['shoot', 'campaign', 'background', 'backdrop', 'shadow', 'outpaint', 'enhance'],
   },
 ]
 
