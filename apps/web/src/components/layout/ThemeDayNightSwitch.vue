@@ -14,7 +14,7 @@ function onChange(event) {
   const rect = event.target.closest('.theme-dn-switch')?.getBoundingClientRect()
   const origin = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null
   const next = event.target.checked ? 'dark' : 'light'
-  runThemeTransition(() => appearanceStore.setScheme(next, origin), origin)
+  void runThemeTransition(() => appearanceStore.setScheme(next, origin), next)
 }
 </script>
 
