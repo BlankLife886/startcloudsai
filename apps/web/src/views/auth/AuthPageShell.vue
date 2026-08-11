@@ -97,7 +97,7 @@ function authModeQuery(mode) {
             ></span>
             <div class="auth-hero-feature__body">
               <strong>六大创作工作台</strong>
-              <p>文生图、插画染色、UI 设计稿、模型图、游戏设计与 AI 拼图</p>
+              <p>文生图、插画染色、UI 设计稿、模型设计、游戏设计与拼图工具</p>
             </div>
           </li>
           <li data-auth-feature class="auth-hero-feature">

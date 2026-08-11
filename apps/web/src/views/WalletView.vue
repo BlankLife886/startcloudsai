@@ -2,38 +2,46 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { getWallet, listWalletLedger, redeemWalletCode } from '@/services/meApi'
+import { useAppearanceStore } from '@/stores/appearance'
+import { getWallet, listWalletLedger } from '@/services/meApi'
 import { claimTrialAccessReward, getTrialAccessApplication } from '@/services/trialAccessApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
 import { useClientWalletBalance, WALLET_UPDATED_EVENT } from '@/composables/useClientWalletBalance'
+import RedeemCodeDialog from '@/components/layout/RedeemCodeDialog.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const appearanceStore = useAppearanceStore()
 const { refreshWalletBalance, applyWalletSnapshot } = useClientWalletBalance()
 
 const wallet = ref(null)
 const walletLoading = ref(false)
 const walletError = ref('')
 const walletLoaded = ref(false)
+const LEDGER_PAGE_SIZE = 12
+
 const ledger = ref([])
 const ledgerLoading = ref(false)
-const ledgerCursor = ref(null)
 const ledgerError = ref('')
-const redeemCode = ref('')
+const ledgerFilter = ref('all')
+const ledgerPage = ref(1)
+const ledgerNextCursor = ref(null)
+const ledgerPageCursors = ref([''])
+const redeemDialogOpen = ref(false)
 const redeeming = ref(false)
 const trialApplication = ref(null)
 const trialLoading = ref(false)
 const trialError = ref('')
 
-const REDEEM_ERROR_MESSAGES = {
-  code_invalid: '兑换码不存在，请检查后重试',
-  code_redeemed: '该兑换码已被使用',
-  code_expired: '兑换码已过期',
-  code_disabled: '兑换码已停用',
-  rate_limited: '尝试过于频繁，请稍后再试',
-}
+const LEDGER_FILTERS = [
+  { id: 'all', label: '全部' },
+  { id: 'income', label: '入账' },
+  { id: 'spend', label: '消费' },
+  { id: 'pending', label: '冻结' },
+  { id: 'refund', label: '退款' },
+]
 
 const balanceCents = computed(() => Number(wallet.value?.balanceCents ?? 0))
 const frozenCents = computed(() => Number(wallet.value?.frozenCents ?? 0))
@@ -51,15 +59,20 @@ const trialFeatureLabel = computed(() => trialApplication.value?.feature?.label 
 const showTrialReward = computed(
   () => trialApplication.value?.status === 'approved' && trialApplication.value?.rewardCents,
 )
+const hasPrevLedgerPage = computed(() => ledgerPage.value > 1)
+const hasNextLedgerPage = computed(() => Boolean(ledgerNextCursor.value))
+const showLedgerPager = computed(
+  () => hasPrevLedgerPage.value || hasNextLedgerPage.value || ledgerPage.value > 1,
+)
 
 const TASK_TYPE_LABELS = {
   t2i: '文生图',
   coloring: '插画染色',
   ui_design: 'UI 设计稿',
-  ecommerce_design: 'AI 电商设计',
-  model_sheet: '模型图生成',
+  ecommerce_design: 'AI 电商',
+  model_sheet: '模型设计',
   game_art: '游戏美术',
-  puzzle: 'AI 拼图',
+  puzzle: '拼图',
   background_remove: '背景移除',
 }
 
@@ -89,6 +102,36 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatClock(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function parseDate(value) {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function dayKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function dayLabel(date) {
+  const today = new Date()
+  const start = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const diffDays = Math.round((start(today) - start(date)) / 86_400_000)
+  if (diffDays === 0) return '今天'
+  if (diffDays === 1) return '昨天'
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} 天前`
+  if (date.getFullYear() === today.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
+
 function ledgerTaskLabel(entry) {
   const task = entry?.task
   if (!task) return 'AI 任务'
@@ -107,6 +150,22 @@ function ledgerTaskMeta(entry) {
   ]
     .filter(Boolean)
     .join(' · ')
+}
+
+function ledgerCategory(entry, presentation) {
+  const tone = presentation?.tone || ''
+  if (tone === 'income') return 'income'
+  if (tone === 'refund') return 'refund'
+  if (tone === 'pending') return 'pending'
+  if (tone === 'spend' || tone === 'settled') return 'spend'
+  const kind = String(entry?.kind || '').toLowerCase()
+  if (['grant', 'order_grant', 'redeem', 'subscription_grant', 'admin_adjust'].includes(kind)) {
+    return Number(entry?.deltaCents || 0) >= 0 ? 'income' : 'spend'
+  }
+  if (kind.includes('freeze')) return 'pending'
+  if (kind.includes('release') || kind.includes('refund')) return 'refund'
+  if (kind.includes('settle') || kind.includes('spend')) return 'spend'
+  return Number(entry?.deltaCents || 0) >= 0 ? 'income' : 'spend'
 }
 
 function ledgerPresentation(entry) {
@@ -232,10 +291,47 @@ const ledgerRows = computed(() => {
     }
     grouped.get(key).relatedEntries.push(entry)
   })
-  return Array.from(grouped.values()).map((entry) => ({
-    ...entry,
-    presentation: ledgerPresentation(entry),
-  }))
+  return Array.from(grouped.values()).map((entry) => {
+    const presentation = ledgerPresentation(entry)
+    return {
+      ...entry,
+      presentation,
+      category: ledgerCategory(entry, presentation),
+    }
+  })
+})
+
+const filterCounts = computed(() => {
+  const counts = { all: ledgerRows.value.length, income: 0, spend: 0, pending: 0, refund: 0 }
+  ledgerRows.value.forEach((row) => {
+    if (counts[row.category] != null) counts[row.category] += 1
+  })
+  return counts
+})
+
+const filteredLedgerRows = computed(() => {
+  if (ledgerFilter.value === 'all') return ledgerRows.value
+  return ledgerRows.value.filter((row) => row.category === ledgerFilter.value)
+})
+
+const ledgerDayGroups = computed(() => {
+  const groups = []
+  const map = new Map()
+  filteredLedgerRows.value.forEach((entry) => {
+    const date = parseDate(entry.createdAt)
+    const key = date ? dayKey(date) : 'unknown'
+    if (!map.has(key)) {
+      const group = {
+        key,
+        label: date ? dayLabel(date) : '更早',
+        items: [],
+      }
+      map.set(key, group)
+      groups.push(group)
+    }
+    map.get(key).items.push(entry)
+  })
+  return groups
 })
 
 async function loadWallet() {
@@ -252,22 +348,43 @@ async function loadWallet() {
   }
 }
 
-async function loadLedger({ append = false } = {}) {
+async function loadLedger(page = 1) {
   if (ledgerLoading.value) return
+  const cursor = ledgerPageCursors.value[page - 1]
+  if (cursor === undefined) return
   ledgerLoading.value = true
   ledgerError.value = ''
   try {
     const { items, nextCursor } = await listWalletLedger({
-      limit: 15,
-      cursor: append ? ledgerCursor.value || '' : '',
+      limit: LEDGER_PAGE_SIZE,
+      cursor: cursor || '',
     })
-    ledger.value = append ? [...ledger.value, ...items] : items
-    ledgerCursor.value = nextCursor
+    ledger.value = items
+    ledgerPage.value = page
+    ledgerNextCursor.value = nextCursor || null
+    const cursors = ledgerPageCursors.value.slice(0, page)
+    if (nextCursor) cursors[page] = nextCursor
+    ledgerPageCursors.value = cursors
   } catch (error) {
     ledgerError.value = error?.message || '账本读取失败'
   } finally {
     ledgerLoading.value = false
   }
+}
+
+async function resetLedger() {
+  ledgerPageCursors.value = ['']
+  ledgerNextCursor.value = null
+  ledgerPage.value = 1
+  await loadLedger(1)
+}
+
+function goLedgerPage(delta) {
+  const next = ledgerPage.value + delta
+  if (next < 1 || ledgerLoading.value) return
+  if (delta > 0 && !hasNextLedgerPage.value) return
+  if (delta < 0 && !hasPrevLedgerPage.value) return
+  void loadLedger(next)
 }
 
 async function loadTrialApplication() {
@@ -283,49 +400,24 @@ async function loadTrialApplication() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadWallet(), loadLedger(), loadTrialApplication()])
+  await Promise.all([loadWallet(), resetLedger(), loadTrialApplication()])
 }
 
-function onRedeemInput(event) {
-  redeemCode.value = String(event.target.value || '').toUpperCase()
+function openRedeemDialog() {
+  redeemDialogOpen.value = true
 }
 
-async function submitRedeem() {
-  const code = redeemCode.value.trim().toUpperCase()
-  if (!code) {
-    notificationService.info('请输入兑换码（格式 SC-XXXX-XXXX-XXXX）')
-    return
-  }
-  if (redeeming.value) return
-  redeeming.value = true
-  try {
-    const result = await redeemWalletCode(code)
-    notificationService.success(`已入账 ${formatPoints(result?.grantCents || 0)}`)
-    redeemCode.value = ''
-    if (result?.balanceCents != null || result?.frozenCents != null) {
-      applyWalletSnapshot({
-        balanceCents: result?.balanceCents,
-        frozenCents: result?.frozenCents,
-        normalBalanceCents: result?.normalBalanceCents,
-        trialBalanceCents: result?.trialBalanceCents,
-        normalFrozenCents: result?.normalFrozenCents,
-        trialFrozenCents: result?.trialFrozenCents,
-      })
-    }
-    await Promise.all([
-      loadWallet(),
-      loadLedger(),
-      loadTrialApplication(),
-      refreshWalletBalance({ force: true }).catch(() => null),
-    ])
-  } catch (error) {
-    const mapped = REDEEM_ERROR_MESSAGES[error?.code]
-    if (mapped) notificationService.error(mapped)
-    else if (error?.status === 404) notificationService.info('兑换功能即将开放，敬请期待')
-    else notificationService.error(error?.message || '兑换失败，请稍后再试')
-  } finally {
-    redeeming.value = false
-  }
+function closeRedeemDialog() {
+  redeemDialogOpen.value = false
+}
+
+async function onRedeemSuccess() {
+  await Promise.all([
+    loadWallet(),
+    resetLedger(),
+    loadTrialApplication(),
+    refreshWalletBalance({ force: true }).catch(() => null),
+  ])
 }
 
 async function claimTrialReward() {
@@ -352,7 +444,7 @@ async function claimTrialReward() {
     }
     await Promise.all([
       loadWallet(),
-      loadLedger(),
+      resetLedger(),
       loadTrialApplication(),
       refreshWalletBalance({ force: true }).catch(() => null),
     ])
@@ -399,107 +491,82 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="wallet">
-    <header class="wallet-top">
-      <div>
-        <h1>钱包</h1>
-        <p>余额、兑换入账与资金明细</p>
-      </div>
-      <div class="wallet-top__actions">
-        <button
-          type="button"
-          class="wallet-btn is-ghost"
-          :disabled="walletLoading || ledgerLoading || trialLoading"
-          @click="refreshAll"
-        >
-          <i
-            class="bi bi-arrow-repeat"
-            :class="{ spin: walletLoading || ledgerLoading || trialLoading }"
-            aria-hidden="true"
-          ></i>
-          刷新
-        </button>
-        <RouterLink class="wallet-btn is-primary" to="/pricing">查看价格</RouterLink>
-      </div>
-    </header>
-
+  <main class="wallet" :class="{ 'is-dark': appearanceStore.isDark }">
     <div v-if="walletLoading && !walletLoaded" class="wallet-skel" aria-hidden="true">
-      <div class="wallet-skel__hero"></div>
-      <div class="wallet-skel__side"></div>
-      <div v-for="n in 4" :key="n" class="wallet-skel__row"></div>
+      <div class="wallet-skel__aside"></div>
+      <div class="wallet-skel__panel"></div>
     </div>
 
     <section v-else-if="walletError && !wallet" class="wallet-error">
       <i class="bi bi-cloud-slash" aria-hidden="true"></i>
       <strong>钱包加载失败</strong>
       <p>{{ walletError }}</p>
-      <button type="button" class="wallet-btn is-ghost" @click="loadWallet">重试</button>
+      <button type="button" class="wallet-btn" @click="loadWallet">重试</button>
     </section>
 
-    <template v-else>
-      <section class="wallet-stage">
-        <article class="wallet-balance">
-          <span class="wallet-balance__label">可用余额</span>
-          <strong>{{ formatPoints(availableCents) }}</strong>
-          <div class="wallet-balance__meta">
-            <span>账户总额 {{ formatPoints(totalCents) }}</span>
-            <span v-if="frozenCents > 0" class="is-frozen">
-              冻结 {{ formatPoints(frozenCents) }}
-            </span>
+    <div v-else class="wallet-layout">
+      <aside class="wallet-aside" aria-label="钱包概览">
+        <div class="wallet-aside__card">
+          <div class="wallet-aside__glow" aria-hidden="true"></div>
+
+          <div class="wallet-aside__hero">
+            <span class="wallet-aside__label">可用余额</span>
+            <p class="wallet-aside__amount">
+              <strong>{{ formatPoints(availableCents, { withUnit: false }) }}</strong>
+              <small>积分</small>
+            </p>
+            <p class="wallet-aside__hint">
+              总额 {{ formatPoints(totalCents) }}
+              <template v-if="frozenCents > 0">
+                · 冻结 {{ formatPoints(frozenCents) }}
+              </template>
+            </p>
           </div>
 
-          <div class="wallet-buckets">
-            <div>
-              <small>普通积分</small>
-              <b>{{ formatPoints(normalBalanceCents) }}</b>
-              <em v-if="normalFrozenCents">冻结 {{ formatPoints(normalFrozenCents) }}</em>
-            </div>
-            <div class="is-trial">
-              <small>{{ trialFeatureLabel }}体验积分</small>
-              <b>{{ formatPoints(trialBalanceCents) }}</b>
-              <em v-if="trialFrozenCents">冻结 {{ formatPoints(trialFrozenCents) }}</em>
-              <em v-else-if="trialBalanceCents > 0">仅限对应功能</em>
-            </div>
+          <div class="wallet-aside__cta">
+            <button type="button" class="wallet-btn is-primary" @click="openRedeemDialog">
+              <i class="bi bi-ticket-perforated" aria-hidden="true"></i>
+              兑换
+            </button>
+            <RouterLink class="wallet-btn" to="/text-to-image">去创作</RouterLink>
+            <RouterLink class="wallet-btn is-ghost" to="/check-in">签到</RouterLink>
+            <RouterLink class="wallet-btn is-ghost" to="/incentive-plans">激励</RouterLink>
           </div>
 
-          <div class="wallet-balance__links">
-            <RouterLink to="/check-in">每日签到</RouterLink>
-            <RouterLink to="/incentive-plans">创作激励</RouterLink>
-            <RouterLink to="/text-to-image">去创作</RouterLink>
+          <div class="wallet-metrics" aria-label="积分构成">
+            <article>
+              <i class="bi bi-wallet2" aria-hidden="true"></i>
+              <span>账户总额</span>
+              <strong>{{ formatPoints(totalCents) }}</strong>
+            </article>
+            <article :class="{ 'is-warn': frozenCents > 0 }">
+              <i class="bi bi-hourglass-split" aria-hidden="true"></i>
+              <span>冻结中</span>
+              <strong>{{ formatPoints(frozenCents) }}</strong>
+            </article>
+            <article>
+              <i class="bi bi-coin" aria-hidden="true"></i>
+              <span>普通积分</span>
+              <strong>{{ formatPoints(normalBalanceCents) }}</strong>
+              <small v-if="normalFrozenCents">含冻结 {{ formatPoints(normalFrozenCents) }}</small>
+            </article>
+            <article class="is-trial">
+              <i class="bi bi-stars" aria-hidden="true"></i>
+              <span>{{ trialFeatureLabel }}体验</span>
+              <strong>{{ formatPoints(trialBalanceCents) }}</strong>
+              <small v-if="trialFrozenCents">含冻结 {{ formatPoints(trialFrozenCents) }}</small>
+              <small v-else-if="trialBalanceCents > 0">仅限对应功能</small>
+            </article>
           </div>
-        </article>
 
-        <div class="wallet-actions">
-          <article class="wallet-panel">
-            <header>
-              <h2>兑换码入账</h2>
-              <p>格式 SC-XXXX-XXXX-XXXX</p>
-            </header>
-            <form class="wallet-redeem" @submit.prevent="submitRedeem">
-              <input
-                :value="redeemCode"
-                type="text"
-                placeholder="SC-XXXX-XXXX-XXXX"
-                maxlength="20"
-                autocomplete="off"
-                spellcheck="false"
-                aria-label="兑换码"
-                @input="onRedeemInput"
-              />
-              <button type="submit" class="wallet-btn is-primary" :disabled="redeeming">
-                {{ redeeming ? '兑换中…' : '兑换' }}
-              </button>
-            </form>
-          </article>
-
-          <article
+          <aside
             v-if="showTrialReward"
             class="wallet-trial"
             :class="{ 'is-used': trialApplication.rewardStatus === 'redeemed' }"
           >
             <span class="wallet-trial__icon" aria-hidden="true"><i class="bi bi-gift"></i></span>
-            <div>
-              <strong>{{ trialFeatureLabel }}体验积分礼包</strong>
+            <div class="wallet-trial__copy">
+              <strong>{{ trialFeatureLabel }}体验礼包</strong>
               <p>
                 {{
                   trialApplication.rewardStatus === 'redeemed'
@@ -507,13 +574,6 @@ onBeforeUnmount(() => {
                     : `领取后仅用于${trialFeatureLabel}`
                 }}
               </p>
-              <small>
-                {{
-                  trialApplication.rewardExpiresAt
-                    ? `领取有效期至 ${formatTime(trialApplication.rewardExpiresAt)}`
-                    : '长期有效'
-                }}
-              </small>
             </div>
             <em v-if="trialApplication.rewardStatus === 'redeemed'">已领取</em>
             <button
@@ -525,331 +585,427 @@ onBeforeUnmount(() => {
             >
               {{ redeeming ? '领取中…' : `领取 ${formatPoints(trialApplication.rewardCents || 0)}` }}
             </button>
-          </article>
+          </aside>
           <p v-else-if="trialError" class="wallet-trial-error">{{ trialError }}</p>
         </div>
-      </section>
+      </aside>
 
-      <section class="wallet-ledger">
-        <header>
+      <section class="wallet-ledger" aria-label="账本明细">
+        <header class="wallet-ledger__head">
           <div>
             <h2>账本明细</h2>
-            <p>任务冻结、结算与入账记录</p>
+            <p>入账、消费、冻结与退款</p>
           </div>
           <span v-if="ledgerError" class="wallet-ledger__error">{{ ledgerError }}</span>
+          <span v-else-if="ledgerLoading" class="wallet-ledger__loading">更新中…</span>
         </header>
 
-        <div v-if="ledgerLoading && !ledger.length" class="wallet-skel is-inline" aria-hidden="true">
-          <div v-for="n in 5" :key="n" class="wallet-skel__row"></div>
+        <div class="wallet-tabs" role="tablist" aria-label="账本分类">
+          <button
+            v-for="tab in LEDGER_FILTERS"
+            :key="tab.id"
+            type="button"
+            role="tab"
+            class="wallet-tabs__btn"
+            :class="{ 'is-active': ledgerFilter === tab.id }"
+            :aria-selected="ledgerFilter === tab.id"
+            @click="ledgerFilter = tab.id"
+          >
+            {{ tab.label }}
+            <em v-if="filterCounts[tab.id]">{{ filterCounts[tab.id] }}</em>
+          </button>
         </div>
 
-        <ul v-else-if="ledgerRows.length" class="wallet-ledger__list">
-          <li
-            v-for="entry in ledgerRows"
-            :key="entry.id"
-            :class="`is-${entry.presentation.tone}`"
+        <div class="wallet-ledger__scroll">
+          <div
+            v-if="ledgerLoading && !ledger.length"
+            class="wallet-skel is-inline"
+            aria-hidden="true"
           >
-            <span class="wallet-ledger__icon" aria-hidden="true">
-              <i class="bi" :class="entry.presentation.icon"></i>
-            </span>
-            <div class="wallet-ledger__body">
-              <div class="wallet-ledger__main">
-                <strong>{{ entry.presentation.title }}</strong>
-                <span>{{ entry.presentation.badge }}</span>
-                <span v-if="entry.creditBucket === 'trial'" class="is-trial">体验积分</span>
-                <span v-else-if="entry.creditBucket === 'mixed'">混合积分</span>
-              </div>
-              <p>{{ entry.presentation.description }}</p>
-              <small>
-                {{ formatTime(entry.createdAt) }}
-                <template v-if="entry.presentation.meta">
-                  · {{ entry.presentation.meta }}
-                </template>
-              </small>
-            </div>
-            <b :class="`is-${entry.presentation.amountTone}`">{{ entry.presentation.amount }}</b>
-          </li>
-        </ul>
+            <div v-for="n in 6" :key="n" class="wallet-skel__row"></div>
+          </div>
 
-        <p v-else-if="!ledgerLoading" class="wallet-empty">暂无余额变动记录</p>
+          <div v-else-if="ledgerDayGroups.length" class="wallet-ledger__groups">
+            <section v-for="group in ledgerDayGroups" :key="group.key" class="wallet-day">
+              <header class="wallet-day__head">
+                <strong>{{ group.label }}</strong>
+                <span>{{ group.items.length }}</span>
+              </header>
+              <ul class="wallet-ledger__list">
+                <li
+                  v-for="entry in group.items"
+                  :key="entry.id"
+                  :class="[`is-${entry.presentation.tone}`, `cat-${entry.category}`]"
+                >
+                  <span class="wallet-ledger__icon" aria-hidden="true">
+                    <i class="bi" :class="entry.presentation.icon"></i>
+                  </span>
+                  <div class="wallet-ledger__body">
+                    <div class="wallet-ledger__main">
+                      <strong>{{ entry.presentation.title }}</strong>
+                      <span>{{ entry.presentation.badge }}</span>
+                      <span v-if="entry.creditBucket === 'trial'" class="is-trial">体验</span>
+                      <span v-else-if="entry.creditBucket === 'mixed'">混合</span>
+                    </div>
+                    <p>{{ entry.presentation.description }}</p>
+                    <small>
+                      {{ formatClock(entry.createdAt) }}
+                      <template v-if="entry.presentation.meta">
+                        · {{ entry.presentation.meta }}
+                      </template>
+                    </small>
+                  </div>
+                  <b :class="`is-${entry.presentation.amountTone}`">{{
+                    entry.presentation.amount
+                  }}</b>
+                </li>
+              </ul>
+            </section>
+          </div>
 
-        <button
-          v-if="ledgerCursor"
-          type="button"
-          class="wallet-btn is-ghost wallet-more"
-          :disabled="ledgerLoading"
-          @click="loadLedger({ append: true })"
-        >
-          {{ ledgerLoading ? '加载中…' : '加载更多' }}
-        </button>
+          <p v-else-if="!ledgerLoading" class="wallet-empty">
+            {{ ledgerFilter === 'all' ? '暂无余额变动记录' : '当前分类暂无记录' }}
+          </p>
+        </div>
+
+        <nav v-if="showLedgerPager" class="wallet-pager" aria-label="账本分页">
+          <button
+            type="button"
+            class="wallet-pager__btn"
+            :disabled="ledgerLoading || !hasPrevLedgerPage"
+            @click="goLedgerPage(-1)"
+          >
+            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+            上一页
+          </button>
+          <div class="wallet-pager__meta">
+            <strong>第 {{ ledgerPage }} 页</strong>
+            <small>{{ ledgerRows.length }} 条本页</small>
+          </div>
+          <button
+            type="button"
+            class="wallet-pager__btn"
+            :disabled="ledgerLoading || !hasNextLedgerPage"
+            @click="goLedgerPage(1)"
+          >
+            下一页
+            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          </button>
+        </nav>
       </section>
-    </template>
+    </div>
+
+    <RedeemCodeDialog
+      :open="redeemDialogOpen"
+      @close="closeRedeemDialog"
+      @success="onRedeemSuccess"
+    />
   </main>
 </template>
 
 <style scoped>
 .wallet {
-  --ink: #1f2430;
-  --muted: #6f7a8c;
-  --line: #ebe3d8;
-  --orange: #f27021;
-  --card: #fff;
+  --ink: #17171f;
+  --muted: #777785;
+  --line: rgb(21 22 31 / 9%);
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
+  --surface: #ffffff;
+  --surface-soft: #f6f5fc;
+  --bg: #efeef7;
+  --income: #0f9f6e;
+  --income-soft: rgb(15 159 110 / 12%);
+  --spend: #e11d48;
+  --spend-soft: rgb(225 29 72 / 10%);
+  --pending: #d97706;
+  --pending-soft: rgb(217 119 6 / 12%);
+  --refund: #0284c7;
+  --refund-soft: rgb(2 132 199 / 12%);
+  box-sizing: border-box;
   width: 100%;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 20px 0 48px;
-  overflow-x: clip;
+  height: calc(100dvh - var(--app-header-offset, 72px));
+  padding: 14px 0;
+  overflow: hidden;
   color: var(--ink);
   background:
-    radial-gradient(circle at 10% 0%, rgb(255 210 150 / 32%), transparent 30%),
-    radial-gradient(circle at 92% 6%, rgb(255 186 120 / 16%), transparent 26%),
-    linear-gradient(180deg, #fffaf3 0%, #f6f3ee 46%, #f3f4f7 100%);
+    radial-gradient(ellipse 50% 42% at 6% 0%, rgb(109 92 255 / 16%), transparent 58%),
+    radial-gradient(ellipse 38% 32% at 96% 6%, rgb(139 123 255 / 11%), transparent 52%),
+    var(--bg);
 }
 
-.wallet-top,
-.wallet-stage,
-.wallet-ledger,
+.wallet.is-dark {
+  --ink: rgba(255, 255, 255, 0.96);
+  --muted: rgba(255, 255, 255, 0.52);
+  --line: rgb(255 255 255 / 9%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --surface: #1a1824;
+  --surface-soft: #15131f;
+  --bg: #121218;
+  --income: #68c994;
+  --income-soft: rgb(104 201 148 / 14%);
+  --spend: #fb7185;
+  --spend-soft: rgb(251 113 133 / 14%);
+  --pending: #fbbf24;
+  --pending-soft: rgb(251 191 36 / 14%);
+  --refund: #38bdf8;
+  --refund-soft: rgb(56 189 248 / 14%);
+  background:
+    radial-gradient(ellipse 48% 38% at 8% 0%, rgb(109 92 255 / 18%), transparent 56%),
+    radial-gradient(ellipse 34% 28% at 92% 8%, rgb(139 123 255 / 12%), transparent 50%),
+    var(--bg);
+}
+
+.wallet-layout,
 .wallet-error,
 .wallet-skel {
-  width: min(1120px, calc(100% - 40px));
+  width: calc(100% - 40px);
+  max-width: 1360px;
   margin-inline: auto;
 }
 
-.wallet-top {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.wallet-top h1 {
-  margin: 0;
-  font-size: clamp(1.7rem, 2.8vw, 2.2rem);
-  font-weight: 850;
-  letter-spacing: -0.03em;
-}
-
-.wallet-top p {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 0.86rem;
-}
-
-.wallet-top__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.wallet-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
 }
 
 .wallet-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 38px;
-  padding: 0 14px;
+  gap: 5px;
+  min-height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 10px;
   color: var(--ink);
-  background: #fff;
+  background: var(--surface);
   font: inherit;
-  font-size: 0.78rem;
-  font-weight: 750;
+  font-size: 0.76rem;
+  font-weight: 720;
   text-decoration: none;
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    filter 0.15s ease;
 }
 
 .wallet-btn.is-primary {
   color: #fff;
-  border-color: var(--orange);
-  background: var(--orange);
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 10px 22px rgb(109 92 255 / 22%);
 }
 
-.wallet-btn.is-ghost:hover:not(:disabled) {
-  border-color: #f2b27a;
-  color: #c45a10;
+.wallet-btn.is-ghost {
+  background: color-mix(in srgb, var(--surface-soft) 80%, transparent);
+}
+
+.wallet-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  color: var(--accent-deep);
+}
+
+.wallet-btn.is-primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.04);
 }
 
 .wallet-btn.is-light {
-  color: #9a4b12;
+  color: var(--accent-deep);
   border-color: transparent;
   background: #fff;
 }
 
 .wallet-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-.wallet-stage {
+.wallet-aside {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
-  gap: 14px;
-  margin-bottom: 16px;
+  min-height: 0;
+  height: 100%;
 }
 
-.wallet-balance,
-.wallet-panel,
-.wallet-trial,
-.wallet-ledger {
+.wallet-aside__card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
   border: 1px solid var(--line);
-  border-radius: 20px;
-  background: rgb(255 255 255 / 92%);
-  box-shadow: 0 12px 32px rgb(60 45 20 / 6%);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(23 23 31 / 5%);
 }
 
-.wallet-balance {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 24px;
+.wallet-aside__glow {
+  position: absolute;
+  inset: -28% -18% auto -28%;
+  height: 58%;
   background:
-    radial-gradient(circle at 100% 0%, rgb(255 186 120 / 28%), transparent 42%),
-    linear-gradient(160deg, #fff8ef 0%, #fff 70%);
+    radial-gradient(circle at 28% 40%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 62%),
+    radial-gradient(circle at 78% 18%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 55%);
+  pointer-events: none;
 }
 
-.wallet-balance__label {
+.wallet-aside__hero {
+  position: relative;
+  z-index: 1;
+  padding: 22px 22px 14px;
+}
+
+.wallet-aside__label {
+  display: block;
   color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
-.wallet-balance > strong {
-  font-size: clamp(2rem, 3.4vw, 2.6rem);
-  font-weight: 850;
-  letter-spacing: -0.04em;
-  line-height: 1;
-}
-
-.wallet-balance__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 0.76rem;
-}
-
-.wallet-balance__meta .is-frozen {
-  color: #b45309;
-}
-
-.wallet-buckets {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.wallet-buckets > div {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid #f0e4d4;
-  border-radius: 14px;
-  background: rgb(255 255 255 / 78%);
-}
-
-.wallet-buckets small {
-  color: var(--muted);
-  font-size: 0.68rem;
-}
-
-.wallet-buckets b {
-  font-size: 1.05rem;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-
-.wallet-buckets em {
-  color: var(--muted);
-  font-size: 0.66rem;
-  font-style: normal;
-}
-
-.wallet-buckets .is-trial b {
-  color: #c45a10;
-}
-
-.wallet-balance__links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.wallet-balance__links a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid #f0d7bc;
-  border-radius: 999px;
-  color: #b85a12;
-  background: rgb(255 255 255 / 80%);
   font-size: 0.72rem;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+}
+
+.wallet-aside__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.wallet-aside__amount strong {
+  font-size: clamp(2.2rem, 3.2vw, 2.85rem);
+  font-weight: 860;
+  letter-spacing: -0.05em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, var(--ink) 38%, var(--accent-deep));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.wallet.is-dark .wallet-aside__amount strong {
+  background: linear-gradient(135deg, #fff 35%, var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.wallet-aside__amount small {
+  color: var(--muted);
+  font-size: 0.9rem;
   font-weight: 700;
-  text-decoration: none;
 }
 
-.wallet-actions {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-}
-
-.wallet-panel {
-  padding: 20px;
-}
-
-.wallet-panel header h2,
-.wallet-ledger header h2 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 850;
-}
-
-.wallet-panel header p,
-.wallet-ledger header p {
-  margin: 4px 0 0;
+.wallet-aside__hint {
+  margin: 8px 0 0;
   color: var(--muted);
   font-size: 0.74rem;
 }
 
-.wallet-redeem {
+.wallet-aside__cta {
+  position: relative;
+  z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 1.15fr 1fr 0.85fr 0.85fr;
   gap: 8px;
-  margin-top: 14px;
+  padding: 0 18px 16px;
 }
 
-.wallet-redeem input {
+.wallet-aside__cta > .wallet-btn {
   min-width: 0;
-  height: 42px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  color: var(--ink);
-  background: #fffaf4;
-  font: inherit;
-  letter-spacing: 0.04em;
-  outline: none;
+  padding-inline: 8px;
 }
 
-.wallet-redeem input:focus {
-  border-color: #f2b27a;
-  box-shadow: 0 0 0 3px rgb(242 112 33 / 10%);
+.wallet-metrics {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 10px;
+  min-height: 0;
+  padding: 0 18px 16px;
+  align-content: stretch;
+}
+
+.wallet-metrics > article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  align-content: center;
+  gap: 2px 10px;
+  min-height: 0;
+  padding: 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-soft) 78%, var(--surface));
+}
+
+.wallet-metrics > article > i {
+  grid-row: 1 / span 3;
+  align-self: center;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+  font-size: 0.95rem;
+}
+
+.wallet-metrics span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.wallet-metrics strong {
+  font-size: 1.05rem;
+  font-weight: 820;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.wallet-metrics small {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.wallet-metrics > article.is-warn > i,
+.wallet-metrics > article.is-warn strong {
+  color: var(--pending);
+}
+
+.wallet-metrics > article.is-warn > i {
+  background: var(--pending-soft);
+}
+
+.wallet-metrics > article.is-trial > i,
+.wallet-metrics > article.is-trial strong {
+  color: var(--accent-deep);
 }
 
 .wallet-trial {
+  position: relative;
+  z-index: 1;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  margin: 0 14px 14px;
+  padding: 12px 12px;
   color: #fff;
-  border: 0;
-  background: linear-gradient(145deg, #2f9f7f, #1d7a62);
-  box-shadow: 0 14px 30px rgb(29 122 98 / 18%);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #5b4de8 0%, #6d5cff 55%, #8b7bff 100%);
+  box-shadow: 0 12px 28px rgb(109 92 255 / 16%);
 }
 
 .wallet-trial.is-used {
@@ -858,116 +1014,230 @@ onBeforeUnmount(() => {
 
 .wallet-trial__icon {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   place-items: center;
-  border-radius: 12px;
-  color: #1d7a62;
+  border-radius: 10px;
+  color: var(--accent-deep);
   background: #fff;
-  font-size: 1.15rem;
+  font-size: 1rem;
 }
 
-.wallet-trial strong {
+.wallet-trial__copy strong {
   display: block;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
+  font-weight: 780;
 }
 
-.wallet-trial p {
-  margin: 4px 0 0;
-  color: rgb(255 255 255 / 88%);
-  font-size: 0.74rem;
-  line-height: 1.4;
-}
-
-.wallet-trial small {
-  display: block;
-  margin-top: 4px;
-  color: rgb(255 255 255 / 62%);
+.wallet-trial__copy p {
+  margin: 2px 0 0;
+  color: rgb(255 255 255 / 82%);
   font-size: 0.66rem;
+  line-height: 1.35;
 }
 
 .wallet-trial > em {
-  padding: 4px 10px;
+  padding: 4px 9px;
   border-radius: 999px;
-  color: #1d7a62;
+  color: var(--accent-deep);
   background: #fff;
   font-style: normal;
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   font-weight: 800;
 }
 
 .wallet-trial-error {
-  margin: 0;
-  color: #dc2626;
-  font-size: 0.74rem;
+  margin: 0 18px 14px;
+  color: var(--spend);
+  font-size: 0.72rem;
 }
 
 .wallet-ledger {
-  padding: 20px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(23 23 31 / 5%);
+  padding: 14px 14px 10px;
+  overflow: hidden;
 }
 
-.wallet-ledger > header {
+.wallet-ledger__head {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
+}
+
+.wallet-ledger__head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 840;
+  letter-spacing: -0.02em;
+}
+
+.wallet-ledger__head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .wallet-ledger__error {
-  color: #dc2626;
+  color: var(--spend);
+  font-size: 0.72rem;
+}
+
+.wallet-ledger__loading {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.wallet-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.wallet-tabs__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.wallet-tabs__btn em {
+  min-width: 1.05rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+  font-style: normal;
+  font-size: 0.64rem;
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-tabs__btn.is-active {
+  color: #fff;
+  background: var(--accent);
+}
+
+.wallet-tabs__btn.is-active em {
+  color: var(--accent-deep);
+  background: #fff;
+}
+
+.wallet-ledger__scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+}
+
+.wallet-ledger__groups {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.wallet-day__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 4px 5px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: linear-gradient(var(--surface) 72%, transparent);
+}
+
+.wallet-day__head strong {
   font-size: 0.74rem;
+  font-weight: 780;
+}
+
+.wallet-day__head span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .wallet-ledger__list {
   display: grid;
-  gap: 8px;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-soft) 50%, var(--surface));
 }
 
 .wallet-ledger__list > li {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
   align-items: start;
-  padding: 12px;
-  border: 1px solid #f0e8dc;
-  border-radius: 14px;
-  background: #fffaf6;
+  padding: 10px 11px;
+  border-top: 1px solid var(--line);
+  transition: background 0.15s ease;
+}
+
+.wallet-ledger__list > li:first-child {
+  border-top: 0;
+}
+
+.wallet-ledger__list > li:hover {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
 }
 
 .wallet-ledger__icon {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 32px;
+  height: 32px;
   place-items: center;
-  border-radius: 12px;
+  border-radius: 9px;
   color: var(--muted);
-  background: #f3eee6;
-  font-size: 1.05rem;
+  background: var(--surface);
+  font-size: 0.88rem;
 }
 
 .wallet-ledger__list > li.is-pending .wallet-ledger__icon {
-  color: #d97706;
-  background: #fff7ed;
+  color: var(--pending);
+  background: var(--pending-soft);
 }
 
 .wallet-ledger__list > li.is-settled .wallet-ledger__icon,
 .wallet-ledger__list > li.is-income .wallet-ledger__icon {
-  color: #16a34a;
-  background: #ecfdf5;
+  color: var(--income);
+  background: var(--income-soft);
 }
 
 .wallet-ledger__list > li.is-refund .wallet-ledger__icon {
-  color: #0284c7;
-  background: #e0f2fe;
+  color: var(--refund);
+  background: var(--refund-soft);
 }
 
 .wallet-ledger__list > li.is-spend .wallet-ledger__icon {
-  color: #dc2626;
-  background: #fef2f2;
+  color: var(--spend);
+  background: var(--spend-soft);
 }
 
 .wallet-ledger__body {
@@ -977,70 +1247,124 @@ onBeforeUnmount(() => {
 .wallet-ledger__main {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
 }
 
 .wallet-ledger__main strong {
-  font-size: 0.88rem;
+  font-size: 0.82rem;
+  font-weight: 740;
 }
 
 .wallet-ledger__main span {
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 999px;
   color: var(--muted);
-  background: #f1ebe3;
-  font-size: 0.64rem;
+  background: var(--surface);
+  font-size: 0.6rem;
   font-weight: 700;
 }
 
 .wallet-ledger__main span.is-trial {
-  color: #14705e;
-  background: #dcf5ee;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
 }
 
 .wallet-ledger__body p {
-  margin: 5px 0 0;
+  margin: 3px 0 0;
   color: var(--muted);
-  font-size: 0.74rem;
-  line-height: 1.45;
+  font-size: 0.7rem;
+  line-height: 1.4;
 }
 
 .wallet-ledger__body small {
   display: block;
-  margin-top: 4px;
-  color: rgb(111 122 140 / 78%);
-  font-size: 0.66rem;
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+  font-size: 0.62rem;
 }
 
 .wallet-ledger__list > li > b {
-  font-size: 0.84rem;
-  font-weight: 850;
+  font-size: 0.8rem;
+  font-weight: 820;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .wallet-ledger__list > li > b.is-income {
-  color: #16a34a;
+  color: var(--income);
 }
 
 .wallet-ledger__list > li > b.is-spend {
-  color: #dc2626;
+  color: var(--spend);
 }
 
 .wallet-ledger__list > li > b.is-neutral {
   color: var(--muted);
 }
 
-.wallet-more {
-  width: 100%;
-  margin-top: 12px;
+.wallet-pager {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.wallet-pager__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--surface-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.wallet-pager__btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  color: var(--accent-deep);
+}
+
+.wallet-pager__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.wallet-pager__meta {
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  text-align: center;
+}
+
+.wallet-pager__meta strong {
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-pager__meta small {
+  color: var(--muted);
+  font-size: 0.64rem;
 }
 
 .wallet-empty {
-  margin: 8px 0 0;
-  padding: 28px 12px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  min-height: 180px;
+  padding: 24px 12px;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   text-align: center;
 }
 
@@ -1048,17 +1372,18 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   gap: 8px;
-  min-height: 320px;
+  height: 100%;
+  min-height: 280px;
   padding: 32px;
   border: 1px solid var(--line);
   border-radius: 20px;
-  background: #fff;
+  background: var(--surface);
   text-align: center;
 }
 
 .wallet-error i {
-  color: var(--orange);
-  font-size: 1.8rem;
+  color: var(--accent);
+  font-size: 1.6rem;
 }
 
 .wallet-error p {
@@ -1068,8 +1393,9 @@ onBeforeUnmount(() => {
 
 .wallet-skel {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
   gap: 14px;
+  height: 100%;
 }
 
 .wallet-skel.is-inline {
@@ -1077,38 +1403,32 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr;
   width: 100%;
   margin: 0;
+  height: auto;
+  gap: 8px;
 }
 
-.wallet-skel__hero,
-.wallet-skel__side,
+.wallet-skel__aside,
+.wallet-skel__panel,
 .wallet-skel__row {
-  border-radius: 16px;
-  background: linear-gradient(90deg, #fff 25%, #fff6eb 50%, #fff 75%);
+  border-radius: 18px;
+  background: linear-gradient(
+    90deg,
+    var(--surface) 25%,
+    color-mix(in srgb, var(--accent) 10%, var(--surface)) 50%,
+    var(--surface) 75%
+  );
   background-size: 200% 100%;
   animation: wallet-shimmer 1.2s linear infinite;
 }
 
-.wallet-skel__hero {
-  min-height: 260px;
-}
-
-.wallet-skel__side {
-  min-height: 180px;
+.wallet-skel__aside,
+.wallet-skel__panel {
+  min-height: 100%;
 }
 
 .wallet-skel__row {
-  grid-column: 1 / -1;
-  height: 72px;
-}
-
-.spin {
-  animation: wallet-spin 0.9s linear infinite;
-}
-
-@keyframes wallet-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  height: 56px;
+  border-radius: 12px;
 }
 
 @keyframes wallet-shimmer {
@@ -1117,42 +1437,123 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 900px) {
-  .wallet-stage,
+@media (max-width: 1080px) {
+  .wallet-aside__cta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .wallet-metrics {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    overflow: auto;
+  }
+}
+
+@media (max-width: 980px) {
+  .wallet {
+    height: auto;
+    min-height: calc(100dvh - var(--app-header-offset, 72px));
+    overflow: auto;
+  }
+
+  .wallet-layout,
   .wallet-skel {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .wallet-aside,
+  .wallet-aside__card {
+    height: auto;
+  }
+
+  .wallet-aside__card {
+    grid-template-rows: auto;
+  }
+
+  .wallet-metrics {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .wallet-ledger {
+    height: min(68dvh, 640px);
+    min-height: 420px;
   }
 }
 
 @media (max-width: 640px) {
-  .wallet-top,
-  .wallet-stage,
-  .wallet-ledger,
+  .wallet {
+    padding: 10px 0 14px;
+  }
+
+  .wallet-layout,
   .wallet-error,
   .wallet-skel {
-    width: calc(100% - 24px);
+    width: calc(100% - 20px);
+    max-width: none;
   }
-  .wallet-top {
-    align-items: stretch;
-    flex-direction: column;
+
+  .wallet-aside__hero {
+    padding: 18px 16px 12px;
   }
-  .wallet-top__actions {
-    width: 100%;
+
+  .wallet-aside__cta,
+  .wallet-metrics {
+    padding-inline: 14px;
   }
-  .wallet-top__actions .wallet-btn {
-    flex: 1;
+
+  .wallet-aside__cta {
+    grid-template-columns: 1fr 1fr;
   }
-  .wallet-buckets,
-  .wallet-redeem,
-  .wallet-trial {
+
+  .wallet-metrics {
     grid-template-columns: 1fr;
+    gap: 8px;
   }
+
+  .wallet-trial {
+    grid-template-columns: 34px minmax(0, 1fr);
+    margin-inline: 12px;
+  }
+
+  .wallet-trial > .wallet-btn,
+  .wallet-trial > em {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .wallet-ledger {
+    border-radius: 18px;
+    padding: 12px 10px 8px;
+  }
+
+  .wallet-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
+  }
+
+  .wallet-tabs__btn {
+    flex: 0 0 auto;
+  }
+
   .wallet-ledger__list > li {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: 32px minmax(0, 1fr);
   }
+
   .wallet-ledger__list > li > b {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .wallet-pager {
+    grid-template-columns: 1fr auto 1fr;
+  }
+
+  .wallet-pager__btn:last-child {
+    justify-self: end;
   }
 }
 </style>

@@ -108,6 +108,25 @@ func TestValidateAssistantReferenceImages(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantReferencesPreservesValidatedInlineImage(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	inline := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image"))
+	references, err := sanitizeAssistantReferences([]map[string]any{{
+		"id": "crop", "name": "框选截图", "dataUrl": inline,
+	}}, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(references) != 1 || references[0]["dataUrl"] != inline {
+		t.Fatalf("references = %#v, want inline image", references)
+	}
+	if _, err := sanitizeAssistantReferences([]map[string]any{{
+		"id": "broken", "dataUrl": "data:image/png;base64,not-base64",
+	}}, userID); err == nil {
+		t.Fatal("broken inline image must be rejected")
+	}
+}
+
 func TestAssistantTaskOutputReferenceKeys(t *testing.T) {
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	items := []map[string]any{
@@ -292,7 +311,7 @@ func TestValidateAssistantImageSize(t *testing.T) {
 
 func TestAssistantConversationLifecycle(t *testing.T) {
 	env := newCommunityEnv(t)
-	_, token := env.newUserSession(t, "user")
+	user, token := env.newUserSession(t, "user")
 
 	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{"title": "持久化测试"}, token)
 	if created.Code != http.StatusCreated {
@@ -300,8 +319,27 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	}
 	data, _ := decode(t, created)
 	id, _ := data["id"].(string)
-	if id == "" || data["title"] != "持久化测试" {
+	if id == "" || data["title"] != "持久化测试" || data["workspace"] != "assistant" {
 		t.Fatalf("created conversation = %#v", data)
+	}
+
+	designCreated := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "框选图片编辑", "workspace": "ui_design",
+	}, token)
+	if designCreated.Code != http.StatusCreated {
+		t.Fatalf("create ui design conversation: status %d body %s", designCreated.Code, designCreated.Body.String())
+	}
+	designData, _ := decode(t, designCreated)
+	designID, _ := designData["id"].(string)
+	if designID == "" || designData["workspace"] != "ui_design" {
+		t.Fatalf("created ui design conversation = %#v", designData)
+	}
+
+	invalid := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "非法工作区", "workspace": "unknown",
+	}, token)
+	if invalid.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid workspace: status %d body %s", invalid.Code, invalid.Body.String())
 	}
 
 	listed := env.do(t, http.MethodGet, "/api/v1/assistant/conversations", nil, token)
@@ -320,10 +358,63 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	if len(response.Data.Conversations) != 1 || response.Data.Conversations[0]["id"] != id {
 		t.Fatalf("listed conversations = %#v", response.Data.Conversations)
 	}
+	designUUID, err := uuid.Parse(designID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	designConversation, err := store.GetUserAssistantConversation(
+		context.Background(), env.st.Pool, user.ID, designUUID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if designConversation == nil || designConversation.Workspace != "ui_design" {
+		t.Fatalf("ui design conversation is not recoverable by id: %#v", designConversation)
+	}
+	now := time.Now().UTC()
+	userMessage, err := store.InsertAssistantMessage(context.Background(), env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: designUUID, Role: "user", Content: "框选任务", Kind: "text",
+		Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantMessage, err := store.InsertAssistantMessage(context.Background(), env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: designUUID, Role: "assistant", Kind: "text",
+		Status: "queued", CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designRun, err := store.InsertAssistantRun(context.Background(), env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: designUUID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "chat", Prompt: "框选任务",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designRunResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs/"+designRun.ID.String(), nil, token)
+	if designRunResponse.Code != http.StatusOK {
+		t.Fatalf("recover ui design run by id: status %d body %s", designRunResponse.Code, designRunResponse.Body.String())
+	}
+	activeRunsResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs", nil, token)
+	if activeRunsResponse.Code != http.StatusOK {
+		t.Fatalf("list assistant runs: status %d body %s", activeRunsResponse.Code, activeRunsResponse.Body.String())
+	}
+	activeRunsData, _ := decode(t, activeRunsResponse)
+	activeRuns, _ := activeRunsData["runs"].([]any)
+	if len(activeRuns) != 0 {
+		t.Fatalf("assistant active runs leaked ui design tasks: %#v", activeRuns)
+	}
 
 	deleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+id, nil, token)
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete conversation: status %d body %s", deleted.Code, deleted.Body.String())
+	}
+	designDeleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+designID+"?cancelActive=true", nil, token)
+	if designDeleted.Code != http.StatusNoContent {
+		t.Fatalf("delete ui design conversation: status %d body %s", designDeleted.Code, designDeleted.Body.String())
 	}
 }
 

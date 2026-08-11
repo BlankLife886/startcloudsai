@@ -64,7 +64,7 @@ import { AgentPanelTabs } from "./agent-panel-tabs";
 const MAX_ATTACHMENTS = 6;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 28 * 1024 * 1024;
 const DEFAULT_AGENT_URL = "http://127.0.0.1:17371";
-const AGENT_PROTOCOL_VERSION = 3;
+const AGENT_PROTOCOL_VERSION = 6;
 const HISTORY_RETRY_DELAYS_MS = [0, 150, 350, 700, 1200];
 const AGENT_REASONING_EFFORTS = new Set<AgentReasoningEffort>(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const AGENT_REASONING_LABELS: Record<AgentReasoningEffort, string> = { minimal: "最低", low: "轻度", medium: "中", high: "高", xhigh: "极高", max: "最高", ultra: "Ultra" };
@@ -331,11 +331,14 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             if (!isCurrentConnection()) return;
             const hello = parseEventData<AgentHelloEvent>(event);
             if (hello?.protocolVersion !== AGENT_PROTOCOL_VERSION) {
-                const text = "本地 Agent 版本过旧，请重启 Canvas Agent 后重新连接";
+                const webIsOutdated = typeof hello?.protocolVersion === "number" && hello.protocolVersion > AGENT_PROTOCOL_VERSION;
+                const text = webIsOutdated
+                    ? `当前网页版本过旧（网页协议 ${AGENT_PROTOCOL_VERSION}，Agent 协议 ${hello.protocolVersion}），请更新或刷新网页后重新连接`
+                    : `本地 Agent 版本过旧（网页协议 ${AGENT_PROTOCOL_VERSION}，Agent 协议 ${hello?.protocolVersion ?? "未知"}），请重启 Canvas Agent 后重新连接`;
                 protocolRejected = true;
                 source.close();
                 connectedRef.current = false;
-                setAgentState({ enabled: false, connected: false, waiting: false, sending: false, activity: "需要重启 Agent", connectError: text, silentConnect: false, pendingTool: null, pendingApprovals: [] });
+                setAgentState({ enabled: false, connected: false, waiting: false, sending: false, activity: webIsOutdated ? "需要更新网页" : "需要重启 Agent", connectError: text, silentConnect: false, pendingTool: null, pendingApprovals: [] });
                 addEventLog("Agent 版本不匹配", text, hello);
                 if (!headless) message.error(text);
                 return;

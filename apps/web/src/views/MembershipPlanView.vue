@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppearanceStore } from '@/stores/appearance'
 import { listPlans, formatCents, formatPoints } from '@/services/billingApi'
-import crownArt from '@/assets/incentives/membership-crown.png'
 
 const router = useRouter()
 const appearanceStore = useAppearanceStore()
@@ -18,7 +17,6 @@ const previewPlans = [
     name: '体验版',
     subtitle: '适合初次体验的你',
     icon: 'bi-gem',
-    tone: 'blue',
     price: '¥0',
     period: '/ 永久',
     features: ['基础功能访问', '标准内容浏览', '社区支持'],
@@ -31,7 +29,6 @@ const previewPlans = [
     name: '基础版',
     subtitle: '满足日常使用需求',
     icon: 'bi-tree-fill',
-    tone: 'green',
     price: '¥28',
     period: '/ 月',
     features: ['基础功能全部开放', '高清内容浏览', '优先客服支持'],
@@ -43,7 +40,6 @@ const previewPlans = [
     name: '高级版',
     subtitle: '畅享更多专属权益',
     icon: 'bi-star-fill',
-    tone: 'orange',
     price: '¥68',
     period: '/ 月',
     yearly: '¥680 / 年（省 17%）',
@@ -57,7 +53,6 @@ const previewPlans = [
     name: '专业版',
     subtitle: '为高效人士打造',
     icon: 'bi-award-fill',
-    tone: 'violet',
     price: '¥128',
     period: '/ 月',
     yearly: '¥1280 / 年（省 17%）',
@@ -70,7 +65,6 @@ const previewPlans = [
     name: '企业版',
     subtitle: '满足企业需求',
     icon: 'bi-gem',
-    tone: 'gold',
     price: '定制价格',
     period: '',
     yearly: '联系销售获取报价',
@@ -82,12 +76,11 @@ const previewPlans = [
 
 const displayPlans = computed(() => {
   if (!catalog.value.length) return previewPlans
-  return catalog.value.map((plan, index) => ({
+  return catalog.value.map((plan) => ({
     ...plan,
     id: plan.id || plan.code,
     subtitle: plan.description || (plan.kind === 'subscription' ? '周期会员方案' : '创作积分方案'),
     icon: plan.kind === 'subscription' ? 'bi-star-fill' : 'bi-gem',
-    tone: ['blue', 'green', 'orange', 'violet', 'gold'][index % 5],
     price: formatCents(plan.priceCents),
     period: plan.kind === 'subscription' ? `/ ${plan.durationDays || 30} 天` : '一次性',
     features:
@@ -102,6 +95,16 @@ const displayPlans = computed(() => {
     recommended: plan.recommended === true,
   }))
 })
+
+const planCount = computed(() => displayPlans.value.length)
+const recommendedPlan = computed(() => displayPlans.value.find((plan) => plan.recommended) || null)
+const accessLabel = computed(() => (paymentEnabled.value ? '在线开通' : '申请体验'))
+
+const tips = [
+  { icon: 'bi-shield-check', title: '安全可靠', copy: '数据加密存储，隐私有保障' },
+  { icon: 'bi-arrow-repeat', title: '灵活自由', copy: '随时升级、降级或取消' },
+  { icon: 'bi-headset', title: '优质支持', copy: '专业团队，快速响应' },
+]
 
 async function loadPlans() {
   loading.value = true
@@ -129,61 +132,88 @@ function usePlan(plan) {
   router.push({ path: '/pricing', query: { trial: 'apply' } })
 }
 
+function goBack() {
+  const canGoBack =
+    typeof window !== 'undefined' &&
+    window.history.length > 1 &&
+    Boolean(window.history.state?.back)
+  if (canGoBack) router.back()
+  else router.push('/incentive-plans')
+}
+
 onMounted(loadPlans)
 </script>
 
 <template>
   <main class="membership-page" :class="{ 'is-dark': appearanceStore.isDark }">
-    <section class="membership-hero">
-      <div class="membership-hero__copy">
-        <h1>选择适合你的<br /><strong>会员计划</strong></h1>
-        <span>解锁专属权益，享受更优质的服务体验<br />随时升级或取消，灵活无忧</span>
-        <div class="membership-hero__social">
-          <span class="hero-avatars" aria-hidden="true">
-            <i class="bi bi-person-fill"></i><i class="bi bi-person-fill"></i
-            ><i class="bi bi-person-fill"></i>
+    <header class="membership-top">
+      <div class="membership-shell membership-top__inner">
+        <button type="button" class="membership-back" @click="goBack">
+          <i class="bi bi-arrow-left" aria-hidden="true"></i>
+          返回
+        </button>
+        <div class="membership-top__copy">
+          <h1>会员计划</h1>
+          <p>查看会员周期、积分供给与专属权益，按需选择并随时调整。</p>
+        </div>
+        <div class="membership-facts" aria-label="会员概览">
+          <span>
+            <i class="bi bi-collection"></i>{{ loading ? '—' : planCount }} 档方案
           </span>
-          <small>已有 98,352 位用户加入</small>
+          <span>
+            <i class="bi bi-star"></i>推荐 {{ loading ? '—' : recommendedPlan?.name || '—' }}
+          </span>
+          <span>
+            <i class="bi bi-shield-check"></i>{{ loading ? '—' : accessLabel }}
+          </span>
         </div>
       </div>
+    </header>
 
-      <div class="membership-hero__offer">
-        <span><i class="bi bi-fire"></i>限时优惠</span>
-        <strong>年付最高可省 <em>17%</em></strong>
-        <small>优惠活动将于 7 天后结束</small>
+    <section class="membership-shell membership-workspace" aria-label="会员方案对比">
+      <div class="workspace-heading">
+        <div>
+          <strong>选择适合你的方案</strong>
+          <small>解锁专属权益，随时升级或取消。</small>
+        </div>
+        <button v-if="loadError" type="button" class="text-action" @click="loadPlans">
+          <i class="bi bi-arrow-clockwise"></i>重新加载
+        </button>
       </div>
 
-      <div class="membership-hero__asset" aria-hidden="true">
-        <img :src="crownArt" alt="" loading="lazy" />
-      </div>
-    </section>
-
-    <section class="plans-section" aria-label="会员方案对比">
-      <div v-if="loading" class="plans-loading" aria-live="polite">
+      <div v-if="loading" class="membership-loading" aria-live="polite">
         <span></span><span></span><span></span>
+        <p>正在读取会员方案…</p>
       </div>
+
+      <div v-else-if="loadError" class="membership-empty-state">
+        <i class="bi bi-exclamation-circle"></i>
+        <h2>暂时无法读取会员计划</h2>
+        <p>{{ loadError }}</p>
+      </div>
+
       <div v-else class="plan-grid">
         <article
           v-for="plan in displayPlans"
           :key="plan.id"
           class="plan-card"
           :class="{ 'is-recommended': plan.recommended, 'is-current': plan.current }"
-          :data-tone="plan.tone"
         >
-          <em v-if="plan.recommended">最受欢迎</em>
+          <span v-if="plan.recommended" class="plan-badge">推荐</span>
+          <span v-else-if="plan.current" class="plan-badge is-current">当前</span>
           <span class="plan-card__icon"><i class="bi" :class="plan.icon"></i></span>
-          <h2>{{ plan.name }}</h2>
+          <h3>{{ plan.name }}</h3>
           <p>{{ plan.subtitle }}</p>
           <div class="plan-card__pricing">
             <div class="plan-card__price">
-              <strong>{{ plan.price }}</strong
-              ><span>{{ plan.period || '' }}</span>
+              <strong>{{ plan.price }}</strong>
+              <span>{{ plan.period || '' }}</span>
             </div>
             <small v-if="plan.yearly">{{ plan.yearly }}</small>
           </div>
           <ul>
             <li v-for="feature in plan.features" :key="feature">
-              <i class="bi bi-check-circle-fill"></i>{{ feature }}
+              <i class="bi bi-check2" aria-hidden="true"></i>{{ feature }}
             </li>
           </ul>
           <button type="button" @click="usePlan(plan)">
@@ -191,431 +221,554 @@ onMounted(loadPlans)
           </button>
         </article>
       </div>
-      <button v-if="loadError" type="button" class="plans-retry" @click="loadPlans">
-        套餐读取失败，重新加载
-      </button>
     </section>
 
-    <section class="membership-assurances" aria-label="会员服务保障">
-      <div>
-        <i class="bi bi-shield-check"></i
-        ><span><strong>安全可靠</strong><small>数据加密存储，隐私有保障</small></span>
+    <footer class="membership-tips" aria-label="会员服务说明">
+      <div class="membership-shell">
+        <ol class="tip-list">
+          <li v-for="item in tips" :key="item.title">
+            <i class="bi" :class="item.icon" aria-hidden="true"></i>
+            <div>
+              <strong>{{ item.title }}</strong>
+              <p>{{ item.copy }}</p>
+            </div>
+          </li>
+        </ol>
       </div>
-      <div>
-        <i class="bi bi-arrow-repeat"></i
-        ><span><strong>灵活自由</strong><small>随时升级、降级或取消</small></span>
-      </div>
-      <div>
-        <i class="bi bi-headset"></i
-        ><span><strong>优质支持</strong><small>专业团队，快速响应</small></span>
-      </div>
-      <div>
-        <i class="bi bi-gift"></i
-        ><span><strong>会员专享</strong><small>定期福利与专属活动</small></span>
-      </div>
-    </section>
+    </footer>
   </main>
 </template>
 
 <style scoped>
+:global(.app-container > .main-content:has(> .membership-page)) {
+  height: 100dvh;
+  max-height: 100dvh;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
 .membership-page {
-  --ink: #1f2430;
-  --muted: #7b8798;
-  --orange: #f27021;
-  --orange-deep: #e2620f;
-  --orange-text: #d4520f;
-  --soft-orange: #ffe9d2;
-  --line: #e7eaf0;
-  --line-soft: #edf0f4;
-  --bg: #f7f6f4;
+  --ink: #17171f;
+  --body: #4f5160;
+  --muted: #777785;
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
+  --accent-hover: #4f3fe0;
   --surface: #ffffff;
-  --surface-soft: #fffaf4;
-  --surface-warm: #fff8ee;
-  --hero-a: rgb(255 205 130 / 38%);
-  --hero-b: rgb(255 226 190 / 45%);
-  --hero-c: #fffefc;
-  --hero-d: #fff8ee;
-  --hero-e: #ffedd6;
-  --hero-line: #f4ecdf;
-  --offer-line: #f0e2cd;
-  --body: #52617a;
-  --social: #6c7889;
-  --avatar-border: #ffffff;
-  --card-border: #e7eaf0;
-  --card-shadow: 0 9px 24px rgb(31 48 75 / 8%);
-  --recommended-border: #f0a45c;
-  --recommended-shadow: 0 16px 34px rgb(225 113 28 / 16%);
-  --plan-li: #455267;
-  --plan-note: #97a1b0;
-  --assurance-line: #eadfd3;
-  --assurance-border: #f2e8dc;
-  --error: #b64d16;
+  --surface-soft: #f6f5fc;
+  --line: rgb(21 22 31 / 10%);
+  --hero: #f4f3fa;
+  display: flex;
   width: 100%;
-  min-width: 1180px;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 0 0 18px;
+  min-width: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
+  overflow: hidden;
   color: var(--ink);
-  background: var(--bg);
+  background: var(--surface);
 }
 
 .membership-page.is-dark {
-  --ink: #f4eee6;
-  --muted: #a79c8f;
-  --orange: #ff8a3d;
-  --orange-deep: #ffb06a;
-  --orange-text: #ffb06a;
-  --soft-orange: rgb(255 138 61 / 16%);
-  --line: #3b342c;
-  --line-soft: #2f2922;
-  --bg: #12100e;
-  --surface: #1c1915;
-  --surface-soft: #221c16;
-  --surface-warm: #181511;
-  --hero-a: rgb(255 138 61 / 18%);
-  --hero-b: rgb(255 176 96 / 12%);
-  --hero-c: #1a1511;
-  --hero-d: #241c15;
-  --hero-e: #17130f;
-  --hero-line: #332c24;
-  --offer-line: #332c24;
-  --body: #cfc4b6;
-  --social: #a79c8f;
-  --avatar-border: #1c1915;
-  --card-border: #3b342c;
-  --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
-  --recommended-border: #ff8a3d;
-  --recommended-shadow: 0 16px 34px rgb(0 0 0 / 32%);
-  --plan-li: #ddd2c4;
-  --plan-note: #a79c8f;
-  --assurance-line: #3b342c;
-  --assurance-border: #332c24;
-  --error: #e0a46a;
+  --ink: rgba(255, 255, 255, 0.96);
+  --body: rgb(255 255 255 / 72%);
+  --muted: rgb(255 255 255 / 52%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --accent-hover: #9d8fff;
+  --surface: #121218;
+  --surface-soft: #1a1824;
+  --line: rgb(255 255 255 / 10%);
+  --hero: #161422;
 }
 
-.membership-hero {
-  display: grid;
-  width: calc(100% - 40px);
-  min-height: 320px;
-  grid-template-columns: minmax(460px, 1fr) 320px minmax(460px, 1fr);
-  align-items: center;
-  margin: 0 auto;
-  overflow: hidden;
+.membership-shell {
+  width: min(1100px, calc(100% - 40px));
+  margin-inline: auto;
+}
+
+.membership-top {
+  --hero-pad-top: calc(var(--app-header-offset, 72px) + var(--app-page-content-top-gap, 0px));
+  flex: 0 0 auto;
+  margin-top: calc(-1 * var(--hero-pad-top));
+  padding: calc(var(--hero-pad-top) + 10px) 0 14px;
   background:
-    radial-gradient(circle at 88% 0%, var(--hero-a), transparent 42%),
-    radial-gradient(circle at 62% 100%, var(--hero-b), transparent 40%),
-    linear-gradient(103deg, var(--hero-c) 0%, var(--hero-d) 52%, var(--hero-e) 100%);
-  border: 1px solid var(--hero-line);
-  border-radius: 8px;
+    radial-gradient(circle at 92% 0%, rgb(109 92 255 / 16%), transparent 36%),
+    linear-gradient(145deg, var(--hero) 0%, color-mix(in srgb, var(--accent) 6%, var(--hero)) 100%);
+  border-bottom: 1px solid var(--line);
 }
 
-.membership-hero__copy {
-  padding: 36px 32px 32px 58px;
-}
-.membership-hero h1 {
-  margin: 0;
-  font-size: 46px;
-  font-weight: 850;
-  line-height: 1.14;
-  letter-spacing: 0;
-}
-.membership-hero h1 strong {
-  color: var(--orange);
-}
-.membership-hero__copy > span {
-  display: block;
-  max-width: 520px;
-  margin-top: 18px;
-  color: var(--body);
-  font-size: 14px;
-  line-height: 1.75;
-}
-.membership-hero__social {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin-top: 22px;
-}
-.hero-avatars {
-  display: inline-flex;
-}
-.hero-avatars i {
+.membership-top__inner {
   display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  color: #fff;
-  background: linear-gradient(140deg, #f7b267, #ef7b45);
-  border: 2px solid var(--avatar-border);
-  border-radius: 50%;
-  font-size: 15px;
-}
-.hero-avatars i:nth-child(2) {
-  margin-left: -9px;
-  background: linear-gradient(140deg, #7fb5f2, #4d7fe0);
-}
-.hero-avatars i:nth-child(3) {
-  margin-left: -9px;
-  background: linear-gradient(140deg, #62d3a4, #2ba374);
-}
-.membership-hero__social small {
-  color: var(--social);
-  font-size: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
 }
 
-.membership-hero__offer {
-  display: flex;
-  align-items: flex-start;
-  flex-direction: column;
-  padding-left: 30px;
-  border-left: 1px solid var(--offer-line);
-}
-.membership-hero__offer > span {
+.membership-back {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 11px;
-  color: var(--orange-text);
-  background: var(--soft-orange);
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 800;
-}
-.membership-hero__offer strong {
-  margin-top: 18px;
-  font-size: 21px;
-  font-weight: 800;
-}
-.membership-hero__offer strong em {
-  color: var(--orange);
-  font-size: 27px;
-  font-style: normal;
-  font-weight: 900;
-}
-.membership-hero__offer small {
-  margin-top: 9px;
-  color: var(--muted);
-  font-size: 12px;
+  padding: 0;
+  color: var(--body);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.membership-hero__asset {
-  display: grid;
-  height: 100%;
-  align-items: end;
-  justify-items: center;
-}
-.membership-hero__asset img {
-  width: min(100%, 470px);
-  mix-blend-mode: multiply;
-}
-.membership-page.is-dark .membership-hero__asset img {
-  mix-blend-mode: normal;
+.membership-back:hover {
+  color: var(--accent);
 }
 
-.plans-section {
-  position: relative;
-  width: calc(100% - 80px);
-  margin: 22px auto 0;
+.membership-top__copy h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 840;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
 }
-.plans-loading {
+
+.membership-top__copy p {
+  margin: 4px 0 0;
+  color: var(--body);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.membership-facts {
   display: flex;
-  height: 464px;
-  align-items: center;
-  justify-content: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
-.plans-loading span {
+
+.membership-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 720;
+}
+
+.membership-facts i {
+  color: var(--accent);
+}
+
+.membership-workspace {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 14px 0 10px;
+  overflow: hidden;
+}
+
+.workspace-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.workspace-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-heading strong {
+  font-size: 0.86rem;
+}
+
+.workspace-heading small {
+  color: var(--body);
+  font-size: 0.76rem;
+}
+
+.text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.membership-loading,
+.membership-empty-state {
+  display: flex;
+  min-height: 180px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.membership-loading {
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--body);
+}
+
+.membership-loading span {
   width: 8px;
   height: 8px;
+  background: var(--accent);
   border-radius: 50%;
-  background: var(--orange);
+  animation: membership-pulse 1s infinite alternate;
 }
+
+.membership-loading span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.membership-loading span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.membership-loading p {
+  width: 100%;
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+@keyframes membership-pulse {
+  to {
+    opacity: 0.25;
+    transform: translateY(-4px);
+  }
+}
+
+.membership-empty-state {
+  flex-direction: column;
+  color: var(--body);
+  text-align: center;
+}
+
+.membership-empty-state i {
+  color: var(--accent);
+  font-size: 1.6rem;
+}
+
+.membership-empty-state h2 {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
+.membership-empty-state p {
+  margin: 6px 0 0;
+  font-size: 0.84rem;
+}
+
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 18px;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(196px, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
 }
+
 .plan-card {
-  --tone: #2476ea;
   position: relative;
   display: flex;
-  min-height: 470px;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
-  padding: 27px 25px 22px;
+  padding: 16px 14px 12px;
+  overflow: hidden;
   background: var(--surface);
-  border: 1px solid var(--card-border);
-  border-radius: 10px;
-  box-shadow: var(--card-shadow);
+  border: 1px solid var(--line);
+  border-radius: 14px;
 }
-.plan-card[data-tone='green'] {
-  --tone: #19ad72;
+
+.plan-card.is-current {
+  background: var(--surface-soft);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--line));
 }
-.plan-card[data-tone='orange'] {
-  --tone: #f07a19;
-}
-.membership-page.is-dark .plan-card[data-tone='orange'] {
-  --tone: #ff8a3d;
-}
-.plan-card[data-tone='violet'] {
-  --tone: #8957df;
-}
-.plan-card[data-tone='gold'] {
-  --tone: #d99a24;
-}
+
 .plan-card.is-recommended {
-  border-color: var(--recommended-border);
-  box-shadow: var(--recommended-shadow);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 8px 20px rgb(109 92 255 / 12%);
 }
-.plan-card > em {
+
+.plan-badge {
   position: absolute;
-  top: -1px;
-  right: -1px;
-  padding: 8px 17px;
+  top: 10px;
+  right: 10px;
+  padding: 3px 8px;
   color: #fff;
-  background: var(--orange);
-  border-radius: 0 10px 0 18px;
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 780;
+  letter-spacing: 0.02em;
 }
+
+.plan-badge.is-current {
+  color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
 .plan-card__icon {
   display: grid;
-  width: 52px;
-  height: 52px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
   place-items: center;
-  color: var(--tone);
-  background: color-mix(in srgb, var(--tone) 11%, var(--surface));
-  border-radius: 14px;
-  font-size: 22px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 10px;
+  font-size: 1rem;
 }
-.plan-card h2 {
-  margin: 18px 0 5px;
-  font-size: 22px;
-  letter-spacing: 0;
+
+.plan-card h3 {
+  margin: 10px 0 2px;
+  padding-right: 44px;
+  font-size: 0.98rem;
+  font-weight: 820;
+  line-height: 1.25;
 }
+
 .plan-card > p {
-  min-height: 20px;
+  min-height: 1.35em;
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
+  color: var(--body);
+  font-size: 0.72rem;
+  line-height: 1.4;
 }
+
 .plan-card__pricing {
   display: flex;
-  min-height: 78px;
-  justify-content: center;
+  min-height: 52px;
   flex-direction: column;
-  gap: 4px;
+  justify-content: center;
+  gap: 2px;
+  margin-top: 8px;
 }
+
 .plan-card__price {
   display: flex;
   align-items: baseline;
-  gap: 7px;
-}
-.plan-card__price strong {
-  font-size: 30px;
-  letter-spacing: 0;
-}
-.plan-card__price span {
-  color: var(--muted);
-  font-size: 12px;
-}
-.plan-card__pricing > small {
-  color: var(--plan-note);
-  font-size: 11px;
-}
-.plan-card ul {
-  display: grid;
-  gap: 11px;
-  margin: 0 0 22px;
-  padding: 18px 0 0;
-  border-top: 1px solid var(--line-soft);
-  list-style: none;
-}
-.plan-card li {
-  display: flex;
-  gap: 8px;
-  color: var(--plan-li);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.plan-card li i {
-  color: var(--tone);
-}
-.plan-card > button {
-  width: 100%;
-  min-height: 43px;
-  margin-top: auto;
-  color: var(--tone);
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--tone) 55%, var(--surface));
-  border-radius: 8px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-  transition:
-    background 140ms ease,
-    border-color 140ms ease;
-}
-.plan-card > button:hover {
-  background: color-mix(in srgb, var(--tone) 7%, var(--surface));
-  border-color: var(--tone);
-}
-.plan-card.is-current > button {
-  background: color-mix(in srgb, var(--tone) 7%, var(--surface));
-}
-.plan-card.is-recommended > button {
-  color: #fff;
-  background: var(--orange);
-  border-color: var(--orange);
-}
-.plan-card.is-recommended > button:hover {
-  background: var(--orange-deep);
-}
-.plans-retry {
-  position: absolute;
-  right: 0;
-  bottom: -32px;
-  color: var(--error);
-  background: transparent;
-  border: 0;
-  font-size: 12px;
-}
-
-.membership-assurances {
-  display: grid;
-  width: calc(100% - 80px);
-  grid-template-columns: repeat(4, 1fr);
-  margin: 24px auto 0;
-  padding: 22px 28px;
-  background: var(--surface-soft);
-  border: 1px solid var(--assurance-border);
-  border-radius: 8px;
-}
-.membership-assurances > div {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  border-right: 1px solid var(--assurance-line);
-}
-.membership-assurances > div:last-child {
-  border-right: 0;
-}
-.membership-assurances i {
-  color: var(--orange);
-  font-size: 28px;
-}
-.membership-assurances span {
-  display: flex;
-  flex-direction: column;
   gap: 4px;
 }
-.membership-assurances strong {
-  font-size: 13px;
+
+.plan-card__price strong {
+  color: var(--accent-deep);
+  font-size: 1.25rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
 }
-.membership-assurances small {
+
+.plan-card__price span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.72rem;
+}
+
+.plan-card__pricing > small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.plan-card ul {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+  overflow: hidden;
+}
+
+.plan-card li {
+  display: flex;
+  gap: 6px;
+  color: var(--body);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.plan-card li i {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+  font-size: 0.82rem;
+}
+
+.plan-card > button {
+  width: 100%;
+  min-height: 36px;
+  margin-top: auto;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.plan-card > button:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.plan-card.is-current > button {
+  color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.plan-card.is-recommended > button {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-color: transparent;
+  box-shadow: 0 6px 14px rgb(109 92 255 / 18%);
+}
+
+.plan-card.is-recommended > button:hover {
+  background: var(--accent-hover);
+}
+
+.membership-tips {
+  flex: 0 0 auto;
+  padding: 10px 0 14px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--line);
+}
+
+.tip-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tip-list li {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+}
+
+.tip-list i {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 50%;
+  font-size: 0.72rem;
+}
+
+.tip-list strong {
+  display: block;
+  font-size: 0.78rem;
+}
+
+.tip-list p {
+  margin: 3px 0 0;
+  color: var(--body);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 960px) {
+  :global(.app-container > .main-content:has(> .membership-page)) {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .membership-page {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .membership-top__inner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .membership-facts {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .membership-workspace {
+    overflow: visible;
+  }
+
+  .plan-grid {
+    grid-auto-flow: row;
+    grid-auto-columns: unset;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .tip-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .membership-shell {
+    width: calc(100% - 28px);
+  }
+
+  .membership-top__inner {
+    gap: 10px;
+  }
+
+  .membership-top__copy h1 {
+    font-size: 1.3rem;
+  }
+
+  .plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tip-list {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .membership-loading span {
+    animation: none;
+  }
 }
 </style>

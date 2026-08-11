@@ -42,7 +42,7 @@ npm run test:task-concurrency
 | `/ai-puzzle` | AI 拼图 |
 | `/pricing` | 价格、只读套餐、创作单价与支付接入状态；支付按钮当前禁用 |
 | `/profile` | 我的作品、投稿、钱包/兑换码、通知，以及头像、个人资料和密码安全设置 |
-| `/app-space` | 应用空间 |
+| `/app-space` | 关于我们 |
 | `/updates` | 更新说明 |
 | `/auth` | 邮箱验证：已有用户登录，首次邮箱自动创建账号 |
 | `/access-limited` | 访问受限状态页 |

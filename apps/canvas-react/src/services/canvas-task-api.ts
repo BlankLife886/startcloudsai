@@ -87,6 +87,7 @@ function imageTaskParams(config: AiConfig) {
         ...(quality ? { quality } : {}),
         ...(config.background === "transparent" ? { transparentBackground: true } : {}),
         ...(config.model ? { publicModelKey: modelOptionName(config.model) } : {}),
+        _kind: "canvas-image-generation",
         _source: "react_canvas",
     };
 }

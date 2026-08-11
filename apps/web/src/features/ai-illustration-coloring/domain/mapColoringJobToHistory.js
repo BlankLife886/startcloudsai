@@ -92,6 +92,15 @@ function pickResultUrl(providerResultUrl, ...values) {
   return ''
 }
 
+function originalJobResultUrls(job = {}) {
+  return [
+    ...(Array.isArray(job?.originalMediaUrls) ? job.originalMediaUrls : []),
+    job?.originalMediaUrl,
+    ...(Array.isArray(job?.originalResultMediaUrls) ? job.originalResultMediaUrls : []),
+    job?.originalResultMediaUrl,
+  ]
+}
+
 function readJobTime(value) {
   if (!value) return 0
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0
@@ -165,14 +174,20 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
     input.sourcePreview,
   )
   const providerResultUrl = pickPersistableUrl(job?.providerResultUrl)
-  const durableResultUrl = pickResultUrl(providerResultUrl, job?.resultMediaUrl)
   const embeddedOutputs = extractServerJobOutputs(job?.result)
+  const durableResultUrl = pickResultUrl(
+    providerResultUrl,
+    ...originalJobResultUrls(job),
+    ...embeddedOutputs,
+  )
+  const legacyResultUrl = pickResultUrl(providerResultUrl, job?.resultMediaUrl)
   const outputs = Array.from(
     new Set(
       [
-        ...(Array.isArray(existingItem?.outputs) ? existingItem.outputs : []),
         durableResultUrl,
         ...embeddedOutputs,
+        ...(Array.isArray(existingItem?.outputs) ? existingItem.outputs : []),
+        legacyResultUrl,
       ]
         .map((item) => pickResultUrl(providerResultUrl, item))
         .filter(Boolean),
@@ -206,7 +221,9 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
   const serverStartedAt = Date.parse(job?.startedAt || job?.createdAt || '') || 0
   const serverFinishedAt = Date.parse(job?.finishedAt || job?.updatedAt || '') || 0
   const finishedAt = isTerminalColoringJobStatus(status)
-    ? serverFinishedAt || (recoveredFromProvisionalTerminal ? 0 : Number(existingItem?.finishedAt || 0)) || Date.now()
+    ? serverFinishedAt ||
+      (recoveredFromProvisionalTerminal ? 0 : Number(existingItem?.finishedAt || 0)) ||
+      Date.now()
     : 0
   const startedAt = serverStartedAt || Number(existingItem?.startedAt || 0) || Date.now()
 
@@ -335,12 +352,18 @@ export async function hydrateColoringHistoryItem(item = {}, job = null) {
     item.sourcePreview,
   )
   const providerResult = pickPersistableUrl(job?.providerResultUrl)
-  const durableResult = pickResultUrl(providerResult, job?.resultMediaUrl)
+  const embeddedOutputs = extractServerJobOutputs(job?.result)
+  const durableResult = pickResultUrl(
+    providerResult,
+    ...originalJobResultUrls(job),
+    ...embeddedOutputs,
+  )
   const existingResult = pickResultUrl(
     providerResult,
     item.resultUrl,
     ...(Array.isArray(item.outputs) ? item.outputs : []),
   )
+  const legacyResult = pickResultUrl(providerResult, job?.resultMediaUrl)
 
   if (!completed) {
     return normalizeColoringHistoryItem({
@@ -351,7 +374,7 @@ export async function hydrateColoringHistoryItem(item = {}, job = null) {
   }
 
   // providerResultUrl 是上游任务 JSON 轮询地址，不能作为图片展示或持久化。
-  const preferredResult = durableResult || existingResult
+  const preferredResult = durableResult || existingResult || legacyResult
   if (
     preferredResult &&
     (preferredResult.startsWith('data:image/') ||
@@ -375,9 +398,7 @@ export async function hydrateColoringHistoryItem(item = {}, job = null) {
     })
   }
 
-  let outputs = extractServerJobOutputs(job?.result)
-    .map((entry) => pickResultUrl(providerResult, entry))
-    .filter(Boolean)
+  let outputs = embeddedOutputs.map((entry) => pickResultUrl(providerResult, entry)).filter(Boolean)
   if (!outputs.length) {
     return normalizeColoringHistoryItem({
       ...item,

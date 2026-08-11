@@ -5,6 +5,7 @@ import {
   getServerAiJobResult,
 } from '@/services/aiWallpaper'
 import { resolveTaskOutputSizeFields } from './outputSizeMetadata'
+import { serverTaskStartedAt } from './taskGenerationTiming'
 
 const TERMINAL_JOB_STATUSES = new Set([
   'completed',
@@ -230,6 +231,10 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
     ).trim(),
     automaticBackgroundRemoval: input._automatic === true,
     parentTaskId: String(input._parentTaskId || existingTask?.parentTaskId || '').trim(),
+    parentOutputIndex: Math.max(
+      0,
+      Number(input._parentOutputIndex ?? existingTask?.parentOutputIndex ?? 0),
+    ),
     aspectRatio:
       input.aspectRatio || job?.params?.aspectRatio || existingTask?.aspectRatio || '16:9',
     requestedAspectRatio:
@@ -314,10 +319,8 @@ export function mapServerJobToTask(job, { resolveModelLabel, existingTask = null
     estimatedCostUsd: job.estimatedCostUsd || existingTask?.estimatedCostUsd || 0,
     usageRecorded: existingTask?.usageRecorded === true,
     createdAt: job.createdAt || existingTask?.createdAt || new Date().toISOString(),
-    startedAt:
-      parseServerTime(job?.startedAt) ||
-      Number(existingTask?.startedAt || 0) ||
-      parseServerTime(job?.createdAt),
+    // 服务端 startedAt 是生成计时的唯一时间源；排队时间不能混入生成耗时。
+    startedAt: serverTaskStartedAt(job),
     finishedAt:
       parseServerTime(job?.finishedAt) ||
       Number(existingTask?.finishedAt || 0) ||

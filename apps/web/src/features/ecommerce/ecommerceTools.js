@@ -667,73 +667,29 @@ export const ECOMMERCE_MENU_GROUPS = [
   {
     id: 'create',
     label: '商品设计',
-    description: '从商品拍摄到详情页与营销素材',
+    description: '商拍、套图与详情页视觉',
     cover: listingMenuCover,
-    items: ['shoot', 'listing', 'detail', 'campaign'].map(menuItem),
+    items: ['shoot', 'listing', 'detail'].map(menuItem),
   },
   {
     id: 'image',
     label: '图片处理',
-    description: '背景、阴影、尺寸与清晰度处理',
+    description: '营销图、背景、阴影与画质处理',
     cover: detailMenuCover,
-    items: [
-      menuItem('background'),
-      menuItem('backdrop'),
-      menuItem('shadow'),
-      {
-        id: 'remove',
-        label: '智能抠图',
-        shortLabel: '智能抠图',
-        tagline: '一键移除商品背景',
-        description: '保留主体边缘，导出透明 PNG。',
-        icon: 'bi-person-bounding-box',
-        to: '/tools/background-remove',
-      },
-      menuItem('outpaint'),
-      menuItem('enhance'),
-    ],
+    items: ['campaign', 'background', 'backdrop', 'shadow', 'outpaint', 'enhance'].map(menuItem),
   },
 ]
 
 export const ECOMMERCE_MENU_LINKS = ECOMMERCE_MENU_GROUPS.flatMap((group) => group.items)
 
-export const ECOMMERCE_RAIL_GROUPS = [
-  {
-    id: 'product',
-    label: '商品套图',
-    icon: 'bi-images',
-    mode: 'listing',
-    modes: ['listing'],
-  },
-  {
-    id: 'detail',
-    label: 'A+ 详情',
-    icon: 'bi-layout-text-window-reverse',
-    mode: 'detail',
-    modes: ['detail'],
-  },
-  {
-    id: 'fashion',
-    label: '服饰穿戴',
-    icon: 'bi-person-standing-dress',
-    mode: 'tryon',
-    modes: ['tryon', 'handheld', 'accessory'],
-  },
-  {
-    id: 'clone',
-    label: '爆款复刻',
-    icon: 'bi-copy',
-    mode: 'clone',
-    modes: ['clone'],
-  },
-  {
-    id: 'more',
-    label: '更多工具',
-    icon: 'bi-grid',
-    mode: 'shoot',
-    modes: ['shoot', 'campaign', 'background', 'backdrop', 'shadow', 'outpaint', 'enhance'],
-  },
-]
+/** 页面侧栏与顶栏 mega 菜单保持同一分组与顺序 */
+export const ECOMMERCE_RAIL_GROUPS = ECOMMERCE_MENU_GROUPS.map((group) => ({
+  id: group.id,
+  label: group.label,
+  items: group.items,
+}))
+
+export const ECOMMERCE_RAIL_MODES = ECOMMERCE_RAIL_GROUPS.flatMap((group) => group.items)
 
 export function ecommerceModeById(id) {
   return (

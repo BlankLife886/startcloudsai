@@ -66,27 +66,34 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	if params == nil {
 		params = map[string]any{}
 	}
+	var deletionActor any
+	if t.DeletionActor != nil {
+		deletionActor = *t.DeletionActor
+	}
 	return gin.H{
-		"id":            t.ID.String(),
-		"type":          t.Type,
-		"model":         t.Model,
-		"status":        t.Status,
-		"prompt":        t.Prompt,
-		"params":        params,
-		"count":         t.Count,
-		"inputKeys":     nonNilStrings(t.InputKeys),
-		"outputKeys":    nonNilStrings(t.OutputKeys),
-		"outputUrls":    nonNilStrings(outputURLs),
-		"thumbnailUrls": nonNilStrings(outputURLs),
-		"originalUrls":  nonNilStrings(originalURLs),
-		"thumbnailKeys": nonNilStrings(t.ThumbnailKeys),
-		"costPoints":    t.CostCents,
-		"costCents":     t.CostCents,
-		"errorCode":     t.ErrorCode,
-		"errorMessage":  t.ErrorMessage,
-		"createdAt":     isoValue(t.CreatedAt),
-		"startedAt":     iso(t.StartedAt),
-		"finishedAt":    iso(t.FinishedAt),
+		"id":                 t.ID.String(),
+		"type":               t.Type,
+		"model":              t.Model,
+		"status":             t.Status,
+		"prompt":             t.Prompt,
+		"params":             params,
+		"count":              t.Count,
+		"inputKeys":          nonNilStrings(t.InputKeys),
+		"outputKeys":         nonNilStrings(t.OutputKeys),
+		"outputUrls":         nonNilStrings(outputURLs),
+		"thumbnailUrls":      nonNilStrings(outputURLs),
+		"originalUrls":       nonNilStrings(originalURLs),
+		"thumbnailKeys":      nonNilStrings(t.ThumbnailKeys),
+		"costPoints":         t.CostCents,
+		"costCents":          t.CostCents,
+		"errorCode":          t.ErrorCode,
+		"errorMessage":       t.ErrorMessage,
+		"createdAt":          isoValue(t.CreatedAt),
+		"startedAt":          iso(t.StartedAt),
+		"finishedAt":         iso(t.FinishedAt),
+		"deletedAt":          iso(t.DeletedAt),
+		"deletionActor":      deletionActor,
+		"deletedOutputCount": t.DeletedOutputCount,
 	}
 }
 

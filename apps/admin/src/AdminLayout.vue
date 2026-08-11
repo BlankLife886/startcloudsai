@@ -23,6 +23,7 @@ import {
   Ticket,
   Star,
   User,
+  UserFilled,
 } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -87,6 +88,7 @@ const NAV_GROUPS = [
     items: [
       { path: "/trial-applications", label: "体验活动", icon: Star },
       { path: "/checkin-activity", label: "签到活动", icon: Calendar },
+      { path: "/growth-groups", label: "好友拼团", icon: UserFilled },
     ],
   },
   {

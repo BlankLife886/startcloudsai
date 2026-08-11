@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -258,6 +259,43 @@ func TestDownloadImageDoesNotForwardAPIKeyCrossOrigin(t *testing.T) {
 	}
 	if len(images) != 1 {
 		t.Fatalf("images = %#v", images)
+	}
+}
+
+func TestPollImageTaskRetriesReturnedImageBeforeItIsAvailable(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"items":[{"id":"task-media-lag","status":"success","data":[{"url":"`+server.URL+`/generated.png"}]}]}`)
+		case "/generated.png":
+			downloads++
+			if downloads == 1 {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, firstErr := client.PollImageTask(context.Background(), "task-media-lag", 1)
+	if pending || len(images) != 0 || !IsRetryableError(firstErr) {
+		t.Fatalf("first poll images=%#v pending=%v err=%v, want retryable media lag", images, pending, firstErr)
+	}
+	images, pending, err = client.PollImageTask(context.Background(), "task-media-lag", 1)
+	if err != nil || pending || len(images) != 1 || downloads != 2 {
+		t.Fatalf("second poll images=%#v pending=%v downloads=%d err=%v", images, pending, downloads, err)
 	}
 }
 

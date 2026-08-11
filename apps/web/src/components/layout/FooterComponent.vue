@@ -15,9 +15,17 @@ const footerGroups = [
       { label: '文生图', to: '/text-to-image' },
       { label: '插画染色', to: '/ai-illustration-coloring' },
       { label: 'UI 设计稿', to: '/design-workshop' },
-      { label: '超高清模型图', to: '/model-sheet' },
+      { label: '模型设计', to: '/model-sheet' },
       { label: '游戏设计', to: '/game-art' },
-      { label: 'AI 拼图', to: '/ai-puzzle' },
+      { label: 'AI 电商', to: '/ecommerce-design' },
+    ],
+  },
+  {
+    title: '工具',
+    links: [
+      { label: '背景移除', to: '/tools/background-remove' },
+      { label: '图片压缩', to: '/tools/image-compress' },
+      { label: '拼图', to: '/tools/puzzle' },
     ],
   },
   {
@@ -26,7 +34,7 @@ const footerGroups = [
       { label: '创作台', to: '/studio' },
       { label: '提示词', to: '/prompts' },
       { label: '社区', to: '/share' },
-      { label: '应用空间', to: '/app-space' },
+      { label: '关于我们', to: '/app-space' },
       { label: '更新说明', to: '/updates' },
     ],
   },

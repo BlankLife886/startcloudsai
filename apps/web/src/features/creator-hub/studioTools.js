@@ -56,7 +56,7 @@ export const STUDIO_TOOLS = [
   {
     id: 'ecommerce',
     to: '/ecommerce-design',
-    label: 'AI 电商设计',
+    label: 'AI 电商',
     tagline: '商拍 · 套图 · 详情页 · 人像穿戴',
     icon: 'bi-bag-check-fill',
     cover: '/ecommerce/ecommerce-menu-preview-v1.webp',
@@ -69,7 +69,7 @@ export const STUDIO_TOOLS = [
   {
     id: 'model',
     to: '/model-sheet',
-    label: '超高清模型图',
+    label: '模型设计',
     tagline: '多视角建模参考',
     icon: 'bi-person-bounding-box',
     cover: '/sucai/ultra-model-sheet-board-1785420340076.png',
@@ -90,26 +90,24 @@ export const STUDIO_TOOLS = [
     feature: 'ai.gameDesign',
     taskType: 'game_art',
   },
-  {
-    id: 'puzzle',
-    to: '/ai-puzzle',
-    label: 'AI 拼图',
-    tagline: '模板拼贴导出',
-    icon: 'bi-puzzle-fill',
-    cover: '/sucai/home-intro-sticker-sheet.png',
-    tone: 'sky',
-    badge: '拼图',
-    feature: 'ai.puzzle',
-    taskType: 'puzzle',
-  },
 ]
+
+/** 本地拼图工具（挂在「工具」下，不占用创作台 AI 入口） */
+export const PUZZLE_TOOL = {
+  id: 'puzzle',
+  to: '/tools/puzzle',
+  label: '拼图',
+  tagline: '模板拼贴导出',
+  icon: 'bi-puzzle-fill',
+  cover: '/sucai/home-intro-sticker-sheet.png',
+}
 
 export const PROMPT_TASK_TYPES = [
   { id: 't2i', label: '文生图', to: '/text-to-image' },
   { id: 'coloring', label: '插画染色', to: '/ai-illustration-coloring' },
   { id: 'ui_design', label: 'UI 设计稿', to: '/design-workshop' },
-  { id: 'ecommerce_design', label: 'AI 电商设计', to: '/ecommerce-design' },
-  { id: 'model_sheet', label: '模型图', to: '/model-sheet' },
+  { id: 'ecommerce_design', label: 'AI 电商', to: '/ecommerce-design' },
+  { id: 'model_sheet', label: '模型设计', to: '/model-sheet' },
   { id: 'game_art', label: '游戏设计', to: '/game-art' },
   { id: 'assistant', label: 'AI 助手', to: '/assistant' },
 ]
@@ -134,6 +132,18 @@ function pendingStorage() {
 export function studioRouteForTaskType(taskType = '') {
   const hit = PROMPT_TASK_TYPES.find((item) => item.id === taskType)
   return hit?.to || '/text-to-image'
+}
+
+export function isSmartCanvasTask(task = {}) {
+  const params = task?.params && typeof task.params === 'object' ? task.params : {}
+  const source = String(params._source || params.source || '').trim().toLowerCase()
+  const kind = String(params._kind || params.kind || '').trim().toLowerCase()
+  return source === 'react_canvas' || kind.startsWith('canvas-')
+}
+
+export function studioRouteForTask(task = {}) {
+  if (isSmartCanvasTask(task)) return '/canvas'
+  return studioRouteForTaskType(task?.type)
 }
 
 export function stashPendingPrompt({ prompt = '', taskType = 't2i', config: launchConfig = {} } = {}) {
@@ -200,11 +210,48 @@ function normalizePendingLaunchConfig(value) {
     'model',
     'material',
     'device',
+    'skills',
+    'referenceImages',
+    'autoStart',
+    'costConfirmed',
   ]
   const normalized = {}
   for (const key of allowedKeys) {
     const raw = value[key]
     if (raw === null || raw === undefined || raw === '') continue
+    if (key === 'skills') {
+      normalized.skills = [
+        ...new Set(
+          (Array.isArray(raw) ? raw : [raw])
+            .map((item) => String(item || '').trim().slice(0, 160))
+            .filter(Boolean),
+        ),
+      ].slice(0, 12)
+      continue
+    }
+    if (key === 'referenceImages') {
+      normalized.referenceImages = (Array.isArray(raw) ? raw : [])
+        .map((item, index) => {
+          if (!item || typeof item !== 'object') return null
+          const dataUrl = String(item.dataUrl || item.url || '').trim()
+          const fileKey = String(item.fileKey || item.key || '').trim()
+          if (!dataUrl && !fileKey) return null
+          return {
+            id: String(item.id || `studio-reference-${index + 1}`).slice(0, 160),
+            name: String(item.name || item.label || `参考图 ${index + 1}`).slice(0, 160),
+            dataUrl: dataUrl.slice(0, 2000),
+            thumbnailUrl: String(item.thumbnailUrl || '').trim().slice(0, 2000),
+            fileKey: fileKey.slice(0, 500),
+          }
+        })
+        .filter(Boolean)
+        .slice(0, 4)
+      continue
+    }
+    if (key === 'autoStart' || key === 'costConfirmed') {
+      normalized[key] = raw === true
+      continue
+    }
     if (key === 'count' || key === 'resolution') {
       const numeric = Number(raw)
       normalized[key] = Number.isFinite(numeric) && String(raw).trim() !== '' ? numeric : String(raw)

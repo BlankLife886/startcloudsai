@@ -86,7 +86,6 @@ const {
   createMaskedEditTask,
   createHint,
   taskStatusLabel,
-  elapsedLabel,
   formatTaskElapsed,
   clearPrompt,
   addReferenceFiles,
@@ -137,8 +136,22 @@ function handleAutoBackgroundRemovalToggle() {
 
 function chooseBackgroundRemovalSetup(useSolidBackground) {
   backgroundRemovalSetupOpen.value = false
+  transparentPngEnabled.value = false
   autoBackgroundRemovalEnabled.value = true
   setSolidBackgroundSkill(useSolidBackground === true)
+}
+
+function handleTransparentPngToggle() {
+  const nextEnabled = !transparentPngEnabled.value
+  transparentPngEnabled.value = nextEnabled
+  if (nextEnabled && autoBackgroundRemovalEnabled.value) {
+    autoBackgroundRemovalEnabled.value = false
+    setSolidBackgroundSkill(false)
+  }
+}
+
+function showsTransparentCanvas(task) {
+  return task?.transparentPngEnabled === true || task?.automaticBackgroundRemoval === true
 }
 
 function cancelBackgroundRemovalSetup() {
@@ -601,7 +614,12 @@ const deleteBusyLabel = computed(() => (deleteConfirmIsGroup.value ? '整组删�
 const runningProgress = computed(() => {
   const running = sortedTasks.value.filter((task) => isBusy(task) || isLocalUpscaling(task))
   if (!running.length) return ''
-  return `处理中 ${elapsedLabel.value} · ${running.length} 个任务`
+  const generating = running.find((task) => ['running', 'waiting_provider'].includes(task.status))
+  if (!generating) {
+    const hasUpscaling = running.some((task) => isLocalUpscaling(task))
+    return `${hasUpscaling ? '高清处理中' : '排队中'} · ${running.length} 个任务`
+  }
+  return `处理中 ${formatTaskElapsed(generating) || '0s'} · ${running.length} 个任务`
 })
 
 function outputImageKey(task, index, url) {
@@ -2228,8 +2246,9 @@ function pendingStageText(task) {
 }
 
 function pendingElapsedText(task) {
+  if (String(task?.status || '').toLowerCase() === 'queued') return '排队中'
   const label = formatTaskElapsed(task)
-  return label ? `已用时 ${label}` : '排队等待中'
+  return label ? `生成耗时 ${label}` : '准备生成'
 }
 
 function normalizedShareStatus(task) {
@@ -3274,7 +3293,7 @@ function setMainTab(tab) {
                       ? '透明 PNG：要求真实 Alpha 并执行质量门'
                       : '当前模型不支持透明背景'
                   "
-                  @click="transparentPngEnabled = !transparentPngEnabled"
+                  @click="handleTransparentPngToggle"
                 >
                   <span class="t2i-prompt-toggle-copy">
                     <i class="bi bi-transparency" aria-hidden="true"></i>
@@ -3446,6 +3465,7 @@ function setMainTab(tab) {
                     :class="{
                       'is-pending': cell.kind === 'pending',
                       'is-regenerating': cell.kind !== 'pending' && isRegenerating(cell.task),
+                      'is-transparent-output': showsTransparentCanvas(cell.task),
                     }"
                   >
                     <div
@@ -3619,6 +3639,7 @@ function setMainTab(tab) {
                   v-else
                   type="button"
                   class="t2i-stage-media"
+                  :class="{ 'is-transparent-output': showsTransparentCanvas(featuredItem.task) }"
                   @click="openLightbox(featuredItem.task, featuredItem.index, $event)"
                 >
                   <ProgressiveAuthenticatedImage
@@ -3838,7 +3859,7 @@ function setMainTab(tab) {
                   aria-label="任务处理中"
                 >
                   <span class="t2i-film-pending-spinner" aria-hidden="true"></span>
-                  <em>{{ formatTaskElapsed(group.cover.task) || '即将开始' }}</em>
+                  <em>{{ pendingElapsedText(group.cover.task) }}</em>
                 </span>
                 <AuthenticatedImage
                   v-else

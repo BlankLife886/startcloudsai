@@ -45,7 +45,6 @@ const isStudioConsoleRoute = computed(() =>
     'assistant',
     'ai-wallpaper',
     'ai-illustration-coloring',
-    'ai-puzzle',
     'design-workshop',
     'model-sheet',
     'game-art',

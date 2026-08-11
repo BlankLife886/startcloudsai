@@ -1,14 +1,13 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAppearanceStore } from '@/stores/appearance'
 import { submitFeedback } from '@/services/feedbackApi'
 import { getGrowthPrograms } from '@/services/growthApi'
 import { formatPoints } from '@/services/billingApi'
 import notificationService from '@/services/notification'
-import giftArt from '@/assets/incentives/suggestion-gift.png'
-import coinArt from '@/assets/incentives/suggestion-coin.png'
 
+const router = useRouter()
 const appearanceStore = useAppearanceStore()
 
 const suggestionTypes = [
@@ -21,6 +20,7 @@ const suggestionTypes = [
 
 const form = reactive({ title: '', content: '', type: '' })
 const submitting = ref(false)
+const loading = ref(true)
 const growthData = ref(null)
 
 const selectedType = computed(() => suggestionTypes.find((item) => item.value === form.type))
@@ -38,11 +38,52 @@ const canSubmit = computed(
     !submitting.value,
 )
 
+const processSteps = [
+  {
+    icon: 'bi-lightbulb-fill',
+    title: '提交建议',
+    copy: '填写建议并提交，我们会尽快评估',
+  },
+  {
+    icon: 'bi-file-earmark-text-fill',
+    title: '评估审核',
+    copy: '产品团队评估建议价值与可行性',
+  },
+  {
+    icon: 'bi-patch-check-fill',
+    title: '采纳通知',
+    copy: '建议被采纳后，系统会通知你',
+  },
+  {
+    icon: 'bi-stack',
+    title: '发放奖励',
+    copy: '按价值等级发放创作积分',
+  },
+]
+
+const tips = [
+  { icon: 'bi-chat-quote', title: '真实具体', copy: '写清问题、场景与可执行方案' },
+  { icon: 'bi-award', title: '按价值奖励', copy: '采纳后按等级发放积分' },
+  { icon: 'bi-clock-history', title: '进度可查', copy: '可在问题反馈中追踪状态' },
+]
+
+function goBack() {
+  const canGoBack =
+    typeof window !== 'undefined' &&
+    window.history.length > 1 &&
+    Boolean(window.history.state?.back)
+  if (canGoBack) router.back()
+  else router.push('/incentive-plans')
+}
+
 async function loadRewardRule() {
+  loading.value = true
   try {
     growthData.value = await getGrowthPrograms()
   } catch {
     growthData.value = null
+  } finally {
+    loading.value = false
   }
 }
 
@@ -76,559 +117,661 @@ onMounted(loadRewardRule)
 
 <template>
   <main class="suggestion-page" :class="{ 'is-dark': appearanceStore.isDark }">
-    <section class="suggestion-hero">
-      <span class="suggestion-hero__glow" aria-hidden="true"></span>
-      <div class="suggestion-shell suggestion-hero__inner">
-        <div class="suggestion-hero__copy">
-          <h1>建议<span>采纳页面</span></h1>
-          <p>让真实、有价值的产品建议获得清晰回报。</p>
+    <header class="suggestion-top">
+      <div class="suggestion-shell suggestion-top__inner">
+        <button type="button" class="suggestion-back" @click="goBack">
+          <i class="bi bi-arrow-left" aria-hidden="true"></i>
+          返回
+        </button>
+        <div class="suggestion-top__copy">
+          <h1>建议采纳</h1>
+          <p>提交真实、具体且可执行的产品建议，采纳后按价值等级发放创作积分。</p>
+        </div>
+        <div class="suggestion-facts" aria-label="建议采纳概览">
+          <span
+            ><i class="bi bi-stars"></i>上限 {{ loading ? '—' : rewardLabel }} 积分</span
+          >
+          <span><i class="bi bi-tags"></i>{{ suggestionTypes.length }} 类建议</span>
+          <span><i class="bi bi-clock-history"></i>问题反馈追踪</span>
+        </div>
+      </div>
+    </header>
 
-          <div class="reward-banner">
-            <div class="reward-banner__asset" aria-hidden="true">
-              <img :src="coinArt" alt="" loading="lazy" />
-            </div>
-            <div class="reward-banner__copy">
-              <span>单次奖励上限</span>
-              <strong>{{ rewardLabel }} <small>积分</small></strong>
-              <p>提交真实、具体且可执行的产品建议，采纳后按价值等级发放奖励。</p>
-            </div>
+    <section class="suggestion-shell suggestion-workspace" aria-label="建议提交">
+      <div class="suggestion-layout">
+        <form class="suggestion-form" @submit.prevent="submitSuggestion">
+          <div class="section-copy">
+            <span class="section-kicker">提交建议</span>
+            <h2>产品建议</h2>
+            <p>写清问题、场景、方案与预期价值，便于更快评估与采纳。</p>
           </div>
-        </div>
-        <div class="suggestion-hero__asset" aria-hidden="true">
-          <img :src="giftArt" alt="" loading="lazy" />
-        </div>
+
+          <label class="suggestion-field">
+            <span>建议标题</span>
+            <span class="suggestion-control">
+              <input
+                v-model="form.title"
+                maxlength="50"
+                autocomplete="off"
+                placeholder="请简要概括你的建议（不超过 50 字）"
+              />
+              <small>{{ form.title.length }}/50</small>
+            </span>
+          </label>
+
+          <label class="suggestion-field suggestion-field--grow">
+            <span>建议描述</span>
+            <span class="suggestion-control suggestion-control--textarea">
+              <textarea
+                v-model="form.content"
+                maxlength="1000"
+                placeholder="请详细描述你的建议，包括问题、场景、方案与预期价值（不少于 20 字）"
+              ></textarea>
+              <small>{{ form.content.length }}/1000</small>
+            </span>
+          </label>
+
+          <label class="suggestion-field">
+            <span>建议类型</span>
+            <span class="suggestion-control suggestion-control--select">
+              <select v-model="form.type">
+                <option value="" disabled>请选择建议类型</option>
+                <option v-for="item in suggestionTypes" :key="item.value" :value="item.value">
+                  {{ item.label }}
+                </option>
+              </select>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </span>
+          </label>
+
+          <div class="suggestion-submit-row">
+            <p>
+              提交后可在
+              <RouterLink to="/feedback?category=suggestion">问题反馈</RouterLink>
+              中追踪建议状态与奖励进度
+            </p>
+            <button type="submit" class="primary-action" :disabled="!canSubmit">
+              <i class="bi bi-send"></i>
+              {{ submitting ? '正在提交…' : '提交产品建议' }}
+            </button>
+          </div>
+        </form>
+
+        <aside class="suggestion-process" aria-label="建议处理流程">
+          <div class="section-copy">
+            <span class="section-kicker">处理流程</span>
+            <h2>从提交到奖励</h2>
+            <p>全程可在问题反馈中追踪进度。</p>
+          </div>
+          <ol>
+            <li v-for="(step, index) in processSteps" :key="step.title">
+              <span class="process-icon" aria-hidden="true">
+                <i class="bi" :class="step.icon"></i>
+              </span>
+              <span class="process-index">{{ index + 1 }}</span>
+              <div>
+                <strong>{{ step.title }}</strong>
+                <p>{{ step.copy }}</p>
+              </div>
+            </li>
+          </ol>
+        </aside>
       </div>
     </section>
 
-    <section class="suggestion-workspace">
-      <form class="suggestion-card suggestion-form" @submit.prevent="submitSuggestion">
-        <h2>提交产品建议</h2>
-
-        <label class="suggestion-field">
-          <span>建议标题</span>
-          <span class="suggestion-control">
-            <input
-              v-model="form.title"
-              maxlength="50"
-              autocomplete="off"
-              placeholder="请简要概括你的建议（不超过 50 字）"
-            />
-            <small>{{ form.title.length }}/50</small>
-          </span>
-        </label>
-
-        <label class="suggestion-field">
-          <span>建议描述</span>
-          <span class="suggestion-control suggestion-control--textarea">
-            <textarea
-              v-model="form.content"
-              maxlength="1000"
-              placeholder="请详细描述你的建议，包括问题、场景、方案与预期价值（不少于 20 字）"
-            ></textarea>
-            <small>{{ form.content.length }}/1000</small>
-          </span>
-        </label>
-
-        <label class="suggestion-field">
-          <span>建议类型</span>
-          <span class="suggestion-control suggestion-control--select">
-            <select v-model="form.type">
-              <option value="" disabled>请选择建议类型</option>
-              <option v-for="item in suggestionTypes" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-            <i class="bi bi-chevron-down" aria-hidden="true"></i>
-          </span>
-        </label>
-
-        <div class="suggestion-submit-row">
-          <p>
-            提交后可在<RouterLink to="/feedback?category=suggestion">问题反馈</RouterLink
-            >中追踪建议状态与奖励进度
-          </p>
-          <button type="submit" :disabled="!canSubmit">
-            {{ submitting ? '正在提交…' : '提交产品建议' }}
-          </button>
-        </div>
-      </form>
-
-      <aside class="suggestion-card suggestion-process">
-        <h2>建议处理流程</h2>
-        <ol>
-          <li class="is-orange">
-            <span class="process-icon"><i class="bi bi-lightbulb-fill"></i></span>
-            <span class="process-index">1</span>
-            <p><strong>提交建议</strong><small>填写建议并提交，我们会尽快评估</small></p>
-          </li>
-          <li class="is-blue">
-            <span class="process-icon"><i class="bi bi-file-earmark-text-fill"></i></span>
-            <span class="process-index">2</span>
-            <p><strong>评估审核</strong><small>产品团队进行评估，判断建议价值</small></p>
-          </li>
-          <li class="is-green">
-            <span class="process-icon"><i class="bi bi-patch-check-fill"></i></span>
-            <span class="process-index">3</span>
-            <p><strong>采纳通知</strong><small>建议被采纳后，系统将通知你</small></p>
-          </li>
-          <li class="is-violet">
-            <span class="process-icon"><i class="bi bi-stack"></i></span>
-            <span class="process-index">4</span>
-            <p><strong>发放奖励</strong><small>按价值等级发放积分奖励</small></p>
+    <footer class="suggestion-tips" aria-labelledby="suggestion-tips-title">
+      <div class="suggestion-shell">
+        <h2 id="suggestion-tips-title" class="sr-only">建议采纳说明</h2>
+        <ol class="tip-list">
+          <li v-for="item in tips" :key="item.title">
+            <span><i class="bi" :class="item.icon" aria-hidden="true"></i></span>
+            <div>
+              <strong>{{ item.title }}</strong>
+              <p>{{ item.copy }}</p>
+            </div>
           </li>
         </ol>
-      </aside>
-    </section>
+      </div>
+    </footer>
   </main>
 </template>
 
 <style scoped>
+:global(.app-container > .main-content:has(> .suggestion-page)) {
+  height: 100dvh;
+  max-height: 100dvh;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .suggestion-page {
-  --ink: #202225;
-  --muted: #53565b;
-  --muted-soft: #8a8f96;
-  --muted-strong: #b2b7c0;
-  --line: #f0f0f0;
-  --line-input: #dce1e7;
-  --orange: #ff7a16;
-  --orange-hover: #f36d08;
-  --bg: #f8f8f8;
+  --ink: #17171f;
+  --body: #4f5160;
+  --muted: #777785;
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
+  --accent-hover: #4f3fe0;
   --surface: #ffffff;
-  --cream: #fffaf3;
-  --hero-a: rgb(255 219 135 / 45%);
-  --hero-b: #ffffff;
-  --hero-c: #fffaf3;
-  --hero-d: #fff1d2;
-  --hero-glow: rgb(255 240 198 / 40%);
-  --reward-bg: rgb(255 246 218 / 78%);
-  --card-shadow: 0 8px 28px rgb(31 35 43 / 5%);
-  --focus-ring: rgb(255 122 22 / 9%);
-  --select-icon: #9aa1aa;
-  --process-line: #ffd7a7;
-  --process-muted: #8f949c;
-  --img-blend: multiply;
-  min-width: 1120px;
-  min-height: 100vh;
+  --surface-soft: #f6f5fc;
+  --line: rgb(21 22 31 / 10%);
+  --hero: #f4f3fa;
+  --focus-ring: rgb(109 92 255 / 14%);
+  --process-muted: #777785;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
   overflow: hidden;
   color: var(--ink);
-  background: var(--bg);
+  background: var(--surface);
 }
+
 .suggestion-page.is-dark {
-  --ink: #f4eee6;
-  --muted: #a79c8f;
-  --muted-soft: #8a8278;
-  --muted-strong: #5a5248;
-  --line: #3b342c;
-  --line-input: #3b342c;
-  --orange: #ff8a3d;
-  --orange-hover: #ffb06a;
-  --bg: #12100e;
-  --surface: #1c1915;
-  --cream: #1c1814;
-  --hero-a: rgb(255 138 61 / 18%);
-  --hero-b: #1a1511;
-  --hero-c: #241c15;
-  --hero-d: #17130f;
-  --hero-glow: rgb(255 138 61 / 12%);
-  --reward-bg: rgb(255 138 61 / 12%);
-  --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
-  --focus-ring: rgb(255 138 61 / 18%);
-  --select-icon: #a79c8f;
-  --process-line: #5a4030;
-  --process-muted: #8a8278;
-  --img-blend: normal;
+  --ink: rgba(255, 255, 255, 0.96);
+  --body: rgb(255 255 255 / 72%);
+  --muted: rgb(255 255 255 / 52%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --accent-hover: #9d8fff;
+  --surface: #121218;
+  --surface-soft: #1a1824;
+  --line: rgb(255 255 255 / 10%);
+  --hero: #161422;
+  --focus-ring: rgb(139 123 255 / 18%);
+  --process-muted: rgb(255 255 255 / 52%);
 }
-.suggestion-shell,
-.suggestion-workspace {
-  width: min(1456px, calc(100% - 224px));
+
+.suggestion-shell {
+  width: min(1100px, calc(100% - 40px));
   margin-inline: auto;
 }
-.suggestion-hero {
-  position: relative;
-  height: 440px;
-  overflow: hidden;
+
+.suggestion-top {
+  --hero-pad-top: calc(var(--app-header-offset, 72px) + var(--app-page-content-top-gap, 0px));
+  flex: 0 0 auto;
+  margin-top: calc(-1 * var(--hero-pad-top));
+  padding: calc(var(--hero-pad-top) + 10px) 0 14px;
   background:
-    radial-gradient(circle at 76% 12%, var(--hero-a), transparent 29%),
-    linear-gradient(108deg, var(--hero-b) 0%, var(--hero-c) 54%, var(--hero-d) 100%);
+    radial-gradient(circle at 92% 0%, rgb(109 92 255 / 16%), transparent 36%),
+    linear-gradient(145deg, var(--hero) 0%, color-mix(in srgb, var(--accent) 6%, var(--hero)) 100%);
+  border-bottom: 1px solid var(--line);
 }
-.suggestion-hero__glow {
-  position: absolute;
-  top: 33px;
-  right: 86px;
-  width: 540px;
-  height: 340px;
-  background: var(--hero-glow);
-  border-radius: 50%;
-}
-.suggestion-hero__inner {
-  position: relative;
+
+.suggestion-top__inner {
   display: grid;
-  height: 100%;
-  grid-template-columns: 55% 45%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
 }
-.suggestion-hero__copy {
-  position: relative;
-  z-index: 2;
-  padding-top: 73px;
+
+.suggestion-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--body);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
 }
-.suggestion-hero h1 {
+
+.suggestion-back:hover {
+  color: var(--accent);
+}
+
+.suggestion-top__copy h1 {
   margin: 0;
-  font-size: 82px;
-  font-weight: 900;
-  line-height: 1.08;
-  letter-spacing: 0;
+  font-size: 1.55rem;
+  font-weight: 840;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
 }
-.suggestion-hero h1 span {
-  color: var(--orange);
+
+.suggestion-top__copy p {
+  margin: 4px 0 0;
+  color: var(--body);
+  font-size: 0.84rem;
+  line-height: 1.4;
 }
-.suggestion-hero__copy > p {
-  margin: 17px 0 0;
-  font-size: 29px;
-  font-weight: 750;
-  line-height: 1.35;
-}
-.reward-banner {
-  display: grid;
-  width: 764px;
-  height: 171px;
-  grid-template-columns: 174px 1fr;
-  align-items: center;
-  margin-top: 28px;
-  background: var(--reward-bg);
-  border-radius: 17px;
-}
-.reward-banner__asset {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  place-items: center;
-}
-.reward-banner__asset img {
-  width: 96px;
-  mix-blend-mode: var(--img-blend);
-}
-.reward-banner__copy {
+
+.suggestion-facts {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
-.reward-banner__copy > span {
-  font-size: 19px;
-  font-weight: 750;
-}
-.reward-banner__copy > strong {
-  margin-top: 3px;
-  color: var(--orange);
-  font-size: 59px;
-  font-weight: 850;
-  line-height: 1.1;
-}
-.reward-banner__copy > strong small {
-  font-size: 25px;
-  font-weight: 750;
-}
-.reward-banner__copy > p {
-  margin: 11px 0 0;
-  color: var(--muted);
-  font-size: 16px;
-}
-.suggestion-hero__asset {
-  position: relative;
-  z-index: 1;
-  display: grid;
+
+.suggestion-facts span {
+  display: inline-flex;
   align-items: center;
-  justify-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 720;
 }
-.suggestion-hero__asset img {
-  width: min(88%, 470px);
-  margin-top: 26px;
-  mix-blend-mode: var(--img-blend);
-  -webkit-mask-image: radial-gradient(82% 88% at 50% 52%, #000 60%, transparent 99%);
-  mask-image: radial-gradient(82% 88% at 50% 52%, #000 60%, transparent 99%);
+
+.suggestion-facts i {
+  color: var(--accent);
 }
+
 .suggestion-workspace {
-  position: relative;
-  z-index: 3;
-  display: grid;
-  grid-template-columns: minmax(0, 884px) minmax(0, 548px);
-  gap: 32px;
-  margin-top: 13px;
-  padding-bottom: 24px;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 14px 0 10px;
+  overflow: hidden;
 }
-.suggestion-card {
-  height: 483px;
-  background: var(--surface);
+
+.suggestion-layout {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.85fr);
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 16px;
-  box-shadow: var(--card-shadow);
 }
-.suggestion-card h2 {
-  position: relative;
-  margin: 0;
-  padding-left: 17px;
-  font-size: 25px;
-  font-weight: 850;
-  line-height: 1.25;
+
+.suggestion-form,
+.suggestion-process {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: 16px 18px;
+  overflow: hidden;
 }
-.suggestion-card h2::before {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  left: 0;
-  width: 5px;
-  background: var(--orange);
-  border-radius: 4px;
-  content: '';
-}
+
 .suggestion-form {
-  padding: 26px 26px 22px;
+  background: var(--surface);
 }
+
+.suggestion-process {
+  background: var(--surface-soft);
+  border-left: 1px solid var(--line);
+}
+
+.section-kicker {
+  color: var(--accent-deep);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.section-copy h2 {
+  margin: 4px 0 0;
+  font-size: 1.15rem;
+  font-weight: 820;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.section-copy p {
+  margin: 6px 0 0;
+  color: var(--body);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 .suggestion-field {
   display: block;
-  margin-top: 24px;
+  margin-top: 10px;
 }
-.suggestion-field + .suggestion-field {
-  margin-top: 17px;
+
+.suggestion-field--grow {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
 }
+
 .suggestion-field > span:first-child {
   display: block;
-  margin-bottom: 8px;
-  font-size: 15px;
-  font-weight: 650;
+  margin-bottom: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
+
 .suggestion-control {
   position: relative;
   display: block;
 }
+
+.suggestion-field--grow .suggestion-control {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .suggestion-control input,
 .suggestion-control textarea,
 .suggestion-control select {
   width: 100%;
   color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--line-input);
-  border-radius: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
   outline: none;
   font: inherit;
-  transition: border-color 150ms ease;
 }
+
 .suggestion-control input:focus,
 .suggestion-control textarea:focus,
 .suggestion-control select:focus {
-  border-color: var(--orange);
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
+
 .suggestion-control input {
-  height: 45px;
-  padding: 0 68px 0 15px;
+  height: 40px;
+  padding: 0 56px 0 12px;
+  font-size: 0.88rem;
 }
+
 .suggestion-control textarea {
-  height: 108px;
-  padding: 12px 70px 24px 15px;
+  min-height: 88px;
+  flex: 1 1 auto;
+  padding: 10px 56px 24px 12px;
   resize: none;
+  font-size: 0.88rem;
+  line-height: 1.45;
 }
+
 .suggestion-control select {
-  height: 45px;
-  padding: 0 46px 0 15px;
+  height: 40px;
+  padding: 0 36px 0 12px;
   appearance: none;
+  font-size: 0.88rem;
 }
+
 .suggestion-control > small {
   position: absolute;
-  right: 15px;
-  bottom: 12px;
-  color: var(--muted-strong);
-  font-size: 14px;
+  right: 12px;
+  bottom: 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
 }
+
 .suggestion-control--select > i {
   position: absolute;
   top: 50%;
-  right: 17px;
-  color: var(--select-icon);
+  right: 14px;
+  color: var(--muted);
   pointer-events: none;
   transform: translateY(-50%);
+  font-size: 0.82rem;
 }
+
 .suggestion-submit-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  margin-top: 24px;
+  gap: 12px;
+  margin-top: 12px;
 }
+
 .suggestion-submit-row p {
   margin: 0;
-  color: var(--muted-soft);
-  font-size: 14px;
+  color: var(--body);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
+
 .suggestion-submit-row a {
-  margin-inline: 3px;
-  color: var(--orange);
+  color: var(--accent);
   text-decoration: none;
+  font-weight: 700;
 }
-.suggestion-submit-row button {
-  width: 308px;
-  height: 53px;
+
+.primary-action {
+  display: inline-flex;
   flex: 0 0 auto;
+  height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 16px;
   color: #fff;
-  background: var(--orange);
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
   border: 0;
-  border-radius: 13px;
-  font-size: 18px;
-  font-weight: 800;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 750;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgb(109 92 255 / 20%);
 }
-.suggestion-submit-row button:hover:not(:disabled) {
-  background: var(--orange-hover);
+
+.primary-action:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
-.suggestion-submit-row button:disabled {
+
+.primary-action:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.suggestion-process {
-  padding: 26px 25px;
-}
+
 .suggestion-process ol {
   display: flex;
-  margin: 26px 0 0;
-  padding: 0 22px 0 34px;
-  list-style: none;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
 }
+
 .suggestion-process li {
-  --step: #ff8427;
   position: relative;
   display: grid;
-  min-height: 94px;
-  grid-template-columns: 58px 35px 1fr;
-  align-items: start;
-  gap: 14px;
+  grid-template-columns: 40px 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+  flex: 1 1 auto;
 }
+
 .suggestion-process li:not(:last-child)::after {
   position: absolute;
-  top: 58px;
-  bottom: 0;
-  left: 28px;
+  top: calc(50% + 18px);
+  bottom: -6px;
+  left: 19px;
   width: 2px;
-  background: repeating-linear-gradient(var(--process-line) 0 5px, transparent 5px 10px);
+  background: repeating-linear-gradient(
+    color-mix(in srgb, var(--accent) 35%, var(--line)) 0 4px,
+    transparent 4px 8px
+  );
   content: '';
 }
+
 .process-icon {
   position: relative;
   z-index: 1;
   display: grid;
-  width: 58px;
-  height: 58px;
+  width: 40px;
+  height: 40px;
   place-items: center;
   color: #fff;
-  background: var(--step);
-  border-radius: 14px;
-  box-shadow: 0 7px 14px color-mix(in srgb, var(--step) 22%, transparent);
-  font-size: 27px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-radius: 11px;
+  font-size: 1.05rem;
+  box-shadow: 0 6px 12px rgb(109 92 255 / 18%);
 }
+
 .process-index {
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 22px;
+  height: 22px;
   place-items: center;
-  margin-top: 4px;
-  color: var(--step);
-  background: color-mix(in srgb, var(--step) 11%, var(--surface));
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   border-radius: 50%;
-  font-size: 16px;
-  font-weight: 850;
+  font-size: 0.68rem;
+  font-weight: 800;
 }
-.suggestion-process li p {
-  display: flex;
-  margin: 4px 0 0;
-  flex-direction: column;
-  gap: 9px;
+
+.suggestion-process li > div {
+  min-width: 0;
 }
+
 .suggestion-process li strong {
-  font-size: 20px;
+  display: block;
+  font-size: 0.86rem;
 }
-.suggestion-process li small {
+
+.suggestion-process li p {
+  margin: 3px 0 0;
   color: var(--process-muted);
-  font-size: 15px;
+  font-size: 0.72rem;
+  line-height: 1.4;
 }
-.suggestion-process li.is-blue {
-  --step: #4d8cf7;
+
+.suggestion-tips {
+  flex: 0 0 auto;
+  padding: 10px 0 14px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--line);
 }
-.suggestion-process li.is-green {
-  --step: #3bc978;
+
+.tip-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.suggestion-process li.is-violet {
-  --step: #a75bea;
+
+.tip-list li {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
 }
-@media (max-width: 1360px) {
-  .suggestion-shell,
-  .suggestion-workspace {
-    width: calc(100% - 96px);
-  }
-  .suggestion-workspace {
-    grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr);
-  }
-  .reward-banner {
-    width: 680px;
-  }
+
+.tip-list li > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 50%;
+  font-size: 0.72rem;
 }
-@media (max-width: 760px) {
-  .suggestion-page {
-    min-width: 0;
-  }
-  .suggestion-shell,
-  .suggestion-workspace {
-    width: calc(100% - 32px);
-  }
-  .suggestion-hero {
-    height: 410px;
-  }
-  .suggestion-hero__inner {
-    display: block;
-  }
-  .suggestion-hero__copy {
-    padding-top: 48px;
-  }
-  .suggestion-hero h1 {
-    font-size: 45px;
-  }
-  .suggestion-hero__copy > p {
-    font-size: 19px;
-  }
-  .reward-banner {
-    width: 100%;
-    height: 154px;
-    grid-template-columns: 30px 1fr;
-    margin-top: 35px;
-  }
-  .reward-banner__asset img,
-  .suggestion-hero__asset img {
-    display: none;
-  }
-  .reward-banner__copy > strong {
-    font-size: 42px;
-  }
-  .reward-banner__copy > p {
-    padding-right: 15px;
-    font-size: 13px;
-  }
-  .suggestion-workspace {
-    display: flex;
-    margin-top: 16px;
-    flex-direction: column;
-  }
-  .suggestion-card {
+
+.tip-list strong {
+  display: block;
+  font-size: 0.78rem;
+}
+
+.tip-list p {
+  margin: 3px 0 0;
+  color: var(--body);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 960px) {
+  :global(.app-container > .main-content:has(> .suggestion-page)) {
     height: auto;
+    max-height: none;
+    overflow: visible;
   }
+
+  .suggestion-page {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .suggestion-top__inner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .suggestion-facts {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .suggestion-workspace {
+    overflow: visible;
+  }
+
+  .suggestion-layout {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .suggestion-process {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .tip-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .suggestion-shell {
+    width: calc(100% - 28px);
+  }
+
+  .suggestion-top__inner {
+    gap: 10px;
+  }
+
+  .suggestion-top__copy h1 {
+    font-size: 1.3rem;
+  }
+
   .suggestion-form,
   .suggestion-process {
-    padding: 22px 18px;
+    padding: 14px;
   }
+
   .suggestion-submit-row {
-    align-items: stretch;
     flex-direction: column;
+    align-items: stretch;
   }
-  .suggestion-submit-row button {
+
+  .primary-action {
+    justify-content: center;
     width: 100%;
   }
-  .suggestion-process ol {
-    padding-inline: 4px;
+
+  .tip-list {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 }
 </style>

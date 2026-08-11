@@ -2035,6 +2035,30 @@
   background: transparent;
 }
 
+.t2i-stage-media.is-transparent-output,
+.t2i-stage-cell.is-transparent-output {
+  background-color: #d7d9de;
+  background-image:
+    linear-gradient(45deg, #f3f4f6 25%, transparent 25%),
+    linear-gradient(-45deg, #f3f4f6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f3f4f6 75%),
+    linear-gradient(-45deg, transparent 75%, #f3f4f6 75%);
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0;
+  background-size: 20px 20px;
+}
+
+.t2i-stage-media.is-transparent-output .authenticated-image,
+.t2i-stage-media.is-transparent-output img,
+.t2i-stage-cell.is-transparent-output .authenticated-image,
+.t2i-stage-cell.is-transparent-output img {
+  object-fit: contain;
+  background: transparent;
+}
+
 /* 主画布交接由 Progressive 双层透明度完成，跳过 blur 揭示动画，避免大图滤镜重绘 */
 .t2i-stage-media .authenticated-image.is-loaded,
 .t2i-stage-cell-media .authenticated-image.is-loaded {

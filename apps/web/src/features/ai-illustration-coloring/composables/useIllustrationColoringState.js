@@ -33,10 +33,7 @@ import {
   isTerminalColoringJobStatus,
   mapColoringJobToHistory,
 } from '@/features/ai-illustration-coloring/domain/mapColoringJobToHistory'
-import {
-  composePendingLaunchPrompt,
-  takePendingPrompt,
-} from '@/features/creator-hub/studioTools'
+import { composePendingLaunchPrompt, takePendingPrompt } from '@/features/creator-hub/studioTools'
 import { prepareColoringUploadBlob } from '@/features/ai-illustration-coloring/domain/prepareColoringUpload'
 import {
   coloringRetryMayCreatePaidRequest,
@@ -659,10 +656,10 @@ export function useIllustrationColoringState() {
 
     const providerResultUrl = toColoringMediaUrl(job.providerResultUrl)
     const candidates = [
-      job.resultMediaUrl,
-      historyItem.resultRemoteUrl,
-      historyItem.resultUrl,
-      ...(Array.isArray(historyItem.outputs) ? historyItem.outputs : []),
+      ...(Array.isArray(job.originalMediaUrls) ? job.originalMediaUrls : []),
+      job.originalMediaUrl,
+      ...(Array.isArray(job.originalResultMediaUrls) ? job.originalResultMediaUrls : []),
+      job.originalResultMediaUrl,
     ]
       .map((item) => toColoringMediaUrl(item))
       .filter((item) => item && item !== providerResultUrl)
@@ -696,10 +693,39 @@ export function useIllustrationColoringState() {
         const resolved = await createResolvedOutput(output, [output], persistentOutput)
         if (resolved) return resolved
       }
-      return { output: '', outputs: [] }
     } catch {
-      return { output: '', outputs: [] }
+      // 旧任务可能没有独立的原图结果接口，继续尝试历史字段。
     }
+
+    const legacyCandidates = [
+      historyItem.resultRemoteUrl,
+      historyItem.resultUrl,
+      ...(Array.isArray(historyItem.outputs) ? historyItem.outputs : []),
+      job.resultMediaUrl,
+    ]
+      .map((item) => toColoringMediaUrl(item))
+      .filter((item) => item && item !== providerResultUrl)
+
+    for (const candidate of legacyCandidates) {
+      const normalized = normalizeImageOutput(candidate) || candidate
+      if (!normalized) continue
+      if (normalized.startsWith('data:image/')) {
+        const resolved = await createResolvedOutput(normalized, [normalized], normalized)
+        if (resolved) return resolved
+      }
+      if (
+        /^https?:\/\//i.test(normalized) ||
+        normalized.startsWith('/') ||
+        normalized.startsWith('blob:')
+      ) {
+        const displayUrl = await resolveAuthenticatedMediaUrl(normalized).catch(() => '')
+        if (!displayUrl) continue
+        const resolved = await createResolvedOutput(displayUrl, [displayUrl], normalized)
+        if (resolved) return resolved
+      }
+    }
+
+    return { output: '', outputs: [] }
   }
 
   function openDebugPanel() {
@@ -2415,6 +2441,10 @@ export function useIllustrationColoringState() {
       }
 
       createdJobs.forEach(({ entry, jobId, job }) => {
+        const originalResultUrl = toColoringMediaUrl(
+          (Array.isArray(job?.originalMediaUrls) ? job.originalMediaUrls.find(Boolean) : '') ||
+            job?.originalMediaUrl,
+        )
         updateHistoryItem(
           entry.id,
           {
@@ -2425,8 +2455,8 @@ export function useIllustrationColoringState() {
             sourceThumbUrl: sourceThumbUrl.value,
             referenceImageUrls,
             referenceThumbUrls,
-            resultRemoteUrl: toColoringMediaUrl(job?.resultMediaUrl) || '',
-            resultUrl: toColoringMediaUrl(job?.resultMediaUrl) || '',
+            resultRemoteUrl: originalResultUrl,
+            resultUrl: originalResultUrl,
           },
           { persistImmediately: true, notifyFailure: false },
         )

@@ -25,6 +25,8 @@ import {
   ECOMMERCE_DETAIL_MODULES,
   ECOMMERCE_MODULES,
   ECOMMERCE_MODES,
+  ECOMMERCE_RAIL_GROUPS,
+  ECOMMERCE_RAIL_MODES,
   ECOMMERCE_REVISION_DIRECTIONS,
   ecommerceShotBlueprints,
   ecommerceModeById,
@@ -153,6 +155,7 @@ const {
   outputPreviewUrls,
   outputGroups,
   outputGroupIndexes,
+  outputGroupSizes,
   outputAspectRatios,
   outputTimings,
   outputParents,
@@ -267,10 +270,14 @@ const outputCountOptions = computed(() =>
 const modelSelectOptions = computed(() =>
   models.value.map((model) => ({ value: model.id, label: model.label })),
 )
+const currentGroupId = computed(() => {
+  const current = currentOutput.value
+  return current ? outputGroups.value[current] || '' : ''
+})
 const currentGroupOutputs = computed(() => {
   const current = currentOutput.value
   if (!current) return []
-  const groupId = outputGroups.value[current]
+  const groupId = currentGroupId.value
   const group = groupId
     ? modeOutputs.value.filter((url) => outputGroups.value[url] === groupId)
     : [current]
@@ -280,8 +287,26 @@ const currentGroupOutputs = computed(() => {
       (Number(outputGroupIndexes.value[right]) || 0),
   )
 })
+const currentGroupSlots = computed(() => {
+  const outputsInGroup = currentGroupOutputs.value
+  if (!outputsInGroup.length) return []
+  const indexed = new Map(
+    outputsInGroup.map((url, fallbackIndex) => {
+      const storedIndex = Number(outputGroupIndexes.value[url])
+      const index = Number.isFinite(storedIndex) ? Math.max(0, storedIndex) : fallbackIndex
+      return [index, url]
+    }),
+  )
+  const highestIndex = indexed.size ? Math.max(...indexed.keys()) : -1
+  const expectedSize = Math.max(
+    outputsInGroup.length,
+    highestIndex + 1,
+    Number(outputGroupSizes.value[currentGroupId.value]) || 0,
+  )
+  return Array.from({ length: expectedSize }, (_, index) => indexed.get(index) || '')
+})
 const resultLayoutClass = computed(() => {
-  const count = currentGroupOutputs.value.length
+  const count = currentGroupSlots.value.length
   if (count <= 1) return 'is-single'
   if (count === 2) return 'is-double'
   if (count <= 4) return 'is-quad'
@@ -1555,32 +1580,6 @@ watch(
     })
   },
 )
-watch(
-  () => currentGroupOutputs.value.join('|'),
-  (next, previous) => {
-    if (!next || next === previous) return
-    nextTick(() => {
-      const cards = commerceRoot.value?.querySelectorAll('.result-image-card')
-      if (!cards?.length) return
-      runScopedMotion(() =>
-        gsap.fromTo(
-          cards,
-          { opacity: 0, y: 14, scale: 0.97 },
-          {
-            opacity: 1,
-            y: 0,
-            scale: 1,
-            duration: 0.45,
-            stagger: 0.06,
-            ease: 'back.out(1.25)',
-            clearProps: 'transform,opacity',
-          },
-        ),
-      )
-    })
-  },
-)
-
 onMounted(async () => {
   await nextTick()
   if (disposed) return
@@ -1768,7 +1767,7 @@ onBeforeUnmount(() => {
       aria-label="选择电商设计工具"
     >
       <button
-        v-for="mode in ECOMMERCE_MODES"
+        v-for="mode in ECOMMERCE_RAIL_MODES"
         :key="mode.id"
         type="button"
         :class="{ active: mode.id === activeMode.id }"
@@ -1787,38 +1786,32 @@ onBeforeUnmount(() => {
         aria-label="电商设计工具"
       >
         <div ref="commerceRailScroll" class="commerce-rail__scroll" @scroll="updateRailEdgeState">
-          <button
-            v-for="mode in ECOMMERCE_MODES"
-            :key="mode.id"
-            type="button"
-            :class="{ active: mode.id === activeMode.id }"
-            :aria-label="mode.label"
-            :aria-current="mode.id === activeMode.id ? 'page' : undefined"
-            :title="`${mode.label}：${mode.tagline}`"
-            :disabled="running"
-            @mouseenter="animateRailTabHover($event, true)"
-            @mouseleave="animateRailTabHover($event, false)"
-            @click="selectRailMode(mode, $event)"
-          >
-            <span class="commerce-rail__icon" aria-hidden="true">
-              <i class="bi" :class="mode.icon"></i>
-            </span>
-            <span class="commerce-rail__label">{{ mode.shortLabel || mode.label }}</span>
-          </button>
-          <div class="commerce-rail__rule" aria-hidden="true"></div>
-          <RouterLink
-            to="/tools/background-remove"
-            class="commerce-rail__external"
-            title="智能抠图"
-            aria-label="智能抠图"
-            @mouseenter="animateRailTabHover($event, true)"
-            @mouseleave="animateRailTabHover($event, false)"
-          >
-            <span class="commerce-rail__icon" aria-hidden="true">
-              <i class="bi bi-person-bounding-box"></i>
-            </span>
-            <span class="commerce-rail__label">智能抠图</span>
-          </RouterLink>
+          <template v-for="(group, groupIndex) in ECOMMERCE_RAIL_GROUPS" :key="group.id">
+            <div
+              v-if="groupIndex > 0"
+              class="commerce-rail__rule"
+              role="separator"
+              :aria-label="group.label"
+            ></div>
+            <button
+              v-for="mode in group.items"
+              :key="mode.id"
+              type="button"
+              :class="{ active: mode.id === activeMode.id }"
+              :aria-label="mode.label"
+              :aria-current="mode.id === activeMode.id ? 'page' : undefined"
+              :title="`${mode.label}：${mode.tagline}`"
+              :disabled="running"
+              @mouseenter="animateRailTabHover($event, true)"
+              @mouseleave="animateRailTabHover($event, false)"
+              @click="selectRailMode(mode, $event)"
+            >
+              <span class="commerce-rail__icon" aria-hidden="true">
+                <i class="bi" :class="mode.icon"></i>
+              </span>
+              <span class="commerce-rail__label">{{ mode.shortLabel || mode.label }}</span>
+            </button>
+          </template>
         </div>
       </nav>
 
@@ -2712,21 +2705,26 @@ onBeforeUnmount(() => {
             <div
               class="result-stage"
               :class="resultLayoutClass"
-              :data-count="currentGroupOutputs.length"
+              :data-count="currentGroupSlots.length"
             >
               <article
-                v-for="(output, index) in currentGroupOutputs"
-                :key="output"
+                v-for="(output, index) in currentGroupSlots"
+                :key="`${currentGroupId || 'result'}:${index}`"
                 class="result-image-card"
-                :class="{ active: output === currentOutput, loaded: loadedOutputs.has(output) }"
+                :class="{
+                  active: output && output === currentOutput,
+                  loaded: output && loadedOutputs.has(output),
+                  'is-pending': !output,
+                }"
                 :style="{
-                  aspectRatio: String(outputAspectRatios[output] || aspectRatio).replace(
+                  aspectRatio: String((output && outputAspectRatios[output]) || aspectRatio).replace(
                     ':',
                     ' / ',
                   ),
                 }"
               >
                 <button
+                  v-if="output"
                   type="button"
                   class="result-image-hit-area"
                   :aria-label="`查看第 ${index + 1} 张结果细节`"
@@ -2737,11 +2735,17 @@ onBeforeUnmount(() => {
                   <AuthenticatedImage
                     :src="output"
                     :alt="`${activeMode.label}第 ${index + 1} 张生成结果`"
+                    loading="eager"
                     :max-dimension="1600"
                     @load="markOutputLoaded(output)"
                   />
                   <span class="result-image-index">{{ String(index + 1).padStart(2, '0') }}</span>
                 </button>
+                <div v-else class="result-image-pending" role="status">
+                  <span class="result-image-skeleton"></span>
+                  <span class="result-image-index">{{ String(index + 1).padStart(2, '0') }}</span>
+                  <small>等待结果</small>
+                </div>
               </article>
             </div>
             <aside
@@ -3359,12 +3363,6 @@ onBeforeUnmount(() => {
   opacity: 1;
   background: linear-gradient(145deg, #6d5cff, #14b8a6);
   box-shadow: 0 6px 14px rgb(109 92 255 / 26%);
-}
-.commerce-rail__external {
-  color: var(--commerce-muted);
-}
-.commerce-rail__external .commerce-rail__label {
-  color: var(--commerce-muted);
 }
 .commerce-rail button:disabled {
   cursor: not-allowed;
@@ -5381,28 +5379,47 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 .result-stage.is-single {
-  grid-template-columns: minmax(240px, min(760px, 100%));
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  place-items: center;
   overflow: hidden;
 }
 .result-stage.is-single .result-image-card {
-  width: 100%;
-  height: 100%;
-  max-height: none;
-  aspect-ratio: auto !important;
+  width: auto;
+  height: 82%;
+  max-width: 82%;
+  max-height: 82%;
 }
 .result-stage.is-double {
   grid-template-columns: repeat(2, minmax(180px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  width: min(760px, 100%);
+  justify-self: center;
 }
 .result-stage.is-quad {
   grid-template-columns: repeat(2, minmax(160px, 1fr));
-  max-width: 920px;
+  grid-template-rows: repeat(2, max-content);
+  grid-auto-flow: column;
+  align-content: start;
+  max-width: 760px;
   width: 100%;
   justify-self: center;
 }
 .result-stage.is-multi {
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: none;
+  grid-template-rows: repeat(2, max-content);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(150px, 1fr);
+  grid-auto-rows: max-content;
   align-content: start;
+  width: 100%;
+  justify-self: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.result-stage:is(.is-double, .is-quad, .is-multi) .result-image-card {
+  align-self: start;
 }
 .result-image-card {
   position: relative;
@@ -5416,17 +5433,16 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 8px;
   box-shadow: var(--commerce-shadow-result);
-  will-change: transform;
+  contain: layout paint style;
+  isolation: isolate;
   transition:
     border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .result-image-card:hover,
 .result-image-card:focus-within {
   border-color: var(--commerce-accent-line);
   box-shadow: 0 22px 52px color-mix(in srgb, var(--commerce-accent) 18%, transparent);
-  transform: translateY(-4px);
 }
 .result-image-hit-area {
   position: absolute;
@@ -5442,6 +5458,18 @@ onBeforeUnmount(() => {
   cursor: zoom-in;
   font: inherit;
   text-align: inherit;
+}
+.result-image-pending {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--commerce-muted);
+}
+.result-image-pending small {
+  position: relative;
+  z-index: 3;
+  font-size: 11px;
 }
 .result-image-hit-area:focus-visible {
   outline: 2px solid var(--commerce-accent);
@@ -6288,9 +6316,6 @@ onBeforeUnmount(() => {
 :global(html.color-scheme-dark .commerce-studio .commerce-header__actions) {
   background: color-mix(in srgb, #1a1726 80%, transparent);
 }
-:global(html.color-scheme-dark .commerce-studio .commerce-rail__external .commerce-rail__label) {
-  color: rgb(255 255 255 / 62%);
-}
 :global(html.color-scheme-dark .commerce-studio .commerce-rail a.active .commerce-rail__icon),
 :global(html.color-scheme-dark .commerce-studio .commerce-rail button.active .commerce-rail__icon) {
   box-shadow: 0 8px 18px rgb(0 0 0 / 36%);
@@ -6674,10 +6699,27 @@ onBeforeUnmount(() => {
     min-height: 58vh;
     padding: 18px;
   }
-  .result-stage.is-double,
-  .result-stage.is-quad,
+  .result-stage.is-single .result-image-card {
+    width: auto;
+    height: 88%;
+    max-width: 92%;
+    max-height: 88%;
+  }
+  .result-stage.is-double {
+    grid-template-columns: repeat(2, minmax(132px, 1fr));
+    align-content: start;
+  }
+  .result-stage.is-quad {
+    grid-template-columns: repeat(2, minmax(132px, 1fr));
+    max-width: none;
+    align-content: start;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
   .result-stage.is-multi {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: none;
+    grid-template-rows: repeat(2, max-content);
+    grid-auto-columns: minmax(132px, 1fr);
     align-content: start;
   }
   .result-image-card {

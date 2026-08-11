@@ -9,6 +9,9 @@ import {
 } from '@/services/assistantApi'
 import { withTransparentPngInstruction } from '@/features/ai-shared/transparentPng'
 import { stabilizeAnalysisNodes } from '@/features/design-workshop/analysisNodeGeometry'
+import { normalizeCropElementItems } from '@/features/design-workshop/regionGeometry'
+import { parseCropElementResponse } from '@/features/design-workshop/cropElementResponse'
+import { resolveRegionImageRequestSize } from '@/features/design-workshop/regionOutputPolicy'
 
 export const ACTIVE_DESIGN_ANALYSIS_KEY = 'ui-design-active-analysis-v1'
 export const ACTIVE_DESIGN_ANALYSIS_VERSION = 3
@@ -497,6 +500,7 @@ export async function generateAiDesignDocument({
     if (!conversation) {
       conversation = await createAssistantConversation(
         referenceImage ? '设计稿元素分析' : 'AI 设计稿生成',
+        { workspace: 'ui_design' },
       )
       onSession?.({
         conversationId: conversation.id,
@@ -641,9 +645,7 @@ export async function generateAiDesignDocument({
 function unwrapCodeBlock(content) {
   const value = String(content || '').trim()
   return (
-    value
-      .match(/```(?:vue|html|css|javascript|typescript)?\s*([\s\S]*?)```/i)?.[1]
-      ?.trim() || value
+    value.match(/```(?:vue|html|css|javascript|typescript)?\s*([\s\S]*?)```/i)?.[1]?.trim() || value
   )
 }
 
@@ -680,7 +682,9 @@ export async function generateDesignRegionCode({
   let runId = ''
   try {
     onStage?.('preparing')
-    conversation = await createAssistantConversation(`提取组件 · ${region.name}`)
+    conversation = await createAssistantConversation(`提取组件 · ${region.name}`, {
+      workspace: 'ui_design',
+    })
     const reference = referenceDescriptor(referenceImage)
     if (!reference) throw new Error('缺少原始设计图，无法生成区域代码')
     const content = await executeDesignPass({
@@ -708,30 +712,389 @@ export async function generateDesignRegionCode({
   }
 }
 
-function regionImagePrompt({ region, transparent, generationMode }) {
+function cropMinSelectableCount(viewport) {
+  const area = Math.max(1, viewport.width) * Math.max(1, viewport.height)
+  // Banner-sized crops should never collapse to a single “whole region” node.
+  if (area >= 220_000) return 5
+  if (area >= 90_000) return 4
+  if (area >= 40_000) return 3
+  return 2
+}
+
+function cropElementAnalysisPrompt({ viewport, recognitionTypes = [] }) {
+  const width = Math.max(1, Math.round(viewport.width))
+  const height = Math.max(1, Math.round(viewport.height))
+  const minCount = recognitionTypes.length ? 1 : cropMinSelectableCount({ width, height })
+  const coordinateEdge = 1000
+  const targetMin = minCount
+  const targetMax = 12
+  const selected = new Set(recognitionTypes)
+  const allowedTypes = [
+    ...(selected.has('text') ? ['text', 'button', 'input'] : []),
+    ...(selected.has('icon') ? ['icon'] : []),
+    ...(selected.has('image') ? ['image'] : []),
+  ]
+  const recognitionRule = allowedTypes.length
+    ? `本次只识别这些 type：${allowedTypes.join(', ')}。其它类型即使可见也禁止输出。`
+    : '本次没有勾选识别类型，禁止输出任何元素。'
+  const exampleType = allowedTypes[0] || 'text'
+  return `你是 UI 局部截图的「多元素拆分器」。唯一依据是本消息附图的真实像素。
+
+目标：只把用户勾选类别拆成可独立点选编辑的叶子元素。
+${recognitionRule}
+禁止：把整块截图识别成 1 个元素；禁止编造附图中看不见的文字或物体。
+name 与 text 必须逐字来自附图可见内容；bounding box 必须紧贴该内容的真实像素位置，不能凭空偏移。
+
+只输出一个紧凑 JSON 对象。第一个字符必须是 {，最后一个字符必须是 }。不要 Markdown、代码围栏、解释或 :::writing 包装。
+
+唯一允许的结构：
+{"coordinateSpace":{"width":${coordinateEdge},"height":${coordinateEdge},"unit":"normalized"},"nodes":[{"id":"el_1","name":"附图真实名称","type":"${exampleType}","x":0,"y":0,"width":1,"height":1,"text":"附图原文"}]}
+
+硬性规则：
+1. coordinateSpace 必须逐字为 ${coordinateEdge}×${coordinateEdge} normalized。所有 x/y/width/height 都使用 0..${coordinateEdge} 的整数坐标，原点是附图左上角；附图实际尺寸为 ${width}×${height}。
+2. 先在脑中把附图分成网格，再按从左到右、从上到下定位；每个 box 的中心必须落在对应对象上。
+3. 至少 ${minCount} 个 nodes；目标 ${targetMin}-${targetMax} 个，不要为了凑数重复元素。
+4. 只拆分已允许的 type；同一类别中的每个独立可见对象各自一个 node，不得把多个对象合成大框。
+5. 单个 node 面积 < 整图 45%；禁止输出覆盖全图的大框。
+6. node 只输出 id/name/type/x/y/width/height/text；type 仅限 ${allowedTypes.join('/') || '无'}。`
+}
+
+function cropElementRepairPrompt({ viewport, recognitionTypes = [], reason = 'parse' }) {
+  const width = Math.max(1, Math.round(viewport.width))
+  const height = Math.max(1, Math.round(viewport.height))
+  const minCount = recognitionTypes.length ? 1 : cropMinSelectableCount({ width, height })
+  const exampleType = recognitionTypes.includes('icon')
+    ? 'icon'
+    : recognitionTypes.includes('image')
+      ? 'image'
+      : 'text'
+  const schema = `{"coordinateSpace":{"width":1000,"height":1000,"unit":"normalized"},"nodes":[{"id":"el_1","name":"附图真实名称","type":"${exampleType}","x":0,"y":0,"width":1,"height":1,"text":"附图原文"}]}`
+  const coordinateRule = `coordinateSpace 固定为 1000×1000 normalized，所有元素坐标使用 0..1000 整数；附图实际尺寸为 ${width}×${height}。`
+  const typeRule = `只输出已勾选类别：${recognitionTypes.join(', ') || '无'}；禁止补充其它类别。`
+  if (reason === 'too-few') {
+    return `上一轮错误：元素太少或把整块当成大框。请只根据附图真实像素重新拆分。
+已勾选类别中的每个独立可见对象各自一个 node；name/text 必须能在附图中找到。
+至少 ${minCount} 个 nodes；单个 node 面积 < 整图 45%。
+${coordinateRule} ${typeRule} 坐标必须对准真实位置。
+只输出 ${schema} 这种紧凑 JSON；不要 Markdown、代码围栏或 :::writing。`
+  }
+  if (reason === 'misaligned') {
+    return `上一轮错误：name/text 或坐标与附图对不上（出现了附图没有的文案，或框没有罩住对应内容）。
+请重新看附图，只输出附图里真实存在的元素；每个 box 必须紧贴该文字/人物/图标的可见边缘。
+${coordinateRule} ${typeRule}
+至少 ${minCount} 个 nodes。只输出 ${schema} 这种紧凑 JSON。`
+  }
+  return `上一轮输出无法被程序解析。请立刻重新输出合法 JSON（不要解释）。
+必须包含至少 ${minCount} 个 "nodes"；禁止编造附图不存在的内容。${coordinateRule} ${typeRule}
+只输出 ${schema} 这种 JSON 对象本身；不要 Markdown、代码围栏或 :::writing。`
+}
+
+function coerceCropNodeItems(items) {
+  return (Array.isArray(items) ? items : []).map((item, index) => {
+    const name = String(item?.name || item?.label || `元素${index + 1}`).trim()
+    const rawText = String(item?.text || item?.content || '').trim()
+    let type = ['text', 'button', 'icon', 'image', 'input', 'divider'].includes(item?.type)
+      ? item.type
+      : rawText
+        ? 'text'
+        : 'image'
+    // Never keep whole-crop wrappers typed as frame/rectangle.
+    if (type === 'frame' || type === 'rectangle') type = rawText ? 'text' : 'image'
+    const text =
+      type === 'text' || type === 'button' || type === 'input' ? rawText || name : rawText
+    return {
+      id: String(item?.id || `el_${index + 1}`),
+      parentId: '',
+      name,
+      type,
+      x: number(item?.x),
+      y: number(item?.y),
+      width: Math.max(1, number(item?.width, 40)),
+      height: Math.max(1, number(item?.height, 24)),
+      text,
+      category:
+        type === 'icon'
+          ? 'icon'
+          : type === 'image'
+            ? 'image'
+            : type === 'button'
+              ? 'component'
+              : 'content',
+      description: name,
+      confidence: number(item?.confidence, 0.85),
+    }
+  })
+}
+
+function filterOversizedCropNodes(nodes, viewport) {
+  const viewArea = Math.max(1, viewport.width * viewport.height)
+  const leafTypes = new Set(['text', 'button', 'icon', 'image', 'input', 'divider'])
+  return (Array.isArray(nodes) ? nodes : []).filter((node) => {
+    if (!leafTypes.has(node?.type)) return false
+    const nodeArea = Math.max(1, number(node.width) * number(node.height))
+    // Drop “整块横幅” wrappers that cover almost the whole crop.
+    if (nodeArea / viewArea > 0.45) return false
+    if (number(node.width) / viewport.width > 0.92 && number(node.height) / viewport.height > 0.7) {
+      return false
+    }
+    return true
+  })
+}
+
+function buildCropDocumentFromItems(
+  items,
+  fallbackViewport,
+  { coordinateSpace = null, reportedViewport = null } = {},
+) {
+  const viewport = targetViewport(fallbackViewport)
+  const normalizedItems = normalizeCropElementItems(items, {
+    viewport,
+    coordinateSpace,
+    reportedViewport,
+  })
+  const coerced = coerceCropNodeItems(normalizedItems)
+  const projected = projectNodes(coerced, viewport, viewport)
+  const nodes = filterOversizedCropNodes(projected, viewport)
+  if (!nodes.length) {
+    throw new Error('元素被合并成整块区域了，需要拆成多个可点选元素')
+  }
+  return {
+    id: uid('document'),
+    name: '框选区域元素',
+    viewport,
+    nodes,
+    tokens: { colors: [], spacing: [], typography: [] },
+    partial: false,
+  }
+}
+
+export function parseCropElementDocument(text, fallbackViewport) {
+  return parseCropElementResponse(
+    text,
+    ({ items, coordinateSpace, reportedViewport, partial }) => ({
+      ...buildCropDocumentFromItems(items, fallbackViewport, {
+        coordinateSpace,
+        reportedViewport,
+      }),
+      partial,
+    }),
+  )
+}
+
+function filterCropNodesByRecognitionTypes(nodes, recognitionTypes) {
+  const selected = new Set(recognitionTypes)
+  const allowed = new Set([
+    ...(selected.has('text') ? ['text', 'button', 'input'] : []),
+    ...(selected.has('icon') ? ['icon'] : []),
+    ...(selected.has('image') ? ['image'] : []),
+  ])
+  return (Array.isArray(nodes) ? nodes : []).filter((node) => allowed.has(node?.type))
+}
+
+/**
+ * Analyze a cropped region screenshot into clickable leaf elements.
+ * Uses ui_design_analysis (chat), not image generation.
+ */
+export async function analyzeDesignCropElements({
+  cropImage,
+  width,
+  height,
+  recognitionTypes = [],
+  model = '',
+  signal,
+  onStage,
+  onRun,
+}) {
+  const viewport = {
+    width: Math.max(1, Math.round(width)),
+    height: Math.max(1, Math.round(height)),
+    background: '#ffffff',
+  }
+  const minCount = recognitionTypes.length ? 1 : cropMinSelectableCount(viewport)
+  const reference = referenceDescriptor(cropImage, '框选区域截图')
+  if (!reference) throw new Error('缺少框选截图，无法分析元素')
+  let conversation = null
+  let runId = ''
+  try {
+    onStage?.('preparing')
+    conversation = await createAssistantConversation('框选区域元素分析', {
+      workspace: 'ui_design',
+    })
+    onStage?.('analyzing')
+    const runPass = async (prompt) =>
+      executeDesignPass({
+        conversationId: conversation.id,
+        prompt,
+        model: String(model || '').trim(),
+        references: [reference],
+        phase: 'draft',
+        signal,
+        onStage,
+        onRun(value) {
+          runId = value
+          onRun?.(value)
+        },
+      })
+
+    let best = null
+    let lastError = null
+    let nextPrompt = cropElementAnalysisPrompt({ viewport, recognitionTypes })
+    for (let index = 0; index < 3; index += 1) {
+      const content = await runPass(nextPrompt)
+      try {
+        const parsed = parseCropElementDocument(content, viewport)
+        const document = {
+          ...parsed,
+          nodes: filterCropNodesByRecognitionTypes(parsed.nodes, recognitionTypes),
+        }
+        const count = document.nodes?.length || 0
+        if (!best || count > best.nodes.length) best = document
+        if (count >= minCount) break
+        lastError = new Error(`只识别到 ${count} 个元素，横幅应拆成多段文字/多张插画分别点选`)
+        nextPrompt = cropElementRepairPrompt({ viewport, recognitionTypes, reason: 'too-few' })
+      } catch (caught) {
+        lastError = caught
+        const retryReason = /合并成整块|拆成多个|元素太少/.test(String(caught?.message || ''))
+          ? 'too-few'
+          : 'parse'
+        nextPrompt = cropElementRepairPrompt({ viewport, recognitionTypes, reason: retryReason })
+      }
+    }
+    if (!best?.nodes?.length) {
+      throw (
+        lastError ||
+        new Error('元素分析失败：没有拆出多个可点选元素。可重新分析，或直接写提示做图片编辑。')
+      )
+    }
+    onStage?.('complete')
+    return best
+  } finally {
+    if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
+    if (conversation?.id) {
+      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+    }
+  }
+}
+
+export function buildRegionEditInstruction({
+  elements = [],
+  userNote = '',
+  viewport = null,
+  action = 'remove',
+} = {}) {
+  const note = String(userNote || '').trim()
+  const list = (Array.isArray(elements) ? elements : [])
+    .map((item, index) => {
+      const name = String(item?.name || item?.type || `元素${index + 1}`).trim()
+      const type = String(item?.type || 'element').trim()
+      const text = String(item?.text || '').trim()
+      const box =
+        viewport?.width && viewport?.height
+          ? `位置约 (${Math.round((Number(item.x) / viewport.width) * 100)}%, ${Math.round((Number(item.y) / viewport.height) * 100)}%)，约占 ${Math.round((Number(item.width) / viewport.width) * 100)}%×${Math.round((Number(item.height) / viewport.height) * 100)}%`
+          : `像素框 (${Math.round(item.x)},${Math.round(item.y)},${Math.round(item.width)}×${Math.round(item.height)})`
+      return `${index + 1}. [${type}] ${name}${text ? `「${text}」` : ''}；${box}`
+    })
+    .filter(Boolean)
+  if (!list.length && !note && action !== 'replace-background') return ''
+  const parts = [
+    '这是图片编辑（image edit / inpainting），不是文生图。必须以第一张参考图（框选截图）为底图做最小改动。',
+  ]
+  if (action === 'remove' && list.length) {
+    parts.push('请移除下列已点选元素，并用周围连续背景自然填补，不要留下灰块/白块/空洞：')
+    parts.push(list.join('\n'))
+    parts.push(
+      '移除后必须保留原来的空间占位，不得让相邻文字、图标、按钮或插画自动补位、居中、缩放或重新排列。只允许修改上述 bounding box 及其边缘少量过渡像素；所有框外像素视为锁定区。',
+    )
+    parts.push(
+      '必须输出与第一张参考图相同的完整画面、画布边界和宽高比；禁止裁切、扩图、重新构图、改变留白或生成另一版布局。',
+    )
+  } else if (action === 'improve-icon' && list.length) {
+    parts.push(
+      '请只重绘下列已点选图标：保持原语义、尺寸、中心位置和点击热区，替换为更精致、统一、清晰的现代图标，不得移动其它元素：',
+    )
+    parts.push(list.join('\n'))
+    parts.push(
+      '必须输出与第一张参考图相同的完整画面和背景；禁止只输出图标、禁止抠图、禁止透明画布、禁止裁切或改变画布比例。',
+    )
+  } else if (action === 'replace-background') {
+    if (list.length) {
+      parts.push('请只替换下列已点选图片或背景区域，保持前景文字、图标和控件原样：')
+      parts.push(list.join('\n'))
+    } else {
+      parts.push('请只重新设计当前框选区域的背景，保持其中全部前景文字、图标和控件原样。')
+    }
+    parts.push('新背景应更有层次并符合原页面风格；禁止纯白背景、白色矩形和无内容占位块。')
+  } else if (action === 'custom' && list.length) {
+    parts.push('只对下列已点选元素执行用户补充要求：')
+    parts.push(list.join('\n'))
+  }
+  if (note) parts.push(`补充要求：${note}`)
+  parts.push('未点选的内容必须保持原样（构图、颜色、材质、光影、其余文字与图标）。')
+  return parts.join('\n')
+}
+
+export function buildRegionRemovalInstruction(options = {}) {
+  return buildRegionEditInstruction({ ...options, action: 'remove' })
+}
+
+function regionImagePrompt({
+  region,
+  transparent,
+  generationMode,
+  userInstruction = '',
+  preserveLayout = false,
+}) {
   const isReplacement = generationMode === 'replace'
-  const prompt = `根据两张参考图重建一个独立 UI 素材。第一张是完整设计稿，第二张是用户选中的目标区域，仅用于视觉参考，不得直接裁切或照搬截图背景。
+  const instruction = String(userInstruction || '').trim()
+  const aspectW = Math.max(1, Math.round(region.width))
+  const aspectH = Math.max(1, Math.round(region.height))
+  const outputRatio = String(region.outputRatio || `${aspectW}:${aspectH}`)
+  const localEditBlock = instruction
+    ? `
+用户图片编辑要求：
+${instruction}
+
+图片编辑规则（最高优先级）：
+- 这是对已有截图的编辑，不是从零文生图；禁止重新设计整张海报。
+- 只改用户点名要改/移除的部分；其余像素尽量与第一张框选截图一致。
+- ${
+    preserveLayout
+      ? '布局已锁定：未点选区域的绝对坐标、尺寸、间距、留白和层级必须逐像素保持；删除后不得触发布局回流。'
+      : '保持第一张框选截图的页面结构和视觉层级。'
+  }
+- 移除文字/控件后，必须用周围背景渐变与纹理自然补齐，禁止灰色/白色矩形占位。
+- 禁止擅自去背，除非用户明确要求抠图/透明背景。
+`
+    : ''
+  const prompt = `这是 UI 局部图片编辑任务。第一张参考图是用户框选截图（编辑底图，必须忠实）；${
+    preserveLayout
+      ? '本任务已启用布局锁定，不使用整页参考，禁止重新推断或重排布局。'
+      : '第二张若存在则为完整设计稿，仅作风格上下文。'
+  }
 
 目标名称：${region.name}
 目标类型：${region.type}
 目标说明：${region.description || region.name}
-
+目标像素约：${aspectW}×${aspectH}
+${localEditBlock}
 要求：
-1. 只重建目标素材本身，不生成完整页面、浏览器窗口、设计软件界面、标注框、文字说明或样机。
+1. 只输出与框选截图同一块区域，不生成完整页面、浏览器窗口、标注框或样机。
 2. ${
-    isReplacement
-      ? '允许替换素材的主体创意，但必须保持原区域的宽高比、视觉重量、构图层级、留白方式、品牌色关系和在界面中的功能角色，替换后能直接放回原位置。'
-      : '执行严格还原：保持目标的主体身份、造型、构图、比例、颜色、材质、光影、边缘细节与当前整张设计稿的视觉语言，不做风格改写或创意替换。'
+    instruction
+      ? '以第一张框选截图为底执行图片编辑；未要求改动的区域保持原构图、颜色、材质、光影与边缘细节。'
+      : isReplacement
+        ? '允许替换素材主体创意，但必须保持原区域宽高比、视觉重量与可放回界面的占位关系。'
+        : '执行严格还原：保持主体身份、造型、构图、比例、颜色、材质与光影。'
   }
-3. 不保留原设计稿周围的卡片、按钮容器或页面背景，除非它们本身就是目标素材的一部分。
-4. 这是 AI 重建任务，不是截图裁切或放大任务。
-5. 输出构图的宽高比必须与目标区域 ${Math.round(region.width)}:${Math.round(region.height)} 保持一致，主体不能被裁断，也不能增加改变占位尺寸的大面积留白。
-6. ${
+3. ${
     transparent
-      ? '只保留目标素材本身和必要的透明留白，不保留原设计稿的底色或周边内容。'
-      : '使用与目标素材协调的干净背景，并保证素材主体完整。'
-  }`
-  return withTransparentPngInstruction(prompt, transparent)
+      ? '用户已要求抠图：只保留目标主体和必要透明留白。'
+      : instruction
+        ? '保留第一张框选截图的完整画布、背景与渐变连续性；不要自动去背，不得只输出被编辑元素，不要改成大面积纯色填充。'
+        : '保留与素材协调的完整背景。'
+  }
+4. 输出清晰锐利；输出比例必须与框选区域实际比例 ${outputRatio} 完全一致。`
+  return transparent ? withTransparentPngInstruction(prompt, true) : prompt
 }
 
 export async function generateDesignRegionImage({
@@ -740,33 +1103,53 @@ export async function generateDesignRegionImage({
   region,
   transparent = true,
   generationMode = 'strict',
+  userInstruction = '',
   requestSize = 'auto',
+  resolution = '',
+  quality = 'high',
+  preserveLayout = false,
+  retainConversation = false,
   signal,
   onStage,
   onRun,
   onImage,
+  onConversation,
 }) {
   let conversation = null
   let runId = ''
   let stream = null
   try {
     onStage?.('preparing')
-    conversation = await createAssistantConversation(`重建素材 · ${region.name}`)
-    const fullReference = referenceDescriptor(referenceImage)
-    const regionReference = referenceDescriptor(regionReferenceDataUrl)
-    const references = [fullReference, regionReference].filter(Boolean)
-    if (!references.length) throw new Error('缺少设计图参考，无法重建素材')
+    conversation = await createAssistantConversation(`图片编辑 · ${region.name}`, {
+      workspace: 'ui_design',
+    })
+    onConversation?.(conversation.id)
+    // Crop first so upstream EditImages treats the selection as the primary canvas.
+    const regionReference = referenceDescriptor(regionReferenceDataUrl, '框选截图（编辑底图）')
+    const fullReference = preserveLayout
+      ? null
+      : referenceDescriptor(referenceImage, '完整设计稿（风格上下文）')
+    const references = [regionReference, fullReference].filter(Boolean)
+    if (!references.length) throw new Error('缺少设计图参考，无法进行图片编辑')
+    const safeRequestSize = resolveRegionImageRequestSize(requestSize, resolution)
     const created = await createAssistantRun(
       {
         conversationId: conversation.id,
-        prompt: regionImagePrompt({ region, transparent, generationMode }),
+        prompt: regionImagePrompt({
+          region,
+          transparent,
+          generationMode,
+          userInstruction,
+          preserveLayout,
+        }),
         mode: 'image',
         clientUserMessageId: uid('user'),
         clientAssistantMessageId: uid('assistant'),
         referenceImages: references,
         count: 1,
-        requestSize,
-        quality: 'high',
+        requestSize: safeRequestSize,
+        ...(resolution ? { resolution } : {}),
+        quality,
         serviceKey: 'ui_design_asset',
       },
       { signal },
@@ -799,11 +1182,15 @@ export async function generateDesignRegionImage({
       : []
     if (!images[0]?.dataUrl) throw new Error('生图模型没有返回 PNG 素材')
     onStage?.('complete')
-    return images[0]
+    return {
+      ...images[0],
+      conversationId: conversation.id,
+      runId,
+    }
   } finally {
     stream?.close()
     if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
-    if (conversation?.id) {
+    if (conversation?.id && !retainConversation) {
       await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
     }
   }
@@ -835,7 +1222,9 @@ export async function generateDesignAssetDescription({
   let runId = ''
   try {
     onStage?.('preparing')
-    conversation = await createAssistantConversation(`描述素材 · ${region.name}`)
+    conversation = await createAssistantConversation(`描述素材 · ${region.name}`, {
+      workspace: 'ui_design',
+    })
     const reference = referenceDescriptor(assetImage, `待确认素材 · ${region.name}`)
     if (!reference) throw new Error('缺少待描述素材')
     const content = await executeDesignPass({
@@ -923,7 +1312,9 @@ export async function generateDesignWebsite({
   let runId = ''
   try {
     onStage?.('preparing')
-    conversation = await createAssistantConversation(`还原网站 · ${name}`)
+    conversation = await createAssistantConversation(`还原网站 · ${name}`, {
+      workspace: 'ui_design',
+    })
     const references = [referenceDescriptor(referenceImage, '完整 UI 设计稿')]
     assets
       .filter((asset) => asset.format === 'png' && asset.url)

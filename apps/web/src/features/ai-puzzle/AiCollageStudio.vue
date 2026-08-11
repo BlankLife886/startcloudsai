@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import notificationService from '@/services/notification'
-import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
@@ -24,9 +23,6 @@ import {
   preloadImageSize,
 } from '@/features/ai-puzzle/domain/collageTemplates'
 import '@/features/ai-puzzle/styles/collage-studio.css'
-
-const runtimeConfigStore = useRuntimeConfigStore()
-const canUseAiPuzzle = computed(() => runtimeConfigStore.canUse('ai.puzzle'))
 
 const {
   templateId,
@@ -65,7 +61,6 @@ const {
   applyFilterToAll,
   autoFillFromUploads,
   shuffleCells,
-  aiRecommendTemplate,
   swapCells,
   undo,
   redo,
@@ -435,22 +430,7 @@ function setCaptionPosition(id) {
   caption.value = { ...caption.value, position: id }
 }
 
-// ---------------- AI 布局 / 导出 ----------------
-function handleAiLayout() {
-  if (!canUseAiPuzzle.value) {
-    notificationService.warning('AI 拼图当前未启用，请联系管理员检查功能配置')
-    return
-  }
-  if (!uploads.value.length && !filledCount.value) {
-    notificationService.info('先上传或挑选几张图片，AI 会按数量推荐最合适的布局')
-    sideTab.value = 'uploads'
-    return
-  }
-  const recommended = aiRecommendTemplate()
-  requestAnimationFrame(() => fitZoom())
-  notificationService.success(`已切换到「${recommended.name}」`)
-}
-
+// ---------------- 导出 ----------------
 async function handleExport() {
   if (!filledCount.value) {
     notificationService.warning('画布还是空的，先拖几张图进格子吧')
@@ -634,7 +614,7 @@ watch(ratioId, () => {
             <i class="bi bi-puzzle-fill"></i>
           </span>
           <div>
-            <strong>AI 拼图工坊</strong>
+            <strong>拼图</strong>
             <small>选模板 · 调布局 · 一键导出</small>
           </div>
         </div>
@@ -657,15 +637,6 @@ watch(ratioId, () => {
         <button type="button" class="collage-top-btn collage-add-btn" @click="triggerUpload">
           <i class="bi bi-plus-lg"></i>
           <span>添加图片</span>
-        </button>
-        <button
-          type="button"
-          class="collage-top-btn"
-          :disabled="!canUseAiPuzzle"
-          @click="handleAiLayout"
-        >
-          <i class="bi bi-stars"></i>
-          <span>AI 布局</span>
         </button>
         <button
           type="button"

@@ -115,6 +115,51 @@ func TestGrowthGroupCompletionRewardsEveryMemberOnce(t *testing.T) {
 	}
 }
 
+func TestGrowthGroupReturnsMemberAvatarsAndAdminOverview(t *testing.T) {
+	env := newCommunityEnv(t)
+	owner, ownerToken := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	ensureWallet(t, env, owner)
+
+	avatarURL := "/api/v1/files/uploads/avatar-owner.png"
+	if _, err := env.st.Pool.Exec(context.Background(), `UPDATE users SET avatar_url=$2 WHERE id=$1`, owner.ID, avatarURL); err != nil {
+		t.Fatal(err)
+	}
+	created := env.do(t, http.MethodPost, "/api/v1/me/growth/groups", nil, ownerToken)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status=%d body=%s", created.Code, created.Body.String())
+	}
+
+	growthResponse := env.do(t, http.MethodGet, "/api/v1/me/growth", nil, ownerToken)
+	if growthResponse.Code != http.StatusOK {
+		t.Fatalf("growth status=%d body=%s", growthResponse.Code, growthResponse.Body.String())
+	}
+	growthData, _ := decode(t, growthResponse)
+	group := growthData["group"].(map[string]any)
+	members := group["members"].([]any)
+	if len(members) != 1 || members[0].(map[string]any)["avatarUrl"] != avatarURL {
+		t.Fatalf("group members = %#v", members)
+	}
+
+	overviewResponse := env.do(t, http.MethodGet, "/api/v1/admin/growth/groups?campaignKey=launch-2026", nil, adminToken)
+	if overviewResponse.Code != http.StatusOK {
+		t.Fatalf("admin overview status=%d body=%s", overviewResponse.Code, overviewResponse.Body.String())
+	}
+	overview, _ := decode(t, overviewResponse)
+	summary := overview["summary"].(map[string]any)
+	if summary["totalGroups"] != float64(1) || summary["activeGroups"] != float64(1) || summary["participations"] != float64(1) {
+		t.Fatalf("admin overview summary = %#v", summary)
+	}
+	items := overview["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("admin overview items = %#v", items)
+	}
+	ownerData := items[0].(map[string]any)["owner"].(map[string]any)
+	if ownerData["avatarUrl"] != avatarURL {
+		t.Fatalf("admin owner = %#v", ownerData)
+	}
+}
+
 func TestRemovedCommercialModesAreUnavailable(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

@@ -1,21 +1,28 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAppearanceStore } from '@/stores/appearance'
 import { getGrowthPrograms } from '@/services/growthApi'
 import { formatPoints } from '@/services/billingApi'
 
+const router = useRouter()
 const appearanceStore = useAppearanceStore()
 const loading = ref(true)
 const loadError = ref('')
 const growthData = ref(null)
 
 const rules = computed(() => growthData.value?.rules || {})
-const remainingClaims = computed(() =>
-  Math.max(
-    0,
-    Number(rules.value.failureBonusDailyLimit || 0) - Number(rules.value.failureClaimsToday || 0),
-  ),
+const claimsToday = computed(() => Number(rules.value.failureClaimsToday || 0))
+const dailyLimit = computed(() => Number(rules.value.failureBonusDailyLimit || 0))
+const remainingClaims = computed(() => Math.max(0, dailyLimit.value - claimsToday.value))
+const claimPercent = computed(() => {
+  if (!dailyLimit.value) return 0
+  return Math.min(100, Math.round((remainingClaims.value / dailyLimit.value) * 100))
+})
+const bonusLabel = computed(() =>
+  rules.value.failureBonusEnabled === false
+    ? '暂未开放'
+    : formatPoints(rules.value.failureBonusCents),
 )
 
 const compensationItems = computed(() => [
@@ -29,10 +36,7 @@ const compensationItems = computed(() => [
   },
   {
     icon: 'bi-gift-fill',
-    value:
-      rules.value.failureBonusEnabled === false
-        ? '暂未开放'
-        : formatPoints(rules.value.failureBonusCents),
+    value: bonusLabel.value,
     title: '额外补偿积分',
     copy: '符合活动规则的失败任务自动获得额外补偿。',
     action: '查看任务记录',
@@ -42,24 +46,16 @@ const compensationItems = computed(() => [
     icon: 'bi-calendar-check',
     value: `${remainingClaims.value} 次`,
     title: '今日剩余补偿',
-    copy: `今日已触发 ${Number(rules.value.failureClaimsToday || 0)} 次，每日上限 ${Number(rules.value.failureBonusDailyLimit || 0)} 次。`,
-    action: '查看补偿规则',
-    to: '#compensation-rules',
+    copy: `今日已触发 ${claimsToday.value} 次，每日上限 ${dailyLimit.value || '—'} 次。`,
+    action: '意见反馈',
+    to: '/feedback',
   },
 ])
 
-const helpItems = [
-  { icon: 'bi-headset', title: '需要帮助？', copy: '补偿未到账时提交问题反馈', to: '/feedback' },
-  { icon: 'bi-wallet2', title: '钱包记录', copy: '查看积分释放与补偿入账', to: '/wallet' },
-  { icon: 'bi-clock-history', title: '任务记录', copy: '核对失败任务与处理状态', to: '/history' },
-  { icon: 'bi-chat-dots', title: '意见反馈', copy: '告诉我们遇到的问题', to: '/feedback' },
-]
-
-const assurances = [
+const tips = [
   { icon: 'bi-journal-check', title: '规则透明', copy: '补偿条件清晰可查' },
-  { icon: 'bi-arrow-repeat', title: '自动处理', copy: '符合条件无需手动领取' },
+  { icon: 'bi-lightning-charge-fill', title: '自动处理', copy: '符合条件无需手动领取' },
   { icon: 'bi-shield-check', title: '账本可查', copy: '每笔积分变化均有记录' },
-  { icon: 'bi-life-preserver', title: '问题支持', copy: '异常情况可提交反馈' },
 ]
 
 async function loadGrowth() {
@@ -74,356 +70,576 @@ async function loadGrowth() {
   }
 }
 
+function goBack() {
+  const canGoBack =
+    typeof window !== 'undefined' &&
+    window.history.length > 1 &&
+    Boolean(window.history.state?.back)
+  if (canGoBack) router.back()
+  else router.push('/incentive-plans')
+}
+
 onMounted(loadGrowth)
 </script>
 
 <template>
   <main class="compensation-page" :class="{ 'is-dark': appearanceStore.isDark }">
-    <section class="compensation-panel">
-      <div class="compensation-hero">
-        <div class="compensation-hero__copy">
-          <i class="bi bi-emoji-frown" aria-hidden="true"></i>
-          <h1>创作失败，也有明确保障</h1>
-          <p>系统繁忙或上游服务异常导致任务失败时，冻结费用会按规则释放。</p>
-          <p>符合活动条件的任务，还会自动获得额外积分补偿。</p>
-          <div>
-            <a href="#compensation-rules">查看补偿规则</a>
-            <RouterLink to="/incentive-plans">返回创作激励</RouterLink>
-          </div>
+    <header class="compensation-top">
+      <div class="compensation-shell compensation-top__inner">
+        <button type="button" class="compensation-back" @click="goBack">
+          <i class="bi bi-arrow-left" aria-hidden="true"></i>
+          返回
+        </button>
+        <div class="compensation-top__copy">
+          <h1>失败补偿</h1>
+          <p>创作失败也有明确保障：冻结费用按规则释放，符合条件时自动发放额外补偿。</p>
         </div>
-        <div class="compensation-hero__asset" aria-hidden="true"></div>
+        <div class="compensation-facts" aria-label="补偿概览">
+          <span
+            ><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>费用处理
+            {{ loading ? '—' : '自动释放' }}</span
+          >
+          <span
+            ><i class="bi bi-gift-fill" aria-hidden="true"></i>额外补偿
+            {{ loading ? '—' : bonusLabel }}</span
+          >
+          <span
+            ><i class="bi bi-calendar-check" aria-hidden="true"></i>今日剩余
+            {{ loading ? '—' : `${remainingClaims} 次` }}</span
+          >
+        </div>
+      </div>
+    </header>
+
+    <section class="compensation-shell compensation-workspace" aria-label="补偿内容">
+      <div class="workspace-heading">
+        <div>
+          <span class="status-dot"></span>
+          <strong>自动处理</strong>
+          <small>所有补偿均由系统自动处理，无需手动领取。</small>
+        </div>
+        <button v-if="loadError" type="button" class="text-action" @click="loadGrowth">
+          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>重新加载
+        </button>
       </div>
 
-      <section
-        id="compensation-rules"
-        class="compensation-benefits"
-        aria-labelledby="benefits-title"
-      >
-        <header>
-          <div>
-            <span>COMPENSATION</span>
-            <h2 id="benefits-title">为你准备的补偿</h2>
-          </div>
-          <button v-if="loadError" type="button" @click="loadGrowth">重新加载</button>
-          <p v-else>所有补偿均由系统自动处理</p>
-        </header>
+      <div v-if="loading" class="compensation-loading" aria-live="polite">
+        <span></span><span></span><span></span>
+        <p>正在读取补偿规则…</p>
+      </div>
 
-        <div v-if="loading" class="compensation-loading" aria-live="polite">
-          <span></span><span></span><span></span>
-        </div>
-        <div v-else class="compensation-grid">
-          <article v-for="item in compensationItems" :key="item.title">
-            <div class="compensation-value">
-              <i class="bi" :class="item.icon"></i><strong>{{ item.value }}</strong>
-            </div>
-            <div class="compensation-copy">
+      <div v-else-if="loadError" class="compensation-empty-state">
+        <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+        <h2>暂时无法读取补偿规则</h2>
+        <p>{{ loadError }}</p>
+      </div>
+
+      <div v-else class="compensation-cards">
+        <article v-for="item in compensationItems" :key="item.title" class="compensation-card">
+          <span class="compensation-card__icon" aria-hidden="true">
+            <i class="bi" :class="item.icon"></i>
+          </span>
+          <div class="compensation-card__body">
+            <div class="compensation-card__head">
+              <span class="compensation-card__value">{{ item.value }}</span>
               <h3>{{ item.title }}</h3>
+            </div>
+            <p>{{ item.copy }}</p>
+            <div v-if="item.icon === 'bi-calendar-check'" class="compensation-card__meter">
+              <i :style="{ width: `${claimPercent}%` }"></i>
+            </div>
+          </div>
+          <RouterLink class="compensation-card__action" :to="item.to">
+            {{ item.action }}<i class="bi bi-arrow-right" aria-hidden="true"></i>
+          </RouterLink>
+        </article>
+      </div>
+    </section>
+
+    <footer class="compensation-tips" aria-label="失败补偿说明">
+      <div class="compensation-shell">
+        <ol class="tip-list">
+          <li v-for="item in tips" :key="item.title">
+            <i class="bi" :class="item.icon" aria-hidden="true"></i>
+            <div>
+              <strong>{{ item.title }}</strong>
               <p>{{ item.copy }}</p>
             </div>
-            <component
-              :is="item.to.startsWith('#') ? 'a' : RouterLink"
-              :href="item.to.startsWith('#') ? item.to : undefined"
-              :to="item.to.startsWith('#') ? undefined : item.to"
-            >
-              {{ item.action }}<i class="bi bi-arrow-right"></i>
-            </component>
-          </article>
-        </div>
-      </section>
-    </section>
-
-    <section class="help-strip" aria-label="补偿帮助入口">
-      <RouterLink v-for="item in helpItems" :key="item.title" :to="item.to">
-        <span><i class="bi" :class="item.icon"></i></span>
-        <p>
-          <strong>{{ item.title }}</strong
-          ><small>{{ item.copy }}</small>
-        </p>
-      </RouterLink>
-    </section>
-
-    <section class="assurance-strip" aria-label="失败补偿保障">
-      <div v-for="item in assurances" :key="item.title">
-        <i class="bi" :class="item.icon"></i>
-        <p>
-          <strong>{{ item.title }}</strong
-          ><small>{{ item.copy }}</small>
-        </p>
+          </li>
+        </ol>
       </div>
-    </section>
+    </footer>
   </main>
 </template>
 
 <style scoped>
-.compensation-page {
-  --ink: #20242b;
-  --muted: #6e7683;
-  --orange: #f4761c;
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --hero: #fff9f3;
-  --line: #e7e9ed;
-  --line-soft: #edf0f3;
-  --soft: #fff1df;
-  --soft-2: #fff1e5;
-  --ghost-text: #333942;
-  --ghost-border: #f0b483;
-  --card-shadow: 0 7px 18px rgb(41 51 67 / 6%);
-  --assurance-icon: #89919d;
-  width: 100%;
-  min-width: 1180px;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 14px 0 22px;
-  color: var(--ink);
-  background: var(--bg);
-}
-.compensation-page.is-dark {
-  --ink: #f4eee6;
-  --muted: #a79c8f;
-  --orange: #ff8a3d;
-  --bg: #12100e;
-  --surface: #1c1915;
-  --hero: #1a1511;
-  --line: #3b342c;
-  --line-soft: #2f2922;
-  --soft: rgb(255 138 61 / 16%);
-  --soft-2: rgb(255 138 61 / 14%);
-  --ghost-text: #f4eee6;
-  --ghost-border: rgb(255 138 61 / 35%);
-  --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
-  --assurance-icon: #8a8278;
-}
-.compensation-panel {
-  width: calc(100% - 120px);
-  margin: 0 auto;
+:global(.app-container > .main-content:has(> .compensation-page)) {
+  height: 100dvh;
+  max-height: 100dvh;
+  padding-bottom: 0;
   overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
 }
-.compensation-hero {
-  display: grid;
-  min-height: 385px;
-  grid-template-columns: minmax(620px, 1fr) minmax(600px, 1fr);
-  align-items: center;
-  background: var(--hero);
-}
-.compensation-hero__copy {
-  padding: 48px 40px 44px 150px;
-}
-.compensation-hero__copy > i {
-  color: var(--orange);
-  font-size: 48px;
-}
-.compensation-hero h1 {
-  margin: 18px 0 19px;
-  font-size: 36px;
-  letter-spacing: 0;
-}
-.compensation-hero__copy > p {
-  margin: 6px 0;
-  color: var(--muted);
-  font-size: 14px;
-}
-.compensation-hero__copy > div {
+
+.compensation-page {
+  --ink: #17171f;
+  --body: #4f5160;
+  --muted: #777785;
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
+  --accent-hover: #4f3fe0;
+  --surface: #ffffff;
+  --surface-soft: #f6f5fc;
+  --line: rgb(21 22 31 / 10%);
+  --hero: #f4f3fa;
   display: flex;
-  gap: 28px;
-  margin-top: 32px;
-}
-.compensation-hero__copy a {
-  display: inline-flex;
-  min-width: 142px;
-  min-height: 48px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 20px;
-  color: #fff;
-  background: var(--orange);
-  border: 1px solid var(--orange);
-  border-radius: 7px;
-  font-size: 13px;
-  font-weight: 800;
-  text-decoration: none;
-}
-.compensation-hero__copy a + a {
-  color: var(--ghost-text);
-  background: var(--surface);
-  border-color: var(--ghost-border);
-}
-.compensation-hero__asset {
   width: 100%;
-  height: 385px;
-}
-.compensation-benefits {
-  padding: 25px 80px 30px;
-  scroll-margin-top: 90px;
-}
-.compensation-benefits > header {
-  display: flex;
-  min-height: 44px;
-  align-items: flex-end;
-  justify-content: space-between;
-}
-.compensation-benefits header span {
-  color: var(--orange);
-  font-size: 10px;
-  font-weight: 850;
-}
-.compensation-benefits h2 {
-  margin: 4px 0 0;
-  font-size: 22px;
-}
-.compensation-benefits header p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-.compensation-benefits header button {
-  padding: 7px 12px;
-  color: var(--orange);
+  min-width: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--ghost-border);
-  border-radius: 6px;
 }
-.compensation-loading {
-  display: flex;
-  min-height: 115px;
+
+.compensation-page.is-dark {
+  --ink: rgba(255, 255, 255, 0.96);
+  --body: rgb(255 255 255 / 72%);
+  --muted: rgb(255 255 255 / 52%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --accent-hover: #9d8fff;
+  --surface: #121218;
+  --surface-soft: #1a1824;
+  --line: rgb(255 255 255 / 10%);
+  --hero: #161422;
+}
+
+.compensation-shell {
+  width: min(1100px, calc(100% - 40px));
+  margin-inline: auto;
+}
+
+.compensation-top {
+  --hero-pad-top: calc(var(--app-header-offset, 72px) + var(--app-page-content-top-gap, 0px));
+  flex: 0 0 auto;
+  margin-top: calc(-1 * var(--hero-pad-top));
+  padding: calc(var(--hero-pad-top) + 10px) 0 14px;
+  background:
+    radial-gradient(circle at 92% 0%, rgb(109 92 255 / 16%), transparent 36%),
+    linear-gradient(145deg, var(--hero) 0%, color-mix(in srgb, var(--accent) 6%, var(--hero)) 100%);
+  border-bottom: 1px solid var(--line);
+}
+
+.compensation-top__inner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: center;
+  gap: 18px;
+}
+
+.compensation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--body);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.compensation-back:hover {
+  color: var(--accent);
+}
+
+.compensation-top__copy h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 840;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.compensation-top__copy p {
+  margin: 4px 0 0;
+  color: var(--body);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.compensation-facts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
+
+.compensation-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 720;
+}
+
+.compensation-facts i {
+  color: var(--accent);
+}
+
+.compensation-workspace {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 14px 0 10px;
+  overflow: auto;
+}
+
+.workspace-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.workspace-heading > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-heading strong {
+  font-size: 0.86rem;
+}
+
+.workspace-heading small {
+  overflow: hidden;
+  color: var(--body);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.compensation-loading,
+.compensation-empty-state {
+  display: flex;
+  min-height: 160px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.compensation-loading {
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--body);
+}
+
 .compensation-loading span {
   width: 8px;
   height: 8px;
+  background: var(--accent);
   border-radius: 50%;
-  background: var(--orange);
+  animation: compensation-pulse 1s infinite alternate;
 }
-.compensation-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 30px;
-  margin-top: 16px;
+
+.compensation-loading span:nth-child(2) {
+  animation-delay: 0.2s;
 }
-.compensation-grid article {
-  display: grid;
-  min-height: 112px;
-  grid-template-columns: 145px 1fr auto;
-  align-items: center;
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  box-shadow: var(--card-shadow);
+
+.compensation-loading span:nth-child(3) {
+  animation-delay: 0.4s;
 }
-.compensation-value {
-  display: flex;
-  height: 100%;
-  align-items: center;
-  justify-content: center;
+
+.compensation-loading p {
+  width: 100%;
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+@keyframes compensation-pulse {
+  to {
+    opacity: 0.25;
+    transform: translateY(-4px);
+  }
+}
+
+.compensation-empty-state {
   flex-direction: column;
-  gap: 8px;
-  color: var(--orange);
-  background: var(--soft);
+  color: var(--body);
+  text-align: center;
 }
-.compensation-value i {
-  font-size: 22px;
+
+.compensation-empty-state i {
+  color: var(--accent);
+  font-size: 1.6rem;
 }
-.compensation-value strong {
-  font-size: 21px;
+
+.compensation-empty-state h2 {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 1.1rem;
 }
-.compensation-copy {
-  min-width: 0;
-  padding: 0 18px;
+
+.compensation-empty-state p {
+  margin: 6px 0 0;
+  font-size: 0.84rem;
 }
-.compensation-copy h3 {
-  margin: 0 0 7px;
-  font-size: 15px;
-}
-.compensation-copy p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-.compensation-grid article > a {
+
+.compensation-cards {
   display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.compensation-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px;
-  margin-right: 17px;
-  color: var(--orange);
-  font-size: 11px;
-  font-weight: 800;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.compensation-card:nth-child(2) {
+  background: var(--accent-soft);
+}
+
+.compensation-card__icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-radius: 12px;
+  font-size: 1.05rem;
+}
+
+.compensation-card:nth-child(2) .compensation-card__icon {
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.compensation-card__body {
+  min-width: 0;
+}
+
+.compensation-card__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compensation-card__value {
+  color: var(--accent-deep);
+  font-size: 0.95rem;
+  font-weight: 820;
+}
+
+.compensation-card__body h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 780;
+  line-height: 1.3;
+}
+
+.compensation-card__body p {
+  margin: 4px 0 0;
+  color: var(--body);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.compensation-card__meter {
+  height: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 12%, var(--line));
+  border-radius: 999px;
+}
+
+.compensation-card__meter > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-deep));
+  border-radius: inherit;
+}
+
+.compensation-card__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 12px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 9px;
+  font-size: 0.74rem;
+  font-weight: 720;
   text-decoration: none;
   white-space: nowrap;
 }
-.help-strip {
+
+.compensation-card__action:hover {
+  color: var(--accent-hover);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.compensation-tips {
+  flex: 0 0 auto;
+  padding: 10px 0 14px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--line);
+}
+
+.tip-list {
   display: grid;
-  width: calc(100% - 120px);
-  min-height: 96px;
-  grid-template-columns: repeat(4, 1fr);
-  margin: 16px auto 0;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.help-strip a {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  color: var(--ink);
-  text-decoration: none;
-  border-right: 1px solid var(--line);
-}
-.help-strip a:last-child {
-  border-right: 0;
-}
-.help-strip a > span {
-  display: grid;
-  width: 48px;
-  height: 48px;
-  place-items: center;
-  color: var(--orange);
-  background: var(--soft-2);
-  border-radius: 50%;
-  font-size: 21px;
-}
-.help-strip p,
-.assurance-strip p {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
   margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.help-strip strong {
-  font-size: 14px;
-}
-.help-strip small,
-.assurance-strip small {
-  color: var(--muted);
-  font-size: 11px;
-}
-.assurance-strip {
-  display: grid;
-  width: calc(100% - 120px);
-  min-height: 76px;
-  grid-template-columns: repeat(4, 1fr);
-  margin: 14px auto 0;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.assurance-strip > div {
+
+.tip-list li {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 13px;
+  min-width: 0;
+  gap: 10px;
 }
-.assurance-strip > div > i {
-  color: var(--assurance-icon);
-  font-size: 22px;
+
+.tip-list i {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent);
+  font-size: 0.95rem;
 }
-.assurance-strip strong {
-  font-size: 12px;
+
+.tip-list strong {
+  display: block;
+  font-size: 0.78rem;
+}
+
+.tip-list p {
+  margin: 3px 0 0;
+  color: var(--body);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 960px) {
+  :global(.app-container > .main-content:has(> .compensation-page)) {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .compensation-page {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .compensation-top__inner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .compensation-facts {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .tip-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .compensation-shell {
+    width: calc(100% - 28px);
+  }
+
+  .compensation-top__inner {
+    gap: 10px;
+  }
+
+  .compensation-top__copy h1 {
+    font-size: 1.3rem;
+  }
+
+  .workspace-heading > div {
+    flex-wrap: wrap;
+  }
+
+  .workspace-heading small {
+    width: 100%;
+    padding-left: 16px;
+    white-space: normal;
+  }
+
+  .compensation-card {
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 10px 12px;
+    padding: 14px;
+  }
+
+  .compensation-card__action {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  .tip-list {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compensation-loading span {
+    animation: none;
+  }
 }
 </style>

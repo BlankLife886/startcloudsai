@@ -13,26 +13,6 @@ const RATIO_OPTIONS = T2I_ASPECT_OPTIONS.map((item) => option(item.value, item.l
 const RESOLUTION_OPTIONS = T2I_RESOLUTION_OPTIONS.map((item) => option(item.value, item.label))
 const QUALITY_OPTIONS = T2I_QUALITY_OPTIONS.map((item) => option(item.value, item.label))
 const COUNT_OPTIONS = T2I_COUNT_OPTIONS.map((item) => option(item.value, item.label))
-const ASSISTANT_RATIO_OPTIONS = [
-  option('auto', '自动'),
-  option('1:1', '1:1'),
-  option('2:3', '2:3'),
-  option('3:2', '3:2'),
-  option('3:4', '3:4'),
-  option('4:3', '4:3'),
-  option('4:5', '4:5'),
-  option('5:4', '5:4'),
-  option('9:16', '9:16'),
-  option('16:9', '16:9'),
-  option('9:21', '9:21'),
-  option('21:9', '21:9'),
-]
-const ASSISTANT_RESOLUTION_OPTIONS = [
-  option('1K', '标清 1K'),
-  option('2K', '高清 2K'),
-  option('4K', '超清 4K'),
-]
-
 const FIELD_META = {
   skill: { key: 'skill', label: 'Skill', icon: 'bi-lightning-charge-fill' },
   ratio: { key: 'ratio', label: '比例', icon: 'bi-aspect-ratio' },
@@ -50,29 +30,15 @@ const PROFILES = {
   assistant: {
     defaults: {
       skill: 'agent',
-      ratio: 'auto',
-      resolution: '1K',
       count: 2,
       model: '',
     },
-    fields(config) {
-      return config.skill === 'image'
-        ? ['skill', 'model', 'ratio', 'resolution', 'count']
-        : ['skill', 'model']
-    },
-    fieldMeta: {
-      skill: { label: '创作类型', icon: 'bi-magic' },
-    },
-    options: {
-      skill: [option('agent', 'Agent 模式'), option('image', '图片生成')],
-      ratio: ASSISTANT_RATIO_OPTIONS,
-      resolution: ASSISTANT_RESOLUTION_OPTIONS,
-      count: COUNT_OPTIONS,
-    },
+    fields: () => ['model'],
+    options: {},
   },
   t2i: {
     defaults: {
-      skill: 'prompt-architect',
+      skills: ['prompt-architect'],
       ratio: '1:1',
       resolution: '2K',
       quality: 'high',
@@ -80,6 +46,9 @@ const PROFILES = {
       model: '',
     },
     fields: () => ['skill', 'ratio', 'resolution', 'quality', 'count', 'model'],
+    fieldMeta: {
+      skill: { configKey: 'skills', multiple: true },
+    },
     options: {
       skill: [
         option('none', '不启用 Skill'),

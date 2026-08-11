@@ -31,7 +31,7 @@ func growthGroupDict(item *store.GrowthGroup) gin.H {
 	for _, member := range item.Members {
 		members = append(members, gin.H{
 			"userId": member.UserID.String(), "username": member.Username,
-			"role": member.Role, "joinedAt": isoValue(member.JoinedAt),
+			"avatarUrl": member.AvatarURL, "role": member.Role, "joinedAt": isoValue(member.JoinedAt),
 		})
 	}
 	return gin.H{
@@ -42,6 +42,47 @@ func growthGroupDict(item *store.GrowthGroup) gin.H {
 		"completedAt": iso(item.CompletedAt), "createdAt": isoValue(item.CreatedAt),
 		"members": members,
 	}
+}
+
+func (s *Server) adminGrowthGroups(c *gin.Context, _ *store.User) {
+	campaignKey := strings.TrimSpace(c.Query("campaignKey"))
+	if campaignKey == "" {
+		cfg, err := growth.LoadConfig(c.Request.Context(), s.St.Pool)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		campaignKey = cfg.GroupCampaignKey
+	}
+	if len(campaignKey) < 2 || len(campaignKey) > 64 {
+		fail(c, apperr.E("validation_error", "campaignKey: 长度须在 2-64 之间", 422))
+		return
+	}
+
+	summary, items, err := store.GetGrowthGroupAdminOverview(c.Request.Context(), s.St.Pool, campaignKey, 12)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	rows := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, gin.H{
+			"id": item.ID.String(), "code": item.Code,
+			"owner":  gin.H{"id": item.OwnerID.String(), "username": item.OwnerUsername, "avatarUrl": item.OwnerAvatarURL},
+			"status": item.Status, "targetMembers": item.TargetMembers, "memberCount": item.MemberCount,
+			"rewardCents": item.RewardCents, "expiresAt": isoValue(item.ExpiresAt),
+			"completedAt": iso(item.CompletedAt), "createdAt": isoValue(item.CreatedAt),
+		})
+	}
+	ok(c, gin.H{
+		"campaignKey": campaignKey,
+		"summary": gin.H{
+			"totalGroups": summary.TotalGroups, "activeGroups": summary.ActiveGroups,
+			"completedGroups": summary.CompletedGroups, "expiredGroups": summary.ExpiredGroups,
+			"participations": summary.Participations,
+		},
+		"items": rows,
+	})
 }
 
 func (s *Server) hydrateGrowthGroup(ctx *gin.Context, item *store.GrowthGroup) (*store.GrowthGroup, error) {

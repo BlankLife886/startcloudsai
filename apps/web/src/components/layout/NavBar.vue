@@ -40,8 +40,6 @@ const logoutConfirmOpen = ref(false)
 const mobileNavOpen = ref(false)
 
 const activeDropdown = ref('')
-let dropdownCloseTimer = null
-const DROPDOWN_CLOSE_DELAY_MS = 100
 const isScrolled = ref(false)
 const siteHeaderEl = ref(null)
 let headerResizeObserver = null
@@ -106,7 +104,6 @@ const historyLink = { to: '/history', label: '历史记录', icon: 'bi-clock-his
 const shareLink = { to: '/share', label: '社区', icon: 'bi-images' }
 
 const pricingLink = { to: '/pricing', label: '创作价格', icon: 'bi-credit-card-2-front-fill' }
-const isPricingRoute = computed(() => isRouteActive('/pricing'))
 
 const incentivesLink = { to: '/incentive-plans', label: '创作激励', icon: 'bi-gift' }
 
@@ -117,7 +114,17 @@ const toolLinks = [
     icon: 'bi-person-bounding-box',
     feature: 'ai.imageTools',
   },
-  { to: '/app-space', label: '应用空间', icon: 'bi-columns-gap' },
+  {
+    to: '/tools/image-compress',
+    label: '图片压缩',
+    icon: 'bi-file-zip',
+  },
+  {
+    to: '/tools/puzzle',
+    label: '拼图',
+    icon: 'bi-puzzle-fill',
+  },
+  { to: '/app-space', label: '关于我们', icon: 'bi-columns-gap' },
   { to: '/updates', label: '更新说明', icon: 'bi-megaphone-fill' },
   { to: '/feedback', label: '问题反馈', icon: 'bi-chat-square-text' },
 ]
@@ -130,7 +137,6 @@ const BENTO_VARIANT = {
   ui: 'tile',
   model: 'tile',
   game: 'tile',
-  puzzle: 'tile',
 }
 
 const imageDesignLinks = STUDIO_TOOLS.filter((tool) => tool.id !== 'ecommerce').map((tool) => ({
@@ -163,7 +169,9 @@ const routePrefetchers = {
   '/text-to-image': () => import('@/views/AiWallpaperView.vue'),
   '/ai-illustration-coloring': () => import('@/views/AiIllustrationColoringView.vue'),
   '/ai-puzzle': () => import('@/views/AiPuzzleView.vue'),
+  '/tools/puzzle': () => import('@/views/AiPuzzleView.vue'),
   '/tools/background-remove': () => import('@/views/BackgroundRemoveView.vue'),
+  '/tools/image-compress': () => import('@/views/ImageCompressView.vue'),
   '/design-workshop': () => import('@/views/DesignWorkshopView.vue'),
   '/model-sheet': () => import('@/views/ModelSheetStudioView.vue'),
   '/game-art': () => import('@/views/GameArtStudioView.vue'),
@@ -313,8 +321,17 @@ function handleAccountClusterClick(event) {
 }
 
 function openRedeemDialog() {
-  if (!authStore.isAuthenticated) return
   closeDropdowns()
+  closeMenu()
+  if (!authStore.isAuthenticated) {
+    router
+      .push({
+        name: 'auth',
+        query: { ...createLoginRedirectQuery(route.fullPath), mode: 'login' },
+      })
+      .catch(() => {})
+    return
+  }
   redeemDialogOpen.value = true
 }
 
@@ -355,11 +372,6 @@ function consumeTrialDialogQuery() {
   delete query.trial
   router.replace({ path: route.path, query, hash: route.hash }).catch(() => {})
   void openTrialDialog()
-}
-
-function openRedeemFromMenu() {
-  closeMenu()
-  openRedeemDialog()
 }
 
 function openLogoutConfirm() {
@@ -448,37 +460,10 @@ function getFirstNavigableLink(links = []) {
 }
 
 function handleGroupPrimaryClick(group, event) {
-  if (
-    typeof window !== 'undefined' &&
-    window.matchMedia('(max-width: 1080px)').matches &&
-    (group.commerceMega || group.mega)
-  ) {
-    openDropdown(group.name)
-    return
-  }
-
-  if (group.primaryTo) {
-    closeMenu()
-    closeDropdowns()
-    prefetchRoute(group.primaryTo)
-    if (!isRouteActive(group.primaryTo)) router.push(group.primaryTo)
-    return
-  }
-
+  event?.preventDefault()
   const firstLink = getFirstNavigableLink(group.links)
-  if (!firstLink) return
-
-  if (isLinkDisabled(firstLink)) {
-    handleDisabledLinkClick(event)
-    return
-  }
-
-  closeMenu()
-  closeDropdowns()
-
-  if (!isRouteActive(firstLink.to)) {
-    router.push(firstLink.to)
-  }
+  if (firstLink) prefetchRoute(group.primaryTo || firstLink.to)
+  toggleDropdown(group.name)
 }
 
 function onToolCoverError(event, link) {
@@ -492,28 +477,21 @@ function onMegaCardEnter(link) {
   prefetchRoute(link?.to)
 }
 
-function clearDropdownCloseTimer() {
-  if (dropdownCloseTimer == null) return
-  window.clearTimeout(dropdownCloseTimer)
-  dropdownCloseTimer = null
-}
-
 function toggleDropdown(name) {
-  clearDropdownCloseTimer()
-  activeDropdown.value = activeDropdown.value === name ? '' : name
+  const next = activeDropdown.value === name ? '' : name
+  activeDropdown.value = next
+  if (!next) return
   const group = navItems.value.find((item) => item.type === 'group' && item.name === name)
   if (group) prefetchLinks(group.links)
 }
 
 function openDropdown(name) {
-  clearDropdownCloseTimer()
   activeDropdown.value = name
   const group = navItems.value.find((item) => item.type === 'group' && item.name === name)
   if (group) prefetchLinks(group.links)
 }
 
 function closeMenu() {
-  clearDropdownCloseTimer()
   activeDropdown.value = ''
   mobileNavOpen.value = false
 }
@@ -582,26 +560,21 @@ function handleDropdownKeydown(event, name) {
 }
 
 function closeDropdowns() {
-  clearDropdownCloseTimer()
   activeDropdown.value = ''
 }
 
-/** 鼠标离开时延迟关闭，方便移入菜单区域点击 */
-function scheduleCloseDropdowns() {
-  clearDropdownCloseTimer()
-  dropdownCloseTimer = window.setTimeout(() => {
-    dropdownCloseTimer = null
-    activeDropdown.value = ''
-  }, DROPDOWN_CLOSE_DELAY_MS)
-}
-
 function handleDocumentClick(event) {
-  // account-menu 使用 @click.stop，内部点击不会冒泡到这里；点到页头其它区域应关闭
-  if (activeDropdown.value === 'account') {
-    closeDropdowns()
+  const target = event.target
+  const header = siteHeaderEl.value
+  if (!(target instanceof Node) || !header?.contains(target)) {
+    closeMenu()
     return
   }
-  if (!siteHeaderEl.value?.contains(event.target)) {
+
+  const element = target instanceof Element ? target : target.parentElement
+  // 点击子菜单/账户菜单外部（含其它主菜单项）时关闭
+  const clickedMenu = element?.closest('.nav-dropdown.open, .account-menu')
+  if (!clickedMenu) {
     closeDropdowns()
   }
 }
@@ -670,15 +643,7 @@ onMounted(() => {
   void refreshTrialCampaignAvailability()
 })
 
-function onDropdownFocusOut(event, name) {
-  const root = event.currentTarget
-  const next = event.relatedTarget
-  if (root instanceof Element && next instanceof Node && root.contains(next)) return
-  if (activeDropdown.value === name) scheduleCloseDropdowns()
-}
-
 onBeforeUnmount(() => {
-  clearDropdownCloseTimer()
   window.removeEventListener('scroll', onWindowScroll)
   window.removeEventListener('focus', refreshTrialCampaignAvailability)
   if (scrollRaf) {
@@ -701,7 +666,6 @@ onBeforeUnmount(() => {
       'nav-compact': settingsStore.settings.sidebar_compact,
       'nav-motion-off': !settingsStore.getSetting('sidebar_animation_effect', true),
       'is-dark': appearanceStore.isDark,
-      'is-pricing': isPricingRoute,
       'is-scrolled': isScrolled,
       'is-mobile-open': mobileNavOpen,
     }"
@@ -743,6 +707,7 @@ onBeforeUnmount(() => {
                 disabled: isLinkDisabled(item),
               }"
               :aria-disabled="isLinkDisabled(item)"
+              :aria-current="isRouteActive(item.to) ? 'page' : undefined"
               :title="isLinkDisabled(item) ? linkDisabledReason(item) : ''"
               @click="isLinkDisabled(item) ? handleDisabledLinkClick($event) : closeMenu()"
               @focus="prefetchRoute(item.to)"
@@ -761,17 +726,15 @@ onBeforeUnmount(() => {
                 'nav-dropdown--mega': item.mega,
                 'nav-dropdown--commerce': item.commerceMega,
               }"
-              @mouseenter="openDropdown(item.name)"
-              @mouseleave="scheduleCloseDropdowns"
-              @focusin="openDropdown(item.name)"
-              @focusout="onDropdownFocusOut($event, item.name)"
             >
               <div class="nav-link nav-dropdown-trigger">
                 <button
                   type="button"
                   class="nav-dropdown-label"
                   :aria-controls="`nav-dropdown-${item.name}`"
-                  @click="handleGroupPrimaryClick(item, $event)"
+                  :aria-expanded="activeDropdown === item.name"
+                  aria-haspopup="menu"
+                  @click.stop="handleGroupPrimaryClick(item, $event)"
                   @keydown="handleDropdownKeydown($event, item.name)"
                   @pointerenter="
                     prefetchRoute(item.primaryTo || getFirstNavigableLink(item.links)?.to)
@@ -792,8 +755,8 @@ onBeforeUnmount(() => {
                   aria-label="展开子菜单"
                   @pointerdown.prevent.stop
                   @click.stop="toggleDropdown(item.name)"
-                  @keydown.enter.prevent.stop="openDropdown(item.name)"
-                  @keydown.space.prevent.stop="openDropdown(item.name)"
+                  @keydown.enter.prevent.stop="toggleDropdown(item.name)"
+                  @keydown.space.prevent.stop="toggleDropdown(item.name)"
                 >
                   <i
                     class="bi bi-chevron-down dropdown-chevron"
@@ -820,10 +783,7 @@ onBeforeUnmount(() => {
                   <div class="commerce-menu-group__visual" aria-hidden="true">
                     <img :src="group.cover" alt="" loading="lazy" decoding="async" />
                     <div class="commerce-menu-group__caption">
-                      <strong>
-                        <i class="bi bi-stars" aria-hidden="true"></i>
-                        {{ group.label }}
-                      </strong>
+                      <strong>{{ group.label }}</strong>
                       <small>{{ group.description }}</small>
                     </div>
                   </div>
@@ -853,10 +813,6 @@ onBeforeUnmount(() => {
                         <strong>{{ link.label }}</strong>
                         <small>{{ link.tagline }}</small>
                       </span>
-                      <i
-                        class="bi bi-chevron-right commerce-menu-card__arrow"
-                        aria-hidden="true"
-                      ></i>
                     </RouterLink>
                   </div>
                 </section>
@@ -962,6 +918,18 @@ onBeforeUnmount(() => {
               </span>
               <span class="nav-checkin-btn__label">签到</span>
             </router-link>
+            <button
+              type="button"
+              class="nav-redeem-btn"
+              data-no-translate
+              title="兑换码入账"
+              @click="openRedeemDialog"
+            >
+              <span class="nav-redeem-btn__icon" aria-hidden="true">
+                <i class="bi bi-ticket-perforated"></i>
+              </span>
+              <span class="nav-redeem-btn__label">兑换</span>
+            </button>
             <button
               v-if="trialCampaignAvailable"
               type="button"
@@ -1122,15 +1090,6 @@ onBeforeUnmount(() => {
                         <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
                         <span>充值积分</span>
                       </router-link>
-                      <button
-                        type="button"
-                        class="account-menu__item"
-                        role="menuitem"
-                        @click="openRedeemFromMenu"
-                      >
-                        <i class="bi bi-ticket-perforated" aria-hidden="true"></i>
-                        <span>兑换码</span>
-                      </button>
                       <router-link
                         class="account-menu__item"
                         role="menuitem"
@@ -1214,7 +1173,7 @@ onBeforeUnmount(() => {
   --nav-accent-mid: rgba(109, 92, 255, 0.16);
   --nav-heading: #17171f;
   --nav-text: #444451;
-  --nav-muted: #777785;
+  --nav-muted: #555763;
   --nav-on-accent: #ffffff;
   --nav-shadow: 0 10px 28px rgba(58, 51, 112, 0.08);
   --nav-ease: cubic-bezier(0.22, 0.8, 0.24, 1);
@@ -1263,31 +1222,9 @@ onBeforeUnmount(() => {
   --nav-accent-mid: rgba(109, 92, 255, 0.22);
   --nav-heading: rgba(255, 255, 255, 0.96);
   --nav-text: rgba(255, 255, 255, 0.78);
-  --nav-muted: rgba(255, 255, 255, 0.52);
+  --nav-muted: rgba(255, 255, 255, 0.76);
   --nav-on-accent: #12101c;
   --nav-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
-}
-
-/* 创作价格页：导航强调色跟页面橙暖色同步 */
-.site-header.is-pricing {
-  --nav-accent: #ef6a1a;
-  --nav-accent-soft: rgba(239, 106, 26, 0.12);
-  --nav-accent-mid: rgba(239, 106, 26, 0.18);
-  --nav-line-strong: rgba(239, 106, 26, 0.36);
-  --nav-shadow: 0 10px 28px rgba(120, 60, 10, 0.1);
-}
-
-.site-header.is-pricing.is-dark {
-  --nav-accent: #ff8a3d;
-  --nav-accent-soft: rgba(255, 138, 61, 0.16);
-  --nav-accent-mid: rgba(255, 138, 61, 0.24);
-  --nav-line-strong: rgba(255, 138, 61, 0.48);
-  --nav-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
-}
-
-.site-header.is-pricing .nav-link.active,
-.site-header.is-pricing .nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label {
-  color: var(--nav-accent);
 }
 
 .site-header.is-dark.is-scrolled {
@@ -1414,7 +1351,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   /* 一级菜单平铺后条目较多：放不下时换行，避免盖住品牌区或右侧工具 */
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 2px;
   padding: 4px;
   border: 0;
@@ -1442,11 +1379,11 @@ onBeforeUnmount(() => {
   padding: 0 11px;
   border: 0;
   border-radius: 7px;
-  color: var(--nav-muted);
+  color: var(--nav-muted) !important;
   text-decoration: none;
   font: inherit;
-  font-size: 0.82rem;
-  font-weight: 620;
+  font-size: 0.86rem;
+  font-weight: 700;
   white-space: nowrap;
   background: transparent;
   cursor: pointer;
@@ -1456,6 +1393,11 @@ onBeforeUnmount(() => {
 .nav-dropdown-label > i:first-child {
   font-size: 0.92rem;
   opacity: 0.78;
+}
+
+.site-header .main-nav .nav-link > span,
+.site-header .main-nav .nav-dropdown-label > span {
+  color: inherit !important;
 }
 
 .nav-caret {
@@ -1473,9 +1415,18 @@ onBeforeUnmount(() => {
 }
 
 .nav-link:hover,
-.nav-dropdown-label:hover {
-  color: var(--nav-heading);
+.nav-dropdown-label:hover,
+.nav-link:focus-visible,
+.nav-dropdown-label:focus-visible {
+  color: var(--nav-heading) !important;
   background: var(--nav-hover);
+}
+
+.nav-link:focus-visible,
+.nav-dropdown-label:focus-visible,
+.nav-dropdown-chevron-btn:focus-visible {
+  outline: 2px solid var(--nav-accent);
+  outline-offset: 2px;
 }
 
 .nav-link:hover > i:first-child,
@@ -1488,8 +1439,32 @@ onBeforeUnmount(() => {
 
 .nav-link.active,
 .nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label {
-  color: var(--nav-heading);
+  color: var(--nav-accent) !important;
   background: var(--nav-accent-soft);
+  box-shadow: none;
+}
+
+.nav-link.active::after,
+.nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--nav-accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.nav-dropdown.open > .nav-dropdown-trigger .nav-dropdown-label {
+  color: var(--nav-accent) !important;
+  background: var(--nav-accent-soft);
+  box-shadow: none;
+}
+
+.nav-dropdown.active.open > .nav-dropdown-trigger .nav-dropdown-label {
   box-shadow: none;
 }
 
@@ -1497,9 +1472,13 @@ onBeforeUnmount(() => {
 .nav-link.disabled:hover {
   opacity: 0.4;
   cursor: not-allowed;
-  color: var(--nav-muted);
+  color: var(--nav-muted) !important;
   background: transparent;
   box-shadow: none;
+}
+
+.nav-link.disabled::after {
+  display: none;
 }
 
 .nav-compact .nav-link,
@@ -1673,77 +1652,58 @@ onBeforeUnmount(() => {
 }
 
 .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
-  --cm-bg: #ffffff;
-  --cm-border: rgb(21 22 31 / 10%);
-  --cm-shadow: 0 24px 60px rgb(28 36 48 / 14%);
-  --cm-divider: rgb(21 22 31 / 8%);
-  --cm-visual-bg: #eef2f4;
-  --cm-visual-ring: rgb(21 22 31 / 8%);
+  --cm-bg: var(--nav-bg-solid, #ffffff);
+  --cm-border: var(--nav-line, rgb(21 22 31 / 10%));
+  --cm-shadow: var(--nav-shadow, 0 18px 48px rgb(58 51 112 / 12%));
+  --cm-divider: var(--nav-line, rgb(21 22 31 / 8%));
+  --cm-visual-bg: var(--nav-track, #f3f2fb);
+  --cm-visual-ring: var(--nav-line, rgb(21 22 31 / 8%));
   --cm-visual-scrim: linear-gradient(
     180deg,
-    rgb(12 18 22 / 4%) 0%,
-    rgb(12 18 22 / 18%) 42%,
-    rgb(12 18 22 / 78%) 100%
+    rgb(28 24 58 / 8%) 0%,
+    rgb(28 24 58 / 28%) 48%,
+    rgb(28 24 58 / 82%) 100%
   );
   --cm-caption: #fff;
-  --cm-caption-muted: rgb(255 255 255 / 82%);
-  --cm-accent: #0f9d8a;
-  --cm-card-bg: #f5f7f8;
-  --cm-card-border: rgb(21 22 31 / 7%);
-  --cm-card-hover: #eef6f4;
-  --cm-card-hover-border: rgb(15 157 138 / 28%);
-  --cm-card-text: #171b22;
-  --cm-card-muted: #667085;
-  --cm-icon: #0f9d8a;
-  --cm-icon-bg: rgb(15 157 138 / 12%);
-  --cm-arrow: rgb(23 27 34 / 28%);
-  --cm-arrow-hover: rgb(23 27 34 / 55%);
+  --cm-caption-muted: rgb(255 255 255 / 80%);
+  --cm-accent: var(--nav-accent, #6d5cff);
+  --cm-card-bg: var(--nav-track, #f6f5fc);
+  --cm-card-border: transparent;
+  --cm-card-hover: var(--nav-accent-soft, rgb(109 92 255 / 10%));
+  --cm-card-hover-border: var(--nav-line-strong, rgb(109 92 255 / 34%));
+  --cm-card-text: var(--nav-heading, #17171f);
+  --cm-card-muted: var(--nav-muted, #777785);
+  --cm-icon: var(--nav-accent, #6d5cff);
+  --cm-icon-bg: var(--nav-accent-soft, rgb(109 92 255 / 10%));
 
   top: calc(100% + 12px);
-  width: min(1120px, calc(100vw - 32px));
+  width: min(1040px, calc(100vw - 32px));
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 12px;
   border: 1px solid var(--cm-border);
-  border-radius: 18px;
+  border-radius: 20px;
   background: var(--cm-bg);
   box-shadow: var(--cm-shadow);
-  transform: translate3d(-36%, -8px, 0);
+  transform: translate3d(-34%, -8px, 0);
 }
 
 .site-header.is-dark .nav-dropdown.nav-dropdown--commerce .commerce-mega-menu {
-  --cm-bg: #121214;
-  --cm-border: #2a2a32;
-  --cm-shadow: 0 28px 72px rgb(0 0 0 / 52%);
-  --cm-divider: rgb(255 255 255 / 7%);
-  --cm-visual-bg: #1a1a1f;
-  --cm-visual-ring: rgb(255 255 255 / 8%);
   --cm-visual-scrim: linear-gradient(
     180deg,
-    rgb(8 8 10 / 6%) 0%,
-    rgb(8 8 10 / 22%) 46%,
-    rgb(8 8 10 / 88%) 100%
+    rgb(12 10 28 / 10%) 0%,
+    rgb(12 10 28 / 36%) 48%,
+    rgb(12 10 28 / 88%) 100%
   );
-  --cm-caption: #fff;
-  --cm-caption-muted: rgb(255 255 255 / 76%);
-  --cm-accent: #7ee0d0;
-  --cm-card-bg: #1c1c22;
-  --cm-card-border: rgb(255 255 255 / 6%);
-  --cm-card-hover: #26262e;
-  --cm-card-hover-border: rgb(110 210 190 / 28%);
-  --cm-card-text: rgb(255 255 255 / 94%);
-  --cm-card-muted: rgb(255 255 255 / 48%);
-  --cm-icon: #7ee0d0;
-  --cm-icon-bg: rgb(70 170 150 / 14%);
-  --cm-arrow: rgb(255 255 255 / 26%);
-  --cm-arrow-hover: rgb(255 255 255 / 62%);
+  --cm-caption-muted: rgb(255 255 255 / 72%);
+  --cm-card-border: transparent;
 }
 
 .nav-dropdown.nav-dropdown--commerce.open .commerce-mega-menu {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transform: translate3d(-36%, 0, 0);
+  transform: translate3d(-34%, 0, 0);
 }
 
 .commerce-mega-menu::before {
@@ -1754,27 +1714,24 @@ onBeforeUnmount(() => {
 .commerce-menu-group {
   display: grid;
   min-width: 0;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   align-items: stretch;
-  gap: 12px;
+  gap: 10px;
 }
 
 .commerce-menu-group + .commerce-menu-group {
-  padding-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--cm-divider);
 }
 
 .commerce-menu-group__visual {
   position: relative;
-  min-height: 128px;
+  min-height: 96px;
+  height: 100%;
   overflow: hidden;
   background: var(--cm-visual-bg);
   border-radius: 14px;
   box-shadow: inset 0 0 0 1px var(--cm-visual-ring);
-}
-
-.commerce-menu-group.is-image .commerce-menu-group__visual {
-  min-height: 212px;
 }
 
 .commerce-menu-group__visual img {
@@ -1809,60 +1766,41 @@ onBeforeUnmount(() => {
   bottom: 14px;
   left: 14px;
   display: grid;
-  gap: 5px;
+  gap: 4px;
   color: var(--cm-caption);
 }
 
 .commerce-menu-group__caption strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 1.2rem;
-  font-weight: 860;
+  font-size: 1.12rem;
+  font-weight: 820;
   letter-spacing: -0.02em;
   line-height: 1.15;
   text-shadow: 0 2px 14px rgb(0 0 0 / 45%);
 }
 
-.commerce-menu-group__caption strong .bi {
-  color: var(--cm-accent);
-  font-size: 0.92rem;
-}
-
 .commerce-menu-group__caption small {
   color: var(--cm-caption-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   line-height: 1.35;
   text-shadow: 0 1px 10px rgb(0 0 0 / 40%);
 }
 
 .commerce-menu-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   align-content: stretch;
   height: 100%;
-  grid-auto-rows: 1fr;
-}
-
-.commerce-menu-group.is-model .commerce-menu-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.commerce-menu-group.is-create .commerce-menu-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.commerce-menu-group.is-image .commerce-menu-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(76px, 1fr);
 }
 
 .commerce-menu-card {
   position: relative;
   display: grid;
   min-width: 0;
-  min-height: 0;
+  min-height: 76px;
   height: 100%;
-  grid-template-columns: 40px minmax(0, 1fr) 12px;
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   padding: 12px 12px 12px 11px;
@@ -1874,7 +1812,7 @@ onBeforeUnmount(() => {
   transition:
     background 140ms ease,
     border-color 140ms ease,
-    transform 140ms ease,
+    box-shadow 140ms ease,
     color 140ms ease;
 }
 
@@ -1884,32 +1822,32 @@ onBeforeUnmount(() => {
   color: var(--cm-card-text);
   background: var(--cm-card-hover);
   border-color: var(--cm-card-hover-border);
+  box-shadow: inset 0 0 0 1px var(--cm-card-hover-border);
   outline: none;
-  transform: translateY(-1px);
 }
 
 .commerce-menu-card__icon {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   place-items: center;
   color: var(--cm-icon);
   background: var(--cm-icon-bg);
-  border-radius: 10px;
-  font-size: 1.05rem;
+  border-radius: 9px;
+  font-size: 0.95rem;
 }
 
 .commerce-menu-card__copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .commerce-menu-card__copy strong {
   overflow: hidden;
-  font-size: 0.84rem;
-  font-weight: 760;
+  font-size: 0.86rem;
+  font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1917,20 +1855,10 @@ onBeforeUnmount(() => {
 .commerce-menu-card__copy small {
   overflow: hidden;
   color: var(--cm-card-muted);
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.commerce-menu-card__arrow {
-  color: var(--cm-arrow);
-  font-size: 0.8rem;
-}
-
-.commerce-menu-card:hover .commerce-menu-card__arrow,
-.commerce-menu-card.active .commerce-menu-card__arrow {
-  color: var(--cm-arrow-hover);
 }
 
 .nav-dropdown.nav-dropdown--mega {
@@ -1972,8 +1900,8 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-template-areas:
     'assistant assistant assistant model model model t2i t2i t2i coloring coloring coloring'
-    'assistant assistant assistant model model model ui ui ui ecommerce ecommerce ecommerce'
-    'game game game game game game puzzle puzzle puzzle puzzle puzzle puzzle';
+    'assistant assistant assistant model model model ui ui ui ui ui ui'
+    'game game game game game game game game game game game game';
   gap: var(--bento-gap);
   min-width: 0;
   align-items: stretch;
@@ -2012,16 +1940,10 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-/* UI 横图 */
+/* UI 横图：占满原 UI + 电商两格，比例按双倍宽度保持行高 */
 .nav-bento-card.is-ui {
   grid-area: ui;
-  aspect-ratio: 16 / 9;
-  width: 100%;
-}
-
-.nav-bento-card.is-ecommerce {
-  grid-area: ecommerce;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 32 / 9;
   width: 100%;
 }
 
@@ -2033,11 +1955,6 @@ onBeforeUnmount(() => {
 /* 底栏等宽宽卡 */
 .nav-bento-card.is-game {
   grid-area: game;
-  min-height: 100px;
-}
-
-.nav-bento-card.is-puzzle {
-  grid-area: puzzle;
   min-height: 100px;
 }
 
@@ -2207,8 +2124,8 @@ onBeforeUnmount(() => {
     --bento-gap: 6px;
   }
 
-  .commerce-menu-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .commerce-menu-group {
+    grid-template-columns: 168px minmax(0, 1fr);
   }
 
   .nav-bento-card {
@@ -2510,6 +2427,72 @@ onBeforeUnmount(() => {
   box-shadow: 0 3px 8px rgb(220 140 40 / 30%);
 }
 
+.nav-redeem-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  min-height: 36px;
+  padding: 4px 12px 4px 4px;
+  color: #3d3480;
+  border: 1px solid rgb(109 92 255 / 28%);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 18% 0%, rgb(255 255 255 / 55%), transparent 42%),
+    linear-gradient(118deg, #f3f0ff 0%, #e4deff 48%, #d7d0ff 100%);
+  box-shadow: 0 8px 20px rgb(109 92 255 / 12%);
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 780;
+  white-space: nowrap;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+.nav-redeem-btn__icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #fff;
+  border: 1px solid rgb(255 255 255 / 58%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 24%, rgb(255 255 255 / 28%), transparent 46%),
+    linear-gradient(150deg, #8b7bff 0%, #6d5cff 52%, #5746e5 100%);
+  box-shadow: 0 2px 6px rgb(109 92 255 / 28%);
+  box-sizing: border-box;
+}
+
+.nav-redeem-btn__icon i {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.nav-redeem-btn__label {
+  padding-right: 2px;
+  color: #3d3480;
+}
+
+.nav-redeem-btn:hover {
+  color: #3d3480;
+  border-color: rgb(109 92 255 / 42%);
+  transform: translateY(-1px);
+  box-shadow: 0 11px 24px rgb(109 92 255 / 20%);
+}
+
+.nav-redeem-btn:hover .nav-redeem-btn__icon {
+  border-color: rgb(255 255 255 / 72%);
+  box-shadow: 0 3px 8px rgb(109 92 255 / 34%);
+}
+
 .nav-trial-btn:hover {
   color: #fff;
   transform: translateY(-1px);
@@ -2774,7 +2757,8 @@ onBeforeUnmount(() => {
   font-size: 0.76rem;
 }
 
-.nav-compact .nav-checkin-btn {
+.nav-compact .nav-checkin-btn,
+.nav-compact .nav-redeem-btn {
   height: 32px;
   min-height: 32px;
   gap: 6px;
@@ -2782,12 +2766,14 @@ onBeforeUnmount(() => {
   font-size: 0.76rem;
 }
 
-.nav-compact .nav-checkin-btn__icon {
+.nav-compact .nav-checkin-btn__icon,
+.nav-compact .nav-redeem-btn__icon {
   width: 22px;
   height: 22px;
 }
 
-.nav-compact .nav-checkin-btn__icon i {
+.nav-compact .nav-checkin-btn__icon i,
+.nav-compact .nav-redeem-btn__icon i {
   font-size: 0.74rem;
 }
 
@@ -2820,25 +2806,27 @@ onBeforeUnmount(() => {
   font-size: 0.8rem;
 }
 
-@media (max-width: 1480px) {
-  .nav-checkin-btn {
+@media (max-width: 1600px) {
+  .nav-checkin-btn,
+  .nav-redeem-btn {
     width: 36px;
     min-width: 36px;
     padding: 4px;
   }
 
-  .nav-checkin-btn__label {
+  .nav-checkin-btn__label,
+  .nav-redeem-btn__label {
     display: none;
   }
 
   .nav-link,
   .nav-dropdown-label {
     padding: 0 9px;
-    font-size: 0.84rem;
+    font-size: 0.83rem;
   }
 }
 
-@media (max-width: 1320px) {
+@media (max-width: 1360px) {
   .nav-trial-btn {
     width: 36px;
     min-width: 36px;
@@ -2856,15 +2844,7 @@ onBeforeUnmount(() => {
   .nav-link,
   .nav-dropdown-label {
     padding: 0 7px;
-    font-size: 0.8rem;
-  }
-}
-
-@media (max-width: 1180px) {
-  .nav-link,
-  .nav-dropdown-label {
-    padding: 0 6px;
-    font-size: 0.78rem;
+    font-size: 0.82rem;
   }
 }
 
@@ -2872,7 +2852,7 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1400px) {
   .site-header {
     z-index: 1100;
   }
@@ -2949,8 +2929,10 @@ onBeforeUnmount(() => {
   }
 
   .nav-checkin-btn,
+  .nav-redeem-btn,
   .nav-trial-btn,
   .nav-compact .nav-checkin-btn,
+  .nav-compact .nav-redeem-btn,
   .nav-compact .nav-trial-btn {
     width: 34px;
     min-width: 34px;
@@ -2960,11 +2942,13 @@ onBeforeUnmount(() => {
   }
 
   .nav-checkin-btn__label,
+  .nav-redeem-btn__label,
   .nav-trial-btn span {
     display: none;
   }
 
-  .nav-compact .nav-checkin-btn__icon {
+  .nav-compact .nav-checkin-btn__icon,
+  .nav-compact .nav-redeem-btn__icon {
     width: 26px;
     height: 26px;
   }
@@ -3009,6 +2993,15 @@ onBeforeUnmount(() => {
     min-height: 42px;
     padding: 0 12px;
     font-size: 0.86rem;
+  }
+
+  .main-nav .nav-link.active::after,
+  .main-nav .nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label::after {
+    left: 4px;
+    bottom: 50%;
+    width: 3px;
+    height: 14px;
+    transform: translateY(50%);
   }
 
   .main-nav .nav-link > i.bi:first-child,
@@ -3081,28 +3074,26 @@ onBeforeUnmount(() => {
     padding-top: 10px;
   }
 
-  .commerce-menu-group__visual,
-  .commerce-menu-group.is-image .commerce-menu-group__visual {
+  .commerce-menu-group__visual {
     width: 100%;
-    min-height: 132px;
+    min-height: 112px;
   }
 
   .commerce-menu-group__caption strong {
     font-size: 1.05rem;
   }
 
-  .commerce-menu-group.is-model .commerce-menu-grid,
-  .commerce-menu-group.is-create .commerce-menu-grid,
-  .commerce-menu-group.is-image .commerce-menu-grid {
+  .commerce-menu-grid {
     grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+  }
+
+  .commerce-menu-card {
+    min-height: 64px;
   }
 
   .nav-bento {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .commerce-menu-grid {
-    grid-template-columns: 1fr;
   }
 }
 

@@ -42,6 +42,13 @@ type NetworkError struct {
 
 func (e *NetworkError) Error() string { return e.Message }
 
+type imageNotReadyError struct {
+	err error
+}
+
+func (e *imageNotReadyError) Error() string { return e.err.Error() }
+func (e *imageNotReadyError) Unwrap() error { return e.err }
+
 type Client struct {
 	BaseURL      string
 	APIKey       string
@@ -285,7 +292,11 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 		return "", &UpstreamError{Message: "上游图片下载跳转地址不安全"}
 	}
 	if resp.StatusCode >= 400 {
-		return "", &UpstreamError{Message: fmt.Sprintf("下载上游图片失败（HTTP %d）", resp.StatusCode), StatusCode: resp.StatusCode}
+		err := &UpstreamError{Message: fmt.Sprintf("下载上游图片失败（HTTP %d）", resp.StatusCode), StatusCode: resp.StatusCode}
+		if resp.StatusCode == http.StatusNotFound {
+			return "", &imageNotReadyError{err: err}
+		}
+		return "", err
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
 	if err != nil {
@@ -657,6 +668,10 @@ func imageEditPayload(prompt, model string, n int, inputImagesB64 []string, size
 }
 
 func isRetryablePollError(err error) bool {
+	var imageNotReady *imageNotReadyError
+	if errors.As(err, &imageNotReady) {
+		return true
+	}
 	var networkErr *NetworkError
 	if errors.As(err, &networkErr) {
 		return true

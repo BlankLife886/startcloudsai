@@ -74,7 +74,7 @@ func ExpireGrowthGroup(ctx context.Context, q Q, groupID uuid.UUID, at time.Time
 }
 
 func ListGrowthGroupMembers(ctx context.Context, q Q, groupID uuid.UUID) ([]*GrowthGroupMember, error) {
-	rows, err := q.Query(ctx, `SELECT m.user_id, u.username, m.role, m.joined_at
+	rows, err := q.Query(ctx, `SELECT m.user_id, u.username, u.avatar_url, m.role, m.joined_at
 		FROM growth_group_members m JOIN users u ON u.id=m.user_id
 		WHERE m.group_id=$1 ORDER BY m.joined_at, m.user_id`, groupID)
 	if err != nil {
@@ -84,12 +84,57 @@ func ListGrowthGroupMembers(ctx context.Context, q Q, groupID uuid.UUID) ([]*Gro
 	items := make([]*GrowthGroupMember, 0)
 	for rows.Next() {
 		var item GrowthGroupMember
-		if err := rows.Scan(&item.UserID, &item.Username, &item.Role, &item.JoinedAt); err != nil {
+		if err := rows.Scan(&item.UserID, &item.Username, &item.AvatarURL, &item.Role, &item.JoinedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)
 	}
 	return items, rows.Err()
+}
+
+func GetGrowthGroupAdminOverview(ctx context.Context, q Q, campaignKey string, limit int) (*GrowthGroupAdminSummary, []*GrowthGroupAdminItem, error) {
+	var summary GrowthGroupAdminSummary
+	err := q.QueryRow(ctx, `SELECT
+		count(*),
+		count(*) FILTER (WHERE status='active' AND expires_at>now()),
+		count(*) FILTER (WHERE status='completed'),
+		count(*) FILTER (WHERE status='expired' OR (status='active' AND expires_at<=now())),
+		coalesce((SELECT count(*) FROM growth_group_members WHERE campaign_key=$1), 0)
+		FROM growth_groups WHERE campaign_key=$1`, campaignKey).Scan(
+		&summary.TotalGroups, &summary.ActiveGroups, &summary.CompletedGroups,
+		&summary.ExpiredGroups, &summary.Participations,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := q.Query(ctx, `SELECT g.id, g.code, g.owner_id, u.username, u.avatar_url,
+		CASE WHEN g.status='active' AND g.expires_at<=now() THEN 'expired' ELSE g.status END,
+		g.target_members, count(m.user_id), g.reward_cents, g.expires_at, g.completed_at, g.created_at
+		FROM growth_groups g
+		JOIN users u ON u.id=g.owner_id
+		LEFT JOIN growth_group_members m ON m.group_id=g.id
+		WHERE g.campaign_key=$1
+		GROUP BY g.id, u.username, u.avatar_url
+		ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, campaignKey, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	items := make([]*GrowthGroupAdminItem, 0, limit)
+	for rows.Next() {
+		var item GrowthGroupAdminItem
+		if err := rows.Scan(&item.ID, &item.Code, &item.OwnerID, &item.OwnerUsername,
+			&item.OwnerAvatarURL, &item.Status, &item.TargetMembers, &item.MemberCount,
+			&item.RewardCents, &item.ExpiresAt, &item.CompletedAt, &item.CreatedAt); err != nil {
+			return nil, nil, err
+		}
+		items = append(items, &item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return &summary, items, nil
 }
 
 func CountSucceededTaskOutputsSince(ctx context.Context, q Q, userID uuid.UUID, since time.Time) (int64, error) {

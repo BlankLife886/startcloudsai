@@ -389,7 +389,9 @@ export async function auditAiDesignQuality({
     : ''
   let conversation
   try {
-    conversation = await createAssistantConversation('UI 设计品质检查')
+    conversation = await createAssistantConversation('UI 设计品质检查', {
+      workspace: 'ui_design',
+    })
     const prompt = `你是资深产品设计评审。请检查附带的完整 UI 设计稿，而不是重新描述图片。
 
 产品与页面目标：${productPrompt || '未提供'}
@@ -531,7 +533,9 @@ export async function auditAiDesignRegion({
   if (!fullReference || !regionReference) throw new Error('框选区域预览生成失败，请重新框选')
   let conversation
   try {
-    conversation = await createAssistantConversation('UI 设计区域优化')
+    conversation = await createAssistantConversation('UI 设计区域优化', {
+      workspace: 'ui_design',
+    })
     const prompt = `你是资深 UI 设计评审。第一张图是完整页面，第二张图是用户框选区域的清晰裁图。
 
 页面目标：${productPrompt || '未提供'}

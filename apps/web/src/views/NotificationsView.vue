@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppearanceStore } from '@/stores/appearance'
 import { useAuthStore } from '@/stores/auth'
@@ -39,6 +39,9 @@ let notificationPollTimer = null
 const NOTIFICATION_POLL_MS = 20_000
 
 const empty = computed(() => loaded.value && !loading.value && !items.value.length)
+const hasMore = computed(() => Boolean(cursor.value))
+const loadMoreSentinel = ref(null)
+let loadMoreObserver = null
 
 const dayGroups = computed(() => {
   const groups = []
@@ -201,7 +204,13 @@ async function loadList({ append = false } = {}) {
       limit: 20,
       cursor: append ? cursor.value || '' : '',
     })
-    items.value = append ? [...items.value, ...result.items] : result.items
+    if (append) {
+      const seen = new Set(items.value.map((item) => String(item.id)))
+      const next = result.items.filter((item) => !seen.has(String(item.id)))
+      items.value = [...items.value, ...next]
+    } else {
+      items.value = result.items
+    }
     cursor.value = result.nextCursor
     loaded.value = true
     if (Number.isFinite(Number(result.unread))) applyUnreadCount(result.unread)
@@ -260,8 +269,29 @@ function handleRealtimeTaskUpdate(event) {
 function pollNotifications() {
   if (document.visibilityState !== 'visible') return
   void refreshUnreadCount({ force: true })
+  // 已翻页或正在加载更多时，不整表重置，避免打断触底加载
+  if (loadingMore.value || items.value.length > 20) return
   void loadList()
 }
+
+function setupLoadMoreObserver() {
+  loadMoreObserver?.disconnect()
+  loadMoreObserver = null
+  if (!loadMoreSentinel.value || !hasMore.value) return
+  loadMoreObserver = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      void loadList({ append: true })
+    },
+    { root: null, rootMargin: '160px 0px', threshold: 0 },
+  )
+  loadMoreObserver.observe(loadMoreSentinel.value)
+}
+
+watch([hasMore, loaded, () => items.value.length], async () => {
+  await nextTick()
+  setupLoadMoreObserver()
+})
 
 onMounted(async () => {
   if (!authStore.isAuthenticated) {
@@ -277,6 +307,8 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', pollNotifications)
   notificationPollTimer = window.setInterval(pollNotifications, NOTIFICATION_POLL_MS)
   await loadList()
+  await nextTick()
+  setupLoadMoreObserver()
 })
 
 onBeforeUnmount(() => {
@@ -284,6 +316,8 @@ onBeforeUnmount(() => {
   window.removeEventListener(TASK_UPDATE_EVENT, handleRealtimeTaskUpdate)
   window.removeEventListener('focus', pollNotifications)
   document.removeEventListener('visibilitychange', pollNotifications)
+  loadMoreObserver?.disconnect()
+  loadMoreObserver = null
   if (realtimeTimer) window.clearTimeout(realtimeTimer)
   if (notificationPollTimer) window.clearInterval(notificationPollTimer)
 })
@@ -294,12 +328,6 @@ onBeforeUnmount(() => {
     class="nt-page"
     :class="{ 'is-light': !appearanceStore.isDark, 'is-dark': appearanceStore.isDark }"
   >
-    <div class="nt-atmosphere" aria-hidden="true">
-      <div class="nt-atmosphere__wash"></div>
-      <div class="nt-atmosphere__orb nt-atmosphere__orb--a"></div>
-      <div class="nt-atmosphere__orb nt-atmosphere__orb--b"></div>
-    </div>
-
     <div class="nt-shell">
       <header class="nt-hero">
         <div class="nt-hero__copy">
@@ -307,19 +335,19 @@ onBeforeUnmount(() => {
             通知
             <em v-if="unreadCount > 0">{{ badgeLabel }}</em>
           </h1>
-          <p>查看账号、任务与审核消息。</p>
+          <p>账号、任务与审核消息</p>
         </div>
 
         <div class="nt-hero__actions">
           <button
             type="button"
-            class="nt-btn is-ghost"
+            class="nt-btn"
             :disabled="marking || unreadCount <= 0"
             @click="handleMarkAllRead"
           >
             全部已读
           </button>
-          <button type="button" class="nt-btn is-ghost" :disabled="loading" @click="loadList()">
+          <button type="button" class="nt-btn" :disabled="loading" @click="loadList()">
             <i class="bi bi-arrow-repeat" :class="{ spin: loading }" aria-hidden="true"></i>
             刷新
           </button>
@@ -328,68 +356,73 @@ onBeforeUnmount(() => {
 
       <section class="nt-board" aria-live="polite">
         <div v-if="loading && !items.length" class="nt-skel" aria-hidden="true">
-          <div v-for="n in 5" :key="n" class="nt-skel__row"></div>
+          <div v-for="n in 6" :key="n" class="nt-skel__row"></div>
         </div>
 
         <div v-else-if="error && !items.length" class="nt-empty is-error">
           <strong>通知读取失败</strong>
           <p>{{ error }}</p>
-          <button type="button" class="nt-btn is-ghost" @click="loadList()">重试</button>
+          <button type="button" class="nt-btn" @click="loadList()">重试</button>
         </div>
 
-        <div v-else-if="dayGroups.length" class="nt-tree">
-          <section v-for="group in dayGroups" :key="group.key" class="nt-branch">
-            <header class="nt-branch__head">
-              <span class="nt-branch__node" aria-hidden="true"></span>
-              <div class="nt-branch__label">
-                <strong>{{ group.label }}</strong>
-                <small v-if="group.sublabel">{{ group.sublabel }}</small>
-              </div>
-              <em>{{ group.items.length }}</em>
+        <div v-else-if="dayGroups.length" class="nt-list">
+          <section v-for="group in dayGroups" :key="group.key" class="nt-day">
+            <header class="nt-day__head">
+              <strong>{{ group.label }}</strong>
+              <small v-if="group.sublabel">{{ group.sublabel }}</small>
+              <span>{{ group.items.length }}</span>
             </header>
 
-            <ol class="nt-branch__list">
+            <ol class="nt-day__items">
               <li
                 v-for="item in group.items"
                 :key="item.id"
-                class="nt-leaf"
+                class="nt-item"
                 :class="{ 'is-unread': !item.readAt }"
               >
-                <article class="nt-leaf__card">
-                  <span class="nt-leaf__icon" aria-hidden="true">
-                    <i class="bi" :class="kindIcon(item)"></i>
-                  </span>
-                  <div class="nt-leaf__body" data-no-translate>
+                <span class="nt-item__icon" aria-hidden="true">
+                  <i class="bi" :class="kindIcon(item)"></i>
+                </span>
+                <div class="nt-item__body" data-no-translate>
+                  <div class="nt-item__title-row">
                     <strong>{{ localizedText(item.title) }}</strong>
-                    <p v-if="item.body">
-                      <template v-for="(part, index) in emphasizeParts(item.body)" :key="index">
-                        <b v-if="part.hl" class="nt-hl">{{ part.text }}</b>
-                        <template v-else>{{ part.text }}</template>
-                      </template>
-                    </p>
+                    <time>{{ formatClock(item.createdAt) }}</time>
+                  </div>
+                  <p v-if="item.body">
+                    <template v-for="(part, index) in emphasizeParts(item.body)" :key="index">
+                      <b v-if="part.hl" class="nt-hl">{{ part.text }}</b>
+                      <template v-else>{{ part.text }}</template>
+                    </template>
+                  </p>
+                  <div class="nt-item__meta">
+                    <span v-if="extractAmount(item.body)" class="nt-item__amount">
+                      {{ extractAmount(item.body) }}
+                      <small>{{ amountUnit(item.body) }}</small>
+                    </span>
+                    <span v-if="!item.readAt" class="nt-item__dot" aria-label="未读"></span>
                     <button
                       v-if="isTrialAccessNotification(item)"
                       type="button"
-                      class="nt-leaf__action"
+                      class="nt-item__action"
                       @click="openTrialAccess(item)"
                     >
                       查看体验资格 <i class="bi bi-arrow-right" aria-hidden="true"></i>
                     </button>
                   </div>
-                  <div class="nt-leaf__aside" data-no-translate>
-                    <div v-if="extractAmount(item.body)" class="nt-leaf__amount">
-                      <b>{{ extractAmount(item.body) }}</b>
-                      <small>{{ amountUnit(item.body) }}</small>
-                    </div>
-                    <time>{{ formatClock(item.createdAt) }}</time>
-                    <span v-if="!item.readAt" class="nt-leaf__badge">{{
-                      localizedText('未读')
-                    }}</span>
-                  </div>
-                </article>
+                </div>
               </li>
             </ol>
           </section>
+
+          <div ref="loadMoreSentinel" class="nt-sentinel" aria-hidden="true"></div>
+
+          <div v-if="loadingMore" class="nt-footer-status">加载中…</div>
+          <div v-else-if="hasMore" class="nt-footer-status">
+            <button type="button" class="nt-btn nt-more" @click="loadList({ append: true })">
+              加载更多
+            </button>
+          </div>
+          <div v-else-if="items.length" class="nt-footer-status is-end">已加载全部通知</div>
         </div>
 
         <div v-else-if="empty" class="nt-empty">
@@ -397,16 +430,6 @@ onBeforeUnmount(() => {
           <strong>暂无通知</strong>
           <p>任务进度、审核结果与账号消息会显示在这里。</p>
         </div>
-
-        <button
-          v-if="cursor"
-          type="button"
-          class="nt-btn is-ghost nt-more"
-          :disabled="loadingMore"
-          @click="loadList({ append: true })"
-        >
-          {{ loadingMore ? '加载中…' : '加载更多' }}
-        </button>
       </section>
     </div>
   </div>
@@ -414,377 +437,264 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .nt-page {
-  --nt-text: #1c1a27;
-  --nt-muted: rgba(28, 26, 39, 0.58);
-  --nt-line: rgba(28, 26, 39, 0.1);
-  --nt-surface: rgba(255, 255, 255, 0.82);
-  --nt-card: rgba(255, 255, 255, 0.92);
-  --nt-soft: rgba(248, 246, 255, 0.9);
-  --nt-accent: #6b5cff;
-  --nt-accent-soft: rgba(107, 92, 255, 0.12);
-  --nt-rail: rgba(107, 92, 255, 0.22);
-  --nt-shadow: 0 18px 40px rgba(40, 30, 80, 0.07);
-  position: relative;
-  min-height: calc(100vh - var(--app-header-offset, 72px));
-  padding: 28px clamp(16px, 3vw, 36px) 72px;
+  --nt-text: #17171f;
+  --nt-muted: #777785;
+  --nt-line: rgb(21 22 31 / 8%);
+  --nt-bg: #f4f3fa;
+  --nt-surface: #ffffff;
+  --nt-row: transparent;
+  --nt-row-hover: rgb(109 92 255 / 4%);
+  --nt-unread: rgb(109 92 255 / 6%);
+  --nt-accent: #6d5cff;
+  --nt-accent-soft: rgb(109 92 255 / 10%);
+  min-height: calc(100dvh - var(--app-header-offset, 72px));
+  padding: 20px clamp(16px, 3vw, 28px) 48px;
   color: var(--nt-text);
-  overflow: clip;
+  background: var(--nt-bg);
 }
 
 .nt-page.is-dark {
-  --nt-text: #f4f2ff;
-  --nt-muted: rgba(244, 242, 255, 0.62);
-  --nt-line: rgba(244, 242, 255, 0.12);
-  --nt-surface: rgba(24, 22, 36, 0.78);
-  --nt-card: rgba(32, 28, 48, 0.92);
-  --nt-soft: rgba(40, 34, 58, 0.88);
-  --nt-accent: #a99dff;
-  --nt-accent-soft: rgba(169, 157, 255, 0.16);
-  --nt-rail: rgba(169, 157, 255, 0.28);
-  --nt-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-}
-
-.nt-atmosphere {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.nt-atmosphere__wash {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(167, 139, 250, 0.22), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(125, 211, 252, 0.16), transparent 50%),
-    linear-gradient(180deg, #f6f3ff 0%, #eef2ff 48%, #f8fafc 100%);
-}
-
-.nt-page.is-dark .nt-atmosphere__wash {
-  background:
-    radial-gradient(ellipse 70% 50% at 12% 0%, rgba(99, 102, 241, 0.28), transparent 55%),
-    radial-gradient(ellipse 55% 45% at 88% 8%, rgba(56, 189, 248, 0.14), transparent 50%),
-    linear-gradient(180deg, #120f1c 0%, #161325 48%, #101018 100%);
-}
-
-.nt-atmosphere__orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(40px);
-  opacity: 0.55;
-}
-
-.nt-atmosphere__orb--a {
-  width: 220px;
-  height: 220px;
-  top: 8%;
-  right: 12%;
-  background: rgba(167, 139, 250, 0.35);
-}
-
-.nt-atmosphere__orb--b {
-  width: 180px;
-  height: 180px;
-  bottom: 18%;
-  left: 8%;
-  background: rgba(125, 211, 252, 0.28);
+  --nt-text: rgba(255, 255, 255, 0.96);
+  --nt-muted: rgba(255, 255, 255, 0.52);
+  --nt-line: rgb(255 255 255 / 8%);
+  --nt-bg: #121218;
+  --nt-surface: #1a1824;
+  --nt-row-hover: rgb(109 92 255 / 8%);
+  --nt-unread: rgb(109 92 255 / 12%);
+  --nt-accent: #8b7bff;
+  --nt-accent-soft: rgb(109 92 255 / 16%);
 }
 
 .nt-shell {
-  position: relative;
-  z-index: 1;
-  width: min(1240px, 100%);
+  width: min(760px, 100%);
   margin: 0 auto;
   display: grid;
-  gap: 22px;
+  gap: 14px;
 }
 
 .nt-hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   flex-wrap: wrap;
-  padding: 8px 4px 0;
 }
 
 .nt-hero h1 {
   margin: 0;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-size: clamp(1.7rem, 2.6vw, 2.15rem);
-  font-weight: 800;
+  gap: 8px;
+  font-size: 1.45rem;
+  font-weight: 820;
   letter-spacing: -0.03em;
 }
 
 .nt-hero h1 em {
-  min-width: 1.5rem;
-  height: 1.5rem;
-  padding: 0 7px;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 6px;
   border-radius: 999px;
   background: var(--nt-accent);
   color: #fff;
   font-style: normal;
-  font-size: 0.78rem;
-  font-weight: 800;
+  font-size: 0.72rem;
+  font-weight: 780;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.nt-hero__copy > p:last-child {
-  margin: 8px 0 0;
+.nt-hero__copy > p {
+  margin: 4px 0 0;
   color: var(--nt-muted);
-  font-size: 0.92rem;
+  font-size: 0.82rem;
 }
 
 .nt-hero__actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .nt-board {
   border: 1px solid var(--nt-line);
-  border-radius: 28px;
+  border-radius: 16px;
   background: var(--nt-surface);
-  backdrop-filter: blur(16px);
-  padding: 22px 18px 18px;
-  box-shadow: var(--nt-shadow);
+  padding: 4px 0 8px;
+  overflow: hidden;
 }
 
-.nt-tree {
+.nt-list {
   display: grid;
-  gap: 28px;
+  gap: 2px;
 }
 
-.nt-branch {
-  position: relative;
-  display: grid;
-  gap: 14px;
-  padding-left: 8px;
-}
-
-.nt-branch::before {
-  content: '';
-  position: absolute;
-  top: 18px;
-  bottom: 8px;
-  left: 20px;
-  width: 2px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, var(--nt-rail), transparent 96%);
-  pointer-events: none;
-}
-
-.nt-branch__head {
-  position: relative;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
+.nt-day__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 14px 16px 8px;
+  position: sticky;
+  top: var(--app-header-offset, 72px);
   z-index: 1;
-  margin-bottom: 2px;
+  background: color-mix(in srgb, var(--nt-surface) 92%, transparent);
+  backdrop-filter: blur(8px);
 }
 
-.nt-branch__node {
-  width: 14px;
-  height: 14px;
-  margin-left: 5px;
-  border-radius: 50%;
-  background: var(--nt-accent);
-  box-shadow:
-    0 0 0 5px var(--nt-accent-soft),
-    0 0 0 1px rgba(107, 92, 255, 0.2);
+.nt-day__head strong {
+  font-size: 0.8rem;
+  font-weight: 780;
 }
 
-.nt-branch__label strong {
-  display: block;
-  font-size: 0.98rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-.nt-branch__label small {
+.nt-day__head small {
   color: var(--nt-muted);
   font-size: 0.72rem;
 }
 
-.nt-branch__head > em {
-  min-width: 1.5rem;
-  height: 1.5rem;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--nt-accent-soft);
-  color: var(--nt-accent);
-  font-style: normal;
-  font-size: 0.72rem;
-  font-weight: 800;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.nt-day__head span {
+  margin-left: auto;
+  color: var(--nt-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
-.nt-branch__list {
+.nt-day__items {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 34px;
+  padding: 0;
+}
+
+.nt-item {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 36px minmax(0, 1fr);
   gap: 12px;
+  align-items: start;
+  padding: 12px 16px;
+  border-top: 1px solid var(--nt-line);
+  background: var(--nt-row);
+  transition: background 120ms ease;
 }
 
-.nt-leaf {
-  min-width: 0;
+.nt-day__items .nt-item:first-child {
+  border-top: 0;
 }
 
-.nt-leaf__card {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) minmax(88px, auto);
-  gap: 16px;
-  align-items: center;
-  padding: 16px 18px;
-  border: 1px solid var(--nt-line);
-  border-radius: 18px;
-  background: linear-gradient(135deg, rgba(107, 92, 255, 0.04), transparent 42%), var(--nt-card);
-  box-shadow: 0 10px 24px rgba(40, 30, 80, 0.04);
+.nt-item:hover {
+  background: var(--nt-row-hover);
 }
 
-.nt-leaf.is-unread .nt-leaf__card {
-  border-color: rgba(107, 92, 255, 0.34);
-  box-shadow:
-    0 12px 28px rgba(107, 92, 255, 0.1),
-    0 0 0 1px rgba(107, 92, 255, 0.06);
-  background: linear-gradient(135deg, rgba(107, 92, 255, 0.14), transparent 52%), var(--nt-card);
+.nt-item.is-unread {
+  background: var(--nt-unread);
 }
 
-.nt-leaf__icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 15px;
+.nt-item__icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   background: var(--nt-accent-soft);
   color: var(--nt-accent);
-  border: 1px solid rgba(107, 92, 255, 0.14);
+  font-size: 0.95rem;
 }
 
-.nt-leaf__icon i {
-  font-size: 1.15rem;
-  line-height: 1;
-}
-
-.nt-leaf.is-unread .nt-leaf__icon {
+.nt-item.is-unread .nt-item__icon {
   background: var(--nt-accent);
   color: #fff;
-  border-color: transparent;
 }
 
-.nt-leaf__body {
+.nt-item__body {
   min-width: 0;
 }
 
-.nt-leaf__body strong {
-  display: block;
-  font-size: 1.02rem;
-  font-weight: 820;
-  letter-spacing: -0.02em;
-  line-height: 1.3;
+.nt-item__title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nt-item__title-row strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 740;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.nt-leaf.is-unread .nt-leaf__body strong {
-  color: var(--nt-text);
-}
-
-.nt-leaf__body p {
-  margin: 5px 0 0;
+.nt-item__title-row time {
+  flex: 0 0 auto;
   color: var(--nt-muted);
-  font-size: 0.84rem;
-  line-height: 1.45;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.nt-leaf__action {
+.nt-item__body p {
+  margin: 4px 0 0;
+  color: var(--nt-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.nt-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-height: 0;
+}
+
+.nt-item__amount {
+  color: var(--nt-accent);
+  font-size: 0.82rem;
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+}
+
+.nt-item__amount small {
+  margin-left: 2px;
+  color: var(--nt-muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.nt-item__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nt-accent);
+}
+
+.nt-item__action {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-top: 9px;
+  gap: 4px;
+  margin-left: auto;
   padding: 0;
-  color: #167a65;
+  color: var(--nt-accent);
   background: transparent;
   border: 0;
   font: inherit;
   font-size: 0.74rem;
-  font-weight: 760;
+  font-weight: 720;
   cursor: pointer;
-}
-
-.nt-leaf__action:hover {
-  color: #0f5e4f;
 }
 
 .nt-hl {
   color: var(--nt-accent);
-  font-weight: 800;
+  font-weight: 780;
   font-variant-numeric: tabular-nums;
-}
-
-.nt-leaf__aside {
-  display: grid;
-  gap: 6px;
-  justify-items: end;
-  align-content: center;
-  min-width: 88px;
-}
-
-.nt-leaf__amount {
-  display: grid;
-  justify-items: end;
-  gap: 1px;
-  line-height: 1;
-}
-
-.nt-leaf__amount b {
-  color: var(--nt-accent);
-  font-size: 1.2rem;
-  font-weight: 850;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
-}
-
-.nt-leaf__amount small {
-  color: var(--nt-muted);
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-
-.nt-leaf__aside time {
-  color: var(--nt-muted);
-  font-size: 0.72rem;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-}
-
-.nt-leaf__badge {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--nt-accent);
-  color: #fff;
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
 }
 
 .nt-btn {
@@ -792,36 +702,47 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: 999px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
   border: 1px solid var(--nt-line);
-  background: #fff;
+  background: var(--nt-surface);
   color: var(--nt-text);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
 }
 
-.nt-page.is-dark .nt-btn {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--nt-text);
-}
-
 .nt-btn:hover:not(:disabled) {
-  border-color: rgba(107, 92, 255, 0.35);
+  border-color: color-mix(in srgb, var(--nt-accent) 36%, var(--nt-line));
   color: var(--nt-accent);
 }
 
 .nt-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .nt-more {
+  min-width: 120px;
+}
+
+.nt-sentinel {
+  height: 1px;
   width: 100%;
-  margin-top: 16px;
+}
+
+.nt-footer-status {
+  display: grid;
+  place-items: center;
+  padding: 14px 16px 10px;
+  color: var(--nt-muted);
+  font-size: 0.76rem;
+}
+
+.nt-footer-status.is-end {
+  opacity: 0.75;
 }
 
 .nt-empty {
@@ -834,48 +755,52 @@ onBeforeUnmount(() => {
 }
 
 .nt-empty i {
-  font-size: 1.6rem;
+  font-size: 1.4rem;
   color: var(--nt-accent);
 }
 
 .nt-empty strong {
   color: var(--nt-text);
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 .nt-empty p {
   margin: 0;
   max-width: 28ch;
-  font-size: 0.86rem;
+  font-size: 0.82rem;
   line-height: 1.5;
 }
 
 .nt-skel {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  padding-left: 42px;
+  gap: 0;
+  padding: 4px 0;
 }
 
 .nt-skel__row {
-  height: 84px;
-  border-radius: 18px;
+  height: 68px;
+  margin: 0 16px;
+  border-radius: 10px;
   background: linear-gradient(
     90deg,
-    rgba(28, 26, 39, 0.04),
-    rgba(28, 26, 39, 0.08),
-    rgba(28, 26, 39, 0.04)
+    rgb(21 22 31 / 3%),
+    rgb(21 22 31 / 7%),
+    rgb(21 22 31 / 3%)
   );
   background-size: 200% 100%;
   animation: nt-shimmer 1.2s linear infinite;
 }
 
+.nt-skel__row + .nt-skel__row {
+  margin-top: 8px;
+}
+
 .nt-page.is-dark .nt-skel__row {
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04),
-    rgba(255, 255, 255, 0.09),
-    rgba(255, 255, 255, 0.04)
+    rgb(255 255 255 / 4%),
+    rgb(255 255 255 / 9%),
+    rgb(255 255 255 / 4%)
   );
   background-size: 200% 100%;
 }
@@ -898,68 +823,24 @@ onBeforeUnmount(() => {
 
 @media (max-width: 720px) {
   .nt-page {
-    padding: 20px 14px 56px;
-  }
-
-  .nt-hero {
-    align-items: flex-start;
+    padding: 16px 12px 40px;
   }
 
   .nt-hero__actions {
     width: 100%;
-    justify-content: stretch;
   }
 
   .nt-hero__actions .nt-btn {
     flex: 1;
   }
 
-  .nt-board {
-    padding: 18px 12px 14px;
-    border-radius: 22px;
-  }
-
-  .nt-branch {
-    padding-left: 2px;
-  }
-
-  .nt-branch::before {
-    left: 14px;
-  }
-
-  .nt-branch__head {
-    grid-template-columns: 24px minmax(0, 1fr) auto;
-    gap: 10px;
-  }
-
-  .nt-branch__node {
-    margin-left: 3px;
-  }
-
-  .nt-branch__list {
-    padding-left: 28px;
-    gap: 10px;
-  }
-
-  .nt-leaf__card {
-    grid-template-columns: 40px minmax(0, 1fr) minmax(72px, auto);
-    gap: 12px;
+  .nt-item {
     padding: 12px 14px;
   }
 
-  .nt-leaf__icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 12px;
-  }
-
-  .nt-leaf__amount b {
-    font-size: 1.05rem;
-  }
-
-  .nt-skel {
-    padding-left: 28px;
-    grid-template-columns: 1fr;
+  .nt-day__head {
+    padding-right: 14px;
+    padding-left: 14px;
   }
 }
 </style>

@@ -24,7 +24,8 @@ const (
 )
 
 type createAssistantConversationIn struct {
-	Title string `json:"title"`
+	Title     string `json:"title"`
+	Workspace string `json:"workspace"`
 }
 
 type importAssistantConversationsIn struct {
@@ -95,8 +96,15 @@ func (s *Server) createAssistantConversation(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	workspace, err := assistantConversationWorkspace(body.Workspace)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	title := assistantTitle(body.Title)
-	item, err := store.InsertAssistantConversation(c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, time.Now().UTC())
+	item, err := store.InsertAssistantConversationWithWorkspace(
+		c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, workspace, time.Now().UTC(),
+	)
 	if err != nil {
 		fail(c, err)
 		return
@@ -549,7 +557,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	userMessageID := parseAssistantUUID(body.ClientUserMessageID)
 	assistantMessageID := parseAssistantUUID(body.ClientAssistantMessageID)
 	now := time.Now().UTC()
-	references := sanitizeAssistantReferences(body.ReferenceImages, user.ID)
+	references, err := sanitizeAssistantReferences(body.ReferenceImages, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	assistantUploadKeys := assistantUploadReferenceKeys(references, user.ID)
 	taskOutputReferenceKeys := assistantTaskOutputReferenceKeys(references, user.ID)
 	assistantOutputKeys := assistantOutputReferenceKeys(references, user.ID)
@@ -812,7 +824,9 @@ func (s *Server) assistantRuns(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	runs, err := store.ListActiveUserAssistantRuns(c.Request.Context(), s.St.Pool, user.ID)
+	runs, err := store.ListActiveUserAssistantRunsByWorkspace(
+		c.Request.Context(), s.St.Pool, user.ID, "assistant",
+	)
 	if err != nil {
 		fail(c, err)
 		return
@@ -931,8 +945,19 @@ func assistantConversationDict(item *store.AssistantConversation, messages []*st
 	for _, message := range messages {
 		serialized = append(serialized, assistantMessageDict(message))
 	}
-	return gin.H{"id": item.ID.String(), "title": item.Title, "createdAt": isoValue(item.CreatedAt),
+	return gin.H{"id": item.ID.String(), "title": item.Title, "workspace": item.Workspace, "createdAt": isoValue(item.CreatedAt),
 		"updatedAt": isoValue(item.UpdatedAt), "messages": serialized}
+}
+
+func assistantConversationWorkspace(value string) (string, error) {
+	workspace := strings.ToLower(strings.TrimSpace(value))
+	if workspace == "" {
+		return "assistant", nil
+	}
+	if workspace != "assistant" && workspace != "ui_design" {
+		return "", apperr.E("validation_error", "workspace: 不支持的会话工作区", 422)
+	}
+	return workspace, nil
 }
 
 func assistantMessageDict(item *store.AssistantMessage) gin.H {
@@ -1128,26 +1153,45 @@ func assistantReferenceItems(value any) []map[string]any {
 	}
 }
 
-func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
+func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) ([]map[string]any, error) {
+	type candidate struct {
+		item        map[string]any
+		key         string
+		sourceIndex int
+	}
+	candidates := make([]candidate, 0, len(items))
+	sources := make([]string, 0, len(items))
 	for _, item := range items {
 		key := strings.TrimSpace(assistantMapText(item, "fileKey"))
 		dataURL := strings.TrimSpace(assistantMapText(item, "dataUrl"))
 		allowedKey := strings.HasPrefix(key, "uploads/"+userID.String()+"/") || strings.HasPrefix(key, "tasks/"+userID.String()+"/")
-		allowedURL := strings.HasPrefix(dataURL, "https://") || strings.HasPrefix(dataURL, "http://")
-		if !allowedKey && !allowedURL {
+		if allowedKey {
+			candidates = append(candidates, candidate{item: item, key: key, sourceIndex: -1})
 			continue
 		}
+		if dataURL == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{item: item, sourceIndex: len(sources)})
+		sources = append(sources, dataURL)
+	}
+	normalizedSources, err := validateAssistantReferenceImages(sources)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		item := candidate.item
 		copyItem := map[string]any{"id": assistantMapText(item, "id"), "name": assistantMapText(item, "name")}
-		if allowedKey {
-			copyItem["fileKey"] = key
-			copyItem["dataUrl"] = "/api/v1/files/" + key
+		if candidate.key != "" {
+			copyItem["fileKey"] = candidate.key
+			copyItem["dataUrl"] = "/api/v1/files/" + candidate.key
 		} else {
-			copyItem["dataUrl"] = dataURL
+			copyItem["dataUrl"] = normalizedSources[candidate.sourceIndex]
 		}
 		out = append(out, copyItem)
 	}
-	return out
+	return out, nil
 }
 
 func assistantResolvedMode(run *store.AssistantRun) string {

@@ -75,9 +75,9 @@ const studioEntries = [
     key: 'model-sheet',
     to: '/model-sheet',
     icon: 'bi-person-bounding-box',
-    title: '超高清模型图',
-    tag: 'Ultra HD',
-    desc: '角色设定与模型图，超高清细节呈现',
+    title: '模型设计',
+    tag: 'Model Design',
+    desc: '角色设定与多视角模型参考',
   },
   {
     key: 'game-art',
@@ -86,14 +86,6 @@ const studioEntries = [
     title: '游戏设计',
     tag: 'Game Asset',
     desc: '原画、图标、场景资产一站生成',
-  },
-  {
-    key: 'puzzle',
-    to: '/ai-puzzle',
-    icon: 'bi-puzzle-fill',
-    title: 'AI 拼图',
-    tag: 'Puzzle',
-    desc: '把喜欢的画面拆成星屑再拼回',
   },
 ]
 

@@ -45,7 +45,7 @@ func TestDeleteTaskProtectsReferencedOutputs(t *testing.T) {
 	}
 }
 
-func TestDeleteTaskCascadeRemovesDependentTaskChain(t *testing.T) {
+func TestDeleteTaskCascadeMarksDependentTaskChainAsUserDeleted(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
 	parentKey := "tasks/" + user.ID.String() + "/parent.png"
@@ -77,14 +77,24 @@ func TestDeleteTaskCascadeRemovesDependentTaskChain(t *testing.T) {
 		t.Fatalf("cascade delete: status %d code %s body %s", w.Code, code, w.Body.String())
 	}
 
-	var remaining int
+	var marked, deletedOutputs, remainingOutputs int
 	if err := env.st.Pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM tasks WHERE id = ANY($1::uuid[])`,
-		[]uuid.UUID{parentID, childID, grandchildID}).Scan(&remaining); err != nil {
-		t.Fatalf("count remaining tasks: %v", err)
+		`SELECT
+			count(*) FILTER (WHERE deleted_at IS NOT NULL AND deletion_actor = 'user'),
+			coalesce(sum(deleted_output_count), 0),
+			coalesce(sum(jsonb_array_length(output_keys)), 0)
+		 FROM tasks WHERE id = ANY($1::uuid[])`,
+		[]uuid.UUID{parentID, childID, grandchildID}).Scan(&marked, &deletedOutputs, &remainingOutputs); err != nil {
+		t.Fatalf("read task deletion markers: %v", err)
 	}
-	if remaining != 0 {
-		t.Fatalf("cascade left %d tasks", remaining)
+	if marked != 3 || deletedOutputs != 3 || remainingOutputs != 0 {
+		t.Fatalf("cascade markers = %d tasks / %d deleted outputs / %d live outputs, want 3 / 3 / 0",
+			marked, deletedOutputs, remainingOutputs)
+	}
+
+	w = env.do(t, http.MethodGet, "/api/v1/tasks/"+parentID.String(), nil, token)
+	if _, code := decode(t, w); w.Code != http.StatusNotFound || code != "task_not_found" {
+		t.Fatalf("read user-deleted task: status %d code %s body %s", w.Code, code, w.Body.String())
 	}
 }
 

@@ -15,8 +15,9 @@ import notificationService from '@/services/notification'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
 import { createLoginRedirectQuery } from '@/services/authRedirect'
 import {
+  isSmartCanvasTask,
   stashPendingPrompt,
-  studioRouteForTaskType,
+  studioRouteForTask,
 } from '@/features/creator-hub/studioTools'
 import { taskCoverUrl, taskOriginalUrl, taskThumbnailUrl } from '@/features/creator-hub/taskMedia'
 import { taskAspectCss } from '@/features/creator-hub/useMasonryFeed'
@@ -177,6 +178,10 @@ function taskPrompt(task) {
     .trim()
 }
 
+function taskTypeLabel(task) {
+  return isSmartCanvasTask(task) ? '智能画布' : TASK_TYPE_LABELS[task?.type] || '创作'
+}
+
 function formatTime(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -215,7 +220,7 @@ const visibleTasks = computed(() => {
     .filter((task) => {
       if (statusFilter.value && task.status !== statusFilter.value) return false
       if (!q) return true
-      return `${taskPrompt(task)} ${TASK_TYPE_LABELS[task.type] || ''}`
+      return `${taskPrompt(task)} ${taskTypeLabel(task)}`
         .toLowerCase()
         .includes(q)
     })
@@ -233,7 +238,7 @@ const selectedDownloadTasks = computed(() =>
 )
 const publishDialogTitle = computed(() => {
   const prompt = taskPrompt(publishTarget.value).replace(/\s+/g, ' ').trim()
-  return prompt ? prompt.slice(0, 120) : `${TASK_TYPE_LABELS[publishTarget.value?.type] || 'AI'} 创作`
+  return prompt ? prompt.slice(0, 120) : `${taskTypeLabel(publishTarget.value)} 创作`
 })
 
 const previewIndex = computed(() => {
@@ -495,7 +500,7 @@ async function copyPreviewPrompt() {
 }
 
 function downloadFilename(task) {
-  const type = TASK_TYPE_LABELS[task?.type] || 'AI作品'
+  const type = taskTypeLabel(task)
   const date = String(task?.createdAt || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
   return `${type}-${date}-${String(task?.id || '').slice(0, 8) || 'original'}`
 }
@@ -916,9 +921,11 @@ function recreate(task) {
     notificationService.info('该任务没有可复用的提示词')
     return
   }
-  stashPendingPrompt({ prompt, taskType: task.type || 't2i' })
+  if (!isSmartCanvasTask(task)) {
+    stashPendingPrompt({ prompt, taskType: task.type || 't2i' })
+  }
   notificationService.success('已带到工作台')
-  router.push(studioRouteForTaskType(task.type))
+  router.push(studioRouteForTask(task))
 }
 
 function handleRealtime(event) {
@@ -1237,7 +1244,7 @@ onBeforeUnmount(() => {
                 </button>
                 <div class="ch-card__body">
                   <div class="ch-card__meta">
-                    <span class="ch-pill">{{ TASK_TYPE_LABELS[item.task.type] || '创作' }}</span>
+                    <span class="ch-pill">{{ taskTypeLabel(item.task) }}</span>
                     <span class="ch-pill is-status" :data-status="item.task.status">
                       {{ STATUS_LABELS[item.task.status] || item.task.status }}
                     </span>
@@ -1331,7 +1338,7 @@ onBeforeUnmount(() => {
                           :max-dimension="240"
                           @load="ensureMediaMetadata(task)"
                         />
-                        <span>{{ TASK_TYPE_LABELS[task.type] || '创作' }}</span>
+                        <span>{{ taskTypeLabel(task) }}</span>
                       </button>
                     </td>
                     <td class="is-prompt" :title="task.cleanPrompt" data-no-translate>{{ task.cleanPrompt }}</td>
@@ -1419,7 +1426,7 @@ onBeforeUnmount(() => {
           <aside class="ch-preview__body">
             <div class="ch-preview__top">
               <div class="ch-card__meta">
-                <span class="ch-pill">{{ TASK_TYPE_LABELS[preview.type] || '创作' }}</span>
+                <span class="ch-pill">{{ taskTypeLabel(preview) }}</span>
                 <span class="ch-pill is-status" :data-status="preview.status">
                   {{ STATUS_LABELS[preview.status] || preview.status }}
                 </span>
@@ -1468,7 +1475,7 @@ onBeforeUnmount(() => {
     <SharePublishDialog
       :open="publishOpen"
       :title="publishDialogTitle"
-      :style-label="TASK_TYPE_LABELS[publishTarget?.type] || 'AI 创作'"
+      :style-label="taskTypeLabel(publishTarget)"
       :submitting="publishBusy"
       :light="!appearanceStore.isDark"
       @close="closePublish"

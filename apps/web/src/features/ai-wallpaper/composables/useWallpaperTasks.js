@@ -20,6 +20,16 @@ import {
   shouldKeepExistingTaskSnapshot,
 } from '@/features/ai-wallpaper/domain/mapServerJobToTask'
 import { resolveServerJobsPagination } from '@/features/ai-wallpaper/domain/historyPagination'
+import {
+  inheritBackgroundRemovalPresentation,
+  isAutomaticBackgroundRemovalJob,
+} from '@/features/ai-wallpaper/domain/backgroundRemovalTasks'
+import {
+  isTaskGenerating,
+  serverTaskStartedAt,
+  taskGenerationElapsedMs,
+  taskTimestamp,
+} from '@/features/ai-wallpaper/domain/taskGenerationTiming'
 import { looksLikeIllustrationColoringTask } from '@/features/ai-shared/aiJobKinds'
 import { getModelAutoAspectRatioCandidates } from '@/features/ai-shared/modelImageCapabilities'
 import {
@@ -153,6 +163,7 @@ export function useWallpaperTasks(deps = {}) {
   const serverJobPollControllers = new Map()
   const pendingServerJobSnapshots = new Map()
   const completedResultRetryTimers = new Map()
+  const automaticBackgroundRefreshTimers = new Set()
   const pendingCancelTaskIds = new Set()
   const pendingRemoveTaskIds = new Set()
   const completedResultMisses = new Map()
@@ -181,7 +192,7 @@ export function useWallpaperTasks(deps = {}) {
     if (task.localUpscaleStatus === 'running') {
       return `正在生成 ${task.localUpscaleTarget || '高清'} · ${Math.round(Number(task.localUpscaleProgress || 0))}%`
     }
-    if (task.status === 'running') return `已处理 ${elapsedLabel.value}`
+    if (task.status === 'running') return `已处理 ${formatTaskElapsed(task) || '0s'}`
     if (task.status === 'done' || task.status === 'completed')
       return `已完成 ${formatDuration(task.finishedAt - task.startedAt)}`
     if (task.status === 'failed') return '任务失败'
@@ -199,27 +210,11 @@ export function useWallpaperTasks(deps = {}) {
     return `${minutes}m ${String(rest).padStart(2, '0')}s`
   }
 
-  function taskTimestamp(value) {
-    if (typeof value === 'number' && Number.isFinite(value)) return value
-    const parsed = Date.parse(String(value || ''))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-
   function formatTaskElapsed(task) {
     if (!task) return ''
-    const startedAt = taskTimestamp(task.startedAt || task.started_at)
-    if (!startedAt) return ''
-    const explicitDuration = Number(task.durationMs || task.duration_ms || 0)
-    if (explicitDuration > 0) return formatDuration(explicitDuration)
-    const finishedAt = taskTimestamp(task.finishedAt || task.finished_at)
-    const status = String(task.status || '').toLowerCase()
-    const isActive = ['queued', 'running', 'waiting_provider'].includes(status)
-    // Read the shared timer so active cards re-render every second. Date math
-    // remains per-task, which keeps concurrent jobs' durations independent.
-    const liveTickMs = elapsedSeconds.value * 1000
-    const endAt = finishedAt || (isActive ? Date.now() : startedAt)
-    const elapsed = Math.max(0, endAt - startedAt)
-    if (isActive) return formatDuration(Math.max(elapsed, liveTickMs))
+    // elapsedSeconds 只负责触发活动卡片刷新；每个任务仍按自己的 startedAt 计算。
+    const tickOffset = isTaskGenerating(task) ? elapsedSeconds.value * 0 : 0
+    const elapsed = taskGenerationElapsedMs(task, Date.now() + tickOffset)
     return elapsed > 0 ? formatDuration(elapsed) : ''
   }
 
@@ -416,15 +411,16 @@ export function useWallpaperTasks(deps = {}) {
   }
 
   function restoreRunningTaskUi() {
-    const running = tasks.value.filter(
+    const active = tasks.value.filter(
       (task) => task.serverJobId && !isTerminalServerJobStatus(task.status),
     )
-    if (!running.length) return
-    runningTaskIds.value = running.map((task) => task.id)
-    runningTaskId.value = running[0].id
-    const startedAt =
-      Number(running[0].startedAt) || Date.parse(running[0].createdAt || '') || Date.now()
-    startTimer(startedAt)
+    if (!active.length) return
+    runningTaskIds.value = active.map((task) => task.id)
+    runningTaskId.value = active[0].id
+    const generating = active.find(
+      (task) => isTaskGenerating(task) && taskTimestamp(task.startedAt),
+    )
+    if (generating) startTimer(generating.startedAt)
   }
 
   function updateTask(id, patch, options = {}) {
@@ -487,6 +483,17 @@ export function useWallpaperTasks(deps = {}) {
     taskIds.forEach(stopServerJobPolling)
   }
 
+  function scheduleAutomaticBackgroundRemovalRefresh() {
+    if (disposed || automaticBackgroundRefreshTimers.size) return
+    ;[350, 1200, 3000].forEach((delay) => {
+      const refreshTimer = globalThis.setTimeout(() => {
+        automaticBackgroundRefreshTimers.delete(refreshTimer)
+        if (!disposed) void refreshServerAiJobs()
+      }, delay)
+      automaticBackgroundRefreshTimers.add(refreshTimer)
+    })
+  }
+
   function resumeServerJobPolling() {
     if (typeof window === 'undefined') return
     if (!authStore.isAuthenticated) return
@@ -499,8 +506,11 @@ export function useWallpaperTasks(deps = {}) {
   function startTimer(startedAt) {
     stopTimer()
     if (typeof window === 'undefined') return
+    const timestamp = taskTimestamp(startedAt)
+    if (!timestamp) return
+    elapsedSeconds.value = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
     timer = window.setInterval(() => {
-      elapsedSeconds.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+      elapsedSeconds.value = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
     }, 1000)
   }
 
@@ -1177,14 +1187,12 @@ export function useWallpaperTasks(deps = {}) {
       Boolean(task.regenerateSnapshot)
     runningTaskId.value = taskId
     runningTaskIds.value = [...new Set([...runningTaskIds.value, taskId])]
-    const startedAt = Date.now()
     elapsedSeconds.value = 0
-    startTimer(startedAt)
     updateTask(
       taskId,
       {
-        status: 'running',
-        startedAt,
+        status: 'queued',
+        startedAt: 0,
         logs: [allowStatusRegression ? '正在重新生成' : '正在提交到云端处理'],
       },
       allowStatusRegression ? { force: true } : {},
@@ -1390,6 +1398,7 @@ export function useWallpaperTasks(deps = {}) {
         taskId,
         {
           status: response.job?.status || 'queued',
+          startedAt: serverTaskStartedAt(response.job),
           serverJobId: response.job?.id || '',
           estimatedCostUsd: response.job?.estimatedCostUsd ?? estimatedCostUsd,
           sourceRemoteUrl: sourceUrl || task.sourceRemoteUrl || '',
@@ -1399,6 +1408,9 @@ export function useWallpaperTasks(deps = {}) {
         },
         { persistImmediately: true, force: allowStatusRegression },
       )
+      if (isTaskGenerating(response.job) && response.job?.startedAt) {
+        startTimer(response.job.startedAt)
+      }
       if (!silentNotifications) {
         notify.success(
           task.isSuperResolution ? '已提交 2 倍超分任务，原图会继续保留' : 'AI 任务已提交云端处理',
@@ -1454,7 +1466,9 @@ export function useWallpaperTasks(deps = {}) {
     if (serverJobPollers.has(taskId)) return
     runningTaskId.value = taskId
     runningTaskIds.value = [...new Set([...runningTaskIds.value, taskId])]
-    if (!timer) startTimer(task.startedAt || Date.now())
+    if (!timer && isTaskGenerating(task) && taskTimestamp(task.startedAt)) {
+      startTimer(task.startedAt)
+    }
     const controller = new AbortController()
     serverJobPollControllers.set(taskId, controller)
     const waiter = waitForTask(task.serverJobId, {
@@ -1541,9 +1555,18 @@ export function useWallpaperTasks(deps = {}) {
       const baseLogs = task.logs || []
       const patch = {
         status,
+        startedAt: serverTaskStartedAt(job),
         error: job.error || '',
         estimatedCostUsd: job.estimatedCostUsd ?? task.estimatedCostUsd,
         logs: (baseLogs.at(-1) === nextLog ? baseLogs : [...baseLogs, nextLog]).slice(-12),
+      }
+
+      if (isTerminalServerJobStatus(status)) {
+        patch.finishedAt =
+          taskTimestamp(job.finishedAt) ||
+          (Number(job.durationMs || 0) > 0 && patch.startedAt
+            ? patch.startedAt + Number(job.durationMs)
+            : taskTimestamp(task.finishedAt) || Date.now())
       }
 
       if (status === 'completed' || status === 'paused') {
@@ -1607,11 +1630,6 @@ export function useWallpaperTasks(deps = {}) {
         patch.thumbnailOutputs = thumbnailOutputs.length
           ? thumbnailOutputs
           : task.thumbnailOutputs || displayOutputs
-        patch.finishedAt =
-          Date.parse(String(job.finishedAt || '')) ||
-          (Number(job.durationMs || 0) > 0 && task.startedAt
-            ? Number(task.startedAt) + Number(job.durationMs)
-            : Date.now())
         if (status === 'completed') {
           patch.logs = [
             ...(task.logs || []),
@@ -1674,6 +1692,25 @@ export function useWallpaperTasks(deps = {}) {
       updateTask(taskId, patch, {
         persistImmediately: isTerminalServerJobStatus(status) || !!patch.outputs?.length,
       })
+      if (!timer && isTaskGenerating(status) && patch.startedAt) {
+        startTimer(patch.startedAt)
+      }
+      if (
+        status === 'completed' &&
+        task.autoBackgroundRemovalEnabled === true &&
+        !task.automaticBackgroundRemoval &&
+        (patch.outputs || []).length
+      ) {
+        scheduleAutomaticBackgroundRemovalRefresh()
+      }
+      if (status === 'completed' && task.automaticBackgroundRemoval && (patch.outputs || []).length) {
+        const currentActive = tasks.value.find((item) => item.id === activeTaskId.value)
+        if (currentActive?.serverJobId === task.parentTaskId) {
+          activeTaskId.value = taskId
+          selectedOutputIndex.value = 0
+          canvasMode.value = 'result'
+        }
+      }
 
       const waitingForCompletedResult =
         status === 'completed' &&
@@ -1690,7 +1727,9 @@ export function useWallpaperTasks(deps = {}) {
         stopServerJobPolling(taskId)
         runningTaskIds.value = runningTaskIds.value.filter((id) => id !== taskId)
         if (runningTaskId.value === taskId) runningTaskId.value = ''
-        if (!runningTaskIds.value.length) stopTimer()
+        if (!tasks.value.some((item) => isTaskGenerating(item) && taskTimestamp(item.startedAt))) {
+          stopTimer()
+        }
         if (status === 'completed' && patch.outputs?.length) {
           notify.success('云端 AI 任务已完成')
         } else if (status === 'completed') {
@@ -1861,14 +1900,39 @@ export function useWallpaperTasks(deps = {}) {
 
   async function refreshServerAiJobsOnce({ append = false } = {}) {
     try {
-      const response = await listServerAiJobs(12, {
-        cursor: append ? serverJobsNextCursor.value : '',
-      })
+      const [response, backgroundRemovalResponse] = await Promise.all([
+        listServerAiJobs(12, {
+          type: 't2i',
+          cursor: append ? serverJobsNextCursor.value : '',
+        }),
+        // 抠图是独立工具任务。单独读取后只合并自动子任务，避免手动抠图历史混入文生图。
+        listServerAiJobs(100, { type: 'background_remove' }).catch(() => ({
+          jobs: [],
+          pagination: { nextCursor: '', hasMore: false },
+        })),
+      ])
       if (disposed) return false
       const responseNextCursor = String(response?.pagination?.nextCursor || '')
       const responseHasMore = response?.pagination?.hasMore === true
-      const remoteJobs = (Array.isArray(response.jobs) ? response.jobs : []).filter((job) =>
+      const wallpaperJobs = (Array.isArray(response.jobs) ? response.jobs : []).filter((job) =>
         isWallpaperJobKind(job?.kind),
+      )
+      const parentJobIds = new Set([
+        ...wallpaperJobs.map((job) => String(job.id || '')),
+        ...tasks.value
+          .filter((task) => !task.automaticBackgroundRemoval)
+          .map((task) => String(task.serverJobId || '')),
+      ])
+      const automaticBackgroundJobs = (
+        Array.isArray(backgroundRemovalResponse?.jobs) ? backgroundRemovalResponse.jobs : []
+      ).filter((job) => {
+        if (!isAutomaticBackgroundRemovalJob(job)) return false
+        const params = job?.input || job?.params || {}
+        return parentJobIds.has(String(params?._parentTaskId || ''))
+      })
+      const responseJobs = [...wallpaperJobs, ...automaticBackgroundJobs]
+      const remoteJobs = responseJobs.filter(
+        (job) => isWallpaperJobKind(job?.kind) || isAutomaticBackgroundRemovalJob(job),
       )
       // 原地重生成期间，旧 job 仍可能短暂留在列表里，绝不能再导成新卡片
       const regeneratingPreviousJobIds = new Set(
@@ -1887,10 +1951,15 @@ export function useWallpaperTasks(deps = {}) {
       remoteJobs.forEach((job) => {
         if (regeneratingPreviousJobIds.has(String(job.id || ''))) return
         const existing = localByServerId.get(job.id)
-        const mapped = mapServerJobToTask(job, {
+        let mapped = mapServerJobToTask(job, {
           resolveModelLabel: resolveJobDisplayModel,
           existingTask: existing,
         })
+        if (mapped.automaticBackgroundRemoval) {
+          const parent =
+            mergedByServerId.get(mapped.parentTaskId) || localByServerId.get(mapped.parentTaskId)
+          if (parent) mapped = inheritBackgroundRemovalPresentation(mapped, parent)
+        }
         mergedByServerId.set(
           job.id,
           existing && shouldKeepExistingTaskSnapshot(existing.status, mapped.status)
@@ -1900,16 +1969,18 @@ export function useWallpaperTasks(deps = {}) {
       })
       const orphanLocalTasks = tasks.value.filter((task) => {
         if (looksLikeIllustrationColoringTask(task)) return false
-        if (task.kind && !isWallpaperJobKind(task.kind)) return false
+        if (task.kind && !isWallpaperJobKind(task.kind) && !task.automaticBackgroundRemoval) {
+          return false
+        }
         // 已按 serverJobId 合并进远程列表的本地任务不能再当孤儿追加，否则会出现同任务双卡片
         if (task.serverJobId && mergedByServerId.has(task.serverJobId)) return false
         // 正在原地重生成的任务即使暂时没有 serverJobId，也必须保留本地卡片
         if (String(task.regenerateStatus || '') === 'running') return true
         if (!task.serverJobId) return true
-        const remote = (Array.isArray(response.jobs) ? response.jobs : []).find(
-          (job) => job.id === task.serverJobId,
-        )
-        if (remote && !isWallpaperJobKind(remote.kind)) return false
+        const remote = responseJobs.find((job) => job.id === task.serverJobId)
+        if (remote && !isWallpaperJobKind(remote.kind) && !isAutomaticBackgroundRemovalJob(remote)) {
+          return false
+        }
         return true
       })
       const seenIds = new Set()
@@ -1931,18 +2002,15 @@ export function useWallpaperTasks(deps = {}) {
       tasks.value = mergedTasks
       taskMutationVersion += 1
       const activeParent = mergedTasks.find((task) => task.id === activeTaskId.value)
-      const completedAutomaticChild = activeParent?.serverJobId
+      const automaticChild = activeParent?.serverJobId && !activeParent.automaticBackgroundRemoval
         ? mergedTasks.find(
             (task) =>
               task.automaticBackgroundRemoval === true &&
-              task.parentTaskId === activeParent.serverJobId &&
-              ['completed', 'done'].includes(String(task.status || '').toLowerCase()) &&
-              Array.isArray(task.outputs) &&
-              task.outputs.length > 0,
+              task.parentTaskId === activeParent.serverJobId,
           )
         : null
-      if (completedAutomaticChild) {
-        activeTaskId.value = completedAutomaticChild.id
+      if (automaticChild) {
+        activeTaskId.value = automaticChild.id
         selectedOutputIndex.value = 0
         canvasMode.value = 'result'
       }
@@ -2244,6 +2312,10 @@ export function useWallpaperTasks(deps = {}) {
     pendingServerJobSnapshots.clear()
     completedResultRetryTimers.forEach((retryTimer) => globalThis.clearTimeout(retryTimer))
     completedResultRetryTimers.clear()
+    automaticBackgroundRefreshTimers.forEach((refreshTimer) =>
+      globalThis.clearTimeout(refreshTimer),
+    )
+    automaticBackgroundRefreshTimers.clear()
     completedResultMisses.clear()
     loadMoreJobsPromise = null
     serverJobsLoadingMore.value = false

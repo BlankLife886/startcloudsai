@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const assistantConversationCols = `id, user_id, title, created_at, updated_at`
+const assistantConversationCols = `id, user_id, title, workspace, created_at, updated_at`
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
 const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id, mode, resolved_mode,
 	status, stage, prompt, params, reserved_cents, cost_cents, billing_generation,
@@ -17,7 +17,7 @@ const assistantRunCols = `id, user_id, conversation_id, user_message_id, assista
 
 func scanAssistantConversation(row pgx.Row) (*AssistantConversation, error) {
 	var item AssistantConversation
-	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.Workspace, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -45,18 +45,27 @@ func scanAssistantRun(row pgx.Row) (*AssistantRun, error) {
 }
 
 func InsertAssistantConversation(ctx context.Context, q Q, id, userID uuid.UUID, title string, createdAt time.Time) (*AssistantConversation, error) {
+	return InsertAssistantConversationWithWorkspace(ctx, q, id, userID, title, "assistant", createdAt)
+}
+
+func InsertAssistantConversationWithWorkspace(ctx context.Context, q Q, id, userID uuid.UUID, title, workspace string, createdAt time.Time) (*AssistantConversation, error) {
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
 	return scanAssistantConversation(q.QueryRow(ctx,
-		`INSERT INTO assistant_conversations (id, user_id, title, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $4) RETURNING `+assistantConversationCols,
-		id, userID, title, createdAt))
+		`INSERT INTO assistant_conversations (id, user_id, title, workspace, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $5) RETURNING `+assistantConversationCols,
+		id, userID, title, workspace, createdAt))
 }
 
 func ListAssistantConversations(ctx context.Context, q Q, userID uuid.UUID, limit int) ([]*AssistantConversation, error) {
+	return ListAssistantConversationsByWorkspace(ctx, q, userID, "assistant", limit)
+}
+
+func ListAssistantConversationsByWorkspace(ctx context.Context, q Q, userID uuid.UUID, workspace string, limit int) ([]*AssistantConversation, error) {
 	rows, err := q.Query(ctx, `SELECT `+assistantConversationCols+`
-		FROM assistant_conversations WHERE user_id = $1 ORDER BY updated_at DESC, id DESC LIMIT $2`, userID, limit)
+		FROM assistant_conversations WHERE user_id = $1 AND workspace = $2
+		ORDER BY updated_at DESC, id DESC LIMIT $3`, userID, workspace, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +362,20 @@ func GetAssistantRunForUpdate(ctx context.Context, q Q, id uuid.UUID) (*Assistan
 func ListActiveUserAssistantRuns(ctx context.Context, q Q, userID uuid.UUID) ([]*AssistantRun, error) {
 	rows, err := q.Query(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs
 		WHERE user_id = $1 AND status IN ('queued','running') ORDER BY created_at DESC`, userID)
+	return scanAssistantRuns(rows, err)
+}
+
+func ListActiveUserAssistantRunsByWorkspace(ctx context.Context, q Q, userID uuid.UUID, workspace string) ([]*AssistantRun, error) {
+	rows, err := q.Query(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs
+		WHERE user_id = $1 AND status IN ('queued','running')
+		AND conversation_id IN (
+			SELECT id FROM assistant_conversations WHERE user_id = $1 AND workspace = $2
+		)
+		ORDER BY created_at DESC`, userID, workspace)
+	return scanAssistantRuns(rows, err)
+}
+
+func scanAssistantRuns(rows pgx.Rows, err error) ([]*AssistantRun, error) {
 	if err != nil {
 		return nil, err
 	}

@@ -55,72 +55,56 @@ onMounted(loadGrowth)
 
 <template>
   <main class="usage-page" :class="{ 'is-dark': appearanceStore.isDark }">
-    <section class="usage-hero">
-      <div class="usage-shell usage-hero__inner">
-        <div class="usage-hero__copy">
-          <button type="button" class="usage-back" @click="goBack">
-            <i class="bi bi-arrow-left" aria-hidden="true"></i>
-            返回上一页
-          </button>
-          <p class="usage-eyebrow">USAGE PLAN</p>
+    <header class="usage-top">
+      <div class="usage-shell usage-top__inner">
+        <button type="button" class="usage-back" @click="goBack">
+          <i class="bi bi-arrow-left" aria-hidden="true"></i>
+          返回
+        </button>
+        <div class="usage-top__copy">
           <h1>用量计划</h1>
           <p>本月成功交付越多，自动解锁越高阶的积分回馈。</p>
-
-          <div class="usage-summary" aria-label="本月用量">
-            <div>
-              <small>本月成功交付</small>
-              <strong>{{ loading ? '—' : delivered }} <em>张</em></strong>
-            </div>
-            <span class="usage-summary__divider"></span>
-            <div>
-              <small>已解锁档位</small>
-              <strong
-                >{{ loading ? '—' : achievedCount }}
-                <em>/ {{ milestones.length || '—' }}</em></strong
-              >
-            </div>
-            <span class="usage-summary__divider"></span>
-            <div>
-              <small>{{ nextMilestone ? '距下一档' : '本月进度' }}</small>
-              <strong v-if="nextMilestone">
-                {{ remainingToNext }} <em>张</em>
-              </strong>
-              <strong v-else>{{ progressPercent }}<em>%</em></strong>
-            </div>
-          </div>
         </div>
-
-        <div class="usage-hero__visual" aria-hidden="true">
-          <span class="usage-hero__ring"></span>
-          <span class="usage-hero__mark"><i class="bi bi-bar-chart-fill"></i></span>
-          <div class="usage-hero__meter">
-            <i :style="{ width: `${progressPercent}%` }"></i>
-          </div>
+        <div class="usage-facts" aria-label="本月用量">
+          <span>
+            <i class="bi bi-box-seam"></i>
+            交付 {{ loading ? '—' : delivered }} 张
+          </span>
+          <span>
+            <i class="bi bi-unlock"></i>
+            已解锁 {{ loading ? '—' : achievedCount }}/{{ milestones.length || '—' }}
+          </span>
+          <span>
+            <i class="bi bi-arrow-up-circle"></i>
+            <template v-if="nextMilestone">距下一档 {{ remainingToNext }} 张</template>
+            <template v-else>本月进度 {{ progressPercent }}%</template>
+          </span>
         </div>
       </div>
-    </section>
+    </header>
 
-    <section class="usage-shell usage-panel" aria-label="用量档位">
-      <header class="usage-panel__head">
+    <section class="usage-shell usage-workspace" aria-label="用量档位">
+      <div class="workspace-heading">
         <div>
-          <h2>本月档位</h2>
-          <p>达到对应交付数量后，奖励自动发放到钱包，同档位本月只结算一次。</p>
+          <span class="status-dot" :class="{ 'is-complete': !nextMilestone && milestones.length }"></span>
+          <strong>本月档位</strong>
+          <small>达到对应交付数量后，奖励自动发放到钱包，同档位本月只结算一次。</small>
         </div>
-        <button
-          v-if="loadError"
-          type="button"
-          class="usage-retry"
-          @click="loadGrowth"
-        >
-          重新加载
+        <button v-if="loadError" type="button" class="text-action" @click="loadGrowth">
+          <i class="bi bi-arrow-clockwise"></i>重新加载
         </button>
-      </header>
+      </div>
 
       <div v-if="loading" class="usage-loading" aria-live="polite">
         <span></span><span></span><span></span>
+        <p>正在读取用量计划…</p>
       </div>
 
-      <p v-else-if="loadError" class="usage-error">{{ loadError }}</p>
+      <div v-else-if="loadError" class="usage-empty-state">
+        <i class="bi bi-exclamation-circle"></i>
+        <h2>暂时无法读取用量计划</h2>
+        <p>{{ loadError }}</p>
+      </div>
 
       <ul v-else-if="milestones.length" class="usage-ladder">
         <li
@@ -149,7 +133,7 @@ onMounted(loadGrowth)
             <b>{{ formatPoints(milestone.rewardCents) }}</b>
           </div>
           <i
-            class="bi"
+            class="bi usage-ladder__state"
             :class="milestone.achieved ? 'bi-check-circle-fill' : 'bi-circle'"
             aria-hidden="true"
           ></i>
@@ -157,356 +141,324 @@ onMounted(loadGrowth)
       </ul>
 
       <p v-else class="usage-empty">暂未配置用量档位，请稍后再看。</p>
-
-      <div class="usage-tips" aria-label="用量计划说明">
-        <div>
-          <i class="bi bi-calendar3" aria-hidden="true"></i>
-          <p><strong>按自然月统计</strong><small>每月 1 日重新累计交付量</small></p>
-        </div>
-        <div>
-          <i class="bi bi-lightning-charge-fill" aria-hidden="true"></i>
-          <p><strong>达标自动到账</strong><small>无需手动领取，写入钱包账本</small></p>
-        </div>
-        <div>
-          <i class="bi bi-shield-check" aria-hidden="true"></i>
-          <p><strong>同档不重复发</strong><small>每个档位每月最多结算一次</small></p>
-        </div>
-      </div>
     </section>
+
+    <footer class="usage-rules" aria-labelledby="usage-rules-title">
+      <div class="usage-shell">
+        <h2 id="usage-rules-title" class="sr-only">用量计划说明</h2>
+        <ol class="rule-list">
+          <li>
+            <span>1</span>
+            <div>
+              <strong>按自然月统计</strong>
+              <p>每月 1 日重新累计交付量</p>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>达标自动到账</strong>
+              <p>无需手动领取，写入钱包账本</p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>同档不重复发</strong>
+              <p>每个档位每月最多结算一次</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </footer>
   </main>
 </template>
 
 <style scoped>
+:global(.app-container > .main-content:has(> .usage-page)) {
+  height: 100dvh;
+  max-height: 100dvh;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .usage-page {
-  --ink: #1f2430;
-  --muted: #6f7a8c;
-  --orange: #f27021;
-  --orange-deep: #c45a10;
-  --line: #ebe3d8;
-  --line-soft: #f2f2f2;
-  --bg: #ffffff;
+  --ink: #17171f;
+  --body: #4f5160;
+  --muted: #777785;
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
+  --accent-hover: #4f3fe0;
+  --green: #0f9f6e;
+  --green-soft: rgb(15 159 110 / 12%);
   --surface: #ffffff;
-  --surface-soft: #fffaf4;
-  --surface-warm: #fff9f4;
-  --cream: #fff8e9;
-  --accent-soft: #fff7ef;
-  --accent-border: #f2d2b4;
-  --body: #3a4150;
-  --back: #8a8a8a;
-  --divider: #eeeeee;
-  --hero-a: rgb(255 186 120 / 34%);
-  --hero-b: rgb(255 220 160 / 28%);
-  --hero-c: #fff8e9;
-  --hero-d: #fffdf8;
-  --hero-e: #ffffff;
-  --summary-bg: rgb(255 255 255 / 92%);
-  --summary-border: #ffe7d3;
-  --summary-shadow: 0 8px 22px rgb(224 137 62 / 7%);
-  --panel-bg: rgb(255 255 255 / 97%);
-  --panel-shadow: 0 18px 55px rgb(31 39 49 / 10%);
-  --ladder-bg: #fffaf4;
-  --ladder-border: #f0e4d4;
-  --ladder-achieved-bg: #ffffff;
-  --ladder-achieved-border: #ffe0c4;
-  --ladder-next-border: #ffb27a;
-  --ladder-next-shadow: 0 10px 24px rgb(242 112 33 / 10%);
-  --ladder-icon: #d7cfc4;
-  --loading: #f2b27a;
-  --ring-a: #ffc06a;
-  --ring-b: #ff8a28;
-  --ring-c: #f27021;
-  --ring-shadow: 0 18px 40px rgb(255 120 20 / 22%);
+  --surface-soft: #f6f5fc;
+  --line: rgb(21 22 31 / 10%);
+  --hero: #f4f3fa;
+  display: flex;
   width: 100%;
-  min-height: calc(100dvh - var(--app-header-offset, 72px));
-  overflow-x: clip;
+  min-width: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  flex-direction: column;
+  overflow: hidden;
   color: var(--ink);
-  background: var(--bg);
+  background: var(--surface);
 }
 
 .usage-page.is-dark {
-  --ink: #f4eee6;
-  --muted: #a79c8f;
-  --orange: #ff8a3d;
-  --orange-deep: #ffb06a;
-  --line: #3b342c;
-  --line-soft: #2f2922;
-  --bg: #12100e;
-  --surface: #1c1915;
-  --surface-soft: #181511;
-  --surface-warm: #221c16;
-  --cream: #1c1814;
-  --accent-soft: rgb(255 138 61 / 16%);
-  --accent-border: #5a4030;
-  --body: #cfc4b6;
-  --back: #a79c8f;
-  --divider: #3b342c;
-  --hero-a: rgb(255 138 61 / 18%);
-  --hero-b: rgb(255 176 96 / 12%);
-  --hero-c: #1a1511;
-  --hero-d: #241c15;
-  --hero-e: #17130f;
-  --summary-bg: rgb(28 25 21 / 92%);
-  --summary-border: #5a4030;
-  --summary-shadow: 0 18px 40px rgb(0 0 0 / 28%);
-  --panel-bg: rgb(28 25 21 / 97%);
-  --panel-shadow: 0 18px 40px rgb(0 0 0 / 32%);
-  --ladder-bg: #221c16;
-  --ladder-border: #3b342c;
-  --ladder-achieved-bg: #1c1915;
-  --ladder-achieved-border: #5a4030;
-  --ladder-next-border: #ff8a3d;
-  --ladder-next-shadow: 0 10px 24px rgb(255 138 61 / 14%);
-  --ladder-icon: #5a5248;
-  --loading: #ff8a3d;
-  --ring-a: #ffb06a;
-  --ring-b: #ff8a3d;
-  --ring-c: #e06a20;
-  --ring-shadow: 0 18px 40px rgb(0 0 0 / 32%);
+  --ink: rgba(255, 255, 255, 0.96);
+  --body: rgb(255 255 255 / 72%);
+  --muted: rgb(255 255 255 / 52%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --accent-hover: #9d8fff;
+  --green: #68c994;
+  --green-soft: rgb(104 201 148 / 14%);
+  --surface: #121218;
+  --surface-soft: #1a1824;
+  --line: rgb(255 255 255 / 10%);
+  --hero: #161422;
 }
 
 .usage-shell {
-  width: min(1120px, calc(100% - 48px));
+  width: min(1100px, calc(100% - 40px));
   margin-inline: auto;
 }
 
-.usage-hero {
-  position: relative;
-  overflow: hidden;
+.usage-top {
+  --hero-pad-top: calc(var(--app-header-offset, 72px) + var(--app-page-content-top-gap, 0px));
+  flex: 0 0 auto;
+  margin-top: calc(-1 * var(--hero-pad-top));
+  padding: calc(var(--hero-pad-top) + 10px) 0 14px;
   background:
-    radial-gradient(circle at 86% 20%, var(--hero-a), transparent 30%),
-    radial-gradient(circle at 12% 0%, var(--hero-b), transparent 24%),
-    linear-gradient(112deg, var(--hero-c) 0%, var(--hero-d) 52%, var(--hero-e) 100%);
+    radial-gradient(circle at 92% 0%, rgb(109 92 255 / 16%), transparent 36%),
+    linear-gradient(145deg, var(--hero) 0%, color-mix(in srgb, var(--accent) 6%, var(--hero)) 100%);
+  border-bottom: 1px solid var(--line);
 }
 
-.usage-hero__inner {
+.usage-top__inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(240px, 0.85fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 20px;
-  min-height: 320px;
-}
-
-.usage-hero__copy {
-  padding: 28px 0 40px;
+  gap: 18px;
 }
 
 .usage-back {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 16px;
+  gap: 6px;
   padding: 0;
-  color: var(--back);
+  color: var(--body);
   background: none;
   border: 0;
   font: inherit;
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   font-weight: 700;
   cursor: pointer;
 }
 
 .usage-back:hover {
-  color: var(--orange);
+  color: var(--accent);
 }
 
-.usage-eyebrow {
+.usage-top__copy h1 {
   margin: 0;
-  color: var(--orange-deep);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.usage-hero h1 {
-  margin: 10px 0 0;
-  font-size: clamp(2.4rem, 4.8vw, 3.8rem);
-  font-weight: 900;
+  font-size: 1.55rem;
+  font-weight: 840;
   letter-spacing: -0.03em;
-  line-height: 1.05;
+  line-height: 1.15;
 }
 
-.usage-hero__copy > p:last-of-type {
-  margin: 14px 0 0;
+.usage-top__copy p {
+  margin: 4px 0 0;
   color: var(--body);
-  font-size: 1.05rem;
-  line-height: 1.55;
+  font-size: 0.84rem;
+  line-height: 1.4;
 }
 
-.usage-summary {
+.usage-facts {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  gap: 0;
-  width: min(100%, 560px);
-  margin-top: 26px;
-  padding: 16px 18px;
-  background: var(--summary-bg);
-  border: 2px solid var(--summary-border);
-  border-radius: 18px;
-  box-shadow: var(--summary-shadow);
+  justify-content: flex-end;
+  gap: 8px;
 }
 
-.usage-summary > div {
-  flex: 1;
-  min-width: 110px;
-  display: grid;
-  gap: 4px;
-}
-
-.usage-summary small {
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
-.usage-summary strong {
-  color: var(--orange);
-  font-size: 1.45rem;
-  font-weight: 850;
-  line-height: 1.1;
-}
-
-.usage-summary em {
+.usage-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
   color: var(--ink);
-  font-style: normal;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.usage-summary__divider {
-  width: 1px;
-  margin: 4px 14px;
-  background: var(--divider);
-}
-
-.usage-hero__visual {
-  position: relative;
-  display: grid;
-  place-items: center;
-  min-height: 260px;
-}
-
-.usage-hero__ring {
-  position: absolute;
-  width: min(78%, 280px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 40% 35%, var(--ring-a) 0%, var(--ring-b) 48%, var(--ring-c) 100%);
-  box-shadow: var(--ring-shadow);
-}
-
-.usage-hero__mark {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  width: 88px;
-  height: 88px;
-  place-items: center;
-  color: #fff;
-  background: rgb(255 255 255 / 18%);
-  border: 1px solid rgb(255 255 255 / 35%);
-  border-radius: 28px;
-  font-size: 2.2rem;
-  backdrop-filter: blur(6px);
-}
-
-.usage-hero__meter {
-  position: absolute;
-  bottom: 28px;
-  left: 18%;
-  right: 18%;
-  height: 10px;
-  overflow: hidden;
-  background: rgb(255 255 255 / 55%);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--line);
   border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 720;
 }
 
-.usage-hero__meter > i {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #fff3, #fff);
-  border-radius: inherit;
+.usage-facts i {
+  color: var(--accent);
 }
 
-.usage-panel {
-  position: relative;
-  z-index: 2;
-  margin-top: -28px;
-  margin-bottom: 40px;
-  padding: 28px 32px 24px;
-  background: var(--panel-bg);
-  border: 1px solid var(--line-soft);
-  border-radius: 22px;
-  box-shadow: var(--panel-shadow);
-}
-
-.usage-panel__head {
+.usage-workspace {
   display: flex;
-  align-items: flex-end;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 14px 0 8px;
+  overflow: auto;
+}
+
+.workspace-heading {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }
 
-.usage-panel__head h2 {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 850;
+.workspace-heading > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
-.usage-panel__head p {
-  margin: 6px 0 0;
-  color: var(--muted);
+.workspace-heading strong {
   font-size: 0.86rem;
 }
 
-.usage-retry {
-  min-height: 36px;
-  padding: 0 14px;
-  color: var(--orange);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: 999px;
+.workspace-heading small {
+  overflow: hidden;
+  color: var(--body);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.status-dot.is-complete {
+  background: var(--green);
+}
+
+.text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--accent);
+  background: none;
+  border: 0;
   font: inherit;
-  font-size: 0.78rem;
-  font-weight: 750;
+  font-size: 0.8rem;
+  font-weight: 720;
   cursor: pointer;
 }
 
-.usage-loading {
+.usage-loading,
+.usage-empty-state {
   display: flex;
-  gap: 8px;
-  padding: 28px 0;
+  min-height: 120px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
 }
 
-.usage-loading > span {
-  width: 10px;
-  height: 10px;
+.usage-loading {
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--body);
+}
+
+.usage-loading span {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
   border-radius: 50%;
-  background: var(--loading);
-  animation: usage-pulse 1s ease-in-out infinite;
+  animation: usage-pulse 1s infinite alternate;
 }
 
-.usage-loading > span:nth-child(2) {
-  animation-delay: 0.12s;
+.usage-loading span:nth-child(2) {
+  animation-delay: 0.2s;
 }
 
-.usage-loading > span:nth-child(3) {
-  animation-delay: 0.24s;
+.usage-loading span:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
-.usage-error,
+.usage-loading p {
+  width: 100%;
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+@keyframes usage-pulse {
+  to {
+    opacity: 0.25;
+    transform: translateY(-4px);
+  }
+}
+
+.usage-empty-state {
+  flex-direction: column;
+  color: var(--body);
+  text-align: center;
+}
+
+.usage-empty-state i {
+  color: var(--accent);
+  font-size: 1.6rem;
+}
+
+.usage-empty-state h2 {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
+.usage-empty-state p {
+  margin: 6px 0 0;
+  font-size: 0.84rem;
+}
+
 .usage-empty {
   margin: 0;
-  padding: 28px 0;
+  padding: 32px 0;
   color: var(--muted);
   text-align: center;
+  font-size: 0.84rem;
 }
 
 .usage-ladder {
   display: grid;
-  gap: 10px;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -514,167 +466,211 @@ onMounted(loadGrowth)
 
 .usage-ladder > li {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto 28px;
+  grid-template-columns: 36px minmax(0, 1fr) auto 22px;
   align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
-  background: var(--ladder-bg);
-  border: 1px solid var(--ladder-border);
-  border-radius: 16px;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
 .usage-ladder > li.is-achieved {
-  background: var(--ladder-achieved-bg);
-  border-color: var(--ladder-achieved-border);
+  background: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
 }
 
 .usage-ladder > li.is-next {
-  border-color: var(--ladder-next-border);
-  box-shadow: var(--ladder-next-shadow);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 6px 16px rgb(109 92 255 / 12%);
 }
 
 .usage-ladder__index {
-  color: var(--orange-deep);
-  font-size: 0.95rem;
-  font-weight: 850;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.usage-ladder > li.is-achieved .usage-ladder__index {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
 }
 
 .usage-ladder__copy {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 
 .usage-ladder__copy strong {
-  font-size: 1rem;
+  font-size: 0.84rem;
+  font-weight: 760;
 }
 
 .usage-ladder__copy small {
-  color: var(--muted);
-  font-size: 0.78rem;
+  color: var(--body);
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 .usage-ladder__reward {
   display: grid;
   justify-items: end;
-  gap: 2px;
+  gap: 1px;
 }
 
 .usage-ladder__reward span {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.64rem;
   font-weight: 700;
 }
 
 .usage-ladder__reward b {
-  color: var(--orange);
-  font-size: 1.05rem;
-  font-weight: 850;
+  color: var(--accent-deep);
+  font-size: 0.88rem;
+  font-weight: 820;
   white-space: nowrap;
 }
 
-.usage-ladder > li > .bi {
-  color: var(--ladder-icon);
-  font-size: 1.2rem;
+.usage-ladder > li.is-achieved .usage-ladder__reward b {
+  color: var(--green);
 }
 
-.usage-ladder > li.is-achieved > .bi {
-  color: #16a34a;
+.usage-ladder__state {
+  color: var(--muted);
+  font-size: 1rem;
 }
 
-.usage-ladder > li.is-next > .bi {
-  color: var(--orange);
+.usage-ladder > li.is-achieved .usage-ladder__state {
+  color: var(--green);
 }
 
-.usage-tips {
+.usage-ladder > li.is-next .usage-ladder__state {
+  color: var(--accent);
+}
+
+.usage-rules {
+  flex: 0 0 auto;
+  padding: 10px 0 14px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--line);
+}
+
+.rule-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 18px;
-}
-
-.usage-tips > div {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  background: var(--surface-warm);
-  border-radius: 14px;
-}
-
-.usage-tips i {
-  color: var(--orange);
-  font-size: 1.2rem;
-}
-
-.usage-tips p {
-  display: grid;
-  gap: 3px;
   margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.usage-tips strong {
-  font-size: 0.88rem;
+.rule-list li {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
 }
 
-.usage-tips small {
-  color: var(--muted);
-  font-size: 0.74rem;
+.rule-list li > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 800;
 }
 
-@keyframes usage-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
+.rule-list strong {
+  display: block;
+  font-size: 0.78rem;
+}
+
+.rule-list p {
+  margin: 3px 0 0;
+  color: var(--body);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 960px) {
+  :global(.app-container > .main-content:has(> .usage-page)) {
+    height: auto;
+    max-height: none;
+    overflow: visible;
   }
-  50% {
-    opacity: 1;
-    transform: translateY(-3px);
-  }
-}
 
-@media (max-width: 900px) {
-  .usage-shell {
-    width: calc(100% - 28px);
+  .usage-page {
+    height: auto;
+    max-height: none;
+    overflow: visible;
   }
 
-  .usage-hero__inner {
+  .usage-top__inner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .usage-facts {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .rule-list {
     grid-template-columns: 1fr;
-  }
-
-  .usage-hero__visual {
-    order: -1;
-    min-height: 200px;
-    margin-top: 18px;
-  }
-
-  .usage-hero__copy {
-    padding-top: 8px;
-  }
-
-  .usage-summary__divider {
-    display: none;
-  }
-
-  .usage-tips {
-    grid-template-columns: 1fr;
+    gap: 10px;
   }
 }
 
 @media (max-width: 640px) {
-  .usage-panel {
-    margin-top: -18px;
-    padding: 22px 16px 18px;
+  .usage-shell {
+    width: calc(100% - 28px);
   }
 
-  .usage-ladder > li {
-    grid-template-columns: 36px minmax(0, 1fr) auto;
+  .usage-top__inner {
     gap: 10px;
   }
 
-  .usage-ladder > li > .bi {
+  .usage-top__copy h1 {
+    font-size: 1.3rem;
+  }
+
+  .workspace-heading > div {
+    flex-wrap: wrap;
+  }
+
+  .workspace-heading small {
+    width: 100%;
+    padding-left: 16px;
+    white-space: normal;
+  }
+
+  .usage-ladder > li {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .usage-ladder__state {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-loading span {
+    animation: none;
   }
 }
 </style>

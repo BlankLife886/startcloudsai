@@ -375,6 +375,7 @@ export function useAiWallpaperStudioState() {
             ),
           )
         : 1
+    const launchCostConfirmed = options.costConfirmed === true
     const createOptions = {
       ...options,
       regenerateTaskId,
@@ -389,7 +390,10 @@ export function useAiWallpaperStudioState() {
           ? String(backgroundRemovalModel.value?.id || '').trim()
           : '',
     }
-    if (authStore.user?.requireCostConfirm === false) {
+    // 两条链路必须互斥：透明生成由生图模型输出 Alpha，自动抠图则在生成后调用独立工具。
+    if (createOptions.autoBackgroundRemovalEnabled) inputs.transparentPngEnabled.value = false
+    delete createOptions.costConfirmed
+    if (authStore.user?.requireCostConfirm === false || launchCostConfirmed) {
       if (createOptions.autoBackgroundRemovalEnabled) {
         const uncheckedSnapshot = await enrichStudioCreditCostSnapshot(
           includeAutomaticBackgroundRemovalCost(
@@ -623,13 +627,16 @@ export function useAiWallpaperStudioState() {
       ) {
         models.selectedPublicModel.value = launchConfig.model
       }
-      if (launchConfig.skill === 'none') {
+      const requestedSkillIds = Array.isArray(launchConfig.skills)
+        ? launchConfig.skills
+        : launchConfig.skill
+          ? [launchConfig.skill]
+          : []
+      if (requestedSkillIds.includes('none')) {
         models.selectedSkillIds.value = []
-      } else if (
-        launchConfig.skill &&
-        models.skillOptions.value.some((item) => item.id === launchConfig.skill)
-      ) {
-        models.selectedSkillIds.value = [launchConfig.skill]
+      } else if (requestedSkillIds.length) {
+        const allowedSkills = new Set(models.skillOptions.value.map((item) => item.id))
+        models.selectedSkillIds.value = requestedSkillIds.filter((id) => allowedSkills.has(id))
       }
       if (launchConfig.ratio) inputs.aspectRatio.value = launchConfig.ratio
       if (launchConfig.resolution) inputs.resolutionScale.value = launchConfig.resolution
@@ -655,6 +662,32 @@ export function useAiWallpaperStudioState() {
       privacyMode.value = settingsStore.getSetting('ai_enable_privacy_mode', privacyMode.value)
       await models.syncCapabilityKitFromServer()
       models.ensureRuntimeProviderAndModels()
+      if (pendingLaunch) {
+        const allowedSkills = new Set(models.skillOptions.value.map((item) => item.id))
+        const requestedSkillIds = Array.isArray(launchConfig.skills)
+          ? launchConfig.skills
+          : launchConfig.skill && launchConfig.skill !== 'none'
+            ? [launchConfig.skill]
+            : []
+        models.selectedSkillIds.value = requestedSkillIds.filter((id) => allowedSkills.has(id))
+        inputs.referenceImages.value = (Array.isArray(launchConfig.referenceImages)
+          ? launchConfig.referenceImages
+          : []
+        )
+          .map((item, index) => {
+            const url = String(item?.dataUrl || '').trim()
+            if (!url) return null
+            return {
+              id: item.id || `studio-reference-${index + 1}`,
+              file: null,
+              url,
+              preview: item.thumbnailUrl || url,
+              label: item.name || `参考图 ${index + 1}`,
+            }
+          })
+          .filter(Boolean)
+          .slice(0, inputs.maxReferenceImages.value)
+      }
       if (!authStore.isAuthenticated) return
       // refreshServerAiJobs owns the in-memory merge. Reloading local storage here races with
       // output hydration and can replace freshly restored images with an older empty snapshot.
@@ -667,6 +700,11 @@ export function useAiWallpaperStudioState() {
         canvas.canvasMode.value = 'result'
       } else if (active?.sourcePreview || active?.sourceRemoteUrl) {
         canvas.canvasMode.value = 'source'
+      }
+      if (pendingLaunch?.config?.autoStart && inputs.prompt.value.trim()) {
+        await requestCreateTask({
+          costConfirmed: pendingLaunch.config.costConfirmed === true,
+        })
       }
     } catch (error) {
       notificationService.warning(error?.message || '部分创作数据加载失败，请稍后刷新重试')

@@ -8,7 +8,7 @@ import {
   watch,
 } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Document, Picture, Refresh, Search } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Document, Picture, Refresh, Search } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import TaskRuntimeSettingsDialog from '@/components/settings/TaskRuntimeSettingsDialog.vue'
 import { request, type Page } from '@/request'
@@ -43,6 +43,9 @@ interface AdminTask {
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
+  deletedAt?: string | null
+  deletionActor?: 'user' | 'admin' | 'system' | null
+  deletedOutputCount?: number
 }
 
 interface TaskSummary {
@@ -309,6 +312,14 @@ function taskOutputCount(task: AdminTask) {
   return task.outputUrls?.length || task.outputKeys?.length || 0
 }
 
+function taskDeletedOutputCount(task: AdminTask) {
+  return Math.max(0, Number(task.deletedOutputCount) || 0)
+}
+
+function isUserDeletedTask(task: AdminTask) {
+  return task.deletionActor === 'user' && Boolean(task.deletedAt)
+}
+
 function taskInputCount(task: AdminTask) {
   return task.inputKeys?.length || 0
 }
@@ -326,7 +337,8 @@ function taskFailedCount(task: AdminTask): number | string {
   if (typeof requested !== 'number') {
     return task.status === 'failed' ? 1 : 0
   }
-  return Math.max(0, requested - taskOutputCount(task))
+  const delivered = taskOutputCount(task) + taskDeletedOutputCount(task)
+  return Math.max(0, requested - delivered)
 }
 
 // 详情抽屉
@@ -695,17 +707,28 @@ async function forceFail(task: AdminTask) {
                     </div>
                   </template>
                 </el-image>
-                <div v-else class="media-ph media-ph--sm is-empty" title="暂无预览">
-                  <el-icon><Picture /></el-icon>
+                <div
+                  v-else
+                  class="media-ph media-ph--sm is-empty"
+                  :class="{ 'is-user-deleted': isUserDeletedTask(row as AdminTask) }"
+                  :title="isUserDeletedTask(row as AdminTask) ? '产物已被用户删除' : '暂无预览'"
+                >
+                  <el-icon>
+                    <Delete v-if="isUserDeletedTask(row as AdminTask)" />
+                    <Picture v-else />
+                  </el-icon>
                 </div>
               </template>
             </el-table-column>
 
-            <el-table-column label="状态" width="84" align="left" header-align="left">
+            <el-table-column label="状态" width="96" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="kind-text" :class="`is-status-${row.status}`">
-                  {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
-                </span>
+                <div class="task-status-cell">
+                  <span class="kind-text" :class="`is-status-${row.status}`">
+                    {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+                  </span>
+                  <small v-if="isUserDeletedTask(row as AdminTask)" class="deletion-mark">用户已删除</small>
+                </div>
               </template>
             </el-table-column>
 
@@ -721,11 +744,11 @@ async function forceFail(task: AdminTask) {
               </template>
             </el-table-column>
 
-            <el-table-column label="数量" min-width="220" align="left" header-align="left">
+            <el-table-column label="数量" min-width="250" align="left" header-align="left">
               <template #default="{ row }">
                 <div
                   class="qty-cell"
-                  :title="`请求 ${taskCount(row as AdminTask)} · 产出 ${taskOutputCount(row as AdminTask)} · 失败 ${taskFailedCount(row as AdminTask)} · 参考图 ${taskInputCount(row as AdminTask)}`"
+                  :title="`请求 ${taskCount(row as AdminTask)} · 现有产出 ${taskOutputCount(row as AdminTask)} · 用户删除 ${taskDeletedOutputCount(row as AdminTask)} · 失败 ${taskFailedCount(row as AdminTask)} · 参考图 ${taskInputCount(row as AdminTask)}`"
                 >
                   <span class="qty-chip">
                     <small>请求</small>
@@ -734,6 +757,10 @@ async function forceFail(task: AdminTask) {
                   <span class="qty-chip">
                     <small>产出</small>
                     <em class="metric-result tnum">{{ taskOutputCount(row as AdminTask) }}</em>
+                  </span>
+                  <span v-if="taskDeletedOutputCount(row as AdminTask)" class="qty-chip is-deleted">
+                    <small>已删</small>
+                    <em class="tnum">{{ taskDeletedOutputCount(row as AdminTask) }}</em>
                   </span>
                   <span class="qty-chip">
                     <small>失败</small>
@@ -937,6 +964,16 @@ async function forceFail(task: AdminTask) {
         </div>
 
         <el-alert
+          v-if="isUserDeletedTask(detail)"
+          class="drawer-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="产物已被用户删除"
+          :description="`用户于 ${formatTime(detail.deletedAt)} 删除了此任务及其 ${taskDeletedOutputCount(detail)} 个产物。任务成功状态和计费记录保留用于审计。`"
+        />
+
+        <el-alert
           v-if="detail.errorCode || detail.errorMessage"
           class="drawer-alert"
           type="error"
@@ -991,7 +1028,7 @@ async function forceFail(task: AdminTask) {
             </el-image>
           </div>
           <div v-else class="media-grid-empty">
-            {{ detail.status === 'failed' ? '任务失败，无产出图' : '对话任务或仍在生成中' }}
+            {{ isUserDeletedTask(detail) ? '产物已被用户删除' : detail.status === 'failed' ? '任务失败，无产出图' : '对话任务或仍在生成中' }}
           </div>
         </section>
 
@@ -1025,6 +1062,10 @@ async function forceFail(task: AdminTask) {
             <div class="info-row">
               <dt>结束</dt>
               <dd>{{ formatTime(detail.finishedAt) }}</dd>
+            </div>
+            <div v-if="detail.deletedAt" class="info-row">
+              <dt>删除</dt>
+              <dd>用户删除 · {{ formatTime(detail.deletedAt) }}</dd>
             </div>
           </dl>
         </section>
@@ -1374,6 +1415,12 @@ html.dark .status-tab.is-active em {
   opacity: 0.72;
 }
 
+.media-ph--sm.is-user-deleted {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface-2));
+  opacity: 1;
+}
+
 .task-prompt-btn {
   max-width: 100%;
   padding: 0;
@@ -1500,6 +1547,11 @@ html.dark .status-tab.is-active em {
   color: var(--info);
 }
 
+.qty-chip.is-deleted small,
+.qty-chip.is-deleted em {
+  color: var(--warning);
+}
+
 .provider-text {
   color: var(--ink-2);
   font-size: 13px;
@@ -1527,6 +1579,18 @@ html.dark .status-tab.is-active em {
 
 .kind-text.is-status-canceled {
   color: var(--warning);
+}
+
+.task-status-cell {
+  display: grid;
+  gap: 2px;
+}
+
+.deletion-mark {
+  color: var(--warning);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .cell-text {

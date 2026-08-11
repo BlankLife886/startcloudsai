@@ -26,8 +26,15 @@ export async function listAssistantConversations({ signal } = {}) {
   return Array.isArray(data?.conversations) ? data.conversations : []
 }
 
-export async function createAssistantConversation(title = '新对话') {
-  return apiPost('/assistant/conversations', { title }, { fallbackMessage: '新建对话失败' })
+export async function createAssistantConversation(
+  title = '新对话',
+  { workspace = 'assistant' } = {},
+) {
+  return apiPost(
+    '/assistant/conversations',
+    { title, workspace },
+    { fallbackMessage: '新建对话失败' },
+  )
 }
 
 export async function deleteAssistantConversation(id, { cancelActive = false } = {}) {

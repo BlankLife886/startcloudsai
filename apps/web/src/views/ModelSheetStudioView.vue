@@ -1267,7 +1267,7 @@ function refreshHistory() {
 
 <template>
   <main ref="studioRoot" class="ms3" :class="{ 'is-light': !appearanceStore.isDark }">
-    <h1 class="ms3-visually-hidden">超高清模型图</h1>
+    <h1 class="ms3-visually-hidden">模型设计</h1>
 
     <!-- 左：参数面板 -->
     <aside class="ms3-panel">
@@ -1677,7 +1677,7 @@ function refreshHistory() {
     <section class="ms3-stage">
       <header class="ms3-stage-bar">
         <div class="ms3-stage-meta">
-          <strong>超高清模型图</strong>
+          <strong>模型设计</strong>
           <span class="ms3-tag">{{ outputMode === 'board' ? '设定板' : '独立视图' }}</span>
           <span class="ms3-tag">{{ aspectRatio }}</span>
           <span class="ms3-tag is-accent">{{ sheetNumber }}</span>
@@ -1793,7 +1793,7 @@ function refreshHistory() {
             v-if="activeOutput"
             data-studio-output
             :src="activeOutput"
-            alt="超高清模型图"
+            alt="模型设计"
             loading="eager"
             :retry-count="2"
             @error="localError = '结果图加载失败，请选择其他版本或重新生成'"
@@ -2139,7 +2139,7 @@ function refreshHistory() {
 
     <SharePublishDialog
       :open="publishOpen"
-      :title="prompt.slice(0, 24) || '超高清模型图'"
+      :title="prompt.slice(0, 24) || '模型设计'"
       style-label="模型设定图"
       :submitting="submittingShare"
       :light="!appearanceStore.isDark"
@@ -2151,7 +2151,7 @@ function refreshHistory() {
       :open="fullscreenOpen"
       :images="outputs"
       :current-src="activeOutput"
-      title="超高清模型图"
+      title="模型设计"
       filename="ultra-model-sheet.png"
       :metadata="{
         生成模式: outputMode === 'board' ? '设定板' : '独立视图',

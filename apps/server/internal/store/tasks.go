@@ -13,13 +13,15 @@ import (
 )
 
 const taskCols = `id, user_id, type, model, status, prompt, params, count, input_keys, output_keys, thumbnail_keys, cost_cents,
-	work_units, idempotency_key, error_code, error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at`
+	work_units, idempotency_key, error_code, error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
+	deleted_at, deletion_actor, deleted_output_count`
 
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	err := row.Scan(&t.ID, &t.UserID, &t.Type, &t.Model, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys, &t.ThumbnailKeys,
 		&t.CostCents, &t.WorkUnits, &t.IdempotencyKey, &t.ErrorCode, &t.ErrorMessage, &t.Attempt, &t.StartedAt,
-		&t.LeaseOwner, &t.HeartbeatAt, &t.LeaseUntil, &t.FinishedAt, &t.CreatedAt)
+		&t.LeaseOwner, &t.HeartbeatAt, &t.LeaseUntil, &t.FinishedAt, &t.CreatedAt,
+		&t.DeletedAt, &t.DeletionActor, &t.DeletedOutputCount)
 	if err != nil {
 		return nil, err
 	}
@@ -87,13 +89,13 @@ func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Ta
 }
 
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2`, id, userID))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
 	return nilOnNoRows(t, err)
 }
 
 // GetUserTaskForUpdate serializes terminal-task deletion with new references.
 func GetUserTaskForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`, id, userID))
 	return nilOnNoRows(t, err)
 }
 
@@ -165,6 +167,7 @@ func CountTasksReferencingInputKeys(ctx context.Context, q Q, userID, excludeID 
 				SELECT count(*)
 				FROM tasks task
 				WHERE task.user_id = $1 AND task.id <> $2
+				  AND task.deleted_at IS NULL
 				  AND (
 					EXISTS (
 						SELECT 1
@@ -243,6 +246,7 @@ func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID
 	rows, err := q.Query(ctx, `SELECT `+taskCols+`
 		FROM tasks task
 		WHERE task.user_id = $1
+		  AND task.deleted_at IS NULL
 		  AND NOT (task.id = ANY($2::uuid[]))
 		  AND (
 			EXISTS (
@@ -275,7 +279,7 @@ func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID
 
 func GetTaskByIdemKey(ctx context.Context, q Q, userID uuid.UUID, key string) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx,
-		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 AND idempotency_key = $2`, userID, key))
+		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL`, userID, key))
 	return nilOnNoRows(t, err)
 }
 
@@ -443,6 +447,7 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 	if userID != nil {
 		args = append(args, *userID)
 		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
+		sql += ` AND deleted_at IS NULL`
 	}
 	if taskType != "" {
 		args = append(args, taskType)
@@ -476,7 +481,8 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 const adminTaskSourceSQL = `
 		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
 			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
-			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at
+			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
+			deleted_at, deletion_actor, deleted_output_count
 		FROM tasks
 		UNION ALL
 		SELECT run.id, run.user_id, 'assistant'::text AS type,
@@ -517,7 +523,9 @@ const adminTaskSourceSQL = `
 			0::bigint AS cost_cents, 1::integer AS work_units, NULL::text AS idempotency_key,
 			run.error_code, run.error_message, 0::integer AS attempt,
 			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
-			NULL::timestamptz AS lease_until, run.finished_at, run.created_at
+			NULL::timestamptz AS lease_until, run.finished_at, run.created_at,
+			NULL::timestamptz AS deleted_at, NULL::text AS deletion_actor,
+			0::integer AS deleted_output_count
 		FROM assistant_runs run
 		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
 	`
@@ -607,7 +615,7 @@ func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, 
 // ListRecentTasks 用户最近 n 条任务。
 func ListRecentTasks(ctx context.Context, q Q, userID uuid.UUID, n int) ([]*Task, error) {
 	rows, err := q.Query(ctx,
-		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, userID, n)
+		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $2`, userID, n)
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +637,7 @@ func TaskCountsBy(ctx context.Context, q Q, userID uuid.UUID, column string) (ma
 		return nil, fmt.Errorf("unsupported group column %q", column)
 	}
 	rows, err := q.Query(ctx,
-		`SELECT `+column+`, count(*) FROM tasks WHERE user_id = $1 GROUP BY `+column, userID)
+		`SELECT `+column+`, count(*) FROM tasks WHERE user_id = $1 AND deleted_at IS NULL GROUP BY `+column, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1217,6 +1225,24 @@ func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string,
 	return attempt, err == nil, err
 }
 
+func MarkTaskDeletedByUser(ctx context.Context, q Q, id uuid.UUID, deletedAt time.Time) error {
+	_, err := q.Exec(ctx, `UPDATE tasks SET
+		deleted_at = $2,
+		deletion_actor = 'user',
+		deleted_output_count = jsonb_array_length(
+			CASE WHEN jsonb_typeof(output_keys) = 'array' THEN output_keys ELSE '[]'::jsonb END
+		),
+		input_keys = '[]'::jsonb,
+		output_keys = '[]'::jsonb,
+		thumbnail_keys = '[]'::jsonb,
+		idempotency_key = NULL,
+		params = COALESCE(params, '{}'::jsonb) - 'maskKey' - 'maskBaseKey'
+		WHERE id = $1 AND deleted_at IS NULL`, id, deletedAt)
+	return err
+}
+
+// DeleteTask permanently removes a task. User-facing deletion must use
+// MarkTaskDeletedByUser so administrators retain the deletion audit marker.
 func DeleteTask(ctx context.Context, q Q, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
 	return err

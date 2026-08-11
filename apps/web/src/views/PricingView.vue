@@ -70,11 +70,11 @@ const previewPlans = [
 ]
 
 const taskTypeMeta = {
-  t2i: { icon: 'bi-image', tone: 'orange', blurb: '文生图 / 图生图' },
+  t2i: { icon: 'bi-image', tone: 'violet', blurb: '文生图 / 图生图' },
   coloring: { icon: 'bi-palette2', tone: 'rose', blurb: '线稿上色' },
   ui_design: { icon: 'bi-window-sidebar', tone: 'blue', blurb: '界面设计稿' },
   ecommerce_design: { icon: 'bi-bag-check', tone: 'green', blurb: '电商设计' },
-  model_sheet: { icon: 'bi-badge-hd', tone: 'teal', blurb: '超高清模型图' },
+  model_sheet: { icon: 'bi-badge-hd', tone: 'teal', blurb: '模型设计' },
   game_art: { icon: 'bi-controller', tone: 'violet', blurb: '游戏美术' },
   puzzle: { icon: 'bi-puzzle', tone: 'slate', blurb: '本地拼图工具' },
   background_remove: { icon: 'bi-scissors', tone: 'amber', blurb: '背景移除' },
@@ -87,7 +87,7 @@ const priceRanges = computed(
 const taskPriceCards = computed(() => {
   const values = pricing.value?.taskPointPrices || pricing.value?.taskPrices || {}
   return Object.entries(TASK_TYPE_LABELS).map(([type, label]) => {
-    const meta = taskTypeMeta[type] || { icon: 'bi-stars', tone: 'orange', blurb: '' }
+    const meta = taskTypeMeta[type] || { icon: 'bi-stars', tone: 'violet', blurb: '' }
     const range = priceRanges.value[type] || {}
     const min =
       Number(range.minPoints ?? range.MinCents ?? range.minCents) ||
@@ -626,33 +626,35 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .pp {
-  --ink: #171b22;
-  --muted: #6a7384;
-  --line: #eadfce;
-  --line-soft: #f0e6d8;
-  --orange: #ef6a1a;
-  --orange-deep: #c45a10;
-  --orange-text: #b45309;
-  --cream: #fff8ef;
-  --bg: #f7f4ef;
+  --ink: #17171f;
+  --muted: #777785;
+  --line: rgb(21 22 31 / 10%);
+  --line-soft: rgb(21 22 31 / 7%);
+  --accent: #6d5cff;
+  --accent-deep: #5746e5;
+  --accent-text: #5746e5;
+  --accent-soft: rgb(109 92 255 / 10%);
   --surface: #ffffff;
-  --surface-soft: #fffaf3;
-  --surface-warm: #fff7ef;
-  --accent-soft: #fff1e2;
-  --hero-a: rgb(255 176 96 / 42%);
-  --hero-b: rgb(255 214 150 / 34%);
-  --hero-c: #fff9f0;
-  --hero-d: #ffe9cf;
-  --hero-e: #fff6ea;
-  --hero-line: #f0e2d0;
-  --card-shadow: 0 14px 34px rgb(60 45 20 / 5%);
-  --wallet-shadow: 0 18px 40px rgb(90 50 10 / 8%);
-  --body: #4a5363;
-  --plan-li: #3f4756;
-  --plan-note: #9a5a24;
-  --muted-strong: #c4c9d2;
-  --nav-bg: rgb(247 244 239 / 92%);
-  --empty-dash: #e5d8c6;
+  --surface-soft: #f6f5fc;
+  --surface-tint: #f3f1ff;
+  --bg: #f4f3fa;
+  --hero-a: rgb(109 92 255 / 22%);
+  --hero-b: rgb(139 123 255 / 16%);
+  --hero-c: #f8f7ff;
+  --hero-d: #efeefc;
+  --hero-e: #f5f4fb;
+  --hero-line: rgb(109 92 255 / 12%);
+  --card-shadow: 0 14px 34px rgb(58 51 112 / 6%);
+  --wallet-shadow: 0 18px 40px rgb(58 51 112 / 8%);
+  --body: #4f5160;
+  --plan-li: #3d3f4d;
+  --plan-note: #5746e5;
+  --muted-strong: #c4c4d0;
+  --sticky-nav-bg: rgb(244 243 250 / 92%);
+  --empty-dash: rgb(109 92 255 / 22%);
+  --cta-a: #2a2458;
+  --cta-b: #3d3480;
+  --cta-c: #1a1730;
   width: 100%;
   min-height: calc(100dvh - var(--app-header-offset, 72px));
   overflow-x: clip;
@@ -661,33 +663,35 @@ onBeforeUnmount(() => {
 }
 
 .pp.is-dark {
-  --ink: #f4eee6;
-  --muted: #a79c8f;
-  --line: #3b342c;
-  --line-soft: #2f2922;
-  --orange: #ff8a3d;
-  --orange-deep: #ffb06a;
-  --orange-text: #ffb06a;
-  --cream: #1c1814;
-  --bg: #12100e;
-  --surface: #1c1915;
-  --surface-soft: #181511;
-  --surface-warm: #221c16;
-  --accent-soft: rgb(255 138 61 / 16%);
-  --hero-a: rgb(255 138 61 / 18%);
-  --hero-b: rgb(255 176 96 / 12%);
-  --hero-c: #1a1511;
-  --hero-d: #241c15;
-  --hero-e: #17130f;
-  --hero-line: #332c24;
+  --ink: rgba(255, 255, 255, 0.96);
+  --muted: rgba(255, 255, 255, 0.52);
+  --line: rgb(255 255 255 / 10%);
+  --line-soft: rgb(255 255 255 / 7%);
+  --accent: #8b7bff;
+  --accent-deep: #a99cff;
+  --accent-text: #a99cff;
+  --accent-soft: rgb(109 92 255 / 16%);
+  --surface: #1a1824;
+  --surface-soft: #15131f;
+  --surface-tint: #221e36;
+  --bg: #121218;
+  --hero-a: rgb(109 92 255 / 22%);
+  --hero-b: rgb(139 123 255 / 14%);
+  --hero-c: #161422;
+  --hero-d: #1c1830;
+  --hero-e: #121218;
+  --hero-line: rgb(139 123 255 / 16%);
   --card-shadow: 0 18px 40px rgb(0 0 0 / 28%);
   --wallet-shadow: 0 18px 40px rgb(0 0 0 / 32%);
-  --body: #cfc4b6;
-  --plan-li: #ddd2c4;
-  --plan-note: #e0a46a;
-  --muted-strong: #5a5248;
-  --nav-bg: rgb(18 16 14 / 92%);
-  --empty-dash: #3b342c;
+  --body: rgb(255 255 255 / 72%);
+  --plan-li: rgb(255 255 255 / 82%);
+  --plan-note: #c4b5fd;
+  --muted-strong: rgb(255 255 255 / 28%);
+  --sticky-nav-bg: rgb(18 18 24 / 92%);
+  --empty-dash: rgb(139 123 255 / 28%);
+  --cta-a: #1a1638;
+  --cta-b: #2c2460;
+  --cta-c: #12101c;
 }
 
 .pp-shell {
@@ -713,23 +717,23 @@ onBeforeUnmount(() => {
 
 .pp-btn.is-primary {
   color: #fff;
-  background: var(--orange);
-  box-shadow: 0 10px 24px rgb(239 106 26 / 22%);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+  box-shadow: 0 10px 24px rgb(109 92 255 / 24%);
 }
 
 .pp-btn.is-primary:hover {
-  background: #e05f12;
+  filter: brightness(1.05);
 }
 
 .pp-btn.is-ghost {
-  color: var(--orange-text);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--surface) 72%, transparent);
-  border-color: color-mix(in srgb, var(--orange) 42%, var(--line));
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
 }
 
 .pp.is-dark .pp-btn.is-ghost {
   background: rgb(255 255 255 / 6%);
-  border-color: rgb(255 138 61 / 28%);
+  border-color: rgb(139 123 255 / 28%);
 }
 
 .pp-btn.is-light {
@@ -747,12 +751,22 @@ onBeforeUnmount(() => {
 
 .pp-hero {
   position: relative;
-  padding: 36px 0 28px;
+  padding: 40px 0 32px;
   background:
-    radial-gradient(circle at 88% 12%, var(--hero-a), transparent 28%),
-    radial-gradient(circle at 8% 0%, var(--hero-b), transparent 26%),
-    linear-gradient(125deg, var(--hero-c) 0%, var(--hero-d) 46%, var(--hero-e) 100%);
+    radial-gradient(circle at 88% 12%, var(--hero-a), transparent 30%),
+    radial-gradient(circle at 8% 0%, var(--hero-b), transparent 28%),
+    linear-gradient(145deg, var(--hero-c) 0%, var(--hero-d) 48%, var(--hero-e) 100%);
   border-bottom: 1px solid var(--hero-line);
+  overflow: hidden;
+}
+
+.pp-hero::before {
+  content: '';
+  position: absolute;
+  inset: auto -8% -40% 45%;
+  height: 70%;
+  background: radial-gradient(circle, rgb(109 92 255 / 14%), transparent 68%);
+  pointer-events: none;
 }
 
 .pp-hero__grid {
@@ -771,7 +785,7 @@ onBeforeUnmount(() => {
 
 .pp-kicker {
   margin: 0;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.16em;
@@ -779,10 +793,10 @@ onBeforeUnmount(() => {
 
 .pp-hero h1 {
   margin: 0;
-  font-size: clamp(2.6rem, 5vw, 4rem);
-  font-weight: 900;
+  font-size: clamp(2.4rem, 4.6vw, 3.6rem);
+  font-weight: 880;
   letter-spacing: -0.04em;
-  line-height: 1;
+  line-height: 1.05;
 }
 
 .pp-hero__copy > p {
@@ -805,15 +819,15 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 8px;
   padding: 24px;
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
-  border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line));
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
   border-radius: 22px;
   box-shadow: var(--wallet-shadow);
   backdrop-filter: blur(10px);
 }
 
 .pp.is-dark .pp-wallet {
-  background: rgb(28 25 21 / 88%);
+  background: rgb(26 24 36 / 88%);
 }
 
 .pp-wallet__top {
@@ -831,7 +845,7 @@ onBeforeUnmount(() => {
   gap: 5px;
   padding: 4px 9px;
   border-radius: 999px;
-  color: var(--orange-text);
+  color: var(--accent-text);
   background: var(--accent-soft);
   font-style: normal;
   font-size: 0.66rem;
@@ -859,7 +873,7 @@ onBeforeUnmount(() => {
   width: fit-content;
   padding: 4px 9px;
   border-radius: 8px;
-  color: var(--orange-text);
+  color: var(--accent-text);
   background: var(--accent-soft);
   font-size: 0.7rem;
   font-weight: 700;
@@ -877,7 +891,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   margin-top: 8px;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   font-size: 0.8rem;
   font-weight: 750;
   text-decoration: none;
@@ -888,7 +902,7 @@ onBeforeUnmount(() => {
   top: var(--app-header-offset, 72px);
   z-index: 20;
   border-bottom: 1px solid var(--line);
-  background: var(--nav-bg);
+  background: var(--sticky-nav-bg);
   backdrop-filter: blur(12px);
 }
 
@@ -914,12 +928,12 @@ onBeforeUnmount(() => {
 
 .pp-nav__inner button.is-active {
   color: #fff;
-  background: var(--orange);
+  background: var(--accent);
 }
 
 .pp.is-dark .pp-nav__inner button.is-active {
-  color: #1a120c;
-  background: var(--orange);
+  color: #12101c;
+  background: var(--accent);
 }
 
 .pp-section {
@@ -965,7 +979,7 @@ onBeforeUnmount(() => {
   flex: none;
   padding: 7px 12px;
   border-radius: 999px;
-  color: var(--orange-text);
+  color: var(--accent-text);
   background: var(--accent-soft);
   font-size: 0.74rem;
   font-weight: 750;
@@ -982,12 +996,21 @@ onBeforeUnmount(() => {
   display: grid;
   align-content: start;
   gap: 12px;
-  min-height: 420px;
-  padding: 28px 24px 22px;
+  min-height: 400px;
+  padding: 26px 22px 20px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 24px;
+  border-radius: 22px;
   box-shadow: var(--card-shadow);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.pp-plan:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  box-shadow: 0 18px 40px rgb(109 92 255 / 10%);
 }
 
 .pp-plan.is-loading {
@@ -995,7 +1018,7 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     90deg,
     var(--surface) 25%,
-    color-mix(in srgb, var(--orange) 12%, var(--surface)) 50%,
+    color-mix(in srgb, var(--accent) 12%, var(--surface)) 50%,
     var(--surface) 75%
   );
   background-size: 200% 100%;
@@ -1005,12 +1028,12 @@ onBeforeUnmount(() => {
 .pp-plan.is-popular {
   border-color: transparent;
   background:
-    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--orange) 28%, transparent), transparent 40%),
-    linear-gradient(180deg, var(--cream) 0%, var(--surface) 55%);
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 42%),
+    linear-gradient(180deg, var(--surface-tint) 0%, var(--surface) 58%);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--orange) 55%, var(--line)),
-    0 22px 48px rgb(239 106 26 / 14%);
-  transform: translateY(-6px);
+    0 0 0 1px color-mix(in srgb, var(--accent) 48%, var(--line)),
+    0 22px 48px rgb(109 92 255 / 14%);
+  transform: translateY(-4px);
 }
 
 .pp-plan__badge {
@@ -1020,13 +1043,13 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   border-radius: 999px;
   color: #fff;
-  background: var(--orange);
+  background: var(--accent);
   font-size: 0.68rem;
   font-weight: 800;
 }
 
 .pp-plan > small {
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   font-size: 0.74rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -1090,7 +1113,7 @@ onBeforeUnmount(() => {
 }
 
 .pp-plan li i {
-  color: var(--orange);
+  color: var(--accent);
   margin-top: 1px;
 }
 
@@ -1102,10 +1125,10 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 46px;
   margin-top: auto;
-  border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   border-radius: 12px;
-  color: var(--orange-deep);
-  background: var(--surface-warm);
+  color: var(--accent-deep);
+  background: var(--surface-tint);
   font: inherit;
   font-size: 0.9rem;
   font-weight: 800;
@@ -1114,8 +1137,8 @@ onBeforeUnmount(() => {
 
 .pp-plan.is-popular > button {
   color: #fff;
-  border-color: var(--orange);
-  background: var(--orange);
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
 }
 
 .pp-model-table {
@@ -1150,7 +1173,7 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     90deg,
     var(--surface) 25%,
-    color-mix(in srgb, var(--orange) 12%, var(--surface)) 50%,
+    color-mix(in srgb, var(--accent) 12%, var(--surface)) 50%,
     var(--surface) 75%
   );
   background-size: 200% 100%;
@@ -1159,6 +1182,7 @@ onBeforeUnmount(() => {
 
 .pp-model-row.is-default {
   background: var(--surface-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .pp-model-row__name {
@@ -1175,7 +1199,7 @@ onBeforeUnmount(() => {
   flex: none;
   place-items: center;
   border-radius: 12px;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   background: var(--accent-soft);
   font-size: 1.1rem;
 }
@@ -1196,7 +1220,7 @@ onBeforeUnmount(() => {
 .pp-model-row__name em {
   font-style: normal;
   font-weight: 750;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
 }
 
 .pp-model-row__name em.is-fast {
@@ -1247,6 +1271,16 @@ onBeforeUnmount(() => {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 18px;
+  transition:
+    border-color 150ms ease,
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.pp-unit:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  box-shadow: 0 10px 24px rgb(109 92 255 / 8%);
+  transform: translateY(-1px);
 }
 
 .pp-unit__icon {
@@ -1255,7 +1289,7 @@ onBeforeUnmount(() => {
   height: 44px;
   place-items: center;
   border-radius: 14px;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   background: var(--accent-soft);
   font-size: 1.15rem;
 }
@@ -1363,11 +1397,19 @@ onBeforeUnmount(() => {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 20px;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.pp-access > article:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  box-shadow: 0 12px 28px rgb(109 92 255 / 8%);
 }
 
 .pp-access__step {
   grid-row: 1 / span 2;
-  color: color-mix(in srgb, var(--orange) 70%, #fff);
+  color: color-mix(in srgb, var(--accent) 62%, #fff);
   font-size: 1.4rem;
   font-weight: 900;
   letter-spacing: -0.04em;
@@ -1379,7 +1421,7 @@ onBeforeUnmount(() => {
   height: 44px;
   place-items: center;
   border-radius: 14px;
-  color: var(--orange-deep);
+  color: var(--accent-deep);
   background: var(--accent-soft);
   font-size: 1.2rem;
 }
@@ -1409,7 +1451,7 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 11px;
   color: #fff;
-  background: var(--orange);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
   font: inherit;
   font-size: 0.82rem;
   font-weight: 800;
@@ -1458,7 +1500,7 @@ onBeforeUnmount(() => {
 
 .pp-faq details[open] summary i {
   transform: rotate(45deg);
-  color: var(--orange);
+  color: var(--accent);
 }
 
 .pp-faq p {
@@ -1471,8 +1513,8 @@ onBeforeUnmount(() => {
 .pp-cta {
   padding: 36px 0 48px;
   background:
-    radial-gradient(circle at 90% 0%, rgb(255 170 90 / 35%), transparent 30%),
-    linear-gradient(120deg, #2a2118 0%, #3b2a1c 48%, #1f1812 100%);
+    radial-gradient(circle at 90% 0%, rgb(109 92 255 / 38%), transparent 32%),
+    linear-gradient(120deg, var(--cta-a) 0%, var(--cta-b) 48%, var(--cta-c) 100%);
   color: #fff;
 }
 
@@ -1520,7 +1562,7 @@ onBeforeUnmount(() => {
 }
 
 .pp-empty i {
-  color: var(--orange);
+  color: var(--accent);
   font-size: 1.6rem;
 }
 

@@ -50,14 +50,18 @@ export const TASK_TYPES = [
 export const IMAGE_SERVICE_ROUTES = [
   { key: "t2i", label: "文生图", detail: "文字生成与参考图编辑" },
   { key: "coloring", label: "插画染色", detail: "线稿与配色参考图" },
-  { key: "ui_design", label: "UI 设计稿", detail: "整张设计稿生成" },
-  { key: "ecommerce_design", label: "AI 电商设计", detail: "商品图、详情页与营销视觉" },
+  {
+    key: "ui_design",
+    label: "UI 设计稿",
+    detail: "整张设计稿生成（工作区 ui_design 图片价）",
+  },
+  { key: "ecommerce_design", label: "AI 电商", detail: "商品图、详情页与营销视觉" },
   {
     key: "ui_design_asset",
-    label: "UI 素材重建",
-    detail: "选区 PNG / 透明素材",
+    label: "UI 框选优化 / 素材重建",
+    detail: "设计稿框选二次处理与局部素材重建，计费同 ui_design 图片模型单价 × 1",
   },
-  { key: "model_sheet", label: "超高清模型图", detail: "多视角模型参考" },
+  { key: "model_sheet", label: "模型设计", detail: "多视角模型参考" },
   { key: "game_art", label: "游戏设计", detail: "角色、场景、道具与 UI" },
   {
     key: "assistant_image",
@@ -73,10 +77,10 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   t2i: "文生图",
   coloring: "插画染色",
   ui_design: "UI设计稿",
-  ecommerce_design: "AI电商设计",
-  model_sheet: "超高清模型图",
+  ecommerce_design: "AI电商",
+  model_sheet: "模型设计",
   game_art: "游戏设计",
-  puzzle: "AI拼图",
+  puzzle: "拼图",
   background_remove: "背景移除",
 };
 

@@ -18,6 +18,18 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 	}
 }
 
+func TestTaskDictIncludesUserDeletionMarker(t *testing.T) {
+	deletedAt := time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)
+	actor := "user"
+	task := &store.Task{
+		ID: uuid.New(), DeletedAt: &deletedAt, DeletionActor: &actor, DeletedOutputCount: 2,
+	}
+	dict := taskDict(task, nil, nil)
+	if dict["deletedAt"] == nil || dict["deletionActor"] != actor || dict["deletedOutputCount"] != 2 {
+		t.Fatalf("deletion marker not serialized: %#v", dict)
+	}
+}
+
 func TestAdminTaskDictIncludesActualServiceProvider(t *testing.T) {
 	tests := []struct {
 		name     string

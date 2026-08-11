@@ -4,14 +4,13 @@ import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
 import { useAuthStore } from '@/stores/auth'
 import { requestAuthentication } from '@/services/authGate'
 import { DEFAULT_AUTH_REDIRECT, createAuthRedirectLocation } from '@/services/authRedirect'
-import { getTrialAccessApplication, getTrialAccessCampaign } from '@/services/trialAccessApi'
 
 if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
   window.history.scrollRestoration = 'manual'
 }
 const siteName = '星空云绘 · StarCloudIsAI'
 const defaultDescription =
-  '星空云绘（StarCloudIsAI）是一站式 AI 图像创作工作台：文生图、插画染色、UI 设计稿、模型图、游戏设计与 AI 拼图。'
+  '星空云绘（StarCloudIsAI）是一站式 AI 图像创作工作台：文生图、插画染色、UI 设计稿、模型设计、游戏设计与本地拼图工具。'
 
 const routes = [
   {
@@ -112,8 +111,8 @@ const routes = [
     name: 'ecommerce-design',
     component: () => import('../views/EcommerceDesignView.vue'),
     meta: {
-      title: `AI 电商设计 - ${siteName}`,
-      titleLabel: 'AI 电商设计',
+      title: `AI 电商 - ${siteName}`,
+      titleLabel: 'AI 电商',
       icon: 'bi-bag-check-fill',
       description: '上传商品图，一次生成适配不同平台、市场与语言的电商详情视觉。',
       requiresAuth: true,
@@ -140,15 +139,20 @@ const routes = [
     },
   },
   {
-    path: '/ai-puzzle',
-    name: 'ai-puzzle',
+    path: '/tools/puzzle',
+    name: 'puzzle',
     component: () => import('../views/AiPuzzleView.vue'),
     meta: {
-      title: `AI 拼图 - ${siteName}`,
-      titleLabel: 'AI 拼图',
+      title: `拼图 - ${siteName}`,
+      titleLabel: '拼图',
       icon: 'bi-puzzle-fill',
-      description: '上传图片、选择模板，在线制作照片拼图并导出高清 PNG。',
+      description: '上传图片、选择模板，本地制作照片拼图并导出高清 PNG。',
+      hideSiteFooter: true,
     },
+  },
+  {
+    path: '/ai-puzzle',
+    redirect: '/tools/puzzle',
   },
   {
     path: '/tools/background-remove',
@@ -161,6 +165,18 @@ const routes = [
       description: '上传图片并移除背景，导出透明 PNG。',
       requiresAuth: true,
       trialFeatureKey: 'background_remove',
+      hideSiteFooter: true,
+    },
+  },
+  {
+    path: '/tools/image-compress',
+    name: 'image-compress',
+    component: () => import('../views/ImageCompressView.vue'),
+    meta: {
+      title: `图片压缩 - ${siteName}`,
+      titleLabel: '图片压缩',
+      icon: 'bi-file-zip',
+      description: '本地智能有损 / 无损压缩，支持多档对比与 ZIP 下载。',
       hideSiteFooter: true,
     },
   },
@@ -183,10 +199,10 @@ const routes = [
     name: 'model-sheet',
     component: () => import('../views/ModelSheetStudioView.vue'),
     meta: {
-      title: `超高清模型图 - ${siteName}`,
-      titleLabel: '模型图',
+      title: `模型设计 - ${siteName}`,
+      titleLabel: '模型设计',
       icon: 'bi-person-bounding-box',
-      description: '把人物或物体转换为可用于后续建模的超高清多视角模型参考图。',
+      description: '把人物或物体转换为可用于后续建模的多视角模型参考图。',
       requiresAuth: true,
       trialFeatureKey: 'model_sheet',
       hideSiteFooter: true,
@@ -250,6 +266,7 @@ const routes = [
       icon: 'bi-calendar-check',
       description: '每日签到领取创作积分，连续签到可获得更高奖励。',
       requiresAuth: true,
+      hideSiteFooter: true,
     },
   },
   {
@@ -298,7 +315,6 @@ const routes = [
       titleLabel: '失败补偿',
       description: '查看失败任务费用释放、额外补偿与每日补偿状态。',
       requiresAuth: true,
-      immersive: true,
       hideSiteFooter: true,
     },
   },
@@ -347,10 +363,10 @@ const routes = [
     name: 'app-space',
     component: () => import('../views/AppSpaceView.vue'),
     meta: {
-      title: `应用空间 - ${siteName}`,
-      titleLabel: '应用空间',
+      title: `关于我们 - ${siteName}`,
+      titleLabel: '关于我们',
       icon: 'bi-columns-gap',
-      description: '管理扩展应用、工作区和更多站内能力。',
+      description: '了解星空云绘，以及本站 App、小程序与相关产品入口。',
     },
   },
   {
@@ -515,16 +531,19 @@ if (typeof window !== 'undefined') {
 }
 
 router.onError((error, to) => {
+  clearNavigationTarget()
   recoverFromStaleAssetVersion(error, to?.fullPath)
 })
 
-const initialNavigationPath =
-  typeof window === 'undefined' ? '' : String(window.location.pathname || '/')
-
 export const navigationTarget = reactive({
   name: null,
-  path: initialNavigationPath,
+  path: '',
 })
+
+function clearNavigationTarget() {
+  navigationTarget.name = null
+  navigationTarget.path = ''
+}
 
 function upsertMeta(attribute, key, content) {
   if (typeof document === 'undefined') return
@@ -541,7 +560,7 @@ function upsertMeta(attribute, key, content) {
   tag.setAttribute('content', content)
 }
 
-router.beforeEach(async (to, from, next) => {
+router.beforeEach((to, from, next) => {
   navigationTarget.name = to.name || null
   navigationTarget.path = to.path || ''
 
@@ -556,8 +575,10 @@ router.beforeEach(async (to, from, next) => {
     return
   }
 
+  // Navigation must never wait for account or entitlement APIs. Cached auth is
+  // enough for the immediate route decision; stale sessions are handled by 401.
   if (to.meta?.requiresAuth || authRouteNames.has(to.name)) {
-    await authStore.initAuth().catch(() => null)
+    void authStore.initAuth().catch(() => null)
   }
 
   if (authRouteNames.has(to.name)) {
@@ -581,58 +602,10 @@ router.beforeEach(async (to, from, next) => {
         target: to.fullPath,
         pageTitle: to.meta?.titleLabel || String(to.meta?.title || '').split(' - ')[0] || '此页面',
       })
-      navigationTarget.name = null
-      navigationTarget.path = ''
+      clearNavigationTarget()
       if (from.matched?.length) next(false)
       else next({ name: 'home', replace: true })
       return
-    }
-  }
-
-  if (to.meta?.trialFeatureKey && authStore.isAuthenticated) {
-    try {
-      const [campaign, application] = await Promise.all([
-        getTrialAccessCampaign(),
-        getTrialAccessApplication(),
-      ])
-      const campaignFeatures = Array.isArray(campaign?.features)
-        ? campaign.features
-        : campaign?.feature
-          ? [campaign.feature]
-          : []
-      const applicationFeatureKeys = Array.isArray(application?.featureKeys)
-        ? application.featureKeys
-        : application?.featureKey
-          ? [application.featureKey]
-          : []
-      const applicationFeatures = Array.isArray(application?.features)
-        ? application.features
-        : application?.feature
-          ? [application.feature]
-          : []
-      const campaignFeature = campaignFeatures.find(
-        (feature) => feature?.key === to.meta.trialFeatureKey,
-      )
-      const entitlementMatches =
-        applicationFeatureKeys.includes(to.meta.trialFeatureKey) &&
-        applicationFeatures.some(
-          (feature) =>
-            feature?.key === to.meta.trialFeatureKey && feature?.entitlementActive === true,
-        )
-      if (campaign?.accessMode === 'restricted' && campaignFeature && !entitlementMatches) {
-        next({
-          name: 'access-limited',
-          query: {
-            reason: `「${campaignFeature?.label || '该功能'}」正在内测，请先申请并通过体验资格审核`,
-            type: 'trial',
-          },
-          replace: true,
-        })
-        return
-      }
-    } catch {
-      // The route check is an experience guard. Task submission remains the
-      // authoritative server-side permission boundary.
     }
   }
 
@@ -651,10 +624,7 @@ router.beforeEach(async (to, from, next) => {
   next()
 })
 
-router.afterEach(() => {
-  navigationTarget.name = null
-  navigationTarget.path = ''
-})
+router.afterEach(clearNavigationTarget)
 
 function resolveRuntimeConfigRedirect(to, runtimeConfigStore) {
   if (to.meta?.skipRuntimeGuard || to.name === 'not-found') return null

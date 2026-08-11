@@ -79,7 +79,9 @@ test('minimum desktop ecommerce workspace stays usable without horizontal overfl
   ).toHaveCount(0)
   await expect(page.locator('.showcase-demo img')).toHaveAttribute('src', /listing-preview/)
   await expect(page.getByRole('button', { name: /从商品库选择/ })).toHaveCount(0)
-  await expect(page.locator('.commerce-rail button')).toHaveCount(13)
+  await expect(page.locator('.commerce-rail button')).toHaveCount(12)
+  await expect(page.locator('.commerce-rail__rule')).toHaveCount(2)
+  await expect(page.locator('.commerce-rail button').first()).toContainText('虚拟试衣')
   expect(
     await page.locator('.commerce-rail a, .commerce-rail button').evaluateAll((tabs) =>
       tabs.every((tab, index) => {
@@ -438,21 +440,25 @@ test('generated result controls remain keyboard-accessible after loading history
   await expect(page.locator('.result-workspace')).toBeVisible()
   await expect(page.locator('.result-image-tools')).toHaveCount(0)
   await expect(page.locator('.result-image-card img')).toHaveCSS('object-fit', 'contain')
-  const resultFitsCanvas = await page.evaluate(() => {
+  const resultFitsCanvasWithBreathingRoom = await page.evaluate(() => {
     const stage = document.querySelector('.result-stage.is-single')
     const card = stage?.querySelector('.result-image-card')
     if (!stage || !card) return false
     const stageRect = stage.getBoundingClientRect()
     const cardRect = card.getBoundingClientRect()
+    const horizontalInset = Math.min(cardRect.left - stageRect.left, stageRect.right - cardRect.right)
+    const verticalInset = Math.min(cardRect.top - stageRect.top, stageRect.bottom - cardRect.bottom)
     return (
       cardRect.top >= stageRect.top &&
       cardRect.left >= stageRect.left &&
       cardRect.right <= stageRect.right &&
       cardRect.bottom <= stageRect.bottom &&
+      horizontalInset >= stageRect.width * 0.08 &&
+      verticalInset >= stageRect.height * 0.08 &&
       stage.scrollHeight <= stage.clientHeight + 1
     )
   })
-  expect(resultFitsCanvas).toBe(true)
+  expect(resultFitsCanvasWithBreathingRoom).toBe(true)
   await expect(page.getByRole('button', { name: '放大查看当前结果' })).toBeVisible()
   await expect(page.getByRole('button', { name: '局部编辑当前结果' })).toBeVisible()
 
@@ -463,6 +469,49 @@ test('generated result controls remain keyboard-accessible after loading history
   await page.keyboard.press('Enter')
   await page.getByRole('button', { name: '确认删除' }).click()
   await expect(page.locator('.result-workspace')).toHaveCount(0)
+})
+
+test('multi-image results keep fixed non-overlapping slots after load and hover', async ({ page }) => {
+  await page.goto('/ecommerce-design?tool=listing&seedResult=multi')
+  const cards = page.locator('.result-image-card')
+  await expect(cards).toHaveCount(4)
+  await expect(cards.locator('img')).toHaveCount(4)
+  await expect(page.locator('.commerce-canvas')).toHaveCSS('transform', 'none')
+  await expect(cards).toHaveClass([/loaded/, /loaded/, /loaded/, /loaded/])
+
+  const snapshot = () =>
+    cards.evaluateAll((items) =>
+      items.map((item) => {
+        const rect = item.getBoundingClientRect()
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      }),
+    )
+  const initial = await snapshot()
+  expect(Math.abs(initial[0].x - initial[1].x)).toBeLessThan(0.5)
+  expect(initial[1].y).toBeGreaterThan(initial[0].y)
+  expect(initial[2].x).toBeGreaterThan(initial[0].x)
+  expect(Math.abs(initial[2].y - initial[0].y)).toBeLessThan(0.5)
+  expect(Math.abs(initial[3].x - initial[2].x)).toBeLessThan(0.5)
+  expect(Math.abs(initial[3].y - initial[1].y)).toBeLessThan(0.5)
+  expect(
+    initial.every((rect, index) =>
+      initial.slice(index + 1).every((other) => {
+        const overlapWidth = Math.min(rect.x + rect.width, other.x + other.width) - Math.max(rect.x, other.x)
+        const overlapHeight = Math.min(rect.y + rect.height, other.y + other.height) - Math.max(rect.y, other.y)
+        return overlapWidth <= 0 || overlapHeight <= 0
+      }),
+    ),
+  ).toBe(true)
+
+  await page.waitForTimeout(450)
+  await cards.first().hover()
+  await page.waitForTimeout(100)
+  const settled = await snapshot()
+  expect(
+    settled.every((rect, index) =>
+      Object.keys(rect).every((key) => Math.abs(rect[key] - initial[index][key]) < 0.5),
+    ),
+  ).toBe(true)
 })
 
 async function mockEcommerceApis(page) {
@@ -584,29 +633,33 @@ async function mockEcommerceApis(page) {
       return
     }
     if (path === '/api/v1/tasks') {
-      if (new URL(page.url()).searchParams.get('seedResult') === '1') {
+      const seedResult = new URL(page.url()).searchParams.get('seedResult')
+      if (seedResult === '1' || seedResult === 'multi') {
+        const count = seedResult === 'multi' ? 4 : 1
+        const mode = seedResult === 'multi' ? 'listing' : 'detail'
         await fulfill(route, {
-          items: [
-            {
-              id: 'e2e-result-task-1',
+          items: Array.from({ length: count }, (_, index) => {
+            const imageUrl = `/api/v1/files/mock-product.png?result=${index + 1}`
+            return {
+              id: `e2e-result-task-${index + 1}`,
               type: 'ecommerce_design',
               status: 'succeeded',
               prompt: '测试电商结果',
               params: {
-                _kind: 'ui-design-ecommerce-detail-generation',
-                aspectRatio: '3:4',
+                _kind: `ui-design-ecommerce-${mode}-generation`,
+                aspectRatio: seedResult === 'multi' ? '1:1' : '3:4',
                 batchId: 'e2e-result-batch-1',
-                batchIndex: 0,
-                batchSize: 1,
+                batchIndex: index,
+                batchSize: count,
                 batchCreatedAt: '2026-01-01T00:00:00.000Z',
               },
               count: 1,
-              originalUrls: ['/api/v1/files/mock-product.png'],
-              outputUrls: ['/api/v1/files/mock-product.png'],
+              originalUrls: [imageUrl],
+              outputUrls: [imageUrl],
               createdAt: '2026-01-01T00:00:00.000Z',
               finishedAt: '2026-01-01T00:01:00.000Z',
-            },
-          ],
+            }
+          }),
           nextCursor: null,
         })
         return

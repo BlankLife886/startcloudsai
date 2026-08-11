@@ -153,7 +153,7 @@ const taskTypeBars = computed(() => {
     game: '游戏',
     design: '设计',
     puzzle: '拼图',
-    modelsheet: '模型图',
+    modelsheet: '模型设计',
   }
   return entries.map((item) => ({
     ...item,
@@ -296,10 +296,10 @@ const TASK_TYPE_LABELS = {
   t2i: '文生图',
   coloring: '插画染色',
   ui_design: 'UI 设计稿',
-  ecommerce_design: 'AI 电商设计',
-  model_sheet: '模型图生成',
+  ecommerce_design: 'AI 电商',
+  model_sheet: '模型设计',
   game_art: '游戏美术',
-  puzzle: 'AI 拼图',
+  puzzle: '拼图',
   background_remove: '背景移除',
 }
 

@@ -2072,7 +2072,7 @@ async function approveAgentProposal(message) {
   proposal.submitting = false
 }
 
-async function sendMessage() {
+async function sendMessage(options = {}) {
   const prompt = draft.value.trim()
   if (!canSend.value) return
   if (activeRunCount.value >= 4 && !conversationHasActiveRun(activeId.value)) {
@@ -2084,7 +2084,12 @@ async function sendMessage() {
   const responseMode =
     mode.value === 'image' ? 'image' : creationType.value === 'agent' ? 'agent' : 'chat'
   const requestCount = requestedImageCount || generationCount.value
-  if (!(await confirmAssistantCharge(responseMode, requestCount, generationModel.value))) return
+  if (
+    options?.skipCostConfirm !== true &&
+    !(await confirmAssistantCharge(responseMode, requestCount, generationModel.value))
+  ) {
+    return
+  }
 
   const conversation = await ensureConversation()
   if (!conversation) return
@@ -2819,6 +2824,7 @@ async function resumeAssistantRun(run) {
 }
 
 onMounted(async () => {
+  let studioPendingLaunch = null
   try {
     sidebarCollapsed.value =
       localStorage.getItem('starclouds:assistant-sidebar-collapsed') === 'true'
@@ -2857,8 +2863,10 @@ onMounted(async () => {
     const { composePendingLaunchPrompt, takePendingPrompt } = await import(
       '@/features/creator-hub/studioTools'
     )
-    const pending = takePendingPrompt(['assistant', 't2i'])
+    const pending = takePendingPrompt('assistant')
     if (pending) {
+      studioPendingLaunch = pending
+      newConversation()
       const launchConfig = pending.config || {}
       const launchPrompt = composePendingLaunchPrompt(pending, 12000)
       if (launchPrompt) draft.value = launchPrompt
@@ -2897,13 +2905,30 @@ onMounted(async () => {
         }
         generationModel.value = conversationModel.value || conversationModels.value[0]?.model || ''
       }
+      referenceImages.value = (Array.isArray(launchConfig.referenceImages)
+        ? launchConfig.referenceImages
+        : []
+      )
+        .map((item) => ({
+          id: item.id || uid(),
+          name: item.name || '创作台参考图',
+          dataUrl: item.dataUrl,
+          thumbnailUrl: item.thumbnailUrl,
+          fileKey: item.fileKey,
+        }))
+        .filter((item) => item.dataUrl || item.fileKey)
+      if ([1, 2, 3, 4].includes(Number(launchConfig.count))) {
+        generationCount.value = Number(launchConfig.count)
+      }
     }
   } catch {
     // ignore
   }
-  activeId.value = conversations.value.some((item) => item.id === workspaceState.activeId)
-    ? workspaceState.activeId
-    : listableConversations.value[0]?.id || ''
+  activeId.value = studioPendingLaunch
+    ? ''
+    : conversations.value.some((item) => item.id === workspaceState.activeId)
+      ? workspaceState.activeId
+      : listableConversations.value[0]?.id || ''
   hydrated.value = true
   await nextTick()
   setupAssistantMotion()
@@ -2935,6 +2960,9 @@ onMounted(async () => {
     for (const run of activeRuns.slice(0, 4)) void resumeAssistantRun(run)
   } catch {
     // Conversation data remains usable if a status refresh temporarily fails.
+  }
+  if (studioPendingLaunch?.config?.autoStart && draft.value.trim()) {
+    void sendMessage({ skipCostConfirm: studioPendingLaunch.config.costConfirmed === true })
   }
 })
 

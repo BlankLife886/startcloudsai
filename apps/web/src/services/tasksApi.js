@@ -21,10 +21,10 @@ export const TASK_TYPE_LABELS = {
   t2i: '文生图',
   coloring: '插画染色',
   ui_design: 'UI 设计稿',
-  ecommerce_design: 'AI 电商设计',
-  model_sheet: '超高清模型图',
+  ecommerce_design: 'AI 电商',
+  model_sheet: '模型设计',
   game_art: '游戏设计',
-  puzzle: 'AI 拼图',
+  puzzle: '拼图',
   background_remove: '背景移除',
 }
 
@@ -199,8 +199,16 @@ function taskSnapshotSignature(task) {
     task?.errorCode,
     task?.outputKeys,
     task?.thumbnailKeys,
+    task?.outputUrls,
+    task?.originalUrls,
     task?.finishedAt,
   ])
+}
+
+function taskSnapshotHasOutput(task) {
+  return [task?.outputKeys, task?.outputUrls, task?.originalUrls].some(
+    (items) => Array.isArray(items) && items.some(Boolean),
+  )
 }
 
 function applyWaitingTaskSnapshot(task, payload = null, broadcast = false) {
@@ -214,7 +222,23 @@ function applyWaitingTaskSnapshot(task, payload = null, broadcast = false) {
       waiter.lastSignature = signature
       if (typeof waiter.onUpdate === 'function') waiter.onUpdate(task)
     }
-    if (terminal) waiter.finish(waiter.resolve, task)
+    if (!terminal) continue
+    const succeededWithoutOutput =
+      String(task?.status || '').toLowerCase() === 'succeeded' && !taskSnapshotHasOutput(task)
+    if (succeededWithoutOutput) {
+      // Completion can become visible just before replicated output fields.
+      // Confirm the empty result through polling before ending the waiter.
+      if (payload?.source !== 'batch-poll') {
+        entry.nextPollAt = 0
+        scheduleTaskPoll(0)
+        continue
+      }
+      waiter.emptySuccessPolls += 1
+      if (waiter.emptySuccessPolls < 3) continue
+    } else {
+      waiter.emptySuccessPolls = 0
+    }
+    waiter.finish(waiter.resolve, task)
   }
   if (broadcast) dispatchTaskUpdate(task, payload || { source: 'batch-poll' })
 }
@@ -392,7 +416,14 @@ export async function waitForTask(
       callback(value)
     }
     const abort = () => finish(reject, createAbortError())
-    const waiter = { resolve, reject, finish, onUpdate, lastSignature: '' }
+    const waiter = {
+      resolve,
+      reject,
+      finish,
+      onUpdate,
+      lastSignature: '',
+      emptySuccessPolls: 0,
+    }
     entry.waiters.add(waiter)
     const timeoutTimer = globalThis.setTimeout(() => {
       finish(reject, new Error('任务等待超时，请稍后在历史记录中查看结果'))

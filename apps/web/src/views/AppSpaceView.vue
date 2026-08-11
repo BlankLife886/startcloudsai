@@ -74,9 +74,9 @@ function cardCategory(app) {
       <header class="app-space-hero">
         <span class="app-space-kicker">
           <i class="bi bi-columns-gap"></i>
-          APP SPACE
+          ABOUT US
         </span>
-        <h1 class="app-space-title">应用空间</h1>
+        <h1 class="app-space-title">关于我们</h1>
         <p class="app-space-lead">本站 App、小程序，以及其他站点产品的下载与打开入口</p>
       </header>
 

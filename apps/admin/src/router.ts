@@ -57,6 +57,11 @@ const router = createRouter({
           meta: { title: "签到活动" },
         },
         {
+          path: "growth-groups",
+          component: () => import("@/views/GrowthGroupsView.vue"),
+          meta: { title: "好友拼团" },
+        },
+        {
           path: "feedback",
           component: () => import("@/views/FeedbackView.vue"),
           meta: { title: "用户反馈" },

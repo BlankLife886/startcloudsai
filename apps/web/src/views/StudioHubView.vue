@@ -4,13 +4,12 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useLocaleStore } from '@/stores/locale'
 import { useRuntimeConfigStore } from '@/stores/runtimeConfig'
-import { listTasks } from '@/services/tasksApi'
+import { listTasks, uploadFile } from '@/services/tasksApi'
 import { STUDIO_TOOLS, stashPendingPrompt } from '@/features/creator-hub/studioTools'
 import {
   ecommerceModeDefaultRatio,
   studioLaunchDefaults,
   studioLaunchFields,
-  studioLaunchOption,
 } from '@/features/creator-hub/studioLaunchProfiles'
 import {
   getModelAspectRatiosForResolution,
@@ -20,11 +19,15 @@ import { taskCoverUrl, taskOriginalUrl, taskThumbnailUrl } from '@/features/crea
 import { taskAspectCss, useMasonryColumns } from '@/features/creator-hub/useMasonryFeed'
 import { useStudioHubMotion } from '@/features/creator-hub/useStudioHubMotion'
 import AuthenticatedImage from '@/components/common/AuthenticatedImage.vue'
+import AiCostConfirmDialog from '@/features/ai-shared/AiCostConfirmDialog.vue'
 import TypeLine from '@/features/home-commercial/components/TypeLine.vue'
 import { translateClientText } from '@/i18n/clientTranslations'
 import notificationService from '@/services/notification'
 import { fetchAssistantConfig } from '@/services/assistantApi'
 import { listPromptLibrary, recordPromptEngagement } from '@/services/promptLibrary'
+import { getFeatureUnitPriceCents } from '@/services/pricing'
+import { useClientWalletBalance } from '@/composables/useClientWalletBalance'
+import { imageCountFromPrompt } from '@/features/assistant/domain/assistantMessages'
 import { ECOMMERCE_MODES } from '@/features/ecommerce/ecommerceTools'
 import '@/features/creator-hub/studio-hub.css'
 
@@ -32,6 +35,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const localeStore = useLocaleStore()
 const runtimeConfigStore = useRuntimeConfigStore()
+const { normalBalanceCents, refreshWalletBalance } = useClientWalletBalance()
 
 const rootRef = ref(null)
 const composerRef = ref(null)
@@ -49,6 +53,13 @@ const promptMaterialsLoading = ref({})
 const voiceSupported = ref(false)
 const voiceListening = ref(false)
 const voiceError = ref('')
+const referenceInputRef = ref(null)
+const composerReferenceImages = ref([])
+const referenceUploading = ref(false)
+const costConfirmOpen = ref(false)
+const costConfirmPayload = ref(null)
+const pendingLaunch = ref(null)
+const launchSubmitting = ref(false)
 const recentTasks = ref([])
 const recentLoading = ref(false)
 const failedThumbIds = ref(new Set())
@@ -63,7 +74,7 @@ useStudioHubMotion(rootRef)
 
 const LEAD_LINE_SOURCES = [
   '先写下想法，再选择工具。从一句话开始，做到成品。',
-  '文生图、染色、模型图、游戏资产——一条创作流。',
+  '文生图、染色、模型设计、游戏资产——一条创作流。',
   '提示词可复用，进度可回看，结果可继续迭代。',
 ]
 const COMPOSER_PLACEHOLDER = '描述你想做的画面、角色、风格或界面…'
@@ -115,7 +126,10 @@ const visibleTools = computed(() =>
   }),
 )
 
-const composerTools = computed(() => visibleTools.value.filter((tool) => tool.taskType))
+const COMPOSER_TOOL_IDS = new Set(['assistant', 't2i'])
+const composerTools = computed(() =>
+  visibleTools.value.filter((tool) => tool.taskType && COMPOSER_TOOL_IDS.has(tool.id)),
+)
 
 /** 工具墙展示顺序：助手 + 模型并排，其余环绕 */
 const TOOL_WALL_ORDER = [
@@ -125,7 +139,6 @@ const TOOL_WALL_ORDER = [
   'coloring',
   'ui',
   'game',
-  'puzzle',
 ]
 const wallTools = computed(() => {
   const map = new Map(visibleTools.value.map((tool) => [tool.id, tool]))
@@ -197,6 +210,11 @@ const selectedLaunchModel = computed(
     null,
 )
 
+const maxComposerReferences = computed(() => {
+  if (selectedTool.value?.id === 'assistant') return 4
+  return Math.max(0, Number(selectedLaunchModel.value?.maxReferenceImages ?? 4) || 0)
+})
+
 function supportedFieldOptions(field) {
   if (selectedTool.value?.id === 'puzzle' && field.key === 'resolution') {
     return field.options
@@ -264,16 +282,51 @@ function selectedComposerOption(key, value) {
 }
 
 function composerFieldLabel(field) {
-  if (selectedTool.value?.id === 't2i' && field.key === 'skill') return 'Skill'
-  return selectedComposerOption(field.key, selectedLaunchConfig.value[field.key])?.label || field.label
+  const configKey = field.configKey || field.key
+  if (field.multiple) {
+    const selectedValues = Array.isArray(selectedLaunchConfig.value[configKey])
+      ? selectedLaunchConfig.value[configKey]
+      : []
+    if (!selectedValues.length) return '不启用 Skill'
+    if (selectedValues.length === 1) {
+      return field.options.find((item) => String(item.value) === String(selectedValues[0]))?.label || '1 个 Skill'
+    }
+    return `${selectedValues.length} 个 Skills`
+  }
+  return selectedComposerOption(field.key, selectedLaunchConfig.value[configKey])?.label || field.label
+}
+
+function composerFieldOptionSelected(field, value) {
+  const configKey = field.configKey || field.key
+  if (field.multiple) {
+    const selectedValues = Array.isArray(selectedLaunchConfig.value[configKey])
+      ? selectedLaunchConfig.value[configKey]
+      : []
+    if (String(value) === 'none') return selectedValues.length === 0
+    return selectedValues.some((item) => String(item) === String(value))
+  }
+  return String(value) === String(selectedLaunchConfig.value[configKey])
 }
 
 function normalizeSelectedLaunchConfig() {
   for (const field of composerFields.value) {
+    const configKey = field.configKey || field.key
+    if (field.multiple) {
+      const allowed = new Set(field.options.map((item) => String(item.value)))
+      selectedLaunchConfig.value[configKey] = [
+        ...new Set(
+          (Array.isArray(selectedLaunchConfig.value[configKey])
+            ? selectedLaunchConfig.value[configKey]
+            : []
+          ).filter((value) => allowed.has(String(value))),
+        ),
+      ]
+      continue
+    }
     if (!field.options.length || field.key === 'material' || field.key === 'model') continue
-    const current = selectedLaunchConfig.value[field.key]
+    const current = selectedLaunchConfig.value[configKey]
     if (field.options.some((item) => String(item.value) === String(current))) continue
-    selectedLaunchConfig.value[field.key] = field.options[0].value
+    selectedLaunchConfig.value[configKey] = field.options[0].value
   }
   if (
     selectedLaunchConfig.value.model &&
@@ -299,8 +352,22 @@ function applyPromptMaterial(nextValue) {
 }
 
 function setLaunchFieldValue(field, raw) {
+  const configKey = field.configKey || field.key
+  if (field.multiple) {
+    if (String(raw) === 'none') {
+      selectedLaunchConfig.value[configKey] = []
+      return
+    }
+    const current = Array.isArray(selectedLaunchConfig.value[configKey])
+      ? selectedLaunchConfig.value[configKey]
+      : []
+    selectedLaunchConfig.value[configKey] = current.some((value) => String(value) === String(raw))
+      ? current.filter((value) => String(value) !== String(raw))
+      : [...current, raw]
+    return
+  }
   const sample = field.options.find((item) => String(item.value) === String(raw))?.value
-  selectedLaunchConfig.value[field.key] = sample ?? raw
+  selectedLaunchConfig.value[configKey] = sample ?? raw
   if (field.key === 'material') applyPromptMaterial(selectedLaunchConfig.value.material)
   if (field.key === 'skill' && selectedTool.value?.id === 'ecommerce') {
     selectedLaunchConfig.value.ratio = ecommerceModeDefaultRatio(selectedLaunchConfig.value.skill)
@@ -321,7 +388,7 @@ function setLaunchFieldValue(field, raw) {
 
 function selectLaunchFieldOption(field, value) {
   setLaunchFieldValue(field, value)
-  closeComposerPanel()
+  if (!field.multiple) closeComposerPanel()
 }
 
 function useComposerPrompt(item) {
@@ -594,24 +661,170 @@ async function loadRecent() {
   }
 }
 
-function startCreate() {
+function openComposerReferencePicker() {
+  if (referenceUploading.value) return
+  if (composerReferenceImages.value.length >= maxComposerReferences.value) {
+    notificationService.info(`当前模型最多添加 ${maxComposerReferences.value} 张参考图`)
+    return
+  }
+  referenceInputRef.value?.click()
+}
+
+async function addComposerReferenceFiles(files) {
+  const incoming = Array.from(files || []).filter((file) => file?.type?.startsWith('image/'))
+  if (!incoming.length) return
+  const remaining = Math.max(
+    0,
+    maxComposerReferences.value - composerReferenceImages.value.length,
+  )
+  if (!remaining) {
+    notificationService.info(
+      maxComposerReferences.value
+        ? `当前模型最多添加 ${maxComposerReferences.value} 张参考图`
+        : '当前模型不支持参考图',
+    )
+    return
+  }
+  referenceUploading.value = true
+  try {
+    const uploaded = await Promise.all(
+      incoming.slice(0, remaining).map(async (file) => {
+        const result = await uploadFile(file)
+        return {
+          id: crypto.randomUUID(),
+          name: file.name || '参考图',
+          dataUrl: result.url,
+          thumbnailUrl: result.thumbnailUrl || result.url,
+          fileKey: result.key,
+        }
+      }),
+    )
+    const existing = new Set(
+      composerReferenceImages.value.map((item) => item.fileKey || item.dataUrl),
+    )
+    composerReferenceImages.value = [
+      ...composerReferenceImages.value,
+      ...uploaded.filter((item) => !existing.has(item.fileKey || item.dataUrl)),
+    ]
+    if (incoming.length > remaining) {
+      notificationService.info(`当前模型最多添加 ${maxComposerReferences.value} 张参考图`)
+    }
+  } catch (error) {
+    notificationService.error(error?.message || '参考图上传失败')
+  } finally {
+    referenceUploading.value = false
+  }
+}
+
+async function handleComposerReferenceInput(event) {
+  await addComposerReferenceFiles(event.target?.files || [])
+  if (event.target) event.target.value = ''
+}
+
+function removeComposerReference(id) {
+  composerReferenceImages.value = composerReferenceImages.value.filter((item) => item.id !== id)
+}
+
+function modelPointPrice(model) {
+  const points = Number(model?.pricePoints)
+  return Number.isFinite(points) ? Math.max(0, points) : 0
+}
+
+async function launchCostSnapshot(tool, config, prompt) {
+  await refreshWalletBalance({ force: true }).catch(() => null)
+  const creditAvailable = authStore.isAuthenticated ? normalBalanceCents.value : null
+  if (tool.id === 'assistant') {
+    const chatModel =
+      assistantLaunchModels.value.conversation.find((item) => item.id === config.model) ||
+      assistantLaunchModels.value.conversation[0]
+    const imageModel = assistantLaunchModels.value.image[0]
+    const imageCount = imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2)
+    const total = Math.max(
+      modelPointPrice(chatModel),
+      modelPointPrice(imageModel) * Math.min(4, imageCount),
+    )
+    return {
+      billingMode: 'credits',
+      unitCost: total,
+      unitPriceCents: total,
+      totalPriceCents: total,
+      count: 1,
+      unitLabel: '次',
+      featureLabel: 'AI 助手 Agent',
+      summary: '确认后将进入一个全新的对话并立即执行；按实际路由结算，多余预留积分自动退回。',
+      creditAvailable,
+    }
+  }
+  const count = Math.max(1, Math.min(4, Number(config.count) || 1))
+  const configuredUnitPrice = modelPointPrice(selectedLaunchModel.value)
+  const taskUnitPrice = await getFeatureUnitPriceCents('wallpaper')
+  const unitPrice = configuredUnitPrice || Math.max(0, Number(taskUnitPrice) || 0)
+  return {
+    billingMode: 'credits',
+    unitCost: unitPrice * count,
+    unitPriceCents: unitPrice,
+    totalPriceCents: unitPrice * count,
+    count,
+    unitLabel: '张',
+    featureLabel: '文生图',
+    summary: '确认后将进入文生图工作台并立即执行；失败或取消时由服务端退回未结算积分。',
+    creditAvailable,
+  }
+}
+
+async function startCreate() {
   const tool = selectedTool.value
-  if (!tool) return
+  if (!tool || launchSubmitting.value || referenceUploading.value) return
   const prompt = draftPrompt.value.trim()
-  const config = { ...selectedLaunchConfig.value }
-  const skillPrompt = studioLaunchOption(tool.id, 'skill', config.skill)?.prompt || ''
-  if (skillPrompt) config.skillPrompt = skillPrompt
+  if (!prompt) {
+    notificationService.info('请先输入创作内容')
+    return
+  }
+  const config = {
+    ...selectedLaunchConfig.value,
+    skills: Array.isArray(selectedLaunchConfig.value.skills)
+      ? [...selectedLaunchConfig.value.skills]
+      : [],
+  }
+  if (tool.id === 'assistant') {
+    config.count = imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2)
+  }
   const materialPrompt = selectedComposerOption('material', config.material)?.prompt || ''
   if (materialPrompt) config.materialPrompt = materialPrompt
-  if (prompt || Object.keys(config).length) {
-    stashPendingPrompt({ prompt, taskType: tool.taskType || tool.id || 't2i', config })
-    notificationService.success('已带到工作台')
+  config.referenceImages = composerReferenceImages.value.map((item) => ({ ...item }))
+  config.autoStart = true
+  config.costConfirmed = true
+  launchSubmitting.value = true
+  try {
+    pendingLaunch.value = { tool, prompt, config }
+    costConfirmPayload.value = await launchCostSnapshot(tool, config, prompt)
+    costConfirmOpen.value = true
+  } catch (error) {
+    pendingLaunch.value = null
+    notificationService.error(error?.message || '积分计算失败，请稍后重试')
+  } finally {
+    launchSubmitting.value = false
   }
-  router.push(
-    tool.id === 'ecommerce'
-      ? { path: tool.to, query: { tool: config.skill || 'detail' } }
-      : tool.to,
-  )
+}
+
+function confirmLaunch() {
+  const launch = pendingLaunch.value
+  if (!launch) return
+  costConfirmOpen.value = false
+  costConfirmPayload.value = null
+  pendingLaunch.value = null
+  stashPendingPrompt({
+    prompt: launch.prompt,
+    taskType: launch.tool.taskType || launch.tool.id || 't2i',
+    config: launch.config,
+  })
+  router.push(launch.tool.to)
+}
+
+function cancelLaunch() {
+  costConfirmOpen.value = false
+  costConfirmPayload.value = null
+  pendingLaunch.value = null
 }
 
 watch(
@@ -632,6 +845,11 @@ watch(
   },
   { immediate: true },
 )
+
+watch(maxComposerReferences, (limit) => {
+  if (composerReferenceImages.value.length <= limit) return
+  composerReferenceImages.value = composerReferenceImages.value.slice(0, limit)
+})
 
 onMounted(async () => {
   setupVoiceInput()
@@ -704,6 +922,36 @@ onBeforeUnmount(() => {
               aria-label="创作描述"
             />
 
+            <div
+              v-if="composerReferenceImages.length || referenceUploading"
+              class="studio-composer__references"
+              aria-label="已添加的参考图"
+            >
+              <figure
+                v-for="item in composerReferenceImages"
+                :key="item.id"
+                class="studio-composer__reference"
+              >
+                <AuthenticatedImage
+                  :src="item.thumbnailUrl || item.dataUrl"
+                  :alt="item.name"
+                  :max-dimension="160"
+                />
+                <button
+                  type="button"
+                  title="移除参考图"
+                  aria-label="移除参考图"
+                  @click="removeComposerReference(item.id)"
+                >
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </figure>
+              <span v-if="referenceUploading" class="studio-composer__reference-loading">
+                <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+                正在上传
+              </span>
+            </div>
+
             <div class="studio-composer__dock">
               <div class="studio-composer__controls">
                 <button
@@ -747,21 +995,22 @@ onBeforeUnmount(() => {
                       class="studio-composer__field-menu"
                       role="listbox"
                       :aria-label="field.label"
+                      :aria-multiselectable="field.multiple || undefined"
                     >
                       <button
                         v-for="item in field.options"
                         :key="String(item.value)"
                         type="button"
                         role="option"
-                        :aria-selected="String(item.value) === String(selectedLaunchConfig[field.key])"
+                        :aria-selected="composerFieldOptionSelected(field, item.value)"
                         :class="{
-                          'is-selected': String(item.value) === String(selectedLaunchConfig[field.key]),
+                          'is-selected': composerFieldOptionSelected(field, item.value),
                         }"
                         @click="selectLaunchFieldOption(field, item.value)"
                       >
                         <span>{{ item.label }}</span>
                         <i
-                          v-if="String(item.value) === String(selectedLaunchConfig[field.key])"
+                          v-if="composerFieldOptionSelected(field, item.value)"
                           class="bi bi-check2"
                           aria-hidden="true"
                         ></i>
@@ -769,6 +1018,30 @@ onBeforeUnmount(() => {
                     </div>
                   </Transition>
                 </div>
+
+                <button
+                  v-if="maxComposerReferences > 0"
+                  type="button"
+                  class="studio-composer__control is-reference"
+                  :disabled="
+                    referenceUploading || composerReferenceImages.length >= maxComposerReferences
+                  "
+                  :title="`添加参考图，最多 ${maxComposerReferences} 张`"
+                  aria-label="添加参考图"
+                  @click="openComposerReferencePicker"
+                >
+                  <i class="bi bi-image" aria-hidden="true"></i>
+                  <span>参考图</span>
+                  <em v-if="composerReferenceImages.length">{{ composerReferenceImages.length }}</em>
+                </button>
+                <input
+                  ref="referenceInputRef"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  @change="handleComposerReferenceInput"
+                />
 
                 <button
                   type="button"
@@ -803,7 +1076,9 @@ onBeforeUnmount(() => {
                 <button
                   type="submit"
                   class="studio-composer__submit"
-                  :disabled="!selectedTool"
+                  :disabled="
+                    !selectedTool || !draftPrompt.trim() || referenceUploading || launchSubmitting
+                  "
                   title="开始创作"
                   aria-label="开始创作"
                 >
@@ -926,12 +1201,12 @@ onBeforeUnmount(() => {
       <section
         v-if="ecommerceTool"
         class="studio-section studio-section--commerce"
-        aria-label="AI 电商设计"
+        aria-label="AI 电商"
         data-studio-reveal
       >
         <div class="studio-section__head">
           <div>
-            <h2>AI 电商设计</h2>
+            <h2>AI 电商</h2>
             <p>商品、人物与营销视觉独立工作流</p>
           </div>
           <router-link :to="ecommerceTool.to">进入电商工作台 →</router-link>
@@ -1042,4 +1317,12 @@ onBeforeUnmount(() => {
       </section>
     </div>
   </main>
+  <AiCostConfirmDialog
+    :show="costConfirmOpen"
+    :cost="costConfirmPayload"
+    hide-preference
+    elevated
+    @confirm="confirmLaunch"
+    @cancel="cancelLaunch"
+  />
 </template>

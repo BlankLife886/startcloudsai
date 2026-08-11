@@ -11,7 +11,6 @@ import FlowingMenu from '@/features/home-commercial/components/FlowingMenu.vue'
 import GradientBlindsHero from '@/features/home-commercial/components/GradientBlindsHero.vue'
 import IntroMediaFlip from '@/features/home-commercial/components/IntroMediaFlip.vue'
 import StrandsBand from '@/features/home-commercial/components/StrandsBand.vue'
-import StudioStoryboard from '@/features/home-commercial/components/StudioStoryboard.vue'
 import TypeLine from '@/features/home-commercial/components/TypeLine.vue'
 import { useCommercialHomeMotion } from '@/features/home-commercial/useCommercialHomeMotion'
 import '@/features/home-commercial/commercial-home.css'
@@ -76,8 +75,8 @@ const studioEntries = [
     to: '/model-sheet',
     icon: 'bi bi-person-bounding-box',
     index: '05',
-    title: '超高清模型图',
-    english: 'Model sheet',
+    title: '模型设计',
+    english: 'Model design',
     description: '生成清晰、统一的多视角角色与模型参考。',
     tone: 'violet',
     taskType: 'model_sheet',
@@ -88,7 +87,7 @@ const studioEntries = [
     to: '/ecommerce-design',
     icon: 'bi bi-bag-check-fill',
     index: '06',
-    title: 'AI 电商设计',
+    title: 'AI 电商',
     english: 'Commerce design',
     description: '上传商品图，一次生成适配平台规范的主图、详情与营销视觉。',
     tone: 'yellow',
@@ -241,7 +240,7 @@ const flowingMenuItems = computed(() => {
 
 const footerDiscoverLinks = [
   { label: '社区', to: '/share' },
-  { label: '应用空间', to: '/app-space' },
+  { label: '关于我们', to: '/app-space' },
   { label: '更新说明', to: '/updates' },
   { label: '价格与套餐', to: '/pricing' },
 ]
@@ -335,7 +334,7 @@ onMounted(() => {
             />
           </div>
           <p data-commercial-hero="copy" class="commercial-hero__summary">
-            AI 助手、文生图、插画染色、UI 设计稿、模型图与游戏美术，
+            AI 助手、文生图、插画染色、UI 设计稿、模型设计与游戏美术，
             由统一模型目录、任务系统和高清交付链路连接。
           </p>
 
@@ -433,10 +432,6 @@ onMounted(() => {
         marquee-text-color="#111111"
         border-color="#ffffff"
       />
-    </section>
-
-    <section class="commercial-studios commercial-band" aria-label="创作工作台">
-      <StudioStoryboard v-if="availableStudios.length" :studios="availableStudios" />
     </section>
 
     <section class="commercial-process commercial-band" aria-labelledby="process-title">

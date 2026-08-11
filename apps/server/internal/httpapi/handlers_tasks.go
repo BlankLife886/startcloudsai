@@ -344,7 +344,7 @@ func (s *Server) getTasksBatch(c *gin.Context) {
 	items := make([]gin.H, 0, len(ids))
 	for _, id := range ids {
 		task := tasksByID[id]
-		if task == nil || task.UserID != user.ID {
+		if task == nil || task.UserID != user.ID || task.DeletedAt != nil {
 			continue
 		}
 		items = append(items, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
@@ -438,6 +438,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 	ctx := c.Request.Context()
 	var keys []string
 	var deletedTaskIDs []uuid.UUID
+	deletedAt := time.Now().UTC()
 	cascade := c.Query("cascade") == "true"
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		root, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
@@ -498,7 +499,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 				if err := store.EnqueueObjectCleanup(ctx, tx, taskKeys); err != nil {
 					return err
 				}
-				if err := store.DeleteTask(ctx, tx, task.ID); err != nil {
+				if err := store.MarkTaskDeletedByUser(ctx, tx, task.ID, deletedAt); err != nil {
 					return err
 				}
 				keys = append(keys, taskKeys...)
@@ -525,7 +526,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 		}
 		cancel()
 		if cleanupErr != nil {
-			log.Printf("task %s deleted from database but object cleanup failed: %v", taskID, cleanupErr)
+			log.Printf("task %s marked as user-deleted but object cleanup failed: %v", taskID, cleanupErr)
 		}
 	}
 	ids := make([]string, 0, len(deletedTaskIDs))

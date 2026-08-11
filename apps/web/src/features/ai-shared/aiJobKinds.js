@@ -3,6 +3,7 @@
 const COLORING_KINDS = new Set(['illustration-coloring'])
 const WALLPAPER_KINDS = new Set([
   // 兼容改名前已经创建的文生图任务；其它工作台均使用各自的专属前缀。
+  // 注意：background_remove（含文生图自动抠图子任务）不属于壁纸历史。
   'image-generation',
   'image-edit',
   'video-generation',
@@ -11,7 +12,6 @@ const WALLPAPER_KINDS = new Set([
   'wallpaper-image-edit',
   'wallpaper-image-mask-edit',
   'wallpaper-image-upscale',
-  'wallpaper-background-remove',
   'wallpaper-video-generation',
   'wallpaper-video-edit',
 ])

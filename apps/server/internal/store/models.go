@@ -279,35 +279,39 @@ type Order struct {
 }
 
 type Task struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	Type           string
-	Model          string
-	Status         string
-	Prompt         string
-	Params         map[string]any
-	Count          int
-	InputKeys      []string
-	OutputKeys     []string
-	ThumbnailKeys  []string
-	CostCents      int64
-	WorkUnits      int
-	IdempotencyKey *string
-	ErrorCode      *string
-	ErrorMessage   *string
-	Attempt        int
-	StartedAt      *time.Time
-	LeaseOwner     *string
-	HeartbeatAt    *time.Time
-	LeaseUntil     *time.Time
-	FinishedAt     *time.Time
-	CreatedAt      time.Time
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	Type               string
+	Model              string
+	Status             string
+	Prompt             string
+	Params             map[string]any
+	Count              int
+	InputKeys          []string
+	OutputKeys         []string
+	ThumbnailKeys      []string
+	CostCents          int64
+	WorkUnits          int
+	IdempotencyKey     *string
+	ErrorCode          *string
+	ErrorMessage       *string
+	Attempt            int
+	StartedAt          *time.Time
+	LeaseOwner         *string
+	HeartbeatAt        *time.Time
+	LeaseUntil         *time.Time
+	FinishedAt         *time.Time
+	CreatedAt          time.Time
+	DeletedAt          *time.Time
+	DeletionActor      *string
+	DeletedOutputCount int
 }
 
 type AssistantConversation struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	Title     string
+	Workspace string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -451,10 +455,11 @@ type UserFeedback struct {
 }
 
 type GrowthGroupMember struct {
-	UserID   uuid.UUID
-	Username string
-	Role     string
-	JoinedAt time.Time
+	UserID    uuid.UUID
+	Username  string
+	AvatarURL *string
+	Role      string
+	JoinedAt  time.Time
 }
 
 type GrowthGroup struct {
@@ -470,6 +475,29 @@ type GrowthGroup struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Members       []*GrowthGroupMember
+}
+
+type GrowthGroupAdminSummary struct {
+	TotalGroups     int64
+	ActiveGroups    int64
+	CompletedGroups int64
+	ExpiredGroups   int64
+	Participations  int64
+}
+
+type GrowthGroupAdminItem struct {
+	ID             uuid.UUID
+	Code           string
+	OwnerID        uuid.UUID
+	OwnerUsername  string
+	OwnerAvatarURL *string
+	Status         string
+	TargetMembers  int
+	MemberCount    int
+	RewardCents    int64
+	ExpiresAt      time.Time
+	CompletedAt    *time.Time
+	CreatedAt      time.Time
 }
 
 type DailyCheckin struct {

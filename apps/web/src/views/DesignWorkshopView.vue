@@ -34,7 +34,28 @@ import {
   stitchQuadrantTiles,
 } from '@/features/design-workshop/tilePrecisionRefine'
 import { uploadAiTempBlob } from '@/features/ai-shared/aiImageIO'
+import {
+  analyzeDesignCropElements,
+  buildRegionEditInstruction,
+  generateDesignRegionImage,
+} from '@/features/design-workshop/aiDesignDocument'
+import { calibrateRegionByType } from '@/features/design-workshop/pixelRegionCalibration'
+import {
+  clampBounds,
+  containedContentBox,
+  projectContainerRegionToContent,
+  sourcePixelBoundsForRegion,
+} from '@/features/design-workshop/regionGeometry'
+import {
+  REGION_EDIT_ACTIONS,
+  REGION_RECOGNITION_OPTIONS,
+  normalizeRegionRecognitionTypes,
+  regionNodeMatchesRecognitionTypes,
+  resolveRegionSelectionRequestSize,
+} from '@/features/design-workshop/regionOutputPolicy'
 import { deleteServerAiJob, uploadAiInputFile } from '@/services/aiWallpaper'
+import { createUserAsset } from '@/services/meApi'
+import { uploadFile } from '@/services/tasksApi'
 import {
   buildVersionForest,
   canIterate,
@@ -47,7 +68,13 @@ import {
   downloadAuthenticatedMedia,
   fetchAuthenticatedMediaBlob,
 } from '@/services/authenticatedMedia'
-import { fetchAssistantConfig } from '@/services/assistantApi'
+import {
+  cancelAssistantRun,
+  deleteAssistantConversation,
+  fetchAssistantConfig,
+  getAssistantRun,
+  waitForAssistantRun,
+} from '@/services/assistantApi'
 import {
   getScopedLocalItem,
   removeScopedLocalItem,
@@ -58,7 +85,6 @@ import notificationService from '@/services/notification'
 import {
   DESIGN_QUALITY_REVIEW_MODES,
   auditAiDesignQuality,
-  auditAiDesignRegion,
   buildDesignQualityRules,
   buildQualityIterationPrompt,
 } from '@/features/design-workshop/designQualityProfile'
@@ -75,7 +101,11 @@ const EDITABLE_HISTORY_KEY = 'ui-editable-document-history-v1'
 const ANALYSIS_MODEL_KEY = 'ui-design-analysis-model-v1'
 const QUALITY_AUDIT_HISTORY_KEY = 'ui-design-quality-audits-v4'
 const TILE_REFINE_FINALS_KEY = 'ui-design-tile-refine-finals-v1'
+const REGION_PROCESS_KEY = 'ui-design-region-process-v1'
+const REGION_SELECTION_SPACE = 'image-content-v1'
+const REGION_ELEMENT_GEOMETRY_VERSION = 2
 const ACTIVE_ANALYSIS_MAX_AGE_MS = 6 * 60 * 60 * 1000
+const REGION_PROCESS_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 function readStoredActiveAnalysisSession() {
   try {
@@ -467,6 +497,7 @@ const {
   creditsPrompt,
   modelId,
   models,
+  selectedModel,
   status,
   error: generationError,
   running,
@@ -577,6 +608,9 @@ async function loadAnalysisModels() {
 
 const studioRoot = ref(null)
 const artboardRef = ref(null)
+const regionBoxRef = ref(null)
+const regionComposerRef = ref(null)
+const regionComposerStyle = ref({})
 const qualityTrigger = ref(null)
 const qualityDialogRef = ref(null)
 const qualityCloseButton = ref(null)
@@ -635,9 +669,25 @@ const activeQualityIssueId = ref('')
 const regionSelectionMode = ref(false)
 const regionSelection = ref(null)
 const regionPreview = ref('')
-const regionReview = ref(null)
-const regionReviewLoading = ref(false)
-const regionReviewError = ref('')
+const regionPrompt = ref('')
+const regionRemoveBackground = ref(false)
+const regionRecognitionTypes = ref([])
+const regionEditAction = ref('remove')
+const regionProcessLoading = ref(false)
+const regionProcessError = ref('')
+const regionProcessStage = ref('')
+const regionResultUrl = ref('')
+const regionApproving = ref(false)
+const regionFullscreenOpen = ref(false)
+const regionAnalyzing = ref(false)
+const regionElements = ref([])
+const regionElementViewport = ref(null)
+const regionMarkedIds = ref([])
+const regionManualElementMode = ref(false)
+const regionManualElementDraft = ref(null)
+const regionImageDimensions = ref(null)
+const regionSelectionCoordinateSpace = ref(REGION_SELECTION_SPACE)
+let regionAnalyzeController = null
 const fullscreenOpen = ref(false)
 const editableCanvasOpen = ref(false)
 const editableGenerationNonce = ref(0)
@@ -686,9 +736,22 @@ function collectMajorDevices(major) {
 }
 const HISTORY_CARD_GAP = 8
 let qualityAuditController = null
-let regionReviewController = null
+let regionProcessController = null
+let regionProcessRunId = ''
+let regionConversationId = ''
+let regionResultBlob = null
 let regionSelectionStart = null
+let regionAdjustSession = null
+let regionManualElementStart = null
 let suppressArtboardClick = false
+let suppressingRegionClear = false
+let regionPersistTimer = null
+let regionComposerFrame = 0
+let regionComposerResizeObserver = null
+const REGION_MIN_SIZE = 0.005
+const REGION_MIN_DRAW_PX = 8
+const REGION_ADJUST_THRESHOLD_PX = 3
+const REGION_ADJUST_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 let historyResizeObserver = null
 let historyLoadQueued = false
 
@@ -880,11 +943,7 @@ const briefInput = computed({
   },
 })
 const generateActionLabel = computed(() =>
-  isIteration.value
-    ? '生成迭代稿'
-    : referenceImages.value.length
-      ? '参考图重绘'
-      : '生成设计稿',
+  isIteration.value ? '生成迭代稿' : referenceImages.value.length ? '参考图重绘' : '生成设计稿',
 )
 const costLabel = computed(() =>
   formatCostEstimate(Math.max(1, isIteration.value ? 1 : selectedDeviceIds.value.length)),
@@ -946,7 +1005,8 @@ const activeVersionNode = computed(() =>
   findNodeByOutput(versionForest.value, activeOutput.value, versionNodeById.value),
 )
 const activeVersionLabel = computed(
-  () => versionMetaByOutput.value[activeOutput.value]?.label || activeVersionNode.value?.label || '',
+  () =>
+    versionMetaByOutput.value[activeOutput.value]?.label || activeVersionNode.value?.label || '',
 )
 const isActiveTileRefine = computed(
   () =>
@@ -1004,7 +1064,8 @@ const canvasDeviceSlots = computed(() => {
   return Object.entries(carriers)
     .filter(([, url]) => url)
     .sort(
-      ([a], [b]) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER),
+      ([a], [b]) =>
+        (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER),
     )
     .map(([deviceId, url]) => {
       const device = getDesignDevice(deviceId)
@@ -1020,12 +1081,8 @@ const canvasDeviceSlots = computed(() => {
     })
 })
 
-const showMultiDeviceLoading = computed(
-  () => running.value && generatingDeviceIds.value.length > 1,
-)
-const showDeviceRail = computed(
-  () => !running.value && canvasDeviceSlots.value.length > 1,
-)
+const showMultiDeviceLoading = computed(() => running.value && generatingDeviceIds.value.length > 1)
+const showDeviceRail = computed(() => !running.value && canvasDeviceSlots.value.length > 1)
 
 function slotFrameStyle(slot) {
   const [width = 16, height = 9] = String(slot?.ratio || '16:9')
@@ -1076,8 +1133,7 @@ function selectMajorOnCanvas(majorId) {
 
 function openVersionDrawer(majorId = '') {
   // versionMajors 已是最新在前；无指定时聚焦当前大版本，否则最新大版本。
-  const fallback =
-    majorRootOf(activeVersionNode.value)?.id || versionMajors.value[0]?.id || ''
+  const fallback = majorRootOf(activeVersionNode.value)?.id || versionMajors.value[0]?.id || ''
   versionDrawerFocusId.value = majorId || fallback
   versionDrawerOpen.value = true
   void requestMoreHistory()
@@ -1315,11 +1371,7 @@ function resolvePageStructurePrompt() {
 
 function buildAssembledPrompt(
   deviceOption = device.value,
-  {
-    multiDevice = false,
-    isAnchor = false,
-    deviceLabels = [],
-  } = {},
+  { multiDevice = false, isAnchor = false, deviceLabels = [] } = {},
 ) {
   const lines = []
   const metrics = metricsForDevice(deviceOption)
@@ -1441,6 +1493,29 @@ const artboardStyle = computed(() => {
     width: `min(100%, calc((100vh - var(--app-header-offset, 64px) - 220px) * ${ratio}))`,
   }
 })
+const artboardRatioViewport = computed(() => {
+  const [rawWidth = 16, rawHeight = 9] = String(device.value?.ratio || '16:9')
+    .split(':')
+    .map(Number)
+  return {
+    width: Math.max(1, rawWidth || 16),
+    height: Math.max(1, rawHeight || 9),
+  }
+})
+const regionImageContentBox = computed(() => {
+  const frame = artboardRatioViewport.value
+  return containedContentBox(frame, regionImageDimensions.value || frame)
+})
+const regionLayerStyle = computed(() => {
+  const frame = artboardRatioViewport.value
+  const box = regionImageContentBox.value
+  return {
+    left: `${(box.x / frame.width) * 100}%`,
+    top: `${(box.y / frame.height) * 100}%`,
+    width: `${(box.width / frame.width) * 100}%`,
+    height: `${(box.height / frame.height) * 100}%`,
+  }
+})
 const regionSelectionStyle = computed(() => {
   const region = regionSelection.value
   if (!region) return {}
@@ -1449,6 +1524,102 @@ const regionSelectionStyle = computed(() => {
     top: `${region.y * 100}%`,
     width: `${region.width * 100}%`,
     height: `${region.height * 100}%`,
+  }
+})
+const regionCostLabel = computed(() => formatCostEstimate(1))
+const regionPreviewImages = computed(() =>
+  [regionResultUrl.value, regionPreview.value].filter(Boolean),
+)
+const regionHintText = computed(() => {
+  if (regionProcessError.value) return regionProcessError.value
+  if (regionSelectionMode.value) {
+    return '拖拽框选区域 → 松手后可自动分析或手动框选元素'
+  }
+  if (regionAnalyzing.value) return '正在分析元素，完成后请直接在绿色框内点选'
+  if (regionProcessLoading.value) return regionProcessStage.value || '正在图片编辑…'
+  if (regionResultUrl.value) return '编辑完成：满意可加入素材库，不满意可重新点选编辑'
+  if (regionManualElementMode.value) return '在绿色大框内拖拽小框，可连续手动选择多个元素'
+  if (regionElements.value.length) {
+    return regionMarkedIds.value.length
+      ? `已点选 ${regionMarkedIds.value.length} 个元素 → 执行「${regionActionLabel.value}」`
+      : `在绿色框内点选要${regionActionLabel.value}的元素（红框=已选）`
+  }
+  if (regionSelection.value) {
+    return regionRecognitionTypes.value.length
+      ? '已选择识别类型，可开始分析元素'
+      : '可勾选类型自动分析，或直接手动框选元素'
+  }
+  return '框选区域 → 自动识别或手动框选元素 → 选择编辑方式'
+})
+const regionPickMode = computed(
+  () =>
+    Boolean(regionSelection.value) &&
+    !regionSelectionMode.value &&
+    !regionAnalyzing.value &&
+    !regionProcessLoading.value &&
+    !regionResultUrl.value &&
+    regionElements.value.length > 0,
+)
+const regionMarkedElements = computed(() =>
+  regionElements.value.filter((node) => regionMarkedIds.value.includes(node.id)),
+)
+const regionActionElements = computed(() =>
+  regionEditAction.value === 'improve-icon'
+    ? regionMarkedElements.value.filter((node) => node.type === 'icon' || node.manualSelection)
+    : regionMarkedElements.value,
+)
+const regionEffectiveTransparent = computed(
+  () => regionEditAction.value === 'custom' && regionRemoveBackground.value,
+)
+const regionActionLabel = computed(
+  () => REGION_EDIT_ACTIONS.find((action) => action.id === regionEditAction.value)?.label || '编辑',
+)
+const regionPromptPlaceholder = computed(() => {
+  if (regionEditAction.value === 'improve-icon') return '例如：改成更简洁的线性图标，统一线宽和圆角'
+  if (regionEditAction.value === 'replace-background') return '例如：换成有层次的科技渐变背景，保留前景内容'
+  if (regionEditAction.value === 'remove') return '可补充说明移除后如何填补背景'
+  return '描述只需要修改的内容，未提及区域保持不变'
+})
+const regionSelectionSourceSize = computed(() => {
+  if (regionSelection.value && regionImageDimensions.value) {
+    return sourcePixelBoundsForRegion(regionSelection.value, regionImageDimensions.value)
+  }
+  return {
+    width: Math.max(1, Math.round(Number(regionElementViewport.value?.width) || 1)),
+    height: Math.max(1, Math.round(Number(regionElementViewport.value?.height) || 1)),
+  }
+})
+const regionOutputRequestSize = computed(() =>
+  resolveRegionSelectionRequestSize(
+    regionSelectionSourceSize.value.width,
+    regionSelectionSourceSize.value.height,
+  ),
+)
+const regionOutputSizeLabel = computed(() => regionOutputRequestSize.value.replace('x', '×'))
+const regionCanStartProcess = computed(() => {
+  if (!regionSelection.value || regionAnalyzing.value || regionProcessLoading.value) return false
+  if (regionEditAction.value === 'replace-background') return true
+  if (regionEditAction.value === 'improve-icon') {
+    return regionActionElements.value.length > 0
+  }
+  if (regionEditAction.value === 'custom') return Boolean(regionPrompt.value.trim())
+  return Boolean(regionActionElements.value.length || regionPrompt.value.trim())
+})
+const regionPreviewAspectStyle = computed(() => {
+  const w = Number(regionElementViewport.value?.width) || Number(regionSelection.value?.width) || 16
+  const h =
+    Number(regionElementViewport.value?.height) || Number(regionSelection.value?.height) || 10
+  if (!w || !h) return {}
+  return { aspectRatio: `${Math.max(1, Math.round(w))} / ${Math.max(1, Math.round(h))}` }
+})
+const regionManualElementDraftStyle = computed(() => {
+  const draft = regionManualElementDraft.value
+  if (!draft) return { display: 'none' }
+  return {
+    left: `${draft.x * 100}%`,
+    top: `${draft.y * 100}%`,
+    width: `${draft.width * 100}%`,
+    height: `${draft.height * 100}%`,
   }
 })
 
@@ -1475,11 +1646,94 @@ function restoreActiveAnalysisSession() {
   tabletPane.value = 'canvas'
 }
 
+function updateRegionComposerPosition() {
+  regionComposerFrame = 0
+  const box = regionBoxRef.value?.getBoundingClientRect()
+  const panel = regionComposerRef.value
+  if (!box || !panel || typeof window === 'undefined') return
+  const margin = 12
+  const gap = 10
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const width = Math.min(Math.max(220, panel.offsetWidth || 280), viewportWidth - margin * 2)
+  const maxHeight = viewportHeight - margin * 2
+  const height = Math.min(panel.scrollHeight || panel.offsetHeight || 320, maxHeight)
+  const roomRight = viewportWidth - box.right - margin
+  const roomLeft = box.left - margin
+  const roomBelow = viewportHeight - box.bottom - margin
+  const roomAbove = box.top - margin
+  let left
+  let top
+  if (roomRight >= width + gap) {
+    left = box.right + gap
+    top = box.top
+  } else if (roomLeft >= width + gap) {
+    left = box.left - width - gap
+    top = box.top
+  } else {
+    left = box.right - width
+    top =
+      roomBelow >= height + gap || roomBelow >= roomAbove
+        ? box.bottom + gap
+        : box.top - height - gap
+  }
+  left = Math.max(margin, Math.min(viewportWidth - width - margin, left))
+  top = Math.max(margin, Math.min(viewportHeight - height - margin, top))
+  const nextStyle = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${Math.round(width)}px`,
+    maxHeight: `${Math.round(maxHeight)}px`,
+  }
+  if (JSON.stringify(nextStyle) !== JSON.stringify(regionComposerStyle.value)) {
+    regionComposerStyle.value = nextStyle
+  }
+}
+
+function scheduleRegionComposerPosition() {
+  if (typeof window === 'undefined' || regionComposerFrame) return
+  regionComposerFrame = window.requestAnimationFrame(updateRegionComposerPosition)
+}
+
+watch(
+  () => [
+    regionSelection.value?.x,
+    regionSelection.value?.y,
+    regionSelection.value?.width,
+    regionSelection.value?.height,
+    regionAnalyzing.value,
+    regionElements.value.length,
+    regionMarkedIds.value.length,
+    regionResultUrl.value,
+    regionProcessError.value,
+  ],
+  () => nextTick(scheduleRegionComposerPosition),
+  { flush: 'post' },
+)
+
+watch(regionComposerRef, (element) => {
+  regionComposerResizeObserver?.disconnect()
+  regionComposerResizeObserver = null
+  if (!element || typeof ResizeObserver === 'undefined') return
+  regionComposerResizeObserver = new ResizeObserver(scheduleRegionComposerPosition)
+  regionComposerResizeObserver.observe(element)
+  nextTick(scheduleRegionComposerPosition)
+})
+
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
-  await Promise.all([initialize(), loadAnalysisModels()])
+  window.addEventListener('resize', scheduleRegionComposerPosition)
+  window.addEventListener('scroll', scheduleRegionComposerPosition, true)
+  // Avoid initialize()/history hydration wiping an in-flight region job from localStorage.
+  suppressingRegionClear = true
+  try {
+    await Promise.all([initialize(), loadAnalysisModels()])
+  } finally {
+    suppressingRegionClear = false
+  }
   restoreTileRefineFinals()
   restoreActiveAnalysisSession()
+  await restoreRegionProcessSession()
   const pending = takePendingPrompt('ui_design')
   if (pending) {
     const launchConfig = pending.config || {}
@@ -1498,10 +1752,8 @@ onMounted(async () => {
   }
 })
 
-watch(activeOutput, (value) => {
-  regionReviewController?.abort()
-  regionReviewController = null
-  regionReviewLoading.value = false
+watch(activeOutput, async (value, previousValue) => {
+  if (value !== previousValue) regionImageDimensions.value = null
   if (value) tabletPane.value = 'canvas'
   const deviceFromMeta = versionMetaByOutput.value[value]?.deviceId
   if (deviceFromMeta) viewDeviceId.value = deviceFromMeta
@@ -1510,11 +1762,23 @@ watch(activeOutput, (value) => {
   selectedQualityIssueIds.value = qualityAudit.value?.issues.map((issue) => issue.id) || []
   activeQualityIssueId.value = qualityAudit.value?.issues.find((issue) => issue.region)?.id || ''
   qualityAuditError.value = ''
-  regionSelectionMode.value = false
-  regionSelection.value = null
-  regionPreview.value = ''
-  regionReview.value = null
-  regionReviewError.value = ''
+  if (suppressingRegionClear) return
+  const session = readRegionProcessSession()
+  if (session?.outputUrl && session.outputUrl === value) {
+    // Switched back to the draft that owns the persisted region job.
+    if (!regionSelection.value && (session.selection || session.loading || session.resultUrl)) {
+      await restoreRegionProcessSession()
+    }
+    return
+  }
+  // Switching drafts must not cancel a background region run or erase its resume state.
+  if (regionSelection.value || regionSelectionMode.value || regionProcessLoading.value) {
+    await clearRegionSelection({
+      discardConversation: false,
+      keepPersisted: Boolean(session),
+      cancelRun: false,
+    })
+  }
 })
 
 watch(
@@ -1530,10 +1794,21 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('resize', scheduleRegionComposerPosition)
+  window.removeEventListener('scroll', scheduleRegionComposerPosition, true)
+  if (regionComposerFrame) window.cancelAnimationFrame(regionComposerFrame)
+  regionComposerFrame = 0
+  regionComposerResizeObserver?.disconnect()
+  regionComposerResizeObserver = null
+  detachRegionAdjustListeners()
+  regionAdjustSession = null
   historyResizeObserver?.disconnect()
   historyResizeObserver = null
   qualityAuditController?.abort()
-  regionReviewController?.abort()
+  // Keep in-flight region jobs alive so user can return and resume.
+  if (regionProcessLoading.value || regionSelection.value || regionResultUrl.value) {
+    persistRegionProcessSession()
+  }
 })
 
 watch(
@@ -1648,7 +1923,9 @@ async function applyReferenceFiles(files = [], { notify = false } = {}) {
   localError.value = ''
   if (notify) {
     if (skipped > 0) {
-      notificationService.info(`已添加 ${accepted.length} 张，另有 ${skipped} 张超出 ${MAX_REFERENCE_IMAGES} 张上限`)
+      notificationService.info(
+        `已添加 ${accepted.length} 张，另有 ${skipped} 张超出 ${MAX_REFERENCE_IMAGES} 张上限`,
+      )
     } else {
       notificationService.success(
         accepted.length > 1 ? `已添加 ${accepted.length} 张参考图` : '已添加参考图',
@@ -1974,8 +2251,9 @@ async function runTilePrecisionRefine(sourceOverride = '') {
 
   const sourceUrl = String(sourceOverride || activeOutput.value)
   const sourceDeviceId =
-    Object.entries(activeVersionNode.value?.carriers || {}).find(([, url]) => url === sourceUrl)?.[0] ||
-    viewDeviceId.value
+    Object.entries(activeVersionNode.value?.carriers || {}).find(
+      ([, url]) => url === sourceUrl,
+    )?.[0] || viewDeviceId.value
   const sourceDevice = getDesignDevice(sourceDeviceId)
   const groupId = `tile-refine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   tabletPane.value = 'canvas'
@@ -2030,9 +2308,7 @@ async function runTilePrecisionRefine(sourceOverride = '') {
 
     // Prefer batchIndex match; fall back to progress order so merge never misses a tile.
     const tileOutputs = Array.from({ length: 4 }, (_, index) => {
-      const match = (result?.items || []).find(
-        (item) => Number(item.batchIndex ?? -1) === index,
-      )
+      const match = (result?.items || []).find((item) => Number(item.batchIndex ?? -1) === index)
       if (match?.outputs?.[0]) return match.outputs[0]
       const progress = activeBatchProgress.value[index]
       return Array.isArray(progress?.outputs) ? progress.outputs[0] || '' : ''
@@ -2168,12 +2444,47 @@ async function downloadActive() {
   }
 }
 
-function toggleRegionSelection() {
-  if (!activeOutput.value || running.value) return
+function handleActiveOutputDimensions(dimensions) {
+  const width = Math.max(0, Number(dimensions?.width) || 0)
+  const height = Math.max(0, Number(dimensions?.height) || 0)
+  if (!width || !height) return
+  regionImageDimensions.value = { width, height }
+  if (regionSelectionCoordinateSpace.value === REGION_SELECTION_SPACE || !regionSelection.value) {
+    return
+  }
+  const migrated = projectContainerRegionToContent(
+    regionSelection.value,
+    artboardRatioViewport.value,
+    regionImageDimensions.value,
+  )
+  regionSelectionCoordinateSpace.value = REGION_SELECTION_SPACE
+  if (!migrated || migrated.width < 0.01 || migrated.height < 0.01) {
+    regionSelection.value = null
+    resetRegionElementState()
+    regionProcessError.value = '旧框选区域位于图片留白外，请重新框选'
+    removeScopedLocalItem(REGION_PROCESS_KEY)
+    return
+  }
+  regionSelection.value = clampRegionRect(migrated)
+  schedulePersistRegionProcessSession()
+}
+
+async function toggleRegionSelection() {
+  if (!activeOutput.value || running.value || regionProcessLoading.value) return
   qualityAuditOpen.value = false
-  regionSelectionMode.value = !regionSelectionMode.value
-  regionReviewError.value = ''
-  if (regionSelectionMode.value) regionSelection.value = null
+  if (regionSelectionMode.value || regionSelection.value) {
+    await clearRegionSelection({ discardConversation: true, cancelRun: true })
+    return
+  }
+  const image = artboardRef.value?.querySelector('img')
+  if (!image?.naturalWidth || !image?.naturalHeight) {
+    regionProcessError.value = '设计稿还在加载，请稍后再框选'
+    return
+  }
+  handleActiveOutputDimensions({ width: image.naturalWidth, height: image.naturalHeight })
+  regionSelectionCoordinateSpace.value = REGION_SELECTION_SPACE
+  regionSelectionMode.value = true
+  regionProcessError.value = ''
 }
 
 function closeQualityAudit({ restoreFocus = true } = {}) {
@@ -2203,12 +2514,9 @@ function handleGlobalKeydown(event) {
     versionDrawerOpen.value = false
     return
   }
-  if (regionSelectionMode.value) {
+  if (regionSelectionMode.value || regionSelection.value) {
     event.preventDefault()
-    regionSelectionStart = null
-    regionSelectionMode.value = false
-    regionSelection.value = null
-    regionReviewError.value = ''
+    clearRegionSelection({ discardConversation: true, cancelRun: true })
   }
 }
 
@@ -2232,7 +2540,8 @@ function handleArtboardClick() {
     suppressArtboardClick = false
     return
   }
-  if (!regionSelectionMode.value) openActivePreview()
+  if (regionSelectionMode.value || regionSelection.value) return
+  openActivePreview()
 }
 
 function regionPoint(event, element) {
@@ -2244,8 +2553,16 @@ function regionPoint(event, element) {
 }
 
 function beginRegionSelection(event) {
-  if (!regionSelectionMode.value) return
-  regionReviewError.value = ''
+  if (
+    !regionSelectionMode.value ||
+    regionProcessLoading.value ||
+    event.isPrimary === false ||
+    event.button !== 0
+  ) {
+    return
+  }
+  regionProcessError.value = ''
+  regionSelectionCoordinateSpace.value = REGION_SELECTION_SPACE
   const point = regionPoint(event, event.currentTarget)
   regionSelectionStart = point
   regionSelection.value = { x: point.x, y: point.y, width: 0, height: 0 }
@@ -2256,7 +2573,7 @@ function cancelRegionSelectionPointer() {
   if (!regionSelectionStart) return
   regionSelectionStart = null
   regionSelection.value = null
-  regionReviewError.value = '框选已取消，请重新拖拽选择区域'
+  regionProcessError.value = '框选已取消，请重新拖拽选择区域'
 }
 
 function moveRegionSelection(event) {
@@ -2270,17 +2587,527 @@ function moveRegionSelection(event) {
   }
 }
 
-async function captureSelectedRegion(region) {
+function clampRegionRect(region) {
+  let width = Math.max(REGION_MIN_SIZE, Math.min(1, Number(region.width) || 0))
+  let height = Math.max(REGION_MIN_SIZE, Math.min(1, Number(region.height) || 0))
+  let x = Math.max(0, Math.min(1 - width, Number(region.x) || 0))
+  let y = Math.max(0, Math.min(1 - height, Number(region.y) || 0))
+  return { x, y, width, height }
+}
+
+function regionLayerElement() {
+  return artboardRef.value?.querySelector('.dws-region-layer') || null
+}
+
+function detachRegionAdjustListeners() {
+  window.removeEventListener('pointermove', onRegionAdjustMove)
+  window.removeEventListener('pointerup', endRegionAdjust)
+  window.removeEventListener('pointercancel', endRegionAdjust)
+}
+
+function invalidateRegionResult() {
+  regionResultUrl.value = ''
+  regionResultBlob = null
+  regionProcessStage.value = ''
+  regionProcessError.value = ''
+}
+
+function stopRegionManualElementMode() {
+  regionManualElementMode.value = false
+  regionManualElementDraft.value = null
+  regionManualElementStart = null
+}
+
+function resetRegionElementState() {
+  regionAnalyzeController?.abort()
+  regionAnalyzeController = null
+  regionAnalyzing.value = false
+  stopRegionManualElementMode()
+  regionElements.value = []
+  regionElementViewport.value = null
+  regionMarkedIds.value = []
+  if (!regionProcessLoading.value) regionProcessStage.value = ''
+}
+
+function handleRegionRecognitionTypesChange() {
+  regionRecognitionTypes.value = normalizeRegionRecognitionTypes(regionRecognitionTypes.value)
+  invalidateRegionResult()
+  resetRegionElementState()
+  regionProcessError.value = ''
+  regionProcessStage.value = regionRecognitionTypes.value.length
+    ? '识别类型已更新，请开始分析'
+    : '请至少勾选一种识别类型'
+  schedulePersistRegionProcessSession()
+}
+
+function handleRegionEditActionChange() {
+  invalidateRegionResult()
+  regionRemoveBackground.value = false
+  schedulePersistRegionProcessSession()
+}
+
+function toggleRegionElementMark(nodeId) {
+  if (!nodeId || regionProcessLoading.value || regionAnalyzing.value) return
+  const id = String(nodeId)
+  if (regionMarkedIds.value.includes(id)) {
+    regionMarkedIds.value = regionMarkedIds.value.filter((item) => item !== id)
+  } else {
+    regionMarkedIds.value = [...regionMarkedIds.value, id]
+  }
+  invalidateRegionResult()
+  schedulePersistRegionProcessSession()
+}
+
+function ensureManualElementViewport() {
+  if (regionElementViewport.value?.width && regionElementViewport.value?.height) {
+    return regionElementViewport.value
+  }
+  const image = artboardRef.value?.querySelector('img')
+  if (!image || !regionSelection.value) return null
+  try {
+    const bounds = regionToSourcePixels(regionSelection.value, image)
+    regionElementViewport.value = { width: bounds.cropWidth, height: bounds.cropHeight }
+  } catch {
+    const width = Math.max(
+      1,
+      Math.round((image.naturalWidth || image.width || 1) * regionSelection.value.width),
+    )
+    const height = Math.max(
+      1,
+      Math.round((image.naturalHeight || image.height || 1) * regionSelection.value.height),
+    )
+    regionElementViewport.value = { width, height }
+  }
+  return regionElementViewport.value
+}
+
+function toggleRegionManualElementMode() {
+  if (
+    !regionSelection.value ||
+    regionProcessLoading.value ||
+    regionAnalyzing.value ||
+    regionApproving.value
+  ) {
+    return
+  }
+  invalidateRegionResult()
+  if (regionManualElementMode.value) {
+    stopRegionManualElementMode()
+    regionProcessStage.value = regionElements.value.length
+      ? `已定位 ${regionElements.value.length} 个元素，可继续点选或编辑`
+      : '可勾选类型自动分析，或再次手动框选元素'
+  } else {
+    ensureManualElementViewport()
+    regionManualElementMode.value = true
+    regionManualElementDraft.value = null
+    regionProcessStage.value = '在绿色大框内拖拽小框，可连续选择多个元素'
+  }
+  schedulePersistRegionProcessSession()
+}
+
+function beginRegionManualElement(event) {
+  if (
+    !regionManualElementMode.value ||
+    regionProcessLoading.value ||
+    event.isPrimary === false ||
+    event.button !== 0
+  ) {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  const point = regionPoint(event, event.currentTarget)
+  regionManualElementStart = point
+  regionManualElementDraft.value = { x: point.x, y: point.y, width: 0, height: 0 }
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+}
+
+function moveRegionManualElement(event) {
+  if (!regionManualElementMode.value || !regionManualElementStart) return
+  event.preventDefault()
+  event.stopPropagation()
+  const point = regionPoint(event, event.currentTarget)
+  regionManualElementDraft.value = {
+    x: Math.min(regionManualElementStart.x, point.x),
+    y: Math.min(regionManualElementStart.y, point.y),
+    width: Math.abs(point.x - regionManualElementStart.x),
+    height: Math.abs(point.y - regionManualElementStart.y),
+  }
+}
+
+function cancelRegionManualElement(event) {
+  if (!regionManualElementStart) return
+  event?.currentTarget?.releasePointerCapture?.(event.pointerId)
+  regionManualElementStart = null
+  regionManualElementDraft.value = null
+}
+
+function finishRegionManualElement(event) {
+  if (!regionManualElementMode.value || !regionManualElementStart) return
+  event.preventDefault()
+  event.stopPropagation()
+  event.currentTarget.releasePointerCapture?.(event.pointerId)
+  const draft = regionManualElementDraft.value
+  const box = event.currentTarget.getBoundingClientRect()
+  regionManualElementStart = null
+  regionManualElementDraft.value = null
+  if (!draft || draft.width * box.width < 8 || draft.height * box.height < 8) {
+    regionProcessError.value = '手动框选范围太小，请拖出完整元素范围'
+    return
+  }
+  const viewport = ensureManualElementViewport()
+  if (!viewport) {
+    regionProcessError.value = '无法读取当前选区尺寸，请重新框选区域'
+    return
+  }
+  const bounds = clampBounds(
+    {
+      x: draft.x * viewport.width,
+      y: draft.y * viewport.height,
+      width: draft.width * viewport.width,
+      height: draft.height * viewport.height,
+    },
+    viewport,
+    { integer: true, minSize: 2 },
+  )
+  const manualIndex = regionElements.value.filter((node) => node.manualSelection).length + 1
+  const id = `manual_${Date.now()}_${manualIndex}`
+  const node = {
+    id,
+    name: `手动框选 ${manualIndex}`,
+    type: regionEditAction.value === 'improve-icon' ? 'icon' : 'manual',
+    text: '',
+    category: regionEditAction.value === 'improve-icon' ? 'icon' : 'content',
+    description: '用户手动框选的元素',
+    confidence: 1,
+    manualSelection: true,
+    selectionConfirmed: true,
+    precisionStatus: 'manual',
+    sourceBounds: { ...bounds },
+    ...bounds,
+  }
+  regionElements.value = [...regionElements.value, node]
+  regionMarkedIds.value = [...new Set([...regionMarkedIds.value, id])]
+  regionProcessError.value = ''
+  regionProcessStage.value = `已手动框选 ${manualIndex} 个元素，可继续拖拽添加`
+  schedulePersistRegionProcessSession()
+}
+
+function regionElementStyle(node) {
+  const viewport = regionElementViewport.value
+  if (!viewport?.width || !viewport?.height || !node) return { display: 'none' }
+  const bounds = clampBounds(node, viewport)
+  const areaRatio = (bounds.width * bounds.height) / Math.max(1, viewport.width * viewport.height)
+  return {
+    left: `${(bounds.x / viewport.width) * 100}%`,
+    top: `${(bounds.y / viewport.height) * 100}%`,
+    width: `${(bounds.width / viewport.width) * 100}%`,
+    height: `${(bounds.height / viewport.height) * 100}%`,
+    zIndex: Math.max(6, 1000 - Math.round(areaRatio * 900)),
+  }
+}
+
+function regionElementLabel(node) {
+  const text = String(node?.text || '').trim()
+  const name = String(node?.name || node?.type || '').trim()
+  const label = text || name
+  return label.length > 16 ? `${label.slice(0, 16)}…` : label
+}
+
+function regionElementShowsLabel(node) {
+  const viewport = regionElementViewport.value
+  if (!viewport?.width || !viewport?.height) return false
+  return (
+    Number(node?.width) / viewport.width >= 0.08 && Number(node?.height) / viewport.height >= 0.035
+  )
+}
+
+function calibrateAnalyzedRegionElements(nodes, captured) {
+  const viewport = { width: captured.width, height: captured.height }
+  return (Array.isArray(nodes) ? nodes : [])
+    .map((node) => {
+      const coarse = clampBounds(node, viewport, { integer: true })
+      const calibrated = captured.pixels
+        ? calibrateRegionByType(captured.pixels, coarse, node.type)
+        : null
+      const bounds = clampBounds(calibrated || coarse, viewport, { integer: true })
+      return {
+        ...node,
+        ...bounds,
+        sourceBounds: { ...bounds },
+        pixelCalibrated: Boolean(calibrated),
+        precisionStatus: calibrated ? 'pixel' : 'coarse',
+      }
+    })
+    .sort((a, b) => b.width * b.height - a.width * a.height)
+}
+
+async function analyzeSelectedRegionElements() {
+  if (!regionSelection.value || regionProcessLoading.value) return
+  const recognitionTypes = normalizeRegionRecognitionTypes(regionRecognitionTypes.value)
+  if (!recognitionTypes.length) {
+    regionProcessError.value = '请先勾选文字、图标或大图，再开始分析'
+    return
+  }
+  regionAnalyzeController?.abort()
+  const controller = new AbortController()
+  regionAnalyzeController = controller
+  stopRegionManualElementMode()
+  regionAnalyzing.value = true
+  regionProcessError.value = ''
+  regionElements.value = []
+  regionMarkedIds.value = []
+  regionElementViewport.value = null
+  regionProcessStage.value = '正在截图并分析元素'
+  try {
+    const captured = await captureSelectedRegion(regionSelection.value, {
+      maxEdge: 1600,
+      includePixels: true,
+    })
+    regionPreview.value = captured.dataUrl
+    regionElementViewport.value = {
+      width: captured.width,
+      height: captured.height,
+    }
+    const document = await analyzeDesignCropElements({
+      cropImage: captured.dataUrl,
+      width: captured.width,
+      height: captured.height,
+      recognitionTypes,
+      model: analysisModelId.value,
+      signal: controller.signal,
+      onStage(value) {
+        regionProcessStage.value =
+          value === 'complete'
+            ? '元素分析完成'
+            : value === 'preparing'
+              ? '正在准备元素分析'
+              : '正在识别框选区域内的元素'
+      },
+    })
+    if (regionAnalyzeController !== controller) return
+    regionElements.value = calibrateAnalyzedRegionElements(document?.nodes, captured).filter(
+      (node) => regionNodeMatchesRecognitionTypes(node, recognitionTypes),
+    )
+    regionElementViewport.value = document?.viewport || regionElementViewport.value
+    regionProcessStage.value = regionElements.value.length
+      ? `已定位 ${regionElements.value.length} 个所选类型元素，请在画布点选目标`
+      : '所选类型未识别到元素，可调整类型后重新分析'
+    schedulePersistRegionProcessSession()
+  } catch (caught) {
+    if (caught?.name === 'AbortError') return
+    // Soft-fail: analysis only assists click-to-edit; free-text image editing still works.
+    regionProcessError.value =
+      caught?.message ||
+      '元素分析失败。可点「重新分析元素」，或直接填写补充提示后「开始图片编辑」。'
+    regionProcessStage.value = '分析未成功，仍可直接写提示做图片编辑'
+    schedulePersistRegionProcessSession()
+  } finally {
+    if (regionAnalyzeController === controller) {
+      regionAnalyzing.value = false
+      regionAnalyzeController = null
+    }
+  }
+}
+
+function beginRegionAdjust(event, mode, handle = '') {
+  if (
+    regionSelectionMode.value ||
+    regionProcessLoading.value ||
+    regionApproving.value ||
+    event.isPrimary === false ||
+    event.button !== 0 ||
+    !regionSelection.value
+  ) {
+    return
+  }
+  const layer = regionLayerElement()
+  if (!layer) return
+  event.preventDefault()
+  event.stopPropagation()
+  regionAdjustSession = {
+    mode,
+    handle,
+    pointerId: event.pointerId,
+    startClient: { x: event.clientX, y: event.clientY },
+    start: regionPoint(event, layer),
+    origin: { ...regionSelection.value },
+    dirty: false,
+  }
+  detachRegionAdjustListeners()
+  window.addEventListener('pointermove', onRegionAdjustMove)
+  window.addEventListener('pointerup', endRegionAdjust)
+  window.addEventListener('pointercancel', endRegionAdjust)
+}
+
+function onRegionAdjustMove(event) {
+  if (!regionAdjustSession || event.pointerId !== regionAdjustSession.pointerId) return
+  const layer = regionLayerElement()
+  if (!layer) return
+  const pointerDistance = Math.hypot(
+    event.clientX - regionAdjustSession.startClient.x,
+    event.clientY - regionAdjustSession.startClient.y,
+  )
+  if (!regionAdjustSession.dirty && pointerDistance < REGION_ADJUST_THRESHOLD_PX) return
+  if (!regionAdjustSession.dirty) {
+    regionAdjustSession.dirty = true
+    invalidateRegionResult()
+    resetRegionElementState()
+  }
+  event.preventDefault()
+  const point = regionPoint(event, layer)
+  const dx = point.x - regionAdjustSession.start.x
+  const dy = point.y - regionAdjustSession.start.y
+  const origin = regionAdjustSession.origin
+  let next
+  if (regionAdjustSession.mode === 'move') {
+    next = {
+      x: origin.x + dx,
+      y: origin.y + dy,
+      width: origin.width,
+      height: origin.height,
+    }
+  } else {
+    let left = origin.x
+    let top = origin.y
+    let right = origin.x + origin.width
+    let bottom = origin.y + origin.height
+    const handle = regionAdjustSession.handle
+    if (handle.includes('w')) left = origin.x + dx
+    if (handle.includes('e')) right = origin.x + origin.width + dx
+    if (handle.includes('n')) top = origin.y + dy
+    if (handle.includes('s')) bottom = origin.y + origin.height + dy
+    left = Math.max(0, Math.min(1, left))
+    right = Math.max(0, Math.min(1, right))
+    top = Math.max(0, Math.min(1, top))
+    bottom = Math.max(0, Math.min(1, bottom))
+    next = {
+      x: Math.min(left, right),
+      y: Math.min(top, bottom),
+      width: Math.abs(right - left),
+      height: Math.abs(bottom - top),
+    }
+  }
+  regionSelection.value = clampRegionRect(next)
+}
+
+async function endRegionAdjust(event) {
+  if (!regionAdjustSession || event?.pointerId !== regionAdjustSession.pointerId) return
+  const changed = regionAdjustSession.dirty
+  regionAdjustSession = null
+  detachRegionAdjustListeners()
+  suppressArtboardClick = true
+  if (!changed) return
+  resetRegionElementState()
+  regionProcessStage.value = '选区已调整，请重新分析元素'
+  schedulePersistRegionProcessSession()
+}
+
+async function restartRegionSelection() {
+  if (regionProcessLoading.value || regionApproving.value) return
+  invalidateRegionResult()
+  resetRegionElementState()
+  regionPreview.value = ''
+  regionSelection.value = null
+  regionSelectionCoordinateSpace.value = REGION_SELECTION_SPACE
+  regionSelectionMode.value = true
+  regionProcessError.value = ''
+  regionProcessStage.value = ''
+  removeScopedLocalItem(REGION_PROCESS_KEY)
+}
+
+function readRegionProcessSession() {
+  try {
+    const session = JSON.parse(getScopedLocalItem(REGION_PROCESS_KEY) || 'null')
+    const updatedAt = Date.parse(session?.updatedAt || '')
+    if (
+      !session?.outputUrl ||
+      !session?.selection ||
+      !Number.isFinite(updatedAt) ||
+      Date.now() - updatedAt > REGION_PROCESS_MAX_AGE_MS
+    ) {
+      return null
+    }
+    return session
+  } catch {
+    return null
+  }
+}
+
+function persistRegionProcessSession() {
+  if (!activeOutput.value || !regionSelection.value) {
+    removeScopedLocalItem(REGION_PROCESS_KEY)
+    return
+  }
+  setScopedLocalItem(
+    REGION_PROCESS_KEY,
+    JSON.stringify({
+      outputUrl: activeOutput.value,
+      selection: regionSelection.value,
+      coordinateSpace: regionSelectionCoordinateSpace.value,
+      prompt: regionPrompt.value,
+      removeBackground: regionRemoveBackground.value,
+      recognitionTypes: regionRecognitionTypes.value,
+      editAction: regionEditAction.value,
+      preview: regionPreview.value,
+      resultUrl: regionResultUrl.value,
+      runId: regionProcessRunId || '',
+      conversationId: regionConversationId || '',
+      stage: regionProcessStage.value,
+      error: regionProcessError.value,
+      loading: regionProcessLoading.value,
+      elements: regionElements.value,
+      elementViewport: regionElementViewport.value,
+      elementGeometryVersion: REGION_ELEMENT_GEOMETRY_VERSION,
+      markedIds: regionMarkedIds.value,
+      updatedAt: new Date().toISOString(),
+    }),
+  )
+}
+
+function schedulePersistRegionProcessSession() {
+  if (regionPersistTimer) window.clearTimeout(regionPersistTimer)
+  regionPersistTimer = window.setTimeout(() => {
+    regionPersistTimer = null
+    persistRegionProcessSession()
+  }, 120)
+}
+
+async function disposeRegionConversation(conversationId = regionConversationId) {
+  const id = String(conversationId || '').trim()
+  if (!id) return
+  await deleteAssistantConversation(id, { cancelActive: false }).catch(() => null)
+  if (regionConversationId === id) regionConversationId = ''
+}
+
+/** Map the image-content selection to source pixels; legacy sessions are migrated on read. */
+function regionToSourcePixels(region, image) {
+  const naturalW = Math.max(1, image.naturalWidth || image.width || 1)
+  const naturalH = Math.max(1, image.naturalHeight || image.height || 1)
+  let imageRegion = region
+  if (regionSelectionCoordinateSpace.value !== REGION_SELECTION_SPACE) {
+    const rect = image.getBoundingClientRect()
+    imageRegion = projectContainerRegionToContent(
+      region,
+      { width: Math.max(1, rect.width), height: Math.max(1, rect.height) },
+      { width: naturalW, height: naturalH },
+    )
+  }
+  if (!imageRegion) throw new Error('框选区域没有覆盖到设计稿内容')
+  const bounds = sourcePixelBoundsForRegion(imageRegion, {
+    width: naturalW,
+    height: naturalH,
+  })
+  const { x: sourceX, y: sourceY, width: cropWidth, height: cropHeight } = bounds
+  return { sourceX, sourceY, cropWidth, cropHeight, naturalW, naturalH }
+}
+
+async function captureSelectedRegion(region, { maxEdge = 0, includePixels = false } = {}) {
   const image = artboardRef.value?.querySelector('img')
   if (!image) throw new Error('当前设计稿还没有加载完成')
-  if (!image.complete) await image.decode()
-  const sourceWidth = image.naturalWidth || image.width
-  const sourceHeight = image.naturalHeight || image.height
-  const sourceX = Math.round(region.x * sourceWidth)
-  const sourceY = Math.round(region.y * sourceHeight)
-  const cropWidth = Math.max(1, Math.round(region.width * sourceWidth))
-  const cropHeight = Math.max(1, Math.round(region.height * sourceHeight))
-  const scale = Math.min(1, 1200 / Math.max(cropWidth, cropHeight))
+  if (!image.complete) await image.decode().catch(() => null)
+  const { sourceX, sourceY, cropWidth, cropHeight } = regionToSourcePixels(region, image)
+  const scale = maxEdge > 0 ? Math.min(1, maxEdge / Math.max(cropWidth, cropHeight)) : 1
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(cropWidth * scale))
   canvas.height = Math.max(1, Math.round(cropHeight * scale))
@@ -2299,7 +3126,22 @@ async function captureSelectedRegion(region) {
     canvas.width,
     canvas.height,
   )
-  return canvas.toDataURL('image/png')
+  let pixels = null
+  if (includePixels) {
+    try {
+      pixels = context.getImageData(0, 0, canvas.width, canvas.height)
+    } catch {
+      // Pixel calibration is an enhancement; capture and model analysis can still continue.
+    }
+  }
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: canvas.width,
+    height: canvas.height,
+    sourceWidth: cropWidth,
+    sourceHeight: cropHeight,
+    pixels,
+  }
 }
 
 async function finishRegionSelection(event) {
@@ -2307,89 +3149,341 @@ async function finishRegionSelection(event) {
   event.currentTarget.releasePointerCapture?.(event.pointerId)
   regionSelectionStart = null
   const region = regionSelection.value
-  if (!region || region.width < 0.04 || region.height < 0.04) {
+  const layer = event.currentTarget.getBoundingClientRect()
+  if (
+    !region ||
+    region.width * layer.width < REGION_MIN_DRAW_PX ||
+    region.height * layer.height < REGION_MIN_DRAW_PX
+  ) {
     regionSelection.value = null
-    regionReviewError.value = '框选范围太小，请拖出一个完整的界面区域'
+    regionProcessError.value = '框选范围太小，请至少拖出 8×8 像素的区域'
     return
   }
   regionSelectionMode.value = false
+  regionSelection.value = clampRegionRect(region)
   suppressArtboardClick = true
-  await runRegionQualityAudit(region)
+  regionProcessError.value = ''
+  invalidateRegionResult()
+  resetRegionElementState()
+  regionProcessStage.value = '可勾选类型自动分析，或直接手动框选元素'
+  schedulePersistRegionProcessSession()
 }
 
-async function runRegionQualityAudit(region = regionSelection.value) {
-  if (!activeOutput.value || !region || regionReviewLoading.value) return
-  const reviewedOutput = activeOutput.value
-  qualityAuditOpen.value = true
-  nextTick(() => qualityCloseButton.value?.focus())
-  regionReviewLoading.value = true
-  regionReviewError.value = ''
-  regionReview.value = null
-  regionReviewController?.abort()
+function abortRegionProcess({ cancelRun = true } = {}) {
+  regionProcessController?.abort()
+  regionProcessController = null
+  if (cancelRun && regionProcessRunId) {
+    cancelAssistantRun(regionProcessRunId).catch(() => null)
+  }
+  regionProcessRunId = ''
+  regionProcessLoading.value = false
+  regionProcessStage.value = ''
+  schedulePersistRegionProcessSession()
+}
+
+function openRegionResultPreview() {
+  if (!regionResultUrl.value && !regionPreview.value) return
+  regionFullscreenOpen.value = true
+}
+
+async function startRegionProcess() {
+  const region = regionSelection.value
+  if (!activeOutput.value || !region || regionProcessLoading.value || regionAnalyzing.value) return
+  const instruction = buildRegionEditInstruction({
+    elements: regionActionElements.value,
+    userNote: regionPrompt.value.trim(),
+    viewport: regionElementViewport.value,
+    action: regionEditAction.value,
+  })
+  if (regionEditAction.value === 'improve-icon' && !regionCanStartProcess.value) {
+    regionProcessError.value = '请先勾选“图标”并分析，再点选至少一个要美化的图标'
+    return
+  }
+  if (!instruction || !regionCanStartProcess.value) {
+    regionProcessError.value = '请先点选要编辑的元素，或填写具体编辑要求'
+    return
+  }
+  const costText = regionCostLabel.value || '以服务端结算为准'
+  const confirmed = window.confirm(
+    `将对框选截图执行「${regionActionLabel.value}」${
+      regionActionElements.value.length
+        ? `（${regionActionElements.value.length} 个点选元素）`
+        : ''
+    }${regionEffectiveTransparent.value ? '，输出透明背景' : '，输出完整背景'}。\n\n预计消耗约 1 张图费用（${costText}）。是否继续？`,
+  )
+  if (!confirmed) return
+
+  const sourceOutput = activeOutput.value
+  const previousConversationId = regionConversationId
+  regionAnalyzeController?.abort()
+  abortRegionProcess({ cancelRun: true })
+  if (previousConversationId) await disposeRegionConversation(previousConversationId)
   const controller = new AbortController()
-  regionReviewController = controller
+  regionProcessController = controller
+  regionProcessLoading.value = true
+  regionProcessError.value = ''
+  regionProcessStage.value = '正在准备图片编辑'
+  regionResultUrl.value = ''
+  regionResultBlob = null
+  regionConversationId = ''
+  persistRegionProcessSession()
   try {
-    const regionImage = await captureSelectedRegion(region)
-    regionPreview.value = regionImage
-    const analyze = (model) =>
-      auditAiDesignRegion({
-        image: reviewedOutput,
-        regionImage,
-        region,
-        model,
-        productPrompt: brief.value.trim(),
-        signal: controller.signal,
-      })
-    try {
-      const result = await analyze(analysisModelId.value)
-      if (activeOutput.value === reviewedOutput && regionReviewController === controller) {
-        regionReview.value = result
-      }
-    } catch (caught) {
-      if (!String(caught?.message || '').includes('所选模型不可用')) throw caught
-      await loadAnalysisModels()
-      const result = await analyze('')
-      if (activeOutput.value === reviewedOutput && regionReviewController === controller) {
-        regionReview.value = result
-      }
-    }
+    const previewCapture =
+      regionPreview.value || (await captureSelectedRegion(region, { maxEdge: 1200 })).dataUrl
+    regionPreview.value = previewCapture
+    regionProcessStage.value = '正在裁切高清选区'
+    const captured = await captureSelectedRegion(region, { maxEdge: 0 })
+    const outputRatio = `${captured.sourceWidth}:${captured.sourceHeight}`
+    const requestSize = resolveRegionSelectionRequestSize(
+      captured.sourceWidth,
+      captured.sourceHeight,
+    )
+    regionProcessStage.value = `输出尺寸对应选区 ${requestSize.replace('x', '×')}`
+    regionProcessStage.value = '正在上传框选截图'
+    const regionReferenceDataUrl = await uploadAiTempBlob(
+      await (await fetch(captured.dataUrl)).blob(),
+      { signal: controller.signal },
+    )
+    const image = await generateDesignRegionImage({
+      referenceImage: sourceOutput,
+      regionReferenceDataUrl,
+      region: {
+        name: '框选优化区域',
+        type: 'frame',
+        description: instruction.slice(0, 240),
+        width: captured.sourceWidth,
+        height: captured.sourceHeight,
+        outputRatio,
+      },
+      transparent: regionEffectiveTransparent.value,
+      generationMode: 'strict',
+      userInstruction: instruction,
+      requestSize,
+      quality: 'high',
+      preserveLayout: ['remove', 'improve-icon'].includes(regionEditAction.value),
+      retainConversation: true,
+      signal: controller.signal,
+      onConversation(value) {
+        regionConversationId = value || ''
+        schedulePersistRegionProcessSession()
+      },
+      onRun(value) {
+        regionProcessRunId = value || ''
+        schedulePersistRegionProcessSession()
+      },
+      onStage(value) {
+        regionProcessStage.value =
+          value === 'complete'
+            ? '处理完成'
+            : value === 'preparing'
+              ? '正在创建图片编辑任务'
+              : '正在图片编辑（非文生图）'
+        schedulePersistRegionProcessSession()
+      },
+      onImage(value) {
+        if (value?.dataUrl) {
+          regionResultUrl.value = value.dataUrl
+          schedulePersistRegionProcessSession()
+        }
+      },
+    })
+    if (regionProcessController !== controller) return
+    regionResultUrl.value = image.dataUrl
+    regionConversationId = image.conversationId || regionConversationId
+    regionProcessRunId = image.runId || regionProcessRunId
+    regionResultBlob = null
+    regionProcessStage.value = '处理完成，可查看大图后再决定是否加入素材库'
+    persistRegionProcessSession()
   } catch (caught) {
-    if (
-      caught?.name !== 'AbortError' &&
-      activeOutput.value === reviewedOutput &&
-      regionReviewController === controller
-    ) {
-      regionReviewError.value = caught?.message || '框选区域分析失败'
+    if (caught?.name !== 'AbortError' && regionProcessController === controller) {
+      if (!creditsPrompt.handleCreditError(caught)) {
+        regionProcessError.value = caught?.message || '框选区域处理失败'
+      }
+      regionProcessStage.value = ''
+      persistRegionProcessSession()
     }
   } finally {
-    if (regionReviewController === controller) {
-      regionReviewLoading.value = false
-      regionReviewController = null
+    if (regionProcessController === controller) {
+      regionProcessLoading.value = false
+      regionProcessController = null
+      persistRegionProcessSession()
     }
   }
 }
 
-function applyRegionReview() {
-  const prompt = regionReview.value?.iterationPrompt?.trim()
-  if (!activeOutput.value || !prompt) return
-  iterationSource.value = activeOutput.value
-  iterationBrief.value = prompt
-  referenceImages.value = []
-  if (fileInput.value) fileInput.value.value = ''
-  qualityAuditOpen.value = false
-  tabletPane.value = 'controls'
-  nextTick(() => briefField.value?.focus())
+async function approveRegionResult() {
+  if (!regionResultUrl.value || regionApproving.value) return
+  regionApproving.value = true
+  regionProcessError.value = ''
+  try {
+    const blob = regionResultBlob || (await fetchAuthenticatedMediaBlob(regionResultUrl.value))
+    const file = new File([blob], `ui-region-${Date.now()}.png`, {
+      type: blob.type || 'image/png',
+    })
+    const uploaded = await uploadFile(file)
+    await createUserAsset({
+      title: (regionPrompt.value.trim() || '框选优化素材').slice(0, 120),
+      fileKey: uploaded.key,
+      thumbnailKey: uploaded.thumbnailKey,
+      contentType: uploaded.contentType || file.type,
+    })
+    notificationService.success('已加入素材库')
+    await clearRegionSelection({ discardConversation: true })
+  } catch (caught) {
+    regionProcessError.value = caught?.message || '加入素材库失败'
+  } finally {
+    regionApproving.value = false
+  }
 }
 
-function clearRegionSelection() {
-  regionReviewController?.abort()
-  regionReviewController = null
-  regionReviewLoading.value = false
+async function clearRegionSelection({
+  discardConversation = true,
+  keepPersisted = false,
+  cancelRun = true,
+} = {}) {
+  detachRegionAdjustListeners()
+  regionAdjustSession = null
+  resetRegionElementState()
+  abortRegionProcess({ cancelRun })
+  if (discardConversation) await disposeRegionConversation()
+  regionSelectionStart = null
   regionSelectionMode.value = false
   regionSelection.value = null
+  regionSelectionCoordinateSpace.value = REGION_SELECTION_SPACE
   regionPreview.value = ''
-  regionReview.value = null
-  regionReviewError.value = ''
+  regionPrompt.value = ''
+  regionRemoveBackground.value = false
+  regionRecognitionTypes.value = []
+  regionEditAction.value = 'remove'
+  regionProcessError.value = ''
+  regionProcessStage.value = ''
+  regionResultUrl.value = ''
+  regionResultBlob = null
+  regionApproving.value = false
+  regionFullscreenOpen.value = false
+  if (!keepPersisted) removeScopedLocalItem(REGION_PROCESS_KEY)
+}
+
+async function restoreRegionProcessSession() {
+  const session = readRegionProcessSession()
+  if (!session) return
+  suppressingRegionClear = true
+  try {
+    if (session.outputUrl && activeOutput.value !== session.outputUrl) {
+      activeOutput.value = session.outputUrl
+    }
+    regionSelectionMode.value = false
+    regionSelection.value = session.selection
+    regionSelectionCoordinateSpace.value = session.coordinateSpace || 'artboard-v1'
+    regionPrompt.value = session.prompt || ''
+    regionRemoveBackground.value =
+      session.editAction === 'custom' && session.removeBackground === true
+    regionRecognitionTypes.value = normalizeRegionRecognitionTypes(session.recognitionTypes)
+    regionEditAction.value = REGION_EDIT_ACTIONS.some((action) => action.id === session.editAction)
+      ? session.editAction
+      : 'remove'
+    regionPreview.value = session.preview || ''
+    regionResultUrl.value = session.resultUrl || ''
+    regionProcessStage.value = session.stage || ''
+    regionProcessError.value = session.error || ''
+    regionProcessRunId = session.runId || ''
+    regionConversationId = session.conversationId || ''
+    const storedElements = Array.isArray(session.elements) ? session.elements : []
+    const hasCurrentElementGeometry =
+      session.elementGeometryVersion === REGION_ELEMENT_GEOMETRY_VERSION
+    regionElements.value = hasCurrentElementGeometry ? storedElements : []
+    regionElementViewport.value = session.elementViewport || null
+    regionMarkedIds.value =
+      hasCurrentElementGeometry && Array.isArray(session.markedIds) ? session.markedIds : []
+    if (!hasCurrentElementGeometry && storedElements.length) {
+      regionProcessStage.value = '元素坐标规则已更新，请重新分析元素'
+      regionProcessError.value = ''
+    }
+    if (regionImageDimensions.value) handleActiveOutputDimensions(regionImageDimensions.value)
+    regionProcessLoading.value = false
+    tabletPane.value = 'canvas'
+    if (session.loading && session.runId) {
+      regionProcessLoading.value = true
+      regionProcessStage.value = session.stage || '正在恢复框选处理…'
+      const controller = new AbortController()
+      regionProcessController = controller
+      try {
+        const completed = await waitForAssistantRun(session.runId, {
+          signal: controller.signal,
+          intervalMs: 900,
+          onUpdate(data) {
+            if (data?.run?.stage) regionProcessStage.value = data.run.stage
+            const images = Array.isArray(data?.assistantMessage?.images)
+              ? data.assistantMessage.images
+              : []
+            if (images[0]?.dataUrl) regionResultUrl.value = images[0].dataUrl
+            schedulePersistRegionProcessSession()
+          },
+        })
+        if (regionProcessController !== controller) return
+        if (completed?.run?.status === 'succeeded') {
+          const images = Array.isArray(completed?.assistantMessage?.images)
+            ? completed.assistantMessage.images
+            : []
+          if (images[0]?.dataUrl) {
+            regionResultUrl.value = images[0].dataUrl
+            regionResultBlob = null
+          }
+          regionProcessStage.value = '处理完成，可查看大图后再决定是否加入素材库'
+          regionProcessError.value = ''
+        } else if (completed?.run?.status === 'canceled') {
+          regionProcessError.value = '框选处理已停止'
+          regionProcessStage.value = ''
+        } else {
+          regionProcessError.value = completed?.run?.errorMessage || '框选处理失败'
+          regionProcessStage.value = ''
+        }
+      } catch (caught) {
+        if (caught?.name !== 'AbortError') {
+          try {
+            const data = await getAssistantRun(session.runId)
+            const images = Array.isArray(data?.assistantMessage?.images)
+              ? data.assistantMessage.images
+              : []
+            if (images[0]?.dataUrl) {
+              regionResultUrl.value = images[0].dataUrl
+              regionProcessStage.value = '处理完成，可查看大图后再决定是否加入素材库'
+            } else {
+              regionProcessError.value = caught?.message || '恢复框选处理失败'
+              regionProcessStage.value = ''
+            }
+          } catch {
+            regionProcessError.value = caught?.message || '恢复框选处理失败'
+            regionProcessStage.value = ''
+          }
+        }
+      } finally {
+        if (regionProcessController === controller) {
+          regionProcessLoading.value = false
+          regionProcessController = null
+          persistRegionProcessSession()
+        }
+      }
+    } else if (session.loading && !session.runId) {
+      regionProcessError.value =
+        '上次离开时任务还在准备阶段，未能挂上可恢复的任务 ID，请重新点「开始处理」'
+      regionProcessStage.value = ''
+      persistRegionProcessSession()
+    } else {
+      persistRegionProcessSession()
+    }
+    if (regionSelection.value) {
+      notificationService.info(
+        regionProcessLoading.value
+          ? '已恢复进行中的框选优化任务'
+          : regionResultUrl.value
+            ? '已恢复框选优化结果，可查看大图或加入素材库'
+            : '已恢复上次的框选区域',
+      )
+    }
+  } finally {
+    suppressingRegionClear = false
+  }
 }
 
 function openQualityAudit() {
@@ -2601,327 +3695,331 @@ function formatEditableHistoryDate(value) {
 
       <aside class="dws-panel" data-studio-enter>
         <div class="dws-panel-scroll">
-        <section class="dws-engine">
-          <span class="dws-engine-icon" aria-hidden="true">
-            <i class="bi bi-cpu"></i>
-          </span>
-          <div class="dws-engine-control">
-            <AspectRatioSelect
-              v-model="modelId"
-              class="dws-model-menu"
-              :options="modelSelectOptions"
-              :show-ratio-icons="false"
-              use-option-label
-              compact-menu
-              glass-menu
-              menu-placement="bottom"
-              aria-label="生成模型"
-              placeholder="选择生成模型"
-            />
-          </div>
-        </section>
+          <section class="dws-engine">
+            <span class="dws-engine-icon" aria-hidden="true">
+              <i class="bi bi-cpu"></i>
+            </span>
+            <div class="dws-engine-control">
+              <AspectRatioSelect
+                v-model="modelId"
+                class="dws-model-menu"
+                :options="modelSelectOptions"
+                :show-ratio-icons="false"
+                use-option-label
+                compact-menu
+                glass-menu
+                menu-placement="bottom"
+                aria-label="生成模型"
+                placeholder="选择生成模型"
+              />
+            </div>
+          </section>
 
-        <section class="dws-block dws-composer-block">
-          <div
-            class="dws-composer"
-            :class="{
-              'is-dragging': composerDragging,
-              'has-reference': hasReference,
-              'is-iteration': isIteration,
-            }"
-            @dragenter="onComposerDragEnter"
-            @dragover="onComposerDragOver"
-            @dragleave="onComposerDragLeave"
-            @drop="onComposerDrop"
-          >
-            <textarea
-              id="dws-brief"
-              ref="briefField"
-              v-model="briefInput"
-              rows="5"
-              maxlength="1000"
-              :aria-label="isIteration ? '本次迭代要求' : '产品与页面描述'"
-              :placeholder="
-                isIteration
-                  ? '只写需要改的地方，例如：主按钮改成蓝色，其余保持不变'
-                  : '这是一个什么产品？页面上要有什么内容？'
-              "
-              @paste="handleBriefPaste"
-            ></textarea>
-
+          <section class="dws-block dws-composer-block">
             <div
-              v-if="iterationSource || referenceImages.length"
-              class="dws-composer-media"
-              aria-label="参考内容"
+              class="dws-composer"
+              :class="{
+                'is-dragging': composerDragging,
+                'has-reference': hasReference,
+                'is-iteration': isIteration,
+              }"
+              @dragenter="onComposerDragEnter"
+              @dragover="onComposerDragOver"
+              @dragleave="onComposerDragLeave"
+              @drop="onComposerDrop"
             >
-              <div v-if="iterationSource" class="dws-composer-iteration">
-                <AuthenticatedImage
-                  :src="iterationSource"
-                  alt="迭代基准版本"
-                  :max-dimension="240"
-                />
-                <div>
-                  <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
-                  <small>仅修改明确描述的内容</small>
+              <textarea
+                id="dws-brief"
+                ref="briefField"
+                v-model="briefInput"
+                rows="5"
+                maxlength="1000"
+                :aria-label="isIteration ? '本次迭代要求' : '产品与页面描述'"
+                :placeholder="
+                  isIteration
+                    ? '只写需要改的地方，例如：主按钮改成蓝色，其余保持不变'
+                    : '这是一个什么产品？页面上要有什么内容？'
+                "
+                @paste="handleBriefPaste"
+              ></textarea>
+
+              <div
+                v-if="iterationSource || referenceImages.length"
+                class="dws-composer-media"
+                aria-label="参考内容"
+              >
+                <div v-if="iterationSource" class="dws-composer-iteration">
+                  <AuthenticatedImage
+                    :src="iterationSource"
+                    alt="迭代基准版本"
+                    :max-dimension="240"
+                  />
+                  <div>
+                    <strong>基于 {{ activeVersionLabel || '当前版本' }} 迭代</strong>
+                    <small>仅修改明确描述的内容</small>
+                  </div>
+                </div>
+                <div v-else class="dws-composer-refs">
+                  <article v-for="(item, index) in referenceImages" :key="item.id">
+                    <img :src="item.preview" :alt="item.name || `参考图 ${index + 1}`" />
+                    <button
+                      type="button"
+                      :aria-label="`移除参考图 ${index + 1}`"
+                      @click="removeReferenceImage(item.id)"
+                    >
+                      <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                  </article>
                 </div>
               </div>
-              <div v-else class="dws-composer-refs">
-                <article v-for="(item, index) in referenceImages" :key="item.id">
-                  <img :src="item.preview" :alt="item.name || `参考图 ${index + 1}`" />
-                  <button
-                    type="button"
-                    :aria-label="`移除参考图 ${index + 1}`"
-                    @click="removeReferenceImage(item.id)"
-                  >
-                    <i class="bi bi-x" aria-hidden="true"></i>
-                  </button>
-                </article>
-              </div>
-            </div>
 
-            <footer class="dws-composer-bar">
-              <button
-                type="button"
-                class="dws-composer-add"
-                :disabled="isIteration || !canAddReferences"
-                :title="
-                  isIteration
-                    ? '迭代模式使用当前版本作参考'
-                    : canAddReferences
-                      ? `添加参考图（${referenceImages.length}/${MAX_REFERENCE_IMAGES}）`
+              <footer class="dws-composer-bar">
+                <button
+                  type="button"
+                  class="dws-composer-add"
+                  :disabled="isIteration || !canAddReferences"
+                  :title="
+                    isIteration
+                      ? '迭代模式使用当前版本作参考'
+                      : canAddReferences
+                        ? `添加参考图（${referenceImages.length}/${MAX_REFERENCE_IMAGES}）`
+                        : `参考图已满 ${MAX_REFERENCE_IMAGES} 张`
+                  "
+                  :aria-label="
+                    canAddReferences
+                      ? `添加参考图，还可添加 ${referenceSlotsLeft} 张`
                       : `参考图已满 ${MAX_REFERENCE_IMAGES} 张`
-                "
-                :aria-label="
-                  canAddReferences
-                    ? `添加参考图，还可添加 ${referenceSlotsLeft} 张`
-                    : `参考图已满 ${MAX_REFERENCE_IMAGES} 张`
-                "
-                @click="fileInput?.click()"
-              >
-                <i class="bi bi-plus-lg" aria-hidden="true"></i>
-              </button>
-              <button
-                type="button"
-                class="dws-composer-clear"
-                :disabled="!canClearComposer"
-                title="清空内容"
-                aria-label="清空内容"
-                @click="clearComposer()"
-              >
-                <i class="bi bi-trash3" aria-hidden="true"></i>
-              </button>
-            </footer>
-          </div>
-          <input
-            ref="fileInput"
-            hidden
-            type="file"
-            accept="image/*"
-            multiple
-            @change="chooseFile"
-          />
-        </section>
-
-        <section v-if="isIteration" class="dws-block dws-iteration-guide" aria-live="polite">
-          <header>
-            <div>
-              <small>CONTROLLED ITERATION</small>
-              <strong>受控迭代进行中</strong>
-            </div>
-            <button type="button" class="dws-iteration-exit" @click="clearReference()">
-              退出迭代
-            </button>
-          </header>
-          <ol>
-            <li>
-              <b>1</b>
-              <span
-                >基准成稿 <em data-no-translate>{{ iterationTargetLabel }}</em
-                >，只出这一端</span
-              >
-            </li>
-            <li>
-              <b>2</b>
-              <span>在上方输入框写「只改什么」，例如：主按钮改成橙色</span>
-            </li>
-            <li>
-              <b>3</b>
-              <span>其余布局、配色、组件、文案全部锁定，不会按下方参数重做</span>
-            </li>
-          </ol>
-          <div class="dws-iteration-lock">
-            <i class="bi bi-lock-fill" aria-hidden="true"></i>
-            <div>
-              <strong>本次不生效</strong>
-              <small>设备多选、页面类型、视觉风格、品牌主色、明暗模式、设计规范</small>
-            </div>
-          </div>
-          <div v-if="iterationDevice" class="dws-iteration-device">
-            <i class="bi" :class="iterationDevice.icon" aria-hidden="true"></i>
-            <span>
-              迭代输出：{{ iterationDevice.label }} ·
-              {{ iterationDevice.ratio }}
-            </span>
-          </div>
-        </section>
-
-        <template v-else>
-          <section class="dws-block">
-            <span class="dws-label">设备载体 · 可多选同版生成</span>
-            <div class="dws-devices" role="group" aria-label="设备载体">
-              <button
-                v-for="item in DEVICE_OPTIONS"
-                :key="item.id"
-                type="button"
-                :class="{ 'is-on': selectedDeviceIds.includes(item.id) }"
-                :aria-pressed="selectedDeviceIds.includes(item.id)"
-                :title="`${item.label} ${item.ratio}`"
-                :aria-label="`${item.label} ${item.ratio}`"
-                @click="toggleDeviceSelection(item.id)"
-              >
-                <i class="bi" :class="item.icon" aria-hidden="true"></i>
-                <small data-no-translate>{{ item.ratio }}</small>
-              </button>
-            </div>
-          </section>
-
-          <section class="dws-block dws-quick-settings">
-            <div class="dws-select-field">
-              <span class="dws-label">页面类型</span>
-              <button
-                ref="pageTypePickerTrigger"
-                type="button"
-                class="dws-page-type-trigger"
-                aria-haspopup="dialog"
-                :aria-expanded="pageTypePickerOpen"
-                aria-label="页面类型"
-                @click="pageTypePickerOpen ? closePageTypePicker() : openPageTypePicker()"
-              >
-                <i class="bi" :class="pageType.icon" aria-hidden="true"></i>
-                <span>{{ pageType.label }}</span>
-                <i class="bi bi-chevron-right" aria-hidden="true"></i>
-              </button>
-            </div>
-            <div class="dws-select-field">
-              <span class="dws-label">视觉风格</span>
-              <button
-                ref="stylePickerTrigger"
-                type="button"
-                class="dws-page-type-trigger"
-                aria-haspopup="dialog"
-                :aria-expanded="activeConfigPanel === 'style'"
-                aria-label="视觉风格"
-                @click="
-                  activeConfigPanel === 'style'
-                    ? closeConfigPicker()
-                    : openConfigPicker('style', stylePickerTrigger)
-                "
-              >
-                <i class="bi" :class="styleOption.icon" aria-hidden="true"></i>
-                <span>{{ styleOption.label }}</span>
-                <i class="bi bi-chevron-right" aria-hidden="true"></i>
-              </button>
+                  "
+                  @click="fileInput?.click()"
+                >
+                  <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  class="dws-composer-clear"
+                  :disabled="!canClearComposer"
+                  title="清空内容"
+                  aria-label="清空内容"
+                  @click="clearComposer()"
+                >
+                  <i class="bi bi-trash3" aria-hidden="true"></i>
+                </button>
+              </footer>
             </div>
             <input
-              v-if="pageTypeId === 'custom'"
-              v-model="customPageType"
-              class="dws-custom-structure"
-              type="text"
-              maxlength="120"
-              placeholder="描述页面结构，例如：顶部搜索栏 + 左侧筛选 + 卡片瀑布流"
-              aria-label="自定义页面结构"
+              ref="fileInput"
+              hidden
+              type="file"
+              accept="image/*"
+              multiple
+              @change="chooseFile"
             />
           </section>
 
-          <section class="dws-block dws-color-row">
-            <div class="dws-color-brand dws-select-field">
-              <span class="dws-label">品牌主色</span>
-              <button
-                ref="brandPickerTrigger"
-                type="button"
-                class="dws-page-type-trigger dws-brand-trigger"
-                aria-haspopup="dialog"
-                :aria-expanded="activeConfigPanel === 'brand'"
-                aria-label="品牌主色"
-                @click="
-                  activeConfigPanel === 'brand'
-                    ? closeConfigPicker()
-                    : openConfigPicker('brand', brandPickerTrigger)
-                "
-              >
-                <i class="dws-brand-dot" :style="{ background: brandColor }" aria-hidden="true"></i>
-                <span>{{
-                  BRAND_COLOR_OPTIONS.find((item) => item.value === brandColor)?.label
-                }}</span>
-                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+          <section v-if="isIteration" class="dws-block dws-iteration-guide" aria-live="polite">
+            <header>
+              <div>
+                <small>CONTROLLED ITERATION</small>
+                <strong>受控迭代进行中</strong>
+              </div>
+              <button type="button" class="dws-iteration-exit" @click="clearReference()">
+                退出迭代
               </button>
-            </div>
-            <div class="dws-color-scheme">
-              <span class="dws-label">明暗模式</span>
-              <div class="dws-scheme" role="group" aria-label="明暗模式">
-                <button
-                  type="button"
-                  :class="{ 'is-on': colorScheme === 'light' }"
-                  :aria-pressed="colorScheme === 'light'"
-                  @click="colorScheme = 'light'"
+            </header>
+            <ol>
+              <li>
+                <b>1</b>
+                <span
+                  >基准成稿 <em data-no-translate>{{ iterationTargetLabel }}</em
+                  >，只出这一端</span
                 >
-                  <i class="bi bi-sun" aria-hidden="true"></i>浅色
-                </button>
-                <button
-                  type="button"
-                  :class="{ 'is-on': colorScheme === 'dark' }"
-                  :aria-pressed="colorScheme === 'dark'"
-                  @click="colorScheme = 'dark'"
-                >
-                  <i class="bi bi-moon-stars" aria-hidden="true"></i>深色
-                </button>
+              </li>
+              <li>
+                <b>2</b>
+                <span>在上方输入框写「只改什么」，例如：主按钮改成橙色</span>
+              </li>
+              <li>
+                <b>3</b>
+                <span>其余布局、配色、组件、文案全部锁定，不会按下方参数重做</span>
+              </li>
+            </ol>
+            <div class="dws-iteration-lock">
+              <i class="bi bi-lock-fill" aria-hidden="true"></i>
+              <div>
+                <strong>本次不生效</strong>
+                <small>设备多选、页面类型、视觉风格、品牌主色、明暗模式、设计规范</small>
               </div>
             </div>
-          </section>
-
-          <section class="dws-block dws-specification">
-            <button
-              ref="specificationTrigger"
-              type="button"
-              class="dws-specification-toggle"
-              aria-haspopup="dialog"
-              :aria-expanded="activeConfigPanel === 'specification'"
-              @click="
-                activeConfigPanel === 'specification'
-                  ? closeConfigPicker()
-                  : openConfigPicker('specification', specificationTrigger)
-              "
-            >
+            <div v-if="iterationDevice" class="dws-iteration-device">
+              <i class="bi" :class="iterationDevice.icon" aria-hidden="true"></i>
               <span>
-                <i class="bi bi-sliders" aria-hidden="true"></i>
-                <strong>设计规范</strong>
-                <small>
-                  {{ designMetrics.columns }} 列 · {{ designMetrics.controlHeight }}px ·
-                  {{ specificationSummary }}
-                </small>
+                迭代输出：{{ iterationDevice.label }} ·
+                {{ iterationDevice.ratio }}
               </span>
-              <i class="bi bi-chevron-right" aria-hidden="true"></i>
-            </button>
+            </div>
           </section>
-        </template>
 
-        <details class="dws-prompt-preview" :open="promptPreviewOpen">
-          <summary @click.prevent="promptPreviewOpen = !promptPreviewOpen">
-            <i class="bi bi-braces" aria-hidden="true"></i
-            >{{ isIteration ? '查看本次迭代将发送的提示词' : '查看将要发送的完整提示词' }}
-            <i
-              class="bi bi-chevron-down"
-              :class="{ 'is-open': promptPreviewOpen }"
-              aria-hidden="true"
-            ></i>
-          </summary>
-          <pre>{{ assembledPrompt }}</pre>
-        </details>
+          <template v-else>
+            <section class="dws-block">
+              <span class="dws-label">设备载体 · 可多选同版生成</span>
+              <div class="dws-devices" role="group" aria-label="设备载体">
+                <button
+                  v-for="item in DEVICE_OPTIONS"
+                  :key="item.id"
+                  type="button"
+                  :class="{ 'is-on': selectedDeviceIds.includes(item.id) }"
+                  :aria-pressed="selectedDeviceIds.includes(item.id)"
+                  :title="`${item.label} ${item.ratio}`"
+                  :aria-label="`${item.label} ${item.ratio}`"
+                  @click="toggleDeviceSelection(item.id)"
+                >
+                  <i class="bi" :class="item.icon" aria-hidden="true"></i>
+                  <small data-no-translate>{{ item.ratio }}</small>
+                </button>
+              </div>
+            </section>
 
-        <p v-if="localError || generationError" class="dws-error" role="alert">
-          <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
-          {{ localError || generationError }}
-        </p>
+            <section class="dws-block dws-quick-settings">
+              <div class="dws-select-field">
+                <span class="dws-label">页面类型</span>
+                <button
+                  ref="pageTypePickerTrigger"
+                  type="button"
+                  class="dws-page-type-trigger"
+                  aria-haspopup="dialog"
+                  :aria-expanded="pageTypePickerOpen"
+                  aria-label="页面类型"
+                  @click="pageTypePickerOpen ? closePageTypePicker() : openPageTypePicker()"
+                >
+                  <i class="bi" :class="pageType.icon" aria-hidden="true"></i>
+                  <span>{{ pageType.label }}</span>
+                  <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                </button>
+              </div>
+              <div class="dws-select-field">
+                <span class="dws-label">视觉风格</span>
+                <button
+                  ref="stylePickerTrigger"
+                  type="button"
+                  class="dws-page-type-trigger"
+                  aria-haspopup="dialog"
+                  :aria-expanded="activeConfigPanel === 'style'"
+                  aria-label="视觉风格"
+                  @click="
+                    activeConfigPanel === 'style'
+                      ? closeConfigPicker()
+                      : openConfigPicker('style', stylePickerTrigger)
+                  "
+                >
+                  <i class="bi" :class="styleOption.icon" aria-hidden="true"></i>
+                  <span>{{ styleOption.label }}</span>
+                  <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                </button>
+              </div>
+              <input
+                v-if="pageTypeId === 'custom'"
+                v-model="customPageType"
+                class="dws-custom-structure"
+                type="text"
+                maxlength="120"
+                placeholder="描述页面结构，例如：顶部搜索栏 + 左侧筛选 + 卡片瀑布流"
+                aria-label="自定义页面结构"
+              />
+            </section>
+
+            <section class="dws-block dws-color-row">
+              <div class="dws-color-brand dws-select-field">
+                <span class="dws-label">品牌主色</span>
+                <button
+                  ref="brandPickerTrigger"
+                  type="button"
+                  class="dws-page-type-trigger dws-brand-trigger"
+                  aria-haspopup="dialog"
+                  :aria-expanded="activeConfigPanel === 'brand'"
+                  aria-label="品牌主色"
+                  @click="
+                    activeConfigPanel === 'brand'
+                      ? closeConfigPicker()
+                      : openConfigPicker('brand', brandPickerTrigger)
+                  "
+                >
+                  <i
+                    class="dws-brand-dot"
+                    :style="{ background: brandColor }"
+                    aria-hidden="true"
+                  ></i>
+                  <span>{{
+                    BRAND_COLOR_OPTIONS.find((item) => item.value === brandColor)?.label
+                  }}</span>
+                  <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                </button>
+              </div>
+              <div class="dws-color-scheme">
+                <span class="dws-label">明暗模式</span>
+                <div class="dws-scheme" role="group" aria-label="明暗模式">
+                  <button
+                    type="button"
+                    :class="{ 'is-on': colorScheme === 'light' }"
+                    :aria-pressed="colorScheme === 'light'"
+                    @click="colorScheme = 'light'"
+                  >
+                    <i class="bi bi-sun" aria-hidden="true"></i>浅色
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ 'is-on': colorScheme === 'dark' }"
+                    :aria-pressed="colorScheme === 'dark'"
+                    @click="colorScheme = 'dark'"
+                  >
+                    <i class="bi bi-moon-stars" aria-hidden="true"></i>深色
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="dws-block dws-specification">
+              <button
+                ref="specificationTrigger"
+                type="button"
+                class="dws-specification-toggle"
+                aria-haspopup="dialog"
+                :aria-expanded="activeConfigPanel === 'specification'"
+                @click="
+                  activeConfigPanel === 'specification'
+                    ? closeConfigPicker()
+                    : openConfigPicker('specification', specificationTrigger)
+                "
+              >
+                <span>
+                  <i class="bi bi-sliders" aria-hidden="true"></i>
+                  <strong>设计规范</strong>
+                  <small>
+                    {{ designMetrics.columns }} 列 · {{ designMetrics.controlHeight }}px ·
+                    {{ specificationSummary }}
+                  </small>
+                </span>
+                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+              </button>
+            </section>
+          </template>
+
+          <details class="dws-prompt-preview" :open="promptPreviewOpen">
+            <summary @click.prevent="promptPreviewOpen = !promptPreviewOpen">
+              <i class="bi bi-braces" aria-hidden="true"></i
+              >{{ isIteration ? '查看本次迭代将发送的提示词' : '查看将要发送的完整提示词' }}
+              <i
+                class="bi bi-chevron-down"
+                :class="{ 'is-open': promptPreviewOpen }"
+                aria-hidden="true"
+              ></i>
+            </summary>
+            <pre>{{ assembledPrompt }}</pre>
+          </details>
+
+          <p v-if="localError || generationError" class="dws-error" role="alert">
+            <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+            {{ localError || generationError }}
+          </p>
         </div>
 
         <div class="dws-generate-dock">
@@ -3011,21 +4109,21 @@ function formatEditableHistoryDate(value) {
           <button
             type="button"
             class="is-region"
-            :class="{ 'is-on': regionSelectionMode }"
-            :disabled="!activeOutput || running || regionReviewLoading"
-            title="在设计稿上框选区域并获取优化说明"
+            :class="{ 'is-on': regionSelectionMode || regionSelection }"
+            :disabled="!activeOutput || running || regionProcessLoading || regionAnalyzing"
+            title="框选截图 → 选择识别类型 → 点选元素 → 图片编辑"
             @click="toggleRegionSelection"
           >
             <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
-            <span>{{ regionSelectionMode ? '拖拽框选' : '框选优化' }}</span>
+            <span>{{
+              regionSelectionMode ? '拖拽框选' : regionSelection ? '取消框选' : '框选优化'
+            }}</span>
           </button>
           <button
             type="button"
             :disabled="!activeOutput || running || !canIterateActive || tileRefineBusy"
             :title="
-              canIterateActive
-                ? '以当前版本为基础继续修改'
-                : '已达最终版本 Vn.n.n，请新建大版本'
+              canIterateActive ? '以当前版本为基础继续修改' : '已达最终版本 Vn.n.n，请新建大版本'
             "
             @click="iterateFromActive"
           >
@@ -3047,7 +4145,9 @@ function formatEditableHistoryDate(value) {
               :class="tileRefineBusy ? 'bi-arrow-repeat spin' : 'bi-grid-3x3-gap'"
               aria-hidden="true"
             ></i>
-            <span>{{ tileRefineBusy ? '精修中' : activeTileRefineEntry ? '查看精修' : '四宫格精修' }}</span>
+            <span>{{
+              tileRefineBusy ? '精修中' : activeTileRefineEntry ? '查看精修' : '四宫格精修'
+            }}</span>
           </button>
           <button
             type="button"
@@ -3196,16 +4296,23 @@ function formatEditableHistoryDate(value) {
               ref="artboardRef"
               class="dws-artboard"
               :class="{
-                'is-previewable': activeOutput && !running && !regionSelectionMode,
-                'is-region-selecting': regionSelectionMode,
+                'is-previewable':
+                  activeOutput && !running && !regionSelectionMode && !regionSelection,
+                'is-region-selecting': regionSelectionMode || regionSelection,
               }"
               :style="artboardStyle"
-              :role="activeOutput && !running ? 'button' : undefined"
-              :tabindex="activeOutput && !running ? 0 : undefined"
-              :aria-label="activeOutput && !running ? '查看当前设计稿大图' : undefined"
+              :role="activeOutput && !running && !regionSelection ? 'button' : undefined"
+              :tabindex="activeOutput && !running && !regionSelection ? 0 : undefined"
+              :aria-label="
+                activeOutput && !running && !regionSelection ? '查看当前设计稿大图' : undefined
+              "
               @click="handleArtboardClick()"
-              @keydown.enter.prevent="!regionSelectionMode && openActivePreview()"
-              @keydown.space.prevent="!regionSelectionMode && openActivePreview()"
+              @keydown.enter.prevent="
+                !regionSelectionMode && !regionSelection && openActivePreview()
+              "
+              @keydown.space.prevent="
+                !regionSelectionMode && !regionSelection && openActivePreview()
+              "
             >
               <div v-if="activeOutput" class="dws-artboard-stage">
                 <div class="dws-artboard-page">
@@ -3215,12 +4322,17 @@ function formatEditableHistoryDate(value) {
                     alt="UI 设计稿预览"
                     loading="eager"
                     :retry-count="2"
+                    @dimensions="handleActiveOutputDimensions"
                     @error="mediaError = '图片加载失败，请切换版本或重新生成'"
                   />
                   <div
                     v-if="regionSelectionMode || regionSelection"
                     class="dws-region-layer"
-                    :class="{ 'is-drawing': regionSelectionMode }"
+                    :style="regionLayerStyle"
+                    :class="{
+                      'is-drawing': regionSelectionMode,
+                      'has-selection': Boolean(regionSelection) && !regionSelectionMode,
+                    }"
                     @pointerdown.prevent="beginRegionSelection"
                     @pointermove.prevent="moveRegionSelection"
                     @pointerup.prevent="finishRegionSelection"
@@ -3229,33 +4341,329 @@ function formatEditableHistoryDate(value) {
                     <span
                       v-if="regionSelectionMode"
                       class="dws-region-hint"
-                      :class="{ 'is-error': regionReviewError }"
+                      :class="{ 'is-error': regionProcessError }"
                       role="status"
                     >
                       <i
                         class="bi"
                         :class="
-                          regionReviewError ? 'bi-exclamation-circle' : 'bi-bounding-box-circles'
+                          regionProcessError
+                            ? 'bi-exclamation-circle'
+                            : regionAnalyzing || regionProcessLoading
+                              ? 'bi-arrow-repeat spin'
+                              : 'bi-bounding-box-circles'
                         "
                         aria-hidden="true"
                       ></i
-                      >{{ regionReviewError || '拖拽框选需要优化的区域' }}
+                      >{{ regionHintText }}
                     </span>
                     <div
                       v-if="regionSelection"
+                      ref="regionBoxRef"
                       class="dws-region-box"
+                      :class="{
+                        'is-adjustable':
+                          !regionSelectionMode &&
+                          !regionProcessLoading &&
+                          !regionAnalyzing &&
+                          !regionManualElementMode,
+                        'is-picking': regionPickMode,
+                        'is-manual': regionManualElementMode,
+                      }"
                       :style="regionSelectionStyle"
+                      @pointerdown="
+                        regionManualElementMode
+                          ? beginRegionManualElement($event)
+                          : !regionSelectionMode &&
+                            !regionAnalyzing &&
+                            beginRegionAdjust($event, 'move')
+                      "
+                      @pointermove="moveRegionManualElement"
+                      @pointerup="finishRegionManualElement"
+                      @pointercancel="cancelRegionManualElement"
                     >
-                      <i></i><i></i><i></i><i></i>
-                      <button
-                        v-if="!regionSelectionMode"
-                        type="button"
-                        aria-label="清除框选区域"
-                        @pointerdown.stop
-                        @click.stop="clearRegionSelection"
+                      <div
+                        v-if="regionElements.length && (regionPickMode || regionManualElementMode)"
+                        class="dws-region-hits"
+                        :class="{ 'is-manual': regionManualElementMode }"
+                        aria-label="在画布上点选要编辑的元素"
                       >
-                        <i class="bi bi-x" aria-hidden="true"></i>
-                      </button>
+                        <button
+                          v-for="(node, index) in regionElements"
+                          :key="node.id"
+                          type="button"
+                          class="dws-region-hit"
+                          :class="{ 'is-marked': regionMarkedIds.includes(node.id) }"
+                          :data-index="index + 1"
+                          :style="regionElementStyle(node)"
+                          :aria-label="`元素 ${index + 1}：${node.name || node.type}，点击选择`"
+                          :title="`${index + 1}. ${node.name || node.type}${node.text ? ` · ${node.text}` : ''}（点击选择）`"
+                          @pointerdown.stop
+                          @click.stop="toggleRegionElementMark(node.id)"
+                        >
+                          <span v-if="regionElementLabel(node) && regionElementShowsLabel(node)">{{
+                            regionElementLabel(node)
+                          }}</span>
+                        </button>
+                      </div>
+                      <span
+                        v-if="regionManualElementDraft"
+                        class="dws-region-manual-draft"
+                        :style="regionManualElementDraftStyle"
+                        aria-hidden="true"
+                      ></span>
+                      <button
+                        v-for="handle in REGION_ADJUST_HANDLES"
+                        v-show="
+                          !regionSelectionMode &&
+                          !regionProcessLoading &&
+                          !regionAnalyzing &&
+                          !regionManualElementMode
+                        "
+                        :key="handle"
+                        type="button"
+                        class="dws-region-handle"
+                        :data-handle="handle"
+                        :aria-label="`调整选区 ${handle}`"
+                        @pointerdown.stop="beginRegionAdjust($event, 'resize', handle)"
+                      ></button>
+                      <Teleport to="body">
+                        <div
+                          v-if="!regionSelectionMode"
+                          ref="regionComposerRef"
+                          class="dws-region-composer"
+                          :style="regionComposerStyle"
+                          @pointerdown.stop
+                          @click.stop
+                        >
+                          <header class="dws-region-composer__header">
+                            <strong>框选优化</strong>
+                            <button
+                              type="button"
+                              class="dws-region-close"
+                              aria-label="清除框选区域"
+                              @pointerdown.stop
+                              @click.stop="clearRegionSelection"
+                            >
+                              <i class="bi bi-x" aria-hidden="true"></i>
+                            </button>
+                          </header>
+                          <figure
+                            v-if="regionResultUrl"
+                            class="dws-region-composer__preview is-clickable"
+                            :style="regionPreviewAspectStyle"
+                            @click="openRegionResultPreview"
+                          >
+                            <img :src="regionResultUrl" alt="编辑结果预览" />
+                            <button
+                              type="button"
+                              class="dws-region-composer__zoom"
+                              @click.stop="openRegionResultPreview"
+                            >
+                              <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
+                              查看大图
+                            </button>
+                          </figure>
+                          <div class="dws-region-composer__recognition">
+                            <strong>识别类型</strong>
+                            <div>
+                              <label
+                                v-for="option in REGION_RECOGNITION_OPTIONS"
+                                :key="option.id"
+                              >
+                                <input
+                                  v-model="regionRecognitionTypes"
+                                  type="checkbox"
+                                  :value="option.id"
+                                  :disabled="regionProcessLoading || regionAnalyzing"
+                                  @change="handleRegionRecognitionTypesChange"
+                                />
+                                <span>{{ option.label }}</span>
+                              </label>
+                            </div>
+                          </div>
+                          <p v-if="regionAnalyzing" class="dws-region-composer__status">
+                            <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
+                            {{ regionProcessStage || '正在分析元素…' }}
+                          </p>
+                          <p v-else-if="regionProcessLoading" class="dws-region-composer__status">
+                            <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
+                            {{ regionProcessStage || '正在图片编辑…' }}
+                          </p>
+                          <p
+                            v-else-if="regionProcessError"
+                            class="dws-region-composer__status is-error"
+                          >
+                            {{ regionProcessError }}
+                          </p>
+                          <p
+                            v-else-if="regionResultUrl"
+                            class="dws-region-composer__status is-done"
+                          >
+                            {{ regionProcessStage || '编辑完成，可查看大图确认效果' }}
+                          </p>
+                          <p
+                            v-else-if="regionManualElementMode"
+                            class="dws-region-composer__status"
+                          >
+                            在左侧绿色大框内拖拽小框 · 可连续选择多个元素
+                          </p>
+                          <p v-else-if="regionElements.length" class="dws-region-composer__status">
+                            在左侧绿色框内点选 · 已定位 {{ regionElements.length }} 个
+                            <template v-if="regionMarkedIds.length">
+                              · 已选 {{ regionMarkedIds.length }} 个
+                            </template>
+                          </p>
+                          <p v-else-if="regionSelection" class="dws-region-composer__status">
+                            {{ regionProcessStage || '勾选识别类型后开始分析' }}
+                          </p>
+                          <div
+                            v-if="regionMarkedElements.length && !regionResultUrl"
+                            class="dws-region-composer__chips"
+                          >
+                            <button
+                              v-for="node in regionMarkedElements"
+                              :key="`chip-${node.id}`"
+                              type="button"
+                              class="dws-region-composer__chip"
+                              :title="'取消选择：' + (node.text || node.name || node.type)"
+                              :disabled="regionProcessLoading || regionApproving"
+                              @click="toggleRegionElementMark(node.id)"
+                            >
+                              {{ regionElementLabel(node) || node.type }}
+                              <i class="bi bi-x" aria-hidden="true"></i>
+                            </button>
+                          </div>
+                          <div class="dws-region-composer__modes" aria-label="编辑方式">
+                            <button
+                              v-for="action in REGION_EDIT_ACTIONS"
+                              :key="action.id"
+                              type="button"
+                              :class="{ active: regionEditAction === action.id }"
+                              :disabled="regionProcessLoading || regionApproving || regionAnalyzing"
+                              @click="regionEditAction = action.id; handleRegionEditActionChange()"
+                            >
+                              <i class="bi" :class="action.icon" aria-hidden="true"></i>
+                              {{ action.label }}
+                            </button>
+                          </div>
+                          <textarea
+                            v-model="regionPrompt"
+                            rows="4"
+                            maxlength="1000"
+                            :disabled="regionProcessLoading || regionApproving || regionAnalyzing"
+                            :placeholder="regionPromptPlaceholder"
+                            @keydown.enter.exact.prevent="startRegionProcess"
+                          ></textarea>
+                          <label class="dws-region-composer__option">
+                            <input
+                              v-model="regionRemoveBackground"
+                              type="checkbox"
+                              :disabled="
+                                regionProcessLoading ||
+                                regionApproving ||
+                                regionAnalyzing ||
+                                regionEditAction !== 'custom'
+                              "
+                            />
+                            <span>
+                              {{
+                                regionEditAction === 'replace-background'
+                                  ? '更换背景模式输出完整背景'
+                                  : regionEditAction === 'improve-icon'
+                                    ? '美化图标保留完整画面'
+                                    : regionEditAction === 'remove'
+                                      ? '移除元素后保留完整画面'
+                                      : '透明背景'
+                              }}
+                            </span>
+                          </label>
+                          <p v-if="regionCostLabel" class="dws-region-composer__cost">
+                            图片编辑 · 输出 {{ regionOutputSizeLabel }} · 预计消耗
+                            {{ regionCostLabel }}
+                          </p>
+                          <div class="dws-region-composer__actions">
+                            <button
+                              v-if="!regionProcessLoading && !regionResultUrl && regionSelection"
+                              type="button"
+                              :class="{ 'is-active': regionManualElementMode }"
+                              :aria-pressed="regionManualElementMode"
+                              :disabled="regionApproving || regionAnalyzing"
+                              @click="toggleRegionManualElementMode"
+                            >
+                              <i class="bi bi-bounding-box" aria-hidden="true"></i>
+                              {{ regionManualElementMode ? '退出手动框选' : '手动框选元素' }}
+                            </button>
+                            <button
+                              v-if="regionResultUrl && !regionProcessLoading"
+                              type="button"
+                              class="is-primary"
+                              :disabled="regionApproving"
+                              @click="approveRegionResult"
+                            >
+                              {{ regionApproving ? '保存中…' : '满意，加入素材库' }}
+                            </button>
+                            <button
+                              type="button"
+                              class="is-primary"
+                              :disabled="
+                                regionProcessLoading ||
+                                regionApproving ||
+                                regionAnalyzing ||
+                                !regionCanStartProcess
+                              "
+                              @click="startRegionProcess"
+                            >
+                              {{
+                                regionProcessLoading
+                                  ? '编辑中…'
+                                  : regionResultUrl
+                                    ? '重新编辑'
+                                    : '开始图片编辑'
+                              }}
+                            </button>
+                            <button
+                              v-if="
+                                !regionProcessLoading &&
+                                !regionResultUrl &&
+                                regionSelection &&
+                                !regionAnalyzing
+                              "
+                              type="button"
+                              :disabled="regionApproving || !regionRecognitionTypes.length"
+                              @click="analyzeSelectedRegionElements"
+                            >
+                              {{ regionElements.length ? '重新分析元素' : '开始分析元素' }}
+                            </button>
+                            <button
+                              v-if="regionResultUrl && !regionProcessLoading"
+                              type="button"
+                              @click="openRegionResultPreview"
+                            >
+                              查看大图
+                            </button>
+                            <button
+                              v-if="!regionProcessLoading && !regionAnalyzing"
+                              type="button"
+                              :disabled="regionApproving"
+                              @click="restartRegionSelection"
+                            >
+                              重新框选
+                            </button>
+                            <button
+                              v-if="regionProcessLoading || regionAnalyzing"
+                              type="button"
+                              @click="
+                                regionAnalyzing
+                                  ? resetRegionElementState()
+                                  : abortRegionProcess({ cancelRun: true })
+                              "
+                            >
+                              停止
+                            </button>
+                          </div>
+                        </div>
+                      </Teleport>
                     </div>
                   </div>
                   <div
@@ -3294,9 +4702,7 @@ function formatEditableHistoryDate(value) {
                   </div>
                 </div>
                 <strong>画布等待第一稿</strong>
-                <span
-                  >{{ device.label }} · {{ device.ratio }} · {{ pageType.label }}</span
-                >
+                <span>{{ device.label }} · {{ device.ratio }} · {{ pageType.label }}</span>
               </div>
               <div v-if="running" class="dws-running" aria-live="polite">
                 <span class="dws-running-scan" aria-hidden="true"></span>
@@ -3326,11 +4732,7 @@ function formatEditableHistoryDate(value) {
               </div>
             </div>
 
-            <aside
-              v-if="showDeviceRail"
-              class="dws-device-rail"
-              aria-label="多端预览切换"
-            >
+            <aside v-if="showDeviceRail" class="dws-device-rail" aria-label="多端预览切换">
               <button
                 v-for="slot in canvasDeviceSlots"
                 :key="`rail-${slot.deviceId}`"
@@ -3341,12 +4743,7 @@ function formatEditableHistoryDate(value) {
                 @click="selectCarrier(slot)"
               >
                 <span class="dws-device-rail-thumb" :style="slotFrameStyle(slot)">
-                  <AuthenticatedImage
-                    v-if="slot.url"
-                    :src="slot.url"
-                    alt=""
-                    :max-dimension="240"
-                  />
+                  <AuthenticatedImage v-if="slot.url" :src="slot.url" alt="" :max-dimension="240" />
                   <i v-else class="bi" :class="slot.icon" aria-hidden="true"></i>
                 </span>
                 <span class="dws-device-rail-meta">
@@ -3411,11 +4808,7 @@ function formatEditableHistoryDate(value) {
                         <em v-if="major.analyzedInTree" class="is-analyzed">已分析</em>
                       </span>
                     </span>
-                    <span
-                      v-if="major.devices.length"
-                      class="dws-family-devices"
-                      aria-hidden="true"
-                    >
+                    <span v-if="major.devices.length" class="dws-family-devices" aria-hidden="true">
                       <i
                         v-for="device in major.devices"
                         :key="`${major.id}-${device.id}`"
@@ -3447,17 +4840,17 @@ function formatEditableHistoryDate(value) {
             </span>
           </div>
           <div class="dws-history-page-meta" aria-live="polite">
-            <strong>{{ historyPage + 1 }} / {{ historyPageCount }}{{ historyHasMore ? '+' : '' }}</strong>
-            <i
-              v-if="historyLoading"
-              class="bi bi-arrow-repeat spin"
-              aria-hidden="true"
-            ></i>
+            <strong
+              >{{ historyPage + 1 }} / {{ historyPageCount }}{{ historyHasMore ? '+' : '' }}</strong
+            >
+            <i v-if="historyLoading" class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
           </div>
           <button
             type="button"
             class="dws-history-page is-next"
-            :disabled="!canNextHistoryPage || (historyLoading && historyPage >= historyPageCount - 1)"
+            :disabled="
+              !canNextHistoryPage || (historyLoading && historyPage >= historyPageCount - 1)
+            "
             aria-label="下一页历史"
             @click="goNextHistoryPage()"
           >
@@ -3654,7 +5047,8 @@ function formatEditableHistoryDate(value) {
             </div>
 
             <p class="dws-spec-hint">
-              当前按「{{ device.label }} {{ device.ratio }}」计算栅格；多端生成时各端会自动适配列数与边距。
+              当前按「{{ device.label }}
+              {{ device.ratio }}」计算栅格；多端生成时各端会自动适配列数与边距。
             </p>
 
             <div class="dws-spec-grid">
@@ -3872,12 +5266,7 @@ function formatEditableHistoryDate(value) {
             </button>
           </div>
 
-          <div
-            v-else-if="
-              !qualityAudit && !(regionSelection || regionReviewLoading || regionReviewError)
-            "
-            class="dws-quality-empty"
-          >
+          <div v-else-if="!qualityAudit" class="dws-quality-empty">
             <i class="bi bi-clipboard2-pulse" aria-hidden="true"></i>
             <strong>这个视角还没有检查记录</strong>
             <p>
@@ -3890,19 +5279,8 @@ function formatEditableHistoryDate(value) {
             </button>
           </div>
 
-          <div
-            v-else-if="qualityAudit || regionSelection || regionReviewLoading || regionReviewError"
-            class="dws-quality-result"
-          >
-            <section v-if="!qualityAudit" class="dws-quality-inline-empty">
-              <span>
-                <i class="bi bi-clipboard2-pulse" aria-hidden="true"></i>
-                <b>当前视角尚未检查</b>
-                <small>{{ currentQualityReviewMode.label }}</small>
-              </span>
-              <button type="button" @click="runQualityAudit">开始检查</button>
-            </section>
-            <section v-if="qualityAudit" class="dws-quality-summary">
+          <div v-else class="dws-quality-result">
+            <section class="dws-quality-summary">
               <div
                 class="dws-quality-score"
                 :style="{ '--quality-score': `${qualityAudit.score * 3.6}deg` }"
@@ -3949,51 +5327,6 @@ function formatEditableHistoryDate(value) {
                 <li>仍存在 {{ qualityAudit.comparison.persistentIssueIds.length }}</li>
                 <li>新增 {{ qualityAudit.comparison.newIssueCount }}</li>
               </ul>
-            </section>
-
-            <section
-              v-if="regionSelection || regionReviewLoading || regionReviewError"
-              class="dws-region-review"
-            >
-              <header>
-                <span>
-                  <i class="bi bi-bounding-box-circles" aria-hidden="true"></i>
-                  <strong>框选区域优化</strong>
-                </span>
-                <button type="button" aria-label="清除框选区域" @click="clearRegionSelection">
-                  <i class="bi bi-x-lg" aria-hidden="true"></i>
-                </button>
-              </header>
-              <div class="dws-region-review-body">
-                <figure>
-                  <img v-if="regionPreview" :src="regionPreview" alt="框选区域预览" />
-                  <span v-else><i class="bi bi-image" aria-hidden="true"></i></span>
-                </figure>
-                <div v-if="regionReviewLoading" class="dws-region-review-loading">
-                  <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
-                  <strong>正在理解框选区域</strong>
-                  <p>结合完整页面判断区域职责、视觉问题和修改边界</p>
-                </div>
-                <div v-else-if="regionReviewError" class="dws-region-review-error">
-                  <strong>{{ regionReviewError }}</strong>
-                  <button type="button" @click="runRegionQualityAudit()">重新分析</button>
-                </div>
-                <div v-else-if="regionReview" class="dws-region-review-copy">
-                  <small>{{ regionReview.location }}</small>
-                  <strong>{{ regionReview.title }}</strong>
-                  <p>{{ regionReview.summary }}</p>
-                  <ul>
-                    <li v-for="item in regionReview.suggestions" :key="item">{{ item }}</li>
-                  </ul>
-                  <button
-                    type="button"
-                    :disabled="!regionReview.iterationPrompt"
-                    @click="applyRegionReview"
-                  >
-                    仅优化此区域<i class="bi bi-arrow-right" aria-hidden="true"></i>
-                  </button>
-                </div>
-              </div>
             </section>
 
             <section v-if="qualityAudit?.dimensions?.length" class="dws-quality-dimensions">
@@ -4138,8 +5471,8 @@ function formatEditableHistoryDate(value) {
             <div>
               <strong>四宫格精修结果 <em>Beta</em></strong>
               <small>
-                {{ tileRefineDialogEntry.width }}×{{ tileRefineDialogEntry.height }} ·
-                亚像素对齐 · 无缝合并为 1 张整图
+                {{ tileRefineDialogEntry.width }}×{{ tileRefineDialogEntry.height }} · 亚像素对齐 ·
+                无缝合并为 1 张整图
               </small>
             </div>
             <button type="button" aria-label="关闭" @click="tileRefineDialogOpen = false">
@@ -4187,6 +5520,21 @@ function formatEditableHistoryDate(value) {
       }"
       @close="fullscreenOpen = false"
       @select="selectOutput"
+    />
+
+    <WallevenImagePreview
+      :open="regionFullscreenOpen"
+      :images="regionPreviewImages"
+      :current-src="regionResultUrl || regionPreview"
+      title="框选优化结果"
+      filename="ui-region-optimize.png"
+      :metadata="{
+        id: 'region-optimize',
+        category: '框选优化',
+        ratio: regionOutputSizeLabel,
+        style: `${regionActionLabel}${regionEffectiveTransparent ? ' · 透明背景' : ''}`,
+      }"
+      @close="regionFullscreenOpen = false"
     />
 
     <AiDesignCanvas
@@ -4551,7 +5899,9 @@ function formatEditableHistoryDate(value) {
   border-radius: 18px;
   background: var(--dws-fill);
   overflow: hidden;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .dws-composer:focus-within {
@@ -7522,6 +8872,7 @@ function formatEditableHistoryDate(value) {
   position: absolute;
   z-index: 8;
   inset: 0;
+  box-sizing: border-box;
   pointer-events: none;
 }
 
@@ -7546,6 +8897,7 @@ function formatEditableHistoryDate(value) {
   background: rgba(10, 13, 18, 0.82);
   color: #b8f0dc;
   font-size: 0.65rem;
+  pointer-events: none;
   transform: translateX(-50%);
   backdrop-filter: blur(8px);
 }
@@ -7558,55 +8910,517 @@ function formatEditableHistoryDate(value) {
 
 .dws-region-box {
   position: absolute;
+  z-index: 2;
   border: 2px solid #72d5b1;
   background: rgba(114, 213, 177, 0.08);
   box-shadow: 0 0 0 9999px rgba(5, 7, 10, 0.34);
+  box-sizing: border-box;
+  pointer-events: auto;
 }
 
-.dws-region-box > i {
+.dws-region-box.is-adjustable {
+  cursor: move;
+  touch-action: none;
+}
+
+.dws-region-box.is-picking {
+  cursor: move;
+  touch-action: none;
+}
+
+.dws-region-box.is-manual {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.dws-region-hits {
   position: absolute;
-  width: 8px;
-  height: 8px;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.dws-region-hits.is-manual .dws-region-hit {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.dws-region-manual-draft {
+  position: absolute;
+  z-index: 1900;
+  box-sizing: border-box;
+  border: 2px dashed #ff7d66;
+  border-radius: 4px;
+  background: rgba(255, 104, 82, 0.2);
+  box-shadow: 0 0 0 1px rgba(80, 18, 10, 0.28);
+  pointer-events: none;
+}
+
+.dws-region-hit {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+  border: 2px solid rgba(94, 214, 170, 0.95);
+  border-radius: 4px;
+  background: rgba(46, 174, 129, 0.16);
+  color: #f4fffa;
+  cursor: pointer;
+  pointer-events: auto;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 1px rgba(8, 16, 12, 0.25);
+}
+
+.dws-region-hit::after {
+  position: absolute;
+  content: '';
+  inset: -5px;
+}
+
+.dws-region-hit::before {
+  position: absolute;
+  z-index: 2;
+  top: -10px;
+  left: -10px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid rgba(224, 255, 244, 0.92);
+  border-radius: 50%;
+  background: #167f5e;
+  box-shadow: 0 1px 5px rgba(5, 26, 19, 0.4);
+  color: #ffffff;
+  content: attr(data-index);
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.dws-region-hit > span {
+  max-width: 100%;
+  margin: 2px;
+  padding: 1px 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(8, 14, 12, 0.72);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.dws-region-hit:hover {
+  background: rgba(46, 174, 129, 0.32);
+  border-color: #9fe7c8;
+}
+
+.dws-region-hit.is-marked {
+  border-color: #ff7d66;
+  background: rgba(255, 104, 82, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 143, 122, 0.45),
+    0 0 0 1px rgba(120, 30, 18, 0.35);
+}
+
+.dws-region-hit.is-marked::before {
+  border-color: rgba(255, 225, 218, 0.96);
+  background: #d94730;
+}
+
+.dws-region-hit.is-marked > span {
+  background: rgba(90, 22, 14, 0.82);
+}
+
+.dws-region-handle {
+  position: absolute;
+  z-index: 2000;
+  width: 12px;
+  height: 12px;
+  padding: 0;
   border: 2px solid #effff9;
   border-radius: 2px;
   background: #2eae81;
+  box-shadow: 0 0 0 1px rgba(8, 16, 12, 0.35);
+  pointer-events: auto;
 }
 
-.dws-region-box > i:nth-child(1) {
-  top: -5px;
-  left: -5px;
+.dws-region-handle[data-handle='nw'] {
+  top: -7px;
+  left: -7px;
+  cursor: nwse-resize;
 }
 
-.dws-region-box > i:nth-child(2) {
-  top: -5px;
-  right: -5px;
+.dws-region-handle[data-handle='n'] {
+  top: -7px;
+  left: 50%;
+  cursor: ns-resize;
+  transform: translateX(-50%);
 }
 
-.dws-region-box > i:nth-child(3) {
-  right: -5px;
-  bottom: -5px;
+.dws-region-handle[data-handle='ne'] {
+  top: -7px;
+  right: -7px;
+  cursor: nesw-resize;
 }
 
-.dws-region-box > i:nth-child(4) {
-  bottom: -5px;
-  left: -5px;
+.dws-region-handle[data-handle='e'] {
+  top: 50%;
+  right: -7px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
 }
 
-.dws-region-box > button {
-  position: absolute;
-  top: -14px;
-  right: -14px;
+.dws-region-handle[data-handle='se'] {
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+
+.dws-region-handle[data-handle='s'] {
+  bottom: -7px;
+  left: 50%;
+  cursor: ns-resize;
+  transform: translateX(-50%);
+}
+
+.dws-region-handle[data-handle='sw'] {
+  bottom: -7px;
+  left: -7px;
+  cursor: nesw-resize;
+}
+
+.dws-region-handle[data-handle='w'] {
+  top: 50%;
+  left: -7px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
+}
+
+.dws-region-close {
   display: grid;
-  width: 26px;
-  height: 26px;
+  flex: none;
+  width: 24px;
+  height: 24px;
   padding: 0;
   place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 50%;
   background: #151820;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42);
   color: #fff;
   cursor: pointer;
   pointer-events: auto;
+}
+
+.dws-region-close:focus-visible {
+  outline: 2px solid #effff9;
+  outline-offset: 2px;
+}
+
+.dws-region-layer.has-selection {
+  pointer-events: none;
+}
+
+.dws-region-composer__header {
+  position: sticky;
+  z-index: 8;
+  top: -10px;
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  margin: -10px -10px 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(12, 16, 22, 0.97);
+}
+
+.dws-region-composer__header > strong {
+  color: #dff7ec;
+  font-size: 0.72rem;
+}
+
+.dws-region-composer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10020;
+  display: grid;
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(114, 213, 177, 0.35);
+  border-radius: 12px;
+  background: rgba(12, 16, 22, 0.94);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  color: #eef6f2;
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+}
+
+.dws-region-composer figure,
+.dws-region-composer__preview {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #0b0e13;
+  aspect-ratio: 16 / 10;
+  max-height: 140px;
+}
+
+.dws-region-composer__preview.is-clickable {
+  cursor: zoom-in;
+}
+
+.dws-region-composer figure img,
+.dws-region-composer__preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.dws-region-composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 72px;
+  overflow: auto;
+}
+
+.dws-region-composer__recognition {
+  display: grid;
+  gap: 6px;
+}
+
+.dws-region-composer__recognition > strong {
+  color: #dff7ec;
+  font-size: 0.7rem;
+}
+
+.dws-region-composer__recognition > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.dws-region-composer__recognition label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #d7ebe1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-region-composer__recognition input {
+  width: 15px;
+  height: 15px;
+  accent-color: #2eae81;
+}
+
+.dws-region-composer__modes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.dws-region-composer__modes button {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  place-items: center;
+  gap: 3px;
+  padding: 5px 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #aabcb4;
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-region-composer__modes button i {
+  font-size: 0.86rem;
+}
+
+.dws-region-composer__modes button.active {
+  background: rgba(46, 174, 129, 0.2);
+  color: #baf4df;
+}
+
+.dws-region-composer__modes button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dws-region-composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 143, 122, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 104, 82, 0.18);
+  color: #ffd4cc;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-region-composer__chip > i {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+
+.dws-region-composer__chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dws-region-composer__zoom {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(8, 12, 18, 0.78);
+  color: #dff7ec;
+  font: inherit;
+  font-size: 0.64rem;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.dws-region-composer__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #d7ebe1;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dws-region-composer__option input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2eae81;
+}
+
+.dws-region-composer__cost {
+  margin: 0;
+  color: #9fe7c8;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.dws-region-composer__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #b8f0dc;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.dws-region-composer__status.is-error {
+  color: #ffb0aa;
+}
+
+.dws-region-composer__status.is-done {
+  color: #9fe7c8;
+}
+
+.dws-region-composer textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #f4faf7;
+  font: inherit;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.dws-region-composer textarea:focus {
+  outline: none;
+  border-color: rgba(114, 213, 177, 0.55);
+}
+
+.dws-region-composer textarea:disabled {
+  opacity: 0.65;
+}
+
+.dws-region-composer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dws-region-composer__actions > button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #eef6f2;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-region-composer__actions > button.is-primary {
+  border-color: rgba(114, 213, 177, 0.42);
+  background: linear-gradient(135deg, #2eae81, #1f8f68);
+  color: #fff;
+}
+
+.dws-region-composer__actions > button.is-active {
+  border-color: rgba(114, 213, 177, 0.58);
+  background: rgba(46, 174, 129, 0.22);
+  color: #baf4df;
+}
+
+.dws-region-composer__actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .dws-quality-marks {
@@ -8132,7 +9946,9 @@ function formatEditableHistoryDate(value) {
   display: grid;
   place-items: center;
   color: var(--dws-muted);
-  transition: color 0.15s ease, background-color 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .dws-family-detail:hover {
@@ -8199,7 +10015,9 @@ function formatEditableHistoryDate(value) {
 .dws-family-tags em {
   flex: none;
   color: var(--dws-faint);
-  font: 500 0.58rem/1 system-ui, sans-serif;
+  font:
+    500 0.58rem/1 system-ui,
+    sans-serif;
   font-style: normal;
   white-space: nowrap;
 }

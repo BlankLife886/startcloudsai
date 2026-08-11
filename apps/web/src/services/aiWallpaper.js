@@ -140,6 +140,8 @@ const KIND_TYPE_RULES = [
   [/^ultra-reference/, 'model_sheet'],
   [/^game-art/, 'game_art'],
   [/^(puzzle|collage)/, 'puzzle'],
+  // 必须放在 /^wallpaper/ 之前，避免 wallpaper-background-remove 被误映射成 t2i
+  [/background-remove/, 'background_remove'],
   [/^wallpaper/, 't2i'],
 ]
 
@@ -161,6 +163,7 @@ const DEFAULT_KIND_BY_TYPE = {
   model_sheet: 'ultra-reference-generation',
   game_art: 'game-art-generation',
   puzzle: 'puzzle-generation',
+  background_remove: 'image-tool-background-remove',
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +239,7 @@ export async function removeImageBackground(sourceUrl, publicModelKey, options =
     params: {
       publicModelKey: modelKey,
       sourceUrl: String(sourceUrl || '').trim(),
-      _kind: 'wallpaper-background-remove',
+      _kind: 'image-tool-background-remove',
     },
     inputKeys: [inputKey],
     count: 1,
@@ -413,7 +416,8 @@ export async function createServerAiJob(payload = {}) {
 
 export async function listServerAiJobs(limit = 30, options = {}) {
   const kind = String(options.kind || '').trim()
-  const type = kind ? mapJobKindToTaskType(kind.split(',')[0]) : ''
+  const type =
+    String(options.type || '').trim() || (kind ? mapJobKindToTaskType(kind.split(',')[0]) : '')
   const { items, nextCursor } = await listTasks({
     type,
     status: String(options.status || '').trim(),

@@ -13,10 +13,10 @@ export const STUDIO_FEATURE_META = {
   preview: { label: 'AI 优化', shortLabel: 'AI 优化' },
   'ai.illustrationColoring': { label: '插画染色', shortLabel: '插画染色' },
   'ai.uiDesign': { label: 'UI 设计稿', shortLabel: 'UI 设计' },
-  'ai.ecommerceDesign': { label: 'AI 电商设计', shortLabel: '电商设计' },
-  'ai.ultraModelSheet': { label: '超高清模型图', shortLabel: '模型图' },
+  'ai.ecommerceDesign': { label: 'AI 电商', shortLabel: 'AI 电商' },
+  'ai.ultraModelSheet': { label: '模型设计', shortLabel: '模型设计' },
   'ai.gameDesign': { label: '游戏设计', shortLabel: '游戏设计' },
-  'ai.puzzle': { label: 'AI 拼图', shortLabel: 'AI 拼图' },
+  'ai.puzzle': { label: '拼图', shortLabel: '拼图' },
 }
 
 export function isStudioPublicModelKey(value = '') {

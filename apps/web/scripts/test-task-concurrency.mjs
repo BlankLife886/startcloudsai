@@ -108,6 +108,40 @@ test('account task event resolves a waiter without an HTTP poll', async () => {
   assert.equal(requests, 0)
 })
 
+test('successful snapshot waits for output fields to become visible', async () => {
+  let batchCalls = 0
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url), 'http://localhost')
+    assert.equal(parsed.pathname, '/api/v1/tasks')
+    batchCalls += 1
+    const withOutput = batchCalls >= 2
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          items: [
+            {
+              id: '20000000-0000-4000-8000-000000000001',
+              type: 'model_sheet',
+              status: 'succeeded',
+              outputKeys: withOutput ? ['tasks/model-sheet/result.png'] : [],
+              originalUrls: withOutput ? ['/api/v1/files/tasks/model-sheet/result.png'] : [],
+            },
+          ],
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
+
+  const task = await waitForTask('20000000-0000-4000-8000-000000000001', {
+    intervalMs: 10,
+    maxWaitMs: 3000,
+  })
+  assert.equal(batchCalls, 2)
+  assert.equal(task.originalUrls.length, 1)
+})
+
 test('lost create response retries with the same idempotency key', async () => {
   const bodies = []
   globalThis.fetch = async (_url, options = {}) => {

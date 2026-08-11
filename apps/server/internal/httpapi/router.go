@@ -329,6 +329,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.DELETE("/changelog/:id", s.adminOnly(s.adminDeleteChangelog))
 	admin.GET("/settings", s.adminOnly(s.adminGetSettings))
 	admin.PUT("/settings", s.adminOnly(s.adminPutSettings))
+	admin.GET("/growth/groups", s.adminOnly(s.adminGrowthGroups))
 	admin.POST("/providers/c2a/tests", s.adminOnly(s.adminTestC2A))
 	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
 	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))

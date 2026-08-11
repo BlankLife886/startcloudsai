@@ -13,7 +13,7 @@ import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
 import { request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
-import { formatPoints, normalizePoints } from "@/utils";
+import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
 
 type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
@@ -232,18 +232,18 @@ const workspaceMeta: Array<{
   {
     key: "ui_design",
     name: "UI 设计稿",
-    detail: "设计稿生成、元素分析与局部素材重建",
+    detail: "整稿生成、框选优化、局部素材重建与元素分析",
     kinds: ["image", "chat"],
   },
   {
     key: "ecommerce_design",
-    name: "AI 电商设计",
+    name: "AI 电商",
     detail: "商品套图、详情页、模特与图片处理",
     kinds: ["image"],
   },
   {
     key: "model_sheet",
-    name: "超高清模型图",
+    name: "模型设计",
     detail: "角色多视图与高清参考图",
     kinds: ["image"],
   },
@@ -483,6 +483,12 @@ const activeWorkspace = computed(
   () =>
     workspaceMeta.find((workspace) => workspace.key === activeWorkspaceKey.value) ||
     workspaceMeta[0],
+);
+
+const uiDesignServiceRoutes = computed(() =>
+  IMAGE_SERVICE_ROUTES.filter(
+    (route) => route.key === "ui_design" || route.key === "ui_design_asset",
+  ),
 );
 
 const assignedWorkspaceModels = computed(() => {
@@ -1721,6 +1727,30 @@ onBeforeUnmount(() => {
                 >
               </div>
             </header>
+
+            <section
+              v-if="activeWorkspace.key === 'ui_design'"
+              class="workspace-billing-note"
+              aria-label="UI 设计稿计费说明"
+            >
+              <header>
+                <strong>框选优化与素材重建计费</strong>
+                <small
+                  ><code>ui_design_asset</code>
+                  与整稿共用本工作区图片模型单价；请将图片价设为非 0，否则前端会显示费用但服务端冻结为
+                  0。</small
+                >
+              </header>
+              <ul>
+                <li v-for="route in uiDesignServiceRoutes" :key="route.key">
+                  <code>{{ route.key }}</code>
+                  <span>
+                    <b>{{ route.label }}</b>
+                    <small>{{ route.detail }}</small>
+                  </span>
+                </li>
+              </ul>
+            </section>
 
             <div class="assignment-defaults" v-if="activeWorkspace.kinds.length">
               <label
@@ -3683,6 +3713,71 @@ html.dark .assignment-panel {
 .assignment-main__head small {
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.workspace-billing-note {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand, #7568f4) 28%, var(--line, #e6e8ee));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--brand, #7568f4) 8%, var(--surface, #fff));
+}
+
+.workspace-billing-note > header {
+  display: grid;
+  gap: 4px;
+}
+
+.workspace-billing-note > header strong {
+  font-size: 13px;
+}
+
+.workspace-billing-note > header small {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workspace-billing-note ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-billing-note li {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.workspace-billing-note code {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ink, #111) 6%, transparent);
+  font-size: 11px;
+}
+
+.workspace-billing-note li span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workspace-billing-note li b {
+  font-size: 12px;
+}
+
+.workspace-billing-note li small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .assignment-defaults {
