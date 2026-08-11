@@ -105,9 +105,7 @@ services:
     pids_limit: 300
 
   web:
-    build:
-      context: .
-      dockerfile: apps/web-react/Dockerfile
+    build: ./apps/web
     restart: unless-stopped
     networks: [frontend]
     mem_limit: 256m
