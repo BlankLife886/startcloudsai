@@ -13,6 +13,20 @@
 
 更换服务器或域名时，只需替换本文中的域名、IP 和项目目录。
 
+### React 主站测试环境
+
+默认 `docker-compose.yml` 继续构建 Vue 主站，作为生产回退路径。测试环境验证 React 主站时必须显式叠加覆盖文件：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f deploy/docker-compose.react.yml \
+  --env-file .env \
+  up -d --build
+```
+
+覆盖文件只替换 `web` 镜像构建入口，API、Worker、数据库、管理端和网关契约保持不变。测试环境通过后，生产切流仍需单独确认，不能只上传代码包后直接重建默认 Compose。
+
 ## 1. 部署架构
 
 生产流量路径：
