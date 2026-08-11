@@ -13,19 +13,25 @@
 
 更换服务器或域名时，只需替换本文中的域名、IP 和项目目录。
 
-### React 主站测试环境
+### React 主站与 Vue 回退
 
-默认 `docker-compose.yml` 继续构建 Vue 主站，作为生产回退路径。测试环境验证 React 主站时必须显式叠加覆盖文件：
+默认 `docker-compose.yml` 构建 React 主站：
+
+```bash
+docker compose --env-file .env up -d --build
+```
+
+逐步撤除 Vue 期间，如 React 主站出现阻断问题，可显式叠加回退文件，只重建用户端和网关：
 
 ```bash
 docker compose \
   -f docker-compose.yml \
-  -f deploy/docker-compose.react.yml \
+  -f deploy/docker-compose.vue.yml \
   --env-file .env \
-  up -d --build
+  up -d --build web gateway
 ```
 
-覆盖文件只替换 `web` 镜像构建入口，API、Worker、数据库、管理端和网关契约保持不变。测试环境通过后，生产切流仍需单独确认，不能只上传代码包后直接重建默认 Compose。
+回退文件只替换 `web` 镜像构建入口，API、Worker、数据库、管理端和网关契约保持不变。Vue 回退必须作为临时故障措施；React 对旧服务、样式和静态配置的源码依赖解除后再删除该入口。
 
 ## 1. 部署架构
 
@@ -50,7 +56,7 @@ Compose 服务：
 | 服务       | 作用                         | 是否保存数据 |
 | ---------- | ---------------------------- | ------------ |
 | `gateway`  | 统一 HTTP 入口和站内反向代理 | 否           |
-| `web`      | 用户端 Vue 静态文件          | 否           |
+| `web`      | 用户端 React 静态文件        | 否           |
 | `admin`    | 管理端 Vue 静态文件          | 否           |
 | `server`   | API、认证、迁移和业务逻辑    | 否           |
 | `worker`   | 图片生成、队列和后台任务     | 否           |

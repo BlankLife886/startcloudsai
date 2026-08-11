@@ -15,8 +15,14 @@ npm run dev
 docker build -f apps/web-react/Dockerfile -t startcloudsai-web-react:test .
 ```
 
-测试环境使用 Compose 覆盖文件启用 React 主站，默认 `docker-compose.yml` 仍保留 Vue 回退：
+默认 Compose 已使用 React 主站：
 
 ```bash
-docker compose -f docker-compose.yml -f deploy/docker-compose.react.yml --env-file .env up -d --build
+docker compose --env-file .env up -d --build
+```
+
+需要临时回退 Vue 主站时显式叠加回退文件：
+
+```bash
+docker compose -f docker-compose.yml -f deploy/docker-compose.vue.yml --env-file .env up -d --build web gateway
 ```
