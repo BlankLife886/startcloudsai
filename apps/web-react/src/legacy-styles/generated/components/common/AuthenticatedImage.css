@@ -1,0 +1,61 @@
+/* Generated from apps/web/src/components/common/AuthenticatedImage.vue. */
+
+.authenticated-image {
+  display: block;
+  background-color: rgba(120, 133, 148, 0.1);
+}
+.authenticated-image.is-placeholder {
+  color: transparent;
+}
+.authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: inherit;
+  object-position: inherit;
+}
+.authenticated-image.is-loading {
+  background-image: linear-gradient(
+    105deg,
+    rgba(255, 255, 255, 0.025) 24%,
+    rgba(255, 255, 255, 0.1) 42%,
+    rgba(255, 255, 255, 0.025) 60%
+  );
+  background-size: 220% 100%;
+  animation: authenticated-image-skeleton 1.25s linear infinite;
+}
+.authenticated-image.is-loaded {
+  animation: authenticated-image-reveal 0.32s ease-out;
+}
+.authenticated-image.is-failed {
+  background-image: linear-gradient(
+    105deg,
+    rgba(255, 255, 255, 0.025) 24%,
+    rgba(255, 255, 255, 0.055) 42%,
+    rgba(255, 255, 255, 0.025) 60%
+  );
+  background-size: 220% 100%;
+}
+@keyframes authenticated-image-skeleton {
+to {
+    background-position: -220% 0;
+}
+}
+@keyframes authenticated-image-reveal {
+from {
+    opacity: 0.35;
+    filter: blur(7px);
+    transform: scale(1.012);
+}
+to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.authenticated-image.is-loading,
+  .authenticated-image.is-loaded {
+    animation: none;
+}
+}

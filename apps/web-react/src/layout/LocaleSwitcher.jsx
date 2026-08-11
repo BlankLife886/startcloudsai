@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import "@legacy/components/layout/LocaleSwitcher.vue?react-style";
+import "@react/legacy-styles/generated/components/layout/LocaleSwitcher.css";
 
 const options = [
   { value: "zh-CN", short: "简", label: "简体中文" },

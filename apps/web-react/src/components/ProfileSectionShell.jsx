@@ -1,4 +1,4 @@
-import "@legacy/components/profile/ProfileSectionShell.vue?react-style";
+import "@react/legacy-styles/generated/components/profile/ProfileSectionShell.css";
 
 export function ProfileSectionShell({ title, description = "", actions, children }) {
   return (

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import "@legacy/components/layout/NavMusicPlayer.vue?react-style";
+import "@react/legacy-styles/generated/components/layout/NavMusicPlayer.css";
 
 export function MusicPlayer() {
   const [open, setOpen] = useState(false);

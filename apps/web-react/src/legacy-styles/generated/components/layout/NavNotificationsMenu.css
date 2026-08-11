@@ -1,0 +1,209 @@
+/* Generated from apps/web/src/components/layout/NavNotificationsMenu.vue. */
+
+.nav-notify {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+}
+.nav-notify__btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid rgba(21, 22, 31, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--nav-accent, #5b4dff);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  line-height: 1;
+}
+.nav-notify__btn i {
+  font-size: 1rem;
+  line-height: 1;
+}
+.nav-notify__btn:hover,
+.nav-notify.open .nav-notify__btn {
+  border-color: rgba(91, 77, 255, 0.28);
+  color: var(--nav-accent, #5b4dff);
+  filter: brightness(0.98);
+}
+.nav-notify__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-style: normal;
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+.nav-notify__panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 80;
+  width: min(360px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid rgba(28, 26, 39, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 22px 48px rgba(28, 22, 60, 0.16);
+  backdrop-filter: blur(16px);
+  color: #1c1a27;
+}
+.nav-notify__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid rgba(28, 26, 39, 0.08);
+}
+.nav-notify__head strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: #1c1a27;
+}
+.nav-notify__head small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(28, 26, 39, 0.55);
+  font-size: 0.72rem;
+}
+.nav-notify__loading,
+.nav-notify__empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 140px;
+  padding: 24px 16px;
+  color: rgba(28, 26, 39, 0.5);
+  font-size: 0.78rem;
+  text-align: center;
+}
+.nav-notify__empty i {
+  font-size: 1.4rem;
+  color: var(--nav-accent, #5b4dff);
+  opacity: 0.75;
+}
+.nav-notify__list {
+  display: grid;
+  gap: 6px;
+  max-height: min(420px, 55vh);
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  list-style: none;
+}
+.nav-notify__list > li {
+  border-radius: 12px;
+}
+.nav-notify__item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 12px;
+  transition: background 140ms ease;
+}
+.nav-notify__item:hover {
+  background: rgba(28, 26, 39, 0.04);
+}
+.nav-notify__list > li.is-unread .nav-notify__item {
+  background: rgba(107, 92, 255, 0.08);
+}
+.nav-notify__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: #5b4dff;
+  background: rgba(107, 92, 255, 0.12);
+  font-size: 0.95rem;
+}
+.nav-notify__item strong {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 750;
+  line-height: 1.35;
+  color: #1c1a27;
+}
+.nav-notify__item p {
+  display: -webkit-box;
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: rgba(28, 26, 39, 0.58);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.nav-notify__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.nav-notify__meta small {
+  color: rgba(28, 26, 39, 0.42);
+  font-size: 0.64rem;
+}
+.nav-notify__list > li.is-unread .nav-notify__meta small:last-child {
+  color: #5b4dff;
+  font-weight: 700;
+}
+.nav-notify__foot {
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(28, 26, 39, 0.08);
+}
+.nav-notify__foot a {
+  color: #5b4dff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+.nav-notify__foot a:hover {
+  text-decoration: underline;
+}
+.nav-notify-panel-enter-active,
+.nav-notify-panel-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.nav-notify-panel-enter-from,
+.nav-notify-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.nav-notify.compact {
+  height: 32px;
+}
+.nav-notify.compact .nav-notify__btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+}

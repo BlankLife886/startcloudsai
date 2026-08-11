@@ -1,5 +1,5 @@
 import { useState } from "react";
-import "@legacy/components/layout/ThemeDayNightSwitch.vue?react-style";
+import "@react/legacy-styles/generated/components/layout/ThemeDayNightSwitch.css";
 
 const circles = ["moon-dot--1", "moon-dot--2", "moon-dot--3"];
 const rays = ["light-ray--1", "light-ray--2", "light-ray--3"];

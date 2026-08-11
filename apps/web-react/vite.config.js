@@ -252,6 +252,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("../web/src", import.meta.url)),
+      "@react": fileURLToPath(new URL("./src", import.meta.url)),
       "@legacy": fileURLToPath(new URL("../web/src", import.meta.url)),
       "@canvas": CANVAS_SOURCE_DIR,
     },

@@ -12,6 +12,7 @@ const baselineRuntimeConfig = {
 }
 
 export async function installVisualBaseline(page) {
+  await page.clock.setFixedTime(new Date('2026-08-11T12:00:00+08:00'))
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
   await page.addInitScript((runtimeConfig) => {
     localStorage.setItem('starclouds-locale', 'zh-CN')

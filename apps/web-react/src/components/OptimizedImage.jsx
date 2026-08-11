@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import "@legacy/components/common/OptimizedImage.vue?react-style";
+import "@react/legacy-styles/generated/components/common/OptimizedImage.css";
 
 export function OptimizedImage({
   src = "",

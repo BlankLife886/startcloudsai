@@ -9,8 +9,8 @@ import { logoutAccount } from "@legacy/services/auth.js";
 import tryonPreview from "@legacy/assets/ecommerce/tryon-preview.webp";
 import listingPreview from "@legacy/assets/ecommerce/listing-preview.webp";
 import detailPreview from "@legacy/assets/ecommerce/detail-preview.webp";
-import "@legacy/components/layout/NavBar.vue?react-style";
-import "@legacy/components/layout/NavNotificationsMenu.vue?react-style";
+import "@react/legacy-styles/generated/components/layout/NavBar.css";
+import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 
 const imageLinks = [
   {

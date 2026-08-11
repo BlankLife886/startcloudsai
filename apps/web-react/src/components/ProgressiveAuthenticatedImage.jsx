@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import "@legacy/components/common/ProgressiveAuthenticatedImage.vue?react-style";
+import "@react/legacy-styles/generated/components/common/ProgressiveAuthenticatedImage.css";
 import { AuthenticatedImage } from "./AuthenticatedImage.jsx";
 
 export function ProgressiveAuthenticatedImage({

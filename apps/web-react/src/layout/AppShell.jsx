@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { Outlet, useLocation } from "react-router";
 import { NavBar } from "./NavBar.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
-import "@legacy/App.vue?react-style";
+import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
   "/",

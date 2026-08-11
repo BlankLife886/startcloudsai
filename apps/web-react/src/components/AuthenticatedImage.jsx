@@ -4,7 +4,7 @@ import {
   releaseAuthenticatedMediaUrl,
   resolveAuthenticatedMediaUrl,
 } from "@legacy/services/authenticatedMedia.js";
-import "@legacy/components/common/AuthenticatedImage.vue?react-style";
+import "@react/legacy-styles/generated/components/common/AuthenticatedImage.css";
 
 export function AuthenticatedImage({
   src = "",
