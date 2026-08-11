@@ -522,7 +522,8 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   background: var(--nt-surface);
   padding: 4px 0 8px;
-  overflow: hidden;
+  /* Clip rounded corners without turning the board into the sticky scroll container. */
+  overflow: clip;
 }
 
 .nt-list {

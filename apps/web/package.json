@@ -23,6 +23,8 @@
     "test:gallery-focus": "node scripts/test-gallery-focus.mjs",
     "test:region-geometry": "node scripts/test-region-geometry.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:visual": "playwright test --grep @visual --project visual-desktop --project visual-mobile",
+    "test:e2e:visual:update": "npm run test:e2e:visual -- --update-snapshots",
     "format": "prettier --write src/",
     "start": "npm run dev"
   },
@@ -35,7 +37,7 @@
     "animejs": "^4.5.0",
     "bootstrap": "^5.3.6",
     "bootstrap-icons": "^1.13.1",
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.13",
     "fflate": "^0.8.2",
     "gsap": "^3.15.0",
     "image-q": "^4.0.0",

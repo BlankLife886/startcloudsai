@@ -28,12 +28,12 @@ export async function listAssistantConversations({ signal } = {}) {
 
 export async function createAssistantConversation(
   title = '新对话',
-  { workspace = 'assistant' } = {},
+  { workspace = 'assistant', signal } = {},
 ) {
   return apiPost(
     '/assistant/conversations',
     { title, workspace },
-    { fallbackMessage: '新建对话失败' },
+    { signal, fallbackMessage: '新建对话失败' },
   )
 }
 
@@ -65,11 +65,11 @@ export async function createAssistantContextBoundary(conversationId) {
   )
 }
 
-export async function importAssistantConversations(conversations) {
+export async function importAssistantConversations(conversations, { signal } = {}) {
   return apiPost(
     '/assistant/conversation-imports',
     { conversations },
-    { fallbackMessage: '旧对话迁移失败' },
+    { signal, fallbackMessage: '旧对话迁移失败' },
   )
 }
 

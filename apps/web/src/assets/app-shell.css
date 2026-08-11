@@ -302,6 +302,20 @@ body:has(.main--profile-console) .site-header.is-dark.is-scrolled {
   min-height: 0;
 }
 
+@media (max-width: 820px) {
+  .main-content.main--profile-console {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .main-content.main--profile-console > .pp-page {
+    height: auto;
+    min-height: calc(100svh - var(--app-header-offset, 82px));
+  }
+}
+
 .main-content.main--ziwei-console {
   padding-top: 0;
   padding-bottom: 0;

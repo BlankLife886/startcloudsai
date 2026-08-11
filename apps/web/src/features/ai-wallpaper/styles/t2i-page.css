@@ -4530,8 +4530,22 @@ html.settings-no-animations .t2i-lightbox-image-layer {
 
   .t2i-sidebar {
     order: 2;
-    height: auto;
-    max-height: 46vh;
+    height: min(460px, 55dvh);
+    min-height: 360px;
+    max-height: none;
+  }
+
+  .t2i-side-scroll {
+    min-height: 150px;
+  }
+
+  .t2i-prompt-box {
+    flex: 0 0 240px;
+  }
+
+  .t2i-control-layers {
+    flex: 0 0 auto;
+    margin-top: 10px;
   }
 
   .t2i-main {

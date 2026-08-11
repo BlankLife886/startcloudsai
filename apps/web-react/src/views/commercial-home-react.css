@@ -1,0 +1,6 @@
+.commercial-home .swap-art-card__media.share-progressive-image img {
+  object-fit: cover;
+  object-position: center;
+  opacity: 0.82;
+  filter: saturate(1.02) contrast(1.04) brightness(0.92);
+}

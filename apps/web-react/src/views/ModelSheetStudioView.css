@@ -1,0 +1,66 @@
+.model-sheet-load-more {
+  width: calc(100% - 20px);
+  margin: 10px;
+}
+
+.ms3-select-pop .ratio-select__trigger {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: var(--line-2);
+  border-radius: 9px;
+  background: var(--field);
+  font-size: 11px;
+}
+
+.ms3-select-pop .ratio-select__trigger:hover {
+  border-color: #3f3f4c;
+}
+
+.ms3-select-pop.is-open .ratio-select__trigger,
+.ms3-select-pop .ratio-select__trigger:focus-visible {
+  border-color: rgba(255, 92, 26, 0.65);
+  background: var(--field);
+  box-shadow: none;
+}
+
+.ms3-ref-slot > .authenticated-image,
+.ms3-subject-card > .authenticated-image,
+.ms3-card-pick > .authenticated-image,
+.ms3-groupbar .authenticated-image {
+  width: 100%;
+  height: 100%;
+}
+
+.ms3-frame > .authenticated-image {
+  width: 100%;
+  height: 100%;
+}
+
+.ms3-frame.has-output > .authenticated-image.model-sheet-stage-output {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ms3-frame > .authenticated-image img,
+.ms3-card-pick .authenticated-image img,
+.ms3-ref-slot .authenticated-image img,
+.ms3-subject-card .authenticated-image img,
+.ms3-groupbar .authenticated-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ms3-frame > .authenticated-image img {
+  object-fit: contain;
+}
+
+@media (max-width: 900px) {
+  .app-container > .main-content.main--model-sheet {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+}

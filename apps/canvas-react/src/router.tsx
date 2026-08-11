@@ -25,13 +25,13 @@ function lazyPage(page: ReactNode) {
 
 const basename = import.meta.env.BASE_URL === "/" ? "/" : import.meta.env.BASE_URL.replace(/\/$/, "");
 
-export const router = createBrowserRouter(
-    [
+export function createCanvasRoutes(routeSync: ReactNode = <HostRouteSync />) {
+    return [
         {
             element: (
                 <UserLayout>
                     <AnalyticsTracker />
-                    <HostRouteSync />
+                    {routeSync}
                     <Outlet />
                 </UserLayout>
             ),
@@ -47,6 +47,7 @@ export const router = createBrowserRouter(
             ],
         },
         { path: "*", element: lazyPage(<NotFound />) },
-    ],
-    { basename },
-);
+    ];
+}
+
+export const router = createBrowserRouter(createCanvasRoutes(), { basename });

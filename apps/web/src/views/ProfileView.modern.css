@@ -769,21 +769,44 @@
 }
 
 @media (max-width: 820px) {
+  .pp-page {
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .pp-shell,
+  .pp-main,
+  .pp-soft-board {
+    height: auto;
+    overflow: visible;
+  }
+
+  .pp-soft-board {
+    grid-template-rows: auto auto auto;
+    gap: 14px;
+  }
+
+  .pp-soft-hero {
+    min-height: 620px;
+    overflow: hidden;
+  }
+
   .pp-soft-event {
     position: relative;
     top: auto;
     right: auto;
-    width: auto;
-    padding: 18px 18px 0;
+    z-index: 12;
+    width: 100%;
+    padding: 24px 20px 0;
   }
 
   .pp-soft-character {
-    position: relative;
-    left: auto;
-    bottom: auto;
-    width: min(54%, 250px, 36vh);
-    margin: 0 auto;
-    transform: none;
+    position: absolute;
+    left: 50%;
+    bottom: -2%;
+    width: min(62vw, 230px);
+    margin: 0;
+    transform: translateX(-50%);
   }
 
   .pp-soft-stripes {

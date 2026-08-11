@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+import { buildRegionEditInstruction } from '../../src/features/design-workshop/aiDesignDocument.js'
 
 const USER = {
   id: 'region-e2e-user',
@@ -20,6 +22,9 @@ const IMAGE_MODEL = {
 }
 
 const OUTPUT_URL = '/src/assets/pricing/wallet/icon-wallet.png'
+const OUTPUT_PATH = fileURLToPath(
+  new URL('../../src/assets/pricing/wallet/icon-wallet.png', import.meta.url),
+)
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(
@@ -93,17 +98,12 @@ test('region selection uses image-content coordinates and keeps controls usable'
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/design-workshop')
-  const editInstructions = await page.evaluate(async () => {
-    const { buildRegionEditInstruction } = await import(
-      '/src/features/design-workshop/aiDesignDocument.js'
-    )
-    const target = [{ id: 'icon', name: '搜索图标', type: 'icon', x: 10, y: 10, width: 20, height: 20 }]
-    return {
-      remove: buildRegionEditInstruction({ elements: target, action: 'remove' }),
-      icon: buildRegionEditInstruction({ elements: target, action: 'improve-icon' }),
-      background: buildRegionEditInstruction({ action: 'replace-background' }),
-    }
-  })
+  const target = [{ id: 'icon', name: '搜索图标', type: 'icon', x: 10, y: 10, width: 20, height: 20 }]
+  const editInstructions = {
+    remove: buildRegionEditInstruction({ elements: target, action: 'remove' }),
+    icon: buildRegionEditInstruction({ elements: target, action: 'improve-icon' }),
+    background: buildRegionEditInstruction({ action: 'replace-background' }),
+  }
   expect(editInstructions.remove).toContain('请移除')
   expect(editInstructions.remove).toContain('不得让相邻文字、图标、按钮或插画自动补位')
   expect(editInstructions.remove).toContain('所有框外像素视为锁定区')
@@ -272,6 +272,9 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
 })
 
 async function mockDesignWorkshopApis(page) {
+  await page.route('**/src/assets/pricing/wallet/icon-wallet.png', (route) =>
+    route.fulfill({ path: OUTPUT_PATH, contentType: 'image/png' }),
+  )
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname

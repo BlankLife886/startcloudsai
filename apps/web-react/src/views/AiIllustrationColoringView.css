@@ -1,0 +1,67 @@
+.coloring-react-model-price {
+  color: #fbbf24;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.coloring-studio-page .authenticated-image,
+.coloring-studio-page .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+}
+
+.coloring-studio-page .authenticated-image-media {
+  display: block;
+  object-fit: inherit;
+}
+
+.coloring-frame-matte .authenticated-image {
+  width: inherit;
+  height: inherit;
+  max-width: inherit;
+  max-height: inherit;
+}
+
+.coloring-frame-matte .authenticated-image-media {
+  object-fit: inherit;
+}
+
+.coloring-result-stage > .coloring-frame-body {
+  width: 100%;
+  height: 100%;
+}
+
+.ratio-select__menu .coloring-react-model-price {
+  justify-self: end;
+}
+
+.coloring-studio-page.is-light .ratio-select__chevron {
+  color: rgba(43, 45, 60, 0.52);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-drawer {
+  color: #24212c;
+  background: rgba(252, 251, 254, 0.98);
+  border-color: rgba(50, 43, 66, 0.12);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-head small,
+.coloring-library-backdrop.is-light .coloring-library-card small,
+.coloring-library-backdrop.is-light .coloring-library-list small,
+.coloring-library-backdrop.is-light .coloring-prompt-list small {
+  color: rgba(45, 41, 57, 0.58);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-head button,
+.coloring-library-backdrop.is-light .coloring-library-tabs button,
+.coloring-library-backdrop.is-light .coloring-library-card,
+.coloring-library-backdrop.is-light .coloring-library-list button,
+.coloring-library-backdrop.is-light .coloring-prompt-list button {
+  color: #2d2938;
+}
+
+@media (max-width: 960px) {
+  .coloring-studio-page {
+    overflow-y: auto;
+  }
+}

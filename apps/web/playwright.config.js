@@ -7,9 +7,16 @@ const WEB_PORT = readPort(WEB_BASE_URL, 3102)
 
 export default defineConfig({
   testDir: './tests/e2e',
+  snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{projectName}/{arg}{ext}',
   timeout: 30_000,
   expect: {
     timeout: 8_000,
+    toHaveScreenshot: {
+      animations: 'disabled',
+      caret: 'hide',
+      maxDiffPixelRatio: 0.002,
+      scale: 'css',
+    },
   },
   fullyParallel: true,
   retries: process.env.CI ? 1 : 0,
@@ -32,7 +39,24 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      grepInvert: /@visual/,
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'visual-desktop',
+      grep: /@visual/,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      name: 'visual-mobile',
+      grep: /@visual/,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 390, height: 844 },
+      },
     },
   ],
 })

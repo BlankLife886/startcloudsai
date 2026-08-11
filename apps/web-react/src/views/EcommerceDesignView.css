@@ -1,0 +1,229 @@
+.commerce-rail-react-group {
+  display: contents;
+}
+html.color-scheme-dark .commerce-studio {
+  --commerce-canvas: #0c0a12;
+  --commerce-accent: #8b7bff;
+}
+.commerce-settings .commerce-select-trigger {
+  height: 34px;
+  padding: 0 10px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border-color: transparent;
+  border-radius: 12px;
+  font-size: 11px;
+}
+.commerce-settings .commerce-select-trigger:hover:not(:disabled) {
+  background: var(--commerce-settings-surface);
+  border-color: color-mix(
+    in srgb,
+    var(--commerce-ink) 26%,
+    var(--commerce-settings-line)
+  );
+}
+.commerce-settings .commerce-select-trigger:focus-visible,
+.commerce-settings .commerce-select-trigger.is-open {
+  border-color: var(--commerce-accent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--commerce-accent) 14%, transparent);
+}
+.result-image-card .authenticated-image,
+.result-image-card .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.commerce-product-card__media .authenticated-image,
+.commerce-product-card__media .authenticated-image-media,
+.commerce-product-editor__asset-grid figure .authenticated-image,
+.commerce-product-editor__asset-grid figure .authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.commerce-react-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 56px;
+  background: rgb(7 7 12 / 94%);
+}
+.commerce-react-preview .authenticated-image {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+.commerce-react-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.commerce-react-preview__close {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 1;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #fff;
+  background: rgb(255 255 255 / 12%);
+  border: 0;
+  border-radius: 8px;
+}
+@media (max-width: 640px) {
+  .commerce-react-preview {
+    padding: 52px 12px 20px;
+  }
+}
+.ecommerce-mask-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(5 5 10 / 78%);
+  backdrop-filter: blur(10px);
+}
+.ecommerce-mask-editor {
+  display: grid;
+  width: min(980px, 100%);
+  max-height: calc(100vh - 40px);
+  grid-template-rows: auto minmax(240px, 1fr) auto auto;
+  overflow: hidden;
+  color: #f4f3f8;
+  background: #17171f;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 8px;
+  box-shadow: 0 28px 80px rgb(0 0 0 / 55%);
+}
+.ecommerce-mask-editor > header,
+.ecommerce-mask-editor > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.ecommerce-mask-editor > header {
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+}
+.ecommerce-mask-editor > header div {
+  display: grid;
+  gap: 2px;
+}
+.ecommerce-mask-editor > header small,
+.ecommerce-mask-editor > footer span {
+  color: #aaa8b5;
+  font-size: 11px;
+}
+.ecommerce-mask-editor > header button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: inherit;
+  background: rgb(255 255 255 / 8%);
+  border: 0;
+  border-radius: 7px;
+}
+.ecommerce-mask-stage {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: 14px;
+  overflow: hidden;
+  background: #0d0d12;
+}
+.ecommerce-mask-image {
+  position: relative;
+  display: grid;
+  max-width: 100%;
+  max-height: 100%;
+  place-items: center;
+}
+.ecommerce-mask-image img {
+  display: block;
+  max-width: 100%;
+  max-height: min(58vh, 680px);
+  object-fit: contain;
+}
+.ecommerce-mask-image canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  opacity: 0.44;
+  mix-blend-mode: screen;
+  touch-action: none;
+}
+.ecommerce-mask-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid rgb(255 255 255 / 9%);
+}
+.ecommerce-mask-controls label {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+}
+.ecommerce-mask-controls textarea {
+  min-height: 68px;
+  padding: 9px 10px;
+  color: inherit;
+  background: #23232c;
+  border: 1px solid #343440;
+  border-radius: 7px;
+  resize: vertical;
+  font: inherit;
+}
+.ecommerce-mask-controls button,
+.ecommerce-mask-editor > footer button {
+  align-self: end;
+  min-height: 36px;
+  padding: 0 12px;
+  color: inherit;
+  background: #292934;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ecommerce-mask-editor > footer button {
+  color: #fff;
+  background: var(--commerce-accent, #6d5cff);
+}
+.ecommerce-mask-editor button:disabled {
+  opacity: 0.45;
+}
+@media (max-width: 640px) {
+  .ecommerce-mask-backdrop {
+    padding: 8px;
+  }
+  .ecommerce-mask-editor {
+    max-height: calc(100vh - 16px);
+  }
+  .ecommerce-mask-controls {
+    grid-template-columns: 1fr;
+  }
+}
+#react-ecommerce-overlay-root .preview-btn {
+  pointer-events: auto !important;
+  transform: none !important;
+}
+
+#react-ecommerce-overlay-root .preview-btn > * {
+  pointer-events: none !important;
+}

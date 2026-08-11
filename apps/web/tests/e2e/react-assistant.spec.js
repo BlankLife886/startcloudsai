@@ -1,0 +1,846 @@
+import { expect, test } from '@playwright/test'
+import { fulfillJson, mockAuthConfig, mockBootstrapConfig } from './helpers/authMocks.js'
+
+const account = {
+  id: 'assistant-user',
+  email: 'assistant@example.com',
+  username: '助手测试用户',
+  role: 'user',
+  requireCostConfirm: false,
+}
+
+const assistantConfig = {
+  conversationModels: [
+    { model: 'chat-basic', label: 'Chat Basic', description: '日常对话', pricePoints: 3 },
+    { model: 'chat-pro', label: 'Chat Pro', description: '复杂创作', pricePoints: 5 },
+  ],
+  imageModels: [
+    {
+      model: 'image-basic',
+      label: 'Image Basic',
+      pricePoints: 12,
+      aspectRatios: ['auto', '1:1', '16:9'],
+      resolutions: ['1K', '2K'],
+      qualities: ['low', 'medium'],
+      maxReferenceImages: 4,
+    },
+    {
+      model: 'image-pro',
+      label: 'Image Pro',
+      pricePoints: 20,
+      aspectRatios: ['1:1', '16:9', '9:16'],
+      resolutions: ['1K', '2K', '4K'],
+      qualities: ['low', 'medium', 'high'],
+      maxReferenceImages: 4,
+    },
+  ],
+}
+
+function message(id, role, content, extra = {}) {
+  return {
+    id,
+    role,
+    content,
+    kind: role === 'assistant' ? 'chat' : 'chat',
+    status: 'complete',
+    pending: false,
+    createdAt: '2026-08-11T08:00:00Z',
+    updatedAt: '2026-08-11T08:00:05Z',
+    ...extra,
+  }
+}
+
+function succeededRun(body, content = '已完成你的创作请求。') {
+  return {
+    run: {
+      id: 'assistant-run-success',
+      conversationId: body.conversationId,
+      userMessageId: body.clientUserMessageId,
+      assistantMessageId: body.clientAssistantMessageId,
+      mode: body.mode,
+      resolvedMode: body.mode === 'agent' ? 'chat' : body.mode,
+      status: 'succeeded',
+      stage: 'complete',
+    },
+    userMessage: message(body.clientUserMessageId, 'user', body.userMessageContent),
+    assistantMessage: message(body.clientAssistantMessageId, 'assistant', content),
+  }
+}
+
+async function mockAssistant(page, { user = account, conversations = [], runs = [] } = {}) {
+  await page.route('**/api/**', (route) => fulfillJson(route, {}))
+  await mockBootstrapConfig(page)
+  await mockAuthConfig(page)
+  await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user }))
+  await page.route('**/api/v1/runtime-config', (route) =>
+    fulfillJson(route, { routes: {}, features: {}, pageLayout: {}, blacklist: { blocked: false } }),
+  )
+  await page.route('**/api/v1/assistant/config', (route) => fulfillJson(route, assistantConfig))
+  await page.route('**/api/v1/assistant/conversations**', (route) =>
+    fulfillJson(route, { conversations }),
+  )
+  await page.route('**/api/v1/assistant/runs**', (route) => fulfillJson(route, { runs }))
+}
+
+test.describe('React assistant workspace contract', () => {
+  test.describe.configure({ mode: 'serial' })
+  test('new conversation remains a draft until the first send', async ({ page }) => {
+    let createCount = 0
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', async (route) => {
+      if (route.request().method() === 'POST') createCount += 1
+      await fulfillJson(route, { conversations: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: '新对话' }).click()
+    await expect(page.getByText('暂无记录')).toBeVisible()
+    expect(createCount).toBe(0)
+  })
+
+  test('first send creates a conversation and uses the assistant run contract', async ({ page }) => {
+    let conversationBody = null
+    let runBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', async (route) => {
+      if (route.request().method() === 'POST') {
+        conversationBody = route.request().postDataJSON()
+        await fulfillJson(route, {
+          id: 'conversation-new',
+          title: '新对话',
+          messages: [],
+          createdAt: '2026-08-11T08:00:00Z',
+          updatedAt: '2026-08-11T08:00:00Z',
+        }, 201)
+        return
+      }
+      await fulfillJson(route, { conversations: [] })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() === 'POST') {
+        runBody = route.request().postDataJSON()
+        await fulfillJson(route, succeededRun(runBody), 201)
+        return
+      }
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('请帮我设计一个简洁的品牌图标')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    expect(conversationBody).toEqual({ title: '新对话', workspace: 'assistant' })
+    expect(runBody).toMatchObject({
+      conversationId: 'conversation-new',
+      prompt: '请帮我设计一个简洁的品牌图标',
+      userMessageContent: '请帮我设计一个简洁的品牌图标',
+      mode: 'agent',
+      referenceImages: [],
+      model: 'chat-basic',
+      ratio: 'auto',
+      resolution: '1K',
+      count: 2,
+      requestSize: 'auto',
+      width: 1024,
+      height: 1024,
+      quality: 'low',
+      serviceKey: 'assistant_image',
+    })
+    expect(runBody.clientUserMessageId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(runBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  test('agent confirmation reserves the maximum chat or image cost and saves the preference', async ({ page }) => {
+    let profileBody = null
+    await mockAssistant(page, { user: { ...account, requireCostConfirm: true } })
+    await page.route('**/api/v1/me/wallet', (route) =>
+      fulfillJson(route, { availableCents: 100, balanceCents: 100 }),
+    )
+    await page.route('**/api/v1/me/profile', async (route) => {
+      if (route.request().method() === 'PATCH') profileBody = route.request().postDataJSON()
+      await fulfillJson(route, { user: { ...account, requireCostConfirm: false } })
+    })
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'cost-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      const body = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(body), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('生成两张主视觉')
+    await page.getByRole('button', { name: '发送' }).click()
+    const dialog = page.getByRole('dialog', { name: '确认生成费用' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.locator('.ai-cost-confirm-total')).toContainText('24 积分')
+    await dialog.getByText('不再每次确认').click()
+    await dialog.getByRole('button', { name: '确认', exact: true }).click()
+
+    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    expect(profileBody).toEqual({ requireCostConfirm: false })
+  })
+
+  test('image mode sends selected model capabilities, dimensions, count, and uploaded keys', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/uploads', (route) =>
+      fulfillJson(route, {
+        key: 'uploads/assistant/reference.png',
+        url: '/api/v1/files/uploads/assistant/reference.png',
+        thumbnailUrl: '/sucai/home-intro-03.png',
+      }),
+    )
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'image-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: /Agent 模式/ }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: /图片生成/ }).click()
+    await page.getByRole('button', { name: /Image Basic/ }).click()
+    await page.locator('.image-model-menu').getByRole('button', { name: /Image Pro/ }).click()
+    await page.locator('.image-settings-button').click()
+    await page.locator('.ratio-options').getByRole('button', { name: '16:9' }).click()
+    await page.locator('.image-resolution-options').getByRole('button', { name: /高清 2K/ }).click()
+    await page.locator('.image-count-options').getByRole('button', { name: '3', exact: true }).click()
+    await page.locator('input.reference-file-input').setInputFiles({
+      name: 'reference.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('reference-image'),
+    })
+    await expect(page.locator('.reference-card')).toHaveCount(1)
+    await expect(page.getByRole('button', { name: '继续添加参考图' })).toBeVisible()
+    await page.getByLabel('消息输入').fill('生成横版品牌主视觉')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+
+    expect(runBody).toMatchObject({
+      mode: 'image',
+      model: 'image-pro',
+      ratio: '16:9',
+      resolution: '2K',
+      count: 3,
+      requestSize: '2048x1152',
+      width: 2048,
+      height: 1152,
+      quality: 'medium',
+      referenceImages: [
+        {
+          name: 'reference.png',
+          dataUrl: '/api/v1/files/uploads/assistant/reference.png',
+          thumbnailUrl: '/sucai/home-intro-03.png',
+          fileKey: 'uploads/assistant/reference.png',
+        },
+      ],
+    })
+  })
+
+  test('selects and deletes an existing conversation', async ({ page }) => {
+    const deleted = []
+    const conversations = [
+      { id: 'conversation-one', title: '第一个对话', messages: [message('u1', 'user', '第一条内容')], updatedAt: '2026-08-11T08:00:00Z' },
+      { id: 'conversation-two', title: '第二个对话', messages: [message('u2', 'user', '第二条内容')], updatedAt: '2026-08-10T08:00:00Z' },
+    ]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/conversations/**', async (route) => {
+      if (route.request().method() === 'DELETE') deleted.push(route.request().url())
+      await fulfillJson(route, {})
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: /第二个对话/ }).click()
+    await expect(page.locator('.message--user')).toContainText('第二条内容')
+    await page.locator('[data-conversation-id="conversation-two"] .conversation-delete').click()
+    await page.getByRole('dialog', { name: '删除这个对话？' }).getByRole('button', { name: '删除', exact: true }).click()
+
+    await expect(page.locator('[data-conversation-id="conversation-two"]')).toHaveCount(0)
+    expect(deleted).toEqual([expect.stringMatching(/\/assistant\/conversations\/conversation-two$/)])
+  })
+
+  test('stops an active run and settles the pending message', async ({ page }) => {
+    let patchBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'running-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs**', async (route) => {
+      const method = route.request().method()
+      const url = new URL(route.request().url())
+      if (method === 'POST') {
+        const body = route.request().postDataJSON()
+        await fulfillJson(route, {
+          run: { id: 'run-active', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: 'agent' },
+          assistantMessage: message(body.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
+        }, 201)
+        return
+      }
+      if (method === 'PATCH') {
+        patchBody = route.request().postDataJSON()
+        await fulfillJson(route, { run: { id: 'run-active', status: 'canceled' }, canceled: true })
+        return
+      }
+      if (url.pathname.endsWith('/run-active')) {
+        await fulfillJson(route, {
+          run: { id: 'run-active', conversationId: 'running-conversation', status: 'running', stage: 'thinking', mode: 'agent' },
+          assistantMessage: { status: 'running', pending: true, content: '' },
+        })
+        return
+      }
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('执行一个长任务')
+    await page.getByRole('button', { name: '发送' }).click()
+    await page.getByRole('button', { name: '停止生成' }).click()
+
+    await expect(page.locator('.message--assistant')).toContainText('已停止生成')
+    expect(patchBody).toEqual({ status: 'canceled' })
+  })
+
+  test('restores a running task after refresh', async ({ page }) => {
+    const conversations = [{
+      id: 'resume-conversation',
+      title: '恢复中的对话',
+      updatedAt: '2026-08-11T08:00:00Z',
+      messages: [
+        message('resume-user', 'user', '继续之前的任务'),
+        message('resume-assistant', 'assistant', '', { status: 'running', pending: true, statusStage: 'thinking' }),
+      ],
+    }]
+    const runs = [{ id: 'resume-run', conversationId: 'resume-conversation', assistantMessageId: 'resume-assistant', status: 'running', stage: 'thinking', mode: 'agent' }]
+    await mockAssistant(page, { conversations, runs })
+    await page.route('**/api/v1/assistant/runs/resume-run', (route) =>
+      fulfillJson(route, {
+        run: { ...runs[0], status: 'succeeded', stage: 'complete', resolvedMode: 'chat' },
+        assistantMessage: message('resume-assistant', 'assistant', '任务刷新后已恢复完成。'),
+      }),
+    )
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message--assistant')).toContainText('任务刷新后已恢复完成。')
+    await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  })
+
+  test('generated images open in the full preview viewer', async ({ page }) => {
+    const conversations = [{
+      id: 'preview-conversation',
+      title: '图片预览对话',
+      updatedAt: '2026-08-11T08:00:00Z',
+      messages: [
+        message('preview-user', 'user', '生成两张预览图'),
+        message('preview-assistant', 'assistant', '', {
+          kind: 'image',
+          images: [
+            { id: 'preview-one', dataUrl: '/sucai/home-intro-02.png', revisedPrompt: '预览图一' },
+            { id: 'preview-two', dataUrl: '/sucai/home-intro-03.png', revisedPrompt: '预览图二' },
+          ],
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.locator('.generated-image-preview').first().click()
+    const viewer = page.getByRole('dialog', { name: '生成图片全屏预览' })
+    await expect(viewer).toBeVisible()
+    await expect(viewer).toContainText('1 / 2')
+    await viewer.getByRole('button', { name: '下一张' }).click()
+    await expect(viewer).toContainText('2 / 2')
+    await viewer.getByRole('button', { name: '放大图片' }).click()
+    await expect(viewer.locator('output')).toHaveText('125%')
+    await viewer.getByRole('button', { name: '关闭预览' }).click()
+    await expect(viewer).toHaveCount(0)
+  })
+
+  test('studio pending prompt starts a new conversation with saved launch settings', async ({ page }) => {
+    let runBody = null
+    await page.addInitScript(() => {
+      localStorage.setItem('starclouds:pending-prompt', JSON.stringify({
+        version: 2,
+        taskType: 'assistant',
+        prompt: '从创作台启动的任务',
+        at: Date.now(),
+        config: {
+          autoStart: true,
+          costConfirmed: true,
+          model: 'chat-pro',
+          count: 3,
+          referenceImages: [{ id: 'studio-reference', name: '商品参考图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/studio-reference.png' }],
+        },
+      }))
+    })
+    await mockAssistant(page, {
+      conversations: [{ id: 'old-conversation', title: '旧对话', messages: [message('old-user', 'user', '旧内容')] }],
+    })
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'studio-new-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    expect(runBody).toMatchObject({
+      conversationId: 'studio-new-conversation',
+      prompt: '从创作台启动的任务',
+      model: 'chat-pro',
+      count: 3,
+      referenceImages: [{ name: '商品参考图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/studio-reference.png' }],
+    })
+    expect(await page.evaluate(() => localStorage.getItem('starclouds:pending-prompt'))).toBeNull()
+  })
+
+  test('pending assistant requests do not block client-side navigation', async ({ page }) => {
+    let markStarted
+    const started = new Promise((resolve) => { markStarted = resolve })
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/config', async (route) => {
+      markStarted()
+      await new Promise((resolve) => setTimeout(resolve, 20_000))
+      await fulfillJson(route, assistantConfig).catch(() => null)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await started
+
+    const startedAt = Date.now()
+    await page.locator('a[href="/"]:visible').first().click()
+    await expect(page).toHaveURL(/\/$/, { timeout: 700 })
+    expect(Date.now() - startedAt).toBeLessThan(700)
+    await expect(page.locator('.commercial-home')).toBeVisible()
+  })
+
+  test('quotes an assistant reply and sends the exact quote payload', async ({ page }) => {
+    let runBody = null
+    const conversations = [{
+      id: 'quote-conversation',
+      title: '引用测试',
+      messages: [
+        message('quote-user', 'user', '原始问题'),
+        message('quote-assistant', 'assistant', '这是一段可引用的回答'),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: '引用', exact: true }).click()
+    await expect(page.locator('.composer-quote')).toContainText('[回复] 这是一段可引用的回答')
+    await page.getByLabel('消息输入').fill('继续解释')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    expect(runBody.quoted).toEqual({
+      id: 'quote-assistant',
+      kind: '回复',
+      content: '这是一段可引用的回答',
+    })
+    await expect(page.locator('.sent-quote').last()).toContainText('这是一段可引用的回答')
+  })
+
+  test('edits and withdraws the latest user turn through the server contract', async ({ page }) => {
+    const runBodies = []
+    const deletes = []
+    const conversations = [{
+      id: 'edit-conversation',
+      title: '编辑测试',
+      messages: [
+        message('edit-user', 'user', '旧问题'),
+        message('edit-assistant', 'assistant', '旧回答', { model: 'chat-basic', requestedMode: 'chat' }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      const body = route.request().postDataJSON()
+      runBodies.push(body)
+      await fulfillJson(route, succeededRun(body, '编辑后回答'), 201)
+    })
+    await page.route('**/api/v1/assistant/messages/**', async (route) => {
+      if (route.request().method() === 'DELETE') deletes.push(route.request().url())
+      await fulfillJson(route, {})
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.locator('.message--user').hover()
+    await page.getByRole('button', { name: '编辑问题' }).click()
+    await page.getByLabel('编辑问题').fill('修改后的问题')
+    await page.locator('.user-message-editor').getByRole('button', { name: '发送' }).click()
+    await expect(page.locator('.message--assistant')).toContainText('编辑后回答')
+    expect(runBodies[0]).toMatchObject({
+      prompt: '修改后的问题',
+      userMessageContent: '修改后的问题',
+      sourceUserMessageId: 'edit-user',
+      clientUserMessageId: 'edit-user',
+    })
+
+    await page.locator('.message--user').hover()
+    await page.getByRole('button', { name: '撤回本轮' }).click()
+    await expect(page.locator('.message-turn')).toHaveCount(0)
+    expect(deletes).toEqual([expect.stringMatching(/\/assistant\/messages\/edit-user\?scope=turn$/)])
+  })
+
+  test('regenerates the latest reply and exposes functional more actions', async ({ page }) => {
+    let retryBody = null
+    let deletedUrl = ''
+    const conversations = [{
+      id: 'actions-conversation',
+      title: '操作测试',
+      messages: [
+        message('actions-user', 'user', '再回答一次'),
+        message('actions-assistant', 'assistant', '第一版回答', { model: 'chat-pro', requestedMode: 'chat' }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      retryBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(retryBody, '重新生成的回答'), 201)
+    })
+    await page.route('**/api/v1/assistant/messages/actions-assistant', async (route) => {
+      deletedUrl = route.request().url()
+      await fulfillJson(route, {})
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: '重新生成' }).click()
+    await expect(page.locator('.message--assistant')).toContainText('重新生成的回答')
+    expect(retryBody).toMatchObject({ sourceUserMessageId: 'actions-user', clientAssistantMessageId: 'actions-assistant' })
+
+    await page.getByRole('button', { name: '更多操作' }).click()
+    await expect(page.locator('.message-more-menu')).toBeVisible()
+    await expect(page.locator('.message-more-menu')).toContainText('下载 Markdown')
+    await page.locator('.message-more-menu').getByRole('button', { name: '删除' }).click()
+    await expect(page.locator('.message--assistant')).toHaveCount(0)
+    expect(deletedUrl).toMatch(/\/assistant\/messages\/actions-assistant$/)
+  })
+
+  test('renders and executes an editable agent image proposal', async ({ page }) => {
+    let runBody = null
+    const proposal = {
+      action: 'generate',
+      prompt: '一张极简品牌主视觉',
+      reason: '根据品牌信息生成主视觉。',
+      planningSummary: '已整理图片生成方案。',
+      model: 'image-pro',
+      ratio: '16:9',
+      resolution: '2K',
+      count: 2,
+      quality: 'medium',
+      referenceImages: [{ id: 'proposal-ref', name: '参考图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/proposal-ref.png' }],
+    }
+    const conversations = [{
+      id: 'proposal-conversation',
+      title: '方案测试',
+      messages: [
+        message('proposal-user', 'user', '帮我生成品牌主视觉'),
+        message('proposal-assistant', 'assistant', '已整理方案', { kind: 'proposal', proposal }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.agent-proposal')).toContainText('图片生成方案')
+    await page.locator('.agent-proposal-prompt textarea').fill('修改后的横版品牌主视觉')
+    await page.locator('.agent-proposal-params label').filter({ hasText: '生成数量' }).locator('select').selectOption('3')
+    await page.getByRole('button', { name: '开始生成' }).click()
+    await expect(page.locator('.message--user').last()).toContainText('执行这个创作方案')
+    expect(runBody).toMatchObject({
+      mode: 'image',
+      prompt: '修改后的横版品牌主视觉',
+      proposalSourceMessageId: 'proposal-assistant',
+      model: 'image-pro',
+      ratio: '16:9',
+      resolution: '2K',
+      count: 3,
+      requestSize: '2048x1152',
+      width: 2048,
+      height: 1152,
+    })
+  })
+
+  test('shows image failure recovery instead of an endless loading tile', async ({ page }) => {
+    let imageRequests = 0
+    const conversations = [{
+      id: 'broken-image-conversation',
+      title: '坏图测试',
+      messages: [
+        message('broken-user', 'user', '生成图片'),
+        message('broken-assistant', 'assistant', '', { kind: 'image', images: [{ dataUrl: '/broken-assistant-image.png' }] }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/broken-assistant-image.png**', async (route) => {
+      imageRequests += 1
+      await route.fulfill({ status: 500, body: '' })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.getByText('图片加载失败')).toBeVisible()
+    await page.getByRole('button', { name: '重新加载' }).click()
+    await expect.poll(() => imageRequests).toBeGreaterThan(1)
+  })
+
+  test('keeps long-thread scrolling, collapsed sidebar preview, assets, and context clearing usable', async ({ page }) => {
+    const messages = []
+    for (let index = 0; index < 36; index += 1) {
+      messages.push(message(`long-user-${index}`, 'user', `第 ${index + 1} 个问题`, { createdAt: `2026-08-11T08:${String(index).padStart(2, '0')}:00Z` }))
+      messages.push(message(`long-assistant-${index}`, 'assistant', `第 ${index + 1} 个回答`, {
+        images: index === 35 ? [{ dataUrl: '/sucai/home-intro-03.png', name: '会话资产' }] : [],
+      }))
+    }
+    const conversations = [{ id: 'long-conversation', title: '长对话', messages }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/conversations/long-conversation/context-boundaries', (route) =>
+      fulfillJson(route, message('context-boundary', 'system', '', { kind: 'context-divider' }), 201),
+    )
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message--assistant')).toHaveCount(12)
+    await page.locator('.assistant-messages').evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
+    await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
+    await page.getByRole('button', { name: '回到底部' }).click()
+    await expect(page.getByRole('button', { name: '回到底部' })).toHaveCount(0)
+    await expect(page.locator('.conversation-minimap')).toBeVisible()
+
+    await page.getByRole('button', { name: '收起侧栏' }).click()
+    await page.locator('[data-conversation-id="long-conversation"] .conversation-select').hover()
+    await expect(page.locator('.assistant-conversation-peek')).toContainText('长对话')
+
+    await page.getByRole('button', { name: '资产库' }).click()
+    await page.locator('.asset-image-grid button').first().click()
+    await expect(page.locator('.reference-card')).toHaveCount(1)
+    await page.getByRole('button', { name: '清除上文并保留可见历史' }).click()
+    await expect(page.getByText('已从这里开始新的上下文')).toBeVisible()
+  })
+
+  test('keeps runs isolated when two conversations generate concurrently', async ({ page }) => {
+    const postBodies = []
+    const conversations = [
+      { id: 'parallel-one', title: '并发对话一', messages: [message('parallel-one-old', 'user', '对话一旧消息')] },
+      { id: 'parallel-two', title: '并发对话二', messages: [message('parallel-two-old', 'user', '对话二旧消息')] },
+    ]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs**', async (route) => {
+      const method = route.request().method()
+      const url = new URL(route.request().url())
+      if (method === 'POST' && url.pathname.endsWith('/assistant/runs')) {
+        const body = route.request().postDataJSON()
+        postBodies.push(body)
+        await fulfillJson(route, {
+          run: { id: `run-${body.conversationId}`, conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: body.mode },
+          assistantMessage: message(body.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
+        }, 201)
+        return
+      }
+      if (method === 'GET' && /\/assistant\/runs\/run-/.test(url.pathname)) {
+        const conversationId = url.pathname.endsWith('parallel-one') ? 'parallel-one' : 'parallel-two'
+        const body = postBodies.find((item) => item.conversationId === conversationId)
+        await fulfillJson(route, {
+          run: { id: `run-${conversationId}`, conversationId, assistantMessageId: body?.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: 'agent' },
+          assistantMessage: message(body?.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
+        })
+        return
+      }
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('对话一的新任务')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+    await page.locator('[data-conversation-id="parallel-two"] .conversation-select').click()
+    await page.getByLabel('消息输入').fill('对话二的新任务')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    await expect.poll(() => postBodies.length).toBe(2)
+    await expect(page.locator('.conversation-run-indicator')).toHaveCount(2)
+    expect(postBodies.map((item) => item.conversationId).sort()).toEqual(['parallel-one', 'parallel-two'])
+  })
+
+  test('renders SSE text immediately and then settles to the authoritative result', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.EventSource = class FakeEventSource {
+        constructor() {
+          window.setTimeout(() => this.onmessage?.({ data: JSON.stringify({ content: 'SSE 增量回答', kind: 'chat', stage: 'answering' }) }), 120)
+        }
+        close() {}
+      }
+    })
+    let polls = 0
+    let sseAssistantId = ''
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'sse-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs**', async (route) => {
+      const method = route.request().method()
+      const url = new URL(route.request().url())
+      if (method === 'POST' && url.pathname.endsWith('/assistant/runs')) {
+        const body = route.request().postDataJSON()
+        sseAssistantId = body.clientAssistantMessageId
+        await fulfillJson(route, {
+          run: { id: 'sse-run', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: 'agent' },
+          assistantMessage: message(body.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
+        }, 201)
+        return
+      }
+      if (method === 'GET' && url.pathname.endsWith('/sse-run')) {
+        polls += 1
+        const terminal = polls > 1
+        await fulfillJson(route, {
+          run: { id: 'sse-run', conversationId: 'sse-conversation', assistantMessageId: sseAssistantId, status: terminal ? 'succeeded' : 'running', stage: terminal ? 'complete' : 'answering', resolvedMode: 'chat' },
+          assistantMessage: message(sseAssistantId, 'assistant', terminal ? '服务端最终回答' : '', { status: terminal ? 'complete' : 'running', pending: !terminal }),
+        })
+        return
+      }
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('测试流式回答')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    await expect(page.locator('.message--assistant')).toContainText('SSE 增量回答')
+    await expect(page.locator('.message--assistant')).toContainText('服务端最终回答')
+    await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  })
+
+  test('provides model search when the configured model list is long', async ({ page }) => {
+    const models = Array.from({ length: 8 }, (_, index) => ({ model: `chat-${index + 1}`, label: `Chat Model ${index + 1}`, description: `模型 ${index + 1}`, pricePoints: index + 1 }))
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/config', (route) => fulfillJson(route, { ...assistantConfig, conversationModels: models }))
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: /Chat Model 1/ }).click()
+    await page.getByPlaceholder('搜索模型名称').fill('Model 8')
+    await expect(page.locator('.model-menu-options > button')).toHaveCount(1)
+    await expect(page.locator('.model-menu-options')).toContainText('Chat Model 8')
+  })
+
+  test('restores and persists the scoped composer workspace state', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('starclouds-assistant-workspace:user:assistant-user', JSON.stringify({
+        activeId: '',
+        draft: '恢复的图片草稿',
+        creationType: 'image',
+        generationRatio: '16:9',
+        generationModel: 'image-pro',
+        generationResolution: '2K',
+        generationCount: 3,
+        customImageWidth: 2048,
+        customImageHeight: 1152,
+      }))
+    })
+    await mockAssistant(page)
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.getByLabel('消息输入')).toHaveValue('恢复的图片草稿')
+    await expect(page.getByRole('button', { name: /图片生成/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Image Pro/ })).toBeVisible()
+    await expect(page.locator('.image-settings-button')).toContainText('16:9 | 2K | 3')
+
+    await page.getByLabel('消息输入').fill('新的持久化草稿')
+    await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem('starclouds-assistant-workspace:user:assistant-user') || '{}').draft)).toBe('新的持久化草稿')
+  })
+
+  test('infers the recent visual context and image count from the prompt', async ({ page }) => {
+    let runBody = null
+    const recentImage = { id: 'recent-image', name: '最近生成图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'tasks/recent-image.png' }
+    const conversations = [{
+      id: 'visual-context-conversation',
+      title: '视觉上下文',
+      messages: [
+        message('visual-old-user', 'user', '生成一张商品图'),
+        message('visual-old-assistant', 'assistant', '', { kind: 'image', images: [recentImage] }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('把这张图的背景改成白色，生成3张')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect(page.locator('.message--assistant').last()).toContainText('已完成你的创作请求。')
+    expect(runBody.count).toBe(3)
+    expect(runBody.referenceImages).toEqual([{
+      name: '最近生成图',
+      dataUrl: '/sucai/home-intro-03.png',
+      fileKey: 'tasks/recent-image.png',
+    }])
+  })
+
+  test('migrates legacy local conversations into cloud history once', async ({ page }) => {
+    let imported = null
+    let didImport = false
+    const legacyConversation = {
+      id: 'legacy-conversation',
+      title: '旧本地对话',
+      messages: [message('legacy-user', 'user', '需要迁移的旧内容')],
+    }
+    await page.addInitScript((conversation) => {
+      localStorage.setItem('starclouds-assistant:user:assistant-user', JSON.stringify([conversation]))
+    }, legacyConversation)
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', async (route) => {
+      await fulfillJson(route, { conversations: didImport ? [legacyConversation] : [] })
+    })
+    await page.route('**/api/v1/assistant/conversation-imports', async (route) => {
+      imported = route.request().postDataJSON()
+      didImport = true
+      await fulfillJson(route, { imported: 1 }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message--user')).toContainText('需要迁移的旧内容')
+    await expect.poll(() => imported).not.toBeNull()
+    expect(imported).toMatchObject({ conversations: [legacyConversation] })
+    expect(await page.evaluate(() => localStorage.getItem('starclouds-assistant:user:assistant-user'))).toBeNull()
+  })
+})

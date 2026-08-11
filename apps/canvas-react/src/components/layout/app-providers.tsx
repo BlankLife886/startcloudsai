@@ -18,7 +18,7 @@ const queryClient = new QueryClient({
     },
 });
 
-export function AppProviders({ children }: { children: ReactNode }) {
+export function AppProviders({ children, popupContainer }: { children: ReactNode; popupContainer?: HTMLElement | null }) {
     const theme = useThemeStore((state) => state.theme);
     const dark = theme === "dark";
 
@@ -28,7 +28,12 @@ export function AppProviders({ children }: { children: ReactNode }) {
     }, [dark, theme]);
 
     return (
-        <ConfigProvider locale={zhCN} theme={getAntThemeConfig(dark)}>
+        <ConfigProvider
+            locale={zhCN}
+            theme={getAntThemeConfig(dark)}
+            getPopupContainer={popupContainer ? () => popupContainer : undefined}
+            getTargetContainer={popupContainer ? () => popupContainer : undefined}
+        >
             <App>
                 <QueryClientProvider client={queryClient}>
                     <ClientRootInit>{children}</ClientRootInit>
