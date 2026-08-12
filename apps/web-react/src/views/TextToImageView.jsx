@@ -36,9 +36,18 @@ import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.j
 import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
 import { registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import {
+  listPromptCategories,
+  listPromptLibrary,
+  recordPromptEngagement,
+} from "@react/legacy-modules/services/promptLibrary.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/aiWallpaperState.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import {
+  getScopedLocalItem,
+  setScopedLocalItem,
+} from "@react/legacy-modules/services/scopedLocalStorage.js";
 import "@react/legacy-static/features/ai-wallpaper/styles/t2i-page.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
@@ -55,6 +64,44 @@ gsap.registerPlugin(useGSAP);
 
 const DRAFT_KEY = AI_WALLPAPER_STUDIO_DRAFT_KEY;
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
+const PROMPT_CATEGORY_STORAGE_KEY = "ai-wallpaper-prompt-category-v1";
+const PROMPT_CATEGORY_PRIMARY = [
+  ["today", "24小时最新"],
+  ["my-favorites", "我的收藏"],
+  ["all", "全部"],
+];
+const PROMPT_SCOPE_CATEGORIES = new Set(PROMPT_CATEGORY_PRIMARY.map(([value]) => value));
+
+function readStoredPromptCategory() {
+  return String(getScopedLocalItem(PROMPT_CATEGORY_STORAGE_KEY) || "").trim();
+}
+
+function initialPromptCategory() {
+  const stored = readStoredPromptCategory();
+  if (stored === "latest") return "today";
+  return PROMPT_SCOPE_CATEGORIES.has(stored) ? stored : "all";
+}
+
+function promptAspectScore(aspect) {
+  const [width, height] = String(aspect || "").split("/").map((part) => Number(part.trim()));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1;
+  return 1 / Math.max(0.35, Math.min(width / height, 3.2));
+}
+
+function buildBalancedPromptColumns(items, columnCount) {
+  const count = Math.max(1, Number(columnCount) || 1);
+  const columns = Array.from({ length: count }, () => []);
+  const heights = Array.from({ length: count }, () => 0);
+  items.forEach((item) => {
+    let target = 0;
+    for (let index = 1; index < heights.length; index += 1) {
+      if (heights[index] < heights[target]) target = index;
+    }
+    columns[target].push(item);
+    heights[target] += promptAspectScore(item.aspect);
+  });
+  return columns;
+}
 
 function storedRuntimeConfig() {
   try {
@@ -455,12 +502,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const skillTriggerRef = useRef(null);
   const skillPanelRef = useRef(null);
   const promptInputRef = useRef(null);
+  const promptViewportRef = useRef(null);
+  const promptMoreRef = useRef(null);
+  const promptSentinelRef = useRef(null);
   const lightboxFrameRef = useRef(null);
   const lightboxPanStartRef = useRef(null);
   const lightboxComparePointerRef = useRef(null);
   const isDark = useIsDark();
   const fileInputRef = useRef(null);
   const pendingRef = useRef(null);
+  const promptLibraryRequestRef = useRef(0);
+  const storedPromptCategoryRef = useRef(readStoredPromptCategory());
   const draft = useMemo(storedDraft, []);
   const [runtime, setRuntime] = useState(storedRuntimeConfig);
   const [loading, setLoading] = useState(true);
@@ -489,7 +541,19 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [skillOpen, setSkillOpen] = useState(false);
   const [skillPanelStyle, setSkillPanelStyle] = useState({});
   const [mainTab, setMainTab] = useState("images");
-  const [promptCategory, setPromptCategory] = useState("all");
+  const [promptCategory, setPromptCategory] = useState(initialPromptCategory);
+  const [promptItems, setPromptItems] = useState([]);
+  const [promptCategories, setPromptCategories] = useState([]);
+  const [promptCategoriesLoaded, setPromptCategoriesLoaded] = useState(false);
+  const [promptLibraryLoading, setPromptLibraryLoading] = useState(false);
+  const [promptLibraryLoadingMore, setPromptLibraryLoadingMore] = useState(false);
+  const [promptPage, setPromptPage] = useState(1);
+  const [promptHasMore, setPromptHasMore] = useState(false);
+  const [promptTotal, setPromptTotal] = useState(0);
+  const [promptSort, setPromptSort] = useState("recommended");
+  const [promptCategoryMoreOpen, setPromptCategoryMoreOpen] = useState(false);
+  const [promptViewportWidth, setPromptViewportWidth] = useState(() => window.innerWidth);
+  const [promptMeasuredAspects, setPromptMeasuredAspects] = useState({});
   const [activeTaskId, setActiveTaskId] = useState("");
   const [featuredImageAspects, setFeaturedImageAspects] = useState({});
   const [cost, setCost] = useState(null);
@@ -512,6 +576,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     190,
     openLayer || "frame",
   );
+  const promptMorePresence = usePopoverPresence(promptCategoryMoreOpen, 150, "prompt-more");
   const models = useMemo(() => featureModels(runtime), [runtime]);
   const feature = useMemo(() => wallpaperFeature(runtime), [runtime]);
   const backgroundRemovalModels = useMemo(() => {
@@ -775,6 +840,108 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, []);
 
   useEffect(() => {
+    if (mainTab !== "prompts" || promptCategoriesLoaded) return undefined;
+    let disposed = false;
+    listPromptCategories({ type: "t2i" })
+      .then((items) => {
+        if (disposed) return;
+        const categories = Array.isArray(items) ? items : [];
+        setPromptCategories(categories);
+        setPromptCategoriesLoaded(true);
+        const validKeys = new Set([
+          ...PROMPT_SCOPE_CATEGORIES,
+          ...categories.map((item) => String(item?.key || item?.id || "").trim()).filter(Boolean),
+        ]);
+        const preferred = storedPromptCategoryRef.current === "latest"
+          ? "today"
+          : storedPromptCategoryRef.current;
+        setPromptCategory(validKeys.has(preferred) ? preferred : "all");
+      })
+      .catch(() => {
+        if (!disposed) {
+          setPromptCategories([]);
+          setPromptCategoriesLoaded(true);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [mainTab, promptCategoriesLoaded]);
+
+  useEffect(() => {
+    setScopedLocalItem(PROMPT_CATEGORY_STORAGE_KEY, promptCategory);
+  }, [promptCategory]);
+
+  useEffect(() => {
+    if (!promptCategoryMoreOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!promptMoreRef.current?.contains(event.target)) setPromptCategoryMoreOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setPromptCategoryMoreOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [promptCategoryMoreOpen]);
+
+  useEffect(() => {
+    if (mainTab !== "prompts") return undefined;
+    const viewport = promptViewportRef.current;
+    if (!viewport) return undefined;
+    const updateWidth = () => setPromptViewportWidth(viewport.clientWidth || window.innerWidth);
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateWidth, { passive: true });
+      return () => window.removeEventListener("resize", updateWidth);
+    }
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [mainTab]);
+
+  useEffect(() => {
+    if (mainTab !== "prompts") return;
+    const requestId = ++promptLibraryRequestRef.current;
+    const scopedCategory = ["today", "my-favorites"].includes(promptCategory)
+      ? "all"
+      : promptCategory;
+    const scope = promptCategory === "my-favorites" ? "favorites" : promptCategory === "today" ? "today" : "";
+    setPromptLibraryLoading(true);
+    setPromptLibraryLoadingMore(false);
+    listPromptLibrary("t2i", {
+      pageNumber: 1,
+      pageSize: 24,
+      category: scopedCategory,
+      scope,
+      sort: promptCategory === "today" ? "latest" : promptSort,
+    })
+      .then((response) => {
+        if (requestId !== promptLibraryRequestRef.current) return;
+        const items = Array.isArray(response?.items)
+          ? response.items.filter((item) => item?.id && item?.prompt)
+          : [];
+        setPromptItems(items);
+        setPromptPage(Number(response?.page || 1));
+        setPromptTotal(Number(response?.total || items.length));
+        setPromptHasMore(response?.hasMore === true);
+      })
+      .catch(() => {
+        if (requestId !== promptLibraryRequestRef.current) return;
+        setPromptItems([]);
+        setPromptPage(1);
+        setPromptTotal(0);
+        setPromptHasMore(false);
+      })
+      .finally(() => {
+        if (requestId === promptLibraryRequestRef.current) setPromptLibraryLoading(false);
+      });
+  }, [mainTab, promptCategory, promptSort]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
         prompt,
@@ -979,15 +1146,165 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     historyItems.forEach((item, index) => columns[index % columns.length].push(item));
     return columns;
   }, [historyItems]);
+  const localPromptItems = useMemo(() =>
+    WALLPAPER_PROMPT_PRESETS.map((preset, index) => ({
+      id: `local-t2i-${index}`,
+      title: `精选提示词 ${String(index + 1).padStart(2, "0")}`,
+      prompt: preset,
+      category: "other",
+      categoryKey: "other",
+      tags: [],
+      coverUrl: "",
+      local: true,
+    })), []);
+  const visiblePromptItems = promptItems.length
+    ? promptItems
+    : promptCategory === "all" && !promptLibraryLoading
+      ? localPromptItems
+      : [];
+  const managedPromptCategories = useMemo(() =>
+    promptCategories
+      .map((item) => ({
+        value: String(item?.key || item?.id || "").trim(),
+        label: String(item?.label || "").trim(),
+      }))
+      .filter((item) => item.value && item.label && !PROMPT_SCOPE_CATEGORIES.has(item.value)),
+  [promptCategories]);
+  const promptCategoryMoreActive = managedPromptCategories.some((item) => item.value === promptCategory);
+  const promptCategoryMoreLabel = managedPromptCategories.find((item) => item.value === promptCategory)?.label || "更多";
+  const promptCategoryLabel = useCallback((value) => {
+    const key = String(value || "other").trim();
+    return [
+      ...PROMPT_CATEGORY_PRIMARY.map(([category, label]) => ({ value: category, label })),
+      ...managedPromptCategories,
+    ].find((item) => item.value === key)?.label || "其他";
+  }, [managedPromptCategories]);
+  const promptColumnCount = promptViewportWidth <= 640 ? 1 : promptViewportWidth <= 960 ? 2 : 3;
+  const promptFeedItems = useMemo(() => visiblePromptItems.map((item) => {
+    const key = `prompt-${item.id}`;
+    const declaredAspect = Number(item.coverWidth) > 0 && Number(item.coverHeight) > 0
+      ? `${Number(item.coverWidth)} / ${Number(item.coverHeight)}`
+      : "16 / 10";
+    return {
+      key,
+      item,
+      aspect: promptMeasuredAspects[key] || declaredAspect,
+    };
+  }), [promptMeasuredAspects, visiblePromptItems]);
   const promptColumns = useMemo(() => {
-    const columns = [[], [], []];
-    WALLPAPER_PROMPT_PRESETS.forEach((preset, index) => {
-      const category = ["photo", "illustration", "design"][index % 3];
-      if (promptCategory !== "all" && promptCategory !== category) return;
-      columns[index % columns.length].push({ preset, index });
-    });
-    return columns;
-  }, [promptCategory]);
+    return buildBalancedPromptColumns(promptFeedItems, promptColumnCount);
+  }, [promptColumnCount, promptFeedItems]);
+  const promptEmptyTitle = promptCategory === "today"
+    ? "最近24小时暂无新增提示词"
+    : promptCategory === "my-favorites"
+      ? "还没有收藏提示词"
+      : "该分类暂时没有提示词";
+  const promptEmptyDescription = promptCategory === "my-favorites"
+    ? "点击提示词卡片下方的心形按钮，收藏后可以在这里快速找到。"
+    : "选择其他分类继续浏览。";
+
+  const selectPromptCategory = (value) => {
+    if (promptViewportRef.current) promptViewportRef.current.scrollTop = 0;
+    setPromptCategory(value);
+    setPromptCategoryMoreOpen(false);
+  };
+
+  const measurePromptLibraryImage = (entry, event) => {
+    const width = Number(event.currentTarget?.naturalWidth || event.target?.naturalWidth || 0);
+    const height = Number(event.currentTarget?.naturalHeight || event.target?.naturalHeight || 0);
+    if (!entry?.key || width <= 0 || height <= 0) return;
+    const aspect = `${width} / ${height}`;
+    setPromptMeasuredAspects((current) => current[entry.key] === aspect
+      ? current
+      : { ...current, [entry.key]: aspect });
+  };
+
+  const loadMorePrompts = async () => {
+    if (promptLibraryLoading || promptLibraryLoadingMore || !promptHasMore) return;
+    const requestId = promptLibraryRequestRef.current;
+    const nextPage = promptPage + 1;
+    const scopedCategory = ["today", "my-favorites"].includes(promptCategory) ? "all" : promptCategory;
+    const scope = promptCategory === "my-favorites" ? "favorites" : promptCategory === "today" ? "today" : "";
+    setPromptLibraryLoadingMore(true);
+    try {
+      const response = await listPromptLibrary("t2i", {
+        pageNumber: nextPage,
+        pageSize: 24,
+        category: scopedCategory,
+        scope,
+        sort: promptCategory === "today" ? "latest" : promptSort,
+      });
+      if (requestId !== promptLibraryRequestRef.current) return;
+      const incoming = Array.isArray(response?.items) ? response.items.filter((item) => item?.id && item?.prompt) : [];
+      setPromptItems((current) => [...new Map([...current, ...incoming].map((item) => [item.id, item])).values()]);
+      setPromptPage(Number(response?.page || nextPage));
+      setPromptTotal(Number(response?.total || promptItems.length + incoming.length));
+      setPromptHasMore(response?.hasMore === true);
+    } finally {
+      if (requestId === promptLibraryRequestRef.current) setPromptLibraryLoadingMore(false);
+    }
+  };
+
+  useEffect(() => {
+    if (mainTab !== "prompts" || !promptHasMore || promptLibraryLoading || promptLibraryLoadingMore) {
+      return undefined;
+    }
+    const sentinel = promptSentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === "undefined") return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadMorePrompts();
+      },
+      {
+        root: sentinel.closest(".t2i-panel") || null,
+        rootMargin: "520px 0px",
+        threshold: 0.01,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [mainTab, promptHasMore, promptLibraryLoading, promptLibraryLoadingMore, promptPage, promptCategory, promptSort]);
+
+  const usePromptLibraryEntry = (item) => {
+    if (!item?.prompt) return;
+    setPrompt(item.prompt);
+    promptInputRef.current?.focus();
+    if (item.local) return;
+    setPromptItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, useCount: Math.max(0, Number(entry.useCount || 0) + 1) } : entry));
+    void recordPromptEngagement(item.id, "use").then((result) => {
+      setPromptItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...result } : entry));
+    }).catch(() => undefined);
+  };
+
+  const togglePromptEngagement = async (item, action) => {
+    if (!item?.id || item.local) return;
+    if (!authenticated) {
+      onRequireAuth?.();
+      return;
+    }
+    const field = action === "like" ? "liked" : "favorited";
+    const countField = action === "like" ? "likeCount" : "favoriteCount";
+    const previous = item[field] === true;
+    setPromptItems((current) => current.map((entry) => entry.id === item.id ? {
+      ...entry,
+      [field]: !previous,
+      [countField]: Math.max(0, Number(entry[countField] || 0) + (previous ? -1 : 1)),
+    } : entry));
+    try {
+      const result = await recordPromptEngagement(item.id, action, !previous);
+      setPromptItems((current) => current
+        .map((entry) => entry.id === item.id ? { ...entry, ...result } : entry)
+        .filter((entry) => !(action === "favorite" && previous && promptCategory === "my-favorites" && entry.id === item.id)));
+      if (action === "favorite" && previous && promptCategory === "my-favorites") setPromptTotal((current) => Math.max(0, current - 1));
+    } catch {
+      setPromptItems((current) => current.map((entry) => entry.id === item.id ? {
+        ...entry,
+        [field]: previous,
+        [countField]: Math.max(0, Number(entry[countField] || 0) + (previous ? 1 : -1)),
+      } : entry));
+      notificationService.error("操作失败，请稍后重试");
+    }
+  };
   const failedOrPausedTasks = jobs.tasks.filter((task) =>
     ["failed", "paused"].includes(task.status),
   );
@@ -1464,7 +1781,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     : mainTab === "history"
                       ? historyItems.length ? `今日 ${historyItems.length} 条` : "今日暂无记录"
                       : mainTab === "prompts"
-                        ? `${WALLPAPER_PROMPT_PRESETS.length} 条提示词`
+                        ? `${Math.max(promptTotal, visiblePromptItems.length)} 条提示词`
                         : "暂无资产"}
             </span>
           </div>
@@ -1636,19 +1953,32 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           </section>
         )}
         {mainTab === "prompts" && (
-          <section className="t2i-panel t2i-library-view">
+          <section ref={promptViewportRef} className="t2i-panel t2i-library-view">
             <div className="t2i-masonry-wrap">
-              <div className="t2i-library-toolbar"><nav className="t2i-library-categories" aria-label="提示词分类">{[["all", "精选"], ["photo", "摄影"], ["illustration", "插画"], ["design", "设计"]].map(([value, label]) => <button key={value} type="button" className={promptCategory === value ? "is-active" : ""} onClick={() => setPromptCategory(value)}>{label}</button>)}</nav></div>
-              <div className="t2i-masonry" style={{ "--t2i-masonry-cols": 3 }}>
-                {promptColumns.map((column, columnIndex) => <div key={columnIndex} className="t2i-masonry-col">{column.map(({ preset, index }) => (
-                  <article key={preset} className="t2i-masonry-card t2i-collection-card">
-                    <button type="button" className="t2i-masonry-cover" style={{ aspectRatio: index % 3 === 0 ? "4 / 5" : "1 / 1" }} onClick={() => { setPrompt(preset); setMainTab("images"); }}><span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span><span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{preset}</span></span></button>
-                    <div className="t2i-masonry-body"><header className="t2i-history-meta"><strong>精选提示词 {String(index + 1).padStart(2, "0")}</strong><small>文生图 · 精选</small></header></div>
-                    <footer className="t2i-entry-actions"><button type="button" onClick={() => { setPrompt(preset); setMainTab("images"); }}><i className="bi bi-magic" />使用提示词</button></footer>
-                  </article>
-                ))}</div>)}
+              <div className="t2i-library-toolbar">
+                <nav className="t2i-library-categories" aria-label="提示词分类">
+                  {PROMPT_CATEGORY_PRIMARY.map(([value, label]) => <button key={value} type="button" className={promptCategory === value ? "is-active" : ""} onClick={() => selectPromptCategory(value)}>{label}</button>)}
+                </nav>
+                <div ref={promptMoreRef} className="t2i-library-more">
+                  <button type="button" className={`t2i-library-more-trigger${promptCategoryMoreActive ? " is-active" : ""}${promptCategoryMoreOpen ? " is-open" : ""}`} aria-expanded={promptCategoryMoreOpen} aria-haspopup="listbox" onClick={() => setPromptCategoryMoreOpen((value) => !value)}><span>{promptCategoryMoreLabel}</span><i className="bi bi-chevron-down" /></button>
+                  {promptMorePresence.mounted && <div className={`t2i-library-more-menu ${transitionClasses("t2i-library-more", promptMorePresence.phase)}`} role="listbox" aria-label="更多分类">{managedPromptCategories.map((category) => <button key={category.value} type="button" role="option" aria-selected={promptCategory === category.value} className={promptCategory === category.value ? "is-active" : ""} onClick={() => selectPromptCategory(category.value)}>{category.label}</button>)}</div>}
+                </div>
+                {promptCategory !== "today" && <label className="t2i-library-sort"><i className="bi bi-sort-down" /><select value={promptSort} aria-label="提示词排序" onChange={(event) => setPromptSort(event.target.value)}><option value="recommended">智能推荐</option><option value="favorites">收藏最多</option><option value="likes">点赞最多</option><option value="usage">使用最多</option></select></label>}
               </div>
-              <p className="t2i-feed-end">没有更多数据了</p>
+              {promptLibraryLoading && !visiblePromptItems.length ? <div className="t2i-history-skeleton" aria-label="提示词库加载中">{[0, 1, 2].map((column) => <div key={column} className="t2i-history-skeleton-col">{[0, 1, 2].map((row) => <article key={row} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>)}</div>)}</div> : !visiblePromptItems.length ? <div className="t2i-empty t2i-collection-empty"><div className="t2i-empty-icon"><i className="bi bi-filter" /></div><strong>{promptEmptyTitle}</strong><span>{promptEmptyDescription}</span></div> : <div className="t2i-masonry" style={{ "--t2i-masonry-cols": promptColumnCount }}>
+                {promptColumns.map((column, columnIndex) => <div key={columnIndex} className="t2i-masonry-col">{column.map((entry) => {
+                  const { item } = entry;
+                  return (
+                  <article key={entry.key} className="t2i-masonry-card t2i-collection-card">
+                    <button type="button" className={`t2i-masonry-cover${item.coverUrl || item.imageUrl ? "" : " t2i-masonry-placeholder"}`} style={{ aspectRatio: entry.aspect }} onClick={() => usePromptLibraryEntry(item)}>{item.coverUrl || item.imageUrl ? <AuthenticatedImage src={item.coverUrl || item.imageUrl} alt={item.title || item.label || "提示词封面"} loading="lazy" maxDimension={720} onLoad={(event) => measurePromptLibraryImage(entry, event)} /> : <span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span>}<span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.prompt}</span><span className="t2i-history-image-specs"><span><i className="bi bi-grid" />{promptCategoryLabel(item.categoryKey || item.category)}</span>{item.tags?.length > 0 && <span><i className="bi bi-tags" />{item.tags.slice(0, 2).join(" · ")}</span>}</span></span></button>
+                    <div className="t2i-masonry-body"><header className="t2i-history-meta"><strong>{item.title || item.label}</strong><small>{promptCategoryLabel(item.categoryKey || item.category)} · 使用 {item.useCount || 0} 次</small></header></div>
+                    <footer className="t2i-entry-actions"><button type="button" className={item.liked ? "is-active" : ""} disabled={item.local} onClick={() => void togglePromptEngagement(item, "like")}><i className={`bi ${item.liked ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} />{item.likeCount || 0}</button><button type="button" className={item.favorited ? "is-active" : ""} disabled={item.local} onClick={() => void togglePromptEngagement(item, "favorite")}><i className={`bi ${item.favorited ? "bi-heart-fill" : "bi-heart"}`} />{item.favoriteCount || 0}</button><button type="button" onClick={() => usePromptLibraryEntry(item)}><i className="bi bi-magic" />使用提示词</button></footer>
+                  </article>
+                  );
+                })}</div>)}
+              </div>}
+              {promptHasMore && <div ref={promptSentinelRef} className="t2i-masonry-sentinel" aria-hidden="true" />}
+              {promptLibraryLoadingMore ? <p className="t2i-feed-loading"><i className="bi bi-arrow-repeat spin" />正在加载更多提示词…</p> : promptHasMore ? <button type="button" className="t2i-feed-more" onClick={() => void loadMorePrompts()}>加载更多</button> : visiblePromptItems.length > 0 && <p className="t2i-feed-end">没有更多数据了</p>}
             </div>
           </section>
         )}
