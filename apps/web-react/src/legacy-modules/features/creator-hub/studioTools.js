@@ -1,4 +1,11 @@
 import { ECOMMERCE_MODES } from '@/features/ecommerce/ecommerceTools'
+import {
+  isSmartCanvasTask,
+  studioRouteForTask,
+  studioRouteForTaskType,
+} from './taskRoutes'
+
+export { isSmartCanvasTask, studioRouteForTask, studioRouteForTaskType }
 
 const ECOMMERCE_STUDIO_HIGHLIGHTS = ['shoot', 'listing', 'tryon']
   .map((modeId) => ECOMMERCE_MODES.find((mode) => mode.id === modeId)?.shortLabel)
@@ -127,23 +134,6 @@ function pendingStorage() {
       return null
     }
   }
-}
-
-export function studioRouteForTaskType(taskType = '') {
-  const hit = PROMPT_TASK_TYPES.find((item) => item.id === taskType)
-  return hit?.to || '/text-to-image'
-}
-
-export function isSmartCanvasTask(task = {}) {
-  const params = task?.params && typeof task.params === 'object' ? task.params : {}
-  const source = String(params._source || params.source || '').trim().toLowerCase()
-  const kind = String(params._kind || params.kind || '').trim().toLowerCase()
-  return source === 'react_canvas' || kind.startsWith('canvas-')
-}
-
-export function studioRouteForTask(task = {}) {
-  if (isSmartCanvasTask(task)) return '/canvas'
-  return studioRouteForTaskType(task?.type)
 }
 
 export function stashPendingPrompt({ prompt = '', taskType = 't2i', config: launchConfig = {} } = {}) {

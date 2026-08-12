@@ -56,45 +56,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - name: Install
-        working-directory: apps/web
-        run: npm ci --no-audit --no-fund
-      - name: Check imports
-        working-directory: apps/web
-        run: node scripts/check-imports.mjs
-      - name: Lint
-        working-directory: apps/web
-        run: npm run lint
-      - name: Task concurrency tests
-        working-directory: apps/web
-        run: npm run test:task-concurrency
-      - name: Build
-        working-directory: apps/web
-        run: npm run build
-      - name: Dependency audit
-        working-directory: apps/web
-        run: npm audit --audit-level=high
-
-  web-react:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: npm
           cache-dependency-path: |
-            apps/web/package-lock.json
             apps/canvas-react/package-lock.json
             apps/web-react/package-lock.json
-      - name: Install shared application dependencies
+      - name: Install
         run: |
-          npm --prefix apps/web ci --no-audit --no-fund
           npm --prefix apps/canvas-react ci --no-audit --no-fund
           npm --prefix apps/web-react ci --no-audit --no-fund
+      - name: Task concurrency tests
+        run: npm --prefix apps/web-react run test:task-concurrency
       - name: Build React main site
         run: npm --prefix apps/web-react run build
+      - name: Dependency audit
+        run: npm --prefix apps/web-react audit --audit-level=high
 
   admin:
     runs-on: ubuntu-latest

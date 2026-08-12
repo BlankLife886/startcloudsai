@@ -1,9 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 
-const WEB_BASE_URL = process.env.WEB_BASE_URL || 'http://127.0.0.1:3102'
+const WEB_BASE_URL = process.env.WEB_BASE_URL || 'http://127.0.0.1:3105'
 const WEB_DIR = fileURLToPath(new URL('.', import.meta.url))
-const WEB_PORT = readPort(WEB_BASE_URL, 3102)
+const WEB_PORT = readPort(WEB_BASE_URL, 3105)
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -28,7 +28,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: `npm run dev -- --host 127.0.0.1 --port ${WEB_PORT} --strictPort`,
+    command: `npm run dev -- --port ${WEB_PORT}`,
     cwd: WEB_DIR,
     url: WEB_BASE_URL,
     timeout: 90_000,

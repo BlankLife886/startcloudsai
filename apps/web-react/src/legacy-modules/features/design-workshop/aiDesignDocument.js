@@ -6,12 +6,12 @@ import {
   listActiveAssistantRuns,
   openAssistantRunStream,
   waitForAssistantRun,
-} from '@/services/assistantApi'
-import { withTransparentPngInstruction } from '@/features/ai-shared/transparentPng'
-import { stabilizeAnalysisNodes } from '@/features/design-workshop/analysisNodeGeometry'
-import { normalizeCropElementItems } from '@/features/design-workshop/regionGeometry'
-import { parseCropElementResponse } from '@/features/design-workshop/cropElementResponse'
-import { resolveRegionImageRequestSize } from '@/features/design-workshop/regionOutputPolicy'
+} from '../../services/assistantApi.js'
+import { withTransparentPngInstruction } from '../ai-shared/transparentPng.js'
+import { stabilizeAnalysisNodes } from './analysisNodeGeometry.js'
+import { normalizeCropElementItems } from './regionGeometry.js'
+import { parseCropElementResponse } from './cropElementResponse.js'
+import { resolveRegionImageRequestSize } from './regionOutputPolicy.js'
 
 export const ACTIVE_DESIGN_ANALYSIS_KEY = 'ui-design-active-analysis-v1'
 export const ACTIVE_DESIGN_ANALYSIS_VERSION = 3

@@ -167,7 +167,7 @@ GET /api/v1/tasks?ids=<uuid>,<uuid>,...
 前端压力测试：
 
 ```bash
-cd apps/web
+cd apps/web-react
 npm run test:task-concurrency
 ```
 

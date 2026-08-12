@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { resolve } from 'node:path'
 import { installVisualBaseline } from './helpers/visualBaseline.js'
 
-const fixtureImage = resolve(process.cwd(), 'public/brand/starcloud-logo.png')
+const fixtureImage = resolve(process.cwd(), 'tests/fixtures/starcloud-logo.png')
 
 test.describe('React local image tools', () => {
   test.describe.configure({ mode: 'serial' })

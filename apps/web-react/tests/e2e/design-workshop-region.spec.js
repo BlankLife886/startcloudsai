@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
-import { buildRegionEditInstruction } from '../../src/features/design-workshop/aiDesignDocument.js'
+import { buildRegionEditInstruction } from '../../src/legacy-modules/features/design-workshop/aiDesignDocument.js'
 
 const USER = {
   id: 'region-e2e-user',
@@ -21,9 +21,9 @@ const IMAGE_MODEL = {
   creditCost: 1,
 }
 
-const OUTPUT_URL = '/src/assets/pricing/wallet/icon-wallet.png'
+const OUTPUT_URL = '/__test-assets/icon-wallet.png'
 const OUTPUT_PATH = fileURLToPath(
-  new URL('../../src/assets/pricing/wallet/icon-wallet.png', import.meta.url),
+  new URL('../fixtures/icon-wallet.png', import.meta.url),
 )
 
 test.beforeEach(async ({ page }) => {
@@ -272,7 +272,7 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
 })
 
 async function mockDesignWorkshopApis(page) {
-  await page.route('**/src/assets/pricing/wallet/icon-wallet.png', (route) =>
+  await page.route('**/__test-assets/icon-wallet.png', (route) =>
     route.fulfill({ path: OUTPUT_PATH, contentType: 'image/png' }),
   )
   await page.route('**/api/v1/**', async (route) => {

@@ -23,7 +23,7 @@ const model = {
 }
 
 const outputImagePath = fileURLToPath(
-  new URL('../../src/assets/pricing/wallet/icon-wallet.png', import.meta.url),
+  new URL('../fixtures/icon-wallet.png', import.meta.url),
 )
 
 const resultTask = {

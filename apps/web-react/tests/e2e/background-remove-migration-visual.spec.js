@@ -17,7 +17,7 @@ const model = {
 }
 
 const resultImagePath = fileURLToPath(
-  new URL('../../src/assets/icons/edit-image.png', import.meta.url),
+  new URL('../../src/legacy-static/assets/icons/edit-image.png', import.meta.url),
 )
 
 const resultTask = {

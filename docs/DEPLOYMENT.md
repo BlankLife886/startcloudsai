@@ -13,19 +13,15 @@
 
 更换服务器或域名时，只需替换本文中的域名、IP 和项目目录。
 
-### React 主站测试环境
+### React 主站
 
-默认 `docker-compose.yml` 在依赖解除阶段继续构建 Vue 主站。测试环境验证 React 主站时必须显式叠加覆盖文件：
+默认 `docker-compose.yml` 直接构建 React 主站：
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f deploy/docker-compose.react.yml \
-  --env-file .env \
-  up -d --build
+docker compose --env-file .env up -d --build
 ```
 
-覆盖文件只替换 `web` 镜像构建入口，API、Worker、数据库、管理端和网关契约保持不变。只有 React 对旧服务、样式和静态配置的源码依赖全部解除，并通过完整回归后，才能把默认 Compose 切换到 React 并停止 Vue 服务。
+`web` 使用 `apps/web-react/Dockerfile`，API、Worker、数据库、管理端和网关仍使用原有服务契约。
 
 ## 1. 部署架构
 
@@ -50,7 +46,7 @@ Compose 服务：
 | 服务       | 作用                         | 是否保存数据 |
 | ---------- | ---------------------------- | ------------ |
 | `gateway`  | 统一 HTTP 入口和站内反向代理 | 否           |
-| `web`      | 用户端 Vue 静态文件          | 否           |
+| `web`      | 用户端 React 静态文件        | 否           |
 | `admin`    | 管理端 Vue 静态文件          | 否           |
 | `server`   | API、认证、迁移和业务逻辑    | 否           |
 | `worker`   | 图片生成、队列和后台任务     | 否           |

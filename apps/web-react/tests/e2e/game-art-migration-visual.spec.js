@@ -9,7 +9,7 @@ const model = {
   capabilities: ['image.generate', 'image.edit', 'imageToImage'], aspectRatios: ['3:4', '16:9', '1:1'],
   qualities: ['high', 'medium'], maxReferenceImages: 4, creditCost: 4, pricePoints: 4,
 }
-const outputImagePath = fileURLToPath(new URL('../../src/assets/pricing/wallet/icon-wallet.png', import.meta.url))
+const outputImagePath = fileURLToPath(new URL('../fixtures/icon-wallet.png', import.meta.url))
 const resultTask = {
   id: 'game-art-result-1', type: 'game_art', status: 'succeeded', prompt: '星轨机械师角色立绘',
   params: { _kind: 'game-art-character-generation', publicModelKey: model.id, aspectRatio: '3:4', viewLabel: '角色', kindVariant: 'character', batchId: 'game-visual-group', batchIndex: 0, batchSize: 1 },

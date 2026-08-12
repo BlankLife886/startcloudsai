@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
 import { fulfillJson, mockBootstrapConfig } from './helpers/authMocks.js'
+import {
+  isSmartCanvasTask,
+  studioRouteForTask,
+} from '../../src/legacy-modules/features/creator-hub/taskRoutes.js'
 
 const CACHED_USER = {
   id: 'navigation-user',
@@ -40,24 +44,18 @@ test('private studio navigation does not wait for auth or trial APIs', async ({ 
   }
 })
 
-test('canvas tasks resolve back to smart canvas, including existing source-only tasks', async ({ page }) => {
-  await page.goto('/')
-  const routes = await page.evaluate(async () => {
-    const { isSmartCanvasTask, studioRouteForTask } = await import(
-      '/src/features/creator-hub/studioTools.js'
-    )
-    const existingTask = { type: 't2i', params: { _source: 'react_canvas' } }
-    const newTask = {
-      type: 't2i',
-      params: { _source: 'react_canvas', _kind: 'canvas-image-generation' },
-    }
-    const wallpaperTask = { type: 't2i', params: { _kind: 'image-generation' } }
-    return {
-      existing: [isSmartCanvasTask(existingTask), studioRouteForTask(existingTask)],
-      current: [isSmartCanvasTask(newTask), studioRouteForTask(newTask)],
-      wallpaper: [isSmartCanvasTask(wallpaperTask), studioRouteForTask(wallpaperTask)],
-    }
-  })
+test('canvas tasks resolve back to smart canvas, including existing source-only tasks', async () => {
+  const existingTask = { type: 't2i', params: { _source: 'react_canvas' } }
+  const newTask = {
+    type: 't2i',
+    params: { _source: 'react_canvas', _kind: 'canvas-image-generation' },
+  }
+  const wallpaperTask = { type: 't2i', params: { _kind: 'image-generation' } }
+  const routes = {
+    existing: [isSmartCanvasTask(existingTask), studioRouteForTask(existingTask)],
+    current: [isSmartCanvasTask(newTask), studioRouteForTask(newTask)],
+    wallpaper: [isSmartCanvasTask(wallpaperTask), studioRouteForTask(wallpaperTask)],
+  }
 
   expect(routes).toEqual({
     existing: [true, '/canvas'],

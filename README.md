@@ -2,7 +2,7 @@
 
 星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、UI 设计稿、超高清模型图、游戏美术和 AI 拼图工作台，并包含共享画廊、提示词库、价格页、兑换码钱包与独立运营后台。价格页和只读套餐展示已恢复；支付、订单创建和套餐购买当前在所有环境中停用。
 
-项目由 Vue 主站、React 无限画布、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
+项目由 React 主站、React 无限画布、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
 
 > UI 产品边界：本项目只面向桌面浏览器，最低支持视口为 `1280x720`，不开发或验收手机/平板适配。具体约束见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
 
@@ -10,7 +10,7 @@
 
 ```text
 .
-├── apps/web/       # 用户端：Vue 3 + Vite + Pinia
+├── apps/web-react/ # 用户端：React 19 + Vite
 ├── apps/canvas-react/ # 无限画布：React 19 + Zustand
 ├── apps/admin/     # 管理端：Vue 3 + Vite + TypeScript + Element Plus
 ├── apps/server/    # API 与 Worker：Go + Gin + pgx + Asynq
@@ -104,8 +104,8 @@ go run ./cmd/server serve
 cd apps/server
 go run ./cmd/server worker
 
-# 用户端：http://localhost:3102
-cd apps/web
+# 用户端：http://localhost:3105
+cd apps/web-react
 npm ci
 npm run dev
 
@@ -128,12 +128,12 @@ CI 使用 Node.js 22、Go module 中声明的 Go 版本和 PostgreSQL 17，执�
 
 ```bash
 cd apps/server && go vet ./... && go test ./...
-cd apps/web && npm ci && npm run check:imports && npm run lint && npm run build
+cd apps/web-react && npm ci && npm run test:task-concurrency && npm run build
 cd apps/admin && npm ci && npm run build
 cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 ```
 
-用户端还提供图片处理验证脚本。`cd apps/web && npm run test:e2e` 会启动当前 Web Vite 服务并运行确定性的工作台冒烟测试；测试通过路由拦截提供登录、运行时模型、历史和商品库数据，不依赖真实图片上游。完整说明见 [apps/web/README.md](apps/web/README.md)。
+用户端还提供 Playwright 交互与视觉回归。`cd apps/web-react && npm run test:e2e` 会启动 React Vite 服务并通过路由拦截提供确定性的登录、模型、历史和商品库数据，不依赖真实图片上游。完整说明见 [apps/web-react/README.md](apps/web-react/README.md)。
 
 ## 文档索引
 
@@ -146,7 +146,7 @@ cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 - [Go 性能与实时可观测性](docs/GO_PERFORMANCE_OBSERVABILITY.md)
 - [管理端 UI 规范](docs/ADMIN_UI_STYLE.md)
 - [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)
-- [用户端首页设计规范](apps/web/DESIGN.md)
-- [用户端开发说明](apps/web/README.md)
+- [用户端迁移与视觉基线记录](apps/web-react/REACT_MIGRATION.md)
+- [用户端开发说明](apps/web-react/README.md)
 - [管理端开发说明](apps/admin/README.md)
 - [服务端开发说明](apps/server/README.md)

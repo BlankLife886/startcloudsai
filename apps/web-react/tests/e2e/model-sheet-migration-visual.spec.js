@@ -9,7 +9,7 @@ const model = {
   capabilities: ['image.generate', 'image.edit', 'imageToImage'], aspectRatios: ['16:9', '1:1', '9:16'],
   qualities: ['high', 'medium', 'low'], maxReferenceImages: 4, creditCost: 3, pricePoints: 3,
 }
-const outputImagePath = fileURLToPath(new URL('../../src/assets/pricing/wallet/icon-wallet.png', import.meta.url))
+const outputImagePath = fileURLToPath(new URL('../fixtures/icon-wallet.png', import.meta.url))
 const resultTask = {
   id: 'model-sheet-result-1', type: 'model_sheet', status: 'succeeded', prompt: '机甲角色模型设定',
   params: { _kind: 'ultra-reference-generation', publicModelKey: model.id, aspectRatio: '16:9', viewId: 'front', viewLabel: '设定板', outputMode: 'board', batchId: 'model-visual-group', batchIndex: 0, batchSize: 1 },
