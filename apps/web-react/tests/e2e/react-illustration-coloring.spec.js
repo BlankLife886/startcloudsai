@@ -156,6 +156,15 @@ test.describe('React illustration coloring interactions', () => {
     )
     await page.goto('/ai-illustration-coloring', { waitUntil: 'domcontentloaded' })
 
+    await expect(page.locator('.coloring-sidebar .coloring-library-launcher')).toHaveCount(0)
+    const toolbarLibrary = page.locator('.coloring-stage-toolbar .coloring-toolbar-library')
+    await expect(toolbarLibrary.getByRole('button', { name: '资产库' })).toBeVisible()
+    await expect(toolbarLibrary.getByRole('button', { name: '历史记录' })).toBeVisible()
+    await expect(toolbarLibrary.getByRole('button', { name: '提示词库' })).toBeVisible()
+    await toolbarLibrary.getByRole('button', { name: '历史记录' }).click()
+    await expect(page.getByRole('dialog', { name: '染色资源' })).toBeVisible()
+    await page.getByRole('dialog', { name: '染色资源' }).getByRole('button', { name: '关闭' }).click()
+
     await expect(page.getByLabel('分辨率')).toContainText('2K')
     await page.getByLabel('分辨率').click()
     await expect(page.getByRole('option', { name: '4K' })).toHaveCount(0)

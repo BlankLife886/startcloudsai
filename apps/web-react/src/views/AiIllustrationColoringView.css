@@ -4,6 +4,19 @@
   white-space: nowrap;
 }
 
+.coloring-toolbar-library {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library {
+  border-right-color: rgba(43, 45, 60, 0.1);
+}
+
 .coloring-studio-page .authenticated-image,
 .coloring-studio-page .authenticated-image-media {
   width: 100%;
