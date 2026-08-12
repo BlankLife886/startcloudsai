@@ -36,4 +36,3 @@ Return the selected target resolution without lossy recompression. Keep the
 source aspect ratio and alpha channel when present. Report failure rather than
 silently changing content. This skill is active only when the image
 super-resolution feature is enabled by the application.
-
