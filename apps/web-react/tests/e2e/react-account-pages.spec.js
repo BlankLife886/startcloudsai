@@ -657,6 +657,34 @@ test.describe('React authenticated account pages', () => {
       fulfillJson(route, { user: accountProfile }),
     )
     await page.route('**/api/v1/me/wallet', (route) => fulfillJson(route, walletSnapshot))
+    await page.route('**/api/v1/trial-access-campaign', (route) =>
+      fulfillJson(route, {
+        campaign: {
+          id: '0ce6c089-5701-43a5-a53f-89b314e1853f',
+          title: '限量功能体验计划',
+          status: 'active',
+          enabled: true,
+          expired: false,
+          full: false,
+          capacity: 100,
+          displayApplied: 8,
+          remaining: 92,
+          nextPosition: 9,
+          expiresAt: '2026-09-11T02:43:12.107849Z',
+          features: [
+            {
+              key: 'text_to_image',
+              label: '文生图',
+              icon: 'bi-stars',
+              route: '/text-to-image',
+            },
+          ],
+        },
+      }),
+    )
+    await page.route('**/api/v1/me/trial-access-application', (route) =>
+      fulfillJson(route, { application: null }),
+    )
     await page.route('**/api/v1/me/notifications**', async (route) => {
       if (route.request().method() === 'PATCH') {
         patchBody = route.request().postDataJSON()
@@ -679,7 +707,8 @@ test.describe('React authenticated account pages', () => {
     await page.goto('/notifications?source=inbox', { waitUntil: 'domcontentloaded' })
 
     await page.getByRole('button', { name: /查看体验资格/ }).click()
-    await expect(page).toHaveURL(/\/notifications\?source=inbox&trial=apply$/)
+    await expect(page).toHaveURL(/\/notifications\?source=inbox$/)
+    await expect(page.getByRole('dialog', { name: '限量功能体验计划' })).toBeVisible()
     await expect(page.locator('.nt-item').filter({ hasText: '体验资格审核通过' })).not.toHaveClass(
       /is-unread/,
     )
@@ -1127,6 +1156,34 @@ test.describe('React authenticated account pages', () => {
         rules: { groupEnabled: true, groupTargetMembers: 5, groupRewardCents: 120 },
       }),
     )
+    await page.route('**/api/v1/trial-access-campaign', (route) =>
+      fulfillJson(route, {
+        campaign: {
+          id: '0ce6c089-5701-43a5-a53f-89b314e1853f',
+          title: '限量功能体验计划',
+          status: 'active',
+          enabled: true,
+          expired: false,
+          full: false,
+          capacity: 100,
+          displayApplied: 8,
+          remaining: 92,
+          nextPosition: 9,
+          expiresAt: '2026-09-11T02:43:12.107849Z',
+          features: [
+            {
+              key: 'text_to_image',
+              label: '文生图',
+              icon: 'bi-stars',
+              route: '/text-to-image',
+            },
+          ],
+        },
+      }),
+    )
+    await page.route('**/api/v1/me/trial-access-application', (route) =>
+      fulfillJson(route, { application: null }),
+    )
     await page.route('**/api/v1/plans', (route) =>
       fulfillJson(route, {
         paymentEnabled: false,
@@ -1144,8 +1201,10 @@ test.describe('React authenticated account pages', () => {
       }),
     )
     await page.goto('/incentive-plans/membership', { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: '申请体验' }).click()
-    await expect(page).toHaveURL(/\/pricing\?trial=apply$/)
+    await page.getByLabel('会员方案对比').getByRole('button', { name: '申请体验' }).click()
+    await expect(page).toHaveURL(/\/pricing$/)
+    await expect(page.getByRole('dialog', { name: '限量功能体验计划' })).toBeVisible()
+    await page.getByRole('button', { name: '关闭体验资格弹窗' }).click()
 
     await page.goto('/incentive-plans/legacy-preview', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.detail-page')).toHaveAttribute('data-tone', 'coral')

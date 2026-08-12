@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
+import { TrialAccessDialog } from "../components/TrialAccessDialog.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { getWallet, listNotifications } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
+import { getTrialAccessCampaign } from "@react/legacy-modules/services/trialAccessApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import tryonPreview from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
 import listingPreview from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
 import detailPreview from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
@@ -184,6 +187,7 @@ function routePath(to) {
 
 export function NavBar() {
   const location = useLocation();
+  const navigate = useNavigate();
   const auth = useAuth();
   const rootRef = useRef(null);
   const [activeDropdown, setActiveDropdown] = useState("");
@@ -192,6 +196,8 @@ export function NavBar() {
   const [balance, setBalance] = useState(0);
   const [notificationUnread, setNotificationUnread] = useState(0);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [trialCampaign, setTrialCampaign] = useState(null);
+  const [trialDialogOpen, setTrialDialogOpen] = useState(false);
 
   const isActive = (to) =>
     location.pathname === routePath(to) ||
@@ -275,6 +281,41 @@ export function NavBar() {
   }, [auth.isAuthenticated]);
 
   useEffect(() => {
+    let disposed = false;
+    const refresh = () =>
+      getTrialAccessCampaign()
+        .then((campaign) => {
+          if (!disposed) setTrialCampaign(campaign?.enabled === true && campaign?.status === "active" ? campaign : null);
+          return campaign;
+        })
+        .catch(() => {
+          if (!disposed) setTrialCampaign(null);
+          return null;
+        });
+    void refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("trial") !== "apply") return;
+    params.delete("trial");
+    navigate(`${location.pathname}${params.size ? `?${params}` : ""}${location.hash}`, { replace: true });
+    getTrialAccessCampaign()
+      .then((campaign) => {
+        if (campaign?.enabled === true && campaign?.status === "active") {
+          setTrialCampaign(campaign);
+          setTrialDialogOpen(true);
+        } else notificationService.info("当前没有开放中的体验活动");
+      })
+      .catch((error) => notificationService.error(error?.message || "体验活动读取失败"));
+  }, [location.hash, location.pathname, location.search, navigate]);
+
+  useEffect(() => {
     if (!auth.isAuthenticated) {
       setNotificationUnread(0);
       return undefined;
@@ -310,6 +351,22 @@ export function NavBar() {
     await logoutAccount().catch(() => null);
     auth.setUser(null);
     closeMenu();
+  }
+
+  async function openTrialDialog() {
+    closeMenu();
+    try {
+      const campaign = await getTrialAccessCampaign();
+      if (campaign?.enabled !== true || campaign?.status !== "active") {
+        setTrialCampaign(null);
+        notificationService.info("当前没有开放中的体验活动");
+        return;
+      }
+      setTrialCampaign(campaign);
+      setTrialDialogOpen(true);
+    } catch (error) {
+      notificationService.error(error?.message || "体验活动读取失败");
+    }
   }
 
   return (
@@ -529,6 +586,18 @@ export function NavBar() {
                 </span>
                 <span className="nav-redeem-btn__label">兑换</span>
               </button>
+              {trialCampaign && (
+                <button
+                  type="button"
+                  className="nav-trial-btn"
+                  data-no-translate
+                  title="申请体验"
+                  onClick={openTrialDialog}
+                >
+                  <i className="bi bi-stars" aria-hidden="true" />
+                  <span>申请体验</span>
+                </button>
+              )}
               <ThemeSwitch />
               <LocaleSwitcher />
               {auth.isAuthenticated ? (
@@ -668,6 +737,11 @@ export function NavBar() {
           </div>
         </div>
       </div>
+      <TrialAccessDialog
+        open={trialDialogOpen}
+        initialCampaign={trialCampaign}
+        onClose={() => setTrialDialogOpen(false)}
+      />
     </header>
   );
 }
