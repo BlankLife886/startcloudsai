@@ -69,9 +69,9 @@ import { uploadAiTempBlob } from "@legacy/features/ai-shared/aiImageIO.js";
 import { createUserAsset } from "@legacy/services/meApi.js";
 import { uploadFile } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/DesignWorkshopView.vue?react-style";
+import "@react/legacy-styles/generated/views/DesignWorkshopView.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
-import "@legacy/features/design-workshop/components/DesignVersionDrawer.vue?react-style";
+import "@react/legacy-styles/generated/features/design-workshop/components/DesignVersionDrawer.css";
 import "./DesignWorkshopView.css";
 
 const SETTINGS_KEY = "ui-design-workshop-v2";

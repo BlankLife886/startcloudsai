@@ -3,7 +3,7 @@ import {
   fetchAuthenticatedMediaBlob,
   getCachedAuthenticatedMediaBlob,
 } from "@legacy/services/authenticatedMedia.js";
-import "@legacy/features/ai-wallpaper/components/LocalMaskEditorDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/LocalMaskEditorDialog.css";
 
 const QUICK_PROMPTS = [
   { label: "移除内容", text: "移除选中区域的内容，并自然补全背景" },

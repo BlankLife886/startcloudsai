@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import "@legacy/views/AccessLimitedView.vue?react-style";
+import "@react/legacy-styles/generated/views/AccessLimitedView.css";
 
 export function AccessLimitedView() {
   const navigate = useNavigate();

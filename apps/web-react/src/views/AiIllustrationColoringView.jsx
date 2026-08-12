@@ -35,8 +35,8 @@ import { submitShareItem } from "@legacy/services/shareGallery.js";
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/features/ai-illustration-coloring/styles/illustration-coloring.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
-import "@legacy/features/ai-illustration-coloring/components/ColoringLibraryDrawer.vue?react-style";
-import "@legacy/features/ai-illustration-coloring/components/ColoringSettingsDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-illustration-coloring/components/ColoringLibraryDrawer.css";
+import "@react/legacy-styles/generated/features/ai-illustration-coloring/components/ColoringSettingsDialog.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "./AiIllustrationColoringView.css";
 

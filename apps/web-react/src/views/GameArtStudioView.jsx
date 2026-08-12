@@ -28,8 +28,8 @@ import { listPromptLibrary, recordPromptEngagement } from "@legacy/services/prom
 import { listMyShareAssets, submitShareItem } from "@legacy/services/shareGallery.js";
 import { composePendingLaunchPrompt, takePendingPrompt } from "@legacy/features/creator-hub/studioTools.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/GameArtStudioView.vue?react-style";
-import "@legacy/features/creative-studios/ClockFilmstrip.vue?react-style";
+import "@react/legacy-styles/generated/views/GameArtStudioView.css";
+import "@react/legacy-styles/generated/features/creative-studios/ClockFilmstrip.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 import "./GameArtStudioView.css";

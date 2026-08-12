@@ -12,7 +12,7 @@ import {
 } from "@legacy/services/meApi.js";
 import { uploadFile } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/MaterialsLibraryView.vue?react-style";
+import "@react/legacy-styles/generated/views/MaterialsLibraryView.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";

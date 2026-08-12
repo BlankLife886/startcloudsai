@@ -1,0 +1,54 @@
+/* Generated from apps/web/src/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarNavigation.vue. */
+
+.preview-navigation {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 18;
+}
+.preview-navigation.controls-visible {
+  opacity: 1;
+}
+.preview-navigation .preview-btn {
+  pointer-events: auto;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.preview-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+  backdrop-filter: blur(4px);
+}
+.preview-btn:hover {
+  background: rgba(25, 25, 25, 0.8);
+  transform: translateY(-50%);
+}
+.preview-btn:active {
+  transform: translateY(-50%);
+}
+.preview-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.preview-btn.active {
+  background: rgba(76, 175, 80, 0.75);
+  box-shadow: 0 0 10px rgba(76, 175, 80, 0.35);
+}
+.preview-prev-btn {
+  left: 16px;
+}
+.preview-next-btn {
+  right: 16px;
+}

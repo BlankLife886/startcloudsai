@@ -33,7 +33,7 @@ import {
 } from "@legacy/features/creator-hub/taskMedia.js";
 import "@legacy/features/creator-hub/creator-hub.css";
 import "@legacy/features/creator-hub/studio-hub.css";
-import "@legacy/features/home-commercial/components/TypeLine.vue?react-style";
+import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";

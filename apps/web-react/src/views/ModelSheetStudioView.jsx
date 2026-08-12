@@ -19,7 +19,7 @@ import { listPromptLibrary, recordPromptEngagement } from "@legacy/services/prom
 import { listMyShareAssets, submitShareItem } from "@legacy/services/shareGallery.js";
 import { composePendingLaunchPrompt, takePendingPrompt } from "@legacy/features/creator-hub/studioTools.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/ModelSheetStudioView.vue?react-style";
+import "@react/legacy-styles/generated/views/ModelSheetStudioView.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "./ModelSheetStudioView.css";

@@ -7,7 +7,7 @@ import {
 import { TASK_UPDATE_EVENT } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
 import { translateClientText } from "@legacy/i18n/clientTranslations.js";
-import "@legacy/views/NotificationsView.vue?react-style";
+import "@react/legacy-styles/generated/views/NotificationsView.css";
 import { useIsDark } from "../hooks/useIsDark.js";
 
 const UPDATED_EVENT = "starclouds:notifications-updated";

@@ -7,7 +7,7 @@ import {
 } from "@legacy/services/ecommerceApi.js";
 import { createUserAsset, deleteUserAsset } from "@legacy/services/meApi.js";
 import { uploadFile } from "@legacy/services/tasksApi.js";
-import "@legacy/components/ecommerce/CommerceProductLibrary.vue?react-style";
+import "@react/legacy-styles/generated/components/ecommerce/CommerceProductLibrary.css";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 
 const STATUS_OPTIONS = [

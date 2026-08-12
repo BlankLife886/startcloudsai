@@ -5,7 +5,7 @@ import {
   listMyGallerySubmissions,
 } from "@legacy/services/meApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/SubmissionsView.vue?react-style";
+import "@react/legacy-styles/generated/views/SubmissionsView.css";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { OptimizedImage } from "../components/OptimizedImage.jsx";
 import { ProfileSectionShell } from "../components/ProfileSectionShell.jsx";

@@ -7,7 +7,7 @@ import {
 } from "@legacy/services/trialAccessApi.js";
 import { formatPoints } from "@legacy/services/billingApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/WalletView.vue?react-style";
+import "@react/legacy-styles/generated/views/WalletView.css";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 

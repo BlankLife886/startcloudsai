@@ -4,7 +4,7 @@ import {
   listMyFeedback,
   submitFeedback,
 } from "@legacy/services/feedbackApi.js";
-import "@legacy/views/FeedbackView.vue?react-style";
+import "@react/legacy-styles/generated/views/FeedbackView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { ProfileSectionShell } from "../components/ProfileSectionShell.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";

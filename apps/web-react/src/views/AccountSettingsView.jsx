@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { updateProfile } from "@legacy/services/meApi.js";
 import { uploadFile } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/AccountSettingsView.vue?react-style";
+import "@react/legacy-styles/generated/views/AccountSettingsView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 
 function profileFromUser(user) {

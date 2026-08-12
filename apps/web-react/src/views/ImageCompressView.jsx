@@ -25,7 +25,7 @@ import {
   prependCompressHistory,
   saveCompressResultBlob,
 } from "@legacy/features/image-compress/compressHistory.js";
-import "@legacy/views/ImageCompressView.vue?react-style";
+import "@react/legacy-styles/generated/views/ImageCompressView.css";
 
 function Icon({ name, className = "" }) {
   return <i className={`bi bi-${name}${className ? ` ${className}` : ""}`} aria-hidden="true" />;

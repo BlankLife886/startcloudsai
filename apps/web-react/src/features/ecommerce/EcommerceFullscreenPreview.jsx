@@ -3,14 +3,14 @@ import { fetchAuthenticatedMediaBlob } from "@legacy/services/authenticatedMedia
 import { buildPreviewFilterCssString } from "@legacy/features/filters/filterEngine.js";
 import { FILTER_PRESETS } from "@legacy/features/filters/filterPresets.js";
 import { buildPresetFilterState } from "@legacy/components/wallpaper/fullscreen-preview/features/filters/filterPresetApplier.js";
-import "@legacy/components/common/WallevenImagePreview.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarActions.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarNavigation.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/viewport/WallpaperPreviewZoomHint.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/compare/WallpaperPreviewComparisonStage.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/info/WallpaperPreviewInfoPanel.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/info/InfoMetadataSection.vue?react-style";
-import "@legacy/components/wallpaper/fullscreen-preview/features/info/InfoUserContentSection.vue?react-style";
+import "@react/legacy-styles/generated/components/common/WallevenImagePreview.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarActions.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarNavigation.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/viewport/WallpaperPreviewZoomHint.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/compare/WallpaperPreviewComparisonStage.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/WallpaperPreviewInfoPanel.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/InfoMetadataSection.css";
+import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/InfoUserContentSection.css";
 import "@legacy/components/wallpaper/fullscreen-preview/features/info/info-tags.css";
 import "@legacy/components/wallpaper/fullscreen-preview/features/filters/filter-panel.css";
 

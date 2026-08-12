@@ -7,7 +7,7 @@ import {
   normalizeCanvasRoutePath,
 } from "@legacy/services/canvasApp.js";
 import { useIsDark } from "../hooks/useIsDark.js";
-import "@legacy/views/CanvasAppView.vue?react-style";
+import "@react/legacy-styles/generated/views/CanvasAppView.css";
 import "./CanvasAppView.css";
 
 export function CanvasAppView() {

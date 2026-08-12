@@ -1,0 +1,40 @@
+/* Generated from apps/web/src/views/CanvasAppView.vue. */
+
+.canvas-app-view {
+  position: relative;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+.canvas-app-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+  transition: opacity 160ms ease;
+}
+.canvas-app-frame.is-ready {
+  opacity: 1;
+}
+.canvas-app-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--bs-secondary-color);
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+:global(html.color-scheme-dark) .canvas-app-view,
+:global(html.color-scheme-dark) .canvas-app-frame,
+:global(html.color-scheme-dark) .canvas-app-loading {
+  background: var(--canvas-app-surface, oklch(0.145 0 0));
+}

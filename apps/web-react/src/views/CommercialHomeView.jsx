@@ -5,12 +5,12 @@ import { useGSAP } from "@gsap/react";
 import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
 import { GradientBlindsHero } from "../components/GradientBlindsHero.jsx";
 import "@legacy/features/home-commercial/commercial-home.css";
-import "@legacy/features/home-commercial/components/CapabilityLoop.vue?react-style";
-import "@legacy/features/home-commercial/components/CardSwapGallery.vue?react-style";
-import "@legacy/features/home-commercial/components/FlowingMenu.vue?react-style";
-import "@legacy/features/home-commercial/components/GradientBlindsHero.vue?react-style";
-import "@legacy/features/home-commercial/components/StrandsBand.vue?react-style";
-import "@legacy/features/home-commercial/components/TypeLine.vue?react-style";
+import "@react/legacy-styles/generated/features/home-commercial/components/CapabilityLoop.css";
+import "@react/legacy-styles/generated/features/home-commercial/components/CardSwapGallery.css";
+import "@react/legacy-styles/generated/features/home-commercial/components/FlowingMenu.css";
+import "@react/legacy-styles/generated/features/home-commercial/components/GradientBlindsHero.css";
+import "@react/legacy-styles/generated/features/home-commercial/components/StrandsBand.css";
+import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import "./commercial-home-react.css";
 
 gsap.registerPlugin(useGSAP);

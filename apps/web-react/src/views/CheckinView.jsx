@@ -5,7 +5,7 @@ import {
   getCheckinState,
 } from "@legacy/services/checkinApi.js";
 import { formatPoints } from "@legacy/services/billingApi.js";
-import "@legacy/views/CheckinView.vue?react-style";
+import "@react/legacy-styles/generated/views/CheckinView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 

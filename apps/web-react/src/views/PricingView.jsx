@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import "@legacy/views/PricingView.vue?react-style";
+import "@react/legacy-styles/generated/views/PricingView.css";
 
 const sectionTabs = [
   ["plans", "套餐方案"],
