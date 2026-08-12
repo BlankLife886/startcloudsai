@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1 --port 3105 --strictPort",
     "build": "vite build",
     "extract:vue-styles": "node scripts/extract-vue-styles.mjs",
+    "extract:vue-game-art-constants": "node scripts/extract-vue-game-art-constants.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 3105 --strictPort"
   },
   "dependencies": {

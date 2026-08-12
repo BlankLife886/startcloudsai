@@ -19,7 +19,7 @@ import {
   CLARITY_OPTIONS,
   REFERENCE_CONSTRAINT_OPTIONS,
   STUDIO_BACKGROUND_OPTIONS,
-} from "@legacy/views/GameArtStudioView.vue?react-game-art-constants";
+} from "../generated/gameArtConstants.js";
 import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
 import { withTransparentPngInstruction } from "@legacy/features/ai-shared/transparentPng.js";
 import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
