@@ -1,11 +1,8 @@
-import {
-  activateLegacyStyle,
-  deactivateLegacyStyle,
-} from "@legacy/views/CreatorIncentiveDetailView.vue?react-style";
+import routeCss from "@react/legacy-styles/generated/views/CreatorIncentiveDetailView.css?inline";
 import { CreatorIncentiveDetailView as View } from "../IncentiveViews.jsx";
 import { useRouteStyle } from "./useRouteStyle.js";
 
 export function CreatorIncentiveDetailView() {
-  useRouteStyle(activateLegacyStyle, deactivateLegacyStyle);
+  useRouteStyle("react-route-style-creator-incentive-detail", routeCss);
   return <View />;
 }

@@ -1,11 +1,8 @@
-import {
-  activateLegacyStyle,
-  deactivateLegacyStyle,
-} from "@legacy/views/FriendGroupView.vue?react-style";
+import routeCss from "@react/legacy-styles/generated/views/FriendGroupView.css?inline";
 import { FriendGroupView as View } from "../IncentiveViews.jsx";
 import { useRouteStyle } from "./useRouteStyle.js";
 
 export function FriendGroupView() {
-  useRouteStyle(activateLegacyStyle, deactivateLegacyStyle);
+  useRouteStyle("react-route-style-friend-group", routeCss);
   return <View />;
 }
