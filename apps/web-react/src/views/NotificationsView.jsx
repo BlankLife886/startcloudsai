@@ -3,10 +3,10 @@ import { useLocation, useNavigate } from "react-router";
 import {
   listNotifications,
   markNotificationsRead,
-} from "@legacy/services/meApi.js";
-import { TASK_UPDATE_EVENT } from "@legacy/services/tasksApi.js";
-import notificationService from "@legacy/services/notification.js";
-import { translateClientText } from "@legacy/i18n/clientTranslations.js";
+} from "@react/legacy-modules/services/meApi.js";
+import { TASK_UPDATE_EVENT } from "@react/legacy-modules/services/tasksApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
+import { translateClientText } from "@react/legacy-modules/i18n/clientTranslations.js";
 import "@react/legacy-styles/generated/views/NotificationsView.css";
 import { useIsDark } from "../hooks/useIsDark.js";
 

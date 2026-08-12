@@ -20,14 +20,14 @@ import {
   REFERENCE_CONSTRAINT_OPTIONS,
   STUDIO_BACKGROUND_OPTIONS,
 } from "../generated/gameArtConstants.js";
-import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
-import { withTransparentPngInstruction } from "@legacy/features/ai-shared/transparentPng.js";
-import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
-import { getScopedLocalItem, setScopedLocalItem } from "@legacy/services/scopedLocalStorage.js";
-import { listPromptLibrary, recordPromptEngagement } from "@legacy/services/promptLibrary.js";
-import { listMyShareAssets, submitShareItem } from "@legacy/services/shareGallery.js";
-import { composePendingLaunchPrompt, takePendingPrompt } from "@legacy/features/creator-hub/studioTools.js";
-import notificationService from "@legacy/services/notification.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { withTransparentPngInstruction } from "@react/legacy-modules/features/ai-shared/transparentPng.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { getScopedLocalItem, setScopedLocalItem } from "@react/legacy-modules/services/scopedLocalStorage.js";
+import { listPromptLibrary, recordPromptEngagement } from "@react/legacy-modules/services/promptLibrary.js";
+import { listMyShareAssets, submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
+import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/GameArtStudioView.css";
 import "@react/legacy-styles/generated/features/creative-studios/ClockFilmstrip.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";

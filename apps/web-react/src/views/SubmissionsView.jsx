@@ -3,8 +3,8 @@ import { Link } from "react-router";
 import {
   deleteMyGallerySubmission,
   listMyGallerySubmissions,
-} from "@legacy/services/meApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/meApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/SubmissionsView.css";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { OptimizedImage } from "../components/OptimizedImage.jsx";

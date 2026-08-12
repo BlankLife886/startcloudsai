@@ -5,9 +5,9 @@ import {
   listServerAiJobs,
   uploadAiInputFile,
   waitForServerAiJob,
-} from "@legacy/services/aiWallpaper.js";
-import { coerceImageModelSettings } from "@legacy/features/ai-shared/modelImageCapabilities.js";
-import { normalizeGptImageOutputSize } from "@legacy/services/aiImageOutputSize.js";
+} from "@react/legacy-modules/services/aiWallpaper.js";
+import { coerceImageModelSettings } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiImageOutputSize.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 

@@ -3,8 +3,8 @@ import { Link } from "react-router";
 import {
   claimDailyCheckin,
   getCheckinState,
-} from "@legacy/services/checkinApi.js";
-import { formatPoints } from "@legacy/services/billingApi.js";
+} from "@react/legacy-modules/services/checkinApi.js";
+import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import "@react/legacy-styles/generated/views/CheckinView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";

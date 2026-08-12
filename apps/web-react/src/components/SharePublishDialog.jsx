@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { getShareOverview } from "@legacy/services/shareGallery.js";
+import { getShareOverview } from "@react/legacy-modules/services/shareGallery.js";
 import "@react/legacy-styles/generated/features/share/components/SharePublishDialog.css";
 
 export function SharePublishDialog({

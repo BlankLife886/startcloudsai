@@ -22,17 +22,17 @@ import {
   readColoringSettings,
   resolveOutputPixelSize,
   writeColoringSettings,
-} from "@legacy/services/aiIllustrationColoringState.js";
+} from "@react/legacy-modules/services/aiIllustrationColoringState.js";
 import {
   isActiveColoringJobStatus,
-} from "@legacy/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
-import { formatColoringErrorText } from "@legacy/features/ai-illustration-coloring/domain/coloringStability.js";
-import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
-import { resolveModelPointPricing } from "@legacy/features/ai-shared/modelPointPricing.js";
-import { getWallet } from "@legacy/services/meApi.js";
-import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
-import { submitShareItem } from "@legacy/services/shareGallery.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
+import { formatColoringErrorText } from "@react/legacy-modules/features/ai-illustration-coloring/domain/coloringStability.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { getWallet } from "@react/legacy-modules/services/meApi.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-static/features/ai-illustration-coloring/styles/illustration-coloring.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-illustration-coloring/components/ColoringLibraryDrawer.css";

@@ -1,1 +1,1 @@
-export * from "@legacy/features/ecommerce/ecommerceTools.js";
+export * from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";

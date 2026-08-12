@@ -1,1 +1,1 @@
-export * from "@legacy/services/authenticatedMedia.js";
+export * from "@react/legacy-modules/services/authenticatedMedia.js";

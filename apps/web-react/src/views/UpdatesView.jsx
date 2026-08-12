@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CHANGELOG, CHANGELOG_TAG_FILTERS, getChangelogTagMeta } from "@legacy/config/changelog.js";
+import { CHANGELOG, CHANGELOG_TAG_FILTERS, getChangelogTagMeta } from "@react/legacy-modules/config/changelog.js";
 import "@react/legacy-static/features/updates/styles/updates-page.css";
 
 function timestamp(value) { const time = new Date(value || 0).getTime(); return Number.isFinite(time) ? time : 0; }

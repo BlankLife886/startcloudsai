@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { getWallet, listWalletLedger } from "@legacy/services/meApi.js";
+import { getWallet, listWalletLedger } from "@react/legacy-modules/services/meApi.js";
 import {
   claimTrialAccessReward,
   getTrialAccessApplication,
-} from "@legacy/services/trialAccessApi.js";
-import { formatPoints } from "@legacy/services/billingApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/trialAccessApi.js";
+import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/WalletView.css";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";

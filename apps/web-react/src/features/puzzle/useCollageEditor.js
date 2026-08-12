@@ -5,7 +5,7 @@ import {
   getBackgroundPresetById,
   getTemplateById,
   resolveBoardRatio,
-} from "@legacy/features/ai-puzzle/domain/collageTemplates.js";
+} from "@react/legacy-modules/features/ai-puzzle/domain/collageTemplates.js";
 
 const HISTORY_LIMIT = 60;
 

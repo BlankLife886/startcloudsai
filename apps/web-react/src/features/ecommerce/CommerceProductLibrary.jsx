@@ -4,9 +4,9 @@ import {
   deleteCommerceProduct,
   listCommerceProducts,
   updateCommerceProduct,
-} from "@legacy/services/ecommerceApi.js";
-import { createUserAsset, deleteUserAsset } from "@legacy/services/meApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
+} from "@react/legacy-modules/services/ecommerceApi.js";
+import { createUserAsset, deleteUserAsset } from "@react/legacy-modules/services/meApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import "@react/legacy-styles/generated/components/ecommerce/CommerceProductLibrary.css";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 

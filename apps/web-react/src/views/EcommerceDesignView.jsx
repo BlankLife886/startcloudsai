@@ -16,11 +16,11 @@ import {
   prepareEcommerceInputFiles,
   supportedEcommerceModules,
 } from "../features/ecommerce/ecommerceTools.js";
-import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
-import { generateCommerceProductBrief } from "@legacy/services/ecommerceApi.js";
-import { listUserAssetGroups, listUserAssets } from "@legacy/services/meApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
-import { fetchAuthenticatedMediaBlob } from "@legacy/services/authenticatedMedia.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { generateCommerceProductBrief } from "@react/legacy-modules/services/ecommerceApi.js";
+import { listUserAssetGroups, listUserAssets } from "@react/legacy-modules/services/meApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
 import listingPreview from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
 import detailPreview from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
 import tryonPreview from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";

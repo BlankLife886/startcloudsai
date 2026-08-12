@@ -5,19 +5,19 @@ import {
   getServerAiJob,
   listServerAiJobs,
   uploadAiInputFile,
-} from "@legacy/services/aiWallpaper.js";
-import { createIllustrationColoringJob } from "@legacy/services/aiIllustrationColoring.js";
-import { prepareColoringUploadBlob } from "@legacy/features/ai-illustration-coloring/domain/prepareColoringUpload.js";
+} from "@react/legacy-modules/services/aiWallpaper.js";
+import { createIllustrationColoringJob } from "@react/legacy-modules/services/aiIllustrationColoring.js";
+import { prepareColoringUploadBlob } from "@react/legacy-modules/features/ai-illustration-coloring/domain/prepareColoringUpload.js";
 import {
   isActiveColoringJobStatus,
   mapColoringJobToHistory,
-} from "@legacy/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
+} from "@react/legacy-modules/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
 import {
   mergeColoringHistory,
   readColoringHistory,
   resolveOutputPixelSize,
   writeColoringHistory,
-} from "@legacy/services/aiIllustrationColoringState.js";
+} from "@react/legacy-modules/services/aiIllustrationColoringState.js";
 
 function newestFirst(items) {
   return [...items].sort(

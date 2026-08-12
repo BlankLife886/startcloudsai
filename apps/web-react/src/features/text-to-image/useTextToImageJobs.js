@@ -6,7 +6,7 @@ import {
   listServerAiJobs,
   uploadAiInputFile,
   waitForServerAiJob,
-} from "@legacy/services/aiWallpaper.js";
+} from "@react/legacy-modules/services/aiWallpaper.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 

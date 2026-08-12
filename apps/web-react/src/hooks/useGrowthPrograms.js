@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getGrowthPrograms } from "@legacy/services/growthApi.js";
+import { getGrowthPrograms } from "@react/legacy-modules/services/growthApi.js";
 
 export function useGrowthPrograms({ auto = true } = {}) {
   const mountedRef = useRef(true);

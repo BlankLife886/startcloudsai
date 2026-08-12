@@ -14,28 +14,28 @@ import {
   subscribeTask,
   TASK_TYPE_LABELS,
   TASK_UPDATE_EVENT,
-} from "@legacy/services/tasksApi.js";
-import { formatPoints } from "@legacy/services/billingApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/tasksApi.js";
+import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import {
   taskCoverUrl,
   taskOriginalUrl,
   taskThumbnailUrl,
-} from "@legacy/features/creator-hub/taskMedia.js";
-import { taskAspectCss } from "@legacy/features/creator-hub/useMasonryFeed.js";
+} from "@react/legacy-modules/features/creator-hub/taskMedia.js";
+import { taskAspectCss } from "../features/history/taskAspectCss.js";
 import {
   isSmartCanvasTask,
   stashPendingPrompt,
   studioRouteForTask,
-} from "@legacy/features/creator-hub/studioTools.js";
-import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   downloadHistoryImagesAsZip,
   readHistoryImageMetadata,
-} from "@legacy/services/historyMediaTools.js";
-import { stashLocalEditHandoff } from "@legacy/services/localEditHandoff.js";
-import { submitShareItem } from "@legacy/services/shareGallery.js";
-import { setBodyScrollLock } from "@legacy/utils/bodyScrollLock.js";
+} from "@react/legacy-modules/services/historyMediaTools.js";
+import { stashLocalEditHandoff } from "@react/legacy-modules/services/localEditHandoff.js";
+import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
+import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";

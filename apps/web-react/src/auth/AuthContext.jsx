@@ -3,7 +3,7 @@ import { Navigate, Outlet, useLocation } from "react-router";
 import {
   fetchCurrentAccount,
   getAuthSession,
-} from "@legacy/services/auth.js";
+} from "@react/legacy-modules/services/auth.js";
 
 const AuthContext = createContext(null);
 

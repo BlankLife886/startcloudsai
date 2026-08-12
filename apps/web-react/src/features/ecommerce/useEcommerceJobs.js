@@ -6,7 +6,7 @@ import {
   listTasks,
   uploadFile,
   waitForTask,
-} from "@legacy/services/tasksApi.js";
+} from "@react/legacy-modules/services/tasksApi.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 

@@ -9,9 +9,9 @@ import {
   listUserAssets,
   updateUserAsset,
   updateUserAssetGroup,
-} from "@legacy/services/meApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/meApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/MaterialsLibraryView.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";

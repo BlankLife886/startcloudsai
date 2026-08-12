@@ -6,15 +6,15 @@ import {
   listServerAiJobs,
   uploadAiInputFile,
   waitForServerAiJob,
-} from "@legacy/services/aiWallpaper.js";
+} from "@react/legacy-modules/services/aiWallpaper.js";
 import {
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
-} from "@legacy/features/ai-shared/modelImageCapabilities.js";
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
   GPT_IMAGE_OUTPUT_LIMITS,
   normalizeGptImageOutputSize,
-} from "@legacy/services/aiImageOutputSize.js";
+} from "@react/legacy-modules/services/aiImageOutputSize.js";
 
 const HISTORY_LIMIT = 24;
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);

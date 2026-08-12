@@ -4,14 +4,14 @@ import {
   formatCents,
   formatPoints,
   listPlans,
-} from "@legacy/services/billingApi.js";
-import { submitFeedback } from "@legacy/services/feedbackApi.js";
+} from "@react/legacy-modules/services/billingApi.js";
+import { submitFeedback } from "@react/legacy-modules/services/feedbackApi.js";
 import {
   createGrowthGroup,
   joinGrowthGroup,
-} from "@legacy/services/growthApi.js";
-import { getWallet } from "@legacy/services/meApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/growthApi.js";
+import { getWallet } from "@react/legacy-modules/services/meApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import highFiveArt from "@react/legacy-static/assets/incentives/group-highfive.png";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useGrowthPrograms } from "../hooks/useGrowthPrograms.js";

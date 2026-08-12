@@ -17,14 +17,14 @@ import {
   outputFilename,
   savingsPercent,
   terminateCompressWorker,
-} from "@legacy/features/image-compress/compressEngine.js";
+} from "@react/legacy-modules/features/image-compress/compressEngine.js";
 import {
   clearCompressHistory,
   loadCompressHistory,
   loadCompressResultBlob,
   prependCompressHistory,
   saveCompressResultBlob,
-} from "@legacy/features/image-compress/compressHistory.js";
+} from "@react/legacy-modules/features/image-compress/compressHistory.js";
 import "@react/legacy-styles/generated/views/ImageCompressView.css";
 
 function Icon({ name, className = "" }) {

@@ -123,9 +123,8 @@ export default defineConfig({
   publicDir: fileURLToPath(new URL("../web/public", import.meta.url)),
   resolve: {
     alias: {
-      "@": fileURLToPath(new URL("../web/src", import.meta.url)),
+      "@": fileURLToPath(new URL("./src/legacy-modules", import.meta.url)),
       "@react": fileURLToPath(new URL("./src", import.meta.url)),
-      "@legacy": fileURLToPath(new URL("../web/src", import.meta.url)),
       "@canvas": CANVAS_SOURCE_DIR,
     },
     dedupe: ["react", "react-dom", "react-router"],

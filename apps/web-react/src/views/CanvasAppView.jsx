@@ -5,7 +5,7 @@ import { CanvasEmbeddedApp } from "@canvas/embedded.tsx";
 import {
   CANVAS_APP_PATH,
   normalizeCanvasRoutePath,
-} from "@legacy/services/canvasApp.js";
+} from "@react/legacy-modules/services/canvasApp.js";
 import { useIsDark } from "../hooks/useIsDark.js";
 import "@react/legacy-styles/generated/views/CanvasAppView.css";
 import "./CanvasAppView.css";

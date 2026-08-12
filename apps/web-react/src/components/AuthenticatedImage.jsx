@@ -3,7 +3,7 @@ import {
   isAuthenticatedAiMediaUrl,
   releaseAuthenticatedMediaUrl,
   resolveAuthenticatedMediaUrl,
-} from "@legacy/services/authenticatedMedia.js";
+} from "@react/legacy-modules/services/authenticatedMedia.js";
 import "@react/legacy-styles/generated/components/common/AuthenticatedImage.css";
 
 export function AuthenticatedImage({

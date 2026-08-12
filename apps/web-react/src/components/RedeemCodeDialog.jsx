@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { redeemWalletCode } from "@legacy/services/meApi.js";
-import { formatPoints } from "@legacy/services/billingApi.js";
-import notificationService from "@legacy/services/notification.js";
+import { redeemWalletCode } from "@react/legacy-modules/services/meApi.js";
+import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/components/layout/RedeemCodeDialog.css";
 
 const ERROR_MESSAGES = {

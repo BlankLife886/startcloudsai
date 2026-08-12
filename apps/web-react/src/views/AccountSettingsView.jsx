@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { updateProfile } from "@legacy/services/meApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
-import notificationService from "@legacy/services/notification.js";
+import { updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/AccountSettingsView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 

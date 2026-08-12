@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchAuthenticatedMediaBlob,
   getCachedAuthenticatedMediaBlob,
-} from "@legacy/services/authenticatedMedia.js";
+} from "@react/legacy-modules/services/authenticatedMedia.js";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/LocalMaskEditorDialog.css";
 
 const QUICK_PROMPTS = [

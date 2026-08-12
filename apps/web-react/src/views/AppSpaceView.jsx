@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { APP_CATALOG, APP_SCOPE_EMPTY, APP_SCOPE_LABELS, APP_TYPE_LABELS } from "@legacy/config/appCatalog.js";
+import { APP_CATALOG, APP_SCOPE_EMPTY, APP_SCOPE_LABELS, APP_TYPE_LABELS } from "@react/legacy-modules/config/appCatalog.js";
 import "@react/legacy-static/features/app-space/styles/app-space.css";
 
 const scopeOrder = ["site", "other"];

@@ -10,7 +10,7 @@ import {
   SPEC_OPTIONS,
   COMPONENT_STATES,
 } from "../features/design-workshop/options.js";
-import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import {
   cancelServerAiJob,
   createServerAiJob,
@@ -18,57 +18,57 @@ import {
   listServerAiJobs,
   uploadAiInputFile,
   waitForServerAiJob,
-} from "@legacy/services/aiWallpaper.js";
+} from "@react/legacy-modules/services/aiWallpaper.js";
 import {
   downloadAuthenticatedMedia,
   fetchAuthenticatedMediaBlob,
-} from "@legacy/services/authenticatedMedia.js";
+} from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   getScopedLocalItem,
   setScopedLocalItem,
-} from "@legacy/services/scopedLocalStorage.js";
+} from "@react/legacy-modules/services/scopedLocalStorage.js";
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
-} from "@legacy/features/creator-hub/studioTools.js";
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   DESIGN_DEVICE_OPTIONS,
   getDesignDevice,
   normalizeSelectedDeviceIds,
-} from "@legacy/features/design-workshop/designDevices.js";
-import { metricsForDeviceOption } from "@legacy/features/design-workshop/multiDeviceConsistency.js";
+} from "@react/legacy-modules/features/design-workshop/designDevices.js";
+import { metricsForDeviceOption } from "@react/legacy-modules/features/design-workshop/multiDeviceConsistency.js";
 import {
   buildTileRefinePrompt,
   extractQuadrantTileFiles,
   resolveTileOutputLongSide,
   stitchQuadrantTiles,
-} from "@legacy/features/design-workshop/tilePrecisionRefine.js";
+} from "@react/legacy-modules/features/design-workshop/tilePrecisionRefine.js";
 import {
   buildVersionForest,
   canIterate,
   collectDescendants,
   pickCarrier,
-} from "@legacy/features/design-workshop/versionTree.js";
+} from "@react/legacy-modules/features/design-workshop/versionTree.js";
 import {
   DESIGN_QUALITY_REVIEW_MODES,
   auditAiDesignQuality,
   buildQualityIterationPrompt,
-} from "@legacy/features/design-workshop/designQualityProfile.js";
+} from "@react/legacy-modules/features/design-workshop/designQualityProfile.js";
 import {
   REGION_EDIT_ACTIONS,
   REGION_RECOGNITION_OPTIONS,
   regionNodeMatchesRecognitionTypes,
   resolveRegionSelectionRequestSize,
-} from "@legacy/features/design-workshop/regionOutputPolicy.js";
+} from "@react/legacy-modules/features/design-workshop/regionOutputPolicy.js";
 import {
   analyzeDesignCropElements,
   buildRegionEditInstruction,
   generateDesignRegionImage,
-} from "@legacy/features/design-workshop/aiDesignDocument.js";
-import { uploadAiTempBlob } from "@legacy/features/ai-shared/aiImageIO.js";
-import { createUserAsset } from "@legacy/services/meApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/features/design-workshop/aiDesignDocument.js";
+import { uploadAiTempBlob } from "@react/legacy-modules/features/ai-shared/aiImageIO.js";
+import { createUserAsset } from "@react/legacy-modules/services/meApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/DesignWorkshopView.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/design-workshop/components/DesignVersionDrawer.css";

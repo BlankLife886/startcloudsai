@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { fetchAuthenticatedMediaBlob } from "@legacy/services/authenticatedMedia.js";
-import { buildPreviewFilterCssString } from "@legacy/features/filters/filterEngine.js";
-import { FILTER_PRESETS } from "@legacy/features/filters/filterPresets.js";
-import { buildPresetFilterState } from "@legacy/components/wallpaper/fullscreen-preview/features/filters/filterPresetApplier.js";
+import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { buildPreviewFilterCssString } from "@react/legacy-modules/features/filters/filterEngine.js";
+import { FILTER_PRESETS } from "@react/legacy-modules/features/filters/filterPresets.js";
+import { buildPresetFilterState } from "@react/legacy-modules/components/wallpaper/fullscreen-preview/features/filters/filterPresetApplier.js";
 import "@react/legacy-styles/generated/components/common/WallevenImagePreview.css";
 import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarActions.css";
 import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarNavigation.css";

@@ -3,7 +3,7 @@ import { useLocation } from "react-router";
 import {
   listMyFeedback,
   submitFeedback,
-} from "@legacy/services/feedbackApi.js";
+} from "@react/legacy-modules/services/feedbackApi.js";
 import "@react/legacy-styles/generated/views/FeedbackView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { ProfileSectionShell } from "../components/ProfileSectionShell.jsx";

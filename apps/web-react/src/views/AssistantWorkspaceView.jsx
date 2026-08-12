@@ -16,14 +16,14 @@ import {
   listAssistantConversations,
   openAssistantRunStream,
   waitForAssistantRun,
-} from "@legacy/services/assistantApi.js";
-import { uploadFile } from "@legacy/services/tasksApi.js";
-import { getWallet, updateProfile } from "@legacy/services/meApi.js";
+} from "@react/legacy-modules/services/assistantApi.js";
+import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
-} from "@legacy/features/creator-hub/studioTools.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import {
   IMAGE_COUNTS,
   conversationTitle,
@@ -34,15 +34,15 @@ import {
   messagePreview,
   messageStatus,
   uid,
-} from "@legacy/features/assistant/domain/assistantMessages.js";
-import { resolveVisualContext } from "@legacy/features/assistant/domain/visualContext.js";
+} from "@react/legacy-modules/features/assistant/domain/assistantMessages.js";
+import { resolveVisualContext } from "@react/legacy-modules/features/assistant/domain/visualContext.js";
 import {
   clearAssistantHistory,
   loadAssistantHistory,
   loadAssistantWorkspaceState,
   saveAssistantWorkspaceState,
-} from "@legacy/services/assistantHistory.js";
-import { normalizeImageModelCapabilities } from "@legacy/features/ai-shared/modelImageCapabilities.js";
+} from "@react/legacy-modules/services/assistantHistory.js";
+import { normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import "@react/legacy-static/features/assistant/styles/assistant-workspace.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";

@@ -6,7 +6,7 @@ import { useNavigate } from "react-router";
 import {
   buildWallpaperSkillPrompt,
   resolveActiveWallpaperSkills,
-} from "@legacy/features/ai-wallpaper/skills/wallpaperSkills.js";
+} from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkills.js";
 import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
@@ -17,28 +17,28 @@ import {
   WALLPAPER_PROMPT_PRESETS,
   WALLPAPER_SKILL_OPTIONS,
   resolveT2iOutputSize,
-} from "@legacy/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
+} from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
   getModelAutoAspectRatioCandidates,
   getModelAspectRatiosForResolution,
   normalizeImageModelCapabilities,
-} from "@legacy/features/ai-shared/modelImageCapabilities.js";
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
-} from "@legacy/features/creator-hub/studioTools.js";
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
   normalizeRuntimeConfig,
-} from "@legacy/services/runtimeConfig.js";
-import { getWallet, updateProfile } from "@legacy/services/meApi.js";
-import { getFeatureUnitPriceCents } from "@legacy/services/pricing.js";
-import { registerUploadedUrl } from "@legacy/services/aiWallpaper.js";
-import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
-import notificationService from "@legacy/services/notification.js";
-import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@legacy/services/aiWallpaperState.js";
-import { resolveModelPointPricing } from "@legacy/features/ai-shared/modelPointPricing.js";
+} from "@react/legacy-modules/services/runtimeConfig.js";
+import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
+import { registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
+import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/aiWallpaperState.js";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import "@react/legacy-static/features/ai-wallpaper/styles/t2i-page.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";

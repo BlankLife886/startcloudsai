@@ -3,34 +3,34 @@ import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Link, useNavigate } from "react-router";
-import { fetchAssistantConfig } from "@legacy/services/assistantApi.js";
-import { getWallet } from "@legacy/services/meApi.js";
+import { fetchAssistantConfig } from "@react/legacy-modules/services/assistantApi.js";
+import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import {
   listPromptLibrary,
   recordPromptEngagement,
-} from "@legacy/services/promptLibrary.js";
-import { getFeatureUnitPriceCents } from "@legacy/services/pricing.js";
+} from "@react/legacy-modules/services/promptLibrary.js";
+import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
 import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
   normalizeRuntimeConfig,
-} from "@legacy/services/runtimeConfig.js";
-import { listTasks, uploadFile } from "@legacy/services/tasksApi.js";
-import notificationService from "@legacy/services/notification.js";
-import { imageCountFromPrompt } from "@legacy/features/assistant/domain/assistantMessages.js";
-import { ECOMMERCE_MODES } from "@legacy/features/ecommerce/ecommerceTools.js";
+} from "@react/legacy-modules/services/runtimeConfig.js";
+import { listTasks, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
+import { imageCountFromPrompt } from "@react/legacy-modules/features/assistant/domain/assistantMessages.js";
+import { ECOMMERCE_MODES } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 import {
   studioLaunchDefaults,
   studioLaunchFields,
-} from "@legacy/features/creator-hub/studioLaunchProfiles.js";
+} from "@react/legacy-modules/features/creator-hub/studioLaunchProfiles.js";
 import {
   STUDIO_TOOLS,
   stashPendingPrompt,
-} from "@legacy/features/creator-hub/studioTools.js";
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   taskOriginalUrl,
   taskThumbnailUrl,
-} from "@legacy/features/creator-hub/taskMedia.js";
+} from "@react/legacy-modules/features/creator-hub/taskMedia.js";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
 import "@react/legacy-static/features/creator-hub/studio-hub.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";

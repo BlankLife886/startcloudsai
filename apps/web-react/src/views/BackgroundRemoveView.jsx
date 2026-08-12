@@ -10,18 +10,18 @@ import {
   outputFilename,
   savingsPercent,
   terminateCompressWorker,
-} from "@legacy/features/image-compress/compressEngine.js";
-import { taskCoverUrl, taskOriginalUrl } from "@legacy/features/creator-hub/taskMedia.js";
-import { fetchRuntimeConfig } from "@legacy/services/runtimeConfig.js";
-import { getWallet, updateProfile } from "@legacy/services/meApi.js";
-import { listTasks } from "@legacy/services/tasksApi.js";
-import { removeImageBackground, uploadAiInputFile } from "@legacy/services/aiWallpaper.js";
+} from "@react/legacy-modules/features/image-compress/compressEngine.js";
+import { taskCoverUrl, taskOriginalUrl } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { listTasks } from "@react/legacy-modules/services/tasksApi.js";
+import { removeImageBackground, uploadAiInputFile } from "@react/legacy-modules/services/aiWallpaper.js";
 import {
   downloadAuthenticatedMedia,
   fetchAuthenticatedMediaBlob,
-} from "@legacy/services/authenticatedMedia.js";
-import { formatPoints } from "@legacy/services/billingApi.js";
-import notificationService from "@legacy/services/notification.js";
+} from "@react/legacy-modules/services/authenticatedMedia.js";
+import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/BackgroundRemoveView.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "./BackgroundRemoveView.css";
