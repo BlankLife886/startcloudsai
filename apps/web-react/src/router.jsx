@@ -10,8 +10,8 @@ function lazyView(importer, exportName) {
   };
 }
 
-// Production paths are intentionally absent until their React implementations
-// pass the Vue screenshot and interaction contracts in apps/web.
+// Route changes must continue to pass the screenshot and interaction contracts
+// maintained in apps/web-react/tests.
 export const router = createBrowserRouter([
   {
     path: "/auth",

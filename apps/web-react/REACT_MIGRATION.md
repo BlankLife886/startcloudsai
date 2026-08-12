@@ -129,6 +129,7 @@ React 页面迁移清单已全部完成，当前没有剩余页面。主站源�
 - 验收基础设施已从 `apps/web` 迁入 `apps/web-react`，包括 Playwright 配置、交互测试、166 张基准截图和稳定 fixture；截图仅移动位置，未更新内容。CI 已移除 Vue 主站构建，只安装 React 主站与 React 画布依赖，并保留任务并发测试、生产构建和依赖审计。
 - 默认网关 CSP 为本地压缩 Worker 增加受限的 `wasm-unsafe-eval`，未开放普通 `unsafe-eval`；生产网关下拼图、无损压缩、下载和处理中即时路由切换 4 项全部通过。
 - 视觉测试时间固定在基准数据日期，避免通知日期分组和“今日作品”随系统日期漂移。
+- Vue 主站实现最终从仓库删除；仍有回归价值的 17 项领域测试、可视化夹具和首页设计基线已迁入 `apps/web-react`，CI 改为执行完整领域测试，默认音乐生成脚本也只写入 React 公共资源目录。
 
 ## 合入门槛
 
@@ -149,4 +150,4 @@ REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e
 REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e2e/react-account-pages.spec.js --project chromium
 ```
 
-只有当前 Vue 页面经过人工确认后才能更新快照；React 实现只允许运行校验命令，不能通过更新快照掩盖偏差。
+只有在产品页面经过人工确认后才能更新快照；日常 React 改动只允许运行校验命令，不能通过更新快照掩盖偏差。

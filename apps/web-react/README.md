@@ -24,7 +24,9 @@ docker compose --env-file .env up -d --build
 交互与视觉回归：
 
 ```bash
-npm run test:task-concurrency
+npm run test:domain
+npm run test:tile-precision-refine:visual
 npm run test:e2e
-npm run test:e2e:visual
+npx playwright test --grep @visual --project visual-desktop --project visual-mobile --grep-invert 'Ecommerce Vue to React visual contract'
+npx playwright test tests/e2e/ecommerce-migration-visual.spec.js --project visual-desktop
 ```

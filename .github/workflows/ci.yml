@@ -63,8 +63,8 @@ jobs:
         run: |
           npm --prefix apps/canvas-react ci --no-audit --no-fund
           npm --prefix apps/web-react ci --no-audit --no-fund
-      - name: Task concurrency tests
-        run: npm --prefix apps/web-react run test:task-concurrency
+      - name: React main site domain tests
+        run: npm --prefix apps/web-react run test:domain
       - name: Build React main site
         run: npm --prefix apps/web-react run build
       - name: Dependency audit

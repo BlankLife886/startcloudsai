@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const outputDir = resolve(root, 'apps/web/public/music')
+const outputDir = resolve(root, 'apps/web-react/public/music')
 const sampleRate = 22050
 const duration = 36
 

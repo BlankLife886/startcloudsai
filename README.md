@@ -128,7 +128,7 @@ CI 使用 Node.js 22、Go module 中声明的 Go 版本和 PostgreSQL 17，执�
 
 ```bash
 cd apps/server && go vet ./... && go test ./...
-cd apps/web-react && npm ci && npm run test:task-concurrency && npm run build
+cd apps/web-react && npm ci && npm run test:domain && npm run build
 cd apps/admin && npm ci && npm run build
 cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 ```
@@ -147,6 +147,7 @@ cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 - [管理端 UI 规范](docs/ADMIN_UI_STYLE.md)
 - [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)
 - [用户端迁移与视觉基线记录](apps/web-react/REACT_MIGRATION.md)
+- [用户端首页历史设计基线](apps/web-react/DESIGN.md)
 - [用户端开发说明](apps/web-react/README.md)
 - [管理端开发说明](apps/admin/README.md)
 - [服务端开发说明](apps/server/README.md)
