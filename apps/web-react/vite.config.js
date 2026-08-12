@@ -120,7 +120,7 @@ export default defineConfig({
     canvasPublicAssets(),
     react(),
   ],
-  publicDir: fileURLToPath(new URL("../web/public", import.meta.url)),
+  publicDir: fileURLToPath(new URL("./public", import.meta.url)),
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src/legacy-modules", import.meta.url)),
