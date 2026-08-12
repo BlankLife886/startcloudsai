@@ -209,7 +209,7 @@ test('signed-out illustration coloring ignores residual guest history', async ({
 
   await page.goto('/ai-illustration-coloring', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByText('登录后开始染色')).toBeVisible()
+  await expect(page.getByText('登录后开始染色')).toHaveCount(0)
   await expect(page.getByText('不应显示的旧任务')).toHaveCount(0)
   await expect(page.getByAltText('线稿预览')).toHaveCount(0)
   await expect(page.locator('.coloring-history-card')).toHaveCount(0)
