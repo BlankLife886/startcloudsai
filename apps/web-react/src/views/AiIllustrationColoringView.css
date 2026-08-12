@@ -19,15 +19,20 @@
 
 .coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn {
   border: 1px solid rgba(53, 48, 68, 0.1) !important;
-  color: rgba(47, 43, 60, 0.76);
-  background: rgba(255, 255, 255, 0.78) !important;
+  color: #2f2b3c !important;
+  background: #ffffff !important;
   box-shadow:
     0 1px 2px rgba(43, 38, 58, 0.04),
     0 5px 14px rgba(68, 55, 92, 0.05);
 }
 
 .coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn i {
-  color: #b23f7b;
+  color: #a92f70 !important;
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn span {
+  color: inherit !important;
+  opacity: 1 !important;
 }
 
 .coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn:hover,
@@ -37,6 +42,18 @@
   color: #8f2f64;
   background: rgba(250, 224, 239, 0.92) !important;
   box-shadow: 0 5px 16px rgba(190, 66, 126, 0.1);
+}
+
+.coloring-studio-page.is-light .coloring-board-empty strong {
+  color: #2d2938 !important;
+}
+
+.coloring-studio-page.is-light .coloring-board-empty p {
+  color: #686274 !important;
+}
+
+.coloring-studio-page.is-light .coloring-empty-upload {
+  color: #ffffff !important;
 }
 
 .coloring-studio-page .authenticated-image,
