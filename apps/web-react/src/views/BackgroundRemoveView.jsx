@@ -23,7 +23,7 @@ import {
 import { formatPoints } from "@legacy/services/billingApi.js";
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/views/BackgroundRemoveView.vue?react-style";
-import "@legacy/features/ai-shared/AiCostConfirmDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "./BackgroundRemoveView.css";
 
 const STAGE_META = {

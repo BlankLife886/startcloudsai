@@ -27,7 +27,7 @@ import tryonPreview from "@legacy/assets/ecommerce/tryon-preview.webp";
 import clonePreview from "@legacy/assets/ecommerce/clone-preview.webp";
 import "@legacy/views/EcommerceDesignView.vue?react-style";
 import "@legacy/components/ecommerce/EcommerceBriefAssistantDialog.vue?react-style";
-import "@legacy/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { CommerceSelect } from "../features/ecommerce/CommerceSelect.jsx";
 import { CommerceProductLibrary } from "../features/ecommerce/CommerceProductLibrary.jsx";

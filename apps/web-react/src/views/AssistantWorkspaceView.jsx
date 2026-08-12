@@ -44,8 +44,8 @@ import {
 } from "@legacy/services/assistantHistory.js";
 import { normalizeImageModelCapabilities } from "@legacy/features/ai-shared/modelImageCapabilities.js";
 import "@legacy/features/assistant/styles/assistant-workspace.css";
-import "@legacy/features/ai-shared/AiCostConfirmDialog.vue?react-style";
-import "@legacy/features/ai-shared/ModelPointPrice.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
+import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "./assistant-workspace-react.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";

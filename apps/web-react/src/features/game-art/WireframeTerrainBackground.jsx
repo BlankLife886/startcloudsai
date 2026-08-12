@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import "@legacy/features/game-art/WireframeTerrainBackground.vue?react-style";
+import "@react/legacy-styles/generated/features/game-art/WireframeTerrainBackground.css";
 
 const lerp = (from, to, progress) => from + (to - from) * progress;
 const gaussian = (value, center, spread) => {

@@ -20,8 +20,8 @@ import { listMyShareAssets, submitShareItem } from "@legacy/services/shareGaller
 import { composePendingLaunchPrompt, takePendingPrompt } from "@legacy/features/creator-hub/studioTools.js";
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/views/ModelSheetStudioView.vue?react-style";
-import "@legacy/features/ai-wallpaper/components/AspectRatioSelect.vue?react-style";
-import "@legacy/features/ai-shared/ModelPointPrice.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
+import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "./ModelSheetStudioView.css";
 
 gsap.registerPlugin(useGSAP);

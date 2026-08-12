@@ -70,7 +70,7 @@ import { createUserAsset } from "@legacy/services/meApi.js";
 import { uploadFile } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/views/DesignWorkshopView.vue?react-style";
-import "@legacy/features/ai-wallpaper/components/AspectRatioSelect.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@legacy/features/design-workshop/components/DesignVersionDrawer.vue?react-style";
 import "./DesignWorkshopView.css";
 

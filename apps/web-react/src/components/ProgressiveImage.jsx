@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import "@legacy/features/share/components/ShareProgressiveImage.vue?react-style";
+import "@react/legacy-styles/generated/features/share/components/ShareProgressiveImage.css";
 
 export function ProgressiveImage({
   src = "",

@@ -30,8 +30,8 @@ import { composePendingLaunchPrompt, takePendingPrompt } from "@legacy/features/
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/views/GameArtStudioView.vue?react-style";
 import "@legacy/features/creative-studios/ClockFilmstrip.vue?react-style";
-import "@legacy/features/ai-shared/ModelPointPrice.vue?react-style";
-import "@legacy/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 import "./GameArtStudioView.css";
 
 gsap.registerPlugin(useGSAP);

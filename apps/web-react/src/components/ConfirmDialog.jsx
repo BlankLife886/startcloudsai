@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import "@legacy/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 
 export function ConfirmDialog({
   open,

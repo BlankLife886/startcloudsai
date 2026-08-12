@@ -34,10 +34,10 @@ import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.
 import { submitShareItem } from "@legacy/services/shareGallery.js";
 import notificationService from "@legacy/services/notification.js";
 import "@legacy/features/ai-illustration-coloring/styles/illustration-coloring.css";
-import "@legacy/features/ai-wallpaper/components/AspectRatioSelect.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@legacy/features/ai-illustration-coloring/components/ColoringLibraryDrawer.vue?react-style";
 import "@legacy/features/ai-illustration-coloring/components/ColoringSettingsDialog.vue?react-style";
-import "@legacy/features/ai-shared/AiCostConfirmDialog.vue?react-style";
+import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "./AiIllustrationColoringView.css";
 
 const ACTIVE = new Set(["queued", "running", "waiting_provider"]);

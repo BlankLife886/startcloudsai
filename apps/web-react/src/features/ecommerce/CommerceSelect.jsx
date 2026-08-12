@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import "@legacy/features/ecommerce/CommerceSelect.vue?react-style";
+import "@react/legacy-styles/generated/features/ecommerce/CommerceSelect.css";
 
 export function CommerceSelect({
   value,

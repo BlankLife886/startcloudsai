@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { redeemWalletCode } from "@legacy/services/meApi.js";
 import { formatPoints } from "@legacy/services/billingApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/components/layout/RedeemCodeDialog.vue?react-style";
+import "@react/legacy-styles/generated/components/layout/RedeemCodeDialog.css";
 
 const ERROR_MESSAGES = {
   code_invalid: "兑换码不存在，请检查后重试",
