@@ -7,7 +7,7 @@ const user = {
 }
 
 test.beforeEach(async ({ page }, testInfo) => {
-  const sessionUser = testInfo.title.includes('anonymous navigation') ? null : user
+  const sessionUser = testInfo.title.includes('anonymous') ? null : user
   await page.addInitScript((currentUser) => {
     if (currentUser) sessionStorage.setItem('sc_auth_session_cache', JSON.stringify({ user: currentUser }))
     else sessionStorage.removeItem('sc_auth_session_cache')
@@ -116,18 +116,26 @@ test('authenticated navbar redeem button opens the existing redeem dialog', asyn
   await expect(page.locator('.redeem-dialog')).toHaveCount(0)
 })
 
-test('anonymous navigation enters account pages without opening a prompt', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 })
+test('authenticated navbar check-in button enters the check-in page', async ({ page }) => {
   await page.goto('/')
+  await page.locator('.nav-checkin-btn').click()
 
-  const homeLink = page.locator('.main-nav > .nav-link').filter({ hasText: '首页' })
+  await expect(page).toHaveURL(/\/check-in$/)
+  await expect(page.locator('.ck-dashboard')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
+})
+
+test('anonymous history navigation opens auth without entering the page', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/prompts')
+
   const historyLink = page.locator('.main-nav > .nav-link').filter({ hasText: '历史记录' })
   await historyLink.click()
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe('/history')
-  await expect(homeLink).not.toHaveClass(/active/)
-  await expect(historyLink).toHaveClass(/active/)
-  await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/prompts$/)
+  await expect(historyLink).not.toHaveClass(/active/)
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('历史记录')
 })
 
 test('anonymous navigation enters an ecommerce module without opening a prompt', async ({ page }) => {

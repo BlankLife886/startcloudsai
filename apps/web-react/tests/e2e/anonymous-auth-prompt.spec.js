@@ -110,6 +110,25 @@ test('signed-out navbar redeem action opens the shared auth component', async ({
   await expect(page).toHaveURL(/\/$/)
 })
 
+test('signed-out navbar check-in action opens auth without entering the page', async ({ page }) => {
+  await page.goto('/prompts', { waitUntil: 'domcontentloaded' })
+  await page.locator('.nav-checkin-btn').click()
+
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('每日签到')
+  await expect(page).toHaveURL(/\/prompts$/)
+})
+
+test('signed-out navbar history action opens auth without entering the page', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/prompts', { waitUntil: 'domcontentloaded' })
+  await page.locator('.main-nav > .nav-link').filter({ hasText: '历史记录' }).click()
+
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('历史记录')
+  await expect(page).toHaveURL(/\/prompts$/)
+})
+
 test('registration preserves the exact page for returning after authentication', async ({ page }) => {
   await page.goto('/game-art?asset=character', { waitUntil: 'domcontentloaded' })
   await page.locator('.ga-generate').click()

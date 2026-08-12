@@ -167,7 +167,13 @@ const navItems = [
     icon: "bi-journal-richtext",
   },
   { type: "link", to: "/share", label: "社区", icon: "bi-images" },
-  { type: "link", to: "/history", label: "历史记录", icon: "bi-clock-history" },
+  {
+    type: "link",
+    to: "/history",
+    label: "历史记录",
+    icon: "bi-clock-history",
+    requiresAuth: true,
+  },
   {
     type: "link",
     to: "/pricing",
@@ -381,6 +387,22 @@ export function NavBar() {
     setRedeemDialogOpen(true);
   }
 
+  function openCheckin(event) {
+    closeMenu();
+    if (!auth.isAuthenticated) {
+      event.preventDefault();
+      requestAuth({ featureLabel: "每日签到" });
+    }
+  }
+
+  function openNavLink(event, item) {
+    closeMenu();
+    if (item.requiresAuth && !auth.isAuthenticated) {
+      event.preventDefault();
+      requestAuth({ featureLabel: item.label });
+    }
+  }
+
   return (
     <header
       ref={rootRef}
@@ -430,7 +452,7 @@ export function NavBar() {
                   to={item.to}
                   className={`nav-link${item.id === "home" ? " nav-home-link" : ""}${isActive(item.to) ? " active router-link-exact-active" : ""}`}
                   aria-current={isActive(item.to) ? "page" : undefined}
-                  onClick={closeMenu}
+                  onClick={(event) => openNavLink(event, item)}
                 >
                   <i className={`bi ${item.icon}`} />
                   <span>{item.label}</span>
@@ -580,7 +602,7 @@ export function NavBar() {
                 className="nav-checkin-btn"
                 data-no-translate
                 title="每日签到领积分"
-                onClick={closeMenu}
+                onClick={openCheckin}
               >
                 <span className="nav-checkin-btn__icon" aria-hidden="true">
                   <i className="bi bi-calendar-check" />
