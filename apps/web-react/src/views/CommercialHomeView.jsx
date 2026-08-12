@@ -4,7 +4,7 @@ import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
 import { GradientBlindsHero } from "../components/GradientBlindsHero.jsx";
-import "@legacy/features/home-commercial/commercial-home.css";
+import "@react/legacy-static/features/home-commercial/commercial-home.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/CapabilityLoop.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/CardSwapGallery.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/FlowingMenu.css";

@@ -11,8 +11,8 @@ import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/f
 import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/WallpaperPreviewInfoPanel.css";
 import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/InfoMetadataSection.css";
 import "@react/legacy-styles/generated/components/wallpaper/fullscreen-preview/features/info/InfoUserContentSection.css";
-import "@legacy/components/wallpaper/fullscreen-preview/features/info/info-tags.css";
-import "@legacy/components/wallpaper/fullscreen-preview/features/filters/filter-panel.css";
+import "@react/legacy-static/components/wallpaper/fullscreen-preview/features/info/info-tags.css";
+import "@react/legacy-static/components/wallpaper/fullscreen-preview/features/filters/filter-panel.css";
 
 const FILTERS = [
   ["none", "原图", "none"],

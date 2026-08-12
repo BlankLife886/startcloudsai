@@ -1,0 +1,307 @@
+/* 全局主题修复 - 确保所有主题下文字都清晰可见 */
+
+/* 默认主题文字颜色修复 */
+.default-theme {
+  --text-color: #ffffff !important;
+  --text-muted-color: rgba(255, 255, 255, 0.76) !important;
+}
+
+.default-theme h1,
+.default-theme h2,
+.default-theme h3,
+.default-theme h4,
+.default-theme h5,
+.default-theme h6,
+.default-theme p,
+.default-theme span,
+.default-theme label,
+.default-theme input,
+.default-theme select,
+.default-theme textarea,
+.default-theme .form-text,
+.default-theme .form-label,
+.default-theme .form-check-label,
+.default-theme .card-title,
+.default-theme .card-text,
+.default-theme .modal-title,
+.default-theme .modal-body,
+.default-theme .toast-body,
+.default-theme .alert {
+  color: #ffffff !important;
+}
+
+.default-theme .text-muted {
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.default-theme .form-control,
+.default-theme .form-select,
+.default-theme .input-group-text {
+  color: #ffffff !important;
+}
+
+.default-theme .card,
+.default-theme .card-header,
+.default-theme .card-body,
+.default-theme .card-footer,
+.default-theme .theme-card {
+  color: #ffffff !important;
+}
+
+/* 矩阵主题文字颜色修复 */
+.matrix-theme {
+  /* 基本文本元素 */
+  --text-color: #ecfdf5 !important;
+}
+
+/* 确保所有文本元素在矩阵主题下都清晰可见 */
+.matrix-theme h1,
+.matrix-theme h2,
+.matrix-theme h3,
+.matrix-theme h4,
+.matrix-theme h5,
+.matrix-theme h6,
+.matrix-theme p,
+.matrix-theme span,
+.matrix-theme div,
+.matrix-theme a,
+.matrix-theme button,
+.matrix-theme label,
+.matrix-theme input,
+.matrix-theme select,
+.matrix-theme textarea,
+.matrix-theme .form-text,
+.matrix-theme .form-label,
+.matrix-theme .form-check-label,
+.matrix-theme .card-title,
+.matrix-theme .card-text,
+.matrix-theme .nav-link,
+.matrix-theme .dropdown-item,
+.matrix-theme .list-group-item,
+.matrix-theme .table,
+.matrix-theme .modal-title,
+.matrix-theme .modal-body,
+.matrix-theme .toast-body,
+.matrix-theme .alert {
+  color: #ecfdf5 !important;
+}
+
+/* 特殊文本元素 */
+.matrix-theme .text-muted {
+  color: #a0f0a0 !important;
+}
+
+.matrix-theme .text-dark {
+  color: #ecfdf5 !important;
+}
+
+.matrix-theme .text-body {
+  color: #ecfdf5 !important;
+}
+
+/* 表单元素 */
+.matrix-theme .form-control,
+.matrix-theme .form-select,
+.matrix-theme .input-group-text {
+  background-color: rgba(0, 0, 0, 0.8) !important;
+  border-color: #4ade80 !important;
+  color: #ecfdf5 !important;
+}
+
+/* 卡片元素 */
+.matrix-theme .card,
+.matrix-theme .card-header,
+.matrix-theme .card-body,
+.matrix-theme .card-footer {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+  color: #ecfdf5 !important;
+}
+
+/* 导航元素 */
+.matrix-theme .navbar,
+.matrix-theme .nav-item,
+.matrix-theme .dropdown-menu {
+  color: #ecfdf5 !important;
+}
+
+.matrix-theme .dropdown-menu {
+  background-color: rgba(0, 0, 0, 0.9) !important;
+  border-color: #4ade80 !important;
+}
+
+.matrix-theme .dropdown-item:hover {
+  background-color: rgba(74, 222, 128, 0.2) !important;
+  color: #ffffff !important;
+}
+
+/* 按钮元素 */
+.matrix-theme .btn {
+  color: #ecfdf5 !important;
+}
+
+/* 表格元素 */
+.matrix-theme .table {
+  color: #ecfdf5 !important;
+}
+
+.matrix-theme .table-striped > tbody > tr:nth-of-type(odd) > * {
+  background-color: rgba(0, 0, 0, 0.3) !important;
+  color: #ecfdf5 !important;
+}
+
+/* 模态框元素 */
+.matrix-theme .modal-content {
+  background-color: rgba(0, 0, 0, 0.9) !important;
+  border-color: #4ade80 !important;
+  color: #ecfdf5 !important;
+}
+
+/* 列表元素 */
+.matrix-theme .list-group-item {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+  border-color: #4ade80 !important;
+  color: #ecfdf5 !important;
+}
+
+/* 提示元素 */
+.matrix-theme .tooltip-inner {
+  background-color: rgba(0, 0, 0, 0.9) !important;
+  color: #ecfdf5 !important;
+}
+
+/* 弹出元素 */
+.matrix-theme .popover {
+  background-color: rgba(0, 0, 0, 0.9) !important;
+  border-color: #4ade80 !important;
+}
+
+.matrix-theme .popover-body,
+.matrix-theme .popover-header {
+  color: #ecfdf5 !important;
+}
+
+/* 警告元素 */
+.matrix-theme .alert {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+  border-color: #4ade80 !important;
+  color: #ecfdf5 !important;
+}
+
+/* 徽章元素 */
+.matrix-theme .badge {
+  background-color: #4ade80 !important;
+  color: #000000 !important;
+}
+
+/* 进度条元素 */
+.matrix-theme .progress {
+  background-color: rgba(0, 0, 0, 0.5) !important;
+}
+
+.matrix-theme .progress-bar {
+  background-color: #4ade80 !important;
+}
+
+/* 链接颜色 */
+.matrix-theme a {
+  color: #4ade80 !important;
+}
+
+.matrix-theme a:hover {
+  color: #ffffff !important;
+}
+
+/* ---------- 暗色主题：正文与表单对比度 ---------- */
+.dark-theme {
+  --text-muted-color: rgba(255, 255, 255, 0.68) !important;
+}
+
+.dark-theme h1,
+.dark-theme h2,
+.dark-theme h3,
+.dark-theme h4,
+.dark-theme h5,
+.dark-theme h6,
+.dark-theme p,
+.dark-theme span,
+.dark-theme label,
+.dark-theme input,
+.dark-theme select,
+.dark-theme textarea,
+.dark-theme .form-label,
+.dark-theme .form-check-label,
+.dark-theme .card-title,
+.dark-theme .card-text {
+  color: var(--dark-on-background, #ffffff) !important;
+}
+
+.dark-theme .text-muted {
+  color: rgba(255, 255, 255, 0.62) !important;
+}
+
+/* ---------- 亮色主题：避免被其它全局规则刷成白字 ---------- */
+.light-theme {
+  --text-muted-color: rgba(33, 33, 33, 0.62) !important;
+}
+
+.light-theme h1,
+.light-theme h2,
+.light-theme h3,
+.light-theme h4,
+.light-theme h5,
+.light-theme h6,
+.light-theme p,
+.light-theme span,
+.light-theme label,
+.light-theme input,
+.light-theme select,
+.light-theme textarea {
+  color: var(--light-on-background, #212121) !important;
+}
+
+.light-theme .text-muted {
+  color: rgba(33, 33, 33, 0.55) !important;
+}
+
+/* ---------- 赛博朋克：正文用高对比白，避免霓虹粉字难读 ---------- */
+.cyberpunk-theme h1,
+.cyberpunk-theme h2,
+.cyberpunk-theme h3,
+.cyberpunk-theme h4,
+.cyberpunk-theme h5,
+.cyberpunk-theme h6,
+.cyberpunk-theme p,
+.cyberpunk-theme span,
+.cyberpunk-theme label,
+.cyberpunk-theme input,
+.cyberpunk-theme select,
+.cyberpunk-theme textarea,
+.cyberpunk-theme .form-control,
+.cyberpunk-theme .form-select {
+  color: var(--cyberpunk-on-background, #ffffff) !important;
+}
+
+.cyberpunk-theme .text-muted {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* ---------- 极简：与浅色底搭配的正文色 ---------- */
+.minimal-theme .text-muted {
+  color: rgba(0, 0, 0, 0.55) !important;
+}
+
+/* ---------- 复古波：正文白、标题仍可由主题 CSS 控制霓虹 ---------- */
+.retrowave-theme p,
+.retrowave-theme span,
+.retrowave-theme label,
+.retrowave-theme input,
+.retrowave-theme select,
+.retrowave-theme textarea,
+.retrowave-theme .form-control,
+.retrowave-theme .form-select {
+  color: var(--retrowave-on-background, #ffffff) !important;
+}
+
+.retrowave-theme .text-muted {
+  color: rgba(255, 255, 255, 0.72) !important;
+}

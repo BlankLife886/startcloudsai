@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
-import "@legacy/features/share/styles/share-view.css";
+import "@react/legacy-static/features/share/styles/share-view.css";
 
 const PAGE_SIZE = 16;
 gsap.registerPlugin(useGSAP);

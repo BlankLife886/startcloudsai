@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
-import "@legacy/features/creator-hub/creator-hub.css";
+import "@react/legacy-static/features/creator-hub/creator-hub.css";
 
 const taskTypes = [
   ["t2i", "文生图", "/text-to-image"],

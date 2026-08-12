@@ -33,7 +33,7 @@ import { getWallet } from "@legacy/services/meApi.js";
 import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.js";
 import { submitShareItem } from "@legacy/services/shareGallery.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/features/ai-illustration-coloring/styles/illustration-coloring.css";
+import "@react/legacy-static/features/ai-illustration-coloring/styles/illustration-coloring.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-illustration-coloring/components/ColoringLibraryDrawer.css";
 import "@react/legacy-styles/generated/features/ai-illustration-coloring/components/ColoringSettingsDialog.css";

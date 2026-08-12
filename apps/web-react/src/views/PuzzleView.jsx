@@ -13,7 +13,7 @@ import {
   filterTemplates,
   getFilterPresetById,
 } from "@legacy/features/ai-puzzle/domain/collageTemplates.js";
-import "@legacy/features/ai-puzzle/styles/collage-studio.css";
+import "@react/legacy-static/features/ai-puzzle/styles/collage-studio.css";
 import { useCollageEditor } from "../features/puzzle/useCollageEditor.js";
 
 const EXPORT_SIZES = [

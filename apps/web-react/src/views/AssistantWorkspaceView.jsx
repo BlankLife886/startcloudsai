@@ -43,7 +43,7 @@ import {
   saveAssistantWorkspaceState,
 } from "@legacy/services/assistantHistory.js";
 import { normalizeImageModelCapabilities } from "@legacy/features/ai-shared/modelImageCapabilities.js";
-import "@legacy/features/assistant/styles/assistant-workspace.css";
+import "@react/legacy-static/features/assistant/styles/assistant-workspace.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "./assistant-workspace-react.css";

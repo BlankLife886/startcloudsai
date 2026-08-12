@@ -6,9 +6,9 @@ import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { getWallet, listNotifications } from "@legacy/services/meApi.js";
 import { logoutAccount } from "@legacy/services/auth.js";
-import tryonPreview from "@legacy/assets/ecommerce/tryon-preview.webp";
-import listingPreview from "@legacy/assets/ecommerce/listing-preview.webp";
-import detailPreview from "@legacy/assets/ecommerce/detail-preview.webp";
+import tryonPreview from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
+import listingPreview from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
+import detailPreview from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 

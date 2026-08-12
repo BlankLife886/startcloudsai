@@ -36,7 +36,7 @@ import {
 import { stashLocalEditHandoff } from "@legacy/services/localEditHandoff.js";
 import { submitShareItem } from "@legacy/services/shareGallery.js";
 import { setBodyScrollLock } from "@legacy/utils/bodyScrollLock.js";
-import "@legacy/features/creator-hub/creator-hub.css";
+import "@react/legacy-static/features/creator-hub/creator-hub.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";

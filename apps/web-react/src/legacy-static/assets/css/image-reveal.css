@@ -1,0 +1,76 @@
+/* 壁纸缩略图马赛克揭幕（全局 keyframes，供 scoped 内子节点使用） */
+@keyframes walleven-mosaic-fade {
+  from {
+    opacity: 1;
+    filter: brightness(1.1);
+  }
+  to {
+    opacity: 0;
+    filter: brightness(1.35);
+  }
+}
+
+@keyframes walleven-mosaic-particle-phantom {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: saturate(1.05) brightness(1);
+  }
+  48% {
+    opacity: 0.72;
+    transform: translate3d(-1px, -2px, 0) scale(1.06);
+    filter: saturate(1.22) brightness(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(2px, -5px, 0) scale(1.14);
+    filter: saturate(1.3) brightness(1.14);
+  }
+}
+
+/* 列表卡片与详情页共用的瓦片变体（类名由 useMosaicReveal 的 tileClass 注入） */
+.mosaic-tile--medium {
+  animation-duration: 0.5s;
+  animation-timing-function: ease-out;
+}
+
+.mosaic-tile--epic-particle {
+  background: radial-gradient(
+    circle at 35% 35%,
+    rgba(208, 226, 255, 0.92) 0%,
+    rgba(122, 168, 244, 0.58) 42%,
+    rgba(34, 52, 94, 0.82) 100%
+  );
+  animation-name: walleven-mosaic-particle-phantom;
+  animation-duration: 0.62s;
+  animation-timing-function: cubic-bezier(0.22, 0.92, 0.25, 1);
+}
+
+/* 轻量揭幕「电影感」高光扫过层 */
+.reveal-sweep {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0.22) 50%,
+    rgba(255, 255, 255, 0) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: walleven-reveal-sweep 0.55s ease-out forwards;
+}
+
+@keyframes walleven-reveal-sweep {
+  0% {
+    background-position: 100% 0;
+    opacity: 0.85;
+  }
+  100% {
+    background-position: -80% 0;
+    opacity: 0;
+  }
+}

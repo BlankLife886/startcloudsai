@@ -12,7 +12,7 @@ import {
 } from "@legacy/services/growthApi.js";
 import { getWallet } from "@legacy/services/meApi.js";
 import notificationService from "@legacy/services/notification.js";
-import highFiveArt from "@legacy/assets/incentives/group-highfive.png";
+import highFiveArt from "@react/legacy-static/assets/incentives/group-highfive.png";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useGrowthPrograms } from "../hooks/useGrowthPrograms.js";
 import { useIsDark } from "../hooks/useIsDark.js";

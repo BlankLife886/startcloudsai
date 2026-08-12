@@ -7,7 +7,7 @@ import { logoutAccount } from "@legacy/services/auth.js";
 import { formatPoints } from "@legacy/services/billingApi.js";
 import { TASK_UPDATE_EVENT } from "@legacy/services/tasksApi.js";
 import notificationService from "@legacy/services/notification.js";
-import "@legacy/views/ProfileView.modern.css";
+import "@react/legacy-static/views/ProfileView.modern.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";

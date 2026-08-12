@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CHANGELOG, CHANGELOG_TAG_FILTERS, getChangelogTagMeta } from "@legacy/config/changelog.js";
-import "@legacy/features/updates/styles/updates-page.css";
+import "@react/legacy-static/features/updates/styles/updates-page.css";
 
 function timestamp(value) { const time = new Date(value || 0).getTime(); return Number.isFinite(time) ? time : 0; }
 function formatDate(value, options = { year: "numeric", month: "short", day: "numeric" }) { const date = new Date(value || 0); return Number.isFinite(date.getTime()) ? date.toLocaleDateString("zh-CN", options) : value || "-"; }

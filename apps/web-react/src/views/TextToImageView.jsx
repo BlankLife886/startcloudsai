@@ -39,7 +39,7 @@ import { downloadAuthenticatedMedia } from "@legacy/services/authenticatedMedia.
 import notificationService from "@legacy/services/notification.js";
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@legacy/services/aiWallpaperState.js";
 import { resolveModelPointPricing } from "@legacy/features/ai-shared/modelPointPricing.js";
-import "@legacy/features/ai-wallpaper/styles/t2i-page.css";
+import "@react/legacy-static/features/ai-wallpaper/styles/t2i-page.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";

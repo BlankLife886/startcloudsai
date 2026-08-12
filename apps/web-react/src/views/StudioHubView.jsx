@@ -31,8 +31,8 @@ import {
   taskOriginalUrl,
   taskThumbnailUrl,
 } from "@legacy/features/creator-hub/taskMedia.js";
-import "@legacy/features/creator-hub/creator-hub.css";
-import "@legacy/features/creator-hub/studio-hub.css";
+import "@react/legacy-static/features/creator-hub/creator-hub.css";
+import "@react/legacy-static/features/creator-hub/studio-hub.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import { useAuth } from "../auth/AuthContext.jsx";

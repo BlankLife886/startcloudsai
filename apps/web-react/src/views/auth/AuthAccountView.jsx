@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
-import "@legacy/views/auth/auth-page.css";
+import "@react/legacy-static/views/auth/auth-page.css";
 import { useAuth } from "../../auth/AuthContext.jsx";
 
 const mangaPanels = [
