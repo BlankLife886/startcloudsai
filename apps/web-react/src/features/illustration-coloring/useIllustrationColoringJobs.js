@@ -60,8 +60,8 @@ async function prepareUploadFile(file, settings, signal) {
 }
 
 export function useIllustrationColoringJobs({ authenticated }) {
-  const [history, setHistoryState] = useState(() => readColoringHistory());
-  const [activeId, setActiveId] = useState(() => readColoringHistory()[0]?.id || "");
+  const [history, setHistoryState] = useState(() => authenticated ? readColoringHistory() : []);
+  const [activeId, setActiveId] = useState(() => authenticated ? readColoringHistory()[0]?.id || "" : "");
   const [historyLoading, setHistoryLoading] = useState(Boolean(authenticated));
   const [submitting, setSubmitting] = useState(false);
   const controllersRef = useRef(new Set());
@@ -115,6 +115,8 @@ export function useIllustrationColoringJobs({ authenticated }) {
 
   const refresh = useCallback(async () => {
     if (!authenticated) {
+      setHistoryState([]);
+      setActiveId("");
       setHistoryLoading(false);
       return;
     }
@@ -188,9 +190,10 @@ export function useIllustrationColoringJobs({ authenticated }) {
             uploadAiInputFile(file, { signal: controller.signal }),
           ),
         );
+        const referenceLimit = Math.max(0, Math.min(15, Number(options.maxAdditionalReferences ?? 3)));
         const remoteReferences = Array.from(
           new Set([...(referenceUrls || []), ...uploadedReferences].filter(Boolean)),
-        ).slice(0, 3);
+        ).slice(0, referenceLimit);
         const count = Math.max(1, Math.min(4, Number(options.generationCount || 1)));
         const batchId = count > 1 ? `coloring-${crypto.randomUUID()}` : "";
         const output = resolveOutputPixelSize(
@@ -213,6 +216,12 @@ export function useIllustrationColoringJobs({ authenticated }) {
               customPrompt: options.customPrompt,
               publicModelKey: options.publicModelKey,
               outputSize: options.outputSize,
+              aspectRatio: options.aspectRatio,
+              resolutionScale: options.resolutionScale,
+              quality: options.quality,
+              outputFormat: options.outputFormat,
+              moderationLevel: options.moderationLevel,
+              maxAdditionalReferences: referenceLimit,
               outputWidth: output.width,
               outputHeight: output.height,
               outputOrientation: output.orientation,

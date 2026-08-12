@@ -17,13 +17,22 @@ import {
   COLORING_BATCH_COUNT_OPTIONS,
   COLORING_COMPRESS_KB_OPTIONS,
   COLORING_FORMAT_OPTIONS,
-  COLORING_OUTPUT_ORIENTATION_OPTIONS,
-  COLORING_OUTPUT_SIZE_OPTIONS,
   formatBytes,
   readColoringSettings,
   resolveOutputPixelSize,
   writeColoringSettings,
 } from "@react/legacy-modules/services/aiIllustrationColoringState.js";
+import {
+  T2I_ASPECT_OPTIONS,
+  T2I_MODERATION_OPTIONS,
+  T2I_OUTPUT_FORMAT_OPTIONS,
+  T2I_QUALITY_OPTIONS,
+  T2I_RESOLUTION_OPTIONS,
+} from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
+import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
   isActiveColoringJobStatus,
 } from "@react/legacy-modules/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
@@ -42,7 +51,13 @@ import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.cs
 import "./AiIllustrationColoringView.css";
 
 const ACTIVE = new Set(["queued", "running", "waiting_provider"]);
-const MAX_REFERENCES = 3;
+function resolutionSetting(value = "") {
+  return String(value || "").trim().toUpperCase();
+}
+
+function outputSizeSetting(value = "") {
+  return resolutionSetting(value).toLowerCase();
+}
 
 function featureConfig(config = {}) {
   const raw = config.features?.["ai.illustrationColoring"] || {};
@@ -56,13 +71,16 @@ function modelOptions(config) {
   const models = Array.isArray(feature.publicModels) ? feature.publicModels : [];
   return models.map((item) => {
     const id = String(item.publicModelKey || item.id || "").trim();
+    const pointPricing = resolveModelPointPricing(item);
     return {
       ...item,
+      ...normalizeImageModelCapabilities(item),
       id,
       label: String(item.label || item.name || id || "未命名模型"),
-      // The Vue page bills coloring through creditCost/feature creditCost.
-      // pricePoints is display metadata for newer shared selectors, not this guard.
-      creditCost: Math.max(0, Number(item.creditCost ?? feature.creditCost ?? 0)),
+      pointPricing,
+      creditCost: Math.max(0, Number(
+        pointPricing.configured ? pointPricing.effective : feature.creditCost ?? 0,
+      )),
     };
   }).filter((item) => item.id);
 }
@@ -243,6 +261,9 @@ export function AiIllustrationColoringView() {
   const [sourceMeta, setSourceMeta] = useState({ width: 0, height: 0, bytes: 0, type: "" });
   const [references, setReferences] = useState([]);
   const [models, setModels] = useState([]);
+  const [quality, setQuality] = useState("");
+  const [outputFormat, setOutputFormat] = useState("");
+  const [moderation, setModeration] = useState("");
   const [disabledMessage, setDisabledMessage] = useState("");
   const [compareMode, setCompareMode] = useState("result");
   const [batchGrid, setBatchGrid] = useState(true);
@@ -270,8 +291,27 @@ export function AiIllustrationColoringView() {
       setModels(nextModels);
       setDisabledMessage(feature.enabled === false ? feature.message || "插画染色功能暂未开放" : "");
       setSettings((current) => {
-        if (current.publicModelKey || !nextModels[0]) return current;
-        const next = { ...current, publicModelKey: nextModels[0].id };
+        if (!nextModels[0]) return current;
+        const selected = nextModels.find((item) => item.id === current.publicModelKey)
+          || nextModels.find((item) => item.default === true || item.isDefault === true || item.metadata?.isDefault === true)
+          || nextModels[0];
+        const supportedResolutions = selected.resolutions || [];
+        const resolution = resolutionSetting(current.outputSize);
+        const nextResolution = supportedResolutions.includes(resolution)
+          ? resolution
+          : supportedResolutions[0] || "2K";
+        const allowedRatios = getModelAspectRatiosForResolution(selected, nextResolution);
+        const nextOrientation = current.outputOrientation === "source"
+          ? "source"
+          : allowedRatios.includes(current.outputOrientation)
+            ? current.outputOrientation
+            : allowedRatios[0] === "auto" ? "source" : allowedRatios[0] || "source";
+        const next = {
+          ...current,
+          publicModelKey: selected.id,
+          outputSize: outputSizeSetting(nextResolution),
+          outputOrientation: nextOrientation,
+        };
         writeColoringSettings(next);
         return next;
       });
@@ -306,15 +346,97 @@ export function AiIllustrationColoringView() {
   const effectiveMeta = source?.meta || (active ? { width: active.sourceWidth, height: active.sourceHeight, bytes: active.sourceBytes, type: active.inputType } : sourceMeta);
   const outputPreview = resolveOutputPixelSize(effectiveMeta.width, effectiveMeta.height, settings.outputSize, settings.outputOrientation);
   const selectedModel = models.find((item) => item.id === settings.publicModelKey) || models[0] || null;
+  const resolutionOptions = useMemo(() => {
+    if (!selectedModel) return [];
+    const supported = Array.isArray(selectedModel?.resolutions)
+      ? selectedModel.resolutions.map(resolutionSetting)
+      : [];
+    const filtered = T2I_RESOLUTION_OPTIONS.filter((item) => supported.includes(item.value));
+    return (filtered.length ? filtered : T2I_RESOLUTION_OPTIONS.filter((item) => item.value !== "8K"))
+      .map((item) => ({ value: item.value.toLowerCase(), label: item.label }));
+  }, [selectedModel]);
+  const orientationOptions = useMemo(() => {
+    if (!selectedModel) return [];
+    const resolution = resolutionSetting(settings.outputSize);
+    const allowed = getModelAspectRatiosForResolution(selectedModel || {}, resolution);
+    const options = T2I_ASPECT_OPTIONS
+      .filter((item) => item.value !== "auto" && allowed.includes(item.value))
+      .map((item) => ({ value: item.value, label: item.label }));
+    const allowSource = allowed.includes("auto") || !allowed.length;
+    return [
+      ...(allowSource ? [{ value: "source", label: "原图比例" }] : []),
+      ...options,
+    ];
+  }, [selectedModel, settings.outputSize]);
+  const qualityOptions = useMemo(() => T2I_QUALITY_OPTIONS
+    .filter((item) => selectedModel?.qualities?.includes(item.value)), [selectedModel]);
+  const outputFormatOptions = useMemo(() => T2I_OUTPUT_FORMAT_OPTIONS
+    .filter((item) => selectedModel?.outputFormats?.includes(item.value)), [selectedModel]);
+  const moderationOptions = useMemo(() => T2I_MODERATION_OPTIONS
+    .filter((item) => selectedModel?.moderationLevels?.includes(item.value)), [selectedModel]);
+  const maxReferences = Math.max(0, Number(selectedModel?.maxReferenceImages || 0) - 1);
   const unitCost = selectedModel?.creditCost || 0;
   const totalCost = unitCost * settings.generationCount;
-  const canSubmit = !disabledMessage && Boolean(source?.file || source?.remoteUrl || sourceUrl) && !jobs.submitting;
+  const canSubmit = !disabledMessage && Boolean(selectedModel) && Boolean(source?.file || source?.remoteUrl || sourceUrl) && !jobs.submitting;
   const split = compareMode === "split" && sourceUrl && resultUrl && !showBatch;
   const stageWidth = resultUrl ? active?.resultWidth || active?.requestedOutputWidth : effectiveMeta.width;
   const stageHeight = resultUrl ? active?.resultHeight || active?.requestedOutputHeight : effectiveMeta.height;
   const frameStyle = { "--frame-aspect": `${Math.max(1, stageWidth || 1)} / ${Math.max(1, stageHeight || 1)}`, "--frame-ratio": String(Math.max(1, stageWidth || 1) / Math.max(1, stageHeight || 1)) };
   const orientation = orientationFromSize(stageWidth, stageHeight);
   const controlsLocked = jobs.submitting;
+
+  useEffect(() => {
+    if (!selectedModel) return;
+    const resolution = resolutionOptions.some((item) => item.value === settings.outputSize)
+      ? settings.outputSize
+      : resolutionOptions[0]?.value || "1k";
+    const nextOrientationOptions = (() => {
+      const allowed = getModelAspectRatiosForResolution(selectedModel, resolutionSetting(resolution));
+      return [
+        ...(allowed.includes("auto") || !allowed.length ? ["source"] : []),
+        ...allowed.filter((item) => item !== "auto"),
+      ];
+    })();
+    const outputOrientation = nextOrientationOptions.includes(settings.outputOrientation)
+      ? settings.outputOrientation
+      : nextOrientationOptions[0] || "source";
+    if (resolution !== settings.outputSize || outputOrientation !== settings.outputOrientation) {
+      setSettings((current) => writeColoringSettings({
+        ...current,
+        outputSize: resolution,
+        outputOrientation,
+      }));
+    }
+    if (!qualityOptions.some((item) => item.value === quality)) {
+      setQuality(qualityOptions.find((item) => item.value === "medium")?.value || qualityOptions[0]?.value || "");
+    }
+    if (!outputFormatOptions.some((item) => item.value === outputFormat)) {
+      setOutputFormat(outputFormatOptions[0]?.value || "");
+    }
+    if (!moderationOptions.some((item) => item.value === moderation)) {
+      setModeration(moderationOptions[0]?.value || "");
+    }
+    setReferences((current) => current.length > maxReferences
+      ? current.slice(0, maxReferences)
+      : current);
+  }, [maxReferences, moderation, moderationOptions, outputFormat, outputFormatOptions, quality, qualityOptions, resolutionOptions, selectedModel, settings.outputOrientation, settings.outputSize]);
+
+  useEffect(() => {
+    if (auth.isAuthenticated) return;
+    setTitle("");
+    setPrompt("");
+    setSource((current) => {
+      if (current?.owned && current.preview) URL.revokeObjectURL(current.preview);
+      return null;
+    });
+    setSourceMeta({ width: 0, height: 0, bytes: 0, type: "" });
+    setReferences((current) => {
+      current.forEach((item) => item.owned && URL.revokeObjectURL(item.previewUrl));
+      return [];
+    });
+    setCompareMode("result");
+    setBatchGrid(true);
+  }, [auth.isAuthenticated]);
 
   useEffect(() => {
     if (!active || source) return;
@@ -370,10 +492,10 @@ export function AiIllustrationColoringView() {
   }, [jobs]);
 
   const chooseReferences = useCallback((files) => {
-    const available = Math.max(0, MAX_REFERENCES - references.length);
+    const available = Math.max(0, maxReferences - references.length);
     const next = [...files].filter((file) => file.type.startsWith("image/")).slice(0, available).map((file) => ({ id: crypto.randomUUID(), file, name: file.name, previewUrl: URL.createObjectURL(file), owned: true }));
     setReferences((current) => [...current, ...next]);
-  }, [references.length]);
+  }, [maxReferences, references.length]);
 
   const selectHistory = useCallback((item) => {
     jobs.setActiveId(item.id);
@@ -413,7 +535,13 @@ export function AiIllustrationColoringView() {
       publicModelKey: selectedModel?.id || settings.publicModelKey || "standard",
       outputSize: settings.outputSize,
       outputOrientation: settings.outputOrientation,
+      aspectRatio: settings.outputOrientation === "source" ? "auto" : settings.outputOrientation,
+      resolutionScale: resolutionSetting(settings.outputSize),
+      quality,
+      outputFormat,
+      moderationLevel: moderation,
       generationCount: settings.generationCount,
+      maxAdditionalReferences: maxReferences,
       uploadSettings: settings,
     };
     let available = null;
@@ -424,7 +552,7 @@ export function AiIllustrationColoringView() {
     } catch { /* service will enforce the balance */ }
     setPendingSubmit(payload);
     setCost({ unit: unitCost, count: settings.generationCount, total: totalCost, available, priced: Boolean(selectedModel && resolveModelPointPricing(selectedModel).configured) });
-  }, [canSubmit, effectiveMeta, prompt, references, requestAuth, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
+  }, [canSubmit, effectiveMeta, maxReferences, moderation, outputFormat, prompt, quality, references, requestAuth, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
 
   const removeHistory = useCallback((item) => {
     const items = item.batchId ? jobs.history.filter((entry) => entry.batchId === item.batchId) : [item];
@@ -486,8 +614,9 @@ export function AiIllustrationColoringView() {
   return <main className={`coloring-studio-page${isDark ? "" : " is-light"}`}>
     <div className="coloring-studio"><div className="coloring-workspace">
       <aside className="coloring-sidebar"><div className="coloring-side-scroll">
-        <section className="coloring-model-engine" aria-label="生成模型"><span className="coloring-model-engine-icon"><i className="bi bi-cpu" /></span><ColoringSelect className="coloring-model-select" value={selectedModel?.id || settings.publicModelKey} options={(models.length ? models : [{ id: settings.publicModelKey || "standard", label: "标准染色模型", creditCost: 0 }]).map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} onChange={(value) => updateSettings({ publicModelKey: value })} label="生成模型" disabled={controlsLocked} icon /></section>
+        <section className="coloring-model-engine" aria-label="生成模型"><span className="coloring-model-engine-icon"><i className="bi bi-cpu" /></span><ColoringSelect className="coloring-model-select" value={selectedModel?.id || ""} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} onChange={(value) => updateSettings({ publicModelKey: value })} label="生成模型" disabled={controlsLocked || !models.length} icon /></section>
         {disabledMessage && <div className="coloring-disabled-banner">{disabledMessage}</div>}
+        {!auth.isAuthenticated && <div className="coloring-login-card"><div className="coloring-login-mark" aria-hidden="true"><i className="bi bi-person-lock" /></div><div><strong>登录后开始染色</strong><p>上传线稿、描述配色，一键 AI 上色</p></div><button type="button" className="coloring-login-btn" onClick={() => requestAuth({ featureLabel: "插画染色" })}>去登录</button></div>}
         <section className="coloring-block coloring-block--title"><input className="coloring-input" value={title} maxLength={80} disabled={controlsLocked} aria-label="作品名称" placeholder="作品名称，例如：赛博机甲头像" onChange={(event) => setTitle(event.target.value)} /></section>
         <section className="coloring-block coloring-block--source"><div className={`coloring-source-card${sourceUrl ? "" : " is-empty"}${uploadDragOver ? " is-dragover" : ""}`} onDragOver={(event) => { event.preventDefault(); setUploadDragOver(true); }} onDragLeave={() => setUploadDragOver(false)} onDrop={(event) => { event.preventDefault(); setUploadDragOver(false); void chooseSource(event.dataTransfer.files[0]); }}>
           {!sourceUrl ? <button type="button" className="coloring-source-main" disabled={controlsLocked} onClick={() => fileInput.current?.click()}><span className="coloring-upload-icon"><i className="bi bi-cloud-arrow-up" /></span><span className="coloring-source-copy"><strong>上传线稿</strong><small>拖拽或点击 · PNG / JPG / WEBP</small></span></button> : <div className="coloring-source-main coloring-source-main--preview"><div className="coloring-source-thumb" data-orientation={orientationFromSize(effectiveMeta.width, effectiveMeta.height)}><MediaImage src={sourceUrl} alt="线稿预览" loading="eager" /></div><div className="coloring-source-copy"><strong>{effectiveMeta.width && effectiveMeta.height ? `${effectiveMeta.width}×${effectiveMeta.height}` : "读取图片信息中…"}</strong><small>{effectiveMeta.bytes ? `${formatBytes(effectiveMeta.bytes)} · ${String(effectiveMeta.type || "").replace("image/", "").toUpperCase()}` : "原始线稿"}</small></div></div>}
@@ -495,14 +624,14 @@ export function AiIllustrationColoringView() {
         </div><input ref={fileInput} type="file" accept="image/*" hidden onChange={(event) => { void chooseSource(event.target.files?.[0]); event.target.value = ""; }} /></section>
         <section className="coloring-library-launcher" aria-label="染色资源">{[["assets", "bi-images", "资产库"], ["history", "bi-clock-history", "历史记录"], ["prompts", "bi-journal-text", "提示词库"]].map(([id, icon, label]) => <button key={id} type="button" onClick={() => openLibrary(id)}><i className={`bi ${icon}`} /><span>{label}</span></button>)}</section>
         <section className="coloring-block"><header className="coloring-block-head"><span>配色描述</span><small>{prompt.length} 字</small></header><textarea className="coloring-textarea" value={prompt} disabled={controlsLocked} placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…" onChange={(event) => setPrompt(event.target.value)} /></section>
-        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{outputPreview.label}</small></header><div className="coloring-parameter-selectors"><div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={COLORING_OUTPUT_ORIENTATION_OPTIONS.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div><div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={COLORING_OUTPUT_SIZE_OPTIONS.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div><div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div></div></section>
+        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{outputPreview.label}</small></header><div className="coloring-parameter-selectors"><div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked || !orientationOptions.length} /></div><div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked || !resolutionOptions.length} /></div><div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
       </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><i className="bi bi-arrow-clockwise" />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => jobs.cancel(active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
 
       <section className="coloring-stage"><div ref={stageRef} className={`coloring-stage-shell${isFullscreen ? " is-fullscreen" : ""}`}>
         <div className="coloring-stage-toolbar"><div className="coloring-stage-toolbar-main"><div className="coloring-view-toggle" aria-label="视图模式"><button type="button" className={compareMode === "result" ? "active" : ""} aria-pressed={compareMode === "result"} onClick={() => setCompareMode("result")}><i className="bi bi-image" /><span>{resultUrl ? "结果" : "预览"}</span></button><button type="button" className={`coloring-compare-toggle${compareMode === "split" ? " active" : ""}${sourceUrl && resultUrl ? " ready" : ""}`} disabled={!sourceUrl || !resultUrl} onClick={() => setCompareMode("split")}><i className="bi bi-layout-split" /><span>对比</span></button></div><div className="coloring-fit-toggle" aria-label="画面适配"><button type="button" className={settings.fitMode === "contain" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "contain" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-aspect-ratio" /><span>适配</span></button><button type="button" className={settings.fitMode === "cover" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "cover" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-arrows-fullscreen" /><span>铺满</span></button></div></div>
           <div className="coloring-tool-strip">{activeBatch.length > 1 && <button type="button" className={`coloring-tool-btn${batchGrid ? " active" : ""}`} onClick={() => setBatchGrid(true)}><i className="bi bi-grid-3x3-gap" /><span>批量对比</span></button>}<button type="button" className={`coloring-tool-btn${isFullscreen ? " active" : ""}`} title={isFullscreen ? "退出全屏" : "全屏预览"} onClick={toggleFullscreen}><i className={`bi ${isFullscreen ? "bi-fullscreen-exit" : "bi-fullscreen"}`} /><span>{isFullscreen ? "退出" : "全屏"}</span></button><button type="button" className="coloring-tool-btn" disabled={!resultUrl} title="下载结果" onClick={() => downloadAuthenticatedMedia(resultUrl, `${active?.title || "插画染色"}.png`)}><i className="bi bi-download" /><span>下载</span></button><button type="button" className="coloring-tool-btn" disabled={!resultUrl || sharing || active?.shareSubmitted} title="提交到 Share 审核" onClick={() => setShareOpen(true)}><i className="bi bi-send-check" /><span>{active?.shareSubmitted ? "已提交" : "Share"}</span></button><button type="button" className="coloring-tool-btn" disabled={!resultUrl || loading} title="继续二次染色" onClick={() => { setSource({ preview: resultUrl, remoteUrl: resultUrl, file: null, owned: false, meta: { width: active?.resultWidth || active?.requestedOutputWidth, height: active?.resultHeight || active?.requestedOutputHeight, bytes: active?.resultBytes, type: active?.resultType } }); jobs.setActiveId(""); setCompareMode("result"); }}><i className="bi bi-layers" /><span>二次染色</span></button><div className="coloring-tool-meta"><span className={`coloring-status-chip${loading || jobs.submitting ? " running" : ""}`}><i className={`bi ${loading || jobs.submitting ? "bi-arrow-repeat spin" : "bi-magic"}`} />{jobs.submitting ? "正在提交…" : loading ? statusLabel(active) : resultUrl ? "染色完成" : sourceUrl ? "已选线稿，可填写配色描述后开始染色" : "上传线稿后开始"}</span>{unitCost > 0 && <span className="coloring-credit-chip"><i className="bi bi-coin" />{totalCost} 积分</span>}<button type="button" className="coloring-icon-btn" title="设置" onClick={() => setSettingsOpen(true)}><i className="bi bi-gear" /></button></div></div>
         </div>
-        <div className="coloring-canvas-area" data-orientation={orientation}><aside className={`coloring-ref-float${referenceCollapsed ? " is-collapsed" : ""}`} aria-label="配色参考图">{referenceCollapsed ? <button type="button" className="coloring-ref-float-chip" title="展开参考图" onClick={() => { setReferenceCollapsed(false); localStorage.setItem("walleven.coloring.referencePanelCollapsed", "0"); }}><i className="bi bi-images" /><span>参考</span><em>{references.length}/{MAX_REFERENCES}</em></button> : <div className="coloring-ref-float-panel"><header className="coloring-ref-float-head"><div className="coloring-ref-float-title"><strong>参考图</strong><small>可选 · {MAX_REFERENCES} 张</small></div><div className="coloring-ref-float-actions">{references.length > 0 && <button type="button" className="coloring-text-btn" onClick={() => setReferences([])}>清空</button>}<button type="button" className="coloring-ref-float-collapse" title="收起参考图" onClick={() => { setReferenceCollapsed(true); localStorage.setItem("walleven.coloring.referencePanelCollapsed", "1"); }}><i className="bi bi-chevron-left" /></button></div></header>{references.length ? <div className="coloring-reference-strip">{references.map((item) => <div key={item.id} className="coloring-reference-card" title={item.name}><AuthenticatedImage src={item.previewUrl || item.remoteUrl} alt="参考图" /><button type="button" className="coloring-reference-remove" title="移除参考图" onClick={() => setReferences((current) => current.filter((entry) => entry.id !== item.id))}><i className="bi bi-x" /></button></div>)}{references.length < MAX_REFERENCES && <button type="button" className="coloring-reference-add" title="添加参考图" onClick={() => referenceInput.current?.click()}><i className="bi bi-plus-lg" /></button>}</div> : <button type="button" className="coloring-reference-empty" onClick={() => referenceInput.current?.click()}><i className="bi bi-images" /><span>添加配色参考图</span></button>}</div>}<input ref={referenceInput} type="file" accept="image/*" multiple hidden onChange={(event) => { chooseReferences(event.target.files || []); event.target.value = ""; }} /></aside>
+        <div className="coloring-canvas-area" data-orientation={orientation}>{maxReferences > 0 && <aside className={`coloring-ref-float${referenceCollapsed ? " is-collapsed" : ""}`} aria-label="配色参考图">{referenceCollapsed ? <button type="button" className="coloring-ref-float-chip" title="展开参考图" onClick={() => { setReferenceCollapsed(false); localStorage.setItem("walleven.coloring.referencePanelCollapsed", "0"); }}><i className="bi bi-images" /><span>参考</span><em>{references.length}/{maxReferences}</em></button> : <div className="coloring-ref-float-panel"><header className="coloring-ref-float-head"><div className="coloring-ref-float-title"><strong>参考图</strong><small>可选 · {maxReferences} 张</small></div><div className="coloring-ref-float-actions">{references.length > 0 && <button type="button" className="coloring-text-btn" onClick={() => setReferences([])}>清空</button>}<button type="button" className="coloring-ref-float-collapse" title="收起参考图" onClick={() => { setReferenceCollapsed(true); localStorage.setItem("walleven.coloring.referencePanelCollapsed", "1"); }}><i className="bi bi-chevron-left" /></button></div></header>{references.length ? <div className="coloring-reference-strip">{references.map((item) => <div key={item.id} className="coloring-reference-card" title={item.name}><AuthenticatedImage src={item.previewUrl || item.remoteUrl} alt="参考图" /><button type="button" className="coloring-reference-remove" title="移除参考图" onClick={() => setReferences((current) => current.filter((entry) => entry.id !== item.id))}><i className="bi bi-x" /></button></div>)}{references.length < maxReferences && <button type="button" className="coloring-reference-add" title="添加参考图" onClick={() => referenceInput.current?.click()}><i className="bi bi-plus-lg" /></button>}</div> : <button type="button" className="coloring-reference-empty" onClick={() => referenceInput.current?.click()}><i className="bi bi-images" /><span>添加配色参考图</span></button>}</div>}<input ref={referenceInput} type="file" accept="image/*" multiple hidden onChange={(event) => { chooseReferences(event.target.files || []); event.target.value = ""; }} /></aside>}
           {sourceUrl || resultUrl || loading || active?.status === "failed" ? <div className={`coloring-board${split ? " is-split" : " is-single"}${showBatch ? " is-batch-results" : ""} is-${orientation}${settings.fitMode === "cover" ? " is-cover" : ""}`} style={frameStyle}>
             {(split || (!resultUrl && !showBatch)) && <article className="coloring-frame is-source" style={frameStyle}><div className="coloring-frame-chrome"><span className="coloring-frame-badge">原线稿</span><small className="coloring-frame-meta">{effectiveMeta.width && effectiveMeta.height ? `${effectiveMeta.width}×${effectiveMeta.height}` : ""}</small></div><FrameMedia src={sourceUrl} alt="原线稿" fitMode={settings.fitMode} zoom={zoom} pan={pan} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} /></article>}
             {(split || resultUrl || loading || active?.status === "failed") && <article className={`coloring-frame is-result${loading && !resultUrl ? " generating" : ""}${showBatch ? " is-batch" : ""}${active?.status === "failed" ? " failed" : ""}`} style={frameStyle}><div className="coloring-frame-chrome"><span className={`coloring-frame-badge${loading && !resultUrl ? " live" : ""}${active?.status === "failed" ? " failed" : ""}`}>{loading && !resultUrl ? "生成中" : active?.status === "failed" ? "失败" : "染色结果"}</span>{loading && !resultUrl && <small className="coloring-frame-meta">{statusLabel(active)}</small>}</div>

@@ -14,6 +14,16 @@ const model = {
   label: '插画染色模型',
   creditCost: 3,
   capabilities: ['image.edit', 'imageToImage'],
+  resolutions: ['1K', '2K'],
+  aspectRatios: ['auto', '1:1', '16:9'],
+  aspectRatiosByResolution: {
+    '1K': ['auto', '1:1'],
+    '2K': ['auto', '16:9'],
+  },
+  qualities: ['medium', 'high'],
+  outputFormats: ['png', 'webp'],
+  moderationLevels: ['auto'],
+  maxReferenceImages: 2,
 }
 
 const tinyPng = Buffer.from(
@@ -114,6 +124,11 @@ test.describe('React illustration coloring interactions', () => {
       expect(body.inputKeys).toHaveLength(2)
       expect(body.params.outputWidth).toBeGreaterThan(0)
       expect(body.params.outputHeight).toBeGreaterThan(0)
+      expect(body.params.resolutionScale).toBe('2K')
+      expect(body.params.aspectRatio).toBe('auto')
+      expect(body.params.quality).toBe('medium')
+      expect(body.params.outputFormat).toBe('png')
+      expect(body.params.moderationLevel).toBe('auto')
     }
     expect(createdBodies.map((body) => body.params.variantIndex)).toEqual([1, 2])
     expect(new Set(createdBodies.map((body) => body.params.batchId)).size).toBe(1)
@@ -130,8 +145,73 @@ test.describe('React illustration coloring interactions', () => {
     await referenceInput.setInputFiles({ name: 'palette.png', mimeType: 'image/png', buffer: tinyPng })
     await expect(page.locator('.coloring-reference-card')).toHaveCount(1)
     await page.getByTitle('收起参考图').click()
-    await expect(page.getByTitle('展开参考图')).toContainText('1/3')
+    await expect(page.getByTitle('展开参考图')).toContainText('1/1')
     await page.getByTitle('展开参考图').click()
     await expect(page.locator('.coloring-reference-card')).toHaveCount(1)
   })
+
+  test('output settings only expose capabilities returned for the selected model', async ({ page }) => {
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, { items: [], nextCursor: null }),
+    )
+    await page.goto('/ai-illustration-coloring', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.getByLabel('分辨率')).toContainText('2K')
+    await page.getByLabel('分辨率').click()
+    await expect(page.getByRole('option', { name: '4K' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    await page.getByLabel('输出比例').click()
+    await expect(page.getByRole('option', { name: '原图比例' })).toBeVisible()
+    await expect(page.getByRole('option', { name: '16:9 横屏' })).toBeVisible()
+    await expect(page.getByRole('option', { name: '1:1 方形' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    await page.getByLabel('质量').click()
+    await expect(page.getByRole('option', { name: '低' })).toHaveCount(0)
+    await expect(page.getByRole('option', { name: '中' })).toBeVisible()
+    await expect(page.getByRole('option', { name: '高' })).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    await page.getByLabel('格式').click()
+    await expect(page.getByRole('option', { name: 'PNG' })).toBeVisible()
+    await expect(page.getByRole('option', { name: 'WebP' })).toBeVisible()
+    await expect(page.getByRole('option', { name: 'JPEG' })).toHaveCount(0)
+  })
+})
+
+test('signed-out illustration coloring ignores residual guest history', async ({ page }) => {
+  await installVisualBaseline(page)
+  await page.addInitScript(() => {
+    const key = 'walleven_illustration_coloring_history_v2'
+    const stale = [{
+      id: 'stale-coloring-result',
+      status: 'completed',
+      title: '不应显示的旧任务',
+      sourcePreview: '/sucai/home-intro-03.png',
+      sourceRemoteUrl: '/sucai/home-intro-03.png',
+      resultUrl: '/sucai/home-intro-03.png',
+      outputs: ['/sucai/home-intro-03.png'],
+      sourceWidth: 1024,
+      sourceHeight: 1024,
+    }]
+    localStorage.setItem(`walleven_guest_local_${key}`, JSON.stringify(stale))
+    localStorage.setItem(key, JSON.stringify(stale))
+  })
+  await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: null }))
+  await page.route('**/api/v1/runtime-config', (route) =>
+    fulfillJson(route, {
+      routes: {},
+      features: { 'ai.illustrationColoring': { enabled: true, config: { publicModels: [model] } } },
+      blacklist: { blocked: false },
+    }),
+  )
+
+  await page.goto('/ai-illustration-coloring', { waitUntil: 'domcontentloaded' })
+
+  await expect(page.getByText('登录后开始染色')).toBeVisible()
+  await expect(page.getByText('不应显示的旧任务')).toHaveCount(0)
+  await expect(page.getByAltText('线稿预览')).toHaveCount(0)
+  await expect(page.locator('.coloring-history-card')).toHaveCount(0)
+  await expect(page.locator('.coloring-board-empty')).toContainText('上传线稿开始创作')
 })

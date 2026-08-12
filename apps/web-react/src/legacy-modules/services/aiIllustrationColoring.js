@@ -30,11 +30,17 @@ export async function createIllustrationColoringJob({
   customPrompt = '',
   publicModelKey = ILLUSTRATION_COLORING_PUBLIC_MODEL,
   outputSize = 'original',
+  aspectRatio = '',
+  resolutionScale = '',
+  quality = '',
+  outputFormat = '',
+  moderationLevel = '',
   outputWidth = 0,
   outputHeight = 0,
   outputOrientation = 'source',
   pricingUsd = 0,
   referenceImageUrls = [],
+  maxAdditionalReferences = 3,
   referenceStrength = 'balanced',
   batchId = '',
   variantIndex = 1,
@@ -46,7 +52,7 @@ export async function createIllustrationColoringJob({
         .map((item) => String(item || '').trim())
         .filter(Boolean),
     ),
-  ).slice(0, 4)
+  ).slice(0, Math.max(0, Math.min(15, Number(maxAdditionalReferences) || 0)))
   const orientation = String(outputOrientation || 'source').trim()
   const orientationPrompt =
     orientation === 'source'
@@ -81,6 +87,11 @@ export async function createIllustrationColoringJob({
       styleLabel: '插画染色',
       customPrompt: String(customPrompt || '').trim(),
       outputSize,
+      aspectRatio,
+      resolutionScale,
+      quality,
+      outputFormat,
+      moderationLevel,
       outputWidth: Number(outputWidth || 0),
       outputHeight: Number(outputHeight || 0),
       outputOrientation: orientation,
@@ -101,6 +112,11 @@ export async function createIllustrationColoringJob({
       styleLabel: '插画染色',
       customPrompt: String(customPrompt || '').trim(),
       outputSize,
+      aspectRatio,
+      resolutionScale,
+      quality,
+      outputFormat,
+      moderationLevel,
       outputWidth: Number(outputWidth || 0),
       outputHeight: Number(outputHeight || 0),
       outputOrientation: orientation,
