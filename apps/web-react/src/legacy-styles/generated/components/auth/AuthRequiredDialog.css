@@ -13,26 +13,26 @@
 .auth-required-dialog {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(380px, 1.05fr);
-  width: min(1280px, 100%);
-  max-height: min(820px, calc(100dvh - 48px));
+  grid-template-columns: minmax(0, 0.95fr) minmax(304px, 1.05fr);
+  width: min(1024px, 100%);
+  max-height: min(656px, calc(100dvh - 48px));
   overflow: hidden;
   color: #f7f7f8;
   background: radial-gradient(circle at 20% 12%, rgb(124 58 237 / 14%), transparent 31%), #111214;
   border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 28px;
-  box-shadow: 0 38px 110px rgb(0 0 0 / 56%);
+  border-radius: 22px;
+  box-shadow: 0 30px 88px rgb(0 0 0 / 56%);
   outline: none;
 }
 .auth-required-close {
   position: absolute;
   z-index: 4;
-  top: 22px;
-  right: 22px;
+  top: 18px;
+  right: 18px;
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   color: #fff;
   background: rgb(12 13 16 / 62%);
   border: 1px solid rgb(255 255 255 / 15%);
@@ -51,63 +51,63 @@
   flex-direction: column;
   justify-content: center;
   min-width: 0;
-  padding: clamp(48px, 6vw, 94px);
+  padding: clamp(38px, 4.8vw, 75px);
 }
 .auth-required-eyebrow {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 0 0 26px;
+  gap: 10px;
+  margin: 0 0 21px;
   color: #a8a8b2;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.2em;
 }
 .auth-required-eyebrow span {
-  width: 34px;
+  width: 27px;
   height: 2px;
   background: linear-gradient(90deg, #8b5cf6, #f43f8f);
 }
 .auth-required-copy h2 {
-  max-width: 620px;
+  max-width: 496px;
   margin: 0;
   color: #fff;
-  font-size: clamp(2.8rem, 5.2vw, 5.35rem);
+  font-size: clamp(2.24rem, 4.16vw, 4.28rem);
   font-weight: 850;
   line-height: 0.98;
   letter-spacing: -0.065em;
 }
 .auth-required-lead {
-  margin: 38px 0 0;
+  margin: 30px 0 0;
   color: #e8e8ec;
-  font-size: clamp(1.05rem, 1.45vw, 1.35rem);
+  font-size: clamp(0.94rem, 1.16vw, 1.08rem);
   font-weight: 650;
   line-height: 1.55;
 }
 .auth-required-detail {
-  max-width: 610px;
-  margin: 14px 0 0;
+  max-width: 488px;
+  margin: 11px 0 0;
   color: #9d9da7;
-  font-size: 0.98rem;
-  line-height: 1.8;
+  font-size: 0.86rem;
+  line-height: 1.7;
 }
 .auth-required-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 42px;
+  gap: 11px;
+  margin-top: 34px;
 }
 .auth-required-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  min-width: 148px;
-  min-height: 54px;
-  padding: 0 25px;
-  font-size: 0.98rem;
+  gap: 10px;
+  min-width: 118px;
+  min-height: 43px;
+  padding: 0 20px;
+  font-size: 0.88rem;
   font-weight: 800;
-  border-radius: 13px;
+  border-radius: 10px;
   transition:
     transform 160ms ease,
     border-color 160ms ease,
@@ -135,13 +135,13 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  margin: 32px 0 0;
+  margin: 26px 0 0;
   color: #777780;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 .auth-required-visual {
   position: relative;
-  min-height: 690px;
+  min-height: 552px;
   margin: 0;
   overflow: hidden;
   background: #d6d6d6;
@@ -186,8 +186,8 @@
 .auth-required-visual figcaption {
   position: absolute;
   z-index: 3;
-  right: 30px;
-  bottom: 28px;
+  right: 24px;
+  bottom: 22px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -195,12 +195,12 @@
   text-shadow: 0 2px 18px rgb(0 0 0 / 58%);
 }
 .auth-required-visual figcaption strong {
-  font-size: 0.78rem;
+  font-size: 0.7rem;
   letter-spacing: 0.15em;
 }
 .auth-required-visual figcaption span {
   margin-top: 4px;
-  font-size: 0.66rem;
+  font-size: 0.6rem;
   letter-spacing: 0.12em;
   opacity: 0.7;
 }
@@ -242,15 +242,25 @@
 }
 .auth-required-eyebrow {
     margin-bottom: 18px;
+    font-size: 0.72rem;
 }
 .auth-required-lead {
     margin-top: 24px;
+    font-size: clamp(1.05rem, 1.45vw, 1.35rem);
+}
+.auth-required-detail {
+    font-size: 0.98rem;
+    line-height: 1.8;
 }
 .auth-required-actions {
     margin-top: 30px;
 }
 .auth-required-actions button {
     flex: 1 1 140px;
+    min-height: 54px;
+    padding: 0 25px;
+    font-size: 0.98rem;
+    border-radius: 13px;
 }
 .auth-required-visual {
     order: 1;
@@ -267,6 +277,11 @@
 .auth-required-close {
     top: 16px;
     right: 16px;
+    width: 42px;
+    height: 42px;
+}
+.auth-required-support {
+    font-size: 0.8rem;
 }
 }
 @media (max-width: 520px) {
