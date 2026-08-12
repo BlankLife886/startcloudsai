@@ -3,7 +3,10 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { TrialAccessDialog } from "../components/TrialAccessDialog.jsx";
+import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
+import { useIsDark } from "../hooks/useIsDark.js";
 import { getWallet, listNotifications } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
 import { getTrialAccessCampaign } from "@react/legacy-modules/services/trialAccessApi.js";
@@ -189,6 +192,8 @@ export function NavBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
+  const isDark = useIsDark();
   const rootRef = useRef(null);
   const [activeDropdown, setActiveDropdown] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -198,6 +203,7 @@ export function NavBar() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [trialCampaign, setTrialCampaign] = useState(null);
   const [trialDialogOpen, setTrialDialogOpen] = useState(false);
+  const [redeemDialogOpen, setRedeemDialogOpen] = useState(false);
 
   const isActive = (to) =>
     location.pathname === routePath(to) ||
@@ -367,6 +373,12 @@ export function NavBar() {
     } catch (error) {
       notificationService.error(error?.message || "体验活动读取失败");
     }
+  }
+
+  function openRedeemDialog() {
+    closeMenu();
+    if (requestAuth({ featureLabel: "兑换积分" })) return;
+    setRedeemDialogOpen(true);
   }
 
   return (
@@ -580,6 +592,7 @@ export function NavBar() {
                 className="nav-redeem-btn"
                 data-no-translate
                 title="兑换码入账"
+                onClick={openRedeemDialog}
               >
                 <span className="nav-redeem-btn__icon" aria-hidden="true">
                   <i className="bi bi-ticket-perforated" />
@@ -741,6 +754,11 @@ export function NavBar() {
         open={trialDialogOpen}
         initialCampaign={trialCampaign}
         onClose={() => setTrialDialogOpen(false)}
+      />
+      <RedeemCodeDialog
+        open={redeemDialogOpen}
+        isDark={isDark}
+        onClose={() => setRedeemDialogOpen(false)}
       />
     </header>
   );

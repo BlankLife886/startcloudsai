@@ -106,6 +106,16 @@ test('mobile menu closes when the user clicks outside the header', async ({ page
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 })
 
+test('authenticated navbar redeem button opens the existing redeem dialog', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.nav-redeem-btn').click()
+
+  await expect(page.locator('.redeem-dialog')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '兑换码' })).toBeFocused()
+  await page.locator('.redeem-dialog__close').click()
+  await expect(page.locator('.redeem-dialog')).toHaveCount(0)
+})
+
 test('anonymous navigation enters account pages without opening a prompt', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')

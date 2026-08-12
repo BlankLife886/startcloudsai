@@ -23,6 +23,30 @@ const checkinArt = Object.freeze({
 
 const weekLabels = ["日", "一", "二", "三", "四", "五", "六"];
 
+function anonymousCheckinState() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return {
+    enabled: true,
+    today: `${year}-${month}-${day}`,
+    todayChecked: false,
+    currentStreak: 0,
+    claimCycleDay: 1,
+    claimRewardCents: 0,
+    nextRewardCents: 0,
+    rewards: Array.from({ length: 7 }, (_, index) => ({
+      day: index + 1,
+      rewardCents: null,
+      milestone: index === 6,
+    })),
+    month: `${year}-${month}`,
+    monthRecords: [],
+    monthRewardCents: 0,
+  };
+}
+
 function buildCalendarDays(state) {
   const [year, month] = String(state?.month || "").split("-").map(Number);
   if (!year || !month) return [];
@@ -61,6 +85,7 @@ export function CheckinView() {
   const [claimBurst, setClaimBurst] = useState(false);
 
   const todayChecked = state?.todayChecked === true;
+  const anonymous = !auth.isAuthenticated;
   const activityEnabled = state?.enabled !== false;
   const claimReward = Math.max(0, Number(state?.claimRewardCents || 0));
   const nextReward = Math.max(0, Number(state?.nextRewardCents || 0));
@@ -77,8 +102,10 @@ export function CheckinView() {
     : "本月签到";
   const progressDone = todayChecked ? completedCycleDay : Math.max(0, activeCycleDay - 1);
   const progressPercent = Math.min(100, Math.max(0, (progressDone / 7) * 100));
-  const statusLabel = !activityEnabled ? "活动暂停" : todayChecked ? "今日已签到" : "今日可领取";
-  const statusDetail = !activityEnabled
+  const statusLabel = anonymous ? "登录后可签到" : !activityEnabled ? "活动暂停" : todayChecked ? "今日已签到" : "今日可领取";
+  const statusDetail = anonymous
+    ? "登录后查看今日奖励并领取积分"
+    : !activityEnabled
     ? "签到活动暂未开放，稍后再来"
     : todayChecked
       ? `明日可领 ${formatPoints(nextReward)}，继续保持连续`
@@ -101,6 +128,13 @@ export function CheckinView() {
 
   useEffect(() => {
     mountedRef.current = true;
+    if (auth.loading) return undefined;
+    if (!auth.isAuthenticated) {
+      setState(anonymousCheckinState());
+      setLoading(false);
+      setLoadError("");
+      return undefined;
+    }
     const controller = new AbortController();
     load(controller.signal);
     return () => {
@@ -108,7 +142,7 @@ export function CheckinView() {
       controller.abort();
       if (burstTimerRef.current) window.clearTimeout(burstTimerRef.current);
     };
-  }, []);
+  }, [auth.isAuthenticated, auth.loading]);
 
   const claim = async () => {
     if (requestAuth({ featureLabel: "每日签到" })) return;
@@ -162,7 +196,7 @@ export function CheckinView() {
                   <i className={`bi ${todayChecked ? "bi-check2-circle" : claiming ? "bi-arrow-repeat ck-spin" : "bi-gift-fill"}`} aria-hidden="true" />
                   <span>
                     <strong>{todayChecked ? "今日已签到" : claiming ? "签到中..." : "立即签到"}</strong>
-                    <small>{activityEnabled ? (todayChecked ? `明日 +${formatPoints(nextReward, { withUnit: false })} 积分` : `领取 +${formatPoints(claimReward, { withUnit: false })} 积分`) : "等待活动重新开放"}</small>
+                    <small>{anonymous ? "登录后查看今日奖励" : activityEnabled ? (todayChecked ? `明日 +${formatPoints(nextReward, { withUnit: false })} 积分` : `领取 +${formatPoints(claimReward, { withUnit: false })} 积分`) : "等待活动重新开放"}</small>
                   </span>
                 </button>
                 <div className="ck-status" data-tone={!activityEnabled ? "off" : todayChecked ? "done" : "ready"} aria-live="polite">
@@ -178,10 +212,10 @@ export function CheckinView() {
 
           <section className="ck-stats" aria-label="签到数据概览">
             {[
-              [checkinArt.calendar, "连续签到", state.currentStreak, "天"],
-              [checkinArt.medal, "累计积分", formatPoints(state.monthRewardCents, { withUnit: false }), "分"],
-              [checkinArt.target, "本月签到", state.monthRecords?.length || 0, "次"],
-              [checkinArt.growth, "当前进度", `D${String(activeCycleDay).padStart(2, "0")}`, "/7"],
+              [checkinArt.calendar, "连续签到", anonymous ? "--" : state.currentStreak, anonymous ? "" : "天"],
+              [checkinArt.medal, "累计积分", anonymous ? "--" : formatPoints(state.monthRewardCents, { withUnit: false }), anonymous ? "" : "分"],
+              [checkinArt.target, "本月签到", anonymous ? "--" : state.monthRecords?.length || 0, anonymous ? "" : "次"],
+              [checkinArt.growth, "当前进度", anonymous ? "--" : `D${String(activeCycleDay).padStart(2, "0")}`, anonymous ? "" : "/7"],
             ].map(([image, label, value, unit]) => (
               <article key={label}><div className="ck-stat__icon"><img src={image} alt="" width="128" height="128" /></div><p>{label}</p><strong>{value}<em>{unit}</em></strong></article>
             ))}
@@ -201,7 +235,7 @@ export function CheckinView() {
                     {active && <span className="ck-reward__today">今天</span>}
                     <span className="ck-reward__day">DAY {reward.day}</span>
                     <img src={checkinArt.coin} alt="" width="128" height="128" loading="lazy" />
-                    <strong>+{formatPoints(reward.rewardCents, { withUnit: false })}</strong>
+                    <strong>{anonymous ? "--" : `+${formatPoints(reward.rewardCents, { withUnit: false })}`}</strong>
                     <small>{reward.milestone ? "里程碑" : "积分"}</small>
                     {done && <i className="bi bi-check-circle-fill" aria-hidden="true" />}
                   </article>
