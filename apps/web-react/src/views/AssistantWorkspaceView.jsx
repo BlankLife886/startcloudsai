@@ -48,6 +48,7 @@ import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.cs
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "./assistant-workspace-react.css";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 
 const SUGGESTIONS = [
@@ -389,6 +390,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
 
 export function AssistantWorkspaceView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const workspaceScope = `user:${auth.user?.id || "anonymous"}`;
   const mountedRef = useRef(true);
@@ -1115,6 +1117,7 @@ export function AssistantWorkspaceView() {
   }, [clearConversationRun, conversations, monitorRun, patchConversation, resumeCandidates]);
 
   const requestSend = async () => {
+    if (requestAuth({ featureLabel: "AI 助手" })) return;
     const prompt = draft.trim();
     if (!prompt || loading || serviceError || activeRun || uploading) return;
     if (Object.keys(activeRuns).length >= 4 && !activeRuns[activeId]) {
@@ -1426,7 +1429,7 @@ export function AssistantWorkspaceView() {
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}
             <textarea ref={textareaRef} value={draft} rows={1} aria-label="消息输入" placeholder={mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题或上传图片进行识别、分析与编辑"} disabled={Boolean(activeRun) || Boolean(serviceError)} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith("image/")); if (files.length) { event.preventDefault(); void uploadReferences(files); } }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
             {draft.trim().length > 10000 && <div className={`draft-counter${draft.trim().length > 12000 ? " is-over" : ""}`}>{draft.trim().length.toLocaleString("zh-CN")} / 12,000</div>}
-            <div className="composer-toolbar"><div className="composer-left"><button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => setCreationMenuOpen((value) => !value)}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi ${creationMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button><button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" onClick={() => setModelMenuOpen((value) => !value)}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span><i className={`bi ${mode === "image" ? "bi-stars" : "bi-chevron-down"}`} /></button>{mode === "image" ? <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => setPreferencesOpen((value) => !value)}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button> : <><button className="composer-tool-button" type="button" disabled title="暂未开放" aria-label="使用技能，暂未开放"><i className="bi bi-wrench-adjustable" /><span>使用技能</span></button><button className="composer-tool-button is-mention" type="button" disabled title="暂未开放" aria-label="添加主体，暂未开放"><span>@</span></button></>}</div>{activeRun ? <button className="send-button stop-button" type="button" aria-label="停止生成" onClick={() => void stopRun()}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={!canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}</div>
+            <div className="composer-toolbar"><div className="composer-left"><button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => setCreationMenuOpen((value) => !value)}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi ${creationMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button><button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" onClick={() => setModelMenuOpen((value) => !value)}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span><i className={`bi ${mode === "image" ? "bi-stars" : "bi-chevron-down"}`} /></button>{mode === "image" ? <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => setPreferencesOpen((value) => !value)}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button> : <><button className="composer-tool-button" type="button" disabled title="暂未开放" aria-label="使用技能，暂未开放"><i className="bi bi-wrench-adjustable" /><span>使用技能</span></button><button className="composer-tool-button is-mention" type="button" disabled title="暂未开放" aria-label="添加主体，暂未开放"><span>@</span></button></>}</div>{activeRun ? <button className="send-button stop-button" type="button" aria-label="停止生成" onClick={() => void stopRun()}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={auth.isAuthenticated && !canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}</div>
           </div>
         </div>
       </main>

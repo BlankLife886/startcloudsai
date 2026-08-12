@@ -8,6 +8,7 @@ import {
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
@@ -226,6 +227,7 @@ function FrameMedia({ src, alt, fitMode, zoom, pan, onWheel, onPointerDown, onPo
 
 export function AiIllustrationColoringView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const navigate = useNavigate();
   const fileInput = useRef(null);
@@ -306,7 +308,7 @@ export function AiIllustrationColoringView() {
   const selectedModel = models.find((item) => item.id === settings.publicModelKey) || models[0] || null;
   const unitCost = selectedModel?.creditCost || 0;
   const totalCost = unitCost * settings.generationCount;
-  const canSubmit = auth.isAuthenticated && !disabledMessage && Boolean(source?.file || source?.remoteUrl || sourceUrl) && !jobs.submitting;
+  const canSubmit = !disabledMessage && Boolean(source?.file || source?.remoteUrl || sourceUrl) && !jobs.submitting;
   const split = compareMode === "split" && sourceUrl && resultUrl && !showBatch;
   const stageWidth = resultUrl ? active?.resultWidth || active?.requestedOutputWidth : effectiveMeta.width;
   const stageHeight = resultUrl ? active?.resultHeight || active?.requestedOutputHeight : effectiveMeta.height;
@@ -398,6 +400,7 @@ export function AiIllustrationColoringView() {
   }, [jobs]);
 
   const startColoring = useCallback(async () => {
+    if (requestAuth({ featureLabel: "插画染色" })) return;
     if (!canSubmit) return;
     const payload = {
       sourceFile: source?.file || null,
@@ -421,7 +424,7 @@ export function AiIllustrationColoringView() {
     } catch { /* service will enforce the balance */ }
     setPendingSubmit(payload);
     setCost({ unit: unitCost, count: settings.generationCount, total: totalCost, available, priced: Boolean(selectedModel && resolveModelPointPricing(selectedModel).configured) });
-  }, [canSubmit, effectiveMeta, prompt, references, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
+  }, [canSubmit, effectiveMeta, prompt, references, requestAuth, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
 
   const removeHistory = useCallback((item) => {
     const items = item.batchId ? jobs.history.filter((entry) => entry.batchId === item.batchId) : [item];
@@ -485,7 +488,6 @@ export function AiIllustrationColoringView() {
       <aside className="coloring-sidebar"><div className="coloring-side-scroll">
         <section className="coloring-model-engine" aria-label="生成模型"><span className="coloring-model-engine-icon"><i className="bi bi-cpu" /></span><ColoringSelect className="coloring-model-select" value={selectedModel?.id || settings.publicModelKey} options={(models.length ? models : [{ id: settings.publicModelKey || "standard", label: "标准染色模型", creditCost: 0 }]).map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} onChange={(value) => updateSettings({ publicModelKey: value })} label="生成模型" disabled={controlsLocked} icon /></section>
         {disabledMessage && <div className="coloring-disabled-banner">{disabledMessage}</div>}
-        {!auth.isAuthenticated && <div className="coloring-login-card"><div className="coloring-login-mark"><i className="bi bi-person-lock" /></div><div><strong>登录后开始染色</strong><p>上传线稿、描述配色，一键 AI 上色</p></div><button type="button" className="coloring-login-btn" onClick={() => navigate("/auth?mode=login&redirect=%2Fai-illustration-coloring")}>去登录</button></div>}
         <section className="coloring-block coloring-block--title"><input className="coloring-input" value={title} maxLength={80} disabled={controlsLocked} aria-label="作品名称" placeholder="作品名称，例如：赛博机甲头像" onChange={(event) => setTitle(event.target.value)} /></section>
         <section className="coloring-block coloring-block--source"><div className={`coloring-source-card${sourceUrl ? "" : " is-empty"}${uploadDragOver ? " is-dragover" : ""}`} onDragOver={(event) => { event.preventDefault(); setUploadDragOver(true); }} onDragLeave={() => setUploadDragOver(false)} onDrop={(event) => { event.preventDefault(); setUploadDragOver(false); void chooseSource(event.dataTransfer.files[0]); }}>
           {!sourceUrl ? <button type="button" className="coloring-source-main" disabled={controlsLocked} onClick={() => fileInput.current?.click()}><span className="coloring-upload-icon"><i className="bi bi-cloud-arrow-up" /></span><span className="coloring-source-copy"><strong>上传线稿</strong><small>拖拽或点击 · PNG / JPG / WEBP</small></span></button> : <div className="coloring-source-main coloring-source-main--preview"><div className="coloring-source-thumb" data-orientation={orientationFromSize(effectiveMeta.width, effectiveMeta.height)}><MediaImage src={sourceUrl} alt="线稿预览" loading="eager" /></div><div className="coloring-source-copy"><strong>{effectiveMeta.width && effectiveMeta.height ? `${effectiveMeta.width}×${effectiveMeta.height}` : "读取图片信息中…"}</strong><small>{effectiveMeta.bytes ? `${formatBytes(effectiveMeta.bytes)} · ${String(effectiveMeta.type || "").replace("image/", "").toUpperCase()}` : "原始线稿"}</small></div></div>}
@@ -494,7 +496,7 @@ export function AiIllustrationColoringView() {
         <section className="coloring-library-launcher" aria-label="染色资源">{[["assets", "bi-images", "资产库"], ["history", "bi-clock-history", "历史记录"], ["prompts", "bi-journal-text", "提示词库"]].map(([id, icon, label]) => <button key={id} type="button" onClick={() => openLibrary(id)}><i className={`bi ${icon}`} /><span>{label}</span></button>)}</section>
         <section className="coloring-block"><header className="coloring-block-head"><span>配色描述</span><small>{prompt.length} 字</small></header><textarea className="coloring-textarea" value={prompt} disabled={controlsLocked} placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…" onChange={(event) => setPrompt(event.target.value)} /></section>
         <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{outputPreview.label}</small></header><div className="coloring-parameter-selectors"><div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={COLORING_OUTPUT_ORIENTATION_OPTIONS.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div><div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={COLORING_OUTPUT_SIZE_OPTIONS.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div><div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div></div></section>
-      </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={!canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><i className="bi bi-arrow-clockwise" />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => jobs.cancel(active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
+      </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><i className="bi bi-arrow-clockwise" />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => jobs.cancel(active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
 
       <section className="coloring-stage"><div ref={stageRef} className={`coloring-stage-shell${isFullscreen ? " is-fullscreen" : ""}`}>
         <div className="coloring-stage-toolbar"><div className="coloring-stage-toolbar-main"><div className="coloring-view-toggle" aria-label="视图模式"><button type="button" className={compareMode === "result" ? "active" : ""} aria-pressed={compareMode === "result"} onClick={() => setCompareMode("result")}><i className="bi bi-image" /><span>{resultUrl ? "结果" : "预览"}</span></button><button type="button" className={`coloring-compare-toggle${compareMode === "split" ? " active" : ""}${sourceUrl && resultUrl ? " ready" : ""}`} disabled={!sourceUrl || !resultUrl} onClick={() => setCompareMode("split")}><i className="bi bi-layout-split" /><span>对比</span></button></div><div className="coloring-fit-toggle" aria-label="画面适配"><button type="button" className={settings.fitMode === "contain" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "contain" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-aspect-ratio" /><span>适配</span></button><button type="button" className={settings.fitMode === "cover" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "cover" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-arrows-fullscreen" /><span>铺满</span></button></div></div>

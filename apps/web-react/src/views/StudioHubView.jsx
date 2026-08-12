@@ -36,6 +36,7 @@ import "@react/legacy-static/features/creator-hub/studio-hub.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
@@ -322,6 +323,7 @@ function StudioCostDialog({ cost, onConfirm, onCancel }) {
 
 export function StudioHubView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const navigate = useNavigate();
   const rootRef = useRef(null);
   const composerRef = useRef(null);
@@ -723,6 +725,7 @@ export function StudioHubView() {
 
   const startCreate = async (event) => {
     event.preventDefault();
+    if (requestAuth({ featureLabel: selectedTool?.label || "创作台" })) return;
     const prompt = draftPrompt.trim();
     if (!selectedTool || launchSubmitting || referenceUploading) return;
     if (!prompt) {
@@ -1049,10 +1052,11 @@ export function StudioHubView() {
                       type="submit"
                       className="studio-composer__submit"
                       disabled={
-                        !selectedTool ||
-                        !draftPrompt.trim() ||
-                        referenceUploading ||
-                        launchSubmitting
+                        auth.isAuthenticated &&
+                        (!selectedTool ||
+                          !draftPrompt.trim() ||
+                          referenceUploading ||
+                          launchSubmitting)
                       }
                       title="开始创作"
                       aria-label="开始创作"

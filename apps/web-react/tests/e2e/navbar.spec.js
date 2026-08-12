@@ -7,7 +7,7 @@ const user = {
 }
 
 test.beforeEach(async ({ page }, testInfo) => {
-  const sessionUser = testInfo.title.includes('canceled protected navigation') ? null : user
+  const sessionUser = testInfo.title.includes('anonymous navigation') ? null : user
   await page.addInitScript((currentUser) => {
     if (currentUser) sessionStorage.setItem('sc_auth_session_cache', JSON.stringify({ user: currentUser }))
     else sessionStorage.removeItem('sc_auth_session_cache')
@@ -106,7 +106,7 @@ test('mobile menu closes when the user clicks outside the header', async ({ page
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 })
 
-test('canceled protected navigation does not leave a false active state', async ({ page }) => {
+test('anonymous navigation enters account pages without opening a prompt', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')
 
@@ -114,10 +114,10 @@ test('canceled protected navigation does not leave a false active state', async 
   const historyLink = page.locator('.main-nav > .nav-link').filter({ hasText: '历史记录' })
   await historyLink.click()
 
-  await expect.poll(() => new URL(page.url()).pathname).toBe('/')
-  await expect(homeLink).toHaveClass(/active/)
-  await expect(historyLink).not.toHaveClass(/active/)
-  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/history')
+  await expect(homeLink).not.toHaveClass(/active/)
+  await expect(historyLink).toHaveClass(/active/)
+  await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
 })
 
 test('desktop navigation never overlaps brand or account tools at boundary widths', async ({

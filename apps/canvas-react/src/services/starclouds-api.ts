@@ -24,7 +24,8 @@ function apiUrl(path: string) {
 function redirectToLogin() {
     if (typeof window === "undefined") return;
     const hostOrigin = getHostAppOrigin();
-    if (window.self !== window.top) {
+    const embedded = window.self !== window.top || document.documentElement.classList.contains("starclouds-hosted");
+    if (embedded) {
         window.parent.postMessage({ type: CANVAS_AUTH_REQUIRED_MESSAGE }, hostOrigin);
         return;
     }

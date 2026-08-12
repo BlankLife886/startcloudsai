@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { EcommerceFullscreenPreview } from "../features/ecommerce/EcommerceFullscreenPreview.jsx";
 import {
@@ -939,6 +940,7 @@ function VersionDrawer({
 }
 
 export function DesignWorkshopView() {
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const rootRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1394,6 +1396,7 @@ export function DesignWorkshopView() {
   );
 
   const generate = useCallback(async () => {
+    if (requestAuth({ featureLabel: "UI 设计稿" })) return;
     setLocalError("");
     if (isIteration && !iterationBrief.trim()) {
       setLocalError("请描述本次迭代只需要修改的内容");
@@ -1522,6 +1525,7 @@ export function DesignWorkshopView() {
       }
     }
   }, [
+    requestAuth,
     activeModel,
     brief,
     buildPrompt,

@@ -6,6 +6,7 @@ import {
 } from "@react/legacy-modules/services/feedbackApi.js";
 import "@react/legacy-styles/generated/views/FeedbackView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { ProfileSectionShell } from "../components/ProfileSectionShell.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 
@@ -35,6 +36,7 @@ function formatTime(value) {
 
 export function FeedbackView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const location = useLocation();
   const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
@@ -97,6 +99,7 @@ export function FeedbackView() {
 
   const submit = async (event) => {
     event.preventDefault();
+    if (requestAuth({ featureLabel: "问题反馈" })) return;
     if (!canSubmit) {
       setSubmitNotice("请填写至少 5 个字符的标题和 10 个字符的问题描述");
       return;
@@ -204,7 +207,11 @@ export function FeedbackView() {
             {submitNotice && <p className="feedback-form-notice" role="status">{submitNotice}</p>}
             <div className="feedback-submit-row">
               <p><i className="bi bi-shield-check" /> 浏览器信息会随反馈提交，仅用于排查问题。</p>
-              <button type="submit" disabled={!canSubmit}>
+              <button
+                type={auth.isAuthenticated ? "submit" : "button"}
+                disabled={auth.isAuthenticated && !canSubmit}
+                onClick={() => { if (!auth.isAuthenticated) requestAuth({ featureLabel: "问题反馈" }); }}
+              >
                 <i className={`bi ${submitting ? "bi-arrow-repeat spin" : "bi-send-check"}`} />
                 {submitting ? "正在提交…" : "提交反馈"}
               </button>

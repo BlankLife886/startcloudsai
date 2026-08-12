@@ -5,7 +5,7 @@ const publicRouteBaselines = [
   { name: 'home', path: '/', root: '.commercial-home' },
   { name: 'prompts', path: '/prompts', root: '.ch-page--prompts' },
   { name: 'studio', path: '/studio', root: '.studio-hub' },
-  { name: 'text-to-image', path: '/text-to-image', root: '.auth-required-dialog' },
+  { name: 'text-to-image', path: '/text-to-image', root: '.t2i-page' },
   { name: 'pricing', path: '/pricing', root: '.pp' },
   { name: 'share', path: '/share', root: '.community-page' },
   { name: 'puzzle', path: '/tools/puzzle', root: '.collage-studio-page' },

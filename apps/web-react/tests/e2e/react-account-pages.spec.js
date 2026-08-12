@@ -131,13 +131,18 @@ test.describe('React authenticated account pages', () => {
     await installVisualBaseline(page)
   })
 
-  test('protected routes redirect anonymous users and preserve the destination', async ({
+  test('account pages remain accessible to anonymous users and prompt only on action', async ({
     page,
   }) => {
     await page.goto('/feedback?category=billing', { waitUntil: 'domcontentloaded' })
 
-    await expect(page).toHaveURL(/\/auth\?mode=login&redirect=%2Ffeedback%3Fcategory%3Dbilling$/)
-    await expect(page.locator('.auth-page')).toBeVisible()
+    await expect(page).toHaveURL(/\/feedback\?category=billing$/)
+    await expect(page.locator('.feedback-page')).toBeVisible()
+    await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
+    await page.getByRole('button', { name: '提交反馈' }).click()
+    await expect(page.locator('.auth-required-dialog')).toBeVisible()
+    await expect(page.locator('.auth-required-dialog')).toContainText('问题反馈')
+    await expect(page).toHaveURL(/\/feedback\?category=billing$/)
   })
 
   test('feedback loads and submits through the existing API contract', async ({ page }) => {

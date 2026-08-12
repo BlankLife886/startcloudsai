@@ -44,10 +44,9 @@ import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRa
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
-import "@react/legacy-styles/generated/components/auth/AuthRequiredDialog.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
-import { CommercialHomeView } from "./CommercialHomeView.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
 import "./TextToImageView.css";
@@ -436,75 +435,20 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
   );
 }
 
-function AuthenticationGate() {
-  const navigate = useNavigate();
-  const locale = localStorage.getItem("starclouds-locale") || "zh-CN";
-  const english = locale.startsWith("en");
-  const authPath = (mode) =>
-    `/auth?mode=${mode}&redirect=${encodeURIComponent("/text-to-image")}`;
-  return (
-    <>
-      <CommercialHomeView />
-      {createPortal(<div className="auth-required-layer" role="presentation">
-        <section
-          className="auth-required-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="auth-required-title"
-        >
-          <button
-            type="button"
-            className="auth-required-close"
-            aria-label={english ? "Close sign-in prompt" : "关闭登录提示"}
-            onClick={() => navigate("/", { replace: true })}
-          >
-            <i className="bi bi-x-lg" />
-          </button>
-          <div className="auth-required-copy">
-            <p className="auth-required-eyebrow"><span />STARCLOUD CREATIVE</p>
-            <h2 id="auth-required-title">{english ? "Ready to create?" : "准备开始创作？"}</h2>
-            <p className="auth-required-lead">
-              {english ? "Sign in before accessing “Text to Image”." : "访问“文生图”前需要先登录账号。"}
-            </p>
-            <p className="auth-required-detail">
-              {english
-                ? "Save generation history, sync personal assets, and continue creating across devices. Your first email verification creates a free account automatically."
-                : "登录后即可保存生成记录、同步个人素材，并在不同设备继续你的创作。首次邮箱验证会自动创建免费账号。"}
-            </p>
-            <div className="auth-required-actions">
-              <button type="button" className="is-primary" onClick={() => navigate(authPath("register"))}>
-                {english ? "Sign up for free" : "免费注册"}<i className="bi bi-arrow-up-right" />
-              </button>
-              <button type="button" className="is-secondary" onClick={() => navigate(authPath("login"))}>
-                {english ? "Sign in" : "去登录"}
-              </button>
-            </div>
-            <p className="auth-required-support"><i className="bi bi-shield-check" />{english ? "Email codes support Gmail, Googlemail, and QQ Mail" : "支持 Gmail、Googlemail 与 QQ 邮箱验证码"}</p>
-          </div>
-          <figure className="auth-required-visual" aria-hidden="true">
-            <img src="/sucai/1home-intro-02.png" alt="" />
-            <span className="auth-required-visual__line is-one" />
-            <span className="auth-required-visual__line is-two" />
-            <figcaption><strong>CREATE WITHOUT LIMITS</strong><span>IMAGE · DESIGN · STORY</span></figcaption>
-          </figure>
-        </section>
-      </div>, document.body)}
-    </>
-  );
-}
-
 export function TextToImageView() {
   const auth = useAuth();
-  if (!auth.isAuthenticated) return <AuthenticationGate />;
+  const { requestAuth } = useAuthPrompt();
   return (
     <TextToImageWorkspace
       user={auth.user}
+      authenticated={auth.isAuthenticated}
+      onRequireAuth={() => requestAuth({ featureLabel: "文生图" })}
       onUserPatch={(patch) => auth.setUser({ ...auth.user, ...patch })}
     />
   );
 }
 
-function TextToImageWorkspace({ user, onUserPatch }) {
+function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch }) {
   const rootRef = useRef(null);
   const modelTriggerRef = useRef(null);
   const modelMenuRef = useRef(null);
@@ -586,7 +530,7 @@ function TextToImageWorkspace({ user, onUserPatch }) {
     (model) => resolveModelPointPricing(model).configured,
   );
   const maxReferences = Math.max(0, Number(currentModel?.maxReferenceImages ?? 4));
-  const jobs = useTextToImageJobs({ authenticated: true });
+  const jobs = useTextToImageJobs({ authenticated });
   const isRunning = jobs.tasks.some((task) => ACTIVE_STATUSES.has(task.status));
   const now = useClock(isRunning);
 
@@ -949,6 +893,10 @@ function TextToImageWorkspace({ user, onUserPatch }) {
   }, [buildPayload, count, jobs, prompt, references]);
 
   const requestGeneration = useCallback(async () => {
+    if (!authenticated) {
+      onRequireAuth?.();
+      return;
+    }
     if (!prompt.trim() || !currentModel) return;
     if (user?.requireCostConfirm === false || pendingRef.current?.value?.config?.costConfirmed) {
       pendingRef.current = { consumed: true, value: null };
@@ -986,7 +934,7 @@ function TextToImageWorkspace({ user, onUserPatch }) {
       pricingUnavailable:
         !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
     });
-  }, [autoRemove, backgroundRemovalModel?.pricePoints, count, currentModel, feature.creditCost, submitGeneration, user?.requireCostConfirm]);
+  }, [authenticated, autoRemove, backgroundRemovalModel?.pricePoints, count, currentModel, feature.creditCost, onRequireAuth, submitGeneration, user?.requireCostConfirm]);
 
   useEffect(() => {
     const pending = pendingRef.current?.value;
@@ -1467,7 +1415,7 @@ function TextToImageWorkspace({ user, onUserPatch }) {
             )}
           </div>
         </div>
-        <button type="button" className="t2i-generate" data-motion disabled={!prompt.trim() || !currentModel || jobs.submitting} onClick={() => void requestGeneration()}>
+        <button type="button" className="t2i-generate" data-motion disabled={authenticated && (!prompt.trim() || !currentModel || jobs.submitting)} onClick={() => void requestGeneration()}>
           <span>{jobs.submitting ? "正在提交" : isRunning ? "再生成一张" : "立即生成"}</span>
           {currentModel && <small>{generationCost > 0 ? `${generationCost.toLocaleString("zh-CN")} 积分` : "免费"}</small>}
           <i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : isRunning ? "bi-plus-lg" : "bi-stars"}`} />

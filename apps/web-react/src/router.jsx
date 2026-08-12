@@ -1,7 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { MigrationPreview } from "./views/MigrationPreview.jsx";
 import { AppShell } from "./layout/AppShell.jsx";
-import { RequireAuth } from "./auth/AuthContext.jsx";
 
 function lazyView(importer, exportName) {
   return async () => {
@@ -104,9 +103,6 @@ export const router = createBrowserRouter([
           "ImageCompressView",
         ),
       },
-      {
-        element: <RequireAuth />,
-        children: [
           {
             path: "/feedback",
             lazy: lazyView(
@@ -280,8 +276,6 @@ export const router = createBrowserRouter([
               "CreatorIncentiveDetailView",
             ),
           },
-        ],
-      },
       {
         path: "*",
         lazy: lazyView(

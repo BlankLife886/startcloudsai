@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Outlet, useLocation } from "react-router";
 import { NavBar } from "./NavBar.jsx";
-import { useAuth } from "../auth/AuthContext.jsx";
+import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
 import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
@@ -25,12 +25,8 @@ const incentiveCanvasRoutes = new Set([
 
 export function AppShell() {
   const location = useLocation();
-  const auth = useAuth();
   const mainRef = useRef(null);
-  const textToImageGate =
-    location.pathname === "/text-to-image" && !auth.isAuthenticated;
-  const documentScroll =
-    documentScrollRoutes.has(location.pathname) || textToImageGate;
+  const documentScroll = documentScrollRoutes.has(location.pathname);
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
@@ -85,7 +81,7 @@ export function AppShell() {
   }
   if (location.pathname === "/check-in") mainClasses.push("main--checkin");
   if (
-    (location.pathname === "/text-to-image" && auth.isAuthenticated) ||
+    location.pathname === "/text-to-image" ||
     location.pathname === "/assistant" ||
     location.pathname === "/ecommerce-design" ||
     location.pathname === "/ai-illustration-coloring" ||
@@ -100,13 +96,13 @@ export function AppShell() {
   }
 
   return (
-    <div
-      className={`app-container${documentScroll ? " app--document-scroll" : ""}`}
-    >
-      <NavBar />
-      <main ref={mainRef} className={mainClasses.join(" ")}>
-        <Outlet />
-      </main>
-    </div>
+    <AuthPromptProvider>
+      <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
+        <NavBar />
+        <main ref={mainRef} className={mainClasses.join(" ")}>
+          <Outlet />
+        </main>
+      </div>
+    </AuthPromptProvider>
   );
 }

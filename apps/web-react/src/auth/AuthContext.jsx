@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Navigate, Outlet, useLocation } from "react-router";
 import {
   fetchCurrentAccount,
   getAuthSession,
@@ -56,18 +55,4 @@ export function useAuth() {
   const value = useContext(AuthContext);
   if (!value) throw new Error("useAuth must be used inside AuthProvider");
   return value;
-}
-
-export function RequireAuth() {
-  const auth = useAuth();
-  const location = useLocation();
-
-  if (auth.loading) {
-    return <div className="route-auth-loading" aria-label="正在确认登录状态" />;
-  }
-  if (!auth.isAuthenticated) {
-    const redirect = encodeURIComponent(`${location.pathname}${location.search}`);
-    return <Navigate replace to={`/auth?mode=login&redirect=${redirect}`} />;
-  }
-  return <Outlet />;
 }

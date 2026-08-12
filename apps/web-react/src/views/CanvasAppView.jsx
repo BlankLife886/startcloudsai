@@ -3,10 +3,12 @@ import { createRoot } from "react-dom/client";
 import { useLocation, useNavigate } from "react-router";
 import { CanvasEmbeddedApp } from "@canvas/embedded.tsx";
 import {
+  CANVAS_AUTH_REQUIRED_MESSAGE,
   CANVAS_APP_PATH,
   normalizeCanvasRoutePath,
 } from "@react/legacy-modules/services/canvasApp.js";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import "@react/legacy-styles/generated/views/CanvasAppView.css";
 import "./CanvasAppView.css";
 
@@ -14,8 +16,10 @@ export function CanvasAppView() {
   const location = useLocation();
   const navigate = useNavigate();
   const isDark = useIsDark();
+  const { requestAuth } = useAuthPrompt();
   const mountRef = useRef(null);
   const nativeRootRef = useRef(null);
+  const lastActionAtRef = useRef(0);
   const [loaded, setLoaded] = useState(false);
   const [headerOffset, setHeaderOffset] = useState(0);
   const canvasPath = normalizeCanvasRoutePath(
@@ -51,6 +55,16 @@ export function CanvasAppView() {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event.data?.type !== CANVAS_AUTH_REQUIRED_MESSAGE) return;
+      if (Date.now() - lastActionAtRef.current > 15_000) return;
+      requestAuth({ featureLabel: "智能画布" });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [requestAuth]);
+
   useLayoutEffect(() => {
     if (!mountRef.current) return undefined;
     const nativeRoot = createRoot(mountRef.current);
@@ -84,6 +98,7 @@ export function CanvasAppView() {
       <div
         ref={mountRef}
         className={`canvas-native-mount starclouds-hosted${isDark ? " dark" : ""}${loaded ? " is-ready" : ""}`}
+        onPointerDownCapture={() => { lastActionAtRef.current = Date.now(); }}
       />
     </section>
   );

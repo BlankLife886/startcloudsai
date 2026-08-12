@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
@@ -113,6 +114,7 @@ function Filmstrip({ groups, selectedId, onSelect }) {
 
 export function GameArtStudioView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const rootRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -300,6 +302,7 @@ export function GameArtStudioView() {
   }
 
   async function generate() {
+    if (requestAuth({ featureLabel: "游戏设计" })) return;
     setLocalError("");
     if (!currentState.prompt.trim() && !inputFile && !referenceUrl) { setLocalError("请先写一段创意描述，或挂一张参考图"); return; }
     if (!currentModel) { setLocalError("后台还没有为游戏设计分配可用模型"); return; }

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
@@ -113,6 +114,7 @@ function MediaImage({ src, alt = "", ...props }) {
 
 export function ModelSheetStudioView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const rootRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -321,6 +323,7 @@ export function ModelSheetStudioView() {
   }
 
   async function generate() {
+    if (requestAuth({ featureLabel: "模型设计" })) return;
     setLocalError("");
     setRetryViews([]);
     if (!selectedViews.length) { setLocalError("请至少选择一个输出视角"); return; }

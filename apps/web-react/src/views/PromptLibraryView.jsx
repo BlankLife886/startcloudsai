@@ -8,6 +8,7 @@ import {
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import {
   listPromptCategories,
@@ -37,6 +38,7 @@ function categoryId(category) {
 export function PromptLibraryView() {
   const navigate = useNavigate();
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -326,7 +328,7 @@ export function PromptLibraryView() {
 
   async function toggleFavorite(item) {
     if (!auth.isAuthenticated) {
-      notificationService.info("登录后可收藏提示词");
+      requestAuth({ featureLabel: "提示词收藏" });
       return;
     }
     if (!item?.id) return;

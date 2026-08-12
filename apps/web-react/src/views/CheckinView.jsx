@@ -7,6 +7,7 @@ import {
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import "@react/legacy-styles/generated/views/CheckinView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 
 const checkinArt = Object.freeze({
@@ -48,6 +49,7 @@ function buildCalendarDays(state) {
 
 export function CheckinView() {
   const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const mountedRef = useRef(true);
   const burstTimerRef = useRef(null);
@@ -109,6 +111,7 @@ export function CheckinView() {
   }, []);
 
   const claim = async () => {
+    if (requestAuth({ featureLabel: "每日签到" })) return;
     if (claiming || todayChecked || !activityEnabled) return;
     setClaiming(true);
     setClaimError("");
@@ -140,7 +143,7 @@ export function CheckinView() {
           <i className="bi bi-cloud-slash" aria-hidden="true" />
           <h1>签到活动加载失败</h1>
           <p>{loadError}</p>
-          <button type="button" className="ck-action is-secondary" onClick={() => load()}><i className="bi bi-arrow-clockwise" aria-hidden="true" />重新加载</button>
+          <button type="button" className="ck-action is-secondary" onClick={() => auth.isAuthenticated ? load() : requestAuth({ featureLabel: "每日签到" })}><i className="bi bi-arrow-clockwise" aria-hidden="true" />重新加载</button>
         </section>
       ) : state ? (
         <div className="ck-dashboard">
@@ -153,7 +156,7 @@ export function CheckinView() {
                 <button
                   type="button"
                   className={`ck-action is-primary${todayChecked ? " is-claimed" : ""}${claimBurst ? " is-burst" : ""}`}
-                  disabled={claiming || todayChecked || !activityEnabled}
+                  disabled={auth.isAuthenticated && (claiming || todayChecked || !activityEnabled)}
                   onClick={claim}
                 >
                   <i className={`bi ${todayChecked ? "bi-check2-circle" : claiming ? "bi-arrow-repeat ck-spin" : "bi-gift-fill"}`} aria-hidden="true" />

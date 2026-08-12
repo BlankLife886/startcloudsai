@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
 import {
   buildEcommerceGenerationPlan,
   buildEcommerceRevisionPrompt,
@@ -348,6 +350,8 @@ function ConfirmDelete({ open, busy, onClose, onConfirm }) {
 }
 
 export function EcommerceDesignView() {
+  const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const [params, setParams] = useSearchParams();
   const mode = ecommerceModeById(params.get("tool") || "detail");
   const fields = useMemo(() => new Set(mode.fields || []), [mode]);
@@ -712,6 +716,7 @@ export function EcommerceDesignView() {
     }
   }
   async function generate() {
+    if (requestAuth({ featureLabel: "AI 电商" })) return;
     if (!canGenerate) return;
     setWorkspace("result");
     setPane("canvas");
@@ -1572,7 +1577,7 @@ export function EcommerceDesignView() {
               <button
                 type="button"
                 className="generate-button"
-                disabled={!canGenerate}
+                disabled={auth.isAuthenticated && !canGenerate}
                 title={readiness}
                 onClick={generate}
               >
