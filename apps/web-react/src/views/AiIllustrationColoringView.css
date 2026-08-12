@@ -17,6 +17,28 @@
   border-right-color: rgba(43, 45, 60, 0.1);
 }
 
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn {
+  border: 1px solid rgba(53, 48, 68, 0.1) !important;
+  color: rgba(47, 43, 60, 0.76);
+  background: rgba(255, 255, 255, 0.78) !important;
+  box-shadow:
+    0 1px 2px rgba(43, 38, 58, 0.04),
+    0 5px 14px rgba(68, 55, 92, 0.05);
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn i {
+  color: #b23f7b;
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn:hover,
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn:focus-visible,
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn.active {
+  border-color: rgba(221, 72, 145, 0.28) !important;
+  color: #8f2f64;
+  background: rgba(250, 224, 239, 0.92) !important;
+  box-shadow: 0 5px 16px rgba(190, 66, 126, 0.1);
+}
+
 .coloring-studio-page .authenticated-image,
 .coloring-studio-page .authenticated-image-media {
   width: 100%;

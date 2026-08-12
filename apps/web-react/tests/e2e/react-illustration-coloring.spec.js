@@ -162,6 +162,7 @@ test.describe('React illustration coloring interactions', () => {
     await expect(toolbarLibrary.getByRole('button', { name: '历史记录' })).toBeVisible()
     await expect(toolbarLibrary.getByRole('button', { name: '提示词库' })).toBeVisible()
     await toolbarLibrary.getByRole('button', { name: '历史记录' }).click()
+    await expect(toolbarLibrary.getByRole('button', { name: '历史记录' })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('dialog', { name: '染色资源' })).toBeVisible()
     await page.getByRole('dialog', { name: '染色资源' }).getByRole('button', { name: '关闭' }).click()
 
