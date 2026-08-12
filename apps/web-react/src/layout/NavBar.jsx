@@ -367,6 +367,7 @@ export function NavBar() {
 
   async function openTrialDialog() {
     closeMenu();
+    if (requestAuth({ featureLabel: "申请体验" })) return;
     try {
       const campaign = await getTrialAccessCampaign();
       if (campaign?.enabled !== true || campaign?.status !== "active") {

@@ -129,6 +129,28 @@ test('signed-out navbar history action opens auth without entering the page', as
   await expect(page).toHaveURL(/\/prompts$/)
 })
 
+test('signed-out trial access action opens auth without opening the application dialog', async ({ page }) => {
+  await page.route('**/api/v1/trial-access-campaign', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: { campaign: { id: 'trial-campaign', enabled: true, status: 'active', title: '体验计划' } },
+      }),
+    }),
+  )
+  await page.goto('/prompts', { waitUntil: 'domcontentloaded' })
+  const entry = page.getByRole('button', { name: '申请体验' })
+  await expect(entry).toBeVisible()
+  await entry.click()
+
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('申请体验')
+  await expect(page.locator('.trial-dialog')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/prompts$/)
+})
+
 test('registration preserves the exact page for returning after authentication', async ({ page }) => {
   await page.goto('/game-art?asset=character', { waitUntil: 'domcontentloaded' })
   await page.locator('.ga-generate').click()

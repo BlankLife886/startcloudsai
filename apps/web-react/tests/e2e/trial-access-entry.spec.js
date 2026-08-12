@@ -46,19 +46,18 @@ async function installRoutes(page, { currentCampaign = campaign, user = null } =
   )
 }
 
-test('active admin campaign exposes the user entry and opens its details', async ({ page }) => {
+test('active admin campaign exposes the entry and prompts anonymous users to log in', async ({ page }) => {
   await installRoutes(page)
-  await page.goto('/')
+  await page.goto('/prompts')
 
   const entry = page.getByRole('button', { name: '申请体验' })
   await expect(entry).toBeVisible()
   await entry.click()
 
-  const dialog = page.getByRole('dialog', { name: campaign.title })
-  await expect(dialog).toBeVisible()
-  await expect(dialog).toContainText('剩余 92 名')
-  await expect(dialog).toContainText('文生图')
-  await expect(dialog).toContainText('请先登录账号')
+  await expect(page.getByRole('dialog', { name: campaign.title })).toHaveCount(0)
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('申请体验')
+  await expect(page).toHaveURL(/\/prompts$/)
 })
 
 test('closed campaign does not leave a stale entry in the navigation', async ({ page }) => {
