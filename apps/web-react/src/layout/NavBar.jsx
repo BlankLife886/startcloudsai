@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router";
 import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
-import { MusicPlayer } from "./MusicPlayer.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { getWallet, listNotifications } from "@react/legacy-modules/services/meApi.js";
@@ -507,7 +506,6 @@ export function NavBar() {
 
           <div className="header-tools">
             <div className="tool-actions">
-              <MusicPlayer />
               <Link
                 to="/check-in"
                 className="nav-checkin-btn"
