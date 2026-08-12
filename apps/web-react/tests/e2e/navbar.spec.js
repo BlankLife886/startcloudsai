@@ -120,6 +120,30 @@ test('anonymous navigation enters account pages without opening a prompt', async
   await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
 })
 
+test('anonymous navigation enters an ecommerce module without opening a prompt', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.route('**/api/v1/tasks**', (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: false, code: 'auth_required', error: '请先登录' }),
+    }),
+  )
+  await page.goto('/')
+
+  const ecommerceDropdown = page.locator('.nav-dropdown').filter({ hasText: 'AI 电商' }).first()
+  await ecommerceDropdown.locator('.nav-dropdown-label').click()
+  await ecommerceDropdown.getByRole('menuitem', { name: 'AI 虚拟试衣' }).click()
+
+  await expect(page).toHaveURL(/\/ecommerce-design\?tool=tryon$/)
+  await expect(page.locator('.commerce-studio')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
+
+  await page.locator('.generate-button').click()
+  await expect(page.locator('.auth-required-dialog')).toBeVisible()
+  await expect(page.locator('.auth-required-dialog')).toContainText('AI 电商')
+})
+
 test('desktop navigation never overlaps brand or account tools at boundary widths', async ({
   page,
 }) => {

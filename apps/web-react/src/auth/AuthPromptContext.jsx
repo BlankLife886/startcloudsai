@@ -38,7 +38,8 @@ export function AuthPromptProvider({ children }) {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const lastActionAtRef = useRef(0);
+  const locationKey = `${location.pathname}${location.search}${location.hash}`;
+  const lastActionRef = useRef({ at: 0, locationKey: "" });
   const [prompt, setPrompt] = useState(null);
 
   const requestAuth = useCallback(
@@ -76,19 +77,28 @@ export function AuthPromptProvider({ children }) {
 
   useEffect(() => {
     const markAction = (event) => {
+      if (event.target?.closest?.("a[href]")) {
+        lastActionRef.current = { at: 0, locationKey: "" };
+        return;
+      }
       if (event.target?.closest?.("button, input[type='submit'], [role='button']")) {
-        lastActionAtRef.current = Date.now();
+        lastActionRef.current = { at: Date.now(), locationKey };
       }
     };
     document.addEventListener("pointerdown", markAction, true);
     setUnauthorizedHandler(() => {
-      if (!auth.isAuthenticated && Date.now() - lastActionAtRef.current < 15_000) requestAuth();
+      const lastAction = lastActionRef.current;
+      if (
+        !auth.isAuthenticated &&
+        lastAction.locationKey === locationKey &&
+        Date.now() - lastAction.at < 15_000
+      ) requestAuth();
     });
     return () => {
       document.removeEventListener("pointerdown", markAction, true);
       setUnauthorizedHandler(null);
     };
-  }, [auth.isAuthenticated, requestAuth]);
+  }, [auth.isAuthenticated, locationKey, requestAuth]);
 
   const continueToAuth = useCallback(
     (mode) => {
