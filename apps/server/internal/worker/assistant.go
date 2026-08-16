@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
@@ -34,7 +35,12 @@ import (
 const (
 	assistantOutputLimit     = 32 << 20
 	assistantC2AItemAttempts = 2
+	assistantChatAttempts    = 2
 )
+
+const assistantChatRetryInstruction = `直接回答用户的问题。不要调用、模拟或输出 search 等内部工具调用语法，也不要复述用户提示词。`
+
+var errAssistantLeakedToolOutput = errors.New("上游模型连续返回了无效的内部工具调用，未生成可用回答，请重试或切换模型")
 
 type assistantC2AImageResult struct {
 	index   int
@@ -1280,6 +1286,101 @@ func assistantAllowedValue(values []string, value string) (string, bool) {
 	return "", false
 }
 
+type assistantChatTextClient interface {
+	ChatTextWithImages(context.Context, []sub2api.Message, []string, func(string) error) (string, error)
+}
+
+func parseLeadingAssistantSearchInvocation(text string) (argument, suffix string, complete bool) {
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	const prefix = "search("
+	if !strings.HasPrefix(trimmed, prefix) {
+		return "", "", false
+	}
+
+	input := trimmed[len(prefix):]
+	decoder := json.NewDecoder(strings.NewReader(input))
+	if err := decoder.Decode(&argument); err != nil {
+		return "", "", false
+	}
+	consumed := int(decoder.InputOffset())
+	remainder := input[consumed:]
+	closeOffset := len(remainder) - len(strings.TrimLeftFunc(remainder, unicode.IsSpace))
+	if closeOffset >= len(remainder) || remainder[closeOffset] != ')' {
+		return "", "", false
+	}
+	return argument, remainder[closeOffset+1:], true
+}
+
+func assistantLeakedSearchMatchesPrompt(argument, prompt string) bool {
+	argument = strings.TrimSpace(argument)
+	prompt = strings.TrimSpace(prompt)
+	if argument == "" || prompt == "" || !strings.HasPrefix(strings.ToLower(argument), "user:") {
+		return false
+	}
+	if argument == prompt {
+		return true
+	}
+	return strings.TrimSpace(argument[len("user:"):]) == prompt
+}
+
+func cleanAssistantChatOutput(text, prompt string) (string, bool) {
+	argument, suffix, complete := parseLeadingAssistantSearchInvocation(text)
+	if !complete || !assistantLeakedSearchMatchesPrompt(argument, prompt) {
+		return text, false
+	}
+	return strings.TrimLeftFunc(suffix, unicode.IsSpace), true
+}
+
+func visibleAssistantChatOutput(text, prompt string) (string, bool) {
+	if cleaned, leaked := cleanAssistantChatOutput(text, prompt); leaked {
+		return cleaned, strings.TrimSpace(cleaned) == ""
+	}
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	if strings.HasPrefix("search(", trimmed) || strings.HasPrefix(trimmed, "search(") {
+		if _, _, complete := parseLeadingAssistantSearchInvocation(text); !complete {
+			return "", true
+		}
+	}
+	return text, false
+}
+
+func requestAssistantChatText(
+	ctx context.Context,
+	client assistantChatTextClient,
+	payload []sub2api.Message,
+	prompt string,
+	onText func(string) error,
+	onLeak func(attempt int, hasUsableSuffix bool),
+) (string, error) {
+	requestPayload := payload
+	for attempt := 0; attempt < assistantChatAttempts; attempt++ {
+		text, err := client.ChatTextWithImages(ctx, requestPayload, nil, func(fullText string) error {
+			visible, hold := visibleAssistantChatOutput(fullText, prompt)
+			if hold || onText == nil {
+				return nil
+			}
+			return onText(visible)
+		})
+		if err != nil {
+			return text, err
+		}
+		cleaned, leaked := cleanAssistantChatOutput(text, prompt)
+		if leaked && onLeak != nil {
+			onLeak(attempt+1, strings.TrimSpace(cleaned) != "")
+		}
+		if !leaked || strings.TrimSpace(cleaned) != "" {
+			return cleaned, nil
+		}
+		if attempt == assistantChatAttempts-1 {
+			return "", errAssistantLeakedToolOutput
+		}
+		requestPayload = make([]sub2api.Message, 0, len(payload)+1)
+		requestPayload = append(requestPayload, sub2api.Message{Role: "system", Content: assistantChatRetryInstruction})
+		requestPayload = append(requestPayload, payload...)
+	}
+	return "", errAssistantLeakedToolOutput
+}
+
 func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string) error {
 	messages, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, 60)
 	if err != nil {
@@ -1301,7 +1402,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
-	text, err := client.ChatTextWithImages(ctx, payload, nil, func(fullText string) error {
+	text, err := requestAssistantChatText(ctx, client, payload, run.Prompt, func(fullText string) error {
 		// 真流式文本经 Redis 即时推送；PostgreSQL 只保留低频断线恢复检查点。
 		if time.Since(lastPublish) >= 50*time.Millisecond {
 			lastPublish = time.Now()
@@ -1329,6 +1430,9 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		lastCheckpoint = time.Now()
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "chat", "running",
 			assistantMessageMetadata(run, nil, "answering", ""))
+	}, func(attempt int, hasUsableSuffix bool) {
+		log.Printf("assistant run %s filtered leaked search prefix model=%s attempt=%d usable_suffix=%t",
+			run.ID, client.ChatModel(), attempt, hasUsableSuffix)
 	})
 	if err != nil {
 		return err
