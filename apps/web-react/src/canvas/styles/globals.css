@@ -152,6 +152,10 @@
         background-origin: border-box;
     }
 
+    html.starclouds-hosted .main--canvas-home .canvas-app-content > * {
+        border-top: 0;
+    }
+
     html.starclouds-hosted .canvas-app-agent-slot {
         box-sizing: border-box;
         height: 100%;
@@ -2153,15 +2157,15 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .canvas-home-pattern {
-    --canvas-pattern-cover: #f6f5ff;
-    --canvas-pattern-line: rgba(106, 79, 224, 0.075);
+    --canvas-pattern-cover: #ffffff;
+    --canvas-pattern-line: rgba(91, 77, 255, 0.07);
     position: relative;
     isolation: isolate;
     background-color: var(--canvas-pattern-cover);
     background-image:
-        radial-gradient(ellipse 70% 50% at 12% 8%, rgba(167, 139, 250, 0.18), transparent 58%),
-        radial-gradient(ellipse 55% 42% at 88% 18%, rgba(56, 189, 248, 0.12), transparent 55%),
-        radial-gradient(ellipse 50% 40% at 72% 88%, rgba(251, 146, 60, 0.08), transparent 60%),
+        radial-gradient(ellipse 70% 50% at 12% 8%, rgba(91, 77, 255, 0.12), transparent 58%),
+        radial-gradient(ellipse 55% 42% at 88% 18%, rgba(139, 123, 255, 0.1), transparent 55%),
+        radial-gradient(ellipse 50% 40% at 72% 88%, rgba(91, 77, 255, 0.06), transparent 60%),
         linear-gradient(var(--canvas-pattern-line) 1px, transparent 1px),
         linear-gradient(90deg, var(--canvas-pattern-line) 1px, transparent 1px);
     background-position: center;
@@ -2169,8 +2173,12 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .dark .canvas-home-pattern {
-    --canvas-pattern-cover: #10111a;
-    --canvas-pattern-line: rgba(198, 188, 255, 0.075);
+    --canvas-pattern-cover: #0d0e14;
+    --canvas-pattern-line: rgba(139, 123, 255, 0.08);
+}
+
+.canvas-home-pattern__inner {
+    padding-top: calc(var(--app-header-offset, 82px) + 16px);
 }
 
 .canvas-home-orb {

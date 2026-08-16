@@ -263,6 +263,51 @@ func TestAutoApprovePassThrough(t *testing.T) {
 	}
 }
 
+func TestTaskListIncludesGalleryShareStatus(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	submitted := env.newSucceededTask(t, user.ID)
+	plain := env.newSucceededTask(t, user.ID)
+
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{
+		"taskId": submitted.String(), "title": "历史状态",
+	}, userToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+
+	w = env.do(t, "GET", "/api/v1/tasks?limit=20", nil, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list tasks: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	items, _ := data["items"].([]any)
+	byID := map[string]map[string]any{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := item["id"].(string)
+		byID[id] = item
+	}
+	if byID[submitted.String()]["shareSubmitted"] != true || byID[submitted.String()]["shareSubmissionStatus"] != "pending" {
+		t.Fatalf("submitted task = %#v", byID[submitted.String()])
+	}
+	if byID[plain.String()]["shareSubmitted"] != false || byID[plain.String()]["shareSubmissionStatus"] != "" {
+		t.Fatalf("plain task = %#v", byID[plain.String()])
+	}
+
+	w = env.do(t, "GET", "/api/v1/tasks/"+submitted.String(), nil, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get task: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ = decode(t, w)
+	if data["shareSubmitted"] != true || data["shareSubmissionStatus"] != "pending" {
+		t.Fatalf("get submitted task = %#v", data)
+	}
+}
+
 func TestAdminPromptCoverReportsOversizeInsteadOfMissingFile(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, adminToken := env.newUserSession(t, "admin")

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -66,6 +67,7 @@ export function PromptLibraryView() {
   const loadSentinelRef = useRef(null);
   const previewPanelRef = useRef(null);
   const previewInertiaCleanupRef = useRef(null);
+  const loadedCoverKeysRef = useRef(new Set());
   const [previewMotionPresent, setPreviewMotionPresent] = useState(false);
 
   const stopPreviewInertiaGuard = useCallback(() => {
@@ -244,7 +246,7 @@ export function PromptLibraryView() {
   const masonry = useVirtualMasonryFeed({
     items: masonryItems,
     fallbackAspect: 3 / 4,
-    bodyHeight: 178,
+    bodyHeight: 96,
     minColumnWidth: 260,
     maxColumns: 12,
     overscan: 960,
@@ -278,71 +280,20 @@ export function PromptLibraryView() {
     { scope: rootRef },
   );
 
-  useGSAP(
-    () => {
-      if (!contentRevision || loading) return undefined;
-      const root = rootRef.current;
-      if (!root) return undefined;
-      let firstFrame = 0;
-      let secondFrame = 0;
-      let animation;
-      const reveal = () => {
-        const container = root.querySelector(".ch-prompt-masonry");
-        const cards = gsap.utils.toArray(".ch-prompt-masonry__item", container || root);
-        if (!container || !cards.length) return;
-        container.dataset.promptFeedState = "entering";
-        if (motionDisabled()) {
-          gsap.set(cards, { clearProps: "opacity,visibility" });
-          container.dataset.promptFeedState = "entered";
-          return;
-        }
-        animation = gsap.fromTo(
-          cards,
-          { autoAlpha: 0 },
-          {
-            autoAlpha: 1,
-            duration: 0.34,
-            stagger: 0.035,
-            ease: "power2.out",
-            clearProps: "opacity,visibility",
-            onComplete: () => {
-              container.dataset.promptFeedState = "entered";
-            },
-          },
-        );
-      };
-      firstFrame = window.requestAnimationFrame(() => {
-        secondFrame = window.requestAnimationFrame(reveal);
-      });
-      return () => {
-        window.cancelAnimationFrame(firstFrame);
-        window.cancelAnimationFrame(secondFrame);
-        animation?.kill();
-      };
-    },
-    { dependencies: [contentRevision, loading], scope: rootRef },
-  );
+  useLayoutEffect(() => {
+    if (!contentRevision || loading) return;
+    const container = rootRef.current?.querySelector(".ch-prompt-masonry");
+    if (container) container.dataset.promptFeedState = "entered";
+  }, [contentRevision, loading]);
 
-  const revealPromptImage = useCallback((event, key) => {
-    masonry.measureFromEvent(key, event);
+  const revealPromptImage = useCallback((event, key, hasServerAspect) => {
     const image = event.currentTarget;
+    const alreadyLoaded = loadedCoverKeysRef.current.has(key);
+    loadedCoverKeysRef.current.add(key);
+    if (!alreadyLoaded && !hasServerAspect) masonry.measureFromEvent(key, event);
     image.classList.add("is-loaded");
     gsap.killTweensOf(image);
-    if (motionDisabled()) {
-      gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
-      return;
-    }
-    gsap.fromTo(
-      image,
-      { autoAlpha: 0, scale: 1.015 },
-      {
-        autoAlpha: 1,
-        scale: 1,
-        duration: 0.38,
-        ease: "power2.out",
-        clearProps: "opacity,visibility,transform",
-      },
-    );
+    gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
   }, [masonry]);
 
   const activeTypeLabel =
@@ -570,7 +521,7 @@ export function PromptLibraryView() {
                   >
                     {entry.cover ? (
                       <img
-                        className="ch-prompt-card__image"
+                        className={`ch-prompt-card__image${loadedCoverKeysRef.current.has(entry.key) ? " is-loaded" : ""}`}
                         src={entry.cover}
                         alt={entry.item.title || "提示词"}
                         loading={
@@ -586,8 +537,17 @@ export function PromptLibraryView() {
                         decoding="async"
                         width={Math.max(1, Math.round(entry.width))}
                         height={Math.max(1, entry.mediaHeight)}
-                        onLoad={(event) => revealPromptImage(event, entry.key)}
-                        onError={(event) => revealPromptImage(event, entry.key)}
+                        onLoad={(event) =>
+                          revealPromptImage(
+                            event,
+                            entry.key,
+                            Number(entry.item.coverWidth) > 0 &&
+                              Number(entry.item.coverHeight) > 0,
+                          )
+                        }
+                        onError={(event) =>
+                          revealPromptImage(event, entry.key, true)
+                        }
                       />
                     ) : (
                       <div className="ch-card__placeholder">
@@ -596,24 +556,25 @@ export function PromptLibraryView() {
                       </div>
                     )}
                   </button>
-                  <div className="ch-card__body">
-                    <div className="ch-card__meta">
-                      <span className="ch-pill">
+                  <div className="ch-card__overlay">
+                    <span className="ch-card__overlay-start">
+                      <span className="ch-card__tag">
                         {entry.item.category || activeTypeLabel}
                       </span>
-                      {entry.item.useCount ? (
-                        <span className="ch-pill">
+                    </span>
+                    {entry.item.useCount ? (
+                      <span className="ch-card__overlay-end">
+                        <span className="ch-card__tag">
                           <i className="bi bi-lightning-charge" aria-hidden="true" />
                           {entry.item.useCount}
                         </span>
-                      ) : null}
-                    </div>
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="ch-card__body">
                     <h3 className="ch-card__title">
                       {entry.item.title || entry.item.label || "未命名灵感"}
                     </h3>
-                    <p className="ch-card__prompt" data-no-translate>
-                      {entry.item.prompt}
-                    </p>
                     <div className="ch-card__actions">
                       <button
                         type="button"

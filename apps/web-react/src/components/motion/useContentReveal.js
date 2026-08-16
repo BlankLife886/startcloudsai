@@ -17,10 +17,12 @@ export function useContentReveal({
   ready = true,
   resetKey = "",
   contentKey = "",
+  identityAttribute = "",
   stateAttribute = "data-content-reveal-state",
   maxItems = 36,
 }) {
   const seenRef = useRef(new WeakSet());
+  const seenIdsRef = useRef(new Set());
   const resetKeyRef = useRef(resetKey);
 
   useGSAP(
@@ -31,6 +33,7 @@ export function useContentReveal({
       if (resetKeyRef.current !== resetKey) {
         resetKeyRef.current = resetKey;
         seenRef.current = new WeakSet();
+        seenIdsRef.current = new Set();
       }
       if (!ready) {
         root.setAttribute(stateAttribute, "loading");
@@ -40,19 +43,31 @@ export function useContentReveal({
       let firstFrame = 0;
       let secondFrame = 0;
       let animation;
+      const isUnseen = (element) => {
+        const id = identityAttribute
+          ? String(element.getAttribute(identityAttribute) || "")
+          : "";
+        if (id) return !seenIdsRef.current.has(id);
+        return !seenRef.current.has(element);
+      };
+      const markSeen = (element) => {
+        const id = identityAttribute
+          ? String(element.getAttribute(identityAttribute) || "")
+          : "";
+        if (id) seenIdsRef.current.add(id);
+        seenRef.current.add(element);
+        element.setAttribute("data-content-reveal-target", "");
+      };
       const reveal = () => {
         const candidates = gsap.utils.toArray(selector, root);
         const unseen = candidates
-          .filter((element) => !seenRef.current.has(element))
+          .filter(isUnseen)
           .slice(0, Math.max(1, maxItems));
         if (!unseen.length) {
           root.setAttribute(stateAttribute, "entered");
           return;
         }
-        unseen.forEach((element) => {
-          seenRef.current.add(element);
-          element.setAttribute("data-content-reveal-target", "");
-        });
+        unseen.forEach(markSeen);
         root.setAttribute(stateAttribute, "entering");
         if (animationsDisabled()) {
           gsap.set(unseen, { clearProps: "opacity,visibility" });

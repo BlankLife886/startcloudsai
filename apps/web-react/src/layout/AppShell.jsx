@@ -12,6 +12,7 @@ const documentScrollRoutes = new Set([
   "/studio",
   "/prompts",
   "/history",
+  "/submissions",
   "/share",
 ]);
 
@@ -36,8 +37,8 @@ export function AppShell() {
   const mainRef = useRef(null);
   const documentScroll = documentScrollRoutes.has(location.pathname);
   const studioMasked = maskedStudioRoutes.has(location.pathname);
-  const canvasRoute =
-    location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
+  const canvasHome = location.pathname === "/canvas";
+  const canvasEditor = location.pathname.startsWith("/canvas/");
 
   useRouteMotion({
     pathname: location.pathname,
@@ -48,9 +49,9 @@ export function AppShell() {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     document.documentElement.classList.toggle(
       "canvas-entry",
-      canvasRoute,
+      canvasHome || canvasEditor,
     );
-  }, [canvasRoute]);
+  }, [canvasEditor, canvasHome]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -79,6 +80,10 @@ export function AppShell() {
     mainClasses.push("main--pricing-console");
   if (location.pathname === "/profile")
     mainClasses.push("main--profile-console");
+  if (location.pathname === "/wallet")
+    mainClasses.push("main--wallet-console");
+  if (location.pathname === "/account")
+    mainClasses.push("main--settings-console");
   if (location.pathname === "/updates")
     mainClasses.push("main--updates-gallery");
   if (location.pathname === "/tools/image-compress") {
@@ -96,9 +101,8 @@ export function AppShell() {
   if (location.pathname === "/game-art") {
     mainClasses.push("main--game-art");
   }
-  if (canvasRoute) {
-    mainClasses.push("main--canvas-app");
-  }
+  if (canvasHome) mainClasses.push("main--canvas-home");
+  if (canvasEditor) mainClasses.push("main--canvas-app");
   if (location.pathname === "/check-in") mainClasses.push("main--checkin");
   if (
     location.pathname === "/text-to-image" ||

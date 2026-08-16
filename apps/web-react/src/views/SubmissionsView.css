@@ -1,8 +1,60 @@
-.ps-submission-list .optimized-image,
-.ps-submission-list .optimized-image img {
-  display: block;
-  width: 64px;
-  height: 64px;
-  border-radius: 12px;
-  object-fit: cover;
+.ch-page--submissions.ps-page {
+  overflow: visible;
+}
+
+.ch-page--submissions .ps-submission-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ch-page--submissions .ch-history-masonry__item .ch-card__body {
+  grid-template-rows: 1.25em 20px 32px;
+}
+
+.ch-page--submissions .ps-submission__reason {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ch-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ch-page--submissions .ch-card__actions.is-icon-row {
+  grid-template-columns: 1fr;
+  justify-items: end;
+}
+
+.ch-page--submissions .ps-submission__remove {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ch-muted);
+}
+
+.ch-page--submissions .ps-submission__remove:hover {
+  background: rgba(214, 69, 69, 0.1);
+  color: var(--ch-danger);
+}
+
+.ch-page--submissions .ps-more {
+  width: 100%;
+  margin-top: 18px;
+}
+
+.ch-page--submissions .spin {
+  display: inline-block;
+  animation: ps-spin 0.9s linear infinite;
+}
+
+@keyframes ps-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import "@react/legacy-styles/generated/views/PricingView.css";
@@ -14,14 +14,18 @@ const sectionTabs = [
   ["faq", "常见问题"],
 ];
 
-const heroHighlights = ["提交冻结", "完成结算", "失败返还"];
+const MODEL_KIND_META = {
+  image: { label: "生图", icon: "bi-image", unit: "/ 张" },
+  chat: { label: "对话", icon: "bi-chat-dots", unit: "/ 条" },
+  tool: { label: "工具", icon: "bi-scissors", unit: "/ 次" },
+};
 
 const previewPlans = [
   {
     id: "preview-usage",
+    kind: "topup",
     name: "按量创作",
-    eyebrow: "灵活起步",
-    description: "无需绑定套餐，按工作台任务单价消耗钱包额度，适合轻量试跑。",
+    eyebrow: "额度包",
     priceMode: "unit",
     suffix: "/ 张起",
     features: [
@@ -33,22 +37,20 @@ const previewPlans = [
   },
   {
     id: "preview-creator",
+    kind: "subscription",
     name: "创作者计划",
-    eyebrow: "持续创作",
-    description:
-      "面向持续创作的月度方案。在线支付接入前，可先申请体验资格领取积分。",
+    eyebrow: "订阅",
     priceMode: "coming",
     suffix: "/ 月",
-    features: ["体验资格领取积分", "覆盖全部图像工作台", "优先体验后续能力"],
+    features: ["覆盖全部图像工作台", "订阅期内按日发放额度", "优先体验后续能力"],
     popular: true,
     preview: true,
   },
   {
     id: "preview-pro",
+    kind: "subscription",
     name: "专业制作",
-    eyebrow: "高频制作",
-    description:
-      "面向高频生产与协作场景。正式套餐开放前，可通过反馈提交合作需求。",
+    eyebrow: "订阅",
     priceMode: "coming",
     suffix: "/ 月",
     features: ["更高额度预留", "适合批量生产流程", "支持反馈合作需求"],
@@ -68,45 +70,27 @@ const taskTypes = {
 };
 
 const accessMethods = [
-  [
-    "redeem",
-    "兑换码入账",
-    "bi-ticket-perforated",
-    "持有兑换码可在钱包直接入账",
-    "去兑换",
-  ],
-  [
-    "trial",
-    "申请体验资格",
-    "bi-stars",
-    "填写职业与用途，审核后领取积分",
-    "立即申请",
-  ],
-  [
-    "checkin",
-    "每日签到",
-    "bi-calendar-check",
-    "连续签到，每天领取免费创作积分",
-    "去签到",
-  ],
+  ["redeem", "兑换码", "bi-ticket-perforated", "去兑换"],
+  ["trial", "体验资格", "bi-stars", "立即申请"],
+  ["checkin", "每日签到", "bi-calendar-check", "去签到"],
 ];
 
 const faqs = [
   [
-    "现在怎样获取套餐积分？",
-    "当前可通过兑换码、体验资格申请和每日签到获取积分。在线支付尚未接入，页面不会创建付款订单。",
+    "现在可以购买套餐吗？",
+    "不可以。支付尚未接入，套餐暂不可用，也不会创建订单。",
+  ],
+  [
+    "现在怎样获取积分？",
+    "兑换码、体验资格或每日签到。已有额度可直接用于创作。",
   ],
   [
     "模型价格和创作单价有什么区别？",
-    "模型价格是具体生图模型的单次积分；创作单价是各工作台任务类型的起步/区间价。实际扣费以提交时选择的模型与工作台为准。",
+    "模型价格是单次模型积分；创作单价是工作台起步价。提交时按所选模型结算。",
   ],
   [
     "任务失败会扣积分吗？",
     "任务提交时冻结额度，成功后结算；失败或取消会释放对应冻结额度。",
-  ],
-  [
-    "套餐会自动扣款吗？",
-    "不会。当前价格只用于展示，支付接口未开放，不会创建订单或自动扣款。",
   ],
 ];
 
@@ -140,7 +124,7 @@ function normalizePlans(plans) {
   if (!plans.length) return previewPlans;
   return plans.map((plan) => ({
     ...plan,
-    eyebrow: plan.kind === "subscription" ? "订阅方案" : "额度包",
+    eyebrow: plan.kind === "subscription" ? "订阅" : "额度包",
     description:
       String(plan.description || "").trim() ||
       (plan.kind === "subscription"
@@ -165,16 +149,75 @@ function planFeatures(plan) {
     : ["全平台创作工具通用", "积分进入个人钱包", "当前不会自动创建订单"];
 }
 
+function collectRawModels(runtimeConfig) {
+  const out = [];
+  const push = (list) => {
+    if (Array.isArray(list)) out.push(...list);
+  };
+  const catalog = runtimeConfig?.aiModelCatalog || {};
+  push(catalog.models);
+  push(catalog.publicModels);
+  push(catalog.featurePublicModels);
+  if (Array.isArray(catalog.providers)) {
+    for (const provider of catalog.providers) push(provider.models);
+  }
+  const features = runtimeConfig?.features || {};
+  for (const feature of Object.values(features)) {
+    const config = feature?.config || {};
+    push(config.publicModels);
+    push(config.imageModels);
+    push(config.textModels);
+    push(config.analysisModels);
+    push(config.backgroundRemovalModels);
+  }
+  return out;
+}
+
+function inferModelKind(model) {
+  const kind = String(model?.kind || "").toLowerCase();
+  const tool = String(model?.tool || "").toLowerCase();
+  const caps = Array.isArray(model?.capabilities)
+    ? model.capabilities.map((item) => String(item).toLowerCase()).join(" ")
+    : "";
+  const unit = String(model?.pricing?.unit || "").toLowerCase();
+  if (
+    kind.includes("tool") ||
+    tool ||
+    caps.includes("background") ||
+    caps.includes("image.tool")
+  ) {
+    return "tool";
+  }
+  if (
+    kind.includes("chat") ||
+    kind.includes("text") ||
+    unit === "token" ||
+    /text\.chat|text\.analysis|image\.understand/.test(caps)
+  ) {
+    return "chat";
+  }
+  return "image";
+}
+
+function isUsagePlan(plan) {
+  return plan.preview === true && plan.priceMode === "unit";
+}
+
 export function PricingView() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const pageRef = useRef(null);
   const [activeSection, setActiveSection] = useState("plans");
+  const planKind =
+    searchParams.get("plan") === "subscription" ? "subscription" : "topup";
   const [plans, setPlans] = useState([]);
+  const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [pricing, setPricing] = useState(null);
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [plansLoading, setPlansLoading] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [plansLoadFailed, setPlansLoadFailed] = useState(false);
+  const [modelKindFilter, setModelKindFilter] = useState("all");
   const [user, setUser] = useState(null);
   const [wallet, setWallet] = useState(null);
   const [dark, setDark] = useState(
@@ -210,20 +253,36 @@ export function PricingView() {
           gsap
             .timeline({ defaults: { ease: "power3.out" } })
             .from(".pp-hero__copy", {
-              y: 18,
+              y: 28,
               autoAlpha: 0,
-              duration: 0.5,
+              duration: 0.62,
             })
             .from(
               ".pp-wallet",
               {
-                y: 18,
+                y: 24,
                 autoAlpha: 0,
-                duration: 0.45,
+                duration: 0.55,
                 clearProps: "transform,opacity,visibility",
               },
-              "-=0.28",
+              "-=0.36",
             );
+          gsap.to(".pp-orb--a", {
+            y: 18,
+            x: 12,
+            duration: 6.4,
+            yoyo: true,
+            repeat: -1,
+            ease: "sine.inOut",
+          });
+          gsap.to(".pp-orb--b", {
+            y: -16,
+            x: -10,
+            duration: 7.2,
+            yoyo: true,
+            repeat: -1,
+            ease: "sine.inOut",
+          });
           return undefined;
         },
       );
@@ -242,13 +301,14 @@ export function PricingView() {
     ]).then(
       async ([plansResult, pricingResult, runtimeResult, sessionResult]) => {
         if (controller.signal.aborted) return;
-        if (plansResult.status === "fulfilled")
+        if (plansResult.status === "fulfilled") {
           setPlans(
             Array.isArray(plansResult.value?.items)
               ? plansResult.value.items
               : [],
           );
-        else setPlansLoadFailed(true);
+          setPaymentEnabled(plansResult.value?.paymentEnabled === true);
+        } else setPlansLoadFailed(true);
         if (pricingResult.status === "fulfilled")
           setPricing(pricingResult.value || null);
         if (runtimeResult.status === "fulfilled")
@@ -330,13 +390,11 @@ export function PricingView() {
   }, [pricing]);
 
   const modelCards = useMemo(() => {
-    const models = Array.isArray(runtimeConfig?.aiModelCatalog?.publicModels)
-      ? runtimeConfig.aiModelCatalog.publicModels
-      : [];
     const seen = new Set();
-    return models
+    const kindOrder = { image: 0, chat: 1, tool: 2 };
+    return collectRawModels(runtimeConfig)
       .map((model) => {
-        const id = String(model?.id || model?.publicModelKey || "").trim();
+        const id = String(model?.id || model?.publicModelKey || model?.model || "").trim();
         if (!id || seen.has(id)) return null;
         seen.add(id);
         const points = Number(
@@ -357,6 +415,7 @@ export function PricingView() {
           model.providerName || model.provider || "",
         ).trim();
         const description = String(model.description || "").trim();
+        const kind = inferModelKind(model);
         return {
           id,
           name: String(model.label || model.name || id),
@@ -367,26 +426,88 @@ export function PricingView() {
           discount: Number.isFinite(discount) ? discount : 0,
           fastMode: model.fastMode === true,
           isDefault: model.default === true,
+          kind,
         };
       })
       .filter(Boolean)
       .sort(
-        (a, b) => a.points - b.points || a.name.localeCompare(b.name, "zh"),
+        (a, b) =>
+          kindOrder[a.kind] - kindOrder[b.kind] ||
+          a.points - b.points ||
+          a.name.localeCompare(b.name, "zh"),
       );
   }, [runtimeConfig]);
 
+  const modelKindCounts = useMemo(() => {
+    const counts = { all: modelCards.length, image: 0, chat: 0, tool: 0 };
+    for (const model of modelCards) counts[model.kind] += 1;
+    return counts;
+  }, [modelCards]);
+
+  const visibleModels = useMemo(
+    () =>
+      modelKindFilter === "all"
+        ? modelCards
+        : modelCards.filter((model) => model.kind === modelKindFilter),
+    [modelCards, modelKindFilter],
+  );
+
   const displayPlans = useMemo(() => normalizePlans(plans), [plans]);
+  const packPlans = useMemo(
+    () => displayPlans.filter((plan) => plan.kind !== "subscription"),
+    [displayPlans],
+  );
+  const subscriptionPlans = useMemo(
+    () => displayPlans.filter((plan) => plan.kind === "subscription"),
+    [displayPlans],
+  );
+  const visiblePlans = planKind === "subscription" ? subscriptionPlans : packPlans;
   const available = Number(wallet?.availableCents ?? wallet?.balanceCents ?? 0);
+
+  useGSAP(
+    () => {
+      if (
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+        document.documentElement.classList.contains("settings-no-animations")
+      ) {
+        return undefined;
+      }
+      const cards = pageRef.current?.querySelectorAll(".pp-plan:not(.is-loading)");
+      if (!cards?.length) return undefined;
+      gsap.from(cards, {
+        y: 20,
+        autoAlpha: 0,
+        duration: 0.42,
+        stagger: 0.07,
+        ease: "power3.out",
+        clearProps: "transform,opacity,visibility",
+      });
+      return undefined;
+    },
+    { scope: pageRef, dependencies: [planKind, plansLoading, visiblePlans.length] },
+  );
   const frozen = Number(wallet?.frozenCents || 0);
 
   function requestTrial() {
-    navigate("/pricing?trial=apply");
+    const next = new URLSearchParams(searchParams);
+    next.set("trial", "apply");
+    navigate(`/pricing?${next.toString()}`);
+  }
+  function setPlanKind(nextKind) {
+    const next = new URLSearchParams(searchParams);
+    if (nextKind === "subscription") next.set("plan", "subscription");
+    else next.delete("plan");
+    setSearchParams(next, { replace: true });
+    setActiveSection("plans");
   }
   function scrollToSection(id) {
     setActiveSection(id);
     document
       .getElementById(`pricing-${id}`)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  function planLocked(plan) {
+    return !isUsagePlan(plan) && !paymentEnabled;
   }
   function planPrice(plan) {
     if (plan.priceMode === "unit") {
@@ -395,11 +516,11 @@ export function PricingView() {
         .filter((value) => value !== null && value > 0);
       return mins.length ? `${formatPoints(Math.min(...mins))}起` : "按量计费";
     }
-    if (plan.priceMode === "coming") return "体验申请中";
+    if (plan.priceMode === "coming") return "待开放";
     return formatCents(plan.priceCents);
   }
   function planSuffix(plan) {
-    if (plan.priceMode === "coming") return "正式价待开放";
+    if (plan.priceMode === "coming" || planLocked(plan)) return "支付接入后开放";
     if (plan.suffix) return plan.suffix;
     if (plan.kind === "subscription")
       return Number(plan.durationDays || 0) > 0
@@ -438,60 +559,56 @@ export function PricingView() {
     <main ref={pageRef} className={`pp${dark ? " is-dark" : ""}`}>
       <section className="pp-hero">
         <div className="pp-hero__atmosphere" aria-hidden="true">
+          <span className="pp-hero__gridline" />
           <span className="pp-orb pp-orb--a" />
           <span className="pp-orb pp-orb--b" />
         </div>
         <div className="pp-shell pp-hero__grid">
           <div className="pp-hero__copy">
-            <p className="pp-kicker">STARCLOUDS · BILLING</p>
             <h1>创作价格</h1>
-            <p>
-              按模型与任务清晰计价。提交时冻结，完成后结算；失败或取消自动返还。
-            </p>
-            <ul className="pp-hero__pills">
-              {heroHighlights.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
+            <div
+              className={`pp-hero__chip${paymentEnabled ? " is-on" : ""}`}
+              role="status"
+            >
+              <i
+                className={`bi ${paymentEnabled ? "bi-unlock" : "bi-lock"}`}
+                aria-hidden="true"
+              />
+              {paymentEnabled ? "支付已接入" : "套餐暂不可用"}
+            </div>
             <div className="pp-hero__actions">
               <button
                 type="button"
                 className="pp-btn is-primary"
                 onClick={() => navigate("/text-to-image")}
               >
-                开始创作{" "}
+                开始创作
                 <i className="bi bi-arrow-up-right" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="pp-btn is-ghost"
-                onClick={requestTrial}
-              >
-                申请体验资格
               </button>
             </div>
           </div>
           <aside className="pp-wallet" aria-label="钱包概览">
             <div className="pp-wallet__top">
               <span>我的钱包</span>
-              <em>
-                <i className="bi bi-shield-check" aria-hidden="true" />
-                安全计费
-              </em>
+              {user && (
+                <Link className="pp-wallet__link" to="/wallet">
+                  明细
+                  <i className="bi bi-arrow-right" aria-hidden="true" />
+                </Link>
+              )}
             </div>
             {user ? (
               <>
-                <small>当前可用</small>
-                <strong>{formatPoints(available)}</strong>
+                <strong>{formatPoints(available, { withUnit: false })}</strong>
+                <span className="pp-wallet__unit">积分</span>
                 {frozen > 0 && (
                   <span className="pp-wallet__frozen">
-                    {formatPoints(frozen)} 任务冻结中
+                    {formatPoints(frozen)} 冻结
                   </span>
                 )}
               </>
             ) : (
               <>
-                <small>登录后查看余额</small>
                 <strong className="is-muted">—</strong>
                 <button
                   type="button"
@@ -501,13 +618,6 @@ export function PricingView() {
                   前往登录
                 </button>
               </>
-            )}
-            <p>额度可用于全部 AI 创作工作台，不会自动扣款。</p>
-            {user && (
-              <Link className="pp-wallet__link" to="/wallet">
-                查看钱包明细{" "}
-                <i className="bi bi-arrow-right" aria-hidden="true" />
-              </Link>
             )}
           </aside>
         </div>
@@ -536,10 +646,30 @@ export function PricingView() {
       >
         <div className="pp-shell">
           <header className="pp-head">
-            <div>
-              <p className="pp-kicker">01 / PLANS</p>
-              <h2 id="plans-title">套餐方案</h2>
-              <p>价格与权益由运营后台配置；当前可申请体验或使用兑换码入账。</p>
+            <h2 id="plans-title">套餐方案</h2>
+            <div className="pp-plan-tabs" role="tablist" aria-label="套餐类型">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={planKind === "topup"}
+                className={planKind === "topup" ? "is-active" : ""}
+                onClick={() => setPlanKind("topup")}
+              >
+                <i className="bi bi-box-seam" aria-hidden="true" />
+                额度包
+                <span>{packPlans.length}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={planKind === "subscription"}
+                className={planKind === "subscription" ? "is-active" : ""}
+                onClick={() => setPlanKind("subscription")}
+              >
+                <i className="bi bi-arrow-repeat" aria-hidden="true" />
+                订阅
+                <span>{subscriptionPlans.length}</span>
+              </button>
             </div>
           </header>
           {plansLoading ? (
@@ -548,14 +678,15 @@ export function PricingView() {
                 <article key={n} className="pp-plan is-loading" />
               ))}
             </div>
-          ) : (
-            <div className="pp-plan-grid">
-              {displayPlans.map((plan) => {
+          ) : visiblePlans.length ? (
+            <div className="pp-plan-grid" data-count={visiblePlans.length}>
+              {visiblePlans.map((plan) => {
                 const quota = quotaLine(plan);
+                const locked = planLocked(plan);
                 return (
                   <article
                     key={plan.id}
-                    className={`pp-plan${plan.popular ? " is-popular" : ""}`}
+                    className={`pp-plan${plan.popular ? " is-popular" : ""}${locked ? " is-locked" : ""}`}
                   >
                     {(plan.badge || plan.popular) && (
                       <div className="pp-plan__badge">
@@ -564,7 +695,6 @@ export function PricingView() {
                     )}
                     <small>{plan.eyebrow}</small>
                     <h3>{plan.name}</h3>
-                    <p>{plan.description}</p>
                     <div className="pp-plan__price">
                       <strong>{planPrice(plan)}</strong>
                       <span>{planSuffix(plan)}</span>
@@ -583,20 +713,33 @@ export function PricingView() {
                     </ul>
                     <button
                       type="button"
+                      disabled={locked}
                       onClick={() =>
-                        plan.preview && plan.priceMode === "unit"
+                        isUsagePlan(plan)
                           ? navigate("/text-to-image")
                           : requestTrial()
                       }
                     >
-                      {plan.preview && plan.priceMode === "unit"
-                        ? "开始创作"
-                        : "申请体验"}{" "}
-                      <i className="bi bi-arrow-up-right" aria-hidden="true" />
+                      {locked
+                        ? "暂不可用"
+                        : isUsagePlan(plan)
+                          ? "开始创作"
+                          : "选择此方案"}
+                      {!locked && (
+                        <i className="bi bi-arrow-up-right" aria-hidden="true" />
+                      )}
                     </button>
                   </article>
                 );
               })}
+            </div>
+          ) : (
+            <div className="pp-empty">
+              <i className="bi bi-box" aria-hidden="true" />
+              <strong>
+                {planKind === "subscription" ? "暂无订阅方案" : "暂无额度包"}
+              </strong>
+              <p>可先用兑换码或体验资格获取积分。</p>
             </div>
           )}
           {plansLoadFailed && (
@@ -613,169 +756,133 @@ export function PricingView() {
       >
         <div className="pp-shell">
           <header className="pp-head">
-            <div>
-              <p className="pp-kicker">02 / MODELS</p>
-              <h2 id="models-title">模型价格</h2>
-              <p>各生图模型的单次积分；提交任务时按所选模型结算。</p>
-            </div>
-            {modelCards.length > 0 && (
-              <span className="pp-head__meta">
-                {modelCards.length} 个可用模型
-              </span>
-            )}
-          </header>
-          {modelsLoading ? (
-            <div className="pp-model-table" aria-busy="true">
-              {[1, 2, 3, 4].map((n) => (
-                <div key={n} className="pp-model-row is-loading" />
+            <h2 id="models-title">模型价格</h2>
+            <div className="pp-model-filters" role="tablist" aria-label="模型类型">
+              {[
+                ["all", "全部"],
+                ["image", "生图"],
+                ["chat", "对话"],
+                ["tool", "工具"],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={modelKindFilter === id}
+                  className={modelKindFilter === id ? "is-active" : ""}
+                  disabled={id !== "all" && !modelKindCounts[id]}
+                  onClick={() => setModelKindFilter(id)}
+                >
+                  {label}
+                  <span>{modelKindCounts[id] || 0}</span>
+                </button>
               ))}
             </div>
-          ) : modelCards.length ? (
-            <div
-              className="pp-model-table"
-              role="table"
-              aria-label="模型价格表"
-            >
-              <div className="pp-model-row is-head" role="row">
-                <span>模型</span>
-                <span>说明</span>
-                <span>单价</span>
-              </div>
-              {modelCards.map((model) => (
-                <article
-                  key={model.id}
-                  className={`pp-model-row${model.isDefault ? " is-default" : ""}`}
-                  role="row"
-                >
-                  <div className="pp-model-row__name">
-                    <span className="pp-model-row__icon" aria-hidden="true">
-                      <i className="bi bi-cpu" />
-                    </span>
-                    <div>
+          </header>
+          {modelsLoading ? (
+            <div className="pp-model-grid" aria-busy="true">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <article key={n} className="pp-model-card is-loading" />
+              ))}
+            </div>
+          ) : visibleModels.length ? (
+            <div className="pp-model-grid">
+              {visibleModels.map((model) => {
+                const meta = MODEL_KIND_META[model.kind];
+                return (
+                  <article
+                    key={model.id}
+                    className={`pp-model-card${model.isDefault ? " is-default" : ""}`}
+                  >
+                    <div className="pp-model-card__name">
                       <strong>{model.name}</strong>
                       <small>
                         {model.provider && <>{model.provider} · </>}
-                        {model.isDefault ? (
-                          <em>默认</em>
-                        ) : model.fastMode ? (
-                          <em className="is-fast">极速</em>
-                        ) : (
-                          <>标准</>
-                        )}
+                        {meta.label}
+                        {model.isDefault && <em>默认</em>}
+                        {model.fastMode && <em className="is-fast">极速</em>}
                       </small>
                     </div>
-                  </div>
-                  <p>
-                    {model.description ||
-                      "按所选模型单次计费，提交时冻结对应积分。"}
-                  </p>
-                  <div className="pp-model-row__price">
-                    <b>{formatPoints(model.points)}</b>
-                    <span>/ 张</span>
-                    {model.standard > 0 &&
-                      model.discount > 0 &&
-                      model.discount < model.standard && (
-                        <small>标准 {formatPoints(model.standard)}</small>
-                      )}
-                  </div>
-                </article>
-              ))}
+                    <div className="pp-model-card__price">
+                      <b>{formatPoints(model.points)}</b>
+                      <span>{meta.unit}</span>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           ) : (
             <div className="pp-empty">
-              <i className="bi bi-cpu" aria-hidden="true" />
-              <strong>暂无已上架模型价格</strong>
-              <p>请稍后在创作台查看可用模型，或联系运营确认模型目录配置。</p>
+              <strong>暂无已上架模型</strong>
             </div>
           )}
         </div>
       </section>
 
-      <section
-        id="pricing-unit"
-        className="pp-section"
-        data-section="unit"
-        aria-labelledby="unit-title"
-      >
-        <div className="pp-shell">
-          <header className="pp-head">
-            <div>
-              <p className="pp-kicker">03 / UNITS</p>
+      <section className="pp-section">
+        <div className="pp-shell pp-more">
+          <div
+            id="pricing-unit"
+            className="pp-more__col"
+            data-section="unit"
+            aria-labelledby="unit-title"
+          >
+            <header className="pp-head">
               <h2 id="unit-title">创作单价</h2>
-              <p>按工作台任务类型计价；有模型区间时显示最低至最高。</p>
-            </div>
-          </header>
-          <div className="pp-unit-grid">
-            {taskPriceCards.map((card) => (
-              <article
-                key={card.type}
-                className="pp-unit"
-                data-tone={card.tone}
-              >
-                <span className="pp-unit__icon" aria-hidden="true">
-                  <i className={`bi ${card.icon}`} />
-                </span>
-                <div className="pp-unit__copy">
+            </header>
+            <div className="pp-unit-grid">
+              {taskPriceCards.map((card) => (
+                <article
+                  key={card.type}
+                  className="pp-unit"
+                  data-tone={card.tone}
+                >
+                  <span className="pp-unit__icon" aria-hidden="true">
+                    <i className={`bi ${card.icon}`} />
+                  </span>
                   <strong>{card.label}</strong>
-                  <small>{card.blurb || card.type}</small>
-                </div>
-                <div className="pp-unit__price">
-                  <b>{unitPrice(card)}</b>
-                  {card.type !== "puzzle" && card.minPoints !== null && (
-                    <span>/ 张</span>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section
-        id="pricing-pay"
-        className="pp-section is-soft"
-        data-section="pay"
-        aria-labelledby="pay-title"
-      >
-        <div className="pp-shell">
-          <header className="pp-head">
-            <div>
-              <p className="pp-kicker">04 / CREDITS</p>
-              <h2 id="pay-title">获取创作积分</h2>
-              <p>在线支付接入前，也可以通过以下方式开始创作。</p>
+                  <div className="pp-unit__price">
+                    <b>{unitPrice(card)}</b>
+                    {card.type !== "puzzle" && card.minPoints !== null && (
+                      <span>/ 张</span>
+                    )}
+                  </div>
+                </article>
+              ))}
             </div>
-          </header>
-          <div className="pp-access">
-            {accessMethods.map(([id, name, icon, note, action], index) => (
-              <article key={id}>
-                <span className="pp-access__step">0{index + 1}</span>
-                <i className={`bi ${icon}`} aria-hidden="true" />
-                <div>
+          </div>
+          <div
+            id="pricing-pay"
+            className="pp-more__col"
+            data-section="pay"
+            aria-labelledby="pay-title"
+          >
+            <header className="pp-head">
+              <h2 id="pay-title">获取积分</h2>
+            </header>
+            <div className="pp-access">
+              {accessMethods.map(([id, name, icon, action]) => (
+                <article key={id}>
+                  <i className={`bi ${icon}`} aria-hidden="true" />
                   <strong>{name}</strong>
-                  <small>{note}</small>
-                </div>
-                <button type="button" onClick={() => useAccessMethod(id)}>
-                  {action}
-                  <i className="bi bi-arrow-right" aria-hidden="true" />
-                </button>
-              </article>
-            ))}
+                  <button type="button" onClick={() => useAccessMethod(id)}>
+                    {action}
+                  </button>
+                </article>
+              ))}
+            </div>
           </div>
         </div>
       </section>
 
       <section
         id="pricing-faq"
-        className="pp-section"
+        className="pp-section is-soft"
         data-section="faq"
         aria-labelledby="faq-title"
       >
         <div className="pp-shell pp-faq-layout">
-          <header className="pp-head is-stack">
-            <p className="pp-kicker">05 / FAQ</p>
-            <h2 id="faq-title">常见问题</h2>
-            <p>计费规则、积分获取与退款说明。</p>
-          </header>
+          <h2 id="faq-title">常见问题</h2>
           <div className="pp-faq">
             {faqs.map(([question, answer], index) => (
               <details key={question} open={index === 0 ? true : undefined}>
@@ -790,30 +897,6 @@ export function PricingView() {
         </div>
       </section>
 
-      <section className="pp-cta">
-        <div className="pp-shell pp-cta__inner">
-          <div>
-            <h2>额度就绪，继续你的创作流程</h2>
-            <p>跳转到文生图工作台，按所选模型与任务类型结算。</p>
-          </div>
-          <div className="pp-cta__actions">
-            <button
-              type="button"
-              className="pp-btn is-primary"
-              onClick={() => navigate("/text-to-image")}
-            >
-              开始创作 <i className="bi bi-arrow-up-right" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="pp-btn is-light"
-              onClick={() => navigate("/wallet")}
-            >
-              打开钱包
-            </button>
-          </div>
-        </div>
-      </section>
     </main>
   );
 }

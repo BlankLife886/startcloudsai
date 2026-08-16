@@ -9,6 +9,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { ProfileSectionShell } from "../components/ProfileSectionShell.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useLocale } from "../i18n/index.js";
 
 const categories = [
   { value: "bug", label: "功能异常", icon: "bi-bug", hint: "页面报错或功能无法使用" },
@@ -24,20 +25,28 @@ const statusMap = {
   open: { label: "待处理", icon: "bi-inbox" },
   in_progress: { label: "处理中", icon: "bi-hourglass-split" },
   resolved: { label: "已解决", icon: "bi-check2-circle" },
-  closed: { label: "已关闭", icon: "bi-archive" },
+  closed: { label: "反馈已关闭", icon: "bi-archive" },
 };
 
-function formatTime(value) {
+const processSteps = [
+  ["01", "提交问题", "描述问题和复现步骤"],
+  ["02", "开始处理", "管理员确认并跟进反馈"],
+  ["03", "结果通知", "站内通知同步处理结果"],
+];
+
+function formatTime(value, locale) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", { hour12: false });
+  const tag = locale === "en" ? "en-US" : locale === "zh-TW" ? "zh-TW" : "zh-CN";
+  return date.toLocaleString(tag, { hour12: false });
 }
 
 export function FeedbackView() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
+  const { locale } = useLocale();
   const location = useLocation();
   const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedCategory = query.get("category") || "";
@@ -127,7 +136,6 @@ export function FeedbackView() {
 
   return (
     <div className={`feedback-page ${isDark ? "is-dark" : "is-light"}`}>
-      <div className="feedback-atmosphere" aria-hidden="true"><span /><span /></div>
       <ProfileSectionShell
         title="问题反馈"
         description="遇到问题或有产品建议，告诉我们具体情况和复现方式。"
@@ -137,8 +145,23 @@ export function FeedbackView() {
           <form className="feedback-form" onSubmit={submit}>
             <header className="feedback-card-head">
               <span className="feedback-card-icon"><i className="bi bi-send" /></span>
-              <div><h2>提交新反馈</h2><p>信息越具体，我们定位和处理得越快。</p></div>
+              <div>
+                <h2>提交新反馈</h2>
+                <p>信息越具体，我们定位和处理得越快。</p>
+              </div>
             </header>
+
+            <ol className="feedback-steps">
+              {processSteps.map(([step, title, note]) => (
+                <li key={step}>
+                  <span>{step}</span>
+                  <div>
+                    <strong>{title}</strong>
+                    <small>{note}</small>
+                  </div>
+                </li>
+              ))}
+            </ol>
 
             <fieldset className="feedback-fieldset">
               <legend>问题分类</legend>
@@ -155,7 +178,10 @@ export function FeedbackView() {
                       onChange={() => updateForm("category", category.value)}
                     />
                     <span className="category-option__icon"><i className={`bi ${category.icon}`} /></span>
-                    <span><strong>{category.label}</strong><small>{category.hint}</small></span>
+                    <span>
+                      <strong>{category.label}</strong>
+                      <small>{category.hint}</small>
+                    </span>
                     <i className="bi bi-check-circle-fill category-option__check" aria-hidden="true" />
                   </label>
                 ))}
@@ -218,48 +244,85 @@ export function FeedbackView() {
             </div>
           </form>
 
-          <aside className="feedback-guide">
-            <div className="feedback-guide__visual"><span><i className="bi bi-chat-heart" /></span><p>YOUR VOICE<br />SHAPES THE PRODUCT</p></div>
-            <h3>反馈处理流程</h3>
-            <ol>
-              <li><span>01</span><div><strong>提交问题</strong><small>描述问题和复现步骤</small></div></li>
-              <li><span>02</span><div><strong>开始处理</strong><small>管理员确认并跟进反馈</small></div></li>
-              <li><span>03</span><div><strong>结果通知</strong><small>站内通知同步处理结果</small></div></li>
-            </ol>
-            <div className="feedback-guide__tip"><i className="bi bi-lightbulb" /><p><strong>更快获得帮助</strong>请避免提交账号密码、验证码或 API 密钥。</p></div>
-          </aside>
+          <section className="feedback-history">
+            <header>
+              <div>
+                <h2>我的反馈</h2>
+                <p>查看提交记录、处理状态和管理员回复。</p>
+              </div>
+              <button type="button" disabled={loading} onClick={() => loadFeedback()}>
+                <i className={`bi bi-arrow-repeat${loading ? " spin" : ""}`} />
+                刷新
+              </button>
+            </header>
+            {loading && !items.length ? (
+              <div className="feedback-skeleton" aria-hidden="true"><span /><span /><span /></div>
+            ) : loadError && !items.length ? (
+              <div className="feedback-empty is-error">
+                <i className="bi bi-cloud-slash" />
+                <strong>反馈记录加载失败</strong>
+                <p>{loadError}</p>
+                <button type="button" onClick={() => loadFeedback()}>重试</button>
+              </div>
+            ) : !items.length ? (
+              <div className="feedback-empty">
+                <i className="bi bi-chat-square-text" />
+                <strong>还没有反馈记录</strong>
+                <p>提交后可在这里持续查看处理进度。</p>
+              </div>
+            ) : (
+              <div className="feedback-list">
+                {items.map((item) => (
+                  <article key={item.id} className="feedback-item">
+                    <div className="feedback-item__top">
+                      <span className="feedback-category">
+                        <i className={`bi ${categoryMap[item.category]?.icon || "bi-chat-square-text"}`} />
+                        {categoryMap[item.category]?.label || item.category}
+                      </span>
+                      <span className={`feedback-status is-${item.status}`}>
+                        <i className={`bi ${statusMap[item.status]?.icon || "bi-circle"}`} />
+                        {statusMap[item.status]?.label || item.status}
+                      </span>
+                      {item.adopted && (
+                        <span className="feedback-adopted">
+                          <i className="bi bi-lightbulb-fill" />
+                          已采纳 · +{item.rewardCents} 积分
+                        </span>
+                      )}
+                    </div>
+                    <h3>{item.title}</h3>
+                    <p className="feedback-item__content">{item.content}</p>
+                    {item.adminReply && (
+                      <div className="feedback-reply">
+                        <span><i className="bi bi-person-check-fill" />管理员回复</span>
+                        <p>{item.adminReply}</p>
+                      </div>
+                    )}
+                    <footer>
+                      <span><i className="bi bi-clock" />{formatTime(item.createdAt, locale)}</span>
+                      {item.pageUrl && (
+                        <a href={item.pageUrl} target="_blank" rel="noopener noreferrer">
+                          <i className="bi bi-box-arrow-up-right" />
+                          问题页面
+                        </a>
+                      )}
+                    </footer>
+                  </article>
+                ))}
+              </div>
+            )}
+            {nextCursor && (
+              <button
+                type="button"
+                className="feedback-more"
+                disabled={loadingMore}
+                onClick={() => loadFeedback({ append: true })}
+              >
+                {loadingMore ? "加载中…" : "加载更多反馈"}
+              </button>
+            )}
+          </section>
         </div>
-
-        <section className="feedback-history">
-          <header>
-            <div><h2>我的反馈</h2><p>查看提交记录、处理状态和管理员回复。</p></div>
-            <button type="button" disabled={loading} onClick={() => loadFeedback()}><i className={`bi bi-arrow-repeat${loading ? " spin" : ""}`} />刷新</button>
-          </header>
-          {loading && !items.length ? (
-            <div className="feedback-skeleton" aria-hidden="true"><span /><span /><span /></div>
-          ) : loadError && !items.length ? (
-            <div className="feedback-empty is-error"><i className="bi bi-cloud-slash" /><strong>反馈记录加载失败</strong><p>{loadError}</p><button type="button" onClick={() => loadFeedback()}>重试</button></div>
-          ) : !items.length ? (
-            <div className="feedback-empty"><i className="bi bi-chat-square-text" /><strong>还没有反馈记录</strong><p>提交后可在这里持续查看处理进度。</p></div>
-          ) : (
-            <div className="feedback-list">
-              {items.map((item) => (
-                <article key={item.id} className="feedback-item">
-                  <div className="feedback-item__top">
-                    <span className="feedback-category"><i className={`bi ${categoryMap[item.category]?.icon || "bi-chat-square-text"}`} />{categoryMap[item.category]?.label || item.category}</span>
-                    <span className={`feedback-status is-${item.status}`}><i className={`bi ${statusMap[item.status]?.icon || "bi-circle"}`} />{statusMap[item.status]?.label || item.status}</span>
-                    {item.adopted && <span className="feedback-adopted"><i className="bi bi-lightbulb-fill" />已采纳 · +{item.rewardCents} 积分</span>}
-                  </div>
-                  <h3>{item.title}</h3>
-                  <p className="feedback-item__content">{item.content}</p>
-                  {item.adminReply && <div className="feedback-reply"><span><i className="bi bi-person-check-fill" />管理员回复</span><p>{item.adminReply}</p></div>}
-                  <footer><span><i className="bi bi-clock" />{formatTime(item.createdAt)}</span>{item.pageUrl && <a href={item.pageUrl} target="_blank" rel="noopener noreferrer"><i className="bi bi-box-arrow-up-right" />问题页面</a>}</footer>
-                </article>
-              ))}
-            </div>
-          )}
-          {nextCursor && <button type="button" className="feedback-more" disabled={loadingMore} onClick={() => loadFeedback({ append: true })}>{loadingMore ? "加载中…" : "加载更多反馈"}</button>}
-        </section>
       </ProfileSectionShell>
     </div>
   );

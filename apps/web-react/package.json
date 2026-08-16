@@ -9,7 +9,7 @@
     "typecheck:canvas": "tsc -p tsconfig.canvas.json",
     "test:domain": "npm run test:image-sizes && npm run test:transparent-upscale && npm run test:coloring-upload-compression && npm run test:coloring-original-result && npm run test:history-pagination && npm run test:task-concurrency && npm run test:task-generation-timing && npm run test:theme-transition && npm run test:ecommerce-plan && npm run test:multi-device-consistency && npm run test:gallery-focus && npm run test:background-removal-linking && npm run test:analysis-node-geometry && npm run test:pixel-region-calibration && npm run test:region-geometry && npm run test:region-output-policy && npm run test:tile-precision-refine && npm run test:canvas-preview-url",
     "test:canvas-preview-url": "node --test --experimental-strip-types scripts/test-canvas-preview-url.mjs",
-    "test:canvas-workflow": "node --test --experimental-strip-types scripts/test-canvas-workflow.mjs",
+    "test:canvas-workflow": "node --test --experimental-strip-types scripts/test-canvas-workflow.mjs scripts/test-dev-performance-entry-guard.mjs",
     "test:image-sizes": "node scripts/test-image-output-size.mjs",
     "test:transparent-upscale": "node scripts/test-transparent-image-upscale.mjs",
     "test:coloring-upload-compression": "node scripts/test-coloring-upload-compression.mjs",

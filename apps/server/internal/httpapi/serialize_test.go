@@ -18,6 +18,17 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 	}
 }
 
+func TestAttachShareSubmission(t *testing.T) {
+	empty := attachShareSubmission(gin.H{}, nil)
+	if empty["shareSubmitted"] != false || empty["shareSubmissionStatus"] != "" {
+		t.Fatalf("empty share = %#v", empty)
+	}
+	submitted := attachShareSubmission(gin.H{}, &store.GallerySubmission{Status: "pending"})
+	if submitted["shareSubmitted"] != true || submitted["shareSubmissionStatus"] != "pending" {
+		t.Fatalf("pending share = %#v", submitted)
+	}
+}
+
 func TestTaskDictIncludesUserDeletionMarker(t *testing.T) {
 	deletedAt := time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)
 	actor := "user"

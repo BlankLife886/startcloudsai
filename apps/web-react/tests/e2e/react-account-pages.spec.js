@@ -288,7 +288,7 @@ test.describe('React authenticated account pages', () => {
       'entered',
     )
     const tableLayout = await page.locator('.ch-history-table-wrap').evaluate((wrapper) => {
-      const preview = wrapper.querySelector('.ch-table-preview .authenticated-image')
+      const preview = wrapper.querySelector('.ch-table-preview img')
       const actions = wrapper.querySelector('.ch-table-actions')
       return {
         wrapperWidth: wrapper.getBoundingClientRect().width,
@@ -357,6 +357,46 @@ test.describe('React authenticated account pages', () => {
       page.locator('.ch-history-masonry__item').filter({ hasText: 'history-delete' }),
     ).toHaveCount(0)
     expect(deletedIds).toEqual(['history-delete'])
+  })
+
+  test('history shows gallery submission status after publishing', async ({ page }) => {
+    let submitted = false
+    await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: account }))
+    await page.route('**/api/v1/gallery/categories**', (route) => fulfillJson(route, { items: [] }))
+    await page.route('**/api/v1/gallery/submissions**', async (route) => {
+      if (route.request().method() === 'POST') {
+        submitted = true
+        await fulfillJson(route, { id: 'submission-1', status: 'pending', taskId: 'history-share' })
+        return
+      }
+      await fulfillJson(route, { items: [] })
+    })
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, {
+        items: [
+          historyTask('history-publish', {
+            shareSubmitted: submitted,
+            shareSubmissionStatus: submitted ? 'pending' : '',
+          }),
+          historyTask('history-approved', {
+            prompt: '已投稿作品',
+            shareSubmitted: true,
+            shareSubmissionStatus: 'approved',
+          }),
+        ],
+        nextCursor: null,
+      }),
+    )
+    await page.goto('/history', { waitUntil: 'domcontentloaded' })
+
+    const approvedCard = page.locator('.ch-history-masonry__item').filter({ hasText: '已投稿作品' })
+    await expect(approvedCard.locator('.ch-card__share').filter({ hasText: '已通过' })).toBeVisible()
+
+    const publishCard = page.locator('.ch-history-masonry__item').filter({ hasText: '历史作品 history-publish' })
+    await publishCard.getByRole('button', { name: '发布到社区' }).click()
+    await expect(page.getByRole('dialog', { name: '发布作品' })).toBeVisible()
+    await page.getByRole('button', { name: '提交审核' }).click()
+    await expect(publishCard.locator('.ch-card__share').filter({ hasText: '审核中' })).toBeVisible()
   })
 
   test('history table becomes a stable mobile list without horizontal overflow', async ({
@@ -726,6 +766,53 @@ test.describe('React authenticated account pages', () => {
     await expect(page.locator('.nt-item.is-unread')).toHaveCount(0)
     await expect(page.locator('.nav-notify__badge')).toHaveCount(0)
     expect(patchBodies).toEqual([{}])
+  })
+
+  test('clearing notifications empties the navbar preview', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    let cleared = false
+    await page.route('**/api/v1/auth/session', (route) =>
+      fulfillJson(route, { user: accountProfile }),
+    )
+    await page.route('**/api/v1/me/wallet', (route) => fulfillJson(route, walletSnapshot))
+    await page.route('**/api/v1/me/notifications**', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        cleared = true
+        await fulfillJson(route, {})
+        return
+      }
+      await fulfillJson(route, {
+        items: cleared
+          ? []
+          : [
+              notificationItem('10000000-0000-4000-8000-000000000021', {
+                kind: 'task_succeeded',
+                title: '无限画布已完成',
+                body: '已生成 1 张图片。',
+              }),
+            ],
+        nextCursor: null,
+        unread: cleared ? 0 : 1,
+      })
+    })
+    await page.goto('/notifications', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.nt-item')).toHaveCount(1)
+
+    await page.getByRole('link', { name: '通知' }).hover()
+    const preview = page.getByRole('dialog', { name: '最近通知' })
+    await expect(preview).toContainText('无限画布已完成')
+
+    await page.getByRole('button', { name: '清空' }).click()
+    const confirm = page.getByRole('alertdialog')
+    await expect(confirm).toContainText('清空全部通知？')
+    await confirm.getByRole('button', { name: '确认清空' }).click()
+
+    await expect(page.locator('.nt-empty')).toContainText('暂无通知')
+    await expect(page.locator('.nav-notify__badge')).toHaveCount(0)
+    await page.getByRole('link', { name: '通知' }).hover()
+    const emptied = page.getByRole('dialog', { name: '最近通知' })
+    await expect(emptied).toContainText('暂无通知')
+    await expect(emptied).not.toContainText('无限画布已完成')
   })
 
   test('notification day header does not cover the first row and stays below the app header', async ({

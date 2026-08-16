@@ -52,6 +52,26 @@ func GetSubmissionByTaskID(ctx context.Context, q Q, taskID uuid.UUID) (*Gallery
 	return nilOnNoRows(s, err)
 }
 
+func GetSubmissionsByTaskIDs(ctx context.Context, q Q, taskIDs []uuid.UUID) (map[uuid.UUID]*GallerySubmission, error) {
+	out := make(map[uuid.UUID]*GallerySubmission, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+submissionCols+` FROM gallery_submissions WHERE task_id = ANY($1)`, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		submission, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[submission.TaskID] = submission
+	}
+	return out, rows.Err()
+}
+
 func DeleteSubmission(ctx context.Context, q Q, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `DELETE FROM gallery_submissions WHERE id = $1`, id)
 	return err

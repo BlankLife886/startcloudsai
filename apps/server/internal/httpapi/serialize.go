@@ -98,6 +98,17 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	}
 }
 
+func attachShareSubmission(d gin.H, submission *store.GallerySubmission) gin.H {
+	if submission == nil {
+		d["shareSubmitted"] = false
+		d["shareSubmissionStatus"] = ""
+		return d
+	}
+	d["shareSubmitted"] = true
+	d["shareSubmissionStatus"] = submission.Status
+	return d
+}
+
 func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	d := taskDict(t, nil, nil)
 	d["userId"] = t.UserID.String()

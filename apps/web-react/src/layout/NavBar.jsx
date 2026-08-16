@@ -6,7 +6,7 @@ import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { TrialAccessDialog } from "../components/TrialAccessDialog.jsx";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
-import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
+import { LogoutDialog } from "../components/LogoutDialog.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
@@ -233,6 +233,8 @@ export function NavBar() {
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const isHome = location.pathname === "/";
+  const isCanvas =
+    location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
   const rootRef = useRef(null);
   const notificationCloseTimerRef = useRef(0);
   const [activeDropdown, setActiveDropdown] = useState("");
@@ -523,6 +525,10 @@ export function NavBar() {
     const onUpdated = (event) => {
       if (!Number.isFinite(Number(event?.detail?.unreadCount))) return;
       setNotificationUnread(Math.max(0, Number(event.detail.unreadCount)));
+      if (event?.detail?.source === "clear-all") {
+        setNotificationItems([]);
+        return;
+      }
       if (Array.isArray(event?.detail?.previewItems))
         setNotificationItems(event.detail.previewItems.slice(0, 8));
     };
@@ -628,7 +634,7 @@ export function NavBar() {
   return (
     <header
       ref={rootRef}
-      className={`site-header${isDark ? " is-dark" : ""}${isHome ? " is-home-dark" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
+      className={`site-header${isDark ? " is-dark" : ""}${isHome ? " is-home-dark" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
     >
       <div className="header-shell">
         <div className="header-row">
@@ -1037,7 +1043,6 @@ export function NavBar() {
                             ["/submissions", "bi-send-check", "我的投稿"],
                             ["/wallet", "bi-wallet2", "钱包"],
                             ["/account", "bi-person-gear", "账号设置"],
-                            ["/assets", "bi-collection", "我的资产"],
                           ].map(([to, icon, label]) => (
                             <Link
                               key={to}
@@ -1091,16 +1096,10 @@ export function NavBar() {
         isDark={isDark}
         onClose={() => setRedeemDialogOpen(false)}
       />
-      <ConfirmDialog
+      <LogoutDialog
         open={logoutOpen}
         busy={loggingOut}
-        heading="退出当前账号？"
-        description="退出后需要重新登录才能继续查看个人资料和创作记录。"
-        confirmLabel="确认退出"
-        busyLabel="正在退出…"
-        icon="bi-box-arrow-right"
-        tone="accent"
-        light={!isDark}
+        isDark={isDark}
         onClose={() => !loggingOut && setLogoutOpen(false)}
         onConfirm={confirmLogout}
       />

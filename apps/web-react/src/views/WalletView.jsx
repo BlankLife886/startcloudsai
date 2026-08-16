@@ -9,6 +9,7 @@ import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/WalletView.css";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
+import "./WalletView.css";
 import { useIsDark } from "../hooks/useIsDark.js";
 
 const PAGE_SIZE = 12;
@@ -474,17 +475,42 @@ export function WalletView() {
       <div className="wallet-layout">
         <aside className="wallet-aside" aria-label="钱包概览">
           <div className="wallet-aside__card">
-            <div className="wallet-aside__glow" aria-hidden="true" />
             <div className="wallet-aside__hero">
               <span className="wallet-aside__label">可用余额</span>
               <p className="wallet-aside__amount">
                 <strong>{formatPoints(available, { withUnit: false })}</strong>
                 <small>积分</small>
               </p>
-              <p className="wallet-aside__hint">
-                总额 {formatPoints(total)}
-                {frozen > 0 ? ` · 冻结 ${formatPoints(frozen)}` : ""}
-              </p>
+            </div>
+            <div className="wallet-metrics" aria-label="积分构成">
+              <article>
+                <i className="bi bi-wallet2" />
+                <span>账户总额</span>
+                <strong>{formatPoints(total)}</strong>
+              </article>
+              <article className={frozen > 0 ? "is-warn" : ""}>
+                <i className="bi bi-hourglass-split" />
+                <span>冻结中</span>
+                <strong>{formatPoints(frozen)}</strong>
+              </article>
+              <article>
+                <i className="bi bi-coin" />
+                <span>普通积分</span>
+                <strong>{formatPoints(normal)}</strong>
+                {normalFrozen > 0 ? (
+                  <small>含冻结 {formatPoints(normalFrozen)}</small>
+                ) : null}
+              </article>
+              <article className="is-trial">
+                <i className="bi bi-stars" />
+                <span>体验积分</span>
+                <strong>{formatPoints(trialBalance)}</strong>
+                {trialFrozen > 0 ? (
+                  <small>含冻结 {formatPoints(trialFrozen)}</small>
+                ) : trialBalance > 0 ? (
+                  <small>仅限对应功能</small>
+                ) : null}
+              </article>
             </div>
             <div className="wallet-aside__cta">
               <button
@@ -504,36 +530,6 @@ export function WalletView() {
               <Link className="wallet-btn is-ghost" to="/incentive-plans">
                 激励
               </Link>
-            </div>
-            <div className="wallet-metrics" aria-label="积分构成">
-              <article>
-                <i className="bi bi-wallet2" />
-                <span>账户总额</span>
-                <strong>{formatPoints(total)}</strong>
-              </article>
-              <article className={frozen > 0 ? "is-warn" : ""}>
-                <i className="bi bi-hourglass-split" />
-                <span>冻结中</span>
-                <strong>{formatPoints(frozen)}</strong>
-              </article>
-              <article>
-                <i className="bi bi-coin" />
-                <span>普通积分</span>
-                <strong>{formatPoints(normal)}</strong>
-                {normalFrozen > 0 && (
-                  <small>含冻结 {formatPoints(normalFrozen)}</small>
-                )}
-              </article>
-              <article className="is-trial">
-                <i className="bi bi-stars" />
-                <span>{trialLabel}体验</span>
-                <strong>{formatPoints(trialBalance)}</strong>
-                {trialFrozen > 0 ? (
-                  <small>含冻结 {formatPoints(trialFrozen)}</small>
-                ) : trialBalance > 0 ? (
-                  <small>仅限对应功能</small>
-                ) : null}
-              </article>
             </div>
             {showTrial ? (
               <aside
@@ -631,12 +627,9 @@ export function WalletView() {
                                 <span>混合</span>
                               ) : null}
                             </div>
-                            <p>{entry.presentation.description}</p>
                             <small>
                               {formatClock(entry.createdAt)}
-                              {entry.presentation.meta
-                                ? ` · ${entry.presentation.meta}`
-                                : ""}
+                              {taskMeta(entry) ? ` · ${taskMeta(entry)}` : ""}
                             </small>
                           </div>
                           <b className={`is-${entry.presentation.amountTone}`}>

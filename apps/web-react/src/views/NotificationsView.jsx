@@ -196,7 +196,12 @@ export function NotificationsView() {
   const applyUnread = (value, detail = {}) => {
     const next = Math.max(0, Number(value) || 0);
     setUnread(next);
-    publishNotifications(next, detail);
+    publishNotifications(next, {
+      ...detail,
+      previewItems: Array.isArray(detail.previewItems)
+        ? detail.previewItems
+        : itemsRef.current.slice(0, 8),
+    });
   };
 
   const loadList = useCallback(async ({ append = false } = {}) => {

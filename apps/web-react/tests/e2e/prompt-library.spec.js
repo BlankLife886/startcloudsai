@@ -88,6 +88,11 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
     "entered",
   );
   await expect(page.locator(".ch-prompt-card__image.is-loaded")).toHaveCount(5);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(page.locator(".ch-prompt-card__image.is-loaded")).toHaveCount(5);
+  const hiddenAfterScroll = await page.locator(".ch-prompt-card__image:not(.is-loaded)").count();
+  expect(hiddenAfterScroll).toBe(0);
   await expect(page.getByText("电影感城市", { exact: true })).toBeVisible();
 
   const geometry = await page.locator(".ch-prompt-masonry__item").evaluateAll((cards) =>

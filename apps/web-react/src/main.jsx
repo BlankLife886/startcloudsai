@@ -11,11 +11,16 @@ import "@react/legacy-static/assets/css/image-reveal.css";
 import { router } from "./router.jsx";
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import { LocaleProvider } from "./i18n/index.js";
+import { installDevPerformanceEntryGuard } from "./utils/devPerformanceEntryGuard.js";
 import { installGlobalClickGuard } from "./utils/globalClickGuard.js";
 import "./styles.css";
 
 const removeGlobalClickGuard = installGlobalClickGuard();
-if (import.meta.hot) import.meta.hot.dispose(removeGlobalClickGuard);
+const removeDevPerformanceEntryGuard = import.meta.env.DEV ? installDevPerformanceEntryGuard() : () => {};
+if (import.meta.hot) {
+  import.meta.hot.dispose(removeGlobalClickGuard);
+  import.meta.hot.dispose(removeDevPerformanceEntryGuard);
+}
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>

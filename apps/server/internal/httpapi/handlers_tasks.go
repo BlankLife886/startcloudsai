@@ -316,9 +316,24 @@ func (s *Server) listTasks(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	shares := s.shareSubmissionsByTasks(c.Request.Context(), rows)
 	ok(c, buildPage(rows, limit, func(t *store.Task) gin.H {
-		return taskDict(t, s.outputURLsFor(c, t), s.originalURLsFor(c, t))
+		return attachShareSubmission(taskDict(t, s.outputURLsFor(c, t), s.originalURLsFor(c, t)), shares[t.ID])
 	}))
+}
+
+func (s *Server) shareSubmissionsByTasks(ctx context.Context, tasks []*store.Task) map[uuid.UUID]*store.GallerySubmission {
+	ids := make([]uuid.UUID, 0, len(tasks))
+	for _, task := range tasks {
+		if task != nil {
+			ids = append(ids, task.ID)
+		}
+	}
+	out, err := store.GetSubmissionsByTaskIDs(ctx, s.St.Pool, ids)
+	if err != nil || out == nil {
+		return map[uuid.UUID]*store.GallerySubmission{}
+	}
+	return out
 }
 
 // getTasksBatch returns current snapshots for many active tasks in one request.
@@ -357,13 +372,18 @@ func (s *Server) getTasksBatch(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	items := make([]gin.H, 0, len(ids))
+	owned := make([]*store.Task, 0, len(ids))
 	for _, id := range ids {
 		task := tasksByID[id]
 		if task == nil || task.UserID != user.ID || task.DeletedAt != nil {
 			continue
 		}
-		items = append(items, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
+		owned = append(owned, task)
+	}
+	shares := s.shareSubmissionsByTasks(c.Request.Context(), owned)
+	items := make([]gin.H, 0, len(owned))
+	for _, task := range owned {
+		items = append(items, attachShareSubmission(taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)), shares[task.ID]))
 	}
 	ok(c, gin.H{"items": items})
 }
@@ -394,7 +414,12 @@ func (s *Server) getTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
+	submission, err := store.GetSubmissionByTaskID(c.Request.Context(), s.St.Pool, task.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, attachShareSubmission(taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)), submission))
 }
 
 func (s *Server) cancelTask(c *gin.Context) {

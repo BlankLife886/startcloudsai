@@ -54,7 +54,7 @@ const routes = [
   { name: 'account', path: '/account', root: '.account' },
   { name: 'notifications', path: '/notifications', root: '.nt-page' },
   { name: 'assets', path: '/assets', root: '.ml-page' },
-  { name: 'submissions', path: '/submissions', root: '.ps-page' },
+  { name: 'submissions', path: '/submissions', root: '.ch-page--submissions' },
   { name: 'profile', path: '/profile', root: '.pp-page' },
   { name: 'incentives', path: '/incentive-plans', root: '.rewards-page' },
   { name: 'incentives-group', path: '/incentive-plans/group', root: '.group-page' },

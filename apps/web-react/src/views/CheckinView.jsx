@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import {
   claimDailyCheckin,
   getCheckinState,
@@ -9,6 +11,8 @@ import "@react/legacy-styles/generated/views/CheckinView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+
+gsap.registerPlugin(useGSAP);
 
 const checkinArt = Object.freeze({
   hero: "/签到页面素材/background-removed-1786338743411 2.webp",
@@ -21,7 +25,7 @@ const checkinArt = Object.freeze({
   coin: "/签到页面素材/ai-wallpaper-1786340924518-2-1.webp",
 });
 
-const weekLabels = ["日", "一", "二", "三", "四", "五", "六"];
+const weekLabels = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
 function anonymousCheckinState() {
   const today = new Date();
@@ -75,6 +79,7 @@ export function CheckinView() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
+  const pageRef = useRef(null);
   const mountedRef = useRef(true);
   const burstTimerRef = useRef(null);
   const [loading, setLoading] = useState(true);
@@ -144,6 +149,103 @@ export function CheckinView() {
     };
   }, [auth.isAuthenticated, auth.loading]);
 
+  useGSAP(
+    () => {
+      if (loading || !state) return undefined;
+      const media = gsap.matchMedia();
+      media.add("(prefers-reduced-motion: no-preference)", () => {
+        if (document.documentElement.classList.contains("settings-no-animations")) {
+          return undefined;
+        }
+        gsap
+          .timeline({ defaults: { ease: "power3.out" } })
+          .from(".ck-hero__copy", { y: 18, autoAlpha: 0, duration: 0.56 })
+          .from(
+            ".ck-hero__visual",
+            { y: 16, autoAlpha: 0, duration: 0.52, clearProps: "transform,opacity,visibility" },
+            "-=0.34",
+          )
+          .from(
+            ".ck-stats article",
+            { y: 12, autoAlpha: 0, duration: 0.4, stagger: 0.06, clearProps: "transform,opacity,visibility" },
+            "-=0.28",
+          )
+          .from(
+            ".ck-panel",
+            { y: 16, autoAlpha: 0, duration: 0.46, stagger: 0.1, clearProps: "transform,opacity,visibility" },
+            "-=0.24",
+          )
+          .from(
+            ".ck-reward-track article",
+            { y: 10, autoAlpha: 0, duration: 0.36, stagger: 0.04, clearProps: "transform,opacity,visibility" },
+            "-=0.28",
+          )
+          .from(
+            ".ck-day:not(.is-empty)",
+            { autoAlpha: 0, duration: 0.28, stagger: 0.012, clearProps: "opacity,visibility" },
+            "-=0.22",
+          );
+        gsap.to(".ck-hero__visual img", {
+          y: 8,
+          duration: 3.8,
+          yoyo: true,
+          repeat: -1,
+          ease: "sine.inOut",
+        });
+        return undefined;
+      });
+      return () => media.revert();
+    },
+    { scope: pageRef, dependencies: [loading, Boolean(state)] },
+  );
+
+  useGSAP(
+    () => {
+      if (!claimBurst) return undefined;
+      if (
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+        document.documentElement.classList.contains("settings-no-animations")
+      ) {
+        return undefined;
+      }
+      const button = pageRef.current?.querySelector(".ck-action.is-primary");
+      const dones = pageRef.current?.querySelectorAll(".ck-reward-track article.is-done");
+      const done = dones?.[dones.length - 1];
+      const bar = pageRef.current?.querySelector(".ck-progress span");
+      const today = pageRef.current?.querySelector(".ck-day.is-today");
+      if (button) {
+        gsap.fromTo(
+          button,
+          { scale: 1 },
+          { scale: 1.03, duration: 0.22, yoyo: true, repeat: 1, ease: "power2.out" },
+        );
+      }
+      if (done) {
+        gsap.fromTo(
+          done,
+          { scale: 0.94 },
+          { scale: 1, duration: 0.5, ease: "power3.out", clearProps: "transform" },
+        );
+      }
+      if (bar) {
+        gsap.fromTo(
+          bar,
+          { filter: "brightness(1.25)" },
+          { filter: "brightness(1)", duration: 0.7, ease: "power2.out" },
+        );
+      }
+      if (today) {
+        gsap.fromTo(
+          today,
+          { scale: 0.92 },
+          { scale: 1, duration: 0.46, ease: "power3.out", clearProps: "transform" },
+        );
+      }
+      return undefined;
+    },
+    { scope: pageRef, dependencies: [claimBurst] },
+  );
+
   const claim = async () => {
     if (requestAuth({ featureLabel: "每日签到" })) return;
     if (claiming || todayChecked || !activityEnabled) return;
@@ -166,7 +268,7 @@ export function CheckinView() {
   };
 
   return (
-    <main className={`ck${isDark ? " is-dark" : ""}`}>
+    <main ref={pageRef} className={`ck${isDark ? " is-dark" : ""}`}>
       {loading ? (
         <div className="ck-state" aria-live="polite">
           <div className="ck-state__loader" aria-hidden="true"><span /><span /><span /></div>

@@ -248,7 +248,7 @@ export default function CanvasPage() {
                 <div data-canvas-orb className="canvas-home-orb right-[10%] top-[8%] size-40 bg-sky-300/20" />
                 <div data-canvas-orb className="canvas-home-orb bottom-[18%] right-[22%] size-48 bg-orange-300/16" />
             </div>
-            <div className="relative z-[2] mx-auto flex w-full max-w-[1560px] flex-col px-7 pb-14 pt-8">
+            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex w-full max-w-[1560px] flex-col px-7 pb-14">
                 <section className="canvas-hero">
                     <div className="canvas-hero__copy">
                         <h1 data-canvas-entry-item className="ai-title-aurora max-w-4xl text-balance text-5xl font-semibold tracking-normal lg:text-7xl">{t("canvas.title")}</h1>

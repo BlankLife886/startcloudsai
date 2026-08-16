@@ -90,6 +90,25 @@ html.color-scheme-dark .main-content.main--search-gallery {
   padding-bottom: 2rem;
   overflow-x: clip;
 }
+.main-content.main--canvas-home {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}
+.app-container > .main-content.main--canvas-home > .canvas-app-view {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 !important;
+  background: transparent;
+}
 .main-content.main--canvas-app {
   --canvas-app-surface: oklch(1 0 0);
   padding: 0;
@@ -149,16 +168,10 @@ html.color-scheme-dark .main-content.main--canvas-app {
   padding-top: var(--app-header-offset, 82px);
 }
 
-/* 助手页顶栏：亮色固定白底 */
-body:has(.assistant-workspace) .site-header:not(.is-dark),
-body:has(.assistant-workspace) .site-header:not(.is-dark).is-scrolled {
-  background: #ffffff;
+body:has(.assistant-workspace) .site-header:not(.is-home-dark):not(.is-scrolled) {
+  background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-}
-html.settings-no-blur body:has(.assistant-workspace) .site-header:not(.is-dark),
-html.settings-no-blur body:has(.assistant-workspace) .site-header:not(.is-dark).is-scrolled {
-  background: #ffffff;
 }
 .main-content.main--browse-dock {
   padding-bottom: calc(2rem + var(--app-bottom-floating-clearance, 112px));
@@ -240,6 +253,26 @@ html:not(.color-scheme-dark) .main-content.main--pricing-console {
 }
 
 /* 个人中心：底色交给页面科幻氛围层，壳层保持透明 */
+.main-content.main--wallet-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+html.color-scheme-dark .main-content.main--wallet-console {
+  background: #0d0e14;
+}
+.main-content.main--wallet-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding-top: calc(var(--app-header-offset, 82px) + 12px);
+}
+
 .main-content.main--profile-console {
   padding-top: 0;
   padding-bottom: 0;
@@ -256,11 +289,8 @@ html.color-scheme-dark .main-content.main--profile-console {
 html:not(.color-scheme-dark) .main-content.main--profile-console {
   background: #f7f7ff;
 }
-body:has(.main--profile-console) .site-header.is-scrolled {
-  background: rgba(255, 255, 255, 0.92) !important;
-}
-body:has(.main--profile-console) .site-header.is-dark.is-scrolled {
-  background: rgba(12, 14, 22, 0.92) !important;
+body:has(.main--profile-console) .site-header:not(.is-scrolled) {
+  background: transparent;
 }
 .main-content.main--profile-console > * {
   flex: 1;
@@ -294,10 +324,17 @@ html.color-scheme-dark .main-content.main--ziwei-console {
   overflow: hidden;
   height: 100svh;
   max-height: 100svh;
-  background: #f7f7ff;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
 }
 html.color-scheme-dark .main-content.main--settings-console {
-  background: #0d0f18;
+  background: #0d0e14;
+}
+.main-content.main--settings-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .main-content.main--studio-console {
   padding-top: 0;

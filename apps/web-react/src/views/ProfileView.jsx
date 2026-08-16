@@ -9,7 +9,7 @@ import { TASK_UPDATE_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-static/views/ProfileView.modern.css";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
+import { LogoutDialog } from "../components/LogoutDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 
 gsap.registerPlugin(useGSAP);
@@ -360,16 +360,10 @@ export function ProfileView() {
           </section>
         </main>
       </div>
-      <ConfirmDialog
+      <LogoutDialog
         open={logoutOpen}
         busy={loggingOut}
-        heading="退出当前账号？"
-        description="退出后需要重新登录才能继续查看个人资料和创作记录。"
-        confirmLabel="确认退出"
-        busyLabel="正在退出…"
-        icon="bi-box-arrow-right"
-        tone="accent"
-        light={!isDark}
+        isDark={isDark}
         onClose={() => !loggingOut && setLogoutOpen(false)}
         onConfirm={confirmLogout}
       />

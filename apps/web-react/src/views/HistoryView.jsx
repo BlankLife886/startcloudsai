@@ -1,12 +1,13 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import gsap from "gsap";
 import { Link, useNavigate } from "react-router";
+import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import {
   deleteTask,
   listTasks,
@@ -22,21 +23,15 @@ import {
   taskThumbnailUrl,
 } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
 import { taskAspectCss } from "../features/history/taskAspectCss.js";
-import {
-  isSmartCanvasTask,
-  stashPendingPrompt,
-  studioRouteForTask,
-} from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import { isSmartCanvasTask } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   downloadHistoryImagesAsZip,
   readHistoryImageMetadata,
 } from "@react/legacy-modules/services/historyMediaTools.js";
-import { stashLocalEditHandoff } from "@react/legacy-modules/services/localEditHandoff.js";
 import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
-import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
@@ -53,6 +48,12 @@ const STATUS_LABELS = {
   queued: "排队中",
   failed: "失败",
   canceled: "已取消",
+};
+const SHARE_STATUS_LABELS = {
+  pending: "审核中",
+  approved: "已通过",
+  rejected: "已拒绝",
+  removed: "已下架",
 };
 const STATUS_FILTERS = [
   ["", "全部状态"],
@@ -103,10 +104,45 @@ function taskPrompt(task) {
     .trim();
 }
 
+function cardPromptPreview(text) {
+  const raw = String(text || "").trim();
+  const chinese = raw.match(/\[中文\]\s*([\s\S]*?)(?=\s*\[English\]|$)/i);
+  if (chinese?.[1]?.trim()) return chinese[1].trim();
+  return raw.replace(/\s*\[(?:中文|English)\]\s*/gi, " ").trim();
+}
+
 function taskTypeLabel(task) {
   return isSmartCanvasTask(task)
     ? "无限画布"
     : TASK_TYPE_LABELS[task?.type] || "创作";
+}
+
+function taskShareStatus(task) {
+  const status = String(task?.shareSubmissionStatus || "")
+    .trim()
+    .toLowerCase();
+  if (status) return status;
+  return task?.shareSubmitted === true ? "pending" : "";
+}
+
+function shareStatusLabel(status) {
+  return SHARE_STATUS_LABELS[status] || "";
+}
+
+function mergeTaskSnapshot(current, incoming) {
+  if (!incoming) return current;
+  const hasShare =
+    incoming.shareSubmitted !== undefined ||
+    incoming.shareSubmissionStatus !== undefined;
+  return {
+    ...incoming,
+    shareSubmitted: hasShare
+      ? incoming.shareSubmitted === true
+      : current?.shareSubmitted === true,
+    shareSubmissionStatus: hasShare
+      ? String(incoming.shareSubmissionStatus || "").toLowerCase()
+      : String(current?.shareSubmissionStatus || "").toLowerCase(),
+  };
 }
 
 function formatTime(value) {
@@ -123,95 +159,6 @@ function formatBytes(value) {
   if (bytes < 1024 ** 2)
     return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(bytes < 10 * 1024 ** 2 ? 1 : 0)} MB`;
-}
-
-function numericAspect(value) {
-  const parts = String(value || "3 / 4")
-    .split(/[/:]/)
-    .map(Number);
-  return parts.length === 2 && parts.every((part) => part > 0)
-    ? parts[0] / parts[1]
-    : 3 / 4;
-}
-
-function useHistoryMasonry(items, columns, measuredAspects) {
-  const ref = useRef(null);
-  const [width, setWidth] = useState(0);
-  const [viewport, setViewport] = useState([0, window.innerHeight]);
-  useLayoutEffect(() => {
-    const root = ref.current;
-    if (!root) return undefined;
-    let frame = 0;
-    const measure = () => {
-      frame = 0;
-      const rect = root.getBoundingClientRect();
-      setWidth(rect.width);
-      setViewport([-rect.top - 960, -rect.top + window.innerHeight + 960]);
-    };
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(measure);
-    };
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(schedule);
-    observer?.observe(root);
-    window.addEventListener("scroll", schedule, { passive: true });
-    window.addEventListener("resize", schedule, { passive: true });
-    measure();
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-    };
-  }, [items.length]);
-  return useMemo(() => {
-    if (!width) return { ref, height: 1, visible: [], columnCount: 1 };
-    const gap = 14;
-    const responsive = Math.max(
-      1,
-      Math.floor((width + gap) / (132 + gap)) || 1,
-    );
-    const count = Math.max(1, Math.min(columns, 12, responsive));
-    const columnWidth = (width - gap * (count - 1)) / count;
-    const heights = Array(count).fill(0);
-    const positions = items.map((task, index) => {
-      let column = 0;
-      for (let candidate = 1; candidate < count; candidate += 1)
-        if (heights[candidate] < heights[column]) column = candidate;
-      const aspect = Math.min(
-        5,
-        Math.max(
-          0.2,
-          measuredAspects[String(task.id)] ||
-            numericAspect(taskAspectCss(task)),
-        ),
-      );
-      const mediaHeight = Math.round(Math.max(1, columnWidth - 2) / aspect);
-      const entry = {
-        task,
-        index,
-        key: String(task.id),
-        width: columnWidth,
-        mediaHeight,
-        height: mediaHeight + 208,
-        left: column * (columnWidth + gap),
-        top: heights[column],
-      };
-      heights[column] += entry.height + gap;
-      return entry;
-    });
-    return {
-      ref,
-      height: Math.max(0, ...heights) - (positions.length ? gap : 0),
-      visible: positions.filter(
-        (item) =>
-          item.top + item.height >= viewport[0] && item.top <= viewport[1],
-      ),
-      columnCount: count,
-    };
-  }, [columns, items, measuredAspects, viewport, width]);
 }
 
 function isUserDeleted(task) {
@@ -242,8 +189,8 @@ export function HistoryView() {
   const [preview, setPreview] = useState(null);
   const [metadata, setMetadata] = useState({});
   const metadataPendingRef = useRef(new Set());
-  const [measuredAspects, setMeasuredAspects] = useState({});
   const [failedThumbIds, setFailedThumbIds] = useState(new Set());
+  const loadedImageIdsRef = useRef(new Set());
   const [actionBusyIds, setActionBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
@@ -268,7 +215,29 @@ export function HistoryView() {
         cleanPrompt: taskPrompt(task) || "未填写提示词",
       }));
   }, [search, statusFilter, tasks]);
-  const masonry = useHistoryMasonry(visibleTasks, gridColumns, measuredAspects);
+  const masonryItems = useMemo(
+    () =>
+      visibleTasks.map((task, index) => {
+        const knownAspect = taskAspectCss(task, "");
+        return {
+          key: String(task.id),
+          item: task,
+          index,
+          aspect: knownAspect || "3 / 4",
+        };
+      }),
+    [visibleTasks],
+  );
+  const getMasonryAspect = useCallback((entry) => entry.aspect, []);
+  const masonry = useVirtualMasonryFeed({
+    items: masonryItems,
+    fallbackAspect: 3 / 4,
+    bodyHeight: 102,
+    minColumnWidth: 132,
+    maxColumns: gridColumns,
+    overscan: 640,
+    getAspect: getMasonryAspect,
+  });
   useContentReveal({
     rootRef: pageRef,
     selector:
@@ -277,7 +246,8 @@ export function HistoryView() {
         : ".ch-history-table tbody tr",
     ready: !loading,
     resetKey: `${layoutMode}:${gridColumns}:${typeFilter}:${statusFilter}:${search}`,
-    contentKey: visibleTasks.map((task) => task.id).join("|"),
+    contentKey: loading ? "loading" : "ready",
+    identityAttribute: "data-history-id",
     stateAttribute: "data-history-content-motion-state",
   });
   const selectedDownloadTasks = visibleTasks.filter(
@@ -310,7 +280,9 @@ export function HistoryView() {
             if (!mountedRef.current) return;
             setTasks((current) =>
               current.map((task) =>
-                task.id === incoming.id ? incoming : task,
+                task.id === incoming.id
+                  ? mergeTaskSnapshot(task, incoming)
+                  : task,
               ),
             );
             if (
@@ -380,7 +352,11 @@ export function HistoryView() {
         const index = current.findIndex((task) => task.id === incoming.id);
         const rows =
           index >= 0
-            ? current.map((task) => (task.id === incoming.id ? incoming : task))
+            ? current.map((task) =>
+                task.id === incoming.id
+                  ? mergeTaskSnapshot(task, incoming)
+                  : task,
+              )
             : matchesTypeFilter(incoming, typeFilter)
               ? [incoming, ...current]
               : current;
@@ -406,7 +382,7 @@ export function HistoryView() {
       (entries) =>
         entries.some((entry) => entry.isIntersecting) &&
         loadTasks({ append: true }),
-      { rootMargin: "1200px 0px" },
+      { rootMargin: "160px 0px" },
     );
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
@@ -498,14 +474,27 @@ export function HistoryView() {
       ? "原图信息不可用"
       : `${value.width}×${value.height} · ${formatBytes(value.bytes)} · ${value.transparent ? "透明图" : "不透明"}`;
   };
-  const rememberAspect = (task, event) => {
-    const image = event.target;
-    if (image?.naturalWidth && image?.naturalHeight)
-      setMeasuredAspects((current) => ({
-        ...current,
-        [String(task.id)]: image.naturalWidth / image.naturalHeight,
-      }));
-    ensureMetadata(task);
+  const revealHistoryImage = (task, event) => {
+    const key = String(task.id);
+    const image = event.currentTarget;
+    loadedImageIdsRef.current.add(key);
+    image?.classList.add("is-loaded");
+    gsap.killTweensOf(image);
+    gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
+  };
+  const recoverHistoryImage = (task, event) => {
+    const key = String(task.id);
+    if (
+      !failedThumbIds.has(key) &&
+      taskThumbnailUrl(task) &&
+      taskOriginalUrl(task) &&
+      taskThumbnailUrl(task) !== taskOriginalUrl(task)
+    ) {
+      loadedImageIdsRef.current.delete(key);
+      setFailedThumbIds((current) => new Set(current).add(key));
+      return;
+    }
+    revealHistoryImage(task, event);
   };
   const setLayout = (mode, columns = gridColumns) => {
     setLayoutMode(mode);
@@ -526,6 +515,14 @@ export function HistoryView() {
     ensureMetadata(task);
   };
   const closePreview = () => setPreview(null);
+  const openShareAction = (task) => {
+    if (taskShareStatus(task)) {
+      closePreview();
+      navigate("/submissions");
+      return;
+    }
+    setPublishTarget(task);
+  };
   const downloadFilename = (task) =>
     `${taskTypeLabel(task)}-${String(task.createdAt || new Date().toISOString()).slice(0, 10)}-${String(task.id || "original").slice(0, 8)}`;
   const downloadTask = async (task) => {
@@ -690,21 +687,13 @@ export function HistoryView() {
       }
     }
   };
-  const recreate = (task) => {
+  const copyPrompt = (task) => {
     const prompt = taskPrompt(task);
-    if (!prompt) return notificationService.info("该任务没有可复用的提示词");
-    if (!isSmartCanvasTask(task))
-      stashPendingPrompt({ prompt, taskType: task.type || "t2i" });
-    notificationService.success("已带到工作台");
-    navigate(studioRouteForTask(task));
-  };
-  const openLocalEdit = (task) => {
-    if (isSmartCanvasTask(task)) return notificationService.info("无限画布任务请在画布中继续编辑");
-    const sourceUrl = taskOriginalUrl(task);
-    if (!sourceUrl) return notificationService.info("当前记录没有可编辑的原图");
-    stashLocalEditHandoff({ task, sourceUrl });
-    closePreview();
-    navigate("/text-to-image?localEdit=history");
+    if (!prompt) return notificationService.info("该任务没有可复制的提示词");
+    navigator.clipboard
+      .writeText(prompt)
+      .then(() => notificationService.success("提示词已复制"))
+      .catch(() => notificationService.error("复制失败，请手动选择文本"));
   };
   const submitPublish = async (options) => {
     if (!publishTarget || publishBusy) return;
@@ -715,13 +704,19 @@ export function HistoryView() {
         title: options.title,
         categoryId: options.categoryId,
       });
-      const status = String(response?.item?.status || "pending").toLowerCase();
+      const status = String(
+        response?.status || response?.item?.status || "pending",
+      ).toLowerCase();
+      const next = {
+        ...publishTarget,
+        shareSubmitted: true,
+        shareSubmissionStatus: status,
+      };
       setTasks((current) =>
-        current.map((item) =>
-          item.id === publishTarget.id
-            ? { ...item, shareSubmitted: true, shareSubmissionStatus: status }
-            : item,
-        ),
+        current.map((item) => (item.id === publishTarget.id ? next : item)),
+      );
+      setPreview((current) =>
+        current?.id === publishTarget.id ? next : current,
       );
       notificationService.success(
         status === "approved" ? "作品已经发布" : "作品已提交发布审核",
@@ -912,17 +907,23 @@ export function HistoryView() {
             </div>
           ) : layoutMode === "grid" ? (
             <div
-              ref={masonry.ref}
+              ref={masonry.containerRef}
               className={`ch-history-masonry${gridColumns >= 6 ? " is-dense" : ""}`}
-              style={{ height: masonry.height }}
+              style={{ height: `${masonry.totalHeight}px` }}
             >
-              {masonry.visible.map((item) => {
-                const task = item.task;
+              {masonry.visibleItems.map((item) => {
+                const task = item.item;
                 const src = coverSrc(task);
                 const selected = selectedIds.has(String(task.id));
+                const share = taskShareStatus(task);
+                const hasCachedMetadata = Boolean(metadata[String(task.id)]);
+                const cardMediaLabel = hasCachedMetadata
+                  ? metadataLabel(task)
+                  : formatTime(task.createdAt);
                 return (
                   <article
                     key={item.key}
+                    data-history-id={item.key}
                     className={`ch-card ch-history-masonry__item${selected ? " is-selected" : ""}${selectMode ? " is-selecting" : ""}`}
                     style={{
                       width: item.width,
@@ -944,7 +945,7 @@ export function HistoryView() {
                     )}
                     <button
                       type="button"
-                      className="ch-card__media"
+                      className="ch-card__media ch-prompt-card__media"
                       style={{ height: item.mediaHeight, aspectRatio: "auto" }}
                       disabled={!selectMode && !src}
                       onClick={() =>
@@ -954,7 +955,8 @@ export function HistoryView() {
                       }
                     >
                       {src ? (
-                        <AuthenticatedImage
+                        <img
+                          className={`ch-prompt-card__image${loadedImageIdsRef.current.has(String(task.id)) ? " is-loaded" : ""}`}
                           src={src}
                           alt={task.cleanPrompt}
                           loading={
@@ -962,20 +964,16 @@ export function HistoryView() {
                               ? "eager"
                               : "lazy"
                           }
-                          rootMargin="240px 0px"
-                          retryCount={2}
-                          maxDimension={failedThumbIds.has(item.key) ? 0 : 720}
-                          onLoad={(event) => rememberAspect(task, event)}
-                          onError={() => {
-                            if (
-                              taskThumbnailUrl(task) &&
-                              taskOriginalUrl(task) &&
-                              taskThumbnailUrl(task) !== taskOriginalUrl(task)
-                            )
-                              setFailedThumbIds((current) =>
-                                new Set(current).add(item.key),
-                              );
-                          }}
+                          fetchPriority={
+                            item.index < Math.max(4, masonry.columnCount)
+                              ? "high"
+                              : "low"
+                          }
+                          decoding="async"
+                          width={Math.max(1, Math.round(item.width))}
+                          height={Math.max(1, item.mediaHeight)}
+                          onLoad={(event) => revealHistoryImage(task, event)}
+                          onError={(event) => recoverHistoryImage(task, event)}
                         />
                       ) : (
                         <div
@@ -994,25 +992,36 @@ export function HistoryView() {
                         </div>
                       )}
                     </button>
-                    <div className="ch-card__body">
-                      <div className="ch-card__meta">
-                        <span className="ch-pill">{taskTypeLabel(task)}</span>
+                    <div className="ch-card__overlay">
+                      <span className="ch-card__overlay-start">
+                        <span className="ch-card__tag">{taskTypeLabel(task)}</span>
+                      </span>
+                      <span className="ch-card__overlay-end">
                         <span
-                          className="ch-pill is-status"
+                          className="ch-card__share is-status"
                           data-status={task.status}
                         >
                           {STATUS_LABELS[task.status] || task.status}
                         </span>
-                      </div>
-                      <p className="ch-card__prompt" title={task.cleanPrompt}>
-                        {task.cleanPrompt}
+                        {share ? (
+                          <span className="ch-card__share" data-status={share}>
+                            {shareStatusLabel(share)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                    <div className="ch-card__body">
+                      <p className="ch-card__prompt">
+                        {cardPromptPreview(task.cleanPrompt)}
                       </p>
                       <span
                         className="ch-card__file-meta"
-                        title={metadataLabel(task)}
+                        title={cardMediaLabel}
                       >
-                        <i className="bi bi-bounding-box" />
-                        {metadataLabel(task)}
+                        <i
+                          className={`bi ${hasCachedMetadata ? "bi-bounding-box" : "bi-clock"}`}
+                        />
+                        {cardMediaLabel}
                       </span>
                       <div className="ch-card__actions is-icon-row">
                         <button
@@ -1028,29 +1037,34 @@ export function HistoryView() {
                         </button>
                         <button
                           type="button"
-                          title="发布到社区"
-                          disabled={
-                            task.status !== "succeeded" || !taskCoverUrl(task)
+                          title={
+                            share
+                              ? `已投稿 · ${shareStatusLabel(share)}`
+                              : "发布到社区"
                           }
-                          onClick={() => setPublishTarget(task)}
+                          aria-label={
+                            share
+                              ? `已投稿 · ${shareStatusLabel(share)}`
+                              : "发布到社区"
+                          }
+                          disabled={
+                            !share &&
+                            (task.status !== "succeeded" || !taskCoverUrl(task))
+                          }
+                          onClick={() => openShareAction(task)}
                         >
-                          <i className="bi bi-send" />
+                          <i
+                            className={`bi ${share ? "bi-send-check" : "bi-send"}`}
+                          />
                         </button>
                         <button
                           type="button"
-                          title="局部编辑"
-                          disabled={!taskOriginalUrl(task) || isSmartCanvasTask(task)}
-                          onClick={() => openLocalEdit(task)}
-                        >
-                          <i className="bi bi-brush" />
-                        </button>
-                        <button
-                          type="button"
-                          title="再做一张"
+                          title="复制提示词"
+                          aria-label="复制提示词"
                           disabled={!taskPrompt(task)}
-                          onClick={() => recreate(task)}
+                          onClick={() => copyPrompt(task)}
                         >
-                          <i className="bi bi-arrow-repeat" />
+                          <i className="bi bi-copy" />
                         </button>
                         {!selectMode && (
                           <button
@@ -1091,9 +1105,11 @@ export function HistoryView() {
                 <tbody>
                   {visibleTasks.map((task) => {
                     const meta = metadata[String(task.id)];
+                    const share = taskShareStatus(task);
                     return (
                       <tr
                         key={task.id}
+                        data-history-id={String(task.id)}
                         className={
                           selectedIds.has(String(task.id)) ? "is-selected" : ""
                         }
@@ -1118,10 +1134,13 @@ export function HistoryView() {
                             onClick={() => openPreview(task)}
                           >
                             {coverSrc(task) && (
-                              <AuthenticatedImage
+                              <img
                                 src={coverSrc(task)}
                                 alt={task.cleanPrompt}
-                                maxDimension={240}
+                                loading="lazy"
+                                decoding="async"
+                                width={52}
+                                height={52}
                                 onLoad={() => ensureMetadata(task)}
                               />
                             )}
@@ -1161,6 +1180,11 @@ export function HistoryView() {
                           >
                             {STATUS_LABELS[task.status] || task.status}
                           </span>
+                          {share && (
+                            <span className="ch-pill is-share" data-status={share}>
+                              {shareStatusLabel(share)}
+                            </span>
+                          )}
                         </td>
                         <td className="is-created" data-label="创建时间">
                           {formatTime(task.createdAt)}
@@ -1175,21 +1199,34 @@ export function HistoryView() {
                               <i className="bi bi-download" />
                             </button>
                             <button
-                              title="发布"
-                              disabled={
-                                task.status !== "succeeded" ||
-                                !taskCoverUrl(task)
+                              title={
+                                share
+                                  ? `已投稿 · ${shareStatusLabel(share)}`
+                                  : "发布"
                               }
-                              onClick={() => setPublishTarget(task)}
+                              aria-label={
+                                share
+                                  ? `已投稿 · ${shareStatusLabel(share)}`
+                                  : "发布"
+                              }
+                              disabled={
+                                !share &&
+                                (task.status !== "succeeded" ||
+                                  !taskCoverUrl(task))
+                              }
+                              onClick={() => openShareAction(task)}
                             >
-                              <i className="bi bi-send" />
+                              <i
+                                className={`bi ${share ? "bi-send-check" : "bi-send"}`}
+                              />
                             </button>
                             <button
-                              title="局部编辑"
-                              disabled={!taskOriginalUrl(task) || isSmartCanvasTask(task)}
-                              onClick={() => openLocalEdit(task)}
+                              title="复制提示词"
+                              aria-label="复制提示词"
+                              disabled={!taskPrompt(task)}
+                              onClick={() => copyPrompt(task)}
                             >
-                              <i className="bi bi-brush" />
+                              <i className="bi bi-copy" />
                             </button>
                             <button
                               title="删除"
@@ -1253,11 +1290,12 @@ export function HistoryView() {
           <>
               <div className="ch-preview__media">
                 {taskCoverUrl(preview) ? (
-                  <AuthenticatedImage
+                  <img
                     src={taskOriginalUrl(preview) || taskCoverUrl(preview)}
                     alt={taskPrompt(preview) || "AI 作品"}
                     loading="eager"
-                    retryCount={2}
+                    decoding="async"
+                    fetchPriority="high"
                   />
                 ) : (
                   <div className="ch-preview__empty">暂无预览图</div>
@@ -1273,6 +1311,14 @@ export function HistoryView() {
                     >
                       {STATUS_LABELS[preview.status] || preview.status}
                     </span>
+                    {taskShareStatus(preview) ? (
+                      <span
+                        className="ch-pill is-share"
+                        data-status={taskShareStatus(preview)}
+                      >
+                        {shareStatusLabel(taskShareStatus(preview))}
+                      </span>
+                    ) : null}
                     <span className="ch-pill">
                       {formatTime(preview.createdAt)}
                     </span>
@@ -1319,18 +1365,7 @@ export function HistoryView() {
                       <button
                         type="button"
                         className="is-primary"
-                        onClick={() =>
-                          navigator.clipboard
-                            .writeText(taskPrompt(preview))
-                            .then(() =>
-                              notificationService.success("提示词已复制"),
-                            )
-                            .catch(() =>
-                              notificationService.error(
-                                "复制失败，请手动选择文本",
-                              ),
-                            )
-                        }
+                        onClick={() => copyPrompt(preview)}
                       >
                         复制提示词
                       </button>
@@ -1340,17 +1375,15 @@ export function HistoryView() {
                     </button>
                     <button
                       type="button"
-                      disabled={preview.status !== "succeeded"}
-                      onClick={() => setPublishTarget(preview)}
+                      disabled={
+                        !taskShareStatus(preview) &&
+                        preview.status !== "succeeded"
+                      }
+                      onClick={() => openShareAction(preview)}
                     >
-                      发布
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!taskOriginalUrl(preview) || isSmartCanvasTask(preview)}
-                      onClick={() => openLocalEdit(preview)}
-                    >
-                      局部编辑
+                      {taskShareStatus(preview)
+                        ? `投稿 · ${shareStatusLabel(taskShareStatus(preview))}`
+                        : "发布"}
                     </button>
                     <button type="button" onClick={closePreview}>
                       关闭
