@@ -44,7 +44,9 @@ export function CanvasCostConfirmDialog({ cost, onCancel, onConfirm }: CanvasCos
     const removalSubtotal = displayCost.removalUnit * displayCost.count;
     const priced = displayCost.total > 0 && !displayCost.pricingUnavailable;
     const generationLabel =
-        displayCost.kind === "text"
+        displayCost.kind === "workflow"
+            ? t("canvas.workflow.costLabel")
+            : displayCost.kind === "text"
             ? t("canvas.costConfirm.textItem")
             : displayCost.kind === "background_remove"
               ? t("canvas.costConfirm.backgroundRemove")

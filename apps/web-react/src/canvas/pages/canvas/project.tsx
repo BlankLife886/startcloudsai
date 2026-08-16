@@ -83,7 +83,8 @@ import { CanvasPluginManagerModal } from "@/components/canvas/canvas-plugin-mana
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasCostConfirmDialog, type CanvasCostPayload } from "@/components/canvas/canvas-cost-confirm-dialog";
 import { CanvasHomeDialog } from "@/components/canvas/canvas-home-dialog";
-import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
+import { estimateCanvasGenerationCost, type CanvasCostEstimate } from "@/lib/canvas/canvas-generation-cost";
+import { compileCanvasWorkflow, findWorkflowOutputNodes } from "@/lib/canvas/canvas-workflow";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -131,6 +132,13 @@ type CanvasGenerationRequest = {
     originNodeId: string;
     runningNodeId: string;
     controller: AbortController;
+};
+
+type CanvasWorkflowRunState = {
+    status: "idle" | "running" | "success" | "error" | "canceled";
+    completed: number;
+    total: number;
+    currentNodeId?: string;
 };
 
 const VIDEO_NODE_MAX_WIDTH = 360;
@@ -280,6 +288,7 @@ function InfiniteCanvasPage() {
     const [backgroundRemovalModelKey, setBackgroundRemovalModelKey] = useState("");
     const [backgroundRemovalPricePoints, setBackgroundRemovalPricePoints] = useState<number | undefined>(undefined);
     const [costConfirm, setCostConfirm] = useState<CanvasCostPayload | null>(null);
+    const [workflowRun, setWorkflowRun] = useState<CanvasWorkflowRunState>({ status: "idle", completed: 0, total: 0 });
     const costResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
     const auth = useAuth() as { user: { requireCostConfirm?: boolean } | null; setUser: (user: unknown) => void };
 
@@ -296,9 +305,8 @@ function InfiniteCanvasPage() {
             });
     }, []);
 
-    const requestCostConfirm = useCallback(
-        async (input: Parameters<typeof estimateCanvasGenerationCost>[0]) => {
-            const estimate = estimateCanvasGenerationCost(input);
+    const requestCostEstimateConfirm = useCallback(
+        async (estimate: CanvasCostEstimate) => {
             if (auth.user?.requireCostConfirm === false) return true;
             const wallet = await getWallet().catch(() => null);
             const available = wallet ? Math.max(0, Number(wallet.availableCents ?? wallet.balanceCents ?? 0)) : null;
@@ -309,6 +317,11 @@ function InfiniteCanvasPage() {
             });
         },
         [auth.user?.requireCostConfirm],
+    );
+
+    const requestCostConfirm = useCallback(
+        (input: Parameters<typeof estimateCanvasGenerationCost>[0]) => requestCostEstimateConfirm(estimateCanvasGenerationCost(input)),
+        [requestCostEstimateConfirm],
     );
 
     const finishCostConfirm = useCallback((confirmed: boolean) => {
@@ -340,12 +353,13 @@ function InfiniteCanvasPage() {
     const viewportApiRef = useRef<CanvasViewportApi | null>(null);
     const viewportInteractingRef = useRef(false);
     const focusAnimRef = useRef<number | null>(null);
-    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
+    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<boolean>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
+    const workflowRunRef = useRef<{ canceled: boolean; currentNodeId?: string }>({ canceled: false });
     const pendingResumeRef = useRef<PendingCanvasImageTask[]>([]);
     const resumePendingCanvasTasksRef = useRef<(targets: PendingCanvasImageTask[]) => Promise<void>>(async () => undefined);
     const projectLoadedRef = useRef(false);
@@ -2277,26 +2291,26 @@ function InfiniteCanvasPage() {
     }, [screenToCanvas]);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: { skipCostConfirm?: boolean } = {}) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             if (!isCanvasGenerationModeEnabled(mode)) {
                 message.warning(t("canvas.projectPage.mediaUnavailable"));
-                return;
+                return false;
             }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const builtinPanel = sourceNode ? getNodeDefinition(sourceNode.type)?.useBuiltinPanel : undefined;
             const billedCount = builtinPanel?.writeBackToSelf ? 1 : mode === "image" || (mode === "text" && sourceNode?.type === CanvasNodeType.Config) ? getGenerationCount(generationConfig.count) : 1;
-            if (!(await requestCostConfirm({ config: generationConfig, kind: mode === "text" ? "text" : "image", count: billedCount }))) return;
+            if (!options.skipCostConfirm && !(await requestCostConfirm({ config: generationConfig, kind: mode === "text" ? "text" : "image", count: billedCount }))) return false;
             if ((mode === "video" || mode === "audio") && !isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
-                return;
+                return false;
             }
 
             // useBuiltinPanel.writeBackToSelf reuses built-in generation while writing the result back to the plugin node.
             // Image mode currently supports display-only nodes such as panoramas, with a useBuiltinPanel.promptPrefix.
             if (sourceNode && builtinPanel?.writeBackToSelf && builtinPanel.mode === "image") {
                 const scene = prompt.trim();
-                if (!scene) return;
+                if (!scene) return false;
                 setRunningNodeId(nodeId);
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
@@ -2320,16 +2334,17 @@ function InfiniteCanvasPage() {
                         prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...imageMetadata(uploaded), prompt: scene, model: generationConfig.model, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)),
                     );
                     setDialogNodeId(null);
+                    return true;
                 } catch (error) {
                     if (!isGenerationCanceled(error)) {
                         const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                         message.error(errorDetails);
                         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node)));
                     }
+                    return false;
                 } finally {
                     finishGenerationRequest(nodeId, controller);
                 }
-                return;
             }
 
             setRunningNodeId(nodeId);
@@ -2343,13 +2358,13 @@ function InfiniteCanvasPage() {
             if (runController.signal.aborted) {
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
-                return;
+                return false;
             }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
             if (!effectivePrompt && (mode === "text" || mode === "audio")) {
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
-                return;
+                return false;
             }
             let pendingChildIds: string[] = [];
             if (markSourceStatus)
@@ -2371,62 +2386,64 @@ function InfiniteCanvasPage() {
                     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
                     const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
                     const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                    const rootId = isEmptyImageNode ? nodeId : nanoid();
+                    const reusableRoot = isConfigNode ? findWorkflowOutputNodes(nodeId, CanvasNodeType.Image, nodesRef.current, connectionsRef.current)[0] : undefined;
+                    const rootId = isEmptyImageNode ? nodeId : reusableRoot?.id || nanoid();
+                    const isNewRoot = !isEmptyImageNode && !reusableRoot;
                     const imageIds = Array.from({ length: count }, () => nanoid());
                     pendingChildIds = [rootId];
                     const rootNode: CanvasNodeData = {
                         id: rootId,
                         type: CanvasNodeType.Image,
                         title: effectivePrompt.slice(0, 32) || "Generated Image",
-                        position: {
+                        position: reusableRoot?.position || {
                             x: isEmptyImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
                             y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
                         },
-                        width: isEmptyImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width,
-                        height: isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height,
+                        width: reusableRoot?.width || (isEmptyImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width),
+                        height: reusableRoot?.height || (isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height),
                         metadata: {
                             prompt: effectivePrompt,
                             status: NODE_STATUS_LOADING,
                             images: imageIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" })),
+                            ...(isConfigNode ? { workflowProducerNodeId: nodeId } : {}),
                             ...generationMetadata,
                         },
                     };
 
-                    setNodes((prev) => [
-                        ...prev.map((node) =>
-                            node.id === nodeId
-                                ? isConfigNode
-                                    ? {
-                                          ...node,
-                                          metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined },
-                                      }
-                                    : isEmptyImageNode
-                                      ? {
-                                            ...node,
-                                            position: rootNode.position,
-                                            width: rootNode.width,
-                                            height: rootNode.height,
-                                            title: rootNode.title,
-                                            metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined },
-                                        }
-                                      : isImageNode
-                                        ? {
-                                              ...node,
-                                              metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined },
-                                          }
-                                        : {
-                                              ...node,
-                                              type: CanvasNodeType.Text,
-                                              title: prompt.slice(0, 32) || "Prompt",
-                                              width: parentConfig.width,
-                                              height: parentConfig.height,
-                                              metadata: { ...node.metadata, content: prompt, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
-                                          }
-                                : node,
-                        ),
-                        ...(isEmptyImageNode ? [] : [rootNode]),
-                    ]);
-                    if (!isEmptyImageNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]);
+                    setNodes((prev) => {
+                        const next = prev.map((node) => {
+                            if (node.id === rootId && reusableRoot) return { ...node, ...rootNode, metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined } };
+                            if (node.id !== nodeId) return node;
+                            if (isConfigNode)
+                                return {
+                                    ...node,
+                                    metadata: { ...node.metadata, workflowOutputNodeIds: [rootId], status: NODE_STATUS_LOADING, errorDetails: undefined },
+                                };
+                            if (isEmptyImageNode)
+                                return {
+                                    ...node,
+                                    position: rootNode.position,
+                                    width: rootNode.width,
+                                    height: rootNode.height,
+                                    title: rootNode.title,
+                                    metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined },
+                                };
+                            if (isImageNode) return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } };
+                            return {
+                                ...node,
+                                type: CanvasNodeType.Text,
+                                title: prompt.slice(0, 32) || "Prompt",
+                                width: parentConfig.width,
+                                height: parentConfig.height,
+                                metadata: { ...node.metadata, content: prompt, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
+                            };
+                        });
+                        return isNewRoot ? [...next, rootNode] : next;
+                    });
+                    if (!isEmptyImageNode)
+                        setConnections((prev) =>
+                            prev.some((connection) => connection.fromNodeId === nodeId && connection.toNodeId === rootId) ? prev : [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }],
+                        );
                     setSelectedNodeIds(new Set([nodeId]));
                     setSelectedConnectionId(null);
                     setDialogNodeId(nodeId);
@@ -2483,7 +2500,7 @@ function InfiniteCanvasPage() {
                                 return node;
                             }),
                         );
-                        return;
+                        return false;
                     }
                     if (hasFailure) {
                         message.error(hasSuccess ? t("canvas.projectPage.partialFailed") : firstError || t("canvas.projectPage.generationFailed"));
@@ -2497,7 +2514,7 @@ function InfiniteCanvasPage() {
                                     : node,
                         ),
                     );
-                    return;
+                    return hasSuccess;
                 }
 
                 if (mode === "video") {
@@ -2564,7 +2581,7 @@ function InfiniteCanvasPage() {
                     } finally {
                         finishGenerationRequest(videoId, controller);
                     }
-                    return;
+                    return true;
                 }
 
                 if (mode === "audio") {
@@ -2595,7 +2612,7 @@ function InfiniteCanvasPage() {
                     } finally {
                         finishGenerationRequest(audioId, controller);
                     }
-                    return;
+                    return true;
                 }
 
                 let streamed = "";
@@ -2604,23 +2621,58 @@ function InfiniteCanvasPage() {
                 const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : CanvasNodeType.Text];
                 const textConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
                 const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                const childIds = isConfigNode || editingTextNode ? Array.from({ length: textCount }, () => nanoid()) : [];
+                const reusableTextOutputs = isConfigNode ? findWorkflowOutputNodes(nodeId, CanvasNodeType.Text, nodesRef.current, connectionsRef.current).slice(0, textCount) : [];
+                const reusedChildIds = reusableTextOutputs.map((node) => node.id);
+                const newChildIds = isConfigNode || editingTextNode ? Array.from({ length: Math.max(0, textCount - reusedChildIds.length) }, () => nanoid()) : [];
+                const childIds = [...reusedChildIds, ...newChildIds];
                 pendingChildIds = childIds;
                 if (isConfigNode || editingTextNode) {
-                    const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
-                        id,
-                        type: CanvasNodeType.Text,
-                        title: effectivePrompt.slice(0, 32) || "Generated Text",
-                        position: {
-                            x: parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 + (index - (textCount - 1) / 2) * (textConfig.height + 36),
-                        },
-                        width: textConfig.width,
-                        height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort },
-                    }));
-                    setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
-                    setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
+                    const childNodes: CanvasNodeData[] = newChildIds.map((id) => {
+                        const index = childIds.indexOf(id);
+                        return {
+                            id,
+                            type: CanvasNodeType.Text,
+                            title: effectivePrompt.slice(0, 32) || "Generated Text",
+                            position: {
+                                x: parentPosition.x + parentConfig.width + 96,
+                                y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 + (index - (textCount - 1) / 2) * (textConfig.height + 36),
+                            },
+                            width: textConfig.width,
+                            height: textConfig.height,
+                            metadata: {
+                                prompt: effectivePrompt,
+                                status: NODE_STATUS_LOADING,
+                                fontSize: 14,
+                                model: generationConfig.model,
+                                reasoningEffort: generationConfig.reasoningEffort,
+                                ...(isConfigNode ? { workflowProducerNodeId: nodeId } : {}),
+                            },
+                        } satisfies CanvasNodeData;
+                    });
+                    setNodes((prev) => [
+                        ...prev.map((node) => {
+                            if (node.id === nodeId && isConfigNode)
+                                return { ...node, metadata: { ...node.metadata, workflowOutputNodeIds: childIds, status: NODE_STATUS_LOADING, errorDetails: undefined } };
+                            if (reusedChildIds.includes(node.id))
+                                return {
+                                    ...node,
+                                    title: effectivePrompt.slice(0, 32) || "Generated Text",
+                                    metadata: {
+                                        ...node.metadata,
+                                        prompt: effectivePrompt,
+                                        status: NODE_STATUS_LOADING,
+                                        errorDetails: undefined,
+                                        model: generationConfig.model,
+                                        reasoningEffort: generationConfig.reasoningEffort,
+                                        workflowProducerNodeId: nodeId,
+                                    },
+                                };
+                            return node;
+                        }),
+                        ...childNodes,
+                    ]);
+                    if (newChildIds.length)
+                        setConnections((prev) => [...prev, ...newChildIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
                 }
 
                 const controller = runController;
@@ -2644,7 +2696,7 @@ function InfiniteCanvasPage() {
                             .finally(() => finishGenerationRequest(targetNodeId, controller));
                     }),
                 );
-                if (controller.signal.aborted) return;
+                if (controller.signal.aborted) return false;
                 const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item.content]));
                 setNodes((prev) =>
                     prev.map((node) =>
@@ -2662,13 +2714,15 @@ function InfiniteCanvasPage() {
                                 : node,
                     ),
                 );
+                return true;
             } catch (error) {
-                if (isGenerationCanceled(error)) return;
+                if (isGenerationCanceled(error)) return false;
                 const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                 message.error(errorDetails);
                 setNodes((prev) =>
                     prev.map((node) => (node.id === nodeId || pendingChildIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } }) : node)),
                 );
+                return false;
             } finally {
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
@@ -2676,6 +2730,109 @@ function InfiniteCanvasPage() {
         },
         [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
     );
+
+    const runWorkflow = useCallback(async () => {
+        if (workflowRunRef.current.currentNodeId) return;
+        const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current);
+        if (!compiled.ok) {
+            message.warning(t(compiled.reason === "cycle" ? "canvas.workflow.cycle" : "canvas.workflow.empty"));
+            return;
+        }
+
+        const estimates: CanvasCostEstimate[] = [];
+        for (const nodeId of compiled.plan.nodeIds) {
+            const node = nodesRef.current.find((item) => item.id === nodeId);
+            if (!node) {
+                message.error(t("canvas.workflow.nodeMissing"));
+                return;
+            }
+            const mode = node.metadata?.generationMode || "image";
+            if (!isCanvasGenerationModeEnabled(mode)) {
+                message.warning(t("canvas.workflow.unsupportedMedia", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            const inputSummary = getInputSummary(buildNodeGenerationInputs(nodeId, nodesRef.current, connectionsRef.current));
+            const hasCurrentInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
+            const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
+            const hasPlannedInput = Boolean(compiled.plan.dependencies.get(nodeId)?.size);
+            if (!hasComposerContent && !hasCurrentInput && !hasPlannedInput) {
+                setSelectedNodeIds(new Set([nodeId]));
+                setSelectedConnectionId(null);
+                message.warning(t("canvas.workflow.notReady", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            const config = buildGenerationConfig(effectiveConfig, node, mode);
+            estimates.push(
+                estimateCanvasGenerationCost({
+                    config,
+                    kind: mode === "text" ? "text" : "image",
+                    count: getGenerationCount(config.count),
+                    backgroundRemovalPricePoints,
+                }),
+            );
+        }
+        const generationUnit = estimates.reduce((sum, estimate) => sum + estimate.generationUnit * estimate.count, 0);
+        const removalUnit = estimates.reduce((sum, estimate) => sum + estimate.removalUnit * estimate.count, 0);
+        const total = generationUnit + removalUnit;
+        const costConfirmed = await requestCostEstimateConfirm({
+            kind: "workflow",
+            modelLabel: t("canvas.workflow.costLabel"),
+            unit: total,
+            generationUnit,
+            removalUnit,
+            count: 1,
+            total,
+            unitLabel: "run",
+            pricingUnavailable: estimates.some((estimate) => estimate.pricingUnavailable),
+        });
+        if (!costConfirmed) return;
+
+        workflowRunRef.current = { canceled: false };
+        setWorkflowRun({ status: "running", completed: 0, total: compiled.plan.nodeIds.length });
+        let completed = 0;
+
+        for (const nodeId of compiled.plan.nodeIds) {
+            if (workflowRunRef.current.canceled) break;
+            const node = nodesRef.current.find((item) => item.id === nodeId);
+            if (!node) {
+                workflowRunRef.current = { canceled: false };
+                setWorkflowRun({ status: "error", completed, total: compiled.plan.nodeIds.length });
+                message.error(t("canvas.workflow.nodeMissing"));
+                return;
+            }
+
+            workflowRunRef.current.currentNodeId = nodeId;
+            setWorkflowRun({ status: "running", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
+            const mode = node.metadata?.generationMode || "image";
+            const prompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+            const succeeded = await handleGenerateNode(nodeId, mode, prompt, { skipCostConfirm: true });
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+            if (workflowRunRef.current.canceled) break;
+            if (!succeeded) {
+                workflowRunRef.current = { canceled: false };
+                setWorkflowRun({ status: "error", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
+                message.error(t("canvas.workflow.failed", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            completed += 1;
+            setWorkflowRun({ status: "running", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
+        }
+
+        const canceled = workflowRunRef.current.canceled;
+        workflowRunRef.current = { canceled: false };
+        setWorkflowRun({ status: canceled ? "canceled" : "success", completed, total: compiled.plan.nodeIds.length });
+        if (!canceled) message.success(t("canvas.workflow.completed", { count: completed }));
+    }, [backgroundRemovalPricePoints, effectiveConfig, handleGenerateNode, message, requestCostEstimateConfirm, t]);
+
+    const stopWorkflow = useCallback(() => {
+        workflowRunRef.current.canceled = true;
+        const currentNodeId = workflowRunRef.current.currentNodeId;
+        if (currentNodeId) stopGenerationByRunningId(currentNodeId);
+        setWorkflowRun((current) => ({ ...current, status: "canceled", currentNodeId: undefined }));
+        message.info(t("canvas.workflow.canceled"));
+    }, [message, stopGenerationByRunningId, t]);
+
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
@@ -3053,6 +3210,9 @@ function InfiniteCanvasPage() {
                     onUpload={() => handleUploadRequest()}
                     onExportProject={exportCurrentProject}
                     onClear={() => setClearConfirmOpen(true)}
+                    workflowRun={workflowRun}
+                    onRunWorkflow={() => void runWorkflow()}
+                    onStopWorkflow={stopWorkflow}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
                 >

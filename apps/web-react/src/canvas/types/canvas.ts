@@ -79,6 +79,8 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     taskId?: string;
+    workflowOutputNodeIds?: string[];
+    workflowProducerNodeId?: string;
 };
 
 export type CanvasNodeData = {

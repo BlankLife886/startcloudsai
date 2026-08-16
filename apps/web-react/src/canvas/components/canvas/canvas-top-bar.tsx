@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot, Download, Eraser, Info, Palette, Pencil, Upload } from "lucide-react";
+import { Bot, Download, Eraser, Info, Palette, Pencil, Play, Square, Upload } from "lucide-react";
 import { Switch, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -20,6 +20,9 @@ export function CanvasTopBar({
     onUpload,
     onExportProject,
     onClear,
+    workflowRun,
+    onRunWorkflow,
+    onStopWorkflow,
     onBackgroundModeChange,
     onShowImageInfoChange,
     children,
@@ -33,6 +36,9 @@ export function CanvasTopBar({
     onUpload: () => void;
     onExportProject: () => void;
     onClear: () => void;
+    workflowRun: { status: "idle" | "running" | "success" | "error" | "canceled"; completed: number; total: number };
+    onRunWorkflow: () => void;
+    onStopWorkflow: () => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
     onShowImageInfoChange: (show: boolean) => void;
     children?: ReactNode;
@@ -64,6 +70,22 @@ export function CanvasTopBar({
                 {children ? <div className="pointer-events-auto absolute left-1/2 top-1/2 max-w-[min(720px,calc(100%-380px))] -translate-x-1/2 -translate-y-1/2">{children}</div> : null}
 
                 <div className="pointer-events-auto flex items-center gap-2">
+                    <Tooltip title={t(workflowRun.status === "running" ? "canvas.workflow.stop" : "canvas.workflow.run")} placement="bottom">
+                        <button
+                            type="button"
+                            className="canvas-chrome-cluster flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-semibold transition"
+                            style={{
+                                color: workflowRun.status === "running" ? theme.toolbar.activeText : theme.node.text,
+                                background: workflowRun.status === "running" ? theme.toolbar.activeBg : theme.toolbar.panel,
+                                boxShadow: `inset 0 0 0 1px ${theme.toolbar.border}`,
+                            }}
+                            onClick={workflowRun.status === "running" ? onStopWorkflow : onRunWorkflow}
+                            aria-label={t(workflowRun.status === "running" ? "canvas.workflow.stop" : "canvas.workflow.run")}
+                        >
+                            {workflowRun.status === "running" ? <Square className="size-3.5" /> : <Play className="size-3.5" />}
+                            <span>{workflowRun.status === "running" ? t("canvas.workflow.progress", { completed: workflowRun.completed, total: workflowRun.total }) : t("canvas.workflow.run")}</span>
+                        </button>
+                    </Tooltip>
                     <div ref={extrasRef} className="canvas-chrome-cluster relative" style={{ color: theme.toolbar.item }}>
                         <ChromeAction title={t("canvas.project.rename")} theme={theme} onClick={onRename}>
                             <Pencil className="size-3.5" />
@@ -200,7 +222,7 @@ function ChromeAction({
     children,
 }: {
     title: string;
-    theme: (typeof canvasThemes)["light"];
+    theme: CanvasTheme;
     danger?: boolean;
     active?: boolean;
     onClick: () => void;
@@ -220,4 +242,3 @@ function ChromeAction({
         </Tooltip>
     );
 }
-

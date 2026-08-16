@@ -2,7 +2,7 @@ import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-r
 import { getGenerationCount } from "@/lib/canvas/canvas-generation-helpers";
 import { modelOptionLabel, modelOptionMeta, type AiConfig } from "@/stores/use-config-store";
 
-export type CanvasCostKind = "image" | "text" | "background_remove";
+export type CanvasCostKind = "image" | "text" | "background_remove" | "workflow";
 
 export type CanvasCostEstimate = {
     kind: CanvasCostKind;
