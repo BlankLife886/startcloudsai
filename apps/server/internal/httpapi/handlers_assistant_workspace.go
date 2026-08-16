@@ -408,8 +408,35 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if body.ServiceKey == "ui_design_analysis" || body.ServiceKey == "ui_design_asset" {
 		workspace = modelconfig.WorkspaceUIDesign
 	}
-	if strings.EqualFold(strings.TrimSpace(body.Workspace), modelconfig.WorkspaceCanvas) {
-		workspace = modelconfig.WorkspaceCanvas
+	if strings.TrimSpace(body.Workspace) != "" {
+		requestedWorkspace, workspaceErr := assistantConversationWorkspace(body.Workspace)
+		if workspaceErr != nil {
+			fail(c, workspaceErr)
+			return
+		}
+		if workspace == modelconfig.WorkspaceUIDesign && requestedWorkspace != workspace {
+			fail(c, apperr.E("validation_error", "workspace: 与服务路由不一致", 422))
+			return
+		}
+		workspace = requestedWorkspace
+	}
+	conversationID, err := uuid.Parse(body.ConversationID)
+	if err != nil {
+		fail(c, apperr.E("validation_error", "conversationId 无效", 422))
+		return
+	}
+	conversation, err := store.GetUserAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, conversationID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if conversation == nil {
+		fail(c, apperr.E("not_found", "对话不存在", 404))
+		return
+	}
+	if conversation.Workspace != workspace {
+		fail(c, apperr.E("validation_error", "workspace: 与对话工作区不一致", 422))
+		return
 	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {
@@ -543,20 +570,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			return
 		}
 	}
-	conversationID, err := uuid.Parse(body.ConversationID)
-	if err != nil {
-		fail(c, apperr.E("validation_error", "conversationId 无效", 422))
-		return
-	}
-	conversation, err := store.GetUserAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, conversationID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if conversation == nil {
-		fail(c, apperr.E("not_found", "对话不存在", 404))
-		return
-	}
 	runID := uuid.New()
 	userMessageID := parseAssistantUUID(body.ClientUserMessageID)
 	assistantMessageID := parseAssistantUUID(body.ClientAssistantMessageID)
@@ -583,6 +596,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"width": body.Width, "height": body.Height, "quality": body.Quality,
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": body.Mode,
+		"workspace":     workspace,
+	}
+	params["_source"] = workspace
+	if workspace == modelconfig.WorkspaceCanvas {
+		params["_source"] = store.CanvasTaskSource
+		params["_kind"] = "canvas-chat"
 	}
 	if body.Mode == "agent" {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
@@ -958,7 +977,7 @@ func assistantConversationWorkspace(value string) (string, error) {
 	if workspace == "" {
 		return "assistant", nil
 	}
-	if workspace != "assistant" && workspace != "ui_design" {
+	if workspace != modelconfig.WorkspaceAssistant && workspace != modelconfig.WorkspaceUIDesign && workspace != modelconfig.WorkspaceCanvas {
 		return "", apperr.E("validation_error", "workspace: 不支持的会话工作区", 422)
 	}
 	return workspace, nil

@@ -371,6 +371,30 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 		t.Fatalf("created ui design conversation = %#v", designData)
 	}
 
+	canvasCreated := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "画布文字节点", "workspace": "infinite_canvas",
+	}, token)
+	if canvasCreated.Code != http.StatusCreated {
+		t.Fatalf("create canvas conversation: status %d body %s", canvasCreated.Code, canvasCreated.Body.String())
+	}
+	canvasData, _ := decode(t, canvasCreated)
+	canvasID, _ := canvasData["id"].(string)
+	if canvasID == "" || canvasData["workspace"] != "infinite_canvas" {
+		t.Fatalf("created canvas conversation = %#v", canvasData)
+	}
+	mismatchedRun := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": canvasID, "prompt": "画布分析", "mode": "chat",
+	}, token)
+	if mismatchedRun.Code != http.StatusUnprocessableEntity || !strings.Contains(mismatchedRun.Body.String(), "与对话工作区不一致") {
+		t.Fatalf("mismatched canvas run: status %d body %s", mismatchedRun.Code, mismatchedRun.Body.String())
+	}
+	invalidRunWorkspace := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": canvasID, "prompt": "画布分析", "mode": "chat", "workspace": "unknown",
+	}, token)
+	if invalidRunWorkspace.Code != http.StatusUnprocessableEntity || !strings.Contains(invalidRunWorkspace.Body.String(), "不支持的会话工作区") {
+		t.Fatalf("invalid run workspace: status %d body %s", invalidRunWorkspace.Code, invalidRunWorkspace.Body.String())
+	}
+
 	invalid := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
 		"title": "非法工作区", "workspace": "unknown",
 	}, token)
@@ -406,6 +430,16 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	}
 	if designConversation == nil || designConversation.Workspace != "ui_design" {
 		t.Fatalf("ui design conversation is not recoverable by id: %#v", designConversation)
+	}
+	canvasUUID, err := uuid.Parse(canvasID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasConversation, err := store.GetUserAssistantConversation(
+		context.Background(), env.st.Pool, user.ID, canvasUUID,
+	)
+	if err != nil || canvasConversation == nil || canvasConversation.Workspace != "infinite_canvas" {
+		t.Fatalf("canvas conversation is not isolated: %#v, err=%v", canvasConversation, err)
 	}
 	now := time.Now().UTC()
 	userMessage, err := store.InsertAssistantMessage(context.Background(), env.st.Pool, store.AssistantMessage{
@@ -451,6 +485,10 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	designDeleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+designID+"?cancelActive=true", nil, token)
 	if designDeleted.Code != http.StatusNoContent {
 		t.Fatalf("delete ui design conversation: status %d body %s", designDeleted.Code, designDeleted.Body.String())
+	}
+	canvasDeleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+canvasID, nil, token)
+	if canvasDeleted.Code != http.StatusNoContent {
+		t.Fatalf("delete canvas conversation: status %d body %s", canvasDeleted.Code, canvasDeleted.Body.String())
 	}
 }
 
@@ -764,6 +802,54 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	}
 	if overview.Total != 1 || overview.Succeeded != 1 || overview.Failed != 0 || overview.Today != 1 {
 		t.Fatalf("admin assistant overview = %+v", overview)
+	}
+
+	canvasConversation, err := store.InsertAssistantConversationWithWorkspace(
+		ctx, env.st.Pool, uuid.New(), user.ID, "画布任务", store.PromptTaskTypeCanvas, now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasUserMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: canvasConversation.ID, Role: "user", Content: "分析商品图",
+		Kind: "chat", Status: "complete", CreatedAt: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasAssistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: canvasConversation.ID, Role: "assistant", Kind: "chat",
+		Status: "queued", CreatedAt: now.Add(time.Second + time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasRun, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: canvasConversation.ID,
+		UserMessageID: canvasUserMessage.ID, AssistantMessageID: canvasAssistantMessage.ID,
+		Mode: "chat", Prompt: "分析商品图", Params: map[string]any{"count": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, claimErr := store.ClaimAssistantRun(ctx, env.st.Pool, canvasRun.ID); claimErr != nil || !claimed {
+		t.Fatalf("claim canvas run = %v, err = %v", claimed, claimErr)
+	}
+	if completed, completeErr := store.CompleteAssistantRun(ctx, env.st.Pool, canvasRun.ID, "chat", 0); completeErr != nil || !completed {
+		t.Fatalf("complete canvas run = %v, err = %v", completed, completeErr)
+	}
+
+	assistantOnly, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil, "")
+	if err != nil || len(assistantOnly) != 1 || assistantOnly[0].ID != run.ID {
+		t.Fatalf("assistant tasks polluted by canvas run: %#v, err=%v", assistantOnly, err)
+	}
+	canvasOnly, err := store.ListAdminTasks(ctx, env.st.Pool, "", "succeeded", "", nil, 20, nil, store.CanvasTaskSource)
+	if err != nil || len(canvasOnly) != 1 || canvasOnly[0].ID != canvasRun.ID {
+		t.Fatalf("canvas task classification = %#v, err=%v", canvasOnly, err)
+	}
+	canvasAdminDict := adminTaskDict(canvasOnly[0], nil)
+	if canvasAdminDict["source"] != store.PromptTaskTypeCanvas {
+		t.Fatalf("canvas admin source = %#v", canvasAdminDict)
 	}
 }
 

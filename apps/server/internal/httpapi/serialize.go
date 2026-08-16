@@ -105,12 +105,28 @@ func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	d["serviceProvider"] = adminTaskServiceProvider(t)
 	d["source"] = "task"
 	if t.Type == "assistant" {
-		d["source"] = "assistant"
+		d["source"] = assistantRunTaskSource(t.Params)
 	}
 	if user != nil {
 		d["user"] = gin.H{"id": user.ID.String(), "email": user.Email, "username": user.Username}
 	}
 	return d
+}
+
+func assistantRunTaskSource(params map[string]any) string {
+	source, _ := params["_source"].(string)
+	workspace, _ := params["workspace"].(string)
+	if source == store.CanvasTaskSource || workspace == store.PromptTaskTypeCanvas {
+		return store.PromptTaskTypeCanvas
+	}
+	return store.PromptTaskTypeAssistant
+}
+
+func assistantRunTaskDisplayName(params map[string]any) string {
+	if assistantRunTaskSource(params) == store.PromptTaskTypeCanvas {
+		return "无限画布"
+	}
+	return "AI 助手"
 }
 
 func adminTaskServiceProvider(t *store.Task) string {
@@ -232,8 +248,8 @@ func ledgerDictWithAssistantRun(e *store.LedgerEntry, run *store.AssistantRun) g
 	d["task"] = gin.H{
 		"id":                        run.ID.String(),
 		"type":                      "assistant",
-		"displayName":               "AI 助手",
-		"source":                    "assistant",
+		"displayName":               assistantRunTaskDisplayName(params),
+		"source":                    assistantRunTaskSource(params),
 		"status":                    run.Status,
 		"modelName":                 strings.TrimSpace(displayModel),
 		"count":                     count,

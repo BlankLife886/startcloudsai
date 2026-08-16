@@ -53,6 +53,17 @@ func TestAdminTaskDictIncludesActualServiceProvider(t *testing.T) {
 	}
 }
 
+func TestAdminTaskDictSeparatesCanvasAssistantSource(t *testing.T) {
+	task := &store.Task{
+		ID: uuid.New(), Type: "assistant",
+		Params: map[string]any{"workspace": "infinite_canvas", "_source": "react_canvas"},
+	}
+	dict := adminTaskDict(task, nil)
+	if dict["source"] != "infinite_canvas" {
+		t.Fatalf("canvas assistant source = %#v", dict)
+	}
+}
+
 func TestUserDictIncludesProfileDetails(t *testing.T) {
 	user := &store.User{
 		ID:                 uuid.New(),
@@ -143,5 +154,20 @@ func TestLedgerDictWithTaskUsesCanvasDisplayName(t *testing.T) {
 	}
 	if taskDict["displayName"] != "无限画布" || taskDict["source"] != "react_canvas" {
 		t.Fatalf("canvas ledger task = %#v", taskDict)
+	}
+}
+
+func TestLedgerDictWithAssistantRunUsesCanvasDisplayName(t *testing.T) {
+	entry := &store.LedgerEntry{
+		ID: uuid.New(), Kind: "spend", SourceType: "assistant_run", CreatedAt: time.Now(),
+	}
+	run := &store.AssistantRun{
+		ID: uuid.New(), Status: "succeeded",
+		Params: map[string]any{"workspace": "infinite_canvas", "_source": "react_canvas"},
+	}
+	dict := ledgerDictWithAssistantRun(entry, run)
+	taskDict, ok := dict["task"].(gin.H)
+	if !ok || taskDict["displayName"] != "无限画布" || taskDict["source"] != "infinite_canvas" {
+		t.Fatalf("canvas assistant ledger task = %#v", dict["task"])
 	}
 }

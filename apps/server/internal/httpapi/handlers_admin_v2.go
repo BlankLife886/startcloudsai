@@ -283,7 +283,7 @@ func adminAssistantRunDict(run *store.AssistantRun) gin.H {
 	params["stage"] = run.Stage
 	return gin.H{
 		"id": run.ID.String(), "userId": run.UserID.String(), "type": "assistant",
-		"source": "assistant", "model": run.Params["model"], "status": run.Status,
+		"source": assistantRunTaskSource(params), "model": run.Params["model"], "status": run.Status,
 		"prompt": run.Prompt, "params": params, "count": run.Params["count"],
 		"inputKeys": []string{}, "outputKeys": []string{}, "outputUrls": []string{},
 		"costCents": run.CostCents, "reservedCents": run.ReservedCents,

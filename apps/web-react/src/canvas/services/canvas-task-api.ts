@@ -253,7 +253,10 @@ function collectMessageReferenceImages(messages: Array<{ role: string; content: 
 export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, signal?: AbortSignal, model = "") {
     const prompt = flattenMessages(messages).slice(-12_000);
     const referenceImages = collectMessageReferenceImages(messages);
-    const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", { title: prompt.slice(0, 42) || "画布助手" });
+    const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
+        title: prompt.slice(0, 42) || "画布助手",
+        workspace: "infinite_canvas",
+    });
     const created = await starcloudsJson<CanvasAssistantResponse>("/assistant/runs", "POST", {
         conversationId: conversation.id,
         prompt,
@@ -274,8 +277,8 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
             onDelta(content);
             return content;
         }
-        if (current.run.status === "failed" || current.run.status === "canceled") throw new Error(current.run.errorMessage || "助手任务失败");
-        if (Date.now() >= deadline) throw new Error("助手仍在后台处理，请稍后重试");
+        if (current.run.status === "failed" || current.run.status === "canceled") throw new Error(current.run.errorMessage || "画布对话任务失败");
+        if (Date.now() >= deadline) throw new Error("画布对话任务仍在后台处理，请稍后重试");
         await wait(700, signal);
     }
 }

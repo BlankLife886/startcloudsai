@@ -539,7 +539,10 @@ const adminTaskSourceSQL = `
 				'conversationId', run.conversation_id::text,
 				'mode', run.mode,
 				'resolvedMode', run.resolved_mode,
-				'stage', run.stage
+				'stage', run.stage,
+				'workspace', conversation.workspace,
+				'_source', CASE WHEN conversation.workspace = 'infinite_canvas'
+					THEN 'react_canvas' ELSE conversation.workspace END
 			) AS params,
 			CASE WHEN COALESCE(run.params->>'count', '') ~ '^[1-4]$'
 				THEN (run.params->>'count')::integer ELSE 1 END AS count,
@@ -575,12 +578,16 @@ const adminTaskSourceSQL = `
 			NULL::timestamptz AS deleted_at, NULL::text AS deletion_actor,
 			0::integer AS deleted_output_count
 		FROM assistant_runs run
+		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
 		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
 	`
 
-// ListAdminTasks merges regular generation tasks with AI assistant runs while
-// keeping assistant_runs as the single source of truth for assistant state.
+// ListAdminTasks merges regular generation tasks with workspace-scoped model
+// runs while keeping assistant_runs as their single execution source of truth.
 func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor, source string) ([]*Task, error) {
+	if taskType == PromptTaskTypeAssistant && source == "" {
+		source = PromptTaskTypeAssistant
+	}
 	sql := `SELECT ` + taskCols + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
 	args := []any{}
 	if taskType != "" {
@@ -631,6 +638,9 @@ type AdminTaskOverview struct {
 // scope. Status itself is intentionally excluded so the UI can switch between
 // status tabs without losing the surrounding overview.
 func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskOverview, error) {
+	if taskType == PromptTaskTypeAssistant && source == "" {
+		source = PromptTaskTypeAssistant
+	}
 	sql := `SELECT
 		count(*) AS total,
 		count(*) FILTER (WHERE status = 'queued') AS queued,

@@ -38,7 +38,7 @@ interface AdminTask {
   userId?: string
   userEmail?: string
   user?: { id: string; email: string }
-  source?: 'task' | 'assistant'
+  source?: 'task' | 'assistant' | 'infinite_canvas'
   serviceProvider?: 'c2a' | 'sub2api' | 'crun' | 'local'
   createdAt: string
   startedAt: string | null
@@ -208,7 +208,11 @@ function refreshNow() {
 function taskPrompt(task: AdminTask) {
   return (
     task.prompt?.trim() ||
-    (task.source === 'assistant' ? 'AI 助手任务' : '未填写提示词')
+    (task.source === 'assistant'
+      ? 'AI 助手任务'
+      : task.source === 'infinite_canvas'
+        ? '无限画布任务'
+        : '未填写提示词')
   )
 }
 
@@ -263,8 +267,18 @@ function taskUser(task: AdminTask): string {
 function taskSourceLabel(task: AdminTask) {
   const source = String(task.params?._source || task.params?.source || '')
   const kind = String(task.params?._kind || task.params?.kind || '')
-  if (source === 'react_canvas' || kind.startsWith('canvas-')) return '无限画布'
+  if (
+    task.source === 'infinite_canvas' ||
+    source === 'react_canvas' ||
+    kind.startsWith('canvas-')
+  ) return '无限画布'
   return task.source === 'assistant' ? 'AI 助手' : '图片任务'
+}
+
+function taskOperationName(task: AdminTask) {
+  if (task.source === 'assistant') return 'AI 助手任务'
+  if (task.source === 'infinite_canvas') return '无限画布任务'
+  return '任务'
 }
 
 const serviceProviderMeta = {
@@ -279,7 +293,7 @@ function taskServiceProvider(task: AdminTask): keyof typeof serviceProviderMeta 
     return task.serviceProvider
   }
   if (task.type === 'puzzle') return 'local'
-  if (task.source === 'assistant') return 'sub2api'
+  if (task.source === 'assistant' || task.source === 'infinite_canvas') return 'sub2api'
   const provider = String(task.params?._serviceProvider || '')
   return provider === 'sub2api' || provider === 'crun' ? provider : 'c2a'
 }
@@ -328,7 +342,7 @@ function taskInputCount(task: AdminTask) {
 }
 
 function taskCount(task: AdminTask): number | string {
-  if (task.source !== 'assistant') return task.count
+  if (task.source !== 'assistant' && task.source !== 'infinite_canvas') return task.count
   const resolvedMode = String(task.params?.resolvedMode || task.params?.mode || '')
   return resolvedMode === 'image' ? task.count : '-'
 }
@@ -528,10 +542,9 @@ async function requeue(task: AdminTask) {
 }
 
 async function cancel(task: AdminTask) {
+  const taskName = taskOperationName(task)
   await ElMessageBox.confirm(
-    task.source === 'assistant'
-      ? `确认取消排队中的 AI 助手任务 ${task.id}？`
-      : `确认取消排队中任务 ${task.id}？取消后将解冻退还该任务费用。`,
+    `确认取消排队中的${taskName} ${task.id}？取消后将解冻退还该任务费用。`,
     '取消任务',
     {
       type: 'warning',
@@ -545,9 +558,7 @@ async function cancel(task: AdminTask) {
       method: 'PATCH',
       body: { status: 'canceled' },
     })
-    ElMessage.success(
-      task.source === 'assistant' ? 'AI 助手任务已取消' : '已取消并解冻费用',
-    )
+    ElMessage.success(`${taskName}已取消并解冻费用`)
     detailVisible.value = false
     refresh()
   } finally {
@@ -556,10 +567,9 @@ async function cancel(task: AdminTask) {
 }
 
 async function forceFail(task: AdminTask) {
+  const taskName = taskOperationName(task)
   await ElMessageBox.confirm(
-    task.source === 'assistant'
-      ? `确认将运行中的 AI 助手任务 ${task.id} 强制置为失败？仅用于卡死任务。`
-      : `确认将运行中任务 ${task.id} 强制置为失败？将解冻并退还该任务冻结的费用（errorCode=admin_force_failed）。仅用于卡死任务，若任务仍在正常执行请勿操作。`,
+    `确认将运行中的${taskName} ${task.id} 强制置为失败？将解冻并退还该任务冻结的费用（errorCode=admin_force_failed）。仅用于卡死任务，若任务仍在正常执行请勿操作。`,
     '强制失败',
     {
       type: 'error',
