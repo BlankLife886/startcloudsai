@@ -88,6 +88,32 @@ func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Ta
 	return out, rows.Err()
 }
 
+// ListUserTasksFinishedBetween 用于把任务通知对回对应任务（画布/文生图等）。
+func ListUserTasksFinishedBetween(ctx context.Context, q Q, userID uuid.UUID, from, to time.Time) ([]*Task, error) {
+	if to.Before(from) {
+		from, to = to, from
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+taskCols+` FROM tasks
+		 WHERE user_id = $1 AND deleted_at IS NULL AND finished_at IS NOT NULL
+		   AND finished_at >= $2 AND finished_at <= $3
+		 ORDER BY finished_at ASC`,
+		userID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, task)
+	}
+	return out, rows.Err()
+}
+
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
 	return nilOnNoRows(t, err)
@@ -440,8 +466,29 @@ func ListAsyncPendingRoutes(ctx context.Context, q Q, limit int) ([]AsyncPending
 	return routes, rows.Err()
 }
 
+func appendTaskOriginFilter(sql string, args []any, source, excludeSource string) (string, []any) {
+	if excludeSource != "" {
+		args = append(args, excludeSource)
+		sql += fmt.Sprintf(` AND COALESCE(params->>'_source','') <> $%d AND COALESCE(params->>'source','') <> $%d`, len(args), len(args))
+		if excludeSource == CanvasTaskSource {
+			sql += ` AND COALESCE(params->>'_kind','') NOT LIKE 'canvas-%'`
+			sql += ` AND type <> '` + PromptTaskTypeCanvas + `'`
+		}
+	}
+	if source != "" {
+		args = append(args, source)
+		sql += fmt.Sprintf(` AND (COALESCE(params->>'_source','') = $%d OR COALESCE(params->>'source','') = $%d`, len(args), len(args))
+		if source == CanvasTaskSource {
+			sql += ` OR COALESCE(params->>'_kind','') LIKE 'canvas-%'`
+			sql += ` OR type = '` + PromptTaskTypeCanvas + `'`
+		}
+		sql += `)`
+	}
+	return sql, args
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
-func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
+func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
 	sql := `SELECT ` + taskCols + ` FROM tasks WHERE true`
 	args := []any{}
 	if userID != nil {
@@ -457,6 +504,7 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 		args = append(args, status)
 		sql += fmt.Sprintf(` AND status = $%d`, len(args))
 	}
+	sql, args = appendTaskOriginFilter(sql, args, source, excludeSource)
 	if userIDs != nil {
 		args = append(args, userIDs)
 		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
@@ -532,7 +580,7 @@ const adminTaskSourceSQL = `
 
 // ListAdminTasks merges regular generation tasks with AI assistant runs while
 // keeping assistant_runs as the single source of truth for assistant state.
-func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*Task, error) {
+func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor, source string) ([]*Task, error) {
 	sql := `SELECT ` + taskCols + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
 	args := []any{}
 	if taskType != "" {
@@ -547,6 +595,7 @@ func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string
 		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
 		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
 	}
+	sql, args = appendTaskOriginFilter(sql, args, source, "")
 	if userIDs != nil {
 		args = append(args, userIDs)
 		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
@@ -581,7 +630,7 @@ type AdminTaskOverview struct {
 // GetAdminTaskOverview returns status totals for the current type/user/error
 // scope. Status itself is intentionally excluded so the UI can switch between
 // status tabs without losing the surrounding overview.
-func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID) (*AdminTaskOverview, error) {
+func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskOverview, error) {
 	sql := `SELECT
 		count(*) AS total,
 		count(*) FILTER (WHERE status = 'queued') AS queued,
@@ -600,6 +649,7 @@ func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, 
 		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
 		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
 	}
+	sql, args = appendTaskOriginFilter(sql, args, source, "")
 	if userIDs != nil {
 		args = append(args, userIDs)
 		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))

@@ -19,7 +19,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-const emailCodeTTL = 10 * time.Minute
+const emailCodeTTL = 3 * time.Minute
 
 func normalizeLoginEmail(raw string) (string, bool) {
 	email := strings.ToLower(strings.TrimSpace(raw))
@@ -71,7 +71,7 @@ func (s *Server) sendLoginCode(email, code string) error {
 	return s.sendPlainEmail(
 		email,
 		"StarCloudsAI verification code",
-		"Your login code is: "+code+"\nIt expires in 10 minutes.\n",
+		"Your login code is: "+code+"\nIt expires in 3 minutes.\n",
 	)
 }
 

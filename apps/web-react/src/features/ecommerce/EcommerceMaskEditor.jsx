@@ -504,6 +504,7 @@ export function EcommerceMaskEditor({
                 className="local-mask-icons"
                 role="group"
                 aria-label="蒙版历史"
+                data-click-guard="off"
               >
                 <button
                   type="button"
@@ -537,6 +538,7 @@ export function EcommerceMaskEditor({
                 className="local-mask-view-tools"
                 role="group"
                 aria-label="视图控制"
+                data-click-guard="off"
               >
                 <button
                   type="button"

@@ -368,7 +368,14 @@ export async function downloadBlobsAsZip(items = [], zipName = 'image-compress.z
   return { count: Object.keys(files).length, bytes: archive.byteLength, zipped: true }
 }
 
-function analyzeInLossyWorker({ imageData, format, signal, onProgress }) {
+function analyzeInLossyWorker({
+  imageData,
+  format,
+  signal,
+  onProgress,
+  type = 'analyze',
+  quality,
+}) {
   if (signal?.aborted) throw new DOMException('压缩已取消', 'AbortError')
   const id = `lossy-${++requestId}`
   const active = ensureLossyWorker()
@@ -391,9 +398,10 @@ function analyzeInLossyWorker({ imageData, format, signal, onProgress }) {
     signal?.addEventListener('abort', handleAbort, { once: true })
     active.postMessage(
       {
-        type: 'analyze',
+        type,
         id,
         format,
+        quality,
         width: imageData.width,
         height: imageData.height,
         buffer: imageData.data.buffer,
@@ -487,6 +495,72 @@ export async function analyzeLossyImageFile(
     variants,
     recommended,
     iconBudget,
+  }
+}
+
+/**
+ * 智能有损定点质量编码（当前用于上传前 WebP）。
+ * @returns {Promise<{
+ *   blob: Blob,
+ *   mimeType: string,
+ *   format: string,
+ *   quality: number,
+ *   beforeBytes: number,
+ *   afterBytes: number,
+ *   resized: boolean,
+ *   width: number,
+ *   height: number,
+ *   sourceWidth: number,
+ *   sourceHeight: number,
+ * }>}
+ */
+export async function encodeLossyImageFile(
+  file,
+  {
+    format = 'webp',
+    quality = 50,
+    maxEdge = 0,
+    maxInputBytes = MAX_FILE_BYTES,
+    signal,
+  } = {},
+) {
+  if (!isAcceptedImageFile(file)) throw new Error('请选择 PNG、JPG 或 WebP 图片')
+  const inputLimit = Math.max(1, Number(maxInputBytes) || MAX_FILE_BYTES)
+  if (file.size > inputLimit) throw new Error(`图片不能超过 ${formatBytes(inputLimit)}`)
+  const target = String(format || 'webp').toLowerCase()
+  if (target !== 'webp') throw new Error('当前仅支持 WebP 定点质量编码')
+  const q = Math.max(0, Math.min(100, Math.round(Number(quality) || 50)))
+
+  const originalBuffer = await file.arrayBuffer()
+  const beforeBytes = originalBuffer.byteLength
+  const decoded = await decodeToImageData(
+    new Blob([originalBuffer], { type: file.type || 'application/octet-stream' }),
+    { maxEdge },
+  )
+  const { imageData, width, height, sourceWidth, sourceHeight, resized } = decoded
+  const variants = await analyzeInLossyWorker({
+    imageData,
+    format: 'webp',
+    type: 'encode',
+    quality: q,
+    signal,
+  })
+  const pick = variants[0]
+  if (!pick?.buffer && !pick?.blob) throw new Error('WebP 压缩失败')
+  const blob = pick.blob || new Blob([pick.buffer], { type: pick.mimeType || 'image/webp' })
+  if (!blob.size) throw new Error('WebP 压缩失败')
+  return {
+    blob,
+    mimeType: pick.mimeType || 'image/webp',
+    format: 'webp',
+    quality: q,
+    beforeBytes,
+    afterBytes: blob.size,
+    resized,
+    width,
+    height,
+    sourceWidth,
+    sourceHeight,
   }
 }
 

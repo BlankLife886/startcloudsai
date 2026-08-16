@@ -261,6 +261,9 @@ function taskUser(task: AdminTask): string {
 }
 
 function taskSourceLabel(task: AdminTask) {
+  const source = String(task.params?._source || task.params?.source || '')
+  const kind = String(task.params?._kind || task.params?.kind || '')
+  if (source === 'react_canvas' || kind.startsWith('canvas-')) return '无限画布'
   return task.source === 'assistant' ? 'AI 助手' : '图片任务'
 }
 
@@ -779,7 +782,7 @@ async function forceFail(task: AdminTask) {
 
             <el-table-column label="任务类型" width="110" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="cell-num">{{ taskTypeLabel(row.type) }}</span>
+                <span class="cell-num">{{ taskTypeLabel(row.type, row.params) }}</span>
               </template>
             </el-table-column>
 
@@ -887,7 +890,7 @@ async function forceFail(task: AdminTask) {
             <span class="drawer-status" :class="`is-${detail.status}`">
               {{ TASK_STATUS_LABELS[detail.status] ?? detail.status }}
             </span>
-            <strong>{{ taskTypeLabel(detail.type) }}</strong>
+            <strong>{{ taskTypeLabel(detail.type, detail.params) }}</strong>
             <small>{{ taskServiceProviderMeta(detail).name }} · {{ taskServiceProviderMeta(detail).detail }}</small>
           </div>
         </div>
@@ -1037,7 +1040,7 @@ async function forceFail(task: AdminTask) {
           <dl class="info-rows info-rows--flat">
             <div class="info-row">
               <dt>类型</dt>
-              <dd>{{ taskTypeLabel(detail.type) }}</dd>
+              <dd>{{ taskTypeLabel(detail.type, detail.params) }}</dd>
             </div>
             <div class="info-row">
               <dt>来源</dt>
@@ -1104,7 +1107,7 @@ async function forceFail(task: AdminTask) {
       @confirm="paramsDialogVisible = false"
     >
       <template v-if="detail" #meta>
-        <span class="admin-dialog__chip">{{ taskTypeLabel(detail.type) }}</span>
+        <span class="admin-dialog__chip">{{ taskTypeLabel(detail.type, detail.params) }}</span>
         <code class="admin-dialog__chip is-mono" :title="detail.id">{{ detail.id }}</code>
       </template>
 

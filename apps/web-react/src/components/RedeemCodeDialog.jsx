@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { redeemWalletCode } from "@react/legacy-modules/services/meApi.js";
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
+import { DialogMotion } from "./motion/DialogMotion.jsx";
 import "@react/legacy-styles/generated/components/layout/RedeemCodeDialog.css";
 
 const ERROR_MESSAGES = {
@@ -16,7 +16,6 @@ const ERROR_MESSAGES = {
 export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
   const inputRef = useRef(null);
   const mountedRef = useRef(true);
-  const closeRef = useRef(onClose);
   const redeemingRef = useRef(false);
   const [code, setCode] = useState("");
   const [redeeming, setRedeeming] = useState(false);
@@ -29,20 +28,10 @@ export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
   }, []);
 
   useEffect(() => {
-    closeRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
     if (!open) return undefined;
     setCode("");
     redeemingRef.current = false;
     setRedeeming(false);
-    requestAnimationFrame(() => inputRef.current?.focus());
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && !redeemingRef.current) closeRef.current?.();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
   const submit = async (event) => {
@@ -80,22 +69,17 @@ export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
     }
   };
 
-  if (!open) return null;
-  return createPortal(
-    <div
-      className={`redeem-dialog-layer${isDark ? " is-dark" : ""}`}
-      role="presentation"
-      onMouseDown={(event) =>
-        event.target === event.currentTarget && !redeeming && onClose?.()
-      }
+  return (
+    <DialogMotion
+      open={open}
+      layerClassName={`redeem-dialog-layer${isDark ? " is-dark" : ""}`}
+      panelClassName="redeem-dialog"
+      ariaLabelledby="redeem-dialog-title"
+      initialFocusRef={inputRef}
+      closeDisabled={redeeming}
+      onClose={onClose}
     >
-      <section
-        className="redeem-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="redeem-dialog-title"
-      >
-        <header className="redeem-dialog__head">
+        <header className="redeem-dialog__head" data-dialog-motion-item>
           <div>
             <h2 id="redeem-dialog-title">兑换积分</h2>
             <p>输入兑换码即可入账。</p>
@@ -110,7 +94,7 @@ export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
             <i className="bi bi-x-lg" aria-hidden="true" />
           </button>
         </header>
-        <form className="redeem-dialog__form" onSubmit={submit}>
+        <form className="redeem-dialog__form" onSubmit={submit} data-dialog-motion-item>
           <input
             ref={inputRef}
             value={code}
@@ -131,8 +115,6 @@ export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
             {redeeming ? "兑换中…" : "立即兑换"}
           </button>
         </form>
-      </section>
-    </div>,
-    document.body,
+    </DialogMotion>
   );
 }

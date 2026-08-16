@@ -42,6 +42,31 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"GET /api/v1/admin/prompts/export",
 		"PATCH /api/v1/admin/tasks/:id",
 		"GET /api/v1/admin/system/metrics",
+		"GET /api/v1/commerce/catalog",
+		"GET /api/v1/commerce/tryon-catalog",
+		"GET /api/v1/commerce/handheld/catalog",
+		"POST /api/v1/commerce/handheld/quotes",
+		"GET /api/v1/commerce/handheld/projects",
+		"POST /api/v1/commerce/handheld/projects",
+		"GET /api/v1/commerce/handheld/projects/:id",
+		"PUT /api/v1/commerce/handheld/projects/:id/draft",
+		"POST /api/v1/commerce/handheld/jobs",
+		"GET /api/v1/commerce/handheld/jobs/:id",
+		"POST /api/v1/commerce/handheld/jobs/:id/cancel",
+		"POST /api/v1/commerce/handheld/items/:id/retry",
+		"POST /api/v1/commerce/handheld/items/:id/save-asset",
+		"GET /api/v1/admin/ecommerce/catalog",
+		"POST /api/v1/admin/ecommerce/catalog",
+		"PATCH /api/v1/admin/ecommerce/catalog/order",
+		"PATCH /api/v1/admin/ecommerce/catalog/:id",
+		"PUT /api/v1/admin/ecommerce/catalog/:id/image",
+		"DELETE /api/v1/admin/ecommerce/catalog/:id",
+		"GET /api/v1/admin/ecommerce/tryon-catalog",
+		"POST /api/v1/admin/ecommerce/tryon-catalog",
+		"PATCH /api/v1/admin/ecommerce/tryon-catalog/order",
+		"PATCH /api/v1/admin/ecommerce/tryon-catalog/:id",
+		"PUT /api/v1/admin/ecommerce/tryon-catalog/:id/image",
+		"DELETE /api/v1/admin/ecommerce/tryon-catalog/:id",
 	}
 	for _, route := range wanted {
 		if !registered[route] {
@@ -58,6 +83,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"GET /api/v1/admin/prompts/asset-audit",
 		"PATCH /api/v1/admin/prompts/:id/asset",
 		"GET /api/v1/gallery",
+		"POST /api/v1/commerce/handheld/items/:id/regenerations",
 	}
 	for _, route := range removed {
 		if registered[route] {

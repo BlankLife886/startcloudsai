@@ -9,6 +9,8 @@ export function CommerceSelect({
   disabled = false,
   placeholder = "请选择",
   ariaLabel = "选择选项",
+  menuMinWidth = 0,
+  treatEmptyAsPlaceholder = false,
 }) {
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -26,6 +28,8 @@ export function CommerceSelect({
   );
   const selectedIndex = normalized.findIndex((item) => item.value === value);
   const selected = normalized[selectedIndex] || null;
+  const isPlaceholder =
+    !selected || (treatEmptyAsPlaceholder && String(selected.value || "") === "");
 
   function positionMenu() {
     if (!triggerRef.current) return;
@@ -40,12 +44,20 @@ export function CommerceSelect({
       110,
       Math.min(264, (placeAbove ? above : below) - gap),
     );
+    const availableWidth = Math.max(120, window.innerWidth - padding * 2);
+    const menuWidth = Math.min(
+      availableWidth,
+      Math.max(rect.width, Number(menuMinWidth) || 0),
+    );
     setStyle({
-      left: Math.min(rect.left, window.innerWidth - rect.width - padding),
+      left: Math.min(
+        Math.max(padding, rect.right - menuWidth),
+        Math.max(padding, window.innerWidth - menuWidth - padding),
+      ),
       top: placeAbove
         ? Math.max(padding, rect.top - Math.min(estimated, maxHeight) - gap)
         : rect.bottom + gap,
-      width: rect.width,
+      width: menuWidth,
       maxHeight,
       transformOrigin: placeAbove ? "bottom center" : "top center",
     });
@@ -113,7 +125,7 @@ export function CommerceSelect({
       <button
         ref={triggerRef}
         type="button"
-        className={`commerce-select-trigger${open ? " is-open" : ""}${selected ? "" : " is-placeholder"}`}
+        className={`commerce-select-trigger${open ? " is-open" : ""}${isPlaceholder ? " is-placeholder" : ""}`}
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="listbox"

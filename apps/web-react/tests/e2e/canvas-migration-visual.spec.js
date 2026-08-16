@@ -5,31 +5,15 @@ import { installVisualBaseline, stabilizeVisualPage } from './helpers/visualBase
 const user = { id: 'canvas-visual-user', email: 'canvas-visual@example.com', username: '画布用户' }
 
 async function stabilizeCanvas(page, marker) {
-  const iframe = page.locator('.canvas-app-frame')
-  const legacyIframe = new URL(page.url()).port === '3103'
-  if (legacyIframe) {
-    await expect(iframe).toBeVisible()
-    await expect(iframe).toHaveClass(/is-ready/)
-    const surface = page.frameLocator('.canvas-app-frame')
-    await expect(surface.locator(marker)).toBeVisible()
-    await surface.locator('head').evaluate((head) => {
-      const style = document.createElement('style')
-      style.textContent = '*,*::before,*::after{animation-duration:0s!important;transition-duration:0s!important}input,textarea{caret-color:transparent!important}'
-      head.appendChild(style)
-    })
-  } else {
-    await expect(page.locator(marker)).toBeVisible()
-  }
+  await expect(page.locator(marker)).toBeVisible()
   await stabilizeVisualPage(page, '.canvas-app-view')
 }
 
-test.describe('Canvas Vue iframe to native React visual contract @visual', () => {
+test.describe('Native React canvas visual contract @visual', () => {
   test.describe.configure({ mode: 'serial' })
 
   test.beforeEach(async ({ page }) => {
     await installVisualBaseline(page)
-    await page.route('http://127.0.0.1:3104/src/**', (route) => route.continue())
-    await page.route('http://127.0.0.1:3105/@fs/**/canvas-react/src/**', (route) => route.continue())
     await page.addInitScript(() => {
       localStorage.removeItem('infinite-canvas:canvas_store')
       indexedDB.deleteDatabase('infinite-canvas')

@@ -2,7 +2,7 @@
 
 星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、UI 设计稿、超高清模型图、游戏美术和 AI 拼图工作台，并包含共享画廊、提示词库、价格页、兑换码钱包与独立运营后台。价格页和只读套餐展示已恢复；支付、订单创建和套餐购买当前在所有环境中停用。
 
-项目由 React 主站、React 无限画布、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
+项目由 React 主站（内置无限画布模块）、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
 
 > UI 产品边界：本项目只面向桌面浏览器，最低支持视口为 `1280x720`，不开发或验收手机/平板适配。具体约束见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
 
@@ -10,8 +10,7 @@
 
 ```text
 .
-├── apps/web-react/ # 用户端：React 19 + Vite
-├── apps/canvas-react/ # 无限画布：React 19 + Zustand
+├── apps/web-react/ # 用户端与内置无限画布：React 19 + Vite + Zustand
 ├── apps/admin/     # 管理端：Vue 3 + Vite + TypeScript + Element Plus
 ├── apps/server/    # API 与 Worker：Go + Gin + pgx + Asynq
 ├── deploy/         # 统一 nginx 网关配置
@@ -23,9 +22,8 @@
 
 | 服务 | 职责 |
 | --- | --- |
-| `gateway` | 唯一入口；`/` 转发用户端，`/canvas-app/` 转发 React 画布资源，`/admin/` 转发管理端，`/api/v1/` 转发 API |
-| `web` | 用户端静态站 |
-| `canvas` | React 无限画布静态站；项目保存、文件和 AI 请求复用站内 API |
+| `gateway` | 唯一入口；`/`（包含 `/canvas`）转发用户端，`/admin/` 转发管理端，`/api/v1/` 转发 API |
+| `web` | 用户端静态站；构建时直接编译无限画布源码，运行时不依赖独立画布服务 |
 | `admin` | 管理端静态站 |
 | `server` | Gin API；启动时自动执行 Goose 数据库迁移 |
 | `worker` | Asynq Worker；执行图片任务和定时维护任务 |
@@ -109,11 +107,6 @@ cd apps/web-react
 npm ci
 npm run dev
 
-# 无限画布独立开发服务：http://localhost:3104/canvas
-cd apps/canvas-react
-npm ci
-npm run dev
-
 # 管理端：http://localhost:3200/admin/
 cd apps/admin
 npm ci
@@ -128,9 +121,8 @@ CI 使用 Node.js 22、Go module 中声明的 Go 版本和 PostgreSQL 17，执�
 
 ```bash
 cd apps/server && go vet ./... && go test ./...
-cd apps/web-react && npm ci && npm run test:domain && npm run build
+cd apps/web-react && npm ci && npm run typecheck:canvas && npm run test:domain && npm run build
 cd apps/admin && npm ci && npm run build
-cd apps/canvas-react && npm ci && npm run typecheck && npm run build
 ```
 
 用户端还提供 Playwright 交互与视觉回归。`cd apps/web-react && npm run test:e2e` 会启动 React Vite 服务并通过路由拦截提供确定性的登录、模型、历史和商品库数据，不依赖真实图片上游。完整说明见 [apps/web-react/README.md](apps/web-react/README.md)。

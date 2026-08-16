@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { Outlet, useLocation } from "react-router";
 import { NavBar } from "./NavBar.jsx";
 import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
+import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
 import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
@@ -23,14 +24,33 @@ const incentiveCanvasRoutes = new Set([
   "/incentive-plans/milestone",
 ]);
 
+const maskedStudioRoutes = new Set([
+  "/ai-illustration-coloring",
+  "/design-workshop",
+  "/model-sheet",
+  "/game-art",
+]);
+
 export function AppShell() {
   const location = useLocation();
   const mainRef = useRef(null);
   const documentScroll = documentScrollRoutes.has(location.pathname);
+  const studioMasked = maskedStudioRoutes.has(location.pathname);
+  const canvasRoute =
+    location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
+
+  useRouteMotion({
+    pathname: location.pathname,
+    rootRef: mainRef,
+  });
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
-  }, [location.pathname]);
+    document.documentElement.classList.toggle(
+      "canvas-entry",
+      canvasRoute,
+    );
+  }, [canvasRoute]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -76,7 +96,7 @@ export function AppShell() {
   if (location.pathname === "/game-art") {
     mainClasses.push("main--game-art");
   }
-  if (location.pathname === "/canvas") {
+  if (canvasRoute) {
     mainClasses.push("main--canvas-app");
   }
   if (location.pathname === "/check-in") mainClasses.push("main--checkin");
@@ -99,9 +119,22 @@ export function AppShell() {
     <AuthPromptProvider>
       <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
         <NavBar />
-        <main ref={mainRef} className={mainClasses.join(" ")}>
+        <main
+          ref={mainRef}
+          className={mainClasses.join(" ")}
+          inert={studioMasked ? true : undefined}
+          aria-hidden={studioMasked || undefined}
+        >
           <Outlet />
         </main>
+        {studioMasked && (
+          <div className="studio-route-mask" data-studio-route-mask role="status">
+            <span className="studio-route-mask__message">
+              <i className="bi bi-tools" aria-hidden="true" />
+              <strong>正在开发中</strong>
+            </span>
+          </div>
+        )}
       </div>
     </AuthPromptProvider>
   );

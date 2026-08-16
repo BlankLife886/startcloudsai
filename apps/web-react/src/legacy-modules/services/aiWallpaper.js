@@ -166,6 +166,14 @@ const DEFAULT_KIND_BY_TYPE = {
   background_remove: 'image-tool-background-remove',
 }
 
+function isCanvasJob(job = {}) {
+  if (String(job.type || '').trim() === 'infinite_canvas') return true
+  const params = job.params && typeof job.params === 'object' ? job.params : {}
+  const source = String(params._source || params.source || job.source || '').trim().toLowerCase()
+  const kind = String(params._kind || params.kind || job.kind || '').trim().toLowerCase()
+  return source === 'react_canvas' || kind.startsWith('canvas-')
+}
+
 // ---------------------------------------------------------------------------
 // URL ↔ R2 key 注册表：新契约用 inputKeys 传参考图，
 // 前端展示用 URL；这里维护双向映射，让「用历史产物当参考图」直接命中 key。
@@ -423,9 +431,10 @@ export async function listServerAiJobs(limit = 30, options = {}) {
     status: String(options.status || '').trim(),
     limit,
     cursor: String(options.cursor || '').trim(),
+    excludeSource: options.excludeSource === undefined ? 'react_canvas' : options.excludeSource,
     signal: options.signal,
   })
-  let jobs = items.map((task) => taskToLegacyJob(task))
+  let jobs = items.map((task) => taskToLegacyJob(task)).filter((job) => !isCanvasJob(job))
   if (options.excludeFailed) {
     jobs = jobs.filter((job) => !['failed', 'cancelled'].includes(job.status))
   }

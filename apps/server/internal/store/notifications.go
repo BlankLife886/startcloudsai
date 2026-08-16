@@ -38,7 +38,11 @@ func CountUnreadNotifications(ctx context.Context, q Q, userID uuid.UUID) (int64
 	err = q.QueryRow(ctx,
 		`SELECT count(*) FROM notifications n
 		 LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = $1
-		 WHERE n.user_id IS NULL AND r.notification_id IS NULL`, userID).Scan(&global)
+		 WHERE n.user_id IS NULL AND r.notification_id IS NULL
+		   AND NOT EXISTS (
+		     SELECT 1 FROM notification_dismissals d
+		     WHERE d.user_id = $1 AND d.notification_id = n.id
+		   )`, userID).Scan(&global)
 	if err != nil {
 		return 0, err
 	}
@@ -47,7 +51,12 @@ func CountUnreadNotifications(ctx context.Context, q Q, userID uuid.UUID) (int64
 
 // ListVisibleNotifications 个人 + 全站合并分页（limit+1 行）。
 func ListVisibleNotifications(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *Cursor) ([]*Notification, error) {
-	sql := `SELECT ` + notificationCols + ` FROM notifications WHERE (user_id = $1 OR user_id IS NULL)`
+	sql := `SELECT ` + notificationCols + ` FROM notifications
+		WHERE (user_id = $1 OR user_id IS NULL)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM notification_dismissals d
+		    WHERE d.user_id = $1 AND d.notification_id = notifications.id
+		  )`
 	args := []any{userID}
 	sql, args = appendCursor(sql, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)
@@ -69,7 +78,12 @@ func ListVisibleNotifications(ctx context.Context, q Q, userID uuid.UUID, limit 
 // ListVisibleNotificationsByIDs 取用户可见的指定通知。
 func ListVisibleNotificationsByIDs(ctx context.Context, q Q, userID uuid.UUID, ids []uuid.UUID) ([]*Notification, error) {
 	rows, err := q.Query(ctx,
-		`SELECT `+notificationCols+` FROM notifications WHERE id = ANY($2) AND (user_id = $1 OR user_id IS NULL)`,
+		`SELECT `+notificationCols+` FROM notifications
+		 WHERE id = ANY($2) AND (user_id = $1 OR user_id IS NULL)
+		   AND NOT EXISTS (
+		     SELECT 1 FROM notification_dismissals d
+		     WHERE d.user_id = $1 AND d.notification_id = notifications.id
+		   )`,
 		userID, ids)
 	if err != nil {
 		return nil, err
@@ -89,7 +103,12 @@ func ListVisibleNotificationsByIDs(ctx context.Context, q Q, userID uuid.UUID, i
 // ListAllVisibleNotifications 全部可见通知（全部已读用）。
 func ListAllVisibleNotifications(ctx context.Context, q Q, userID uuid.UUID) ([]*Notification, error) {
 	rows, err := q.Query(ctx,
-		`SELECT `+notificationCols+` FROM notifications WHERE (user_id = $1 OR user_id IS NULL)`, userID)
+		`SELECT `+notificationCols+` FROM notifications
+		 WHERE (user_id = $1 OR user_id IS NULL)
+		   AND NOT EXISTS (
+		     SELECT 1 FROM notification_dismissals d
+		     WHERE d.user_id = $1 AND d.notification_id = notifications.id
+		   )`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,5 +161,16 @@ func InsertNotificationRead(ctx context.Context, q Q, userID, notificationID uui
 	_, err := q.Exec(ctx,
 		`INSERT INTO notification_reads (user_id, notification_id) VALUES ($1, $2)
 		 ON CONFLICT (user_id, notification_id) DO NOTHING`, userID, notificationID)
+	return err
+}
+
+func ClearUserNotifications(ctx context.Context, q Q, userID uuid.UUID) error {
+	if _, err := q.Exec(ctx, `DELETE FROM notifications WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO notification_dismissals (user_id, notification_id)
+		SELECT $1, id FROM notifications WHERE user_id IS NULL
+		ON CONFLICT (user_id, notification_id) DO NOTHING`, userID)
 	return err
 }

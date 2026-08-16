@@ -277,7 +277,75 @@ test.describe('React authenticated account pages', () => {
       '产物已被用户删除',
     )
     await expect(page.locator('.ch-history-masonry__item')).toHaveCount(3)
+    await expect(page.locator('.ch-page--history')).toHaveAttribute(
+      'data-history-content-motion-state',
+      'entered',
+    )
+    await page.getByRole('button', { name: '表格布局' }).click()
+    await expect(page.locator('.ch-history-table tbody tr')).toHaveCount(3)
+    await expect(page.locator('.ch-page--history')).toHaveAttribute(
+      'data-history-content-motion-state',
+      'entered',
+    )
+    const tableLayout = await page.locator('.ch-history-table-wrap').evaluate((wrapper) => {
+      const preview = wrapper.querySelector('.ch-table-preview .authenticated-image')
+      const actions = wrapper.querySelector('.ch-table-actions')
+      return {
+        wrapperWidth: wrapper.getBoundingClientRect().width,
+        tableWidth: wrapper.querySelector('table').getBoundingClientRect().width,
+        previewPosition: preview ? getComputedStyle(preview).position : '',
+        previewWidth: preview?.getBoundingClientRect().width || 0,
+        actionsRight: actions?.getBoundingClientRect().right || 0,
+        wrapperRight: wrapper.getBoundingClientRect().right,
+      }
+    })
+    expect(tableLayout.tableWidth).toBeLessThanOrEqual(tableLayout.wrapperWidth + 1)
+    expect(tableLayout.previewPosition).toBe('relative')
+    expect(tableLayout.previewWidth).toBeGreaterThanOrEqual(50)
+    expect(tableLayout.actionsRight).toBeLessThanOrEqual(tableLayout.wrapperRight + 1)
+    await page.getByRole('button', { name: '4 列布局' }).click()
+    await expect(page.locator('.ch-history-masonry__item')).toHaveCount(3)
+    await expect(page.locator('.ch-page--history')).toHaveAttribute(
+      'data-history-content-motion-state',
+      'entered',
+    )
     expect(cursorRequests).toBe(1)
+
+    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' })
+    const previewTrigger = page
+      .locator('.ch-history-masonry__item')
+      .filter({ hasText: 'history-delete' })
+      .locator('.ch-card__media')
+    await previewTrigger.click()
+    const previewLayer = page.locator('.ch-preview-layer')
+    await expect(page.getByRole('dialog', { name: '历史记录图片预览' })).toBeVisible()
+    await expect(previewLayer).toHaveAttribute('data-dialog-motion-state', 'entered')
+    await previewLayer.evaluate((node) => {
+      window.__historyPreviewMotionStates = [node.dataset.dialogMotionState]
+      new MutationObserver(() => {
+        window.__historyPreviewMotionStates.push(node.dataset.dialogMotionState)
+      }).observe(node, { attributes: true, attributeFilter: ['data-dialog-motion-state'] })
+    })
+    await page.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(previewLayer).toHaveCount(0)
+    expect(await page.evaluate(() => window.__historyPreviewMotionStates)).toContain('exiting')
+
+    await page.getByRole('button', { name: '清空全部' }).click()
+    const clearDialog = page.getByRole('alertdialog')
+    await expect(clearDialog).toContainText('删除全部历史记录？')
+    await expect(page.locator('.delete-confirm__backdrop')).toHaveAttribute(
+      'data-dialog-motion-state',
+      'entered',
+    )
+    await page.locator('.delete-confirm__backdrop').evaluate((node) => {
+      window.__historyClearMotionStates = [node.dataset.dialogMotionState]
+      new MutationObserver(() => {
+        window.__historyClearMotionStates.push(node.dataset.dialogMotionState)
+      }).observe(node, { attributes: true, attributeFilter: ['data-dialog-motion-state'] })
+    })
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(clearDialog).toHaveCount(0)
+    expect(await page.evaluate(() => window.__historyClearMotionStates)).toContain('exiting')
 
     await page
       .locator('.ch-history-masonry__item')
@@ -289,6 +357,50 @@ test.describe('React authenticated account pages', () => {
       page.locator('.ch-history-masonry__item').filter({ hasText: 'history-delete' }),
     ).toHaveCount(0)
     expect(deletedIds).toEqual(['history-delete'])
+  })
+
+  test('history table becomes a stable mobile list without horizontal overflow', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.route('**/api/v1/auth/session', (route) =>
+      fulfillJson(route, { user: account }),
+    )
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, {
+        items: [
+          historyTask('history-mobile', {
+            prompt:
+              '一段用于验证小屏列表布局不会挤压操作按钮和作品缩略图的较长历史提示词',
+          }),
+        ],
+        nextCursor: null,
+      }),
+    )
+    await page.goto('/history', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '表格布局' }).click()
+
+    const row = page.locator('.ch-history-table tbody tr').first()
+    await expect(row).toBeVisible()
+    const layout = await row.evaluate((node) => {
+      const rect = node.getBoundingClientRect()
+      const actions = node.querySelector('.ch-table-actions')?.getBoundingClientRect()
+      const prompt = node.querySelector('.is-prompt')?.getBoundingClientRect()
+      return {
+        rowLeft: rect.left,
+        rowRight: rect.right,
+        viewportWidth: document.documentElement.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        actionsLeft: actions?.left || 0,
+        actionsRight: actions?.right || 0,
+        promptRight: prompt?.right || 0,
+      }
+    })
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+    expect(layout.rowLeft).toBeGreaterThanOrEqual(0)
+    expect(layout.rowRight).toBeLessThanOrEqual(layout.viewportWidth)
+    expect(layout.promptRight).toBeLessThanOrEqual(layout.actionsLeft)
+    expect(layout.actionsRight).toBeLessThanOrEqual(layout.rowRight)
   })
 
   test('a pending history request does not block client-side navigation', async ({ page }) => {
@@ -354,6 +466,7 @@ test.describe('React authenticated account pages', () => {
   })
 
   test('wallet redeems an uppercase code and synchronizes the header balance', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' })
     let currentWallet = { ...walletSnapshot }
     let redemptionBody = null
     await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: account }))
@@ -378,10 +491,19 @@ test.describe('React authenticated account pages', () => {
     await page.goto('/wallet', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.wallet-aside__cta').getByRole('button', { name: '兑换' }).click()
+    await expect(page.locator('.redeem-dialog-layer')).toHaveAttribute(
+      'data-dialog-motion-state',
+      'entered',
+    )
+    await expect(page.getByRole('textbox', { name: '兑换码' })).toBeFocused()
     await page.getByRole('textbox', { name: '兑换码' }).fill('sc-abcd-1234-efgh')
     await page.getByRole('button', { name: '立即兑换' }).click()
 
     await expect(page.getByRole('button', { name: '兑换中…' })).toBeDisabled()
+    await expect(page.locator('.redeem-dialog-layer')).toHaveAttribute(
+      'data-dialog-motion-state',
+      'exiting',
+    )
     await expect(page.locator('.redeem-dialog')).toHaveCount(0)
     await expect(page.locator('.wallet-aside__amount strong')).toHaveText('1,520')
     await expect(page.locator('.account-cluster__value')).toHaveText('1,520')
@@ -795,11 +917,19 @@ test.describe('React authenticated account pages', () => {
       }
       await fulfillJson(route, { items: firstPage, nextCursor: 'materials-page-2' })
     })
-    await page.goto('/materials', { waitUntil: 'domcontentloaded' })
+    await page.goto('/assets', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.ml-card')).toHaveCount(2)
+    await expect(page.locator('.ml-page')).toHaveAttribute(
+      'data-assets-content-motion-state',
+      'entered',
+    )
     await page.getByRole('button', { name: '加载更多' }).click()
     await expect(page.locator('.ml-card')).toHaveCount(3)
+    await expect(page.locator('.ml-page')).toHaveAttribute(
+      'data-assets-content-motion-state',
+      'entered',
+    )
     expect(cursorRequests).toBe(1)
 
     await page.locator('.ml-card').first().locator('.ml-card__cover').click()
@@ -813,7 +943,7 @@ test.describe('React authenticated account pages', () => {
     const logoCard = page.locator('.ml-card').filter({ hasText: '品牌素材 asset-logo' })
     await logoCard.hover()
     await logoCard.getByTitle('编辑').click()
-    await page.getByPlaceholder('素材标题').fill('新版品牌标志')
+    await page.getByPlaceholder('资产标题').fill('新版品牌标志')
     await page.locator('.ml-edit__form select').selectOption(group.id)
     await page.locator('.ml-edit__form').getByRole('button', { name: '保存' }).click()
     await expect(page.locator('.ml-card').filter({ hasText: '新版品牌标志' })).toBeVisible()
@@ -825,6 +955,11 @@ test.describe('React authenticated account pages', () => {
     await page.getByRole('button', { name: '确认删除' }).click()
     await expect(pageTwoCard).toHaveCount(0)
     expect(deletedIds).toEqual(['asset-page-2'])
+  })
+
+  test('legacy materials route redirects to the global assets page', async ({ page }) => {
+    await page.goto('/materials', { waitUntil: 'domcontentloaded' })
+    await expect(page).toHaveURL(/\/assets$/)
   })
 
   test('materials create a group and upload an image into it', async ({ page }) => {
@@ -875,7 +1010,7 @@ test.describe('React authenticated account pages', () => {
       }
       await fulfillJson(route, { items: [], nextCursor: null })
     })
-    await page.goto('/materials', { waitUntil: 'domcontentloaded' })
+    await page.goto('/assets', { waitUntil: 'domcontentloaded' })
 
     await page.getByRole('button', { name: /新建分组/ }).click()
     await page.getByRole('textbox', { name: '新建分组名称' }).fill('产品图')
@@ -883,7 +1018,7 @@ test.describe('React authenticated account pages', () => {
     await expect(page.getByRole('button', { name: /产品图/ })).toHaveClass(/is-active/)
     expect(createGroupBody).toEqual({ name: '产品图' })
 
-    await page.getByRole('button', { name: /添加素材/ }).click()
+    await page.getByRole('button', { name: /添加资产/ }).click()
     await page.locator('input[type="file"]').setInputFiles({
       name: '产品主图.png',
       mimeType: 'image/png',
@@ -918,7 +1053,7 @@ test.describe('React authenticated account pages', () => {
       await new Promise((resolve) => setTimeout(resolve, 20_000))
       await fulfillJson(route, { items: [], nextCursor: null }).catch(() => null)
     })
-    await page.goto('/materials', { waitUntil: 'domcontentloaded' })
+    await page.goto('/assets', { waitUntil: 'domcontentloaded' })
     await requestStarted
 
     const startedAt = Date.now()
@@ -1062,7 +1197,7 @@ test.describe('React authenticated account pages', () => {
     expect(Date.now() - startedAt).toBeLessThan(700)
 
     await page.goto('/profile?tab=materials', { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(/\/materials$/)
+    await expect(page).toHaveURL(/\/assets$/)
   })
 
   test('incentive group joins, shares, and creates through the existing growth contract', async ({

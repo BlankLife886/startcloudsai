@@ -82,7 +82,7 @@ func (e *Engine) CreateFileImportBatch(ctx context.Context, input []FilePrompt, 
 			title = fmt.Sprintf("导入提示词 %d", index+1)
 		}
 		taskType := strings.TrimSpace(raw.TaskType)
-		if !store.Contains(store.TaskTypes, taskType) {
+		if !store.Contains(store.PromptTaskTypes, taskType) {
 			taskType = "t2i"
 		}
 		tags := mergeTags(nil, raw.Tags, 12)

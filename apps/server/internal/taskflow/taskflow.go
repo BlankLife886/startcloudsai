@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -100,6 +101,11 @@ type CreateInput struct {
 	Count          int
 	IdempotencyKey *string
 }
+
+// CreateTaskCommitHook runs inside the task creation transaction after the
+// task and its wallet freeze have been persisted. Returning an error rolls the
+// entire task creation back.
+type CreateTaskCommitHook func(context.Context, pgx.Tx, *store.Task, bool) error
 
 func taskUploadReferenceKeys(inputKeys []string, params map[string]any) []string {
 	keys := append([]string(nil), inputKeys...)
@@ -213,6 +219,16 @@ func validateAndLockTaskInputReferences(ctx context.Context, q store.Q, userID u
 
 // CreateTask 校验 + 冻结 + 建任务（单事务）。返回 (task, created)。
 func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in CreateInput) (*store.Task, bool, error) {
+	return createTask(ctx, st, userID, in, nil)
+}
+
+// CreateTaskWithCommitHook lets a domain record be attached atomically to a
+// newly created task. Callers should use a unique idempotency key per attempt.
+func CreateTaskWithCommitHook(ctx context.Context, st *store.Store, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook) (*store.Task, bool, error) {
+	return createTask(ctx, st, userID, in, hook)
+}
+
+func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook) (*store.Task, bool, error) {
 	if !store.Contains(store.TaskTypes, in.Type) {
 		return nil, false, apperr.E("validation_error", "不支持的任务类型", 422)
 	}
@@ -244,6 +260,9 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 				if err := store.AddUserUploadReferences(ctx, tx, userID, store.UploadReferenceTaskInput,
 					existing.ID, taskUploadReferenceKeys(existing.InputKeys, existing.Params)); err != nil {
 					return err
+				}
+				if hook != nil {
+					return hook(ctx, tx, task, false)
 				}
 				return nil
 			}
@@ -322,6 +341,10 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			requestedModelID = ""
 		}
 		workspace, workspaceMapped := modelconfig.WorkspaceForTaskType(in.Type)
+		if stringParam(in.Params, "_source") == "react_canvas" {
+			workspace = modelconfig.WorkspaceCanvas
+			workspaceMapped = true
+		}
 		var selection *modelconfig.Selection
 		var configured bool
 		if isBackgroundRemove {
@@ -478,6 +501,9 @@ func CreateTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			}
 		}
 		created = true
+		if hook != nil {
+			return hook(ctx, tx, task, true)
+		}
 		return nil
 	})
 	if err != nil {
@@ -536,8 +562,8 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 			}
 		}
 		if notify {
-			body := fmt.Sprintf("你的「%s」任务已被管理员取消，费用已退回。", t.Type)
-			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", "任务已取消", &body); err != nil {
+			body := taskNotifyName(t) + "已被管理员取消，费用已退回。"
+			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", taskNotifyName(t)+"已取消", &body); err != nil {
 				return err
 			}
 		}
@@ -675,19 +701,96 @@ func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 	return true, nil
 }
 
+// TaskDisplayName 用户可读的任务名称，画布来源显示为无限画布而不是文生图。
+func TaskDisplayName(task *store.Task) string {
+	return taskNotifyName(task)
+}
+
+func taskNotifyName(task *store.Task) string {
+	if task == nil {
+		return "图片生成"
+	}
+	source := stringParam(task.Params, "_source")
+	kind := stringParam(task.Params, "_kind")
+	if source == "react_canvas" || strings.HasPrefix(kind, "canvas-") {
+		if kind == "canvas-background-remove" {
+			return "画布去背"
+		}
+		return "无限画布"
+	}
+	switch task.Type {
+	case "t2i":
+		return "文生图"
+	case "coloring":
+		return "插画染色"
+	case "ui_design":
+		return "UI 设计稿"
+	case "ecommerce_design":
+		return "AI 电商"
+	case "model_sheet":
+		return "模型设计"
+	case "game_art":
+		return "游戏设计"
+	case "puzzle":
+		return "拼图"
+	case "background_remove":
+		return "背景移除"
+	case "assistant":
+		return "AI 助手"
+	default:
+		return "图片生成"
+	}
+}
+
 // NotifyTaskSucceeded 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
 func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, imageCount int) {
-	body := fmt.Sprintf("你的「%s」任务已生成 %d 张图片。", task.Type, imageCount)
-	if err := store.InsertNotification(ctx, q, &task.UserID, "task", "任务已完成", &body); err != nil {
+	name := taskNotifyName(task)
+	body := fmt.Sprintf("%s已生成 %d 张图片。", name, imageCount)
+	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"已完成", &body); err != nil {
 		log.Printf("notify task %s succeeded: %v", task.ID, err)
 	}
 }
 
 // NotifyTaskFailed 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
 func NotifyTaskFailed(ctx context.Context, q store.Q, task *store.Task) {
-	body := fmt.Sprintf("你的「%s」任务执行失败，费用已退回。", task.Type)
-	if err := store.InsertNotification(ctx, q, &task.UserID, "task", "任务失败", &body); err != nil {
+	name := taskNotifyName(task)
+	body := name + "执行失败，费用已退回。"
+	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"失败", &body); err != nil {
 		log.Printf("notify task %s failed: %v", task.ID, err)
+	}
+}
+
+var generatedCountPattern = regexp.MustCompile(`已生成\s*(\d+)\s*张`)
+
+// ApplyTaskNotificationDisplay 把历史「t2i」通知改成可读任务名（无限画布 / 文生图）。
+func ApplyTaskNotificationDisplay(n *store.Notification, task *store.Task) {
+	if n == nil || task == nil {
+		return
+	}
+	name := taskNotifyName(task)
+	title := strings.TrimSpace(n.Title)
+	body := ""
+	if n.Body != nil {
+		body = *n.Body
+	}
+	switch {
+	case strings.Contains(title, "取消") || strings.Contains(body, "取消"):
+		n.Title = name + "已取消"
+		text := name + "已被管理员取消，费用已退回。"
+		n.Body = &text
+	case strings.Contains(title, "失败") || strings.Contains(body, "失败"):
+		n.Title = name + "失败"
+		text := name + "执行失败，费用已退回。"
+		n.Body = &text
+	default:
+		n.Title = name + "已完成"
+		if match := generatedCountPattern.FindStringSubmatch(body); len(match) == 2 {
+			text := fmt.Sprintf("%s已生成 %s 张图片。", name, match[1])
+			n.Body = &text
+		} else {
+			text := name + "已生成图片。"
+			n.Body = &text
+		}
 	}
 }
 

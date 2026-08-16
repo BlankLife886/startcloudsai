@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
+import { useRef } from "react";
+import { DialogMotion } from "./motion/DialogMotion.jsx";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/DeleteHistoryConfirmDialog.css";
 
 export function ConfirmDialog({
@@ -16,43 +16,28 @@ export function ConfirmDialog({
   onConfirm,
 }) {
   const cancelRef = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    cancelRef.current?.focus();
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && !busy) {
-        event.preventDefault();
-        onClose?.();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [busy, onClose, open]);
-  if (!open) return null;
-  return createPortal(
-    <div
-      className={`delete-confirm__backdrop${light ? " is-light" : ""}`}
-      onMouseDown={(event) =>
-        event.target === event.currentTarget && !busy && onClose?.()
-      }
+  return (
+    <DialogMotion
+      open={open}
+      layerClassName={`delete-confirm__backdrop${light ? " is-light" : ""}`}
+      panelClassName="delete-confirm__dialog"
+      role="alertdialog"
+      ariaLabelledby="delete-confirm-title"
+      ariaDescribedby="delete-confirm-description"
+      initialFocusRef={cancelRef}
+      closeDisabled={busy}
+      onClose={onClose}
     >
-      <section
-        className="delete-confirm__dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="delete-confirm-title"
-        aria-describedby="delete-confirm-description"
-      >
-        <div className={`delete-confirm__icon is-${tone}`} aria-hidden="true">
+        <div className={`delete-confirm__icon is-${tone}`} aria-hidden="true" data-dialog-motion-item>
           <i className={`bi ${icon}`} />
         </div>
-        <div className="delete-confirm__copy">
+        <div className="delete-confirm__copy" data-dialog-motion-item>
           <h2 id="delete-confirm-title">{heading}</h2>
           <p id="delete-confirm-description">
             {description || "删除后将无法恢复"}
           </p>
         </div>
-        <footer className="delete-confirm__actions">
+        <footer className="delete-confirm__actions" data-dialog-motion-item>
           <button
             ref={cancelRef}
             type="button"
@@ -74,8 +59,6 @@ export function ConfirmDialog({
             {busy ? busyLabel : confirmLabel}
           </button>
         </footer>
-      </section>
-    </div>,
-    document.body,
+    </DialogMotion>
   );
 }

@@ -26,6 +26,7 @@ import {
   saveCompressResultBlob,
 } from "@react/legacy-modules/features/image-compress/compressHistory.js";
 import "@react/legacy-styles/generated/views/ImageCompressView.css";
+import { useIsDark } from "../hooks/useIsDark.js";
 
 function Icon({ name, className = "" }) {
   return <i className={`bi bi-${name}${className ? ` ${className}` : ""}`} aria-hidden="true" />;
@@ -95,6 +96,7 @@ function formatHistoryTime(value) {
 }
 
 export function ImageCompressView() {
+  const isDark = useIsDark();
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [compressMode, setCompressMode] = useState("lossy");
@@ -406,7 +408,7 @@ export function ImageCompressView() {
   };
 
   return (
-    <main className={`ic${compressing ? " is-busy" : ""}`}>
+    <main className={`ic${isDark ? " is-dark" : ""}${compressing ? " is-busy" : ""}`}>
       <div className="ic-glow" aria-hidden="true" />
       <header className="ic-header">
         <div className="ic-header__copy">

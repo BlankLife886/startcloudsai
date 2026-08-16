@@ -17,7 +17,7 @@ gsap.registerPlugin(useGSAP);
 const LEGACY_TABS = {
   works: "/history",
   notifications: "/notifications",
-  materials: "/materials",
+  materials: "/assets",
   submissions: "/submissions",
   wallet: "/wallet",
   account: "/account",
@@ -334,10 +334,10 @@ export function ProfileView() {
               </div>
             </aside>
             <div className="pp-soft-stats">
-              <Link to="/materials" className="pp-soft-stat">
+              <Link to="/assets" className="pp-soft-stat">
                 <small>To do</small>
                 <strong>{materialCount}</strong>
-                <span>素材库</span>
+                <span>我的资产</span>
               </Link>
               <Link to="/notifications" className="pp-soft-stat">
                 <small>On going</small>

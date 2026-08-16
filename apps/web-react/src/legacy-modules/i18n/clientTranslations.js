@@ -1,7 +1,7 @@
 const EN = {
   首页: 'Home',
   创作台: 'Studio',
-  智能画布: 'Canvas',
+  无限画布: 'Infinite Canvas',
   图片设计: 'Design',
   提示词: 'Prompts',
   历史记录: 'History',
@@ -185,6 +185,12 @@ const EN = {
   已执行: 'Done',
   会话资产: 'This chat',
   全部资产: 'All assets',
+  搜索标题或分组: 'Search title or group',
+  重复: 'Duplicate',
+  重复项: 'Duplicates',
+  没有匹配的资产: 'No matching assets',
+  '换个关键词试试，或清空筛选。': 'Try another keyword, or clear filters.',
+  清空筛选: 'Clear filters',
   关闭资产库: 'Close library',
   搜索图片资产: 'Search images',
   没有匹配的图片资产: 'No matching images',
@@ -260,6 +266,13 @@ const EN = {
   全部: 'All',
   未分组: 'Ungrouped',
   新建分组: 'New group',
+  编辑分组: 'Edit group',
+  取消编辑分组: 'Cancel editing group',
+  '例如：产品图': 'e.g. Product shots',
+  '最多 50 个分组，创建后可把资产移入其中。':
+    'Up to 50 groups. Move assets into them after creating.',
+  '当前 {count} 项资产。删除分组不会删除资产，只会移到未分组。':
+    'This group has assets. Deleting it only ungroups them.',
   分组名称: 'Group name',
   创建: 'Create',
   取消: 'Cancel',
@@ -408,6 +421,15 @@ const EN = {
   账本明细: 'Transactions',
   暂无通知: 'No notifications',
   全部已读: 'Mark all read',
+  清空: 'Clear',
+  通知已清空: 'Inbox cleared',
+  清空失败: 'Could not clear inbox',
+  清空通知失败: 'Could not clear inbox',
+  '清空全部通知？': 'Clear all notifications?',
+  '个人通知会删除，全站公告只对你隐藏。之后的新消息仍会进来。':
+    'Personal messages will be deleted. Site-wide notices are only hidden for you. New messages will still arrive.',
+  确认清空: 'Clear inbox',
+  '清空中…': 'Clearing…',
   搜索: 'Search',
   状态: 'Status',
   类型: 'Type',
@@ -1491,6 +1513,13 @@ Object.assign(EN, {
   查看全部通知: 'View all notifications',
   暂无新通知: 'No new notifications',
   暂无未读: 'No unread',
+  暂无此类通知: 'Nothing in this category',
+  '当前消息都已读完，可切回全部查看历史通知。':
+    'Everything is read. Switch back to All to browse earlier messages.',
+  '这一类暂时没有消息，可切回全部继续查看。':
+    'Nothing here yet. Switch back to All to keep browsing.',
+  试用: 'Trial',
+  审核: 'Review',
   通知预览: 'Notification preview',
   刚刚: 'Just now',
   今天: 'Today',
@@ -1553,7 +1582,13 @@ Object.assign(EN, {
   真实增强: 'Enhance',
   'AI 虚拟试衣': 'AI virtual try-on',
   手持商品图: 'Handheld product',
-  'AI 饰品穿戴': 'AI accessory try-on',
+  'AI 饰品穿戴': 'AI accessory wear',
+  '珠宝眼镜腕表真实佩戴': 'Real jewelry, glasses & watch wear',
+  '为耳饰、项链、戒指、手链、胸针、发饰、腕表和眼镜生成真人佩戴商业图。':
+    'Generate real-model wear shots for earrings, necklaces, rings, bracelets, brooches, hairpieces, watches, and glasses.',
+  '饰品身份参考': 'Accessory identity references',
+  '第 1 张饰品图必填；模特与场景可选':
+    'Product image required; model and scene optional',
   背景复刻: 'Backdrop transfer',
   'AI 商品阴影': 'AI product shadow',
   爆款图复刻: 'Best-seller recreation',
@@ -1636,6 +1671,15 @@ Object.assign(EN, {
   '规格、包装、细节智能匹配': 'Smart-match specs, packaging, and details',
   结构完整: 'Structure complete',
   '需要分配满 7 张': 'Allocate all 7 images',
+  套图已满: 'Set complete',
+  可以生成: 'Ready to generate',
+  '至少分配 1 张': 'Assign at least 1 image',
+  '请至少分配 1 张套图': 'Assign at least 1 image',
+  生成失败: 'Generation failed',
+  '请重试这一张': 'Retry this image',
+  重试: 'Retry',
+  '生成失败，请检查网络后重试': 'Generation failed. Check the network and retry.',
+  '重新生成失败，请重试': 'Regeneration failed. Please retry.',
   复刻类型: 'Recreation type',
   电商商品图: 'E-commerce product image',
   服饰电商图: 'Fashion e-commerce image',
@@ -2025,7 +2069,7 @@ Object.assign(EN, {
 
 const TW_PHRASES = {
   画布: '畫布',
-  智能画布: '智能畫布',
+  无限画布: '無限畫布',
   图片设计: '圖片設計',
   背景移除: '背景移除',
   无损压缩: '無損壓縮',
@@ -2090,7 +2134,18 @@ const TW_PHRASES = {
   分组: '分組',
   全部: '全部',
   未分组: '未分組',
+  搜索标题或分组: '搜尋標題或分組',
+  重复: '重複',
+  重复项: '重複項',
+  没有匹配的资产: '沒有符合的資產',
+  '换个关键词试试，或清空筛选。': '換個關鍵詞試試，或清空篩選。',
+  清空筛选: '清空篩選',
   新建分组: '新建分組',
+  编辑分组: '編輯分組',
+  取消编辑分组: '取消編輯分組',
+  '例如：产品图': '例如：產品圖',
+  '最多 50 个分组，创建后可把资产移入其中。':
+    '最多 50 個分組，建立後可把資產移入其中。',
   分组名称: '分組名稱',
   创建: '建立',
   取消: '取消',
@@ -2455,7 +2510,7 @@ const TW_CHARS = {
   约: '約',
   组: '組',
   档: '檔',
-  布: '佈',
+  布: '布',
   原: '原',
   优: '優',
   化: '化',
@@ -2528,6 +2583,7 @@ const TW_CHARS = {
   并: '並',
   将: '將',
   仅: '僅',
+  让: '讓',
 }
 
 function traditionalize(text) {
@@ -2756,3 +2812,28 @@ export function translateClientText(source, locale) {
 export function translateClientAttribute(source, locale) {
   return translateClientText(source, locale)
 }
+
+export function translateClientDictionary(source, locale) {
+  if (typeof source === 'string') return translateClientText(source, locale)
+  if (Array.isArray(source)) {
+    return source.map((item) => translateClientDictionary(item, locale))
+  }
+  if (!source || typeof source !== 'object') return source
+  return Object.fromEntries(
+    Object.entries(source).map(([key, value]) => [
+      key,
+      translateClientDictionary(value, locale),
+    ]),
+  )
+}
+
+// Public dictionary registry. Consumers should normally use translateClientText;
+// this export keeps all three language sources discoverable from one entry point.
+export const CLIENT_TRANSLATION_DICTIONARIES = Object.freeze({
+  'zh-CN': Object.freeze({}),
+  en: Object.freeze(EN),
+  'zh-TW': Object.freeze({
+    phrases: Object.freeze(TW_PHRASES),
+    characters: Object.freeze(TW_CHARS),
+  }),
+})

@@ -79,3 +79,36 @@ func TestUserUploadReferencesProtectSharedObjectsUntilLastRelease(t *testing.T) 
 		t.Fatal("claimed object was not marked deleted")
 	}
 }
+
+func TestGetUserAssetByFileKeyIsUserScoped(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	owner, err := store.InsertUser(ctx, st.Pool, "asset-owner-"+uuid.NewString()+"@example.com", "", "", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.InsertUser(ctx, st.Pool, "asset-other-"+uuid.NewString()+"@example.com", "", "", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileKey := "uploads/" + owner.ID.String() + "/original/handheld-source.png"
+	inserted, err := store.InsertUserAsset(ctx, st.Pool, owner.ID, "手持商品", fileKey,
+		"uploads/"+owner.ID.String()+"/thumb/handheld-source.jpg", "image/png", 128, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.GetUserAssetByFileKey(ctx, st.Pool, owner.ID, fileKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || found.ID != inserted.ID {
+		t.Fatalf("asset lookup = %#v, want %s", found, inserted.ID)
+	}
+	missing, err := store.GetUserAssetByFileKey(ctx, st.Pool, other.ID, fileKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != nil {
+		t.Fatalf("cross-user asset lookup leaked %#v", missing)
+	}
+}

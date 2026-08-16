@@ -20,12 +20,20 @@ import (
 )
 
 const (
-	maxResponseBytes   int64 = 64 << 20
-	maxImageBytes      int64 = 20 << 20
-	asyncSubmitTimeout       = 30 * time.Second
-	asyncPollTimeout         = 15 * time.Second
-	asyncPollInterval        = 2 * time.Second
+	maxResponseBytes        int64 = 64 << 20
+	maxImageBytes           int64 = 20 << 20
+	asyncSubmitTimeout            = 30 * time.Second
+	asyncPollTimeout              = 15 * time.Second
+	asyncPollInterval             = 2 * time.Second
+	maxImageDownloadTimeout       = 3 * time.Minute
 )
+
+func imageDownloadTimeout(configured time.Duration) time.Duration {
+	if configured <= 0 || configured > maxImageDownloadTimeout {
+		return maxImageDownloadTimeout
+	}
+	return configured
+}
 
 // UpstreamError 上游返回的业务错误（不重试）。
 type UpstreamError struct {
@@ -279,10 +287,7 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 	if sameOrigin {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	timeout := c.Timeout
-	if timeout <= 0 || timeout > time.Minute {
-		timeout = time.Minute
-	}
+	timeout := imageDownloadTimeout(c.Timeout)
 	resp, err := netguard.NewHTTPClient(timeout, c.AllowPrivate, false).Do(req)
 	if err != nil {
 		return "", &NetworkError{Message: fmt.Sprintf("下载上游图片失败：%v", err)}
@@ -353,10 +358,41 @@ func imageTaskResults(task imageTask) []map[string]any {
 	return task.Results
 }
 
+func normalizedImageTaskStatus(task imageTask) string {
+	return strings.ToLower(strings.TrimSpace(task.Status))
+}
+
+func imageTaskStatusPending(status string) bool {
+	switch status {
+	case "", "queued", "pending", "running", "processing", "in_progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func imageTaskStatusSucceeded(status string) bool {
+	switch status {
+	case "success", "succeeded", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func imageTaskStatusFailed(status string) bool {
+	switch status {
+	case "error", "failed", "canceled", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expected int) ([]string, bool, error) {
-	status := strings.ToLower(strings.TrimSpace(task.Status))
+	status := normalizedImageTaskStatus(task)
 	results := imageTaskResults(task)
-	if len(results) > 0 && (status == "success" || status == "error" || len(results) >= expected) {
+	if len(results) > 0 && (imageTaskStatusSucceeded(status) || imageTaskStatusFailed(status) || len(results) >= expected) {
 		images, err := c.taskImagesB64(ctx, results)
 		if err != nil {
 			return nil, true, err
@@ -365,16 +401,16 @@ func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expect
 			return images, true, nil
 		}
 	}
-	switch status {
-	case "queued", "running", "":
+	if imageTaskStatusPending(status) {
 		return nil, false, nil
-	case "success":
-		return nil, true, &UpstreamError{Message: "上游图片任务成功但未返回图片", StatusCode: http.StatusBadGateway}
-	case "error":
-		return nil, true, imageTaskError(task)
-	default:
-		return nil, true, &UpstreamError{Message: "上游返回未知图片任务状态：" + status, StatusCode: http.StatusBadGateway}
 	}
+	if imageTaskStatusSucceeded(status) {
+		return nil, true, &UpstreamError{Message: "上游图片任务成功但未返回图片", StatusCode: http.StatusBadGateway}
+	}
+	if imageTaskStatusFailed(status) {
+		return nil, true, imageTaskError(task)
+	}
+	return nil, true, &UpstreamError{Message: "上游返回未知图片任务状态：" + status, StatusCode: http.StatusBadGateway}
 }
 
 func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, error) {
@@ -603,7 +639,7 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 			images, done, taskErr := c.completedTaskImages(ctx, task, expected[task.ID])
 			emit(task.ID, ImageTaskPollResult{
 				Images: images, Pending: !done,
-				ExplicitFailure: strings.EqualFold(strings.TrimSpace(task.Status), "error"),
+				ExplicitFailure: imageTaskStatusFailed(normalizedImageTaskStatus(task)),
 				Err:             taskErr,
 			})
 		}
@@ -623,8 +659,8 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 }
 
 func imageTaskNeedsCompletionClaim(task imageTask, expected int) bool {
-	status := strings.ToLower(strings.TrimSpace(task.Status))
-	if status != "" && status != "queued" && status != "running" {
+	status := normalizedImageTaskStatus(task)
+	if !imageTaskStatusPending(status) {
 		return true
 	}
 	results := imageTaskResults(task)

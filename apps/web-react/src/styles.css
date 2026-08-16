@@ -5,6 +5,11 @@
   font-synthesis: none;
 }
 
+:root.color-scheme-dark {
+  color: #f0f2f1;
+  background: #0d100f;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -18,6 +23,74 @@ body {
 #root {
   width: 100%;
   min-height: 100vh;
+}
+
+.main-content[data-route-motion-state="entering"] > [data-route-motion-target] {
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-content > [data-route-motion-target] {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+  }
+}
+
+html.settings-no-animations .main-content > [data-route-motion-target] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+}
+
+[data-content-reveal-state="entering"] [data-content-reveal-target],
+[data-history-content-motion-state="entering"] [data-content-reveal-target],
+[data-assets-content-motion-state="entering"] [data-content-reveal-target],
+[data-t2i-prompts-motion-state="entering"] [data-content-reveal-target],
+[data-t2i-history-motion-state="entering"] [data-content-reveal-target],
+[data-t2i-assets-motion-state="entering"] [data-content-reveal-target],
+[data-commerce-library-motion-state="entering"] [data-content-reveal-target],
+[data-products-content-motion-state="entering"] [data-content-reveal-target] {
+  will-change: opacity;
+}
+
+.studio-route-mask {
+  position: fixed;
+  z-index: 2990;
+  top: var(--app-header-offset, 82px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 11, 18, 0.58);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  cursor: not-allowed;
+  touch-action: none;
+}
+
+.studio-route-mask__message {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.studio-route-mask__message i {
+  color: rgba(255, 255, 255, 0.54);
+  font-size: clamp(1.4rem, 2vw, 1.9rem);
+}
+
+.studio-route-mask__message strong {
+  font-family: "Songti SC", "Noto Serif SC", "STSong", Georgia, serif;
+  font-size: clamp(1.8rem, 3.4vw, 3rem);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.24);
 }
 
 .app-container > .main-content.main--image-compress {
@@ -53,7 +126,17 @@ body {
 }
 
 .app-container > .main-content.main--incentives {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-height: 100dvh;
   padding-bottom: 0;
+  overflow: hidden;
+}
+
+.app-container > .main-content.main--incentives > * {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .feedback-page .ps-board {

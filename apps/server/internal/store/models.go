@@ -7,9 +7,17 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	PromptTaskTypeCanvas    = "infinite_canvas"
+	PromptTaskTypeAssistant = "assistant"
+	CanvasTaskSource        = "react_canvas"
+)
+
 var (
 	TaskTypes          = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove"}
+	PromptTaskTypes    = append(append([]string{}, TaskTypes...), PromptTaskTypeCanvas, PromptTaskTypeAssistant)
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
+	AdminTaskFilters   = append(append([]string{}, AdminTaskTypes...), PromptTaskTypeCanvas)
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
 	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
@@ -79,6 +87,119 @@ type EcommerceProduct struct {
 }
 
 func (p *EcommerceProduct) CursorKey() (time.Time, uuid.UUID) { return p.UpdatedAt, p.ID }
+
+type EcommerceAssetReview struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	TaskID     uuid.UUID
+	Status     string
+	Checklist  map[string]any
+	Note       string
+	Channel    string
+	ReviewedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type EcommerceTryonCatalogItem struct {
+	ID        uuid.UUID
+	Kind      string
+	Label     string
+	ImageKey  string
+	Apparel   string
+	Metadata  map[string]any
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type EcommerceHandheldCatalogItem struct {
+	ID        uuid.UUID
+	Kind      string
+	Label     string
+	ImageKey  string
+	Metadata  map[string]any
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type EcommerceHandheldProject struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	ProductID       *uuid.UUID
+	Name            string
+	ProductSnapshot map[string]any
+	Draft           map[string]any
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type EcommerceHandheldBatch struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	ProjectID       *uuid.UUID
+	ProductID       *uuid.UUID
+	ParentBatchID   *uuid.UUID
+	Status          string
+	ModelID         string
+	ProductSnapshot map[string]any
+	JobSpec         map[string]any
+	ItemCount       int
+	TotalCostCents  int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type EcommerceHandheldItem struct {
+	ID           uuid.UUID
+	BatchID      uuid.UUID
+	UserID       uuid.UUID
+	TaskID       *uuid.UUID
+	ParentItemID *uuid.UUID
+	ItemIndex    int
+	Label        string
+	Prompt       string
+	ShotSpec     map[string]any
+	Status       string
+	QAStatus     string
+	ReviewStatus string
+	ReviewNote   string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type EcommerceHandheldInput struct {
+	ID        uuid.UUID
+	BatchID   uuid.UUID
+	ItemID    *uuid.UUID
+	Role      string
+	ObjectKey string
+	Ordinal   int
+	CreatedAt time.Time
+}
+
+type EcommerceHandheldQualityReport struct {
+	ID        uuid.UUID
+	ItemID    uuid.UUID
+	Status    string
+	Detector  string
+	Checks    []map[string]any
+	Score     *float64
+	Summary   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+var EcommerceHandheldCatalogKinds = []string{"model", "scene", "hand"}
+var EcommerceHandheldInputRoles = []string{"product_front", "product_side", "product_back", "logo_detail", "colorway", "hand_or_model", "scene", "layout"}
+
+var EcommerceCatalogKinds = []string{"model", "scene", "garment", "hand"}
+var EcommerceTryonCatalogKinds = EcommerceCatalogKinds
+
+const MaxEcommerceTryonCatalogPerKind = 40
 
 type UserAssetGroup struct {
 	ID         uuid.UUID

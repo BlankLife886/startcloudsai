@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -18,6 +19,12 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	storagepkg "github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+)
+
+var (
+	errTaskImageMissing = errors.New("task image missing")
+	errTaskImageFormat  = errors.New("task image unsupported")
+	errTaskImageContent = errors.New("task image unreadable")
 )
 
 // sniffUploadMedia identifies supported upload formats from their signatures.
@@ -124,23 +131,52 @@ func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UU
 func (s *Server) inspectOwnedTaskImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, error) {
 	key = strings.TrimSpace(key)
 	if !isOwnedTaskImageKey(userID, key) {
-		return 0, fmt.Errorf("object key is not an owned task image")
+		return 0, fmt.Errorf("%w: object key is not an owned task image", errTaskImageMissing)
 	}
-	data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
+	data, err := s.readOwnedTaskImageBytes(ctx, key, maxBytes)
 	if err != nil {
+		log.Printf("inspect task image %s: %v", key, err)
 		return 0, err
 	}
 	size, _, err := inspectUserUploadImageData(data)
+	if err != nil {
+		log.Printf("inspect task image %s content: %v", key, err)
+	}
 	return size, err
+}
+
+func (s *Server) readOwnedTaskImageBytes(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !storagepkg.IsNotFound(err) || attempt == 3 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("object read failed")
+	}
+	return nil, fmt.Errorf("%w: %v", errTaskImageMissing, lastErr)
 }
 
 func inspectUserUploadImageData(data []byte) (int64, string, error) {
 	_, contentType := sniffImage(data)
 	if contentType == "" {
-		return 0, "", fmt.Errorf("object is not a supported image")
+		return 0, "", fmt.Errorf("%w: object is not a supported image", errTaskImageFormat)
 	}
 	if _, _, err := media.Dimensions(data); err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("%w: %v", errTaskImageContent, err)
 	}
 	return int64(len(data)), contentType, nil
 }
@@ -285,6 +321,10 @@ func (s *Server) getFile(c *gin.Context) {
 	switch {
 	case strings.HasPrefix(key, "prompt-covers/"):
 		allowed = true // 提示词封面公开可读
+	case strings.HasPrefix(key, "ecommerce-catalog/"),
+		strings.HasPrefix(key, "ecommerce-tryon/"),
+		strings.HasPrefix(key, "ecommerce-handheld/"):
+		allowed = true // 后台上架的电商通用素材公开可读
 	case admin != nil:
 		allowed = true
 	case user != nil && (strings.HasPrefix(key, "uploads/"+user.ID.String()+"/") ||

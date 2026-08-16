@@ -35,6 +35,9 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return promptCoverMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/admin/prompt-import-batches/") && strings.HasSuffix(path, "/cover"):
 		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/ecommerce/catalog"),
+		strings.HasPrefix(path, "/api/v1/admin/ecommerce/tryon-catalog"):
+		return tryonCatalogMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/prompt-import-batches/upload":
 		return promptTransferMaxBytes + (1 << 20)
 	default:
@@ -170,6 +173,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/me/trial-access-application/reward", s.redeemTrialAccessReward)
 	api.GET("/me/notifications", s.myNotifications)
 	api.PATCH("/me/notifications", s.markNotificationsRead)
+	api.DELETE("/me/notifications", s.clearNotifications)
 	api.GET("/me/tasks/events", s.userTaskStream)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
@@ -204,6 +208,21 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/commerce/products/:id", s.updateEcommerceProduct)
 	api.DELETE("/commerce/products/:id", s.deleteEcommerceProduct)
 	api.POST("/commerce/product-briefs", s.generateEcommerceProductBrief)
+	api.GET("/commerce/reviews", s.listEcommerceAssetReviews)
+	api.PUT("/commerce/reviews/:taskId", s.upsertEcommerceAssetReview)
+	api.GET("/commerce/catalog", s.publicEcommerceCatalog)
+	api.GET("/commerce/tryon-catalog", s.publicTryonCatalog)
+	api.GET("/commerce/handheld/catalog", s.publicHandheldCatalog)
+	api.POST("/commerce/handheld/quotes", s.quoteHandheldJob)
+	api.GET("/commerce/handheld/projects", s.listHandheldProjects)
+	api.POST("/commerce/handheld/projects", s.createHandheldProject)
+	api.GET("/commerce/handheld/projects/:id", s.getHandheldProject)
+	api.PUT("/commerce/handheld/projects/:id/draft", s.updateHandheldProjectDraft)
+	api.POST("/commerce/handheld/jobs", s.createHandheldJob)
+	api.GET("/commerce/handheld/jobs/:id", s.getHandheldJob)
+	api.POST("/commerce/handheld/jobs/:id/cancel", s.cancelHandheldJob)
+	api.POST("/commerce/handheld/items/:id/retry", s.retryHandheldItem)
+	api.POST("/commerce/handheld/items/:id/save-asset", s.saveHandheldItemAsset)
 
 	// canvas projects
 	api.GET("/canvas-projects", s.listCanvasProjects)
@@ -336,6 +355,18 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
 	admin.POST("/model-config/discoveries", s.adminOnly(s.adminDiscoverProviderModels))
+	admin.GET("/ecommerce/catalog", s.adminOnly(s.adminListTryonCatalog))
+	admin.POST("/ecommerce/catalog", s.adminOnly(s.adminCreateTryonCatalog))
+	admin.PATCH("/ecommerce/catalog/order", s.adminOnly(s.adminReorderTryonCatalog))
+	admin.PATCH("/ecommerce/catalog/:id", s.adminOnly(s.adminPatchTryonCatalog))
+	admin.PUT("/ecommerce/catalog/:id/image", s.adminOnly(s.adminUploadTryonCatalogImage))
+	admin.DELETE("/ecommerce/catalog/:id", s.adminOnly(s.adminDeleteTryonCatalog))
+	admin.GET("/ecommerce/tryon-catalog", s.adminOnly(s.adminListTryonCatalog))
+	admin.POST("/ecommerce/tryon-catalog", s.adminOnly(s.adminCreateTryonCatalog))
+	admin.PATCH("/ecommerce/tryon-catalog/order", s.adminOnly(s.adminReorderTryonCatalog))
+	admin.PATCH("/ecommerce/tryon-catalog/:id", s.adminOnly(s.adminPatchTryonCatalog))
+	admin.PUT("/ecommerce/tryon-catalog/:id/image", s.adminOnly(s.adminUploadTryonCatalogImage))
+	admin.DELETE("/ecommerce/tryon-catalog/:id", s.adminOnly(s.adminDeleteTryonCatalog))
 
 	return r
 }

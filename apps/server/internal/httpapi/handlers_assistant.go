@@ -76,7 +76,8 @@ func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
 }
 
 func (s *Server) assistantConfig(c *gin.Context) {
-	if _, err := s.requireUser(c); err != nil {
+	user, err := s.currentUser(c)
+	if err != nil {
 		fail(c, err)
 		return
 	}
@@ -149,6 +150,16 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"chatModel": chatModel, "imageModel": imageModel,
 			"conversationModels": conversationOptions, "imageModels": imageOptions,
 			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
+		})
+		return
+	}
+	// Anonymous visitors may inspect explicitly assigned public model metadata,
+	// but must never fall back to legacy provider discovery.
+	if user == nil {
+		ok(c, gin.H{
+			"chatModel": "", "imageModel": "",
+			"conversationModels": []modelOption{}, "imageModels": []modelOption{},
+			"modelDiscoveryAvailable": false, "conversationModelMode": "configured",
 		})
 		return
 	}

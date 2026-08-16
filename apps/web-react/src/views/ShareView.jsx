@@ -557,6 +557,7 @@ export function ShareView() {
                 className="community-featured__arrow is-prev"
                 type="button"
                 aria-label="上一张"
+                data-click-guard="off"
                 onClick={(event) => {
                   event.stopPropagation();
                   setHeroIndex(
@@ -570,6 +571,7 @@ export function ShareView() {
                 className="community-featured__arrow is-next"
                 type="button"
                 aria-label="下一张"
+                data-click-guard="off"
                 onClick={(event) => {
                   event.stopPropagation();
                   setHeroIndex((heroIndex + 1) % heroItems.length);

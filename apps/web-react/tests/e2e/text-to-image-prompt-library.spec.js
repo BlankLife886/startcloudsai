@@ -56,6 +56,10 @@ test('text-to-image prompt library renders server prompts and fills the composer
   await expect(page.getByRole('button', { name: '更多' })).toBeVisible()
   await expect(page.getByLabel('提示词排序')).toHaveValue('recommended')
   await expect(page.getByText('高端护肤品摄影', { exact: true })).toBeVisible()
+  await expect(page.locator('.t2i-page')).toHaveAttribute(
+    'data-t2i-prompts-motion-state',
+    'entered',
+  )
   await expect(page.locator('.t2i-collection-card')).toContainText('透明玻璃精华瓶')
   await expect(page.locator('.t2i-collection-card')).toContainText('使用 0 次')
   await expect(page.locator('.t2i-collection-card .t2i-entry-actions button')).toHaveCount(3)
@@ -152,6 +156,10 @@ test('text-to-image prompt library automatically loads the next Vue-style cursor
 
   await expect(page.getByText('第一页提示词', { exact: true })).toBeVisible()
   await expect(page.getByText('第二页提示词', { exact: true })).toBeVisible()
+  await expect(page.locator('.t2i-page')).toHaveAttribute(
+    'data-t2i-prompts-motion-state',
+    'entered',
+  )
   await expect.poll(() => cursors).toContain('next-page')
   await expect(page.locator('.t2i-library-view')).toContainText('没有更多数据了')
 })

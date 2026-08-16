@@ -33,28 +33,6 @@ body:has(.commercial-home) #vue-inspector-container {
   display: none !important;
 }
 
-body:has(.commercial-home) .site-header {
-  --nav-heading: rgba(255, 255, 255, 0.96);
-  --nav-text: rgba(255, 255, 255, 0.76);
-  --nav-muted: rgba(255, 255, 255, 0.5);
-  --nav-hover: rgba(255, 255, 255, 0.07);
-  --nav-track: rgba(255, 255, 255, 0.04);
-  --nav-line: rgba(255, 255, 255, 0.08);
-}
-
-body:has(.commercial-home) .site-header .header-shell {
-  background: rgba(7, 9, 8, 0.78);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
-  backdrop-filter: blur(16px) saturate(1.18);
-  -webkit-backdrop-filter: blur(16px) saturate(1.18);
-}
-
-html.settings-no-blur body:has(.commercial-home) .site-header .header-shell {
-  background: #090b0a;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 .commercial-shell {
   width: min(1360px, calc(100% - 240px));
   margin: 0 auto;

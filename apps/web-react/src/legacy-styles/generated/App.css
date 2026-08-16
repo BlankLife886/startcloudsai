@@ -233,10 +233,10 @@ html.color-scheme-dark .main-content.main--history-gallery {
   padding-bottom: 0;
   overflow-x: clip;
   overflow-y: visible;
-  background: #09090c;
+  background: transparent;
 }
 html:not(.color-scheme-dark) .main-content.main--pricing-console {
-  background: #f3f4f8;
+  background: transparent;
 }
 
 /* 个人中心：底色交给页面科幻氛围层，壳层保持透明 */

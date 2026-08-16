@@ -4,6 +4,7 @@ package taskflow_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -142,6 +143,32 @@ func TestCreateTaskFreezesCost(t *testing.T) {
 	}
 }
 
+func TestCreateTaskCommitHookRollsBackTaskAndFreeze(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	wantErr := errors.New("domain attachment conflict")
+	_, created, err := taskflow.CreateTaskWithCommitHook(ctx, st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "test rollback", Count: 1,
+	}, func(context.Context, pgx.Tx, *store.Task, bool) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) || created {
+		t.Fatalf("hook result created=%v err=%v", created, err)
+	}
+	var taskCount int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE user_id=$1`, user.ID).Scan(&taskCount); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("rolled-back hook left %d task rows", taskCount)
+	}
+	walletState := getWallet(t, st, user.ID)
+	if walletState.BalanceCents != 100 || walletState.FrozenCents != 0 {
+		t.Fatalf("rolled-back hook changed wallet: %#v", walletState)
+	}
+}
+
 func TestRestrictedTrialFeatureRequiresApprovedEntitlement(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)
@@ -223,6 +250,38 @@ func TestCreateTaskUsesUserSelectedPublicModel(t *testing.T) {
 	}
 	if task.Model != "flux-kontext-max" || task.CostCents != 12 {
 		t.Fatalf("fast task = model %q cost %d", task.Model, task.CostCents)
+	}
+}
+
+func TestCreateCanvasTaskUsesInfiniteCanvasAssignment(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{ID: "provider", Name: "Provider", Adapter: "openai", BaseURL: "https://api.example.com", APIKey: "secret", Enabled: true}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "t2i-only", Name: "T2I", ProviderID: "provider", UpstreamModel: "t2i-upstream", Kind: "image", PriceCents: 20, Public: true, Enabled: true},
+		{ID: "canvas-only", Name: "Canvas", ProviderID: "provider", UpstreamModel: "canvas-upstream", Kind: "image", PriceCents: 11, Public: true, Enabled: true},
+	}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceT2I:    {ModelIDs: []string{"t2i-only"}},
+		modelconfig.WorkspaceCanvas: {ModelIDs: []string{"canvas-only"}},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	task, _, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "画布生成", Count: 1,
+		Params: map[string]any{"publicModelKey": "canvas-only", "_source": "react_canvas"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Type != "t2i" {
+		t.Fatalf("canvas task type = %q, want t2i", task.Type)
+	}
+	if task.Model != "canvas-upstream" || task.CostCents != 11 {
+		t.Fatalf("canvas task = model %q cost %d", task.Model, task.CostCents)
 	}
 }
 

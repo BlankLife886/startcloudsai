@@ -39,6 +39,7 @@ export function shortId(id: string | null | undefined): string {
 /** 任务类型 */
 export const TASK_TYPES = [
   "t2i",
+  "infinite_canvas",
   "coloring",
   "ui_design",
   "ecommerce_design",
@@ -47,8 +48,11 @@ export const TASK_TYPES = [
   "puzzle",
 ] as const;
 
+export const PROMPT_TASK_TYPES = ["assistant", ...TASK_TYPES] as const;
+
 export const IMAGE_SERVICE_ROUTES = [
   { key: "t2i", label: "文生图", detail: "文字生成与参考图编辑" },
+  { key: "infinite_canvas", label: "无限画布", detail: "画布节点生成与改图" },
   { key: "coloring", label: "插画染色", detail: "线稿与配色参考图" },
   {
     key: "ui_design",
@@ -73,8 +77,9 @@ export const IMAGE_SERVICE_ROUTES = [
 export type ImageServiceRouteKey = (typeof IMAGE_SERVICE_ROUTES)[number]["key"];
 
 export const TASK_TYPE_LABELS: Record<string, string> = {
-  assistant: "AI助手",
+  assistant: "AI 助手",
   t2i: "文生图",
+  infinite_canvas: "无限画布",
   coloring: "插画染色",
   ui_design: "UI设计稿",
   ecommerce_design: "AI电商",
@@ -84,7 +89,15 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   background_remove: "背景移除",
 };
 
-export function taskTypeLabel(type: string): string {
+export function taskTypeLabel(
+  type: string,
+  params?: Record<string, unknown> | null,
+): string {
+  const source = String(params?._source || "");
+  const kind = String(params?._kind || "");
+  if (source === "react_canvas" || kind.startsWith("canvas-")) {
+    return kind === "canvas-background-remove" ? "画布去背" : "无限画布";
+  }
   return TASK_TYPE_LABELS[type] ?? type;
 }
 

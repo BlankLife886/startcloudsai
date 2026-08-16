@@ -2,6 +2,7 @@
  * AI 任务 API（新契约 /api/v1/tasks*、/api/v1/uploads）。
  *
  * 任务类型：t2i | coloring | ui_design | ecommerce_design | model_sheet | game_art | puzzle | background_remove
+ * 无限画布不是独立 type，而是 t2i / background_remove + params._source=react_canvas
  * 状态机：queued → running → succeeded | failed | canceled
  */
 import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
@@ -234,7 +235,7 @@ function applyWaitingTaskSnapshot(task, payload = null, broadcast = false) {
         continue
       }
       waiter.emptySuccessPolls += 1
-      if (waiter.emptySuccessPolls < 3) continue
+      if (waiter.emptySuccessPolls < 2) continue
     } else {
       waiter.emptySuccessPolls = 0
     }
@@ -324,9 +325,9 @@ async function pollWaitingTasks() {
  * 当前用户任务列表（cursor 分页）。
  * @returns {Promise<{items: object[], nextCursor: string|null}>}
  */
-export async function listTasks({ type = '', status = '', limit = 20, cursor = '', signal } = {}) {
+export async function listTasks({ type = '', status = '', limit = 20, cursor = '', excludeSource = '', source = '', signal } = {}) {
   const data = await apiGet('/tasks', {
-    query: { type, status, limit, cursor },
+    query: { type, status, limit, cursor, excludeSource, source },
     signal,
     fallbackMessage: '任务列表读取失败',
   })

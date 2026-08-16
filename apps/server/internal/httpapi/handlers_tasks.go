@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -108,7 +109,16 @@ func validateTaskImageKeys(ctx context.Context, userID uuid.UUID, field string, 
 	var totalInputBytes int64
 	for i := range keys {
 		if sizeErrs[i] != nil {
-			return apperr.E("validation_error", field+": 图片不存在、格式不支持或内容无法读取", 422)
+			message := field + ": 图片不存在、格式不支持或内容无法读取"
+			switch {
+			case errors.Is(sizeErrs[i], errTaskImageMissing):
+				message = field + ": 图片不存在或尚未写入完成，请重试"
+			case errors.Is(sizeErrs[i], errTaskImageFormat):
+				message = field + ": 图片格式不支持，请使用 png / jpg / webp"
+			case errors.Is(sizeErrs[i], errTaskImageContent):
+				message = field + ": 图片内容无法读取或尺寸过大"
+			}
+			return apperr.E("validation_error", message, 422)
 		}
 		totalInputBytes += sizes[i]
 		if sizes[i] <= 0 || sizes[i] > maxObjectBytes || totalInputBytes > maxTotalBytes {
@@ -282,6 +292,12 @@ func (s *Server) listTasks(c *gin.Context) {
 	}
 	taskType := c.Query("type")
 	status := c.Query("status")
+	excludeSource := strings.TrimSpace(c.Query("excludeSource"))
+	source := strings.TrimSpace(c.Query("source"))
+	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
+		source = store.CanvasTaskSource
+		taskType = ""
+	}
 	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
@@ -295,7 +311,7 @@ func (s *Server) listTasks(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListTasks(c.Request.Context(), s.St.Pool, &user.ID, taskType, status, nil, limit, cursor)
+	rows, err := store.ListTasks(c.Request.Context(), s.St.Pool, &user.ID, taskType, status, nil, limit, cursor, excludeSource, source)
 	if err != nil {
 		fail(c, err)
 		return

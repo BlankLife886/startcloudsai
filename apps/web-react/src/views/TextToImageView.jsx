@@ -57,6 +57,9 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
+import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
+import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
 import "./TextToImageView.css";
 
@@ -188,17 +191,46 @@ function stageFrameStyle(task, measuredAspect = "") {
   };
 }
 
+function stageGridLayout(count, imageAspect, canvasAspect) {
+  if (count < 2) return null;
+  const [width, height] = String(imageAspect || "1 / 1").split("/").map(Number);
+  const imageRatio = Number.isFinite(width) && Number.isFinite(height) && height > 0
+    ? width / height
+    : 1;
+  const targetRatio = Number(canvasAspect) > 0 ? Number(canvasAspect) : 16 / 9;
+  const candidates = [];
+  for (let columns = 1; columns <= count; columns += 1) {
+    if (count % columns === 0) {
+      candidates.push({ columns, rows: count / columns, collage: false });
+    }
+  }
+  if (count === 3) candidates.push({ columns: 2, rows: 2, collage: true });
+  return candidates.reduce((best, candidate) => {
+    const ratio = (imageRatio * candidate.columns) / candidate.rows;
+    const score = Math.abs(Math.log(ratio / targetRatio));
+    return !best || score < best.score ? { ...candidate, ratio, score } : best;
+  }, null);
+}
+
+function showsTransparentCanvas(task) {
+  return task?.transparentPngEnabled === true || task?.automaticBackgroundRemoval === true;
+}
+
 function taskOutput(task) {
   return taskOutputs(task)[0] || taskThumbnailOutputs(task)[0] || "";
 }
 
 function taskOutputs(task) {
+  const preferred = Array.isArray(task?.originalOutputs) && task.originalOutputs.length
+    ? task.originalOutputs
+    : task?.outputs;
   return Array.from(
-    new Set((Array.isArray(task?.outputs) ? task.outputs : []).map(String).filter(Boolean)),
+    new Set((Array.isArray(preferred) ? preferred : []).map(String).filter(Boolean)),
   );
 }
 
 function taskThumbnailOutputs(task) {
+  if (task?.hasDedicatedThumbnails === false) return [];
   return Array.from(
     new Set(
       (Array.isArray(task?.thumbnailOutputs) ? task.thumbnailOutputs : [])
@@ -283,7 +315,7 @@ function elapsedLabel(task, now) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function buildGalleryItems(tasks) {
+function buildGalleryItems(tasks, unavailableImageKeys = {}) {
   const items = [];
   for (const task of tasks.slice(0, 120)) {
     if (!isToday(task.createdAt)) continue;
@@ -291,12 +323,13 @@ function buildGalleryItems(tasks) {
     const thumbnails = taskThumbnailOutputs(task);
     if (outputs.length) {
       outputs.forEach((url, index) => {
+        if (unavailableImageKeys[`${task.id}::${index}::${url}`]) return;
         items.push({
           key: `${task.id}-${index}`,
           kind: "image",
           task,
           url,
-          thumbnailUrl: thumbnails[index] || thumbnails[0] || "",
+          thumbnailUrl: thumbnails[index] || "",
           index,
           batchIndex:
             Number(task.batchSize || 1) > 1 ? Number(task.batchIndex || 0) : index,
@@ -308,15 +341,21 @@ function buildGalleryItems(tasks) {
       continue;
     }
     if (ACTIVE_STATUSES.has(task.status)) {
+      const batchSize = Math.max(1, Number(task.batchSize || 1));
+      const slots = batchSize > 1
+        ? 1
+        : Math.min(4, Math.max(1, Number(task.count || 1)));
+      for (let index = 0; index < slots; index += 1) {
       items.push({
-        key: `pending-${task.id}`,
+        key: `pending-${task.id}-${index}`,
         kind: "pending",
         task,
-        index: 0,
-        batchIndex: Number(task.batchIndex || 0),
-        total: Math.max(1, Number(task.batchSize || 1)),
+        index,
+        batchIndex: batchSize > 1 ? Number(task.batchIndex || 0) : index,
+        total: batchSize > 1 ? batchSize : slots,
         title: task.prompt || "图片生成",
       });
+      }
       continue;
     }
     if (["cancelled", "canceled"].includes(task.status)) {
@@ -331,6 +370,22 @@ function buildGalleryItems(tasks) {
       });
     }
   }
+  const groups = new Map();
+  items.forEach((item) => {
+    const key = taskGroupKey(item.task);
+    const group = groups.get(key) || [];
+    group.push(item);
+    groups.set(key, group);
+  });
+  groups.forEach((group) => {
+    group.sort((left, right) =>
+      Number(left.task?.batchIndex || 0) - Number(right.task?.batchIndex || 0) ||
+      Number(left.index || 0) - Number(right.index || 0));
+    group.forEach((item, index) => {
+      item.batchIndex = index;
+      item.total = group.length;
+    });
+  });
   return items;
 }
 
@@ -418,30 +473,28 @@ function usePopoverPresence(open, duration, key = "popover") {
 
 function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
   const [skipEveryTime, setSkipEveryTime] = useState(false);
+  const costRef = useRef(cost);
+  if (cost) costRef.current = cost;
   useEffect(() => {
     if (cost) setSkipEveryTime(false);
   }, [cost]);
-  if (!cost) return null;
-  const total = Math.max(0, Number(cost.total || 0));
-  const available = Number.isFinite(Number(cost.available))
-    ? Math.max(0, Number(cost.available))
+  const activeCost = costRef.current;
+  if (!activeCost) return null;
+  const total = Math.max(0, Number(activeCost.total || 0));
+  const available = Number.isFinite(Number(activeCost.available))
+    ? Math.max(0, Number(activeCost.available))
     : null;
   const insufficient = available != null && total > available;
   const remaining = available == null ? null : Math.max(0, available - total);
-  return createPortal(
-    <div
-      className={`ai-cost-confirm-layer${light ? " is-light" : ""}`}
-      onMouseDown={(event) => event.target === event.currentTarget && onCancel()}
+  return (
+    <DialogMotion
+      open={Boolean(cost)}
+      layerClassName={`ai-cost-confirm-layer${light ? " is-light" : ""}`}
+      panelClassName="ai-cost-confirm-panel is-credits"
+      ariaLabelledby="ai-cost-confirm-title"
+      ariaDescribedby="ai-cost-confirm-summary"
+      onClose={onCancel}
     >
-      <section
-        className="ai-cost-confirm-panel is-credits"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ai-cost-confirm-title"
-        aria-describedby="ai-cost-confirm-summary"
-        tabIndex={-1}
-        onKeyDown={(event) => event.key === "Escape" && onCancel()}
-      >
         <header className="ai-cost-confirm-head">
           <span className="ai-cost-confirm-icon"><i className="bi bi-coin" /></span>
           <div className="ai-cost-confirm-titles">
@@ -457,7 +510,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
           <div className="ai-cost-confirm-total">
             <div className="ai-cost-confirm-total__copy">
               <span>本次预计</span>
-              <small>{cost.unit} 积分 / 张 × {cost.count} 张</small>
+              <small>{activeCost.unit} 积分 / 张 × {activeCost.count} 张</small>
             </div>
             <strong>{total > 0 ? `${total.toLocaleString("zh-CN")} 积分` : "按实际用量结算"}</strong>
           </div>
@@ -467,7 +520,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
             <div className={insufficient ? "danger" : ""}><span>支付后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${remaining.toLocaleString("zh-CN")} 积分`}</strong></div>
           </div>
         </div>
-        {cost.pricingUnavailable && <p className="ai-cost-confirm-warn"><i className="bi bi-info-circle" />暂时读取不到单价，本次费用以服务端结算为准。</p>}
+        {activeCost.pricingUnavailable && <p className="ai-cost-confirm-warn"><i className="bi bi-info-circle" />暂时读取不到单价，本次费用以服务端结算为准。</p>}
         {insufficient && <p className="ai-cost-confirm-warn is-danger"><i className="bi bi-exclamation-circle" />钱包余额不足，请充值后再提交任务。</p>}
         <footer className="ai-cost-confirm-footer">
           <label className="ai-cost-confirm-preference"><input type="checkbox" checked={skipEveryTime} onChange={(event) => setSkipEveryTime(event.target.checked)} /><span>不再每次确认</span></label>
@@ -476,9 +529,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
             <button type="button" className="ai-cost-confirm-btn primary" disabled={insufficient} onClick={() => onConfirm({ skipEveryTime })}>确认</button>
           </div>
         </footer>
-      </section>
-    </div>,
-    document.body,
+    </DialogMotion>
   );
 }
 
@@ -505,6 +556,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const promptViewportRef = useRef(null);
   const promptMoreRef = useRef(null);
   const promptSentinelRef = useRef(null);
+  const stageCanvasRef = useRef(null);
+  const filmstripRef = useRef(null);
   const lightboxFrameRef = useRef(null);
   const lightboxPanStartRef = useRef(null);
   const lightboxComparePointerRef = useRef(null);
@@ -555,7 +608,11 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [promptViewportWidth, setPromptViewportWidth] = useState(() => window.innerWidth);
   const [promptMeasuredAspects, setPromptMeasuredAspects] = useState({});
   const [activeTaskId, setActiveTaskId] = useState("");
+  const [activeGalleryKey, setActiveGalleryKey] = useState("");
+  const [activeGroupKey, setActiveGroupKey] = useState("");
   const [featuredImageAspects, setFeaturedImageAspects] = useState({});
+  const [unavailableImageKeys, setUnavailableImageKeys] = useState({});
+  const [stageCanvasAspect, setStageCanvasAspect] = useState(16 / 9);
   const [cost, setCost] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [lightboxZoom, setLightboxZoom] = useState(1);
@@ -761,20 +818,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   const ratioOptions = useMemo(() => {
     const allowed = getModelAspectRatiosForResolution(currentModel || {}, resolution);
-    return T2I_ASPECT_OPTIONS.filter((option) => allowed.includes(option.value));
+    const labels = new Map(T2I_ASPECT_OPTIONS.map((option) => [option.value, option.label]));
+    return allowed.map((value) => ({
+      value,
+      label: labels.get(value) || (value === "auto" ? "Auto 比例" : value),
+    }));
   }, [currentModel, resolution]);
 
   const resolutionOptions = useMemo(() => {
-    const supported = Array.isArray(currentModel?.resolutions)
-      ? currentModel.resolutions.map((item) => String(item || "").toUpperCase())
-      : [];
-    if (!supported.length) return T2I_RESOLUTION_OPTIONS;
+    const supported = normalizeImageModelCapabilities(currentModel || {}).resolutions;
     return T2I_RESOLUTION_OPTIONS.filter((option) => supported.includes(option.value));
   }, [currentModel]);
 
   const qualityOptions = useMemo(() => {
-    const supported = Array.isArray(currentModel?.qualities) ? currentModel.qualities : [];
-    if (!supported.length) return T2I_QUALITY_OPTIONS;
+    const supported = normalizeImageModelCapabilities(currentModel || {}).qualities;
     return T2I_QUALITY_OPTIONS.filter((option) => supported.includes(option.value));
   }, [currentModel]);
 
@@ -801,14 +858,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       setTransparent(false);
     }
     if (!backgroundRemovalModel && autoRemove) setAutoRemove(false);
-    if (currentModel?.outputFormats?.length && !currentModel.outputFormats.includes(outputFormat)) {
-      setOutputFormat(currentModel.outputFormats[0]);
-    }
-    if (
-      currentModel?.moderationLevels?.length &&
-      !currentModel.moderationLevels.includes(moderation)
+    const supportedFormats = currentModel?.outputFormats || [];
+    if (!supportedFormats.length) {
+      if (outputFormat !== "auto") setOutputFormat("auto");
+    } else if (
+      outputFormat !== "auto" &&
+      !supportedFormats.includes(outputFormat)
     ) {
-      setModeration(currentModel.moderationLevels[0]);
+      setOutputFormat(supportedFormats[0]);
+    }
+    const supportedModeration = currentModel?.moderationLevels || [];
+    if (!supportedModeration.length) {
+      if (moderation) setModeration("");
+    } else if (moderation && !supportedModeration.includes(moderation)) {
+      setModeration(supportedModeration[0]);
     }
   }, [autoRemove, backgroundRemovalModel, currentModel, moderation, outputFormat, transparent]);
 
@@ -965,6 +1028,18 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (!activeTaskId && jobs.tasks[0]) setActiveTaskId(jobs.tasks[0].id);
   }, [activeTaskId, jobs.tasks]);
 
+  useEffect(() => {
+    const canvas = stageCanvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Number(entry?.contentRect?.width || 0);
+      const height = Number(entry?.contentRect?.height || 0);
+      if (width > 0 && height > 0) setStageCanvasAspect(width / height);
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [mainTab]);
+
   const addReferenceFiles = useCallback((fileList) => {
     const files = Array.from(fileList || []).filter((file) => file.type.startsWith("image/"));
     setReferences((current) => {
@@ -1001,6 +1076,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     const publicModelKey = currentModel?.id || modelId;
     const kind = sourceUrls.length ? "wallpaper-image-edit" : "wallpaper-image-generation";
     const requestPrompt = [prompt.trim(), skillPrompt].filter(Boolean).join("\n\n");
+    const supportedFormats = currentModel?.outputFormats || [];
+    const requestedFormat = transparent ? "png" : outputFormat;
+    const effectiveOutputFormat = supportedFormats.includes(requestedFormat)
+      ? requestedFormat
+      : "";
+    const supportedModeration = currentModel?.moderationLevels || [];
+    const effectiveModeration = supportedModeration.includes(moderation)
+      ? moderation
+      : "";
     const input = {
       sourceUrl: sourceUrls[0] || "",
       sourceUrls,
@@ -1028,8 +1112,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       transparentBackground: transparent,
       autoBackgroundRemovalEnabled: autoRemove,
       autoBackgroundRemovalModelKey: autoRemove ? backgroundRemovalModel?.id || "" : "",
-      outputFormat: transparent ? "png" : outputFormat,
-      moderationLevel: moderation,
+      ...(effectiveOutputFormat ? { outputFormat: effectiveOutputFormat } : {}),
+      ...(effectiveModeration ? { moderationLevel: effectiveModeration } : {}),
       skills: activeSkills,
       skillIds: activeSkills.map((item) => item.id),
     };
@@ -1111,20 +1195,44 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     }
   }, [currentModel, loading, prompt, requestGeneration]);
 
-  const galleryItems = useMemo(() => buildGalleryItems(jobs.tasks), [jobs.tasks]);
+  const galleryItems = useMemo(
+    () => buildGalleryItems(jobs.tasks, unavailableImageKeys),
+    [jobs.tasks, unavailableImageKeys],
+  );
   const filmstripGroups = useMemo(() => groupGalleryItems(galleryItems), [galleryItems]);
   const featuredGroup =
-    filmstripGroups.find((group) =>
-      group.items.some((item) => item.task.id === activeTaskId),
-    ) || filmstripGroups[0] || null;
-  const featuredItem = featuredGroup?.cover || null;
+    filmstripGroups.find((group) => group.key === activeGroupKey) ||
+    filmstripGroups.find((group) => group.items.some((item) => item.key === activeGalleryKey)) ||
+    filmstripGroups.find((group) => group.items.some((item) => item.task.id === activeTaskId)) ||
+    filmstripGroups[0] || null;
+  const featuredItem =
+    featuredGroup?.items.find((item) => item.key === activeGalleryKey) ||
+    featuredGroup?.items.find((item) => item.kind === "image") ||
+    featuredGroup?.cover || null;
   const activeTask = featuredItem?.task || null;
   const activeOutput = featuredItem?.url || "";
   const stageGridItems = featuredGroup?.items.length > 1 ? featuredGroup.items : [];
-  const activeStageStyle = stageFrameStyle(
+  const featuredAspect = stageAspectValue(
     activeTask,
     featuredItem?.key ? featuredImageAspects[featuredItem.key] : "",
   );
+  const gridLayout = stageGridLayout(stageGridItems.length, featuredAspect, stageCanvasAspect);
+  const activeStageStyle = (() => {
+    const style = stageFrameStyle(activeTask, featuredItem?.key ? featuredImageAspects[featuredItem.key] : "");
+    if (!gridLayout) return style;
+    return {
+      ...style,
+      aspectRatio: String(gridLayout.ratio),
+      "--t2i-stage-fit-width": `${gridLayout.ratio * 100}cqh`,
+      "--t2i-stage-max-width": "1600px",
+    };
+  })();
+  const visibleFilmstripGroups = useMemo(() => {
+    if (filmstripGroups.length <= 30) return filmstripGroups;
+    const focusedIndex = Math.max(0, filmstripGroups.indexOf(featuredGroup));
+    const start = Math.min(Math.max(0, focusedIndex - 15), filmstripGroups.length - 30);
+    return filmstripGroups.slice(start, start + 30);
+  }, [featuredGroup, filmstripGroups]);
   const completed = galleryItems.filter((item) => item.kind === "image");
   const historyItems = useMemo(() => {
     const rows = [...galleryItems];
@@ -1191,6 +1299,31 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       aspect: promptMeasuredAspects[key] || declaredAspect,
     };
   }), [promptMeasuredAspects, visiblePromptItems]);
+  useContentReveal({
+    rootRef,
+    selector: ".t2i-library-view .t2i-collection-card",
+    ready: mainTab === "prompts" && !promptLibraryLoading,
+    resetKey: `${mainTab}:${promptCategory}:${promptSort}`,
+    contentKey: visiblePromptItems.map((item) => item.id).join("|"),
+    stateAttribute: "data-t2i-prompts-motion-state",
+  });
+  useContentReveal({
+    rootRef,
+    selector: ".t2i-history-card",
+    ready: mainTab === "history" && !jobs.historyLoading,
+    resetKey: mainTab,
+    contentKey: historyItems.map((item) => item.key).join("|"),
+    stateAttribute: "data-t2i-history-motion-state",
+  });
+  useContentReveal({
+    rootRef,
+    selector: ".t2i-assets-view > *",
+    ready: mainTab === "assets",
+    resetKey: mainTab,
+    contentKey: mainTab,
+    stateAttribute: "data-t2i-assets-motion-state",
+    maxItems: 4,
+  });
   const promptColumns = useMemo(() => {
     return buildBalancedPromptColumns(promptFeedItems, promptColumnCount);
   }, [promptColumnCount, promptFeedItems]);
@@ -1395,8 +1528,29 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     void requestGeneration();
   }, [modelId, pendingRegenerate, prompt, quality, ratio, requestGeneration, resolution]);
 
-  const focusGroup = (group) => {
-    if (group?.cover?.task?.id) setActiveTaskId(group.cover.task.id);
+  const focusGroup = (group, event) => {
+    if (!group?.cover) return;
+    setActiveTaskId(group.cover.task?.id || "");
+    setActiveGalleryKey(group.cover.key);
+    setActiveGroupKey(group.key);
+    const button = event?.currentTarget;
+    const strip = filmstripRef.current;
+    if (!(button instanceof HTMLElement) || !(strip instanceof HTMLElement)) return;
+    const itemRect = button.getBoundingClientRect();
+    const stripRect = strip.getBoundingClientRect();
+    const edgePadding = Math.max(itemRect.width * 2.5, 96);
+    if (
+      itemRect.left >= stripRect.left + edgePadding &&
+      itemRect.right <= stripRect.right - edgePadding
+    ) return;
+    const left = Math.max(
+      0,
+      strip.scrollLeft + itemRect.left + itemRect.width / 2 - stripRect.left - stripRect.width / 2,
+    );
+    strip.scrollTo({
+      left,
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
   };
 
   const stepFeatured = (delta) => {
@@ -1424,6 +1578,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     setLightboxNaturalSize({ width: 0, height: 0 });
     setLightbox({ key: item.key });
   };
+
+  const markImageUnavailable = useCallback((item) => {
+    if (!item?.task?.id || !item?.url) return;
+    const key = `${item.task.id}::${item.index}::${item.url}`;
+    setUnavailableImageKeys((current) => current[key] ? current : { ...current, [key]: true });
+  }, []);
 
   const stepLightbox = useCallback((delta) => {
     if (!lightboxItem || lightboxItems.length < 2) return;
@@ -1693,8 +1853,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           <div className="t2i-control-layers" data-motion>
             <div className="t2i-control-layer-bar" aria-label="生成参数分类">
               {[
-                ["frame", "bi-aspect-ratio", "画面", `${ratio} · ${resolution} · ${qualityLabel} · ${count}张`],
-                ["output", "bi-file-earmark-image", "输出", `${outputFormat.toUpperCase()} · ${moderation === "auto" ? "自动审核" : "低限制"}`],
+                ["frame", "bi-aspect-ratio", "画面", `${qualityLabel} · ${ratio} · ${resolution} · ${count}张`],
+                ["output", "bi-file-earmark-image", "输出", `${outputFormat === "auto" ? "模型内置" : outputFormat.toUpperCase()} · ${moderation ? (moderation === "auto" ? "自动审核" : "低限制") : "模型内置"}`],
                 ["enhance", "bi-stars", "增强", enhanceSummary],
               ].map(([id, icon, title, summary]) => (
                 <button key={id} type="button" className={openLayer === id ? "is-open" : ""} aria-expanded={openLayer === id} onClick={() => setOpenLayer((value) => value === id ? "" : id)}>
@@ -1704,20 +1864,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             </div>
             {controlLayerPresence.mounted && controlLayerPresence.key === "frame" && (
               <section className={`t2i-control-layer-panel is-frame ${transitionClasses("t2i-control-popover", controlLayerPresence.phase)}`} aria-label="画面参数">
+                <CompactSegments label="质量" value={quality} options={qualityOptions} onChange={setQuality} />
                 <div className="t2i-compact-field is-ratio-field"><span>比例</span><div className="t2i-compact-ratio-grid">
                   {ratioOptions.map((option) => <button key={option.value} type="button" className={ratio === option.value ? "is-selected" : ""} aria-pressed={ratio === option.value} title={option.label} onClick={() => setRatio(option.value)}><i className={compactRatioClass(option.value)} style={ratioStyle(option.value)} /><small>{option.value === "auto" ? "自动" : option.value}</small></button>)}
                 </div></div>
                 <div className="t2i-compact-field-row">
                   <CompactSegments label="分辨率" value={resolution} options={resolutionOptions} onChange={setResolution} />
-                  <CompactSegments label="质量" value={quality} options={qualityOptions} onChange={setQuality} />
+                  <CompactSegments label="张数" value={count} options={T2I_COUNT_OPTIONS} onChange={(value) => setCount(Number(value))} />
                 </div>
-                <CompactSegments label="张数" value={count} options={T2I_COUNT_OPTIONS} onChange={(value) => setCount(Number(value))} />
               </section>
             )}
             {controlLayerPresence.mounted && controlLayerPresence.key === "output" && (
               <section className={`t2i-control-layer-panel is-output ${transitionClasses("t2i-control-popover", controlLayerPresence.phase)}`} aria-label="输出参数">
-                <CompactSegments label="格式" value={outputFormat} options={T2I_OUTPUT_FORMAT_OPTIONS.filter((item) => currentModel?.outputFormats?.includes(item.value === "jpeg" ? "jpeg" : item.value))} onChange={setOutputFormat} />
-                <CompactSegments label="内容审核" value={moderation} options={T2I_MODERATION_OPTIONS.filter((item) => currentModel?.moderationLevels?.includes(item.value))} onChange={setModeration} />
+                <CompactSegments label="格式" value={outputFormat} options={T2I_OUTPUT_FORMAT_OPTIONS.filter((item) => item.value === "auto" || currentModel?.outputFormats?.includes(item.value))} onChange={setOutputFormat} />
+                <CompactSegments label="内容审核" value={moderation} options={T2I_MODERATION_OPTIONS.filter((item) => item.value === "" || currentModel?.moderationLevels?.includes(item.value))} onChange={setModeration} />
               </section>
             )}
             {controlLayerPresence.mounted && controlLayerPresence.key === "enhance" && (
@@ -1793,22 +1953,30 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-image" /></div><strong>今日还没有作品</strong><span>点左侧「立即生成」，当天作品会显示在这里和底部栏。</span></div>
               ) : (
                 <div className="t2i-stage">
-                  <div className="t2i-stage-canvas">
+                  <div ref={stageCanvasRef} className="t2i-stage-canvas">
                     <div className="t2i-stage-frame" style={activeStageStyle}>
                       {stageGridItems.length > 0 ? (
                         <div
-                          className={`t2i-stage-grid${stageGridItems.length === 3 ? " is-collage" : ""}`}
-                          style={{ "--t2i-grid-cols": stageGridItems.length === 2 ? 2 : 2 }}
+                          className={`t2i-stage-grid${gridLayout?.collage ? " is-collage" : ""}`}
+                          style={{ "--t2i-grid-cols": gridLayout?.columns || 2 }}
                           aria-label="同批次生成结果"
                         >
                           {stageGridItems.map((item) => (
-                            <div key={item.key} className={`t2i-stage-cell${item.kind === "pending" ? " is-pending" : ""}`}>
+                            <div key={item.key} className={`t2i-stage-cell${item.kind === "pending" ? " is-pending" : ""}${showsTransparentCanvas(item.task) ? " is-transparent-output" : ""}`}>
                               {item.kind === "pending" ? (
                                 <PendingStage task={item.task} now={now} batchIndex={item.batchIndex} />
                               ) : (
                                 <>
                                   <button type="button" className="t2i-stage-cell-media" onClick={() => openLightbox(item)}>
-                                    <AuthenticatedImage src={item.url} alt="" loading="eager" />
+                                    <ProgressiveAuthenticatedImage
+                                      src={item.url}
+                                      previewSrc={item.thumbnailUrl}
+                                      alt=""
+                                      loading="eager"
+                                      loadOriginal
+                                      hideStatus
+                                      onError={() => markImageUnavailable(item)}
+                                    />
                                   </button>
                                   <button
                                     type="button"
@@ -1834,11 +2002,14 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         </div>
                       ) : featuredItem.kind === "image" ? (
                         <>
-                          <button type="button" className="t2i-stage-media" onClick={() => openLightbox(featuredItem)}>
-                            <AuthenticatedImage
+                          <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openLightbox(featuredItem)}>
+                            <ProgressiveAuthenticatedImage
                               src={activeOutput}
+                              previewSrc={featuredItem.thumbnailUrl}
                               alt={activeTask.prompt}
                               loading="eager"
+                              loadOriginal
+                              hideStatus
                               onLoad={(event) => {
                                 const width = Number(event.currentTarget?.naturalWidth || 0);
                                 const height = Number(event.currentTarget?.naturalHeight || 0);
@@ -1850,6 +2021,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                     : { ...current, [featuredItem.key]: nextAspect },
                                 );
                               }}
+                              onError={() => markImageUnavailable(featuredItem)}
                             />
                           </button>
                           <ImageQuickActions
@@ -1884,25 +2056,33 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                       ) : (
                         <button type="button" className="is-primary" disabled={!prompt.trim()} onClick={() => void requestGeneration()}>生成下一张</button>
                       )}
-                      {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" onClick={() => stepFeatured(-1)}>上一张</button>}
-                      {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" onClick={() => stepFeatured(1)}>下一张</button>}
+                      {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" data-click-guard="off" onClick={() => stepFeatured(-1)}>上一张</button>}
+                      {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" data-click-guard="off" onClick={() => stepFeatured(1)}>下一张</button>}
                     </div>
                   </div>
                   {filmstripGroups.length > 1 && (
-                    <div className="t2i-filmstrip" aria-label="作品列表">
-                      {filmstripGroups.slice(0, 30).map((group) => (
+                    <div ref={filmstripRef} className="t2i-filmstrip" aria-label="作品列表">
+                      {visibleFilmstripGroups.map((group, groupIndex) => (
                         <button
                           key={group.key}
                           type="button"
-                          className={`t2i-film-item${group.key === featuredGroup.key ? " is-on" : ""}${group.kind === "pending" ? " is-pending" : ""}`}
-                          title={group.items.length > 1 ? "单击查看这组图片" : "单击查看，双击设为参考图"}
-                          onClick={() => focusGroup(group)}
+                          data-click-guard="off"
+                          className={`t2i-film-item${group.key === featuredGroup.key ? " is-on" : ""}${group.kind !== "image" ? " is-pending" : ""}`}
+                          title={group.kind === "pending" ? "任务处理中" : group.kind === "mixed" ? `已完成 ${group.items.length - group.pendingCount}/${group.items.length} 张` : group.items.length > 1 ? "单击查看这组图片" : "单击查看，双击设为参考图"}
+                          onClick={(event) => focusGroup(group, event)}
                           onDoubleClick={() => group.items.length === 1 && group.cover.kind === "image" && useAsReference(group.cover)}
                         >
                           {group.kind === "pending" ? (
                             <span className="t2i-film-pending"><span className="t2i-film-pending-spinner" /><em>{elapsedLabel(group.cover.task, now)}</em></span>
                           ) : (
-                            <AuthenticatedImage src={group.cover.thumbnailUrl || group.cover.url} alt="" />
+                            <AuthenticatedImage
+                              src={group.cover.thumbnailUrl || group.cover.url}
+                              alt=""
+                              loading={groupIndex < 12 ? "eager" : "lazy"}
+                              rootMargin="180px 240px"
+                              maxDimension={280}
+                              onError={() => markImageUnavailable(group.cover)}
+                            />
                           )}
                           {group.items.length > 1 && <span className="t2i-film-batch-index">{group.items.length} 张</span>}
                         </button>
@@ -1972,7 +2152,39 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                   <article key={entry.key} className="t2i-masonry-card t2i-collection-card">
                     <button type="button" className={`t2i-masonry-cover${item.coverUrl || item.imageUrl ? "" : " t2i-masonry-placeholder"}`} style={{ aspectRatio: entry.aspect }} onClick={() => usePromptLibraryEntry(item)}>{item.coverUrl || item.imageUrl ? <AuthenticatedImage src={item.coverUrl || item.imageUrl} alt={item.title || item.label || "提示词封面"} loading="lazy" maxDimension={720} onLoad={(event) => measurePromptLibraryImage(entry, event)} /> : <span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span>}<span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.prompt}</span><span className="t2i-history-image-specs"><span><i className="bi bi-grid" />{promptCategoryLabel(item.categoryKey || item.category)}</span>{item.tags?.length > 0 && <span><i className="bi bi-tags" />{item.tags.slice(0, 2).join(" · ")}</span>}</span></span></button>
                     <div className="t2i-masonry-body"><header className="t2i-history-meta"><strong>{item.title || item.label}</strong><small>{promptCategoryLabel(item.categoryKey || item.category)} · 使用 {item.useCount || 0} 次</small></header></div>
-                    <footer className="t2i-entry-actions"><button type="button" className={item.liked ? "is-active" : ""} disabled={item.local} onClick={() => void togglePromptEngagement(item, "like")}><i className={`bi ${item.liked ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} />{item.likeCount || 0}</button><button type="button" className={item.favorited ? "is-active" : ""} disabled={item.local} onClick={() => void togglePromptEngagement(item, "favorite")}><i className={`bi ${item.favorited ? "bi-heart-fill" : "bi-heart"}`} />{item.favoriteCount || 0}</button><button type="button" onClick={() => usePromptLibraryEntry(item)}><i className="bi bi-magic" />使用提示词</button></footer>
+                    <footer className="t2i-entry-actions t2i-prompt-card-actions">
+                      <button
+                        type="button"
+                        className={`t2i-prompt-card-actions__metric${item.liked ? " is-active" : ""}`}
+                        disabled={item.local}
+                        aria-label={item.liked ? "取消点赞" : "点赞"}
+                        title={item.liked ? "取消点赞" : "点赞"}
+                        onClick={() => void togglePromptEngagement(item, "like")}
+                      >
+                        <i className={`bi ${item.liked ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} aria-hidden="true" />
+                        <span>{item.likeCount || 0}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`t2i-prompt-card-actions__metric${item.favorited ? " is-active" : ""}`}
+                        disabled={item.local}
+                        aria-label={item.favorited ? "取消收藏" : "收藏"}
+                        title={item.favorited ? "取消收藏" : "收藏"}
+                        onClick={() => void togglePromptEngagement(item, "favorite")}
+                      >
+                        <i className={`bi ${item.favorited ? "bi-heart-fill" : "bi-heart"}`} aria-hidden="true" />
+                        <span>{item.favoriteCount || 0}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="t2i-prompt-card-actions__use"
+                        onClick={() => usePromptLibraryEntry(item)}
+                      >
+                        <i className="bi bi-stars" aria-hidden="true" />
+                        <span>使用提示词</span>
+                        <i className="bi bi-arrow-up-right" aria-hidden="true" />
+                      </button>
+                    </footer>
                   </article>
                   );
                 })}</div>)}
@@ -2052,12 +2264,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               )}
             </div>
           </div>
-          {lightboxItems.length > 1 && <><button type="button" className="t2i-lightbox-hotzone is-prev" aria-label="上一张" title="上一张" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" className="t2i-lightbox-hotzone is-next" aria-label="下一张" title="下一张" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></>}
+          {lightboxItems.length > 1 && <><button type="button" className="t2i-lightbox-hotzone is-prev" aria-label="上一张" title="上一张" data-click-guard="off" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" className="t2i-lightbox-hotzone is-next" aria-label="下一张" title="下一张" data-click-guard="off" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></>}
           <div className={`t2i-lightbox-load-chip${lightboxImageLoading ? " is-visible" : ""}`} aria-hidden="true"><span className="t2i-lightbox-load-chip-dot" /><span>图片加载中</span></div>
           <div className="t2i-lightbox-controls" aria-label="预览操作">
             <div className="t2i-lightbox-controls-info"><strong className="t2i-lightbox-controls-title" title={lightboxItem.task.prompt}>{lightboxItem.task.prompt || "图片预览"}</strong><span className="t2i-lightbox-controls-count">{lightboxItems.findIndex((item) => item.key === lightboxItem.key) + 1} / {lightboxItems.length}</span><span className="t2i-lightbox-controls-size">{lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize ? `处理后 ${(lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize).replace(/x/i, "×")}` : "处理后"}</span></div>
-            {lightboxItems.length > 1 && <div className="t2i-lightbox-controls-nav"><button type="button" aria-label="上一张" title="上一张" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" aria-label="下一张" title="下一张" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></div>}
-            <div className="t2i-lightbox-controls-tools">
+            {lightboxItems.length > 1 && <div className="t2i-lightbox-controls-nav" data-click-guard="off"><button type="button" aria-label="上一张" title="上一张" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" aria-label="下一张" title="下一张" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></div>}
+            <div className="t2i-lightbox-controls-tools" data-click-guard="off">
               <button type="button" disabled={lightboxZoom <= 1} aria-label="缩小图片" onClick={() => changeLightboxZoom(lightboxZoom - 0.25)}><i className="bi bi-zoom-out" /></button>
               <output className="t2i-lightbox-controls-zoom">{Math.round(lightboxZoom * 100)}%</output>
               <button type="button" disabled={lightboxZoom >= 5} aria-label="放大图片" onClick={() => changeLightboxZoom(lightboxZoom + 0.25)}><i className="bi bi-zoom-in" /></button>
@@ -2139,16 +2351,21 @@ function ImageQuickActions({ cell = false, onEdit, onRegenerate, onDownload, onR
 }
 
 function ActionConfirmDialog({ open, heading, description, confirmLabel, busy = false, tone = "accent", light = false, onCancel, onConfirm }) {
-  if (!open) return null;
-  return createPortal(
-    <div className={`delete-confirm__backdrop${light ? " is-light" : ""}`} onMouseDown={(event) => event.target === event.currentTarget && !busy && onCancel()}>
-      <section className="delete-confirm__dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-confirm-title" aria-describedby="delete-confirm-description">
+  return (
+    <DialogMotion
+      open={open}
+      layerClassName={`delete-confirm__backdrop${light ? " is-light" : ""}`}
+      panelClassName="delete-confirm__dialog"
+      role="alertdialog"
+      ariaLabelledby="delete-confirm-title"
+      ariaDescribedby="delete-confirm-description"
+      closeDisabled={busy}
+      onClose={onCancel}
+    >
         <div className={`delete-confirm__icon is-${tone}`}><i className={`bi ${tone === "danger" ? "bi-trash3" : "bi-arrow-clockwise"}`} /></div>
         <div className="delete-confirm__copy"><h2 id="delete-confirm-title">{heading}</h2><p id="delete-confirm-description">{description}</p></div>
         <footer className="delete-confirm__actions"><button type="button" className="is-cancel" disabled={busy} onClick={onCancel}>取消</button><button type="button" className={`is-confirm is-${tone}`} disabled={busy} onClick={onConfirm}>{busy && <i className="bi bi-arrow-repeat spin" />} {busy ? "处理中…" : confirmLabel}</button></footer>
-      </section>
-    </div>,
-    document.body,
+    </DialogMotion>
   );
 }
 

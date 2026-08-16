@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
@@ -12,6 +11,7 @@ import {
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
+import { DialogMotion } from "./motion/DialogMotion.jsx";
 import "./TrialAccessDialog.css";
 
 const OCCUPATIONS = [
@@ -58,8 +58,6 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
   const isDark = useIsDark();
   const location = useLocation();
   const navigate = useNavigate();
-  const closeRef = useRef(onClose);
-  const busyRef = useRef(false);
   const [campaign, setCampaign] = useState(initialCampaign);
   const [application, setApplication] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -71,28 +69,13 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
   const [claiming, setClaiming] = useState(false);
 
   useEffect(() => {
-    closeRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    busyRef.current = submitting || claiming;
-  }, [claiming, submitting]);
-
-  useEffect(() => {
-    if (!open) {
-      setBodyScrollLock(SCROLL_LOCK_OWNER, false);
-      return undefined;
-    }
-    setBodyScrollLock(SCROLL_LOCK_OWNER, true, { freezeViewport: true });
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && !busyRef.current) closeRef.current?.();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      setBodyScrollLock(SCROLL_LOCK_OWNER, false);
-    };
+    if (open) setBodyScrollLock(SCROLL_LOCK_OWNER, true, { freezeViewport: true });
   }, [open]);
+
+  useEffect(
+    () => () => setBodyScrollLock(SCROLL_LOCK_OWNER, false),
+    [],
+  );
 
   useEffect(() => {
     if (!open) return undefined;
@@ -246,20 +229,21 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
     }
   }
 
-  if (!open) return null;
-  return createPortal(
-    <div
-      className={`trial-dialog-layer${isDark ? " is-dark" : ""}`}
-      role="presentation"
-      onMouseDown={(event) =>
-        event.target === event.currentTarget && !submitting && !claiming && onClose?.()
-      }
+  return (
+    <DialogMotion
+      open={open}
+      variant="detail"
+      layerClassName={`trial-dialog-layer${isDark ? " is-dark" : ""}`}
+      panelClassName="trial-dialog"
+      ariaLabelledby="trial-dialog-title"
+      closeDisabled={submitting || claiming}
+      onClose={onClose}
+      onExited={() => setBodyScrollLock(SCROLL_LOCK_OWNER, false)}
     >
-      <section className="trial-dialog" role="dialog" aria-modal="true" aria-labelledby="trial-dialog-title">
-        <button type="button" className="trial-dialog__close" aria-label="关闭体验资格弹窗" onClick={onClose}>
+        <button type="button" className="trial-dialog__close" aria-label="关闭体验资格弹窗" disabled={submitting || claiming} onClick={onClose}>
           <i className="bi bi-x-lg" aria-hidden="true" />
         </button>
-        <aside className="trial-dialog__story">
+        <aside className="trial-dialog__story" data-dialog-motion-item>
           <span className="trial-dialog__mark" aria-hidden="true"><i className="bi bi-stars" /></span>
           <p className="trial-dialog__eyebrow">EARLY CREATOR PROGRAM</p>
           <h2 id="trial-dialog-title">{campaign?.title || "申请体验"}</h2>
@@ -276,7 +260,7 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
           )}
           <ol className="trial-dialog__steps"><li><span>01</span>登录账号</li><li><span>02</span>提交职业与申请理由</li><li><span>03</span>审核通过后领取积分</li></ol>
         </aside>
-        <main className="trial-dialog__content" aria-live="polite">
+        <main className="trial-dialog__content" aria-live="polite" data-dialog-motion-item>
           {screen === "loading" && <div className="trial-dialog__loading"><i className="bi bi-stars" /><span>正在读取体验活动…</span></div>}
           {screen === "error" && <State icon="bi-cloud-slash" title="体验活动读取失败" text={error}><button type="button" className="is-primary" onClick={refreshApplication}>重试</button></State>}
           {screen === "unavailable" && <State icon="bi-calendar2-x" title="本期申请已结束" text="本期体验名额已满或活动已经关闭，暂时不能提交新的申请。"><button type="button" className="is-secondary" onClick={onClose}>关闭</button></State>}
@@ -295,9 +279,7 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
             </form>
           )}
         </main>
-      </section>
-    </div>,
-    document.body,
+    </DialogMotion>
   );
 }
 

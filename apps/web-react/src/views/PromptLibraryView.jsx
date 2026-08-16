@@ -5,7 +5,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
@@ -22,7 +23,10 @@ import {
   studioRouteForTaskType,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
+import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
+
+gsap.registerPlugin(useGSAP);
 
 const PREVIEW_SCROLL_LOCK = "prompt-library-preview";
 const SCOPE_CATEGORIES = [
@@ -33,6 +37,13 @@ const SCOPE_CATEGORIES = [
 
 function categoryId(category) {
   return String(category?.key || category?.id || "");
+}
+
+function motionDisabled() {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+    document.documentElement.classList.contains("settings-no-animations")
+  );
 }
 
 export function PromptLibraryView() {
@@ -49,10 +60,13 @@ export function PromptLibraryView() {
   const [activeType, setActiveType] = useState("t2i");
   const [activeCategory, setActiveCategory] = useState("all");
   const [preview, setPreview] = useState(null);
+  const [contentRevision, setContentRevision] = useState(0);
+  const rootRef = useRef(null);
   const requestIdRef = useRef(0);
   const loadSentinelRef = useRef(null);
   const previewPanelRef = useRef(null);
   const previewInertiaCleanupRef = useRef(null);
+  const [previewMotionPresent, setPreviewMotionPresent] = useState(false);
 
   const stopPreviewInertiaGuard = useCallback(() => {
     previewInertiaCleanupRef.current?.();
@@ -155,6 +169,7 @@ export function PromptLibraryView() {
         setItems((current) =>
           reset ? response.items || [] : [...current, ...(response.items || [])],
         );
+        if (reset) setContentRevision((current) => current + 1);
         setPage(nextPage);
         setHasMore(Boolean(response.hasMore));
       } catch (error) {
@@ -236,6 +251,100 @@ export function PromptLibraryView() {
     getAspect: getEntryAspect,
   });
 
+  useGSAP(
+    () => {
+      const root = rootRef.current;
+      if (!root) return undefined;
+      const targets = gsap.utils.toArray("[data-prompt-page-motion]", root);
+      root.dataset.promptMotionState = "entering";
+      if (motionDisabled()) {
+        gsap.set(targets, { clearProps: "opacity,visibility,transform" });
+        root.dataset.promptMotionState = "entered";
+        return undefined;
+      }
+      const timeline = gsap.timeline({
+        defaults: { ease: "power2.out" },
+        onComplete: () => {
+          root.dataset.promptMotionState = "entered";
+        },
+      });
+      timeline.fromTo(
+        targets,
+        { autoAlpha: 0, y: 12 },
+        { autoAlpha: 1, y: 0, duration: 0.42, stagger: 0.07, clearProps: "transform" },
+      );
+      return () => timeline.kill();
+    },
+    { scope: rootRef },
+  );
+
+  useGSAP(
+    () => {
+      if (!contentRevision || loading) return undefined;
+      const root = rootRef.current;
+      if (!root) return undefined;
+      let firstFrame = 0;
+      let secondFrame = 0;
+      let animation;
+      const reveal = () => {
+        const container = root.querySelector(".ch-prompt-masonry");
+        const cards = gsap.utils.toArray(".ch-prompt-masonry__item", container || root);
+        if (!container || !cards.length) return;
+        container.dataset.promptFeedState = "entering";
+        if (motionDisabled()) {
+          gsap.set(cards, { clearProps: "opacity,visibility" });
+          container.dataset.promptFeedState = "entered";
+          return;
+        }
+        animation = gsap.fromTo(
+          cards,
+          { autoAlpha: 0 },
+          {
+            autoAlpha: 1,
+            duration: 0.34,
+            stagger: 0.035,
+            ease: "power2.out",
+            clearProps: "opacity,visibility",
+            onComplete: () => {
+              container.dataset.promptFeedState = "entered";
+            },
+          },
+        );
+      };
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(reveal);
+      });
+      return () => {
+        window.cancelAnimationFrame(firstFrame);
+        window.cancelAnimationFrame(secondFrame);
+        animation?.kill();
+      };
+    },
+    { dependencies: [contentRevision, loading], scope: rootRef },
+  );
+
+  const revealPromptImage = useCallback((event, key) => {
+    masonry.measureFromEvent(key, event);
+    const image = event.currentTarget;
+    image.classList.add("is-loaded");
+    gsap.killTweensOf(image);
+    if (motionDisabled()) {
+      gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
+      return;
+    }
+    gsap.fromTo(
+      image,
+      { autoAlpha: 0, scale: 1.015 },
+      {
+        autoAlpha: 1,
+        scale: 1,
+        duration: 0.38,
+        ease: "power2.out",
+        clearProps: "opacity,visibility,transform",
+      },
+    );
+  }, [masonry]);
+
   const activeTypeLabel =
     PROMPT_TASK_TYPES.find((item) => item.id === activeType)?.label || "文生图";
   const previewIndex = preview
@@ -248,6 +357,7 @@ export function PromptLibraryView() {
   const openPreview = useCallback(
     (item) => {
       stopPreviewInertiaGuard();
+      setPreviewMotionPresent(true);
       setPreview(item);
     },
     [stopPreviewInertiaGuard],
@@ -282,14 +392,11 @@ export function PromptLibraryView() {
   );
 
   useEffect(() => {
-    if (!preview) return undefined;
+    if (!previewMotionPresent) return undefined;
     setBodyScrollLock(PREVIEW_SCROLL_LOCK, true, { freezeViewport: false });
     startPreviewInertiaGuard(0, { allowPreviewScroll: true });
     const onKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closePreview();
-      } else if (event.key === "ArrowLeft" && hasPreviewPrev) {
+      if (event.key === "ArrowLeft" && hasPreviewPrev) {
         event.preventDefault();
         showPreviewAt(previewIndex - 1);
       } else if (event.key === "ArrowRight" && hasPreviewNext) {
@@ -307,6 +414,7 @@ export function PromptLibraryView() {
     hasPreviewNext,
     hasPreviewPrev,
     preview,
+    previewMotionPresent,
     previewIndex,
     showPreviewAt,
     startPreviewInertiaGuard,
@@ -361,7 +469,7 @@ export function PromptLibraryView() {
     if (item?.id) {
       void recordPromptEngagement(item.id, "use", true).catch(() => null);
     }
-    if (taskType === "t2i") {
+    if (taskType === "t2i" || taskType === "infinite_canvas") {
       notificationService.success("已带到工作台");
     } else {
       try {
@@ -382,9 +490,13 @@ export function PromptLibraryView() {
   }
 
   return (
-    <main className="ch-page ch-page--prompts">
+    <main
+      ref={rootRef}
+      className="ch-page ch-page--prompts"
+      data-prompt-motion-state="idle"
+    >
       <div className="ch-shell">
-        <div className="ch-sticky-bar">
+        <div className="ch-sticky-bar" data-prompt-page-motion>
           <div className="ch-toolbar">
             <label className="ch-search">
               <i className="bi bi-search" aria-hidden="true" />
@@ -422,13 +534,17 @@ export function PromptLibraryView() {
           </div>
         </div>
 
-        <section className="ch-section">
+        <section className="ch-section" data-prompt-page-motion>
           {loading && !filteredItems.length ? (
             <div className="ch-loading">正在加载提示词…</div>
           ) : !filteredItems.length ? (
             <div className="ch-empty">
               <strong>暂无提示词</strong>
-              <span>换个分类试试，或稍后再来看官方更新</span>
+              <span>
+                {activeType === "infinite_canvas"
+                  ? "后台还没有投放无限画布提示词"
+                  : "换个分类试试，或稍后再来看官方更新"}
+              </span>
             </div>
           ) : (
             <div
@@ -454,6 +570,7 @@ export function PromptLibraryView() {
                   >
                     {entry.cover ? (
                       <img
+                        className="ch-prompt-card__image"
                         src={entry.cover}
                         alt={entry.item.title || "提示词"}
                         loading={
@@ -469,9 +586,8 @@ export function PromptLibraryView() {
                         decoding="async"
                         width={Math.max(1, Math.round(entry.width))}
                         height={Math.max(1, entry.mediaHeight)}
-                        onLoad={(event) =>
-                          masonry.measureFromEvent(entry.key, event)
-                        }
+                        onLoad={(event) => revealPromptImage(event, entry.key)}
+                        onError={(event) => revealPromptImage(event, entry.key)}
                       />
                     ) : (
                       <div className="ch-card__placeholder">
@@ -532,15 +648,17 @@ export function PromptLibraryView() {
         </section>
       </div>
 
-      {preview
-        ? createPortal(
-            <div
-              className="ch-preview-layer"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) closePreview();
-              }}
-            >
+      <DialogMotion
+        open={Boolean(preview)}
+        variant="detail"
+        layerClassName="ch-preview-layer"
+        panelClassName="ch-preview"
+        panelRef={previewPanelRef}
+        ariaLabel="提示词详情"
+        onClose={closePreview}
+        onExited={() => setPreviewMotionPresent(false)}
+        layerExtras={preview ? () => (
+          <>
               <button
                 type="button"
                 className="ch-preview__nav is-prev"
@@ -559,13 +677,11 @@ export function PromptLibraryView() {
               >
                 <i className="bi bi-chevron-right" aria-hidden="true" />
               </button>
-              <div
-                ref={previewPanelRef}
-                className="ch-preview"
-                role="dialog"
-                aria-modal="true"
-                aria-label="提示词详情"
-              >
+          </>
+        ) : null}
+      >
+        {preview ? (
+          <>
                 <div className="ch-preview__media">
                   {preview.coverUrl || preview.imageUrl ? (
                     <img
@@ -636,11 +752,9 @@ export function PromptLibraryView() {
                     </div>
                   </div>
                 </aside>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+          </>
+        ) : null}
+      </DialogMotion>
     </main>
   );
 }

@@ -112,6 +112,75 @@ func TestEcommerceProductRejectsForeignAsset(t *testing.T) {
 	}
 }
 
+func TestEcommerceAssetReviewLifecycleAndOwnership(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	_, otherToken := env.newUserSession(t, "user")
+	task, err := store.InsertTask(context.Background(), env.st.Pool, store.NewTask{
+		ID: uuid.New(), UserID: user.ID, Type: "ecommerce_design", Model: "test-image",
+		Prompt: "商品场景图", Params: map[string]any{"_kind": "ui-design-ecommerce-shoot-generation"},
+		Count: 1, InputKeys: []string{"uploads/source.png"}, CostCents: 2,
+	})
+	if err != nil {
+		t.Fatalf("insert ecommerce task: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(context.Background(), `UPDATE tasks SET status='succeeded',output_keys='["outputs/result.png"]'::jsonb,finished_at=now() WHERE id=$1`, task.ID); err != nil {
+		t.Fatalf("complete ecommerce task: %v", err)
+	}
+
+	checklist := map[string]bool{
+		"identity": true, "copy": true, "color": true,
+		"physics": true, "channel": true, "rights": true,
+	}
+	w := env.do(t, http.MethodPut, "/api/v1/commerce/reviews/"+task.ID.String(), map[string]any{
+		"status": "approved", "checklist": checklist, "note": "商品事实与渠道规范均已确认", "channel": "Amazon US",
+	}, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve review: status %d body %s", w.Code, w.Body.String())
+	}
+	review, _ := decode(t, w)
+	if review["status"] != "approved" || review["channel"] != "Amazon US" || review["reviewedAt"] == nil {
+		t.Fatalf("review = %#v", review)
+	}
+
+	w = env.do(t, http.MethodGet, "/api/v1/commerce/reviews?status=approved", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list reviews: status %d body %s", w.Code, w.Body.String())
+	}
+	listed, _ := decode(t, w)
+	if len(listed["items"].([]any)) != 1 {
+		t.Fatalf("listed reviews = %#v", listed)
+	}
+
+	w = env.do(t, http.MethodPut, "/api/v1/commerce/reviews/"+task.ID.String(), map[string]any{
+		"status": "changes_requested", "checklist": map[string]bool{"identity": true}, "note": "包装文字需要复核",
+	}, otherToken)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("other user review: status %d body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEcommerceAssetReviewRequiresCompleteChecklist(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	task, err := store.InsertTask(context.Background(), env.st.Pool, store.NewTask{
+		ID: uuid.New(), UserID: user.ID, Type: "ecommerce_design", Model: "test-image",
+		Prompt: "商品图", Params: map[string]any{}, Count: 1, CostCents: 1,
+	})
+	if err != nil {
+		t.Fatalf("insert ecommerce task: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(context.Background(), `UPDATE tasks SET status='succeeded',output_keys='["outputs/result.png"]'::jsonb WHERE id=$1`, task.ID); err != nil {
+		t.Fatalf("complete ecommerce task: %v", err)
+	}
+	w := env.do(t, http.MethodPut, "/api/v1/commerce/reviews/"+task.ID.String(), map[string]any{
+		"status": "approved", "checklist": map[string]bool{"identity": true},
+	}, token)
+	if _, code := decode(t, w); w.Code != http.StatusConflict || code != "review_incomplete" {
+		t.Fatalf("incomplete review: status %d code %s body %s", w.Code, code, w.Body.String())
+	}
+}
+
 func TestEcommerceProductLimitAdmissionIsSerialized(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

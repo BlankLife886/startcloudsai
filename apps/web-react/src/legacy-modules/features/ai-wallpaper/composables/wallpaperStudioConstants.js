@@ -64,12 +64,14 @@ export const T2I_COUNT_OPTIONS = [
 ]
 
 export const T2I_OUTPUT_FORMAT_OPTIONS = [
+  { value: 'auto', label: '模型内置', icon: 'bi-stars' },
   { value: 'png', label: 'PNG', icon: 'bi-filetype-png' },
   { value: 'webp', label: 'WebP', icon: 'bi-file-earmark-image' },
   { value: 'jpeg', label: 'JPEG', icon: 'bi-filetype-jpg' },
 ]
 
 export const T2I_MODERATION_OPTIONS = [
+  { value: '', label: '模型内置', icon: 'bi-stars' },
   { value: 'auto', label: '自动审核', icon: 'bi-shield-check' },
   { value: 'low', label: '低限制', icon: 'bi-shield' },
 ]

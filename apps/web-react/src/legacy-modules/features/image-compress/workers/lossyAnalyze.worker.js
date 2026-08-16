@@ -244,10 +244,35 @@ async function analyzePng(original, onProgress) {
   return variants
 }
 
+async function encodeWebpAtQuality(original, quality) {
+  await ensureWebpEnc()
+  const q = Math.max(0, Math.min(100, Math.round(Number(quality) || 50)))
+  const buffer = await encodeWebpBuffer(original, {
+    quality: q,
+    method: 4,
+    lossless: 0,
+    exact: 0,
+    alpha_quality: Math.min(100, q + 5),
+  })
+  return {
+    id: `webp-q${q}`,
+    label: `WebP 质量 ${q}`,
+    kind: 'webp',
+    quality: q,
+    mimeType: 'image/webp',
+    format: 'webp',
+    bytes: buffer.byteLength,
+    rmse: 0,
+    maxError: 0,
+    buffer,
+  }
+}
+
 self.onmessage = async (event) => {
   const payload = event.data || {}
-  if (payload.type !== 'analyze') return
   const id = payload.id
+  const type = String(payload.type || '')
+  if (type !== 'analyze' && type !== 'encode') return
   try {
     const format = String(payload.format || 'jpeg').toLowerCase()
     const width = Number(payload.width) || 0
@@ -258,7 +283,10 @@ self.onmessage = async (event) => {
       self.postMessage({ type: 'progress', id, done, total })
     }
     let variants
-    if (format === 'png') variants = await analyzePng(original, report)
+    if (type === 'encode') {
+      if (format !== 'webp') throw new Error('当前仅支持 WebP 定点质量编码')
+      variants = [await encodeWebpAtQuality(original, payload.quality)]
+    } else if (format === 'png') variants = await analyzePng(original, report)
     else if (format === 'webp') variants = await analyzeWebp(original, report)
     else variants = await analyzeJpeg(original, report)
 

@@ -111,6 +111,7 @@ export const PUZZLE_TOOL = {
 
 export const PROMPT_TASK_TYPES = [
   { id: 't2i', label: '文生图', to: '/text-to-image' },
+  { id: 'infinite_canvas', label: '无限画布', to: '/canvas?mode=new' },
   { id: 'coloring', label: '插画染色', to: '/ai-illustration-coloring' },
   { id: 'ui_design', label: 'UI 设计稿', to: '/design-workshop' },
   { id: 'ecommerce_design', label: 'AI 电商', to: '/ecommerce-design' },
@@ -193,6 +194,7 @@ function normalizePendingLaunchConfig(value) {
     'skill',
     'skillPrompt',
     'materialPrompt',
+    'mode',
     'ratio',
     'resolution',
     'quality',

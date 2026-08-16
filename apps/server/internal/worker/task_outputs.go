@@ -129,10 +129,6 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if ext == "" {
 		return fmt.Errorf("upstream returned unsupported image data")
 	}
-	thumb, err := media.ThumbnailJPEG(data, 512)
-	if err != nil {
-		return err
-	}
 
 	objectIndex := fmt.Sprintf("%d", index)
 	if c.completionClaimID != "" {
@@ -160,6 +156,11 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		results <- uploadResult{key: key, err: c.w.Storage.UploadBytes(c.ctx, key, data, contentType)}
 	}()
 	go func() {
+		thumb, thumbErr := media.ThumbnailJPEG(data, 512)
+		if thumbErr != nil {
+			results <- uploadResult{key: thumbKey, err: thumbErr}
+			return
+		}
 		results <- uploadResult{key: thumbKey, err: c.w.Storage.UploadBytes(c.ctx, thumbKey, thumb, "image/jpeg")}
 	}()
 	uploaded := make([]string, 0, 2)

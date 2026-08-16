@@ -1,5 +1,9 @@
 import { ECOMMERCE_MODES } from '@/features/ecommerce/ecommerceTools'
 import {
+  IMAGE_ASPECT_RATIOS,
+  IMAGE_RESOLUTIONS,
+} from '@/features/ai-shared/modelImageCapabilities'
+import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
   T2I_QUALITY_OPTIONS,
@@ -9,12 +13,17 @@ import {
 
 const option = (value, label, extra = {}) => ({ value, label, ...extra })
 
-const RATIO_OPTIONS = T2I_ASPECT_OPTIONS.map((item) => option(item.value, item.label))
-const RESOLUTION_OPTIONS = T2I_RESOLUTION_OPTIONS.map((item) => option(item.value, item.label))
+const RATIO_LABELS = new Map(T2I_ASPECT_OPTIONS.map((item) => [item.value, item.label]))
+const RATIO_OPTIONS = IMAGE_ASPECT_RATIOS.map((value) =>
+  option(value, RATIO_LABELS.get(value) || (value === 'auto' ? 'Auto 比例' : value)),
+)
+const RESOLUTION_OPTIONS = T2I_RESOLUTION_OPTIONS.filter((item) =>
+  IMAGE_RESOLUTIONS.includes(item.value),
+).map((item) => option(item.value, item.label))
 const QUALITY_OPTIONS = T2I_QUALITY_OPTIONS.map((item) => option(item.value, item.label))
 const COUNT_OPTIONS = T2I_COUNT_OPTIONS.map((item) => option(item.value, item.label))
 const FIELD_META = {
-  skill: { key: 'skill', label: 'Skill', icon: 'bi-lightning-charge-fill' },
+  skill: { key: 'skill', label: 'Skills', icon: 'bi-lightning-charge-fill' },
   ratio: { key: 'ratio', label: '比例', icon: 'bi-aspect-ratio' },
   resolution: { key: 'resolution', label: '分辨率', icon: 'bi-badge-hd' },
   quality: { key: 'quality', label: '质量', icon: 'bi-stars' },
@@ -30,11 +39,33 @@ const PROFILES = {
   assistant: {
     defaults: {
       skill: 'agent',
+      ratio: 'auto',
+      resolution: '1K',
       count: 2,
       model: '',
     },
-    fields: () => ['model'],
-    options: {},
+    fields: (config) =>
+      config.skill === 'image'
+        ? ['skill', 'model', 'ratio', 'resolution', 'count']
+        : ['skill', 'model'],
+    fieldMeta: {
+      skill: { label: '创作类型', icon: 'bi-magic' },
+    },
+    options: {
+      skill: [
+        option('agent', 'Agent 模式', {
+          icon: 'bi-magic',
+          description: '自动识别对话与生图',
+        }),
+        option('image', '图片生成', {
+          icon: 'bi-image',
+          description: '描述画面并上传参考图',
+        }),
+      ],
+      ratio: RATIO_OPTIONS,
+      resolution: RESOLUTION_OPTIONS,
+      count: COUNT_OPTIONS,
+    },
   },
   t2i: {
     defaults: {
@@ -45,14 +76,22 @@ const PROFILES = {
       count: 1,
       model: '',
     },
-    fields: () => ['skill', 'ratio', 'resolution', 'quality', 'count', 'model'],
+    fields: () => ['model', 'quality', 'ratio', 'resolution', 'count', 'skill'],
     fieldMeta: {
       skill: { configKey: 'skills', multiple: true },
     },
     options: {
       skill: [
-        option('none', '不启用 Skill'),
-        ...WALLPAPER_SKILL_OPTIONS.map((item) => option(item.id, item.name)),
+        option('none', '不启用 Skills', {
+          icon: 'bi-slash-circle',
+          description: '不附加额外生成指令',
+        }),
+        ...WALLPAPER_SKILL_OPTIONS.map((item) =>
+          option(item.id, item.name, {
+            icon: item.icon,
+            description: item.description,
+          }),
+        ),
       ],
       ratio: RATIO_OPTIONS,
       resolution: RESOLUTION_OPTIONS,

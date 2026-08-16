@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
 type profilePatch struct {
@@ -261,37 +263,64 @@ func (s *Server) myLedger(c *gin.Context) {
 		return
 	}
 	taskIDs := make([]uuid.UUID, 0, len(rows))
+	runIDs := make([]uuid.UUID, 0, len(rows))
 	seenTaskIDs := make(map[uuid.UUID]struct{}, len(rows))
+	seenRunIDs := make(map[uuid.UUID]struct{}, len(rows))
 	for _, entry := range rows {
-		if entry.SourceType != "task" || entry.SourceID == nil {
+		sourceID, ok := ledgerSourceUUID(entry)
+		if !ok {
 			continue
 		}
-		rawID := strings.SplitN(*entry.SourceID, "/", 2)[0]
-		taskID, parseErr := uuid.Parse(rawID)
-		if parseErr != nil {
-			continue
+		switch entry.SourceType {
+		case "task":
+			if _, exists := seenTaskIDs[sourceID]; exists {
+				continue
+			}
+			seenTaskIDs[sourceID] = struct{}{}
+			taskIDs = append(taskIDs, sourceID)
+		case "assistant_run":
+			if _, exists := seenRunIDs[sourceID]; exists {
+				continue
+			}
+			seenRunIDs[sourceID] = struct{}{}
+			runIDs = append(runIDs, sourceID)
 		}
-		if _, exists := seenTaskIDs[taskID]; exists {
-			continue
-		}
-		seenTaskIDs[taskID] = struct{}{}
-		taskIDs = append(taskIDs, taskID)
 	}
-	tasksByID, err := store.GetTasksByIDs(c.Request.Context(), s.St.Pool, taskIDs)
+	ctx := c.Request.Context()
+	tasksByID, err := store.GetTasksByIDs(ctx, s.St.Pool, taskIDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	runsByID, err := store.GetAssistantRunsByIDs(ctx, s.St.Pool, runIDs)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
-		if entry.SourceType != "task" || entry.SourceID == nil {
+		sourceID, ok := ledgerSourceUUID(entry)
+		if !ok {
 			return ledgerDict(entry)
 		}
-		taskID, parseErr := uuid.Parse(strings.SplitN(*entry.SourceID, "/", 2)[0])
-		if parseErr != nil {
+		if entry.SourceType == "assistant_run" {
+			return ledgerDictWithAssistantRun(entry, runsByID[sourceID])
+		}
+		if entry.SourceType != "task" {
 			return ledgerDict(entry)
 		}
-		return ledgerDictWithTask(entry, tasksByID[taskID])
+		return ledgerDictWithTask(entry, tasksByID[sourceID])
 	}))
+}
+
+func ledgerSourceUUID(entry *store.LedgerEntry) (uuid.UUID, bool) {
+	if entry == nil || entry.SourceID == nil {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(strings.SplitN(*entry.SourceID, "/", 2)[0])
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 func (s *Server) myNotifications(c *gin.Context) {
@@ -308,6 +337,10 @@ func (s *Server) myNotifications(c *gin.Context) {
 	ctx := c.Request.Context()
 	rows, err := store.ListVisibleNotifications(ctx, s.St.Pool, user.ID, limit, cursor)
 	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := decorateTaskNotifications(ctx, s.St.Pool, user.ID, rows); err != nil {
 		fail(c, err)
 		return
 	}
@@ -401,4 +434,78 @@ func (s *Server) markNotificationsRead(c *gin.Context) {
 		return
 	}
 	respondNoContent(c)
+}
+
+func (s *Server) clearNotifications(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := store.ClearUserNotifications(c.Request.Context(), s.St.Pool, user.ID); err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
+}
+
+const notifyTaskMatchWindow = 2 * time.Minute
+
+func decorateTaskNotifications(ctx context.Context, q store.Q, userID uuid.UUID, rows []*store.Notification) error {
+	var from, to time.Time
+	hasTask := false
+	for _, item := range rows {
+		if item == nil || item.Kind != "task" {
+			continue
+		}
+		hasTask = true
+		if from.IsZero() || item.CreatedAt.Before(from) {
+			from = item.CreatedAt
+		}
+		if to.IsZero() || item.CreatedAt.After(to) {
+			to = item.CreatedAt
+		}
+	}
+	if !hasTask {
+		return nil
+	}
+	tasks, err := store.ListUserTasksFinishedBetween(ctx, q, userID, from.Add(-notifyTaskMatchWindow), to.Add(notifyTaskMatchWindow))
+	if err != nil {
+		return err
+	}
+	used := make(map[uuid.UUID]bool, len(tasks))
+	for _, item := range rows {
+		if item == nil || item.Kind != "task" {
+			continue
+		}
+		task := closestUnusedTask(item.CreatedAt, tasks, used)
+		if task == nil {
+			continue
+		}
+		used[task.ID] = true
+		taskflow.ApplyTaskNotificationDisplay(item, task)
+	}
+	return nil
+}
+
+func closestUnusedTask(at time.Time, tasks []*store.Task, used map[uuid.UUID]bool) *store.Task {
+	var best *store.Task
+	var bestDist time.Duration
+	for _, task := range tasks {
+		if task == nil || task.FinishedAt == nil || used[task.ID] {
+			continue
+		}
+		dist := task.FinishedAt.Sub(at)
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist > notifyTaskMatchWindow {
+			continue
+		}
+		if best == nil || dist < bestDist {
+			best = task
+			bestDist = dist
+		}
+	}
+	return best
 }

@@ -33,6 +33,13 @@ function taskFromJob(job = {}, patch = {}) {
     1,
     Number(input.batchSize ?? params.batchSize ?? job.batchSize ?? 1) || 1,
   );
+  const originalOutputs = Array.isArray(job.originalMediaUrls)
+    ? job.originalMediaUrls.filter(Boolean)
+    : urls;
+  const hasDedicatedThumbnails = Array.isArray(job.thumbnailKeys) && job.thumbnailKeys.length > 0;
+  const thumbnailOutputs = hasDedicatedThumbnails && Array.isArray(job.resultMediaUrls)
+    ? job.resultMediaUrls.filter(Boolean)
+    : [];
   return {
     id: String(job.id || job.taskId || ""),
     serverJobId: String(job.id || job.taskId || ""),
@@ -59,6 +66,7 @@ function taskFromJob(job = {}, patch = {}) {
     transparentPngEnabled:
       input.transparentPngEnabled === true || input.transparentBackground === true,
     autoBackgroundRemovalEnabled: input.autoBackgroundRemovalEnabled === true,
+    automaticBackgroundRemoval: input._automatic === true,
     batchId: String(input.batchId || params.batchId || job.batchId || ""),
     batchIndex: Math.max(
       0,
@@ -66,9 +74,9 @@ function taskFromJob(job = {}, patch = {}) {
     ),
     batchSize,
     outputs: urls,
-    thumbnailOutputs: Array.isArray(job.resultMediaUrls)
-      ? job.resultMediaUrls.filter(Boolean)
-      : urls,
+    originalOutputs,
+    thumbnailOutputs,
+    hasDedicatedThumbnails,
     createdAt: job.createdAt || new Date().toISOString(),
     startedAt: job.startedAt || "",
     finishedAt: job.finishedAt || "",
@@ -270,6 +278,8 @@ export function useTextToImageJobs({ authenticated }) {
   const cancelTask = useCallback(async (task) => {
     const id = String(task?.serverJobId || "");
     if (!id) return;
+    controllersRef.current.get(id)?.abort();
+    controllersRef.current.delete(id);
     const response = await cancelServerAiJob(id);
     upsertTask(
       taskFromJob(

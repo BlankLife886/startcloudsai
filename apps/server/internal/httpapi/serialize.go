@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
 func userDict(u *store.User) gin.H {
@@ -176,15 +177,69 @@ func ledgerDictWithTask(e *store.LedgerEntry, task *store.Task) gin.H {
 			settledCost = task.CostCents / int64(task.Count) * int64(len(task.OutputKeys))
 		}
 	}
+	source, _ := params["_source"].(string)
 	d["task"] = gin.H{
 		"id":                        task.ID.String(),
 		"type":                      task.Type,
+		"displayName":               taskflow.TaskDisplayName(task),
+		"source":                    strings.TrimSpace(source),
 		"status":                    task.Status,
 		"modelName":                 strings.TrimSpace(displayModel),
 		"count":                     task.Count,
 		"costPoints":                task.CostCents,
 		"settledCostPoints":         settledCost,
 		"automaticBackgroundRemove": automatic,
+	}
+	return d
+}
+
+func ledgerDictWithAssistantRun(e *store.LedgerEntry, run *store.AssistantRun) gin.H {
+	d := ledgerDict(e)
+	if run == nil {
+		return d
+	}
+	params := run.Params
+	if params == nil {
+		params = map[string]any{}
+	}
+	displayModel, _ := params["_modelDisplayName"].(string)
+	if strings.TrimSpace(displayModel) == "" {
+		displayModel, _ = params["model"].(string)
+	}
+	count := 1
+	switch value := params["count"].(type) {
+	case int:
+		if value > 1 {
+			count = value
+		}
+	case int64:
+		if value > 1 {
+			count = int(value)
+		}
+	case float64:
+		if value > 1 {
+			count = int(value)
+		}
+	}
+	cost := run.CostCents
+	if cost <= 0 {
+		cost = run.ReservedCents
+	}
+	settledCost := int64(0)
+	if run.Status == "succeeded" {
+		settledCost = run.CostCents
+	}
+	d["task"] = gin.H{
+		"id":                        run.ID.String(),
+		"type":                      "assistant",
+		"displayName":               "AI 助手",
+		"source":                    "assistant",
+		"status":                    run.Status,
+		"modelName":                 strings.TrimSpace(displayModel),
+		"count":                     count,
+		"costPoints":                cost,
+		"settledCostPoints":         settledCost,
+		"automaticBackgroundRemove": false,
 	}
 	return d
 }

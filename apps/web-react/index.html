@@ -5,6 +5,65 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex,nofollow" />
     <title>星空云绘（StarCloudIsAI）- AI 图像创作工作台</title>
+    <style>
+      /* Critical first-paint colors: keep hard refreshes aligned with the app
+         before the JavaScript-owned stylesheets have finished loading. */
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        background: oklch(1 0 0);
+      }
+
+      html.color-scheme-dark,
+      html.color-scheme-dark body,
+      html.color-scheme-dark #root {
+        background: oklch(0.145 0 0);
+      }
+
+      html.canvas-entry,
+      html.canvas-entry body,
+      html.canvas-entry #root {
+        background-color: #f8f8ff;
+        background-image:
+          linear-gradient(rgba(106, 79, 224, 0.075) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(106, 79, 224, 0.075) 1px, transparent 1px);
+        background-position: center;
+        background-size: 40px 40px;
+      }
+
+      html.canvas-entry.color-scheme-dark,
+      html.canvas-entry.color-scheme-dark body,
+      html.canvas-entry.color-scheme-dark #root {
+        background-color: #10111a;
+        background-image:
+          linear-gradient(rgba(198, 188, 255, 0.075) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(198, 188, 255, 0.075) 1px, transparent 1px);
+      }
+    </style>
+    <script>
+      (() => {
+        try {
+          document.documentElement.classList.toggle(
+            "canvas-entry",
+            location.pathname === "/canvas" || location.pathname.startsWith("/canvas/"),
+          );
+          const value =
+            localStorage.getItem("walleven-color-scheme") ||
+            localStorage.getItem("starclouds-appearance") ||
+            "light";
+          const appearance = value === "dark" ? "dark" : "light";
+          document.documentElement.classList.toggle(
+            "color-scheme-dark",
+            appearance === "dark",
+          );
+          document.documentElement.dataset.colorScheme = appearance;
+          document.documentElement.style.colorScheme = appearance;
+        } catch {
+          document.documentElement.dataset.colorScheme = "light";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

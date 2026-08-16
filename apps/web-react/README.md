@@ -1,6 +1,6 @@
 # React 主站
 
-这个应用是生产用户端主站。源码、样式、静态资源和测试均位于 `apps/web-react`；智能画布直接复用 `apps/canvas-react`，因此生产容器从仓库根目录构建。
+这个应用是生产用户端主站。源码、样式、静态资源和测试均位于 `apps/web-react`；智能画布源码已合并到 `src/canvas`，主站可独立安装、构建和运行。
 
 ```bash
 npm install

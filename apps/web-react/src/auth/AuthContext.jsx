@@ -1,14 +1,31 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchCurrentAccount,
   getAuthSession,
 } from "@react/legacy-modules/services/auth.js";
+import storageService from "@react/legacy-modules/services/storage.js";
 
 const AuthContext = createContext(null);
 
+function accountScope(user) {
+  return user?.id ? `user_${user.id}` : "guest";
+}
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => getAuthSession()?.user || null);
+  const initialUser = useMemo(() => getAuthSession()?.user || null, []);
+  const userRef = useRef(initialUser);
+  const [user, setUserState] = useState(() => {
+    storageService.setActiveScope(accountScope(initialUser));
+    return initialUser;
+  });
   const [loading, setLoading] = useState(() => !getAuthSession()?.user);
+
+  const setUser = useCallback((nextUser) => {
+    const resolvedUser = typeof nextUser === "function" ? nextUser(userRef.current) : nextUser;
+    userRef.current = resolvedUser || null;
+    storageService.setActiveScope(accountScope(userRef.current));
+    setUserState(userRef.current);
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading((current) => current && !getAuthSession()?.user);

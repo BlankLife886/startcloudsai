@@ -1,7 +1,7 @@
 import tailwindcss from "@tailwindcss/postcss";
 import prefixSelector from "postcss-prefix-selector";
 
-const canvasStyles = `${process.platform === "win32" ? "\\" : "/"}apps${process.platform === "win32" ? "\\" : "/"}canvas-react${process.platform === "win32" ? "\\" : "/"}src${process.platform === "win32" ? "\\" : "/"}styles${process.platform === "win32" ? "\\" : "/"}globals.css`;
+const canvasStyles = `${process.platform === "win32" ? "\\" : "/"}src${process.platform === "win32" ? "\\" : "/"}canvas${process.platform === "win32" ? "\\" : "/"}styles${process.platform === "win32" ? "\\" : "/"}globals.css`;
 
 const strengthenCanvasUtilities = {
   postcssPlugin: "strengthen-native-canvas-utilities",
@@ -27,8 +27,9 @@ export default {
         if (selector.startsWith("html.starclouds-hosted ")) {
           return `${prefix} ${selector.slice("html.starclouds-hosted ".length)}`;
         }
-        if (selector.startsWith(".dark ")) {
-          return `${prefix}.dark ${selector.slice(".dark ".length)}`;
+        if (selector.startsWith(".dark ") || selector.startsWith("html.dark ")) {
+          const rest = selector.startsWith("html.dark ") ? selector.slice("html.dark ".length) : selector.slice(".dark ".length);
+          return `${prefix}.dark ${rest}`;
         }
         return prefixedSelector;
       },

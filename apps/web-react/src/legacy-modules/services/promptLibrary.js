@@ -4,7 +4,45 @@
  * 数据来自服务端 GET /api/v1/prompts（见 promptsApi.js，带内存缓存），
  * 并转换为工作台使用的页码式返回结构。
  */
+import { readLocale } from '../../i18n/locale.js'
 import { listPromptCategories, listPrompts, recordPromptEngagement } from './promptsApi'
+
+const ZH_MARKERS = /^(中文|zh|zh-cn|zh-tw|zh-hk|chinese)$/i
+const EN_MARKERS = /^(en|english)$/i
+
+function collapsePromptSpace(value) {
+  return String(value || '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+/**
+ * 词库里常把 [中文] / [English] 写在同一段。按当前语言只取对应正文。
+ */
+export function resolveLocalizedPrompt(prompt, locale = readLocale()) {
+  const text = collapsePromptSpace(prompt)
+  if (!text) return ''
+  const marks = [...text.matchAll(/\[(中文|English|en|zh|zh-CN|zh-TW|chinese)\]\s*/gi)]
+  if (marks.length < 2) return text
+  const segments = marks
+    .map((mark, index) => {
+      const start = mark.index + mark[0].length
+      const end = index + 1 < marks.length ? marks[index + 1].index : text.length
+      return {
+        label: String(mark[1] || '').trim(),
+        text: collapsePromptSpace(text.slice(start, end)),
+      }
+    })
+    .filter((segment) => segment.text)
+  if (!segments.length) return text
+  const preferEnglish = locale === 'en'
+  const picked = segments.find((segment) =>
+    preferEnglish ? EN_MARKERS.test(segment.label) : ZH_MARKERS.test(segment.label),
+  )
+  return picked?.text || segments[0].text
+}
 
 // cursor 分页 → 页码分页的游标链：key = `${type}|${category}`，index p 存第 p+1 页的 cursor
 const cursorChains = new Map()
@@ -20,7 +58,7 @@ function toLegacyItem(item) {
     id: item.id,
     title: item.title,
     label: item.title,
-    prompt: item.prompt,
+    prompt: resolveLocalizedPrompt(item.prompt),
     taskType: item.taskType,
     category: item.category,
     categoryKey: item.category || 'other',
@@ -63,9 +101,11 @@ export async function listPromptLibrary(type, options = {}) {
     category = '',
     scope = '',
     sort = 'recommended',
+    search = '',
   } = options
   const normalizedCategory = category === 'all' ? '' : String(category || '')
-  const key = chainKey(type, normalizedCategory, `${scope}:${sort}`)
+  const normalizedSearch = String(search || '').trim()
+  const key = chainKey(type, normalizedCategory, `${scope}:${sort}:${normalizedSearch}`)
   const chain = cursorChains.get(key) || ['']
   const page = Math.max(1, Number(pageNumber) || 1)
 
@@ -82,6 +122,7 @@ export async function listPromptLibrary(type, options = {}) {
       category: normalizedCategory,
       scope,
       sort,
+      search: normalizedSearch,
       cursor,
       limit: pageSize,
     })

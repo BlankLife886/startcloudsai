@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router";
 import {
   deleteTask,
@@ -39,6 +38,8 @@ import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
+import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import "./HistoryView.css";
@@ -60,7 +61,24 @@ const STATUS_FILTERS = [
   ["queued", "排队中"],
   ["failed", "失败"],
 ];
-const TYPE_FILTERS = [["", "全部"], ...Object.entries(TASK_TYPE_LABELS)];
+const CANVAS_SOURCE = "react_canvas";
+const TYPE_FILTERS = [
+  ["", "全部"],
+  [CANVAS_SOURCE, "无限画布"],
+  ...Object.entries(TASK_TYPE_LABELS),
+];
+
+function matchesTypeFilter(task, typeFilter) {
+  if (!typeFilter) return true;
+  if (typeFilter === CANVAS_SOURCE) return isSmartCanvasTask(task);
+  if (
+    (typeFilter === "t2i" || typeFilter === "background_remove") &&
+    isSmartCanvasTask(task)
+  ) {
+    return false;
+  }
+  return typeFilter === task?.type;
+}
 
 function readStoredLayout() {
   const stored = localStorage.getItem(HISTORY_LAYOUT_KEY) || "grid:4";
@@ -87,7 +105,7 @@ function taskPrompt(task) {
 
 function taskTypeLabel(task) {
   return isSmartCanvasTask(task)
-    ? "智能画布"
+    ? "无限画布"
     : TASK_TYPE_LABELS[task?.type] || "创作";
 }
 
@@ -208,6 +226,7 @@ export function HistoryView() {
   const listControllerRef = useRef(null);
   const subscriptionsRef = useRef(new Map());
   const sentinelRef = useRef(null);
+  const pageRef = useRef(null);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -250,6 +269,17 @@ export function HistoryView() {
       }));
   }, [search, statusFilter, tasks]);
   const masonry = useHistoryMasonry(visibleTasks, gridColumns, measuredAspects);
+  useContentReveal({
+    rootRef: pageRef,
+    selector:
+      layoutMode === "grid"
+        ? ".ch-history-masonry__item"
+        : ".ch-history-table tbody tr",
+    ready: !loading,
+    resetKey: `${layoutMode}:${gridColumns}:${typeFilter}:${statusFilter}:${search}`,
+    contentKey: visibleTasks.map((task) => task.id).join("|"),
+    stateAttribute: "data-history-content-motion-state",
+  });
   const selectedDownloadTasks = visibleTasks.filter(
     (task) => selectedIds.has(String(task.id)) && taskOriginalUrl(task),
   );
@@ -307,9 +337,14 @@ export function HistoryView() {
       } else setLoadingMore(true);
       try {
         const page = await listTasks({
-          type: typeFilter,
+          type: typeFilter === CANVAS_SOURCE ? "" : typeFilter,
           limit: 24,
           cursor: append ? cursor || "" : "",
+          excludeSource:
+            typeFilter === "t2i" || typeFilter === "background_remove"
+              ? CANVAS_SOURCE
+              : "",
+          source: typeFilter === CANVAS_SOURCE ? CANVAS_SOURCE : "",
           signal: listControllerRef.current?.signal,
         });
         if (!mountedRef.current) return;
@@ -346,7 +381,7 @@ export function HistoryView() {
         const rows =
           index >= 0
             ? current.map((task) => (task.id === incoming.id ? incoming : task))
-            : !typeFilter || typeFilter === incoming.type
+            : matchesTypeFilter(incoming, typeFilter)
               ? [incoming, ...current]
               : current;
         queueMicrotask(() => mountedRef.current && syncSubscriptions(rows));
@@ -381,7 +416,6 @@ export function HistoryView() {
     if (!preview) return undefined;
     setBodyScrollLock(HISTORY_PREVIEW_LOCK, true, { freezeViewport: false });
     const keydown = (event) => {
-      if (event.key === "Escape") closePreview();
       if (event.key === "ArrowLeft" && previewIndex > 0)
         setPreview(visibleTasks[previewIndex - 1]);
       if (event.key === "ArrowRight" && previewIndex < visibleTasks.length - 1)
@@ -390,7 +424,6 @@ export function HistoryView() {
     document.addEventListener("keydown", keydown);
     return () => {
       document.removeEventListener("keydown", keydown);
-      setBodyScrollLock(HISTORY_PREVIEW_LOCK, false);
     };
   }, [preview, previewIndex, visibleTasks]);
 
@@ -405,8 +438,11 @@ export function HistoryView() {
       listControllerRef.current = new AbortController();
       setLoading(true);
       listTasks({
-        type: value,
+        type: value === CANVAS_SOURCE ? "" : value,
         limit: 24,
+        excludeSource:
+          value === "t2i" || value === "background_remove" ? CANVAS_SOURCE : "",
+        source: value === CANVAS_SOURCE ? CANVAS_SOURCE : "",
         signal: listControllerRef.current.signal,
       })
         .then((page) => {
@@ -663,6 +699,7 @@ export function HistoryView() {
     navigate(studioRouteForTask(task));
   };
   const openLocalEdit = (task) => {
+    if (isSmartCanvasTask(task)) return notificationService.info("无限画布任务请在画布中继续编辑");
     const sourceUrl = taskOriginalUrl(task);
     if (!sourceUrl) return notificationService.info("当前记录没有可编辑的原图");
     stashLocalEditHandoff({ task, sourceUrl });
@@ -705,7 +742,7 @@ export function HistoryView() {
         : `读取原图 ${batchProgress.completed}/${batchProgress.total}`;
 
   return (
-    <main className="ch-page ch-page--history">
+    <main ref={pageRef} className="ch-page ch-page--history">
       <div className="ch-shell">
         <div className="ch-sticky-bar">
           <div className="ch-toolbar">
@@ -861,9 +898,16 @@ export function HistoryView() {
           ) : !visibleTasks.length ? (
             <div className="ch-empty">
               <strong>还没有历史记录</strong>
-              <span>去创作台生成第一张图吧</span>
-              <Link className="ch-btn is-primary" to="/studio">
-                打开创作台
+              <span>
+                {typeFilter === CANVAS_SOURCE
+                  ? "去无限画布生成第一张图吧"
+                  : "去创作台生成第一张图吧"}
+              </span>
+              <Link
+                className="ch-btn is-primary"
+                to={typeFilter === CANVAS_SOURCE ? "/canvas" : "/studio"}
+              >
+                {typeFilter === CANVAS_SOURCE ? "打开无限画布" : "打开创作台"}
               </Link>
             </div>
           ) : layoutMode === "grid" ? (
@@ -995,7 +1039,7 @@ export function HistoryView() {
                         <button
                           type="button"
                           title="局部编辑"
-                          disabled={!taskOriginalUrl(task)}
+                          disabled={!taskOriginalUrl(task) || isSmartCanvasTask(task)}
                           onClick={() => openLocalEdit(task)}
                         >
                           <i className="bi bi-brush" />
@@ -1033,14 +1077,14 @@ export function HistoryView() {
               <table className="ch-history-table">
                 <thead>
                   <tr>
-                    {selectMode && <th aria-label="选择" />}
-                    <th>作品</th>
-                    <th>提示词</th>
-                    <th>尺寸</th>
-                    <th>大小</th>
-                    <th>透明</th>
-                    <th>状态</th>
-                    <th>创建时间</th>
+                    {selectMode && <th className="is-check" aria-label="选择" />}
+                    <th className="is-work">作品</th>
+                    <th className="is-prompt">提示词</th>
+                    <th className="is-size">尺寸</th>
+                    <th className="is-file-size">大小</th>
+                    <th className="is-transparency">透明</th>
+                    <th className="is-status-cell">状态</th>
+                    <th className="is-created">创建时间</th>
                     <th className="is-actions">操作</th>
                   </tr>
                 </thead>
@@ -1066,7 +1110,7 @@ export function HistoryView() {
                             </button>
                           </td>
                         )}
-                        <td>
+                        <td className="is-work">
                           <button
                             className="ch-table-preview"
                             type="button"
@@ -1087,7 +1131,7 @@ export function HistoryView() {
                         <td className="is-prompt" title={task.cleanPrompt}>
                           {task.cleanPrompt}
                         </td>
-                        <td>
+                        <td className="is-size" data-label="尺寸">
                           {!taskOriginalUrl(task)
                             ? "—"
                             : meta?.width
@@ -1096,8 +1140,10 @@ export function HistoryView() {
                                 ? "不可用"
                                 : "读取中…"}
                         </td>
-                        <td>{meta?.bytes ? formatBytes(meta.bytes) : "—"}</td>
-                        <td>
+                        <td className="is-file-size" data-label="大小">
+                          {meta?.bytes ? formatBytes(meta.bytes) : "—"}
+                        </td>
+                        <td className="is-transparency" data-label="透明">
                           {meta && !meta.error ? (
                             <span
                               className={`ch-transparency${meta.transparent ? " is-transparent" : ""}`}
@@ -1108,7 +1154,7 @@ export function HistoryView() {
                             "—"
                           )}
                         </td>
-                        <td>
+                        <td className="is-status-cell" data-label="状态">
                           <span
                             className="ch-pill is-status"
                             data-status={task.status}
@@ -1116,7 +1162,9 @@ export function HistoryView() {
                             {STATUS_LABELS[task.status] || task.status}
                           </span>
                         </td>
-                        <td>{formatTime(task.createdAt)}</td>
+                        <td className="is-created" data-label="创建时间">
+                          {formatTime(task.createdAt)}
+                        </td>
                         <td className="is-actions">
                           <div className="ch-table-actions">
                             <button
@@ -1138,7 +1186,7 @@ export function HistoryView() {
                             </button>
                             <button
                               title="局部编辑"
-                              disabled={!taskOriginalUrl(task)}
+                              disabled={!taskOriginalUrl(task) || isSmartCanvasTask(task)}
                               onClick={() => openLocalEdit(task)}
                             >
                               <i className="bi bi-brush" />
@@ -1170,14 +1218,16 @@ export function HistoryView() {
           )}
         </section>
       </div>
-      {preview &&
-        createPortal(
-          <div
-            className="ch-preview-layer"
-            onMouseDown={(event) =>
-              event.target === event.currentTarget && closePreview()
-            }
-          >
+      <DialogMotion
+        open={Boolean(preview)}
+        variant="detail"
+        layerClassName="ch-preview-layer"
+        panelClassName="ch-preview"
+        ariaLabel="历史记录图片预览"
+        onClose={closePreview}
+        onExited={() => setBodyScrollLock(HISTORY_PREVIEW_LOCK, false)}
+        layerExtras={preview ? () => (
+          <>
             <button
               type="button"
               className="ch-preview__nav is-prev"
@@ -1196,7 +1246,11 @@ export function HistoryView() {
             >
               <i className="bi bi-chevron-right" />
             </button>
-            <div className="ch-preview" role="dialog" aria-modal="true">
+          </>
+        ) : null}
+      >
+        {preview ? (
+          <>
               <div className="ch-preview__media">
                 {taskCoverUrl(preview) ? (
                   <AuthenticatedImage
@@ -1293,7 +1347,7 @@ export function HistoryView() {
                     </button>
                     <button
                       type="button"
-                      disabled={!taskOriginalUrl(preview)}
+                      disabled={!taskOriginalUrl(preview) || isSmartCanvasTask(preview)}
                       onClick={() => openLocalEdit(preview)}
                     >
                       局部编辑
@@ -1304,10 +1358,9 @@ export function HistoryView() {
                   </div>
                 </div>
               </aside>
-            </div>
-          </div>,
-          document.body,
-        )}
+          </>
+        ) : null}
+      </DialogMotion>
       <SharePublishDialog
         open={Boolean(publishTarget)}
         title={

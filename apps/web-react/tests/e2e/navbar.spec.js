@@ -49,7 +49,19 @@ test('desktop dropdown opens on click and closes on trigger or outside', async (
   const ecommerceTrigger = ecommerceDropdown.locator('.nav-dropdown-label')
   await ecommerceTrigger.click()
   await expect(ecommerceDropdown).toHaveClass(/open/)
-  await expect(ecommerceDropdown.locator('.commerce-mega-menu')).toBeVisible()
+  const ecommerceMenu = ecommerceDropdown.locator('.commerce-mega-menu')
+  await expect(ecommerceMenu).toBeVisible()
+  await expect(ecommerceMenu).toHaveAttribute('data-nav-motion-state', 'entered')
+
+  // 快速切换分组时，新菜单必须接管动画且不能残留半透明状态。
+  const designDropdown = page.locator('.nav-dropdown--mega')
+  await designDropdown.locator('.nav-dropdown-label').click()
+  const designMenu = designDropdown.locator('.nav-mega-menu')
+  await expect(ecommerceTrigger).toHaveAttribute('aria-expanded', 'false')
+  await expect(designMenu).toHaveAttribute('data-nav-motion-state', 'entered')
+  await expect(designMenu).toHaveCSS('opacity', '1')
+  await ecommerceTrigger.click()
+  await expect(ecommerceMenu).toHaveAttribute('data-nav-motion-state', 'entered')
 
   // 再次点击主菜单项关闭
   await ecommerceTrigger.click()
@@ -99,7 +111,9 @@ test('mobile menu closes when the user clicks outside the header', async ({ page
   await expect(toggle).toBeVisible()
   await toggle.click()
   await expect(header).toHaveClass(/is-mobile-open/)
-  await expect(page.locator('.main-nav')).toBeVisible()
+  const navigation = page.locator('.main-nav')
+  await expect(navigation).toBeVisible()
+  await expect(navigation).toHaveAttribute('data-nav-motion-state', 'entered')
 
   await page.mouse.click(550, 780)
   await expect(header).not.toHaveClass(/is-mobile-open/)
@@ -123,6 +137,86 @@ test('authenticated navbar check-in button enters the check-in page', async ({ p
   await expect(page).toHaveURL(/\/check-in$/)
   await expect(page.locator('.ck-dashboard')).toBeVisible()
   await expect(page.locator('.auth-required-dialog')).toHaveCount(0)
+})
+
+test('notification hover shows recent messages and remains interactive', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.route('**/api/v1/me/notifications**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          unread: 2,
+          items: [
+            {
+              id: 'nav-notification-1',
+              kind: 'task_complete',
+              title: '图片生成完成',
+              body: '你的作品已经生成完成，可前往历史记录查看。',
+              readAt: null,
+              createdAt: new Date(Date.now() - 120_000).toISOString(),
+            },
+            {
+              id: 'nav-notification-2',
+              kind: 'wallet_redeem',
+              title: '兑换积分已到账',
+              body: '260 积分已加入账户余额。',
+              readAt: '2026-08-11T08:00:00Z',
+              createdAt: '2026-08-11T08:00:00Z',
+            },
+          ],
+          nextCursor: null,
+        },
+      }),
+    }),
+  )
+  await page.goto('/')
+
+  const notificationButton = page.getByRole('link', { name: '通知' })
+  await notificationButton.hover()
+  const preview = page.getByRole('dialog', { name: '最近通知' })
+  await expect(preview).toBeVisible()
+  await expect(preview).toContainText('2 条未读')
+  await expect(preview).toContainText('图片生成完成')
+  await preview.hover()
+  await page.waitForTimeout(220)
+  await expect(preview).toBeVisible()
+  await preview.getByRole('link', { name: /查看全部通知/ }).click()
+  await expect(page).toHaveURL(/\/notifications$/)
+})
+
+test('navbar logout requires confirmation before deleting the session', async ({ page }) => {
+  let logoutRequests = 0
+  await page.route('**/api/v1/auth/session', async (route) => {
+    if (route.request().method() === 'DELETE') {
+      logoutRequests += 1
+      await route.fulfill({ status: 204, body: '' })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { user } }),
+    })
+  })
+  await page.goto('/')
+  await page.locator('.account-cluster').click()
+  await page.getByRole('menuitem', { name: '退出登录' }).click()
+
+  const confirm = page.getByRole('alertdialog')
+  await expect(confirm).toContainText('退出当前账号？')
+  expect(logoutRequests).toBe(0)
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(confirm).toHaveCount(0)
+  expect(logoutRequests).toBe(0)
+
+  await page.locator('.account-cluster').click()
+  await page.getByRole('menuitem', { name: '退出登录' }).click()
+  await page.getByRole('button', { name: '确认退出' }).click()
+  await expect.poll(() => logoutRequests).toBe(1)
+  await expect(page.locator('.account-login')).toBeVisible()
 })
 
 test('anonymous history navigation opens auth without entering the page', async ({ page }) => {

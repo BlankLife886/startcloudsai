@@ -125,7 +125,7 @@ func Load() *Config {
 	cfg := &Config{
 		AppEnv:         appEnv,
 		AppSecret:      getenv("APP_SECRET", "dev-secret-change-me"),
-		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3104,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3104,http://127.0.0.1:3200"),
+		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3105,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3105,http://127.0.0.1:3200"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
 		SMTPAddr:       getenv("SMTP_ADDR", ""),

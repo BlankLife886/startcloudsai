@@ -1,6 +1,35 @@
+import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import { MigrationPreview } from "./views/MigrationPreview.jsx";
 import { AppShell } from "./layout/AppShell.jsx";
+import { AuthAccountView } from "./views/auth/AuthAccountView.jsx";
+import { ProtectedCanvasRoute } from "./auth/ProtectedCanvasRoute.jsx";
+
+const CanvasNativeLayout = lazy(() =>
+  import("@canvas/native-layout.tsx").then((module) => ({
+    default: module.CanvasNativeLayout,
+  })),
+);
+const CanvasProjectRoute = lazy(() =>
+  import("@canvas/native-routes.tsx").then((module) => ({
+    default: module.CanvasProjectRoute,
+  })),
+);
+const CanvasConfigRoute = lazy(() =>
+  import("@canvas/native-routes.tsx").then((module) => ({
+    default: module.CanvasConfigRoute,
+  })),
+);
+
+function canvasElement(Page) {
+  return (
+    <Suspense fallback={null}>
+      <CanvasNativeLayout>
+        <Page />
+      </CanvasNativeLayout>
+    </Suspense>
+  );
+}
 
 function lazyView(importer, exportName) {
   return async () => {
@@ -14,10 +43,7 @@ function lazyView(importer, exportName) {
 export const router = createBrowserRouter([
   {
     path: "/auth",
-    lazy: lazyView(
-      () => import("./views/auth/AuthAccountView.jsx"),
-      "AuthAccountView",
-    ),
+    element: <AuthAccountView />,
   },
   {
     path: "/auth/login",
@@ -162,8 +188,24 @@ export const router = createBrowserRouter([
           {
             path: "/canvas",
             lazy: lazyView(
-              () => import("./views/CanvasAppView.jsx"),
-              "CanvasAppView",
+              () => import("@canvas/native-index-route.tsx"),
+              "CanvasNativeIndexRoute",
+            ),
+          },
+          {
+            path: "/canvas/config",
+            element: (
+              <ProtectedCanvasRoute>
+                {canvasElement(CanvasConfigRoute)}
+              </ProtectedCanvasRoute>
+            ),
+          },
+          {
+            path: "/canvas/:id",
+            element: (
+              <ProtectedCanvasRoute>
+                {canvasElement(CanvasProjectRoute)}
+              </ProtectedCanvasRoute>
             ),
           },
           {
@@ -216,11 +258,15 @@ export const router = createBrowserRouter([
             ),
           },
           {
-            path: "/materials",
+            path: "/assets",
             lazy: lazyView(
               () => import("./views/MaterialsLibraryView.jsx"),
               "MaterialsLibraryView",
             ),
+          },
+          {
+            path: "/materials",
+            element: <Navigate replace to="/assets" />,
           },
           {
             path: "/incentive-plans",

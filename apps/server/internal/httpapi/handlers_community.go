@@ -56,7 +56,7 @@ func normalizePromptQueryTags(values []string) []string {
 
 func (s *Server) publicPrompts(c *gin.Context) {
 	taskType := c.Query("type")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -210,7 +210,7 @@ func (s *Server) promptEngagement(c *gin.Context) {
 
 func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 	taskType := c.Query("type")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -314,7 +314,7 @@ func validatePromptFields(title, prompt, taskType string, category *string, tags
 	if prompt == "" || len([]rune(prompt)) > 10000 {
 		return apperr.E("validation_error", "prompt: 长度须在 1-10000 之间", 422)
 	}
-	if !store.Contains(store.TaskTypes, taskType) {
+	if !store.Contains(store.PromptTaskTypes, taskType) {
 		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
 	}
 	if category != nil && len([]rune(*category)) > 64 {
@@ -524,7 +524,7 @@ type movePromptIn struct {
 }
 
 func validatePromptSortScope(taskType, status string) error {
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
 	}
 	if status != "" && status != "enabled" && status != "disabled" && status != "missing-cover" {

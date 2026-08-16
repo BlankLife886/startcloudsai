@@ -262,10 +262,10 @@
 
 /* 输入框底部：参考图与清空同排，Skills 独占下一行 */
 .t2i-prompt-foot {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: flex-end;
-  gap: 10px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
   padding: 0 12px 10px;
 }
 
@@ -792,12 +792,11 @@
 }
 
 .t2i-prompt-foot .t2i-skill-tools {
-  width: 100%;
-  grid-column: 1 / -1;
+  flex: 0 0 auto;
 }
 
 .t2i-prompt-foot .t2i-skill-trigger {
-  width: 100%;
+  width: auto;
   min-height: 34px;
 }
 
@@ -2967,6 +2966,87 @@
   background: rgba(var(--t2i-accent-rgb), 0.18);
 }
 
+/* 提示词卡片操作栏：轻量计数 + 单一主操作，避免多个描边胶囊争抢层级。 */
+.t2i-prompt-card-actions {
+  display: grid;
+  grid-template-columns: 44px 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 4px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.t2i-prompt-card-actions > button {
+  min-width: 0;
+  min-height: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.t2i-prompt-card-actions > button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.t2i-prompt-card-actions .t2i-prompt-card-actions__metric {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 5px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 0.74rem;
+}
+
+.t2i-prompt-card-actions__metric i {
+  font-size: 0.92rem;
+}
+
+.t2i-prompt-card-actions .t2i-prompt-card-actions__metric:hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.t2i-prompt-card-actions .t2i-prompt-card-actions__metric.is-active {
+  border-color: transparent;
+  background: rgba(var(--t2i-accent-rgb), 0.14);
+  color: var(--t2i-accent-2);
+}
+
+.t2i-prompt-card-actions .t2i-prompt-card-actions__use {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  background: rgba(var(--t2i-accent-rgb), 0.16);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 0.76rem;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.t2i-prompt-card-actions__use .bi-arrow-up-right {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.72rem;
+}
+
+.t2i-prompt-card-actions .t2i-prompt-card-actions__use:hover {
+  border-color: transparent;
+  background: rgba(var(--t2i-accent-rgb), 0.24);
+  color: #fff;
+}
+
 .t2i-image-actions button:disabled,
 .t2i-entry-actions button:disabled {
   opacity: 0.45;
@@ -3186,10 +3266,15 @@
     font-size: 0.62rem;
   }
 
-  .t2i-collection-card .t2i-entry-actions button {
-    min-height: 28px;
-    padding: 0 10px;
-    font-size: 0.72rem;
+  .t2i-collection-card .t2i-prompt-card-actions {
+    grid-template-columns: 40px 40px minmax(0, 1fr);
+  }
+
+  .t2i-collection-card .t2i-prompt-card-actions > button {
+    min-height: 34px;
+    height: 34px;
+    padding-inline: 7px;
+    font-size: 0.7rem;
   }
 }
 
@@ -5160,6 +5245,23 @@ html.settings-no-animations .t2i-masonry-card {
   color: rgba(34, 36, 49, 0.44);
 }
 
+.t2i-page.is-light .t2i-clear-failed {
+  border-color: rgba(204, 72, 92, 0.32);
+  background: rgba(204, 72, 92, 0.1);
+  color: #b4233c;
+}
+
+.t2i-page.is-light .t2i-clear-failed:hover:not(:disabled) {
+  border-color: rgba(204, 72, 92, 0.5);
+  background: rgba(204, 72, 92, 0.16);
+  color: #9f1239;
+}
+
+.t2i-page.is-light .t2i-clear-failed em {
+  background: rgba(204, 72, 92, 0.16);
+  color: #9f1239;
+}
+
 .t2i-page.is-light .t2i-image-actions button,
 .t2i-page.is-light .t2i-entry-actions button {
   background: rgba(31, 33, 46, 0.04);
@@ -5176,6 +5278,42 @@ html.settings-no-animations .t2i-masonry-card {
 .t2i-page.is-light .t2i-entry-actions button.is-active,
 .t2i-page.is-light .t2i-image-actions button.is-primary {
   color: var(--t2i-accent);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions {
+  background: rgba(31, 33, 46, 0.045);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions .t2i-prompt-card-actions__metric {
+  background: transparent;
+  color: rgba(31, 33, 46, 0.55);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions .t2i-prompt-card-actions__metric:hover {
+  border-color: transparent;
+  background: rgba(31, 33, 46, 0.07);
+  color: rgba(31, 33, 46, 0.9);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions .t2i-prompt-card-actions__metric.is-active {
+  background: rgba(var(--t2i-accent-rgb), 0.12);
+  color: var(--t2i-accent);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions .t2i-prompt-card-actions__use {
+  border-color: transparent;
+  background: rgba(var(--t2i-accent-rgb), 0.13);
+  color: var(--t2i-accent);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions .t2i-prompt-card-actions__use:hover {
+  border-color: transparent;
+  background: rgba(var(--t2i-accent-rgb), 0.2);
+  color: var(--t2i-accent);
+}
+
+.t2i-page.is-light .t2i-prompt-card-actions__use .bi-arrow-up-right {
+  color: rgba(var(--t2i-accent-rgb), 0.58);
 }
 
 .t2i-page.is-light .t2i-masonry-card {

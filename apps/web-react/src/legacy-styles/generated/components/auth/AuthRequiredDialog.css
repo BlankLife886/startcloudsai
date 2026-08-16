@@ -9,6 +9,8 @@
   padding: clamp(18px, 4vw, 64px);
   background: rgb(4 5 8 / 78%);
   backdrop-filter: blur(18px) saturate(0.8);
+  -webkit-backdrop-filter: blur(18px) saturate(0.8);
+  will-change: opacity;
 }
 .auth-required-dialog {
   position: relative;
@@ -23,6 +25,7 @@
   border-radius: 22px;
   box-shadow: 0 30px 88px rgb(0 0 0 / 56%);
   outline: none;
+  will-change: transform, opacity;
 }
 .auth-required-close {
   position: absolute;
@@ -145,6 +148,7 @@
   margin: 0;
   overflow: hidden;
   background: #d6d6d6;
+  will-change: transform, opacity;
 }
 .auth-required-visual::after {
   position: absolute;
@@ -164,6 +168,7 @@
   object-fit: cover;
   object-position: 50% 42%;
   filter: contrast(1.05);
+  will-change: transform;
 }
 .auth-required-visual__line {
   position: absolute;
@@ -203,25 +208,6 @@
   font-size: 0.6rem;
   letter-spacing: 0.12em;
   opacity: 0.7;
-}
-.auth-required-enter-active,
-.auth-required-leave-active {
-  transition: opacity 180ms ease;
-}
-.auth-required-enter-active .auth-required-dialog,
-.auth-required-leave-active .auth-required-dialog {
-  transition:
-    transform 220ms ease,
-    opacity 180ms ease;
-}
-.auth-required-enter-from,
-.auth-required-leave-to {
-  opacity: 0;
-}
-.auth-required-enter-from .auth-required-dialog,
-.auth-required-leave-to .auth-required-dialog {
-  opacity: 0;
-  transform: translateY(18px) scale(0.985);
 }
 @media (max-width: 900px) {
 .auth-required-layer {
@@ -293,11 +279,7 @@
 }
 }
 @media (prefers-reduced-motion: reduce) {
-.auth-required-enter-active,
-  .auth-required-leave-active,
-  .auth-required-enter-active .auth-required-dialog,
-  .auth-required-leave-active .auth-required-dialog,
-  .auth-required-actions button,
+.auth-required-actions button,
   .auth-required-close {
     transition: none;
 }

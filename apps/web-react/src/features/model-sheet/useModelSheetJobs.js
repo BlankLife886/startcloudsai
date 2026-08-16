@@ -86,6 +86,14 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [batchProgress, setBatchProgress] = useState([]);
+  const [executionStartedAt, setExecutionStartedAt] = useState(0);
+
+  const markExecutionStarted = useCallback((job = {}) => {
+    const currentStatus = String(job.status || "").toLowerCase();
+    if (currentStatus !== "running") return;
+    const startedAt = Date.parse(job.startedAt || "") || Date.now();
+    setExecutionStartedAt((current) => current ? Math.min(current, startedAt) : startedAt);
+  }, []);
 
   const ingestJob = useCallback((job, { activate = false, prepend = false } = {}) => {
     const urls = resultUrls(job);
@@ -120,6 +128,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         intervalMs: 2500,
         maxPolls: 260,
         signal,
+        onUpdate: markExecutionStarted,
         onImage: (_partialOutputs, partialJob, partialResult) => {
           if (signal.aborted || !mountedRef.current) return;
           const urls = resultUrls(partialJob, partialResult);
@@ -143,7 +152,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     } finally {
       activeJobIdsRef.current.delete(jobId);
     }
-  }, [activeOutput, ingestJob]);
+  }, [activeOutput, ingestJob, markExecutionStarted]);
 
   const loadHistory = useCallback(async ({ reset = true } = {}) => {
     if (!isAuthenticated || historyLoading) return [];
@@ -258,6 +267,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         intervalMs: 2500,
         maxPolls: 260,
         signal,
+        onUpdate: markExecutionStarted,
         onStatus: (message) => mountedRef.current && setStatus(String(message || "")),
         onImage: (_partialOutputs, partialJob, partialResult) => {
           if (signal.aborted || !mountedRef.current) return;
@@ -288,7 +298,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     } finally {
       activeJobIdsRef.current.delete(jobId);
     }
-  }, [ingestJob, model]);
+  }, [ingestJob, markExecutionStarted, model]);
 
   const generateBatch = useCallback(async ({
     items,
@@ -305,6 +315,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     setRunning(true);
     setError("");
     setStatus("正在准备参考图");
+    setExecutionStartedAt(0);
     const progress = items.map((item, index) => ({
       label: String(item.viewLabel || `第 ${index + 1} 张`),
       status: "pending",
@@ -444,6 +455,30 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (isAuthenticated) {
+      void loadHistory();
+      return undefined;
+    }
+    historyControllerRef.current?.abort();
+    generationControllerRef.current?.abort();
+    activeJobIdsRef.current.clear();
+    cursorRef.current = "";
+    setEntries([]);
+    setActiveOutput("");
+    setRunning(false);
+    setCancelling(false);
+    setStatus("");
+    setError("");
+    setHistoryLoading(false);
+    setHistoryHasMore(false);
+    setBatchProgress([]);
+    setExecutionStartedAt(0);
+    return undefined;
+    // Authentication changes own history refreshes; polling owns later updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
   return {
     entries,
     activeOutput,
@@ -456,6 +491,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     historyLoading,
     historyHasMore,
     batchProgress,
+    executionStartedAt,
     loadHistory,
     loadMoreHistory: () => loadHistory({ reset: false }),
     generateBatch,

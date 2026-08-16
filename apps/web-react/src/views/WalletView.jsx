@@ -21,13 +21,15 @@ const FILTERS = [
 ];
 const TASK_TYPES = {
   t2i: "文生图",
+  infinite_canvas: "无限画布",
   coloring: "插画染色",
   ui_design: "UI 设计稿",
   ecommerce_design: "AI 电商",
   model_sheet: "模型设计",
-  game_art: "游戏美术",
+  game_art: "游戏设计",
   puzzle: "拼图",
   background_remove: "背景移除",
+  assistant: "AI 助手",
 };
 const TASK_STATUSES = {
   queued: "排队中",
@@ -77,9 +79,18 @@ function dayLabel(date) {
 
 function taskLabel(entry) {
   const task = entry?.task;
-  if (!task) return "AI 任务";
+  const displayName = String(task?.displayName || "").trim();
+  if (displayName) return displayName;
+  if (!task) {
+    return String(entry?.sourceType || "").includes("assistant")
+      ? "AI 助手"
+      : "AI 任务";
+  }
   if (task.type === "background_remove" && task.automaticBackgroundRemove)
     return "生成后自动抠图";
+  const source = String(task.source || "").toLowerCase();
+  if (source === "react_canvas" || source.includes("canvas")) return "无限画布";
+  if (source === "assistant" || task.type === "assistant") return "AI 助手";
   return TASK_TYPES[task.type] || "AI 任务";
 }
 

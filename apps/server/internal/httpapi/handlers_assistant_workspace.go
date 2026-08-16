@@ -58,6 +58,7 @@ type assistantRunIn struct {
 	Height                   int              `json:"height"`
 	Quality                  string           `json:"quality"`
 	ServiceKey               string           `json:"serviceKey"`
+	Workspace                string           `json:"workspace"`
 	FastMode                 bool             `json:"fastMode"`
 	ProposalSourceMessageID  string           `json:"proposalSourceMessageId"`
 }
@@ -406,6 +407,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	workspace := modelconfig.WorkspaceAssistant
 	if body.ServiceKey == "ui_design_analysis" || body.ServiceKey == "ui_design_asset" {
 		workspace = modelconfig.WorkspaceUIDesign
+	}
+	if strings.EqualFold(strings.TrimSpace(body.Workspace), modelconfig.WorkspaceCanvas) {
+		workspace = modelconfig.WorkspaceCanvas
 	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {

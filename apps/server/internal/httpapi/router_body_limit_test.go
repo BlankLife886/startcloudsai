@@ -12,6 +12,10 @@ func TestRequestBodyLimitAllowsPromptCoverMultipart(t *testing.T) {
 		{path: "/api/v1/admin/prompts/order", want: 1 << 20},
 		{path: "/api/v1/admin/prompts", want: 1 << 20},
 		{path: "/api/v1/admin/prompt-import-batches/upload", want: promptTransferMaxBytes + (1 << 20)},
+		{path: "/api/v1/admin/ecommerce/tryon-catalog", want: tryonCatalogMaxBytes + (1 << 20)},
+		{path: "/api/v1/admin/ecommerce/tryon-catalog/4be6463a-e469-4db5-82ff-bfd3e9071f85/image", want: tryonCatalogMaxBytes + (1 << 20)},
+		{path: "/api/v1/admin/ecommerce/catalog", want: tryonCatalogMaxBytes + (1 << 20)},
+		{path: "/api/v1/admin/ecommerce/catalog/4be6463a-e469-4db5-82ff-bfd3e9071f85/image", want: tryonCatalogMaxBytes + (1 << 20)},
 	}
 	for _, test := range tests {
 		if got := requestBodyLimit(test.path, 15<<20); got != test.want {

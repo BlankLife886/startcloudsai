@@ -8,8 +8,7 @@
 flowchart LR
   U[用户浏览器] --> G[nginx gateway]
   A[管理员浏览器] --> G
-  G -->|/ 和 /canvas| W[用户端 React SPA]
-  G -->|/canvas-app/| V[React 无限画布 SPA]
+  G -->|/ 和 /canvas| W[用户端 React SPA（内置无限画布）]
   G -->|/admin/| M[管理端 Vue SPA]
   G -->|/api/v1/| S[Go API / Gin]
   S --> P[(PostgreSQL)]
@@ -28,8 +27,7 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 
 | 组件         | 技术                            | 主要职责                                        |
 | ------------ | ------------------------------- | ----------------------------------------------- |
-| `apps/web-react` | React 19、Vite               | 创作工作台、画廊、兑换码钱包与个人中心          |
-| `apps/canvas-react` | React 19、Zustand、Ant Design | 无限画布、节点编排、素材与 Agent 交互           |
+| `apps/web-react` | React 19、Vite、Zustand、Ant Design | 创作工作台、画廊、个人中心，以及 `src/canvas` 内的画布编排、素材与 Agent 交互 |
 | `apps/admin` | Vue 3、TypeScript、Element Plus | 用户、任务、社区、内容、安全与系统运营          |
 | API          | Go、Gin、pgx                    | 认证、校验、同步业务事务、R2 文件访问和队列投递 |
 | Worker       | Go、Asynq                       | 图片生成、缩略图处理、超时回收和提示词源同步    |
@@ -37,9 +35,9 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 | Redis        | 7                               | Asynq 队列和调度                                |
 | R2           | S3 API                          | 用户上传、任务产物和提示词封面                  |
 
-前端业务请求只访问同源 `/api/v1`。用户端、React 画布和管理端开发服务器分别监听 `3105`、`3104`、`3200`，并通过 `/api` 代理到 `localhost:8000`。生产环境的 `/canvas` 由 React 主站原生挂载画布应用；`/canvas-app/` 继续保留独立画布兼容入口。
+前端业务请求只访问同源 `/api/v1`。用户端和管理端开发服务器分别监听 `3105`、`3200`，并通过 `/api` 代理到 `localhost:8000`。`/canvas` 由 React 主站直接编译并原生挂载画布模块，不存在独立画布开发服务或生产容器；旧 `/canvas-app/` 地址只重定向到 `/canvas`。
 
-画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 R2，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 AGPL 许可证及来源信息保存在 `apps/canvas-react/UPSTREAM_LICENSE` 和 `UPSTREAM.md`。
+画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 R2，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 MIT 许可证及来源信息保存在 `apps/web-react/CANVAS_UPSTREAM_LICENSE` 和 `CANVAS_UPSTREAM.md`。
 
 ## 请求与鉴权
 

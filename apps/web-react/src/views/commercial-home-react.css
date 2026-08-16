@@ -1,6 +1,37 @@
-.commercial-home .swap-art-card__media.share-progressive-image img {
-  object-fit: cover;
-  object-position: center;
-  opacity: 0.82;
-  filter: saturate(1.02) contrast(1.04) brightness(0.92);
+.commercial-home .commercial-hero__layout {
+  grid-template-columns: minmax(0, 1240px);
+  justify-content: center;
+  align-content: center;
+  padding-top: var(--app-header-offset, 62px);
+  padding-bottom: 0;
+}
+
+.commercial-home .commercial-hero__copy {
+  width: 100%;
+  max-width: 1240px;
+  padding-left: 0;
+  padding-bottom: 0;
+  text-align: center;
+}
+
+.commercial-home .commercial-hero__actions {
+  justify-content: center;
+}
+
+@media (min-width: 1180px) {
+  .commercial-home .commercial-hero__summary {
+    width: max-content;
+    max-width: calc(100vw - 80px);
+    margin-right: auto;
+    margin-left: auto;
+    white-space: nowrap;
+    text-wrap: nowrap;
+  }
+}
+
+@media (max-width: 960px) {
+  .commercial-home .commercial-hero__layout {
+    padding-top: calc(var(--app-header-offset, 62px) + 28px);
+    padding-bottom: 28px;
+  }
 }

@@ -1,12 +1,15 @@
 /* 应用空间 */
 
 .app-space-page {
-  --as-bg: #040508;
-  --as-line: rgba(255, 255, 255, 0.08);
-  --as-text: #f8fafc;
-  --as-muted: #8b9cb3;
-  --as-accent: #4ade80;
-  --as-accent-rgb: 74, 222, 128;
+  --as-bg: #f5f7f6;
+  --as-line: rgba(18, 31, 27, 0.1);
+  --as-text: #17201d;
+  --as-muted: #66746f;
+  --as-accent: #168466;
+  --as-accent-rgb: 22, 132, 102;
+  --as-card: rgba(255, 255, 255, 0.86);
+  --as-card-copy: rgba(23, 32, 29, 0.64);
+  --as-control: rgba(255, 255, 255, 0.72);
   --as-max: 1160px;
 
   position: relative;
@@ -15,6 +18,18 @@
   color: var(--as-text);
   background: var(--as-bg);
   overflow: hidden;
+}
+
+html.color-scheme-dark .app-space-page {
+  --as-bg: #080b0a;
+  --as-line: rgba(255, 255, 255, 0.09);
+  --as-text: #f4f7f5;
+  --as-muted: #94a49e;
+  --as-accent: #4ade80;
+  --as-accent-rgb: 74, 222, 128;
+  --as-card: rgba(14, 19, 17, 0.84);
+  --as-card-copy: rgba(244, 247, 245, 0.64);
+  --as-control: rgba(255, 255, 255, 0.04);
 }
 
 .app-space-rings {
@@ -102,7 +117,7 @@
   border: 1px solid var(--as-line);
   border-radius: 999px;
   color: var(--as-muted);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--as-control);
   font-size: 0.8rem;
   font-weight: 750;
   cursor: pointer;
@@ -111,7 +126,7 @@
 
 .app-space-filter:hover {
   color: var(--as-text);
-  border-color: rgba(255, 255, 255, 0.14);
+  border-color: rgba(var(--as-accent-rgb), 0.32);
 }
 
 .app-space-filter.active {
@@ -144,7 +159,7 @@
 .app-space-section-head span {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--as-control);
   color: var(--as-muted);
   font-size: 0.68rem;
   font-weight: 800;
@@ -164,7 +179,7 @@
   padding: 22px 20px 18px;
   border: 1px solid var(--as-line);
   border-radius: 18px;
-  background: rgba(10, 14, 22, 0.75);
+  background: var(--as-card);
   backdrop-filter: blur(16px);
   text-decoration: none;
   color: inherit;
@@ -268,7 +283,7 @@
   line-height: 1.65;
   border: 1px dashed var(--as-line);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--as-control);
 }
 
 .app-card-name {
@@ -280,7 +295,7 @@
 
 .app-card-tagline {
   margin: 0;
-  color: rgba(248, 250, 252, 0.62);
+  color: var(--as-card-copy);
   font-size: 0.82rem;
   line-height: 1.45;
 }

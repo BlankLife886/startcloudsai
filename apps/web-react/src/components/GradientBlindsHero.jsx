@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Mesh, Program, Renderer, Triangle } from "ogl";
+import "@react/legacy-styles/generated/features/home-commercial/components/GradientBlindsHero.css";
 
 const MAX_COLORS = 8;
 

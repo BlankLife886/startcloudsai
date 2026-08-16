@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import { Link, useLocation, useNavigate } from "react-router";
 import "@react/legacy-static/views/auth/auth-page.css";
 import { useAuth } from "../../auth/AuthContext.jsx";
+import { useIsDark } from "../../hooks/useIsDark.js";
+
+gsap.registerPlugin(useGSAP);
 
 const mangaPanels = [
   "polygon(0 0, 47.5% 0, 0 63%)",
@@ -9,29 +14,6 @@ const mangaPanels = [
   "polygon(76.5% 0, 100% 0, 100% 35%, 68% 53%, 76.5% 0)",
   "polygon(0 65.5%, 0 100%, 42% 100%, 54% 55%, 0 65.5%)",
   "polygon(56% 55%, 68% 55%, 100% 37%, 100% 100%, 44% 100%)",
-];
-
-const features = [
-  {
-    icon: "bi-stars",
-    title: "六大创作工作台",
-    description: "文生图、插画染色、UI 设计稿、模型设计、游戏设计与拼图工具",
-  },
-  {
-    icon: "bi-cloud-arrow-up",
-    title: "云端任务",
-    description: "任务队列云端执行，历史记录与创作产物跨设备同步",
-  },
-  {
-    icon: "bi-images",
-    title: "共享画廊",
-    description: "一键投稿作品到社区画廊，浏览官方精选与分类展墙",
-  },
-  {
-    icon: "bi-wallet2",
-    title: "安全登录",
-    description: "邮箱验证码保护每次账号验证",
-  },
 ];
 
 async function apiRequest(path, options = {}) {
@@ -55,6 +37,8 @@ function safeRedirect(value) {
 }
 
 export function AuthAccountView() {
+  const pageRef = useRef(null);
+  const isDark = useIsDark();
   const location = useLocation();
   const navigate = useNavigate();
   const auth = useAuth();
@@ -160,9 +144,61 @@ export function AuthAccountView() {
         ? "重新发送"
         : "获取验证码";
 
+  useGSAP(
+    () => {
+      const root = pageRef.current;
+      if (!root) return undefined;
+      const topItems = gsap.utils.toArray("[data-auth-top]", root);
+      const card = root.querySelector("[data-auth-card]");
+      const cardSections = card
+        ? Array.from(card.children).filter((element) => element instanceof HTMLElement)
+        : [];
+      const targets = [...topItems, card, ...cardSections].filter(Boolean);
+      root.dataset.authMotionState = "entering";
+
+      const disabled =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+        document.documentElement.classList.contains("settings-no-animations");
+      if (disabled) {
+        gsap.set(targets, { clearProps: "opacity,visibility,transform" });
+        root.dataset.authMotionState = "entered";
+        return undefined;
+      }
+
+      const timeline = gsap.timeline({
+        defaults: { ease: "power2.out" },
+        onComplete: () => {
+          root.dataset.authMotionState = "entered";
+        },
+      });
+      timeline
+        .fromTo(
+          topItems,
+          { autoAlpha: 0, y: -8 },
+          { autoAlpha: 1, y: 0, duration: 0.34, stagger: 0.05, clearProps: "opacity,visibility,transform" },
+        )
+        .fromTo(
+          card,
+          { autoAlpha: 0, y: 12 },
+          { autoAlpha: 1, y: 0, duration: 0.44, clearProps: "opacity,visibility,transform" },
+          "-=0.2",
+        )
+        .fromTo(
+          cardSections,
+          { autoAlpha: 0, y: 6 },
+          { autoAlpha: 1, y: 0, duration: 0.32, stagger: 0.055, clearProps: "opacity,visibility,transform" },
+          "-=0.27",
+        );
+      return () => timeline.kill();
+    },
+    { scope: pageRef },
+  );
+
   return (
     <main
-      className="auth-page is-single is-ready"
+      ref={pageRef}
+      className={`auth-page is-single is-ready${isDark ? " is-dark" : ""}`}
+      data-auth-motion-state="idle"
       style={{ "--auth-manga-image": 'url("/brand/auth-manga-bg.png")' }}
     >
       <div className="auth-backdrop" aria-hidden="true">
@@ -194,49 +230,44 @@ export function AuthAccountView() {
       </header>
 
       <div className="auth-stage">
-        <section className="auth-hero" aria-label="账号入口介绍">
-          <p data-auth-hero className="auth-hero-brandline">
-            StarCloudIsAI · CREATIVE WORKSPACE
-          </p>
-          <p data-auth-hero className="auth-kicker">
-            账号验证
-          </p>
-          <h1 data-auth-hero className="auth-site-name">
-            星空云绘
-          </h1>
-          <p data-auth-hero className="auth-hero-lead">
-            登录后同步你的 AI 创作记录、云端任务进度与共享画廊作品。
-          </p>
-          <ul className="auth-hero-features" aria-label="账号职责">
-            {features.map((feature) => (
-              <li
-                key={feature.title}
-                data-auth-feature
-                className="auth-hero-feature"
-              >
-                <span className="auth-hero-feature__icon" aria-hidden="true">
-                  <i className={`bi ${feature.icon}`} />
-                </span>
-                <div className="auth-hero-feature__body">
-                  <strong>{feature.title}</strong>
-                  <p>{feature.description}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <div data-auth-card className="auth-unified-card">
+          <section className="auth-hero" aria-label="账号入口介绍">
+            <div className="auth-hero-copy">
+              <p data-auth-hero className="auth-hero-brandline">
+                StarCloudIsAI · CREATIVE WORKSPACE
+              </p>
+              <p data-auth-hero className="auth-kicker">
+                欢迎回来
+              </p>
+              <h1 data-auth-hero className="auth-site-name">
+                继续你的创作
+              </h1>
+              <p data-auth-hero className="auth-hero-lead">
+                一个账号连接创作记录、云端任务与个人资产，让每次灵感都能继续生长。
+              </p>
+            </div>
+            <p className="auth-hero-footnote">
+              <i className="bi bi-stars" aria-hidden="true" />
+              首次验证将自动创建星空云绘账号
+            </p>
+          </section>
 
-        <div className="auth-panel-shell auth-panel-shell--single">
-          <div data-auth-card className="auth-panel-motion">
-            <article className="auth-panel-card auth-flow-card is-active">
+          <div className="auth-panel-shell auth-panel-shell--single">
+            <div className="auth-panel-motion">
+              <article className="auth-panel-card auth-flow-card is-active">
               <div className="auth-panel-head">
-                <div className="auth-panel-head__badge" aria-hidden="true">
-                  <i className="bi bi-envelope-check" />
-                </div>
+                <span className="auth-panel-brandmark" aria-hidden="true">
+                  <img src="/brand/starcloud-logo.svg" alt="" />
+                </span>
                 <div className="auth-panel-head__copy">
-                  <h2>邮箱验证</h2>
-                  <p>首次验证将自动创建账号</p>
+                  <h2>登录</h2>
+                  <small>STARCLOUD ACCOUNT</small>
                 </div>
+              </div>
+
+              <div className="auth-panel-meta" aria-label="验证说明">
+                <span><i className="bi bi-clock" aria-hidden="true" />3 分钟有效</span>
+                <span><i className="bi bi-person-plus" aria-hidden="true" />首次验证自动建号</span>
               </div>
 
               {(error || info) && (
@@ -311,9 +342,14 @@ export function AuthAccountView() {
               </div>
 
               <footer className="auth-panel-footer auth-mode-footer">
-                支持 Gmail、Googlemail 与 QQ 邮箱
+                <div className="auth-provider-list" aria-label="支持的邮箱">
+                  <span><i className="bi bi-google" aria-hidden="true" />谷歌邮箱</span>
+                  <span><i className="bi bi-tencent-qq" aria-hidden="true" />QQ 邮箱</span>
+                </div>
+                <p><i className="bi bi-lock" aria-hidden="true" />邮箱仅用于账号验证与安全通知</p>
               </footer>
-            </article>
+              </article>
+            </div>
           </div>
         </div>
       </div>

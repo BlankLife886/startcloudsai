@@ -626,7 +626,7 @@ export function EcommerceFullscreenPreview({
           </button>
         </div>
         {uniqueGallery.length > 1 && (
-          <div className="preview-navigation controls-visible">
+          <div className="preview-navigation controls-visible" data-click-guard="off">
             <button
               type="button"
               className="preview-btn preview-nav-btn preview-prev-btn"
@@ -648,7 +648,7 @@ export function EcommerceFullscreenPreview({
           </div>
         )}
         <div className="preview-zoom-hint controls-visible">
-          <div className="zoom-buttons">
+          <div className="zoom-buttons" data-click-guard="off">
             <button
               type="button"
               data-preview-command="zoom-in"

@@ -57,7 +57,11 @@
   position: fixed;
   z-index: 5000;
   padding: 5px;
+  max-width: calc(100vw - 20px);
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
   color: #151a2d;
   background: rgb(255 255 255 / 98%);
   border: 1px solid #e4e3ec;
@@ -69,6 +73,7 @@
 .commerce-select-menu button {
   display: grid;
   width: 100%;
+  min-width: 0;
   min-height: 34px;
   grid-template-columns: minmax(0, 1fr) 18px;
   align-items: center;

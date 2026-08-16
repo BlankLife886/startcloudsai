@@ -1,30 +1,615 @@
-.ml-card__cover .authenticated-image,
-.ml-card__cover .authenticated-image-media,
-.ml-card__cover img,
+.ml-page.ch-page {
+  --ml-text: var(--ch-heading);
+  --ml-muted: var(--ch-muted);
+  --ml-line: var(--ch-line);
+  --ml-page-bg: var(--ch-bg);
+  --ml-panel: var(--ch-surface);
+  --ml-accent: var(--ch-accent);
+  --ml-accent-soft: var(--ch-accent-soft);
+  --ml-danger: var(--ch-danger);
+  padding: 8px 0 72px;
+  overflow: visible;
+  background: inherit;
+}
+
+.ml-atmosphere,
+.ml-hero,
+.ml-panel,
+.ml-workspace,
+.ml-sidebar {
+  display: none;
+}
+
+.ml-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ml-group-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ml-group-bar .ch-chips {
+  flex: 1;
+  min-width: 0;
+}
+
+.ml-group-bar__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.ml-bulk-bar {
+  overflow: visible;
+}
+
+.ml-bulk-bar__count {
+  min-width: 52px;
+  color: var(--ch-muted);
+  font-size: 0.78rem;
+  font-weight: 680;
+}
+
+.ml-bulk-move {
+  position: relative;
+}
+
+.ml-bulk-move .ml-card__menu {
+  top: calc(100% + 6px);
+  right: auto;
+  bottom: auto;
+  left: 0;
+  width: 220px;
+  transform-origin: top left;
+}
+
+.ml-bulk-move .ml-card__menu button {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ch-text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.ml-bulk-move .ml-card__menu button:hover,
+.ml-bulk-move .ml-card__menu button.is-active {
+  background: var(--ch-accent-soft);
+  color: var(--ch-heading);
+}
+
+.ml-bulk-move .ml-card__menu button:hover {
+  transform: translateX(3px);
+}
+
+.ml-group-dialog {
+  width: min(440px, 100%);
+}
+
+.ml-group-dialog__form {
+  padding: 18px;
+}
+
+.ml-group-dialog .ml-edit__actions {
+  justify-content: flex-end;
+}
+
+.ml-group-dialog .ml-btn.is-danger-ghost {
+  margin-right: auto;
+}
+
+.ml-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ml-chip-ops {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.ml-chip-ops button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ch-muted);
+  cursor: pointer;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    transform 200ms ease;
+}
+
+.ml-chip-ops button:hover {
+  background: var(--ch-accent-soft);
+  color: var(--ch-accent);
+  transform: scale(1.06);
+}
+
+.ml-chip-ops button:last-child:hover {
+  background: rgba(214, 69, 69, 0.1);
+  color: var(--ch-danger);
+}
+
+.ml-chip-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ml-chip-create input {
+  min-width: 132px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--ch-line);
+  border-radius: 999px;
+  background: var(--ch-surface);
+  color: var(--ch-heading);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.ml-chip-create button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--ch-line);
+  border-radius: 999px;
+  background: var(--ch-surface);
+  color: var(--ch-heading);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ml-chip-create button[type="submit"] {
+  border-color: transparent;
+  background: var(--ch-heading);
+  color: #fff;
+}
+
+.ml-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.ml-page .ch-chip {
+  transition:
+    background-color 220ms ease,
+    border-color 220ms ease,
+    color 220ms ease,
+    transform 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.ml-page .ch-chip:hover:not(.is-active):not(:disabled) {
+  border-color: color-mix(in srgb, var(--ch-accent) 28%, var(--ch-line));
+  background: var(--ch-surface-soft);
+  transform: translateY(-1px);
+}
+
+.ml-page .ch-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: visible;
+  transition:
+    transform 240ms ease,
+    box-shadow 240ms ease,
+    border-color 240ms ease;
+}
+
+.ml-page .ch-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px rgba(24, 26, 40, 0.1);
+}
+
+.ml-page .ch-card.is-menu,
+.ml-page .ch-card:has(.ml-card__menu) {
+  z-index: 6;
+}
+
+.ml-page .ch-card__check {
+  z-index: 3;
+}
+
+.ml-card__stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: visible;
+  border-radius: 16px;
+}
+
+.ml-page .ch-card__media {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  outline: none;
+  background: var(--ch-surface-soft);
+}
+
+.ml-page .ch-card__media:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ch-accent);
+}
+
+.ml-page .ch-card__media .authenticated-image,
+.ml-page .ch-card__media .authenticated-image-media,
+.ml-page .ch-card__media img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: transparent;
+}
+
+.ml-card__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 12px;
+  border-radius: 16px;
+  background: linear-gradient(
+    180deg,
+    transparent 40%,
+    rgba(10, 11, 16, 0.2) 62%,
+    rgba(10, 11, 16, 0.82) 100%
+  );
+  color: #fff;
+  text-align: left;
+  pointer-events: none;
+}
+
+.ml-card__overlay-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ml-card__overlay-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ml-card__overlay-title {
+  overflow: hidden;
+  font-size: 0.88rem;
+  font-weight: 760;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+}
+
+.ml-card__overlay-group {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ml-card__overlay-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+
+.ml-card__overlay-meta em {
+  font-style: normal;
+}
+
+.ml-card__overlay-flag {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(214, 69, 69, 0.88);
+  font-size: 0.64rem;
+  font-weight: 720;
+}
+
+.ml-page .ml-card__overlay .ch-card__actions {
+  pointer-events: auto;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.ml-page .ch-card__actions > button,
+.ml-move > button {
+  min-width: 0;
+  padding: 0 10px;
+  white-space: nowrap;
+  transition:
+    background-color 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.ml-page .ml-card__overlay .ch-card__actions > button,
+.ml-page .ml-card__overlay .ml-move > button {
+  min-height: 32px;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.ml-page .ml-card__overlay .ch-card__actions > button.is-icon {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.ml-page .ml-card__overlay .ch-card__actions > button:hover,
+.ml-page .ml-card__overlay .ml-move > button:hover {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: rgba(255, 255, 255, 0.46);
+}
+
+.ml-page .ml-card__overlay .ch-card__actions > button.is-danger:hover {
+  background: rgba(214, 69, 69, 0.28);
+  border-color: rgba(255, 180, 180, 0.5);
+}
+
+.ml-move {
+  position: relative;
+  min-width: 0;
+}
+
+.ml-page .ml-card__overlay .ml-move > button.is-on {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.ml-card__menu {
+  position: absolute;
+  top: auto;
+  right: 0;
+  left: auto;
+  bottom: calc(100% + 6px);
+  z-index: 8;
+  display: grid;
+  gap: 2px;
+  width: max(188px, calc(200% + 8px));
+  max-height: 220px;
+  padding: 6px;
+  overflow: auto;
+  border: 1px solid var(--ch-line);
+  border-radius: 14px;
+  background: var(--ch-surface);
+  box-shadow: 0 16px 40px rgba(24, 26, 40, 0.14);
+  transform-origin: bottom right;
+}
+
+.ml-page .ch-card__actions .ml-card__menu button {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ch-text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.ml-card__menu button:hover,
+.ml-card__menu button.is-active {
+  background: var(--ch-accent-soft);
+  color: var(--ch-heading);
+}
+
+.ml-card__menu button:hover {
+  transform: translateX(3px);
+}
+
+.ml-card__menu-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--ch-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.ml-more {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.ml-edit-backdrop {
+  z-index: 10200;
+}
+
+.ml-lightbox.ch-preview-layer {
+  display: grid;
+  place-items: center;
+  grid-template-rows: none;
+  color: inherit;
+  background: rgba(8, 8, 12, 0.62);
+}
+
+.ml-lightbox .ch-preview__media .authenticated-image,
+.ml-lightbox .ch-preview__media .authenticated-image-media,
+.ml-lightbox .ch-preview__media img {
+  position: static;
+  inset: auto;
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+  background: #0b0b10;
+}
+
+.ml-lightbox .ch-preview__top .ch-card__title {
+  margin: 0;
+}
+
+.ml-lightbox .ch-preview__top .ch-card__meta {
+  margin-bottom: 10px;
+}
+
+.ml-lightbox .ch-preview__specs {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ml-lightbox .ch-preview__bottom .ch-card__actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ml-lightbox .ch-preview__bottom .ch-card__actions button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.ml-lightbox .ch-preview__bottom .ch-card__actions .ml-lightbox__close,
+.ml-lightbox .ml-lightbox__close {
+  position: static;
+  width: auto;
+  height: auto;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--ch-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ch-heading);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 680;
+}
+
+.ml-edit__thumb {
+  position: relative;
+}
+
 .ml-edit__thumb .authenticated-image,
 .ml-edit__thumb .authenticated-image-media,
 .ml-edit__thumb img {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.ml-lightbox__stage .progressive-authenticated-image {
-  position: relative;
-  display: block;
-  width: min(1100px, 100%);
-  height: min(72vh, 820px);
-  min-height: 280px;
-  border-radius: 16px;
-  object-fit: contain;
-  background: transparent;
+.ml-edit__form select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%238b8f9c' d='M1.2 1.4 6 6.2l4.8-4.8'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
 }
 
-.ml-lightbox__stage .authenticated-image,
-.ml-lightbox__stage .authenticated-image-media,
-.ml-lightbox__stage img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+@media (prefers-reduced-motion: reduce) {
+  .ml-page .ch-chip,
+  .ml-page .ch-card,
+  .ml-page .ch-card__actions > button,
+  .ml-move > button,
+  .ml-page .ch-card__actions .ml-card__menu button,
+  .ml-bulk-move .ml-card__menu button,
+  .ml-chip-ops button {
+    transition: none;
+  }
+
+  .ml-page .ch-chip:hover:not(.is-active):not(:disabled),
+  .ml-page .ch-card:hover,
+  .ml-card__menu button:hover,
+  .ml-bulk-move .ml-card__menu button:hover,
+  .ml-chip-ops button:hover {
+    transform: none;
+  }
+}
+
+html.settings-no-animations .ml-page .ch-chip,
+html.settings-no-animations .ml-page .ch-card,
+html.settings-no-animations .ml-page .ch-card__actions > button,
+html.settings-no-animations .ml-move > button,
+html.settings-no-animations .ml-page .ch-card__actions .ml-card__menu button,
+html.settings-no-animations .ml-bulk-move .ml-card__menu button,
+html.settings-no-animations .ml-chip-ops button {
+  transition: none;
+}
+
+html.settings-no-animations .ml-page .ch-chip:hover:not(.is-active):not(:disabled),
+html.settings-no-animations .ml-page .ch-card:hover,
+html.settings-no-animations .ml-card__menu button:hover,
+html.settings-no-animations .ml-bulk-move .ml-card__menu button:hover,
+html.settings-no-animations .ml-chip-ops button:hover {
+  transform: none;
+}
+
+@media (max-width: 720px) {
+  .ml-group-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ml-group-bar__actions {
+    justify-content: flex-end;
+  }
+
+  .ml-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
 }

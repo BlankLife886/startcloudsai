@@ -11,6 +11,13 @@
   height: 100%;
   object-fit: inherit;
 }
+.ch-page--history .ch-table-preview .authenticated-image {
+  position: relative;
+  inset: auto;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 52px;
+}
 .ch-page--history .ch-preview__media .authenticated-image {
   position: static;
   width: 100%;
@@ -29,4 +36,20 @@
 .ch-card__placeholder > span {
   display: block;
   text-align: center;
+}
+
+@media (max-width: 760px) {
+  .ch-page--history .ch-table-preview .authenticated-image {
+    flex-basis: 62px;
+    width: 62px;
+    height: 62px;
+  }
+}
+
+@media (max-width: 430px) {
+  .ch-page--history .ch-table-preview .authenticated-image {
+    flex-basis: 56px;
+    width: 56px;
+    height: 56px;
+  }
 }

@@ -14,12 +14,16 @@ export function ProgressiveAuthenticatedImage({
   loadOriginal = false,
   hideStatus = false,
   className = "",
+  onLoad,
+  onPreviewLoad,
+  onError,
+  onOriginalError,
   ...props
 }) {
   const source = String(src || "").trim();
   const preview = String(previewSrc || "").trim();
-  const distinctPreview = Boolean(preview) && preview !== source;
   const shouldLoadOriginal = loadOriginal && Boolean(source);
+  const distinctPreview = Boolean(preview) && preview !== source;
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [originalActive, setOriginalActive] = useState(
@@ -42,27 +46,16 @@ export function ProgressiveAuthenticatedImage({
     : previewFailed;
   const hasTarget = shouldLoadOriginal ? Boolean(source) : Boolean(preview);
   const classes = useMemo(
-    () =>
-      [
-        "authenticated-image progressive-authenticated-image",
-        hasTarget && !targetLoaded && !targetFailed ? "is-loading" : "",
-        previewLoaded && !originalLoaded ? "is-preview-loaded" : "",
-        originalLoaded ? "is-original-loaded" : "",
-        !shouldLoadOriginal ? "is-thumbnail-only" : "",
-        targetFailed ? "is-failed" : "",
-        className,
-      ]
-        .filter(Boolean)
-        .join(" "),
-    [
+    () => [
+      "authenticated-image progressive-authenticated-image",
+      hasTarget && !targetLoaded && !targetFailed ? "is-loading" : "",
+      previewLoaded && !originalLoaded ? "is-preview-loaded" : "",
+      originalLoaded ? "is-original-loaded" : "",
+      !shouldLoadOriginal ? "is-thumbnail-only" : "",
+      targetFailed ? "is-failed" : "",
       className,
-      hasTarget,
-      originalLoaded,
-      previewLoaded,
-      shouldLoadOriginal,
-      targetFailed,
-      targetLoaded,
-    ],
+    ].filter(Boolean).join(" "),
+    [className, hasTarget, originalLoaded, previewLoaded, shouldLoadOriginal, targetFailed, targetLoaded],
   );
 
   return (
@@ -84,15 +77,18 @@ export function ProgressiveAuthenticatedImage({
           fetchPriority={fetchPriority}
           rootMargin={rootMargin}
           retryCount={retryCount}
-          onLoad={() => {
+          onLoad={(event) => {
             setPreviewLoaded(true);
             setPreviewFailed(false);
+            onPreviewLoad?.(event);
             if (shouldLoadOriginal) setOriginalActive(true);
+            else onLoad?.(event);
           }}
-          onError={() => {
+          onError={(event) => {
             setPreviewLoaded(false);
             setPreviewFailed(true);
             if (shouldLoadOriginal) setOriginalActive(true);
+            else onError?.(event);
           }}
         />
       )}
@@ -108,27 +104,22 @@ export function ProgressiveAuthenticatedImage({
           fetchPriority={fetchPriority}
           rootMargin={rootMargin}
           retryCount={retryCount}
-          onLoad={() => {
+          onLoad={(event) => {
             setOriginalLoaded(true);
             setOriginalFailed(false);
+            onLoad?.(event);
           }}
-          onError={() => {
+          onError={(event) => {
             setOriginalLoaded(false);
             setOriginalFailed(true);
+            if (previewLoaded) onOriginalError?.(event);
+            else onError?.(event);
           }}
         />
       )}
       {!hideStatus && hasTarget && !targetLoaded && (
-        <span
-          className={`progressive-authenticated-image__status${
-            targetFailed ? " is-failed" : ""
-          }`}
-          aria-hidden="true"
-        >
-          <i
-            className={`bi ${targetFailed ? "bi-image-alt" : "bi-arrow-repeat"}`}
-            aria-hidden="true"
-          />
+        <span className={`progressive-authenticated-image__status${targetFailed ? " is-failed" : ""}`} aria-hidden="true">
+          <i className={`bi ${targetFailed ? "bi-image-alt" : "bi-arrow-repeat"}`} />
           <span>{targetFailed ? "图片暂时无法读取" : "图片加载中"}</span>
         </span>
       )}

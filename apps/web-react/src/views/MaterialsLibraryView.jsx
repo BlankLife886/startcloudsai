@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import {
   createUserAsset,
   createUserAssetGroup,
@@ -11,13 +13,22 @@ import {
   updateUserAssetGroup,
 } from "@react/legacy-modules/services/meApi.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/MaterialsLibraryView.css";
+import "@react/legacy-static/features/creator-hub/creator-hub.css";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
-import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
+import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useIsDark } from "../hooks/useIsDark.js";
 import "./MaterialsLibraryView.css";
+
+gsap.registerPlugin(useGSAP);
+
+const ASSET_PREVIEW_LOCK = "react-assets-preview";
 
 function formatBytes(value) {
   const bytes = Math.max(0, Number(value || 0));
@@ -26,22 +37,160 @@ function formatBytes(value) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatDimensions(size) {
+  const width = Number(size?.w || size?.width || 0);
+  const height = Number(size?.h || size?.height || 0);
+  if (!width || !height) return "";
+  return `${width} × ${height}`;
+}
+
 function displayTitle(title) {
   const raw = String(title || "").trim();
   if (!raw) return "未命名素材";
-  if (/^[a-f0-9]{16,}$/i.test(raw) || /^[A-Za-z0-9_-]{20,}$/.test(raw))
-    return `${raw.slice(0, 8)}…`;
+  if (/[\u4e00-\u9fff]/.test(raw) || /\s/.test(raw)) return raw;
+  if (/^[a-f0-9]{8,}$/i.test(raw)) return "未命名素材";
+  if (
+    /^[A-Za-z0-9_-]{12,}$/.test(raw) &&
+    /[A-Z]/.test(raw) &&
+    /[a-z]/.test(raw) &&
+    /\d/.test(raw)
+  )
+    return "未命名素材";
   return raw;
 }
 
+function assetDuplicateKeys(asset) {
+  const keys = [];
+  if (asset?.fileKey) keys.push(`file:${asset.fileKey}`);
+  if (asset?.thumbnailKey) keys.push(`thumb:${asset.thumbnailKey}`);
+  const title = String(asset?.title || "")
+    .trim()
+    .toLowerCase();
+  const size = Number(asset?.sizeBytes || 0);
+  if (title && size) keys.push(`meta:${title}:${size}`);
+  return keys;
+}
+
 function materialTitle(file) {
-  return String(file?.name || "个人素材")
+  return String(file?.name || "个人资产")
     .replace(/\.[a-z0-9]+$/i, "")
     .trim()
     .slice(0, 120);
 }
 
+function motionDisabled() {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+    document.documentElement.classList.contains("settings-no-animations")
+  );
+}
+
+function AssetGroupMenu({ open, dropUp = false, children }) {
+  const rootRef = useRef(null);
+  const [present, setPresent] = useState(Boolean(open));
+
+  useEffect(() => {
+    if (open) setPresent(true);
+  }, [open]);
+
+  useGSAP(
+    (context, contextSafe) => {
+      const root = rootRef.current;
+      if (!present || !root) return undefined;
+      const items = Array.from(root.querySelectorAll("[data-group-menu-item]"));
+      const targets = [root, ...items];
+      const finishExit = contextSafe(() => setPresent(false));
+
+      gsap.killTweensOf(targets);
+      if (motionDisabled()) {
+        gsap.set(targets, { autoAlpha: 1, clearProps: "transform" });
+        if (!open) finishExit();
+        return undefined;
+      }
+
+      const offset = dropUp ? 8 : -8;
+      if (!open) {
+        gsap
+          .timeline({ onComplete: finishExit })
+          .to(
+            items,
+            { autoAlpha: 0, y: dropUp ? 3 : -3, duration: 0.08, stagger: 0.008, ease: "power1.in" },
+            0,
+          )
+          .to(
+            root,
+            { autoAlpha: 0, y: dropUp ? 6 : -6, scale: 0.98, duration: 0.16, ease: "power2.in" },
+            0,
+          );
+        return undefined;
+      }
+
+      gsap
+        .timeline({ defaults: { ease: "power3.out" } })
+        .fromTo(
+          root,
+          { autoAlpha: 0, y: offset, scale: 0.96 },
+          { autoAlpha: 1, y: 0, scale: 1, duration: 0.22, clearProps: "transform" },
+          0,
+        )
+        .fromTo(
+          items,
+          { autoAlpha: 0, y: 6 },
+          { autoAlpha: 1, y: 0, duration: 0.18, stagger: 0.018, clearProps: "transform" },
+          0.05,
+        );
+      return undefined;
+    },
+    { dependencies: [dropUp, open, present], scope: rootRef },
+  );
+
+  if (!present) return null;
+  return (
+    <div
+      ref={rootRef}
+      className="ml-card__menu"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {children}
+    </div>
+  );
+}
+
+function randomDigits(length = 4) {
+  const max = 10 ** length;
+  return String(Math.floor(Math.random() * max)).padStart(length, "0");
+}
+
+function buildBatchTitles(prefix, count) {
+  const used = new Set();
+  const titles = [];
+  const digits = count > 9000 ? 5 : 4;
+  while (titles.length < count) {
+    const suffix = randomDigits(digits);
+    if (used.has(suffix)) continue;
+    used.add(suffix);
+    titles.push(`${prefix}${suffix}`);
+  }
+  return titles;
+}
+
+async function mapPool(items, worker, concurrency = 4) {
+  const queue = [...items];
+  const results = [];
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, queue.length || 1) }, async () => {
+      while (queue.length) {
+        const item = queue.shift();
+        results.push(await worker(item));
+      }
+    }),
+  );
+  return results;
+}
+
 export function MaterialsLibraryView() {
+  const auth = useAuth();
+  const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const mountedRef = useRef(true);
   const assetsControllerRef = useRef(null);
@@ -55,15 +204,17 @@ export function MaterialsLibraryView() {
   const materialInputRef = useRef(null);
   const editInputRef = useRef(null);
   const groupNameInputRef = useRef(null);
+  const batchRenameInputRef = useRef(null);
+  const pageRef = useRef(null);
 
   const [materials, setMaterials] = useState([]);
   const [groups, setGroups] = useState([]);
   const [ungroupedCount, setUngroupedCount] = useState(0);
   const [totalAssetCount, setTotalAssetCount] = useState(0);
   const [activeFilter, setActiveFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(auth.loading);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [groupsLoading, setGroupsLoading] = useState(auth.loading);
   const [loaded, setLoaded] = useState(false);
   const [cursor, setCursor] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -79,10 +230,21 @@ export function MaterialsLibraryView() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [moveMenuId, setMoveMenuId] = useState(null);
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [savingGroup, setSavingGroup] = useState(false);
   const [showGroupComposer, setShowGroupComposer] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [renamingGroupId, setRenamingGroupId] = useState(null);
   const [renamingGroupName, setRenamingGroupName] = useState("");
+  const [query, setQuery] = useState("");
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [batchMoveOpen, setBatchMoveOpen] = useState(false);
+  const [batchRenameOpen, setBatchRenameOpen] = useState(false);
+  const [batchRenamePrefix, setBatchRenamePrefix] = useState("");
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(null);
+  const [assetDimensions, setAssetDimensions] = useState({});
 
   const applyMaterials = useCallback((next) => {
     const value =
@@ -97,6 +259,11 @@ export function MaterialsLibraryView() {
     if (mountedRef.current) setCursor(next || null);
   }, []);
 
+  const requireAssetLogin = useCallback(
+    () => requestAuth({ featureLabel: "我的资产" }),
+    [requestAuth],
+  );
+
   const groupNameOf = useCallback(
     (asset) => {
       if (!asset?.groupId) return "未分组";
@@ -106,6 +273,7 @@ export function MaterialsLibraryView() {
   );
 
   const loadGroups = useCallback(async () => {
+    if (!auth.isAuthenticated) return;
     groupsControllerRef.current?.abort();
     const controller = new AbortController();
     groupsControllerRef.current = controller;
@@ -124,10 +292,11 @@ export function MaterialsLibraryView() {
         if (mountedRef.current) setGroupsLoading(false);
       }
     }
-  }, []);
+  }, [auth.isAuthenticated]);
 
   const loadList = useCallback(
     async ({ append = false } = {}) => {
+      if (!auth.isAuthenticated) return;
       if (append) {
         if (loadingMoreRef.current || !cursorRef.current) return;
         loadingMoreRef.current = true;
@@ -162,7 +331,7 @@ export function MaterialsLibraryView() {
         }
       } catch (error) {
         if (error?.name !== "AbortError" && mountedRef.current)
-          notificationService.error(error?.message || "素材库读取失败");
+          notificationService.error(error?.message || "资产读取失败");
       } finally {
         if (assetsControllerRef.current === controller) {
           assetsControllerRef.current = null;
@@ -175,30 +344,69 @@ export function MaterialsLibraryView() {
         }
       }
     },
-    [applyCursor, applyMaterials],
+    [applyCursor, applyMaterials, auth.isAuthenticated],
   );
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadGroups();
+    document.documentElement.classList.add("creator-hub-sticky-page");
     return () => {
       mountedRef.current = false;
+      document.documentElement.classList.remove("creator-hub-sticky-page");
+      setBodyScrollLock(ASSET_PREVIEW_LOCK, false);
       assetsControllerRef.current?.abort();
       groupsControllerRef.current?.abort();
       uploadControllerRef.current?.abort();
     };
-  }, [loadGroups]);
+  }, []);
+
+  useEffect(() => {
+    if (auth.loading) return;
+    if (!auth.isAuthenticated) {
+      assetsControllerRef.current?.abort();
+      groupsControllerRef.current?.abort();
+      applyMaterials([]);
+      applyCursor(null);
+      setGroups([]);
+      setUngroupedCount(0);
+      setTotalAssetCount(0);
+      setLoading(false);
+      setGroupsLoading(false);
+      setLoaded(true);
+      return;
+    }
+    void loadGroups();
+  }, [
+    applyCursor,
+    applyMaterials,
+    auth.isAuthenticated,
+    auth.loading,
+    loadGroups,
+  ]);
 
   useEffect(() => {
     filterRef.current = activeFilter;
     setMoveMenuId(null);
     setEditAsset(null);
+    setSelectedIds(new Set());
+    setBatchMoveOpen(false);
     applyCursor(null);
     applyMaterials([]);
     setLoaded(false);
     loadingRef.current = false;
-    void loadList();
-  }, [activeFilter, applyCursor, applyMaterials, loadList]);
+    if (!auth.loading && auth.isAuthenticated) void loadList();
+    else if (!auth.loading) {
+      setLoading(false);
+      setLoaded(true);
+    }
+  }, [
+    activeFilter,
+    applyCursor,
+    applyMaterials,
+    auth.isAuthenticated,
+    auth.loading,
+    loadList,
+  ]);
 
   useEffect(() => {
     if (!editAsset) return;
@@ -207,15 +415,120 @@ export function MaterialsLibraryView() {
   }, [editAsset]);
 
   useEffect(() => {
-    if (showGroupComposer) groupNameInputRef.current?.focus();
-  }, [showGroupComposer]);
+    if (showGroupComposer || renamingGroupId) groupNameInputRef.current?.focus();
+  }, [renamingGroupId, showGroupComposer]);
+
+  useEffect(() => {
+    if (batchRenameOpen) batchRenameInputRef.current?.focus();
+  }, [batchRenameOpen]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (!current.size) return current;
+      const alive = new Set(materials.map((item) => item.id));
+      const next = new Set([...current].filter((id) => alive.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [materials]);
+
+  useEffect(() => {
+    if (!previewMaterial) {
+      setBodyScrollLock(ASSET_PREVIEW_LOCK, false);
+      return undefined;
+    }
+    setBodyScrollLock(ASSET_PREVIEW_LOCK, true, { freezeViewport: false });
+    return () => setBodyScrollLock(ASSET_PREVIEW_LOCK, false);
+  }, [previewMaterial]);
 
   const empty = loaded && !loading && !materials.length;
   const canUpload = !uploading && totalAssetCount < 200;
   const canCreateGroup = groups.length < 50;
-  const boardMeta = `${materials.length}${cursor ? "+" : ""} 项 · ${
-    totalAssetCount > 0 ? `${totalAssetCount} / 200` : "上限 200"
-  }`;
+  const showUngrouped = groups.length > 0 || activeFilter === "ungrouped";
+  const visibleGroups = useMemo(
+    () =>
+      groups.filter(
+        (group) =>
+          (group.assetCount || 0) > 0 ||
+          activeFilter === group.id ||
+          renamingGroupId === group.id,
+      ),
+    [activeFilter, groups, renamingGroupId],
+  );
+  const editingGroup =
+    groups.find((group) => group.id === renamingGroupId) || null;
+  const activeCustomGroup =
+    activeFilter !== "all" && activeFilter !== "ungrouped"
+      ? groups.find((group) => group.id === activeFilter) || null
+      : null;
+  const duplicateKeys = useMemo(() => {
+    const counts = new Map();
+    for (const asset of materials) {
+      for (const key of assetDuplicateKeys(asset)) {
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    return new Set(
+      [...counts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([key]) => key),
+    );
+  }, [materials]);
+  const isDuplicateAsset = useCallback(
+    (asset) =>
+      assetDuplicateKeys(asset).some((key) => duplicateKeys.has(key)),
+    [duplicateKeys],
+  );
+  const duplicateItemCount = useMemo(
+    () => materials.filter(isDuplicateAsset).length,
+    [isDuplicateAsset, materials],
+  );
+  const visibleMaterials = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    const items = materials.filter((asset) => {
+      if (showDuplicatesOnly && !isDuplicateAsset(asset)) return false;
+      if (!keyword) return true;
+      const title = String(asset.title || "").toLowerCase();
+      const shown = displayTitle(asset.title).toLowerCase();
+      const group = groupNameOf(asset).toLowerCase();
+      return (
+        title.includes(keyword) ||
+        shown.includes(keyword) ||
+        group.includes(keyword)
+      );
+    });
+    if (!showDuplicatesOnly) return items;
+    return [...items].sort((left, right) => {
+      const leftTitle = String(left.title || "").toLowerCase();
+      const rightTitle = String(right.title || "").toLowerCase();
+      if (leftTitle !== rightTitle) return leftTitle.localeCompare(rightTitle);
+      return Number(left.sizeBytes || 0) - Number(right.sizeBytes || 0);
+    });
+  }, [groupNameOf, isDuplicateAsset, materials, query, showDuplicatesOnly]);
+  const noVisible = !empty && loaded && !loading && !visibleMaterials.length;
+  const selectedAssets = useMemo(
+    () => materials.filter((asset) => selectedIds.has(asset.id)),
+    [materials, selectedIds],
+  );
+  const selectedCount = selectedAssets.length;
+  const selectedGroupId = useMemo(() => {
+    if (!selectedAssets.length) return undefined;
+    const first = selectedAssets[0].groupId || "";
+    return selectedAssets.every((asset) => (asset.groupId || "") === first)
+      ? first
+      : undefined;
+  }, [selectedAssets]);
+  const batchRenameExample = `${(batchRenamePrefix.trim() || "产品图_").slice(0, 100)}1847`;
+  const previewIndex = previewMaterial
+    ? visibleMaterials.findIndex((asset) => asset.id === previewMaterial.id)
+    : -1;
+  useContentReveal({
+    rootRef: pageRef,
+    selector: ".ml-grid .ml-card",
+    ready: !loading,
+    resetKey: activeFilter,
+    contentKey: visibleMaterials.map((asset) => asset.id).join("|"),
+    stateAttribute: "data-assets-content-motion-state",
+  });
   const uploadTargetLabel =
     groups.find((group) => group.id === uploadGroupId)?.name ||
     (uploadGroupId ? "分组" : "未分组");
@@ -224,12 +537,14 @@ export function MaterialsLibraryView() {
     activeFilter !== "all" && activeFilter !== "ungrouped" ? activeFilter : "";
 
   const refreshAll = async () => {
+    if (requireAssetLogin()) return;
     setMoveMenuId(null);
     loadingRef.current = false;
     await Promise.all([loadGroups(), loadList()]);
   };
 
   const openUpload = () => {
+    if (requireAssetLogin()) return;
     if (!canUpload) return;
     setMoveMenuId(null);
     setUploadGroupId(defaultUploadGroupId());
@@ -248,7 +563,7 @@ export function MaterialsLibraryView() {
     if (event.target) event.target.value = "";
     if (!files.length || uploading) return;
     if (files.length > 6) {
-      notificationService.warning("单次最多上传 6 张素材");
+      notificationService.warning("单次最多上传 6 项资产");
       return;
     }
     const invalid = files.find(
@@ -262,7 +577,7 @@ export function MaterialsLibraryView() {
       return;
     }
     if (totalAssetCount + files.length > 200) {
-      notificationService.warning("素材库最多保存 200 项");
+      notificationService.warning("我的资产最多保存 200 项");
       return;
     }
     setPendingUploadFiles(files);
@@ -273,6 +588,7 @@ export function MaterialsLibraryView() {
   };
 
   const confirmUpload = async () => {
+    if (requireAssetLogin()) return;
     if (!pendingUploadFiles.length) {
       materialInputRef.current?.click();
       return;
@@ -317,13 +633,13 @@ export function MaterialsLibraryView() {
         : "";
       notificationService.success(
         groupName
-          ? `已添加 ${completed} 项素材到「${groupName}」`
-          : `已添加 ${completed} 项素材`,
+          ? `已添加 ${completed} 项资产到「${groupName}」`
+          : `已添加 ${completed} 项资产`,
       );
     } catch (error) {
       if (error?.name !== "AbortError" && mountedRef.current)
         notificationService.error(
-          error?.message || `已添加 ${completed} 项，其余素材上传失败`,
+          error?.message || `已添加 ${completed} 项，其余资产上传失败`,
         );
     } finally {
       if (uploadControllerRef.current === controller) {
@@ -334,6 +650,7 @@ export function MaterialsLibraryView() {
   };
 
   const confirmDelete = async () => {
+    if (requireAssetLogin()) return;
     const asset = pendingDelete;
     setPendingDelete(null);
     if (!asset) return;
@@ -347,10 +664,10 @@ export function MaterialsLibraryView() {
       if (editAsset?.id === asset.id) setEditAsset(null);
       setTotalAssetCount((count) => Math.max(0, count - 1));
       await loadGroups();
-      notificationService.success("素材已删除");
+      notificationService.success("资产已删除");
     } catch (error) {
       if (mountedRef.current)
-        notificationService.error(error?.message || "素材删除失败");
+        notificationService.error(error?.message || "资产删除失败");
     }
   };
 
@@ -367,6 +684,7 @@ export function MaterialsLibraryView() {
   };
 
   const openEdit = (asset) => {
+    if (requireAssetLogin()) return;
     setMoveMenuId(null);
     setEditAsset(asset);
     setEditingTitle(asset.title || "");
@@ -415,16 +733,17 @@ export function MaterialsLibraryView() {
       setEditAsset(null);
       setEditingTitle("");
       setEditingGroupId("");
-      notificationService.success("素材已更新");
+      notificationService.success("资产已更新");
     } catch (error) {
       if (mountedRef.current)
-        notificationService.error(error?.message || "素材更新失败");
+        notificationService.error(error?.message || "资产更新失败");
     } finally {
       if (mountedRef.current) setSavingEdit(false);
     }
   };
 
   const moveToGroup = async (asset, groupId) => {
+    if (requireAssetLogin()) return;
     const next = groupId || null;
     setMoveMenuId(null);
     if ((asset.groupId || null) === next) return;
@@ -444,12 +763,233 @@ export function MaterialsLibraryView() {
       notificationService.success(next ? "已移入分组" : "已移出分组");
     } catch (error) {
       if (mountedRef.current)
-        notificationService.error(error?.message || "素材更新失败");
+        notificationService.error(error?.message || "资产更新失败");
     }
+  };
+
+  const rememberDimensions = (id, event) => {
+    const image = event.currentTarget;
+    const width = Number(image?.naturalWidth || 0);
+    const height = Number(image?.naturalHeight || 0);
+    if (!id || !width || !height) return;
+    setAssetDimensions((current) => {
+      const prev = current[id];
+      if (prev?.w === width && prev?.h === height) return current;
+      return { ...current, [id]: { w: width, h: height } };
+    });
+  };
+
+  const toggleSelected = (id) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectMode = () => {
+    setSelectMode((value) => !value);
+    setSelectedIds(new Set());
+    setBatchMoveOpen(false);
+    setMoveMenuId(null);
+    setPreviewMaterial(null);
+  };
+
+  const selectVisible = () => {
+    setSelectedIds(new Set(visibleMaterials.map((asset) => asset.id)));
+  };
+
+  const applyBulkUpdates = (updatedItems) => {
+    if (!updatedItems.length) return;
+    const byId = new Map(updatedItems.map((item) => [item.id, item]));
+    applyMaterials(
+      materialsRef.current
+        .map((item) => (byId.has(item.id) ? { ...item, ...byId.get(item.id) } : item))
+        .filter((item) => {
+          if (!byId.has(item.id)) return true;
+          return (
+            filterRef.current === "all" ||
+            (filterRef.current === "ungrouped" && !item.groupId) ||
+            item.groupId === filterRef.current
+          );
+        }),
+    );
+    setPreviewMaterial((current) =>
+      current && byId.has(current.id)
+        ? { ...current, ...byId.get(current.id) }
+        : current,
+    );
+  };
+
+  const batchMoveToGroup = async (groupId) => {
+    if (requireAssetLogin()) return;
+    const next = groupId || null;
+    const targets = selectedAssets.filter(
+      (asset) => (asset.groupId || null) !== next,
+    );
+    setBatchMoveOpen(false);
+    if (!targets.length) {
+      notificationService.info("所选资产已在该分组");
+      return;
+    }
+    setBulkBusy(true);
+    const updatedItems = [];
+    let failed = 0;
+    try {
+      await mapPool(targets, async (asset) => {
+        try {
+          updatedItems.push(await updateUserAsset(asset.id, { groupId: next }));
+        } catch {
+          failed += 1;
+        }
+      });
+      if (!mountedRef.current) return;
+      applyBulkUpdates(updatedItems);
+      setSelectedIds(new Set());
+      await loadGroups();
+      if (failed) {
+        notificationService.error(
+          `已移动 ${updatedItems.length} 项，${failed} 项失败`,
+        );
+      } else {
+        notificationService.success(
+          next
+            ? `已将 ${updatedItems.length} 项移入分组`
+            : `已将 ${updatedItems.length} 项移出分组`,
+        );
+      }
+    } finally {
+      if (mountedRef.current) setBulkBusy(false);
+    }
+  };
+
+  const openBatchRename = () => {
+    if (requireAssetLogin()) return;
+    if (!selectedCount) return;
+    setBatchMoveOpen(false);
+    setBatchRenamePrefix("");
+    setBatchRenameOpen(true);
+  };
+
+  const closeBatchRename = () => {
+    if (bulkBusy) return;
+    setBatchRenameOpen(false);
+    setBatchRenamePrefix("");
+  };
+
+  const submitBatchRename = async (event) => {
+    event.preventDefault();
+    if (requireAssetLogin()) return;
+    const prefix = batchRenamePrefix.trim().slice(0, 100);
+    if (!prefix) {
+      notificationService.warning("请输入标题前缀");
+      return;
+    }
+    if (!selectedAssets.length) return;
+    const titles = buildBatchTitles(prefix, selectedAssets.length);
+    setBulkBusy(true);
+    const updatedItems = [];
+    let failed = 0;
+    try {
+      await mapPool(
+        selectedAssets.map((asset, index) => ({ asset, title: titles[index] })),
+        async ({ asset, title }) => {
+          if (asset.title === title) {
+            updatedItems.push(asset);
+            return;
+          }
+          try {
+            updatedItems.push(await updateUserAsset(asset.id, { title }));
+          } catch {
+            failed += 1;
+          }
+        },
+      );
+      if (!mountedRef.current) return;
+      applyBulkUpdates(updatedItems);
+      setSelectedIds(new Set());
+      setBatchRenameOpen(false);
+      setBatchRenamePrefix("");
+      if (failed) {
+        notificationService.error(
+          `已重命名 ${updatedItems.length} 项，${failed} 项失败`,
+        );
+      } else {
+        notificationService.success(`已重命名 ${updatedItems.length} 项`);
+      }
+    } finally {
+      if (mountedRef.current) setBulkBusy(false);
+    }
+  };
+
+  const confirmBulkDelete = async () => {
+    if (requireAssetLogin()) return;
+    const ids = pendingBulkDelete || [];
+    if (!ids.length || bulkBusy) return;
+    setBulkBusy(true);
+    const removed = new Set();
+    let failed = 0;
+    try {
+      await mapPool(ids, async (id) => {
+        try {
+          await deleteUserAsset(id);
+          removed.add(id);
+        } catch {
+          failed += 1;
+        }
+      });
+      if (!mountedRef.current) return;
+      applyMaterials(
+        materialsRef.current.filter((item) => !removed.has(item.id)),
+      );
+      if (previewMaterial && removed.has(previewMaterial.id)) {
+        setPreviewMaterial(null);
+      }
+      if (editAsset && removed.has(editAsset.id)) setEditAsset(null);
+      setTotalAssetCount((count) => Math.max(0, count - removed.size));
+      setSelectedIds(new Set());
+      setPendingBulkDelete(null);
+      await loadGroups();
+      if (failed) {
+        notificationService.error(
+          `已删除 ${removed.size} 项，${failed} 项失败`,
+        );
+      } else {
+        notificationService.success(`已删除 ${removed.size} 项资产`);
+      }
+    } finally {
+      if (mountedRef.current) setBulkBusy(false);
+    }
+  };
+
+  const closeGroupDrawer = () => {
+    if (creatingGroup || savingGroup) return;
+    setShowGroupComposer(false);
+    setNewGroupName("");
+    setRenamingGroupId(null);
+    setRenamingGroupName("");
+  };
+
+  const openCreateGroup = () => {
+    if (requireAssetLogin()) return;
+    setRenamingGroupId(null);
+    setRenamingGroupName("");
+    setNewGroupName("");
+    setShowGroupComposer(true);
+  };
+
+  const openEditGroup = (group) => {
+    if (requireAssetLogin()) return;
+    if (!group) return;
+    setShowGroupComposer(false);
+    setNewGroupName("");
+    setRenamingGroupId(group.id);
+    setRenamingGroupName(group.name || "");
   };
 
   const submitCreateGroup = async (event) => {
     event.preventDefault();
+    if (requireAssetLogin()) return;
     const name = newGroupName.trim();
     if (!name) {
       notificationService.warning("请输入分组名称");
@@ -474,6 +1014,7 @@ export function MaterialsLibraryView() {
 
   const saveRenameGroup = async (event, group) => {
     event.preventDefault();
+    if (requireAssetLogin()) return;
     const name = renamingGroupName.trim();
     if (!name) {
       notificationService.warning("请输入分组名称");
@@ -484,6 +1025,7 @@ export function MaterialsLibraryView() {
       setRenamingGroupName("");
       return;
     }
+    setSavingGroup(true);
     try {
       const updated = await updateUserAssetGroup(group.id, { name });
       if (!mountedRef.current) return;
@@ -498,10 +1040,13 @@ export function MaterialsLibraryView() {
     } catch (error) {
       if (mountedRef.current)
         notificationService.error(error?.message || "分组更新失败");
+    } finally {
+      if (mountedRef.current) setSavingGroup(false);
     }
   };
 
   const confirmDeleteGroup = async () => {
+    if (requireAssetLogin()) return;
     const group = pendingGroupDelete;
     setPendingGroupDelete(null);
     if (!group) return;
@@ -510,6 +1055,8 @@ export function MaterialsLibraryView() {
       if (!mountedRef.current) return;
       setGroups((items) => items.filter((item) => item.id !== group.id));
       if (filterRef.current === group.id) setActiveFilter("all");
+      setRenamingGroupId(null);
+      setRenamingGroupName("");
       await refreshAll();
       notificationService.success("分组已删除");
     } catch (error) {
@@ -534,7 +1081,7 @@ export function MaterialsLibraryView() {
             onKeyDown={(event) => event.key === "Escape" && closeUpload()}
           >
             <header className="ml-edit__head">
-              <h2 id="ml-upload-title">添加素材</h2>
+              <h2 id="ml-upload-title">添加资产</h2>
               <button
                 type="button"
                 aria-label="关闭"
@@ -632,201 +1179,138 @@ export function MaterialsLibraryView() {
       )
     : null;
 
-  const editDialog = editAsset
-    ? createPortal(
-        <div
-          className={`ml-edit-backdrop${!isDark ? " is-light" : ""}`}
-          onMouseDown={(event) =>
-            event.target === event.currentTarget && closeEdit()
-          }
-        >
-          <section
-            className="ml-edit"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ml-edit-title"
-            onKeyDown={(event) => event.key === "Escape" && closeEdit()}
-          >
-            <header className="ml-edit__head">
-              <h2 id="ml-edit-title">编辑素材</h2>
-              <button
-                type="button"
-                aria-label="关闭"
-                disabled={savingEdit}
-                onClick={closeEdit}
-              >
-                <i className="bi bi-x-lg" />
-              </button>
-            </header>
-            <div className="ml-edit__body">
-              <div className="ml-edit__thumb">
-                <AuthenticatedImage
-                  src={editAsset.thumbnailUrl}
-                  alt={editAsset.title}
-                  loading="eager"
-                />
-              </div>
-              <form className="ml-edit__form" onSubmit={saveEdit}>
-                <label>
-                  <span>标题</span>
-                  <input
-                    ref={editInputRef}
-                    value={editingTitle}
-                    maxLength={120}
-                    placeholder="素材标题"
-                    disabled={savingEdit}
-                    onChange={(event) => setEditingTitle(event.target.value)}
-                  />
-                </label>
-                <label>
-                  <span>分组</span>
-                  <select
-                    value={editingGroupId}
-                    disabled={savingEdit}
-                    onChange={(event) => setEditingGroupId(event.target.value)}
-                  >
-                    <option value="">未分组</option>
-                    {groups.map((group) => (
-                      <option key={group.id} value={group.id}>
-                        {group.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="ml-edit__hint">
-                  {formatBytes(editAsset.sizeBytes)} · 点击卡片可预览原图
-                </p>
-                <footer className="ml-edit__actions">
-                  <button
-                    type="button"
-                    className="ml-btn is-ghost"
-                    disabled={savingEdit}
-                    onClick={closeEdit}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="submit"
-                    className="ml-btn is-primary"
-                    disabled={savingEdit}
-                  >
-                    {savingEdit && (
-                      <i
-                        className="bi bi-arrow-repeat spin"
-                        aria-hidden="true"
-                      />
-                    )}
-                    {savingEdit ? "保存中…" : "保存"}
-                  </button>
-                </footer>
-              </form>
-            </div>
-          </section>
-        </div>,
-        document.body,
-      )
-    : null;
-
-  const lightbox = previewMaterial
-    ? createPortal(
-        <div
-          className={`ml-lightbox${!isDark ? " is-light" : ""}`}
-          tabIndex={-1}
-          onMouseDown={(event) =>
-            event.target === event.currentTarget && setPreviewMaterial(null)
-          }
-          onKeyDown={(event) =>
-            event.key === "Escape" && setPreviewMaterial(null)
-          }
-        >
-          <button
-            type="button"
-            className="ml-lightbox__close"
-            aria-label="关闭"
-            onClick={() => setPreviewMaterial(null)}
-          >
-            <i className="bi bi-x-lg" />
-          </button>
-          <div
-            className="ml-lightbox__stage"
-            onMouseDown={(event) =>
-              event.target === event.currentTarget && setPreviewMaterial(null)
-            }
-          >
-            <ProgressiveAuthenticatedImage
-              src={previewMaterial.url}
-              previewSrc={previewMaterial.thumbnailUrl}
-              alt={previewMaterial.title}
-              loading="eager"
-              fetchPriority="high"
-              loadOriginal
-            />
-          </div>
-          <footer className="ml-lightbox__bar">
-            <div className="ml-lightbox__copy">
-              <strong title={previewMaterial.title}>
-                {previewMaterial.title}
-              </strong>
-              <small>
-                {formatBytes(previewMaterial.sizeBytes)} ·{" "}
-                {groupNameOf(previewMaterial)}
-              </small>
-            </div>
-            <div className="ml-lightbox__actions">
-              <button
-                type="button"
-                className="ml-btn is-ghost"
-                onClick={() => openEdit(previewMaterial)}
-              >
-                <i className="bi bi-pencil" /> 编辑
-              </button>
-              <button
-                type="button"
-                className="ml-btn is-danger-ghost"
-                onClick={() => setPendingDelete(previewMaterial)}
-              >
-                <i className="bi bi-trash3" /> 删除
-              </button>
-            </div>
-          </footer>
-        </div>,
-        document.body,
-      )
-    : null;
-
-  return (
-    <div
-      className={`ml-page ${isDark ? "is-dark" : "is-light"}`}
-      onClick={() => setMoveMenuId(null)}
+  const editDialog = (
+    <DialogMotion
+      open={Boolean(editAsset)}
+      layerClassName={`ml-edit-backdrop${!isDark ? " is-light" : ""}`}
+      panelClassName="ml-edit"
+      ariaLabelledby="ml-edit-title"
+      initialFocusRef={editInputRef}
+      closeDisabled={savingEdit}
+      onClose={closeEdit}
     >
-      <div className="ml-atmosphere" aria-hidden="true">
-        <div className="ml-atmosphere__wash" />
-        <div className="ml-atmosphere__orb ml-atmosphere__orb--a" />
-        <div className="ml-atmosphere__orb ml-atmosphere__orb--b" />
-      </div>
-      <div className="ml-shell">
-        <header className="ml-hero">
-          <div className="ml-hero__copy">
-            <h1>素材库</h1>
-            <p>整理可复用的个人视觉素材，随时拖进创作。</p>
-          </div>
-          <div className="ml-hero__actions">
+      {editAsset ? (
+        <>
+          <header className="ml-edit__head" data-dialog-motion-item>
+            <h2 id="ml-edit-title">编辑资产</h2>
             <button
               type="button"
-              className="ml-btn is-primary"
-              disabled={!canUpload}
+              aria-label="关闭"
+              disabled={savingEdit}
+              onClick={closeEdit}
+            >
+              <i className="bi bi-x-lg" />
+            </button>
+          </header>
+          <div className="ml-edit__body" data-dialog-motion-item>
+            <div className="ml-edit__thumb">
+              <AuthenticatedImage
+                src={editAsset.thumbnailUrl}
+                alt={editAsset.title}
+                loading="eager"
+              />
+            </div>
+            <form className="ml-edit__form" onSubmit={saveEdit}>
+              <label>
+                <span>标题</span>
+                <input
+                  ref={editInputRef}
+                  value={editingTitle}
+                  maxLength={120}
+                  placeholder="资产标题"
+                  disabled={savingEdit}
+                  onChange={(event) => setEditingTitle(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>分组</span>
+                <select
+                  value={editingGroupId}
+                  disabled={savingEdit}
+                  onChange={(event) => setEditingGroupId(event.target.value)}
+                >
+                  <option value="">未分组</option>
+                  {groups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="ml-edit__hint">
+                {formatBytes(editAsset.sizeBytes)} · 点击卡片可预览原图
+              </p>
+              <footer className="ml-edit__actions">
+                <button
+                  type="button"
+                  className="ml-btn is-ghost"
+                  disabled={savingEdit}
+                  onClick={closeEdit}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="ml-btn is-primary"
+                  disabled={savingEdit}
+                >
+                  {savingEdit && (
+                    <i className="bi bi-arrow-repeat spin" aria-hidden="true" />
+                  )}
+                  {savingEdit ? "保存中…" : "保存"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </>
+      ) : null}
+    </DialogMotion>
+  );
+
+  const showPreviewAt = (index) => {
+    const next = visibleMaterials[index];
+    if (next) setPreviewMaterial(next);
+  };
+
+  return (
+    <main
+      ref={pageRef}
+      className={`ch-page ch-page--prompts ml-page ${isDark ? "is-dark" : "is-light"}`}
+      onClick={() => {
+        setMoveMenuId(null);
+        setBatchMoveOpen(false);
+      }}
+    >
+      <div className="ch-shell">
+        <div className="ch-sticky-bar">
+          <div className="ch-toolbar">
+            <label className="ch-search">
+              <i className="bi bi-search" aria-hidden="true" />
+              <input
+                type="search"
+                value={query}
+                placeholder="搜索标题或分组"
+                aria-label="搜索标题或分组"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="ch-btn is-primary"
+              disabled={auth.isAuthenticated && !canUpload}
               onClick={openUpload}
             >
               <i
                 className={`bi ${uploading ? "bi-arrow-repeat spin" : "bi-plus-lg"}`}
               />
-              {uploading ? "上传中…" : "添加素材"}
+              {uploading ? "上传中…" : "添加资产"}
             </button>
             <button
               type="button"
-              className="ml-btn is-ghost"
+              className="ch-btn is-ghost"
               aria-label="刷新"
-              disabled={loading || groupsLoading}
+              title="刷新资产"
+              disabled={auth.isAuthenticated && (loading || groupsLoading)}
               onClick={refreshAll}
             >
               <i
@@ -844,266 +1328,371 @@ export function MaterialsLibraryView() {
               onChange={onMaterialsSelected}
             />
           </div>
-        </header>
-        <div
-          className="ml-filters"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            className={`ml-chip${activeFilter === "all" ? " is-active" : ""}`}
-            onClick={() => setActiveFilter("all")}
-          >
-            全部 {totalAssetCount > 0 && <em>{totalAssetCount}</em>}
-          </button>
-          <button
-            type="button"
-            className={`ml-chip${
-              activeFilter === "ungrouped" ? " is-active" : ""
-            }`}
-            onClick={() => setActiveFilter("ungrouped")}
-          >
-            未分组 {ungroupedCount > 0 && <em>{ungroupedCount}</em>}
-          </button>
-          {groups.map((group) => (
-            <div key={group.id} className="ml-chip-wrap">
-              {renamingGroupId !== group.id ? (
+          <div className="ml-group-bar">
+            <nav
+              className="ch-chips"
+              aria-label="资产分组"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className={`ch-chip${activeFilter === "all" && !showDuplicatesOnly ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowDuplicatesOnly(false);
+                  setActiveFilter("all");
+                }}
+              >
+                全部 {totalAssetCount}
+              </button>
+              {showUngrouped && (
                 <button
                   type="button"
-                  className={`ml-chip${
-                    activeFilter === group.id ? " is-active" : ""
-                  }`}
-                  onClick={() => setActiveFilter(group.id)}
-                  onDoubleClick={() => {
-                    setRenamingGroupId(group.id);
-                    setRenamingGroupName(group.name || "");
+                  className={`ch-chip${activeFilter === "ungrouped" ? " is-active" : ""}`}
+                  onClick={() => {
+                    setShowDuplicatesOnly(false);
+                    setActiveFilter("ungrouped");
                   }}
                 >
-                  {group.name}{" "}
-                  {group.assetCount > 0 && <em>{group.assetCount}</em>}
+                  未分组 {ungroupedCount}
                 </button>
-              ) : (
-                <form
-                  className="ml-chip-edit"
-                  onSubmit={(event) => saveRenameGroup(event, group)}
-                >
-                  <input
-                    value={renamingGroupName}
-                    maxLength={64}
-                    aria-label="分组名称"
-                    autoFocus
-                    onChange={(event) =>
-                      setRenamingGroupName(event.target.value)
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        setRenamingGroupId(null);
-                        setRenamingGroupName("");
-                      }
-                    }}
-                  />
-                  <button type="submit" aria-label="保存">
-                    <i className="bi bi-check-lg" />
-                  </button>
-                </form>
               )}
-              {renamingGroupId !== group.id && activeFilter === group.id && (
-                <div className="ml-chip-ops">
-                  <button
-                    type="button"
-                    aria-label="重命名分组"
-                    onClick={() => {
-                      setRenamingGroupId(group.id);
-                      setRenamingGroupName(group.name || "");
-                    }}
-                  >
-                    <i className="bi bi-pencil" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="删除分组"
-                    onClick={() => setPendingGroupDelete(group)}
-                  >
-                    <i className="bi bi-trash3" />
-                  </button>
-                </div>
+              {visibleGroups.map((group) => (
+                <button
+                  key={group.id}
+                  type="button"
+                  data-click-guard="off"
+                  className={`ch-chip${activeFilter === group.id ? " is-active" : ""}`}
+                  onClick={() => {
+                    setShowDuplicatesOnly(false);
+                    setActiveFilter(group.id);
+                  }}
+                >
+                  {group.name} {group.assetCount || 0}
+                </button>
+              ))}
+              {duplicateKeys.size > 0 && (
+                <button
+                  type="button"
+                  className={`ch-chip${showDuplicatesOnly ? " is-active" : ""}`}
+                  onClick={() => setShowDuplicatesOnly((value) => !value)}
+                >
+                  重复项 {duplicateItemCount}
+                </button>
+              )}
+            </nav>
+            <div className="ml-group-bar__actions">
+              <button
+                type="button"
+                className={`ch-chip${selectMode ? " is-active" : ""}`}
+                disabled={bulkBusy}
+                onClick={toggleSelectMode}
+              >
+                {selectMode ? "退出多选" : "多选"}
+              </button>
+              {activeCustomGroup && (
+                <button
+                  type="button"
+                  className="ch-chip"
+                  onClick={() => openEditGroup(activeCustomGroup)}
+                >
+                  编辑分组
+                </button>
+              )}
+              {canCreateGroup && (
+                <button
+                  type="button"
+                  className="ch-chip"
+                  onClick={openCreateGroup}
+                >
+                  + 新建分组
+                </button>
               )}
             </div>
-          ))}
-          {showGroupComposer ? (
-            <form className="ml-chip-create" onSubmit={submitCreateGroup}>
-              <input
-                ref={groupNameInputRef}
-                value={newGroupName}
-                maxLength={64}
-                placeholder="分组名称"
-                aria-label="新建分组名称"
-                onChange={(event) => setNewGroupName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setShowGroupComposer(false);
-                    setNewGroupName("");
-                  }
-                }}
-              />
-              <button type="submit" disabled={creatingGroup}>
-                {creatingGroup ? "…" : "创建"}
+          </div>
+          {selectMode && (
+            <div
+              className="ch-bulk-bar ml-bulk-bar"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <span className="ml-bulk-bar__count">
+                已选 {selectedCount}
+              </span>
+              <button
+                type="button"
+                className="ch-chip"
+                disabled={bulkBusy || !visibleMaterials.length}
+                onClick={selectVisible}
+              >
+                全选当前
+              </button>
+              <div className="ml-bulk-move">
+                <button
+                  type="button"
+                  className={`ch-chip${batchMoveOpen ? " is-active" : ""}`}
+                  disabled={bulkBusy || !selectedCount}
+                  onClick={() => setBatchMoveOpen((open) => !open)}
+                >
+                  移入分组
+                </button>
+                <AssetGroupMenu open={batchMoveOpen}>
+                  <button
+                    type="button"
+                    data-group-menu-item
+                    className={selectedGroupId === "" ? "is-active" : ""}
+                    disabled={bulkBusy}
+                    onClick={() => batchMoveToGroup("")}
+                  >
+                    未分组
+                  </button>
+                  {groups.map((group) => (
+                    <button
+                      key={group.id}
+                      type="button"
+                      data-group-menu-item
+                      className={
+                        selectedGroupId === group.id ? "is-active" : ""
+                      }
+                      disabled={bulkBusy}
+                      onClick={() => batchMoveToGroup(group.id)}
+                    >
+                      {group.name}
+                    </button>
+                  ))}
+                  {!groups.length && (
+                    <p className="ml-card__menu-empty" data-group-menu-item>
+                      还没有分组，先在上方新建
+                    </p>
+                  )}
+                </AssetGroupMenu>
+              </div>
+              <button
+                type="button"
+                className="ch-chip"
+                disabled={bulkBusy || !selectedCount}
+                onClick={openBatchRename}
+              >
+                批量重命名
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowGroupComposer(false);
-                  setNewGroupName("");
-                }}
+                className="ch-chip is-danger"
+                disabled={bulkBusy || !selectedCount}
+                onClick={() => setPendingBulkDelete([...selectedIds])}
               >
-                取消
+                删除所选{selectedCount ? ` (${selectedCount})` : ""}
               </button>
-            </form>
-          ) : (
-            canCreateGroup && (
-              <button
-                type="button"
-                className="ml-chip is-ghost"
-                onClick={() => setShowGroupComposer(true)}
-              >
-                <i className="bi bi-plus-lg" /> 新建分组
-              </button>
-            )
+            </div>
           )}
         </div>
-        <section className="ml-board" aria-live="polite">
-          <div className="ml-board__meta">
-            <span>{boardMeta}</span>
-            <span>单张 ≤ 10MB · 单次最多 6 张</span>
-          </div>
+
+        <section className="ch-section" aria-live="polite">
           {loading && !materials.length ? (
-            <div className="ml-grid" aria-hidden="true">
-              {Array.from({ length: 8 }, (_, index) => (
-                <div key={index} className="ml-skel" />
-              ))}
-            </div>
-          ) : materials.length ? (
+            <div className="ch-loading">正在加载资产…</div>
+          ) : visibleMaterials.length ? (
             <div className="ml-grid">
-              {materials.map((asset) => (
-                <article
-                  key={asset.id}
-                  className={`ml-card${moveMenuId === asset.id ? " is-menu" : ""}`}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <div className="ml-card__media">
-                    <button
-                      type="button"
-                      className="ml-card__cover"
-                      onClick={() => setPreviewMaterial(asset)}
-                    >
-                      <AuthenticatedImage
-                        src={asset.thumbnailUrl}
-                        alt={asset.title}
-                        loading="lazy"
-                        rootMargin="180px 0px"
-                      />
-                    </button>
-                    <div className="ml-card__toolbar">
+              {visibleMaterials.map((asset) => {
+                const duplicate = isDuplicateAsset(asset);
+                const selected = selectedIds.has(asset.id);
+                const dimensions =
+                  formatDimensions(asset) ||
+                  formatDimensions(assetDimensions[asset.id]);
+                return (
+                  <article
+                    key={asset.id}
+                    className={`ch-card ml-card${moveMenuId === asset.id ? " is-menu" : ""}${selectMode ? " is-selecting" : ""}${selected ? " is-selected" : ""}`}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {selectMode && (
                       <button
                         type="button"
-                        title="编辑"
-                        onClick={() => openEdit(asset)}
+                        className="ch-card__check"
+                        aria-pressed={selected}
+                        aria-label={selected ? "取消选择" : "选择资产"}
+                        onClick={() => toggleSelected(asset.id)}
                       >
-                        <i className="bi bi-pencil" />
+                        <i
+                          className={`bi ${selected ? "bi-check-circle-fill" : "bi-circle"}`}
+                        />
                       </button>
+                    )}
+                    <div className="ml-card__stage">
                       <button
                         type="button"
-                        title="移动到分组"
-                        className={moveMenuId === asset.id ? "is-on" : ""}
+                        className="ch-card__media ml-card__cover"
                         onClick={() =>
-                          setMoveMenuId((id) =>
-                            id === asset.id ? null : asset.id,
-                          )
+                          selectMode
+                            ? toggleSelected(asset.id)
+                            : setPreviewMaterial(asset)
                         }
                       >
-                        <i className="bi bi-folder" />
+                        <AuthenticatedImage
+                          src={asset.thumbnailUrl}
+                          alt={asset.title}
+                          loading="lazy"
+                          rootMargin="180px 0px"
+                          onLoad={(event) =>
+                            rememberDimensions(asset.id, event)
+                          }
+                        />
                       </button>
-                      <button
-                        type="button"
-                        title="删除"
-                        className="is-danger"
-                        onClick={() => setPendingDelete(asset)}
-                      >
-                        <i className="bi bi-trash3" />
-                      </button>
-                    </div>
-                    {moveMenuId === asset.id && (
-                      <div
-                        className="ml-card__menu"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <button
-                          type="button"
-                          className={!asset.groupId ? "is-active" : ""}
-                          onClick={() => moveToGroup(asset, "")}
-                        >
-                          未分组
-                        </button>
-                        {groups.map((group) => (
-                          <button
-                            key={group.id}
-                            type="button"
-                            className={
-                              asset.groupId === group.id ? "is-active" : ""
-                            }
-                            onClick={() => moveToGroup(asset, group.id)}
-                          >
-                            {group.name}
-                          </button>
-                        ))}
-                        {!groups.length && (
-                          <p className="ml-card__menu-empty">
-                            还没有分组，先在上方新建
-                          </p>
-                        )}
+                      <div className="ml-card__overlay">
+                        {duplicate ? (
+                          <span className="ml-card__overlay-flag">重复</span>
+                        ) : null}
+                        <div className="ml-card__overlay-bar">
+                          <div className="ml-card__overlay-copy">
+                            <strong
+                              className="ml-card__overlay-title"
+                              title={asset.title}
+                            >
+                              {displayTitle(asset.title)}
+                            </strong>
+                            <span className="ml-card__overlay-group">
+                              {groupNameOf(asset)}
+                            </span>
+                            <span className="ml-card__overlay-meta">
+                              <em>{formatBytes(asset.sizeBytes)}</em>
+                              <em>{dimensions || "—"}</em>
+                            </span>
+                          </div>
+                          {!selectMode && (
+                            <div className="ch-card__actions">
+                              <button
+                                type="button"
+                                className="is-icon"
+                                title="编辑"
+                                aria-label="编辑"
+                                onClick={() => openEdit(asset)}
+                              >
+                                <i className="bi bi-pencil" aria-hidden="true" />
+                              </button>
+                              <div className="ml-move">
+                                <button
+                                  type="button"
+                                  title="移动到分组"
+                                  className={
+                                    moveMenuId === asset.id ? "is-on" : ""
+                                  }
+                                  onClick={() =>
+                                    setMoveMenuId((id) =>
+                                      id === asset.id ? null : asset.id,
+                                    )
+                                  }
+                                >
+                                  分组
+                                </button>
+                                <AssetGroupMenu
+                                  open={moveMenuId === asset.id}
+                                  dropUp
+                                >
+                                  <button
+                                    type="button"
+                                    data-group-menu-item
+                                    className={
+                                      !asset.groupId ? "is-active" : ""
+                                    }
+                                    onClick={() => moveToGroup(asset, "")}
+                                  >
+                                    未分组
+                                  </button>
+                                  {groups.map((group) => (
+                                    <button
+                                      key={group.id}
+                                      type="button"
+                                      data-group-menu-item
+                                      className={
+                                        asset.groupId === group.id
+                                          ? "is-active"
+                                          : ""
+                                      }
+                                      onClick={() =>
+                                        moveToGroup(asset, group.id)
+                                      }
+                                    >
+                                      {group.name}
+                                    </button>
+                                  ))}
+                                  {!groups.length && (
+                                    <p
+                                      className="ml-card__menu-empty"
+                                      data-group-menu-item
+                                    >
+                                      还没有分组，先在上方新建
+                                    </p>
+                                  )}
+                                </AssetGroupMenu>
+                              </div>
+                              <button
+                                type="button"
+                                className="is-icon is-danger"
+                                title="删除"
+                                aria-label="删除"
+                                onClick={() => setPendingDelete(asset)}
+                              >
+                                <i
+                                  className="bi bi-trash3"
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                  <div className="ml-card__meta">
-                    <strong title={asset.title}>
-                      {displayTitle(asset.title)}
-                    </strong>
-                    <small>
-                      {formatBytes(asset.sizeBytes)}
-                      {activeFilter === "all" && asset.groupId
-                        ? ` · ${groupNameOf(asset)}`
-                        : ""}
-                    </small>
-                  </div>
-                </article>
-              ))}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
-          ) : empty ? (
-            <div className="ml-empty">
-              <i className="bi bi-collection" aria-hidden="true" />
+          ) : (
+            <div className="ch-empty">
               <strong>
-                {activeFilter === "all" ? "还没有素材" : "这个分组是空的"}
+                {noVisible
+                  ? "没有匹配的资产"
+                  : !auth.isAuthenticated
+                    ? "登录后管理你的资产"
+                    : activeFilter === "all"
+                      ? "还没有资产"
+                      : "这个分组是空的"}
               </strong>
-              <p>
-                {activeFilter === "all"
-                  ? "上传 PNG、JPEG 或 WebP，单张不超过 10MB。"
-                  : "上传到这里，或把其它素材移进来。"}
-              </p>
-              <button
-                type="button"
-                className="ml-btn is-primary"
-                onClick={openUpload}
-              >
-                {activeFilter === "all" ? "添加素材" : "上传到此分组"}
-              </button>
+              <span>
+                {noVisible
+                  ? "换个关键词试试，或清空筛选。"
+                  : !auth.isAuthenticated
+                    ? "资产会与账号同步，并可在全站创作工具中重复使用。"
+                    : activeFilter === "all"
+                      ? "上传图片，建立可在全站调用的个人资产库。"
+                      : "上传到这里，或把其他资产移入当前分组。"}
+              </span>
+              {noVisible ? (
+                <button
+                  type="button"
+                  className="ch-btn is-ghost"
+                  onClick={() => {
+                    setQuery("");
+                    setShowDuplicatesOnly(false);
+                  }}
+                >
+                  清空筛选
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="ch-btn is-primary"
+                  onClick={openUpload}
+                >
+                  {!auth.isAuthenticated
+                    ? "登录后添加"
+                    : activeFilter === "all"
+                      ? "添加资产"
+                      : "上传到此分组"}
+                </button>
+              )}
             </div>
-          ) : null}
-          {cursor && (
+          )}
+          {cursor && !showDuplicatesOnly && !query.trim() && (
             <button
               type="button"
-              className="ml-btn is-ghost ml-more"
+              className="ch-btn is-ghost ml-more"
               disabled={loadingMore}
               onClick={() => loadList({ append: true })}
             >
@@ -1114,11 +1703,275 @@ export function MaterialsLibraryView() {
       </div>
       {uploadDialog}
       {editDialog}
-      {lightbox}
+      <DialogMotion
+        open={batchRenameOpen}
+        layerClassName={`ml-edit-backdrop${!isDark ? " is-light" : ""}`}
+        panelClassName="ml-edit ml-group-dialog"
+        ariaLabelledby="ml-batch-rename-title"
+        initialFocusRef={batchRenameInputRef}
+        closeDisabled={bulkBusy}
+        onClose={closeBatchRename}
+      >
+        <header className="ml-edit__head" data-dialog-motion-item>
+          <h2 id="ml-batch-rename-title">批量重命名</h2>
+          <button
+            type="button"
+            aria-label="关闭"
+            disabled={bulkBusy}
+            onClick={closeBatchRename}
+          >
+            <i className="bi bi-x-lg" />
+          </button>
+        </header>
+        <form
+          className="ml-edit__form ml-group-dialog__form"
+          data-dialog-motion-item
+          onSubmit={submitBatchRename}
+        >
+          <label>
+            <span>标题前缀</span>
+            <input
+              ref={batchRenameInputRef}
+              value={batchRenamePrefix}
+              maxLength={100}
+              placeholder="例如：产品图_"
+              aria-label="批量重命名前缀"
+              disabled={bulkBusy}
+              onChange={(event) => setBatchRenamePrefix(event.target.value)}
+            />
+          </label>
+          <p className="ml-edit__hint">
+            将为 {selectedCount} 项资产生成「前缀 + 4 位随机数字」，例如{" "}
+            {batchRenameExample}
+            。需要分隔可在前缀末尾加上 _ 或 -。
+          </p>
+          <footer className="ml-edit__actions">
+            <button
+              type="button"
+              className="ml-btn is-ghost"
+              disabled={bulkBusy}
+              onClick={closeBatchRename}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="ml-btn is-primary"
+              disabled={bulkBusy || !batchRenamePrefix.trim()}
+            >
+              {bulkBusy ? "重命名中…" : `重命名 ${selectedCount} 项`}
+            </button>
+          </footer>
+        </form>
+      </DialogMotion>
+      <DialogMotion
+        open={showGroupComposer || Boolean(editingGroup)}
+        layerClassName={`ml-edit-backdrop${!isDark ? " is-light" : ""}`}
+        panelClassName="ml-edit ml-group-dialog"
+        ariaLabelledby="ml-group-dialog-title"
+        initialFocusRef={groupNameInputRef}
+        closeDisabled={creatingGroup || savingGroup}
+        onClose={closeGroupDrawer}
+      >
+        <header className="ml-edit__head" data-dialog-motion-item>
+          <h2 id="ml-group-dialog-title">
+            {showGroupComposer ? "新建分组" : "编辑分组"}
+          </h2>
+          <button
+            type="button"
+            aria-label="关闭"
+            disabled={creatingGroup || savingGroup}
+            onClick={closeGroupDrawer}
+          >
+            <i className="bi bi-x-lg" />
+          </button>
+        </header>
+        <form
+          className="ml-edit__form ml-group-dialog__form"
+          data-dialog-motion-item
+          onSubmit={
+            showGroupComposer
+              ? submitCreateGroup
+              : (event) => saveRenameGroup(event, editingGroup)
+          }
+        >
+          <label>
+            <span>分组名称</span>
+            <input
+              ref={groupNameInputRef}
+              value={showGroupComposer ? newGroupName : renamingGroupName}
+              maxLength={64}
+              placeholder="例如：产品图"
+              aria-label={showGroupComposer ? "新建分组名称" : "分组名称"}
+              disabled={creatingGroup || savingGroup}
+              onChange={(event) =>
+                showGroupComposer
+                  ? setNewGroupName(event.target.value)
+                  : setRenamingGroupName(event.target.value)
+              }
+            />
+          </label>
+          <p className="ml-edit__hint">
+            {editingGroup
+              ? `当前 ${editingGroup.assetCount || 0} 项资产。删除分组不会删除资产，只会移到未分组。`
+              : "最多 50 个分组，创建后可把资产移入其中。"}
+          </p>
+          <footer className="ml-edit__actions">
+            {editingGroup ? (
+              <button
+                type="button"
+                className="ml-btn is-danger-ghost"
+                disabled={creatingGroup || savingGroup}
+                onClick={() => setPendingGroupDelete(editingGroup)}
+              >
+                删除分组
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="ml-btn is-ghost"
+              aria-label={
+                showGroupComposer ? "取消新建分组" : "取消编辑分组"
+              }
+              disabled={creatingGroup || savingGroup}
+              onClick={closeGroupDrawer}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="ml-btn is-primary"
+              disabled={creatingGroup || savingGroup}
+            >
+              {showGroupComposer
+                ? creatingGroup
+                  ? "创建中…"
+                  : "创建"
+                : savingGroup
+                  ? "保存中…"
+                  : "保存"}
+            </button>
+          </footer>
+        </form>
+      </DialogMotion>
+      <DialogMotion
+        open={Boolean(previewMaterial)}
+        variant="detail"
+        layerClassName="ch-preview-layer ml-lightbox"
+        panelClassName="ch-preview"
+        ariaLabel="资产预览"
+        onClose={() => setPreviewMaterial(null)}
+        onExited={() => setBodyScrollLock(ASSET_PREVIEW_LOCK, false)}
+        layerExtras={
+          previewMaterial
+            ? () => (
+                <>
+                  <button
+                    type="button"
+                    className="ch-preview__nav is-prev"
+                    disabled={previewIndex <= 0}
+                    aria-label="上一条"
+                    onClick={() => showPreviewAt(previewIndex - 1)}
+                  >
+                    <i className="bi bi-chevron-left" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ch-preview__nav is-next"
+                    disabled={
+                      previewIndex < 0 ||
+                      previewIndex >= visibleMaterials.length - 1
+                    }
+                    aria-label="下一条"
+                    onClick={() => showPreviewAt(previewIndex + 1)}
+                  >
+                    <i className="bi bi-chevron-right" aria-hidden="true" />
+                  </button>
+                </>
+              )
+            : null
+        }
+      >
+        {previewMaterial ? (
+          <>
+            <div className="ch-preview__media">
+              <AuthenticatedImage
+                src={previewMaterial.url}
+                alt={previewMaterial.title}
+                loading="eager"
+                onLoad={(event) =>
+                  rememberDimensions(previewMaterial.id, event)
+                }
+              />
+            </div>
+            <aside className="ch-preview__body">
+              <div className="ch-preview__top">
+                {isDuplicateAsset(previewMaterial) ? (
+                  <div className="ch-card__meta">
+                    <span className="ch-pill is-status" data-status="failed">
+                      重复
+                    </span>
+                  </div>
+                ) : null}
+                <h2 className="ch-card__title">
+                  {displayTitle(previewMaterial.title)}
+                </h2>
+              </div>
+              <div className="ch-preview__mid">
+                <dl className="ch-preview__specs">
+                  <div>
+                    <dt>分组</dt>
+                    <dd>{groupNameOf(previewMaterial)}</dd>
+                  </div>
+                  <div>
+                    <dt>大小</dt>
+                    <dd>{formatBytes(previewMaterial.sizeBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>尺寸</dt>
+                    <dd>
+                      {formatDimensions(previewMaterial) ||
+                        formatDimensions(assetDimensions[previewMaterial.id]) ||
+                        "—"}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+              <div className="ch-preview__bottom">
+                <div className="ch-card__actions">
+                  <button
+                    type="button"
+                    className="is-primary"
+                    title="编辑"
+                    onClick={() => openEdit(previewMaterial)}
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    title="删除"
+                    onClick={() => setPendingDelete(previewMaterial)}
+                  >
+                    删除
+                  </button>
+                  <button
+                    type="button"
+                    className="ml-lightbox__close"
+                    aria-label="关闭"
+                    onClick={() => setPreviewMaterial(null)}
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+            </aside>
+          </>
+        ) : null}
+      </DialogMotion>
       <ConfirmDialog
         open={Boolean(pendingDelete)}
-        heading="删除这项素材？"
-        description="素材原图和缩略图都会移除，删除后无法恢复。"
+        heading="删除这项资产？"
+        description="资产原图和缩略图都会移除，删除后无法恢复。"
         confirmLabel="确认删除"
         icon="bi-trash3"
         light={!isDark}
@@ -1128,13 +1981,27 @@ export function MaterialsLibraryView() {
       <ConfirmDialog
         open={Boolean(pendingGroupDelete)}
         heading="删除这个分组？"
-        description="分组内的素材不会删除，只会移到未分组。"
+        description="分组内的资产不会删除，只会移到未分组。"
         confirmLabel="确认删除"
         icon="bi-folder-x"
         light={!isDark}
         onConfirm={confirmDeleteGroup}
         onClose={() => setPendingGroupDelete(null)}
       />
-    </div>
+      <ConfirmDialog
+        open={Boolean(pendingBulkDelete?.length)}
+        busy={bulkBusy}
+        heading={`删除选中的 ${pendingBulkDelete?.length || 0} 项资产？`}
+        description="资产原图和缩略图都会移除，删除后无法恢复。"
+        confirmLabel="删除所选"
+        busyLabel="删除中…"
+        icon="bi-trash3"
+        light={!isDark}
+        onConfirm={confirmBulkDelete}
+        onClose={() => {
+          if (!bulkBusy) setPendingBulkDelete(null);
+        }}
+      />
+    </main>
   );
 }

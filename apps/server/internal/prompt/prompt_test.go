@@ -25,6 +25,34 @@ func TestSizeExtractedFromParams(t *testing.T) {
 	}
 }
 
+func TestSizeDerivedFromAspectRatioWhenMissing(t *testing.T) {
+	_, size := prompt.Compile("t2i", "一只猫", map[string]any{
+		"aspectRatio":     "16:9",
+		"resolutionScale": "1K",
+	})
+	if size != "1088x608" {
+		t.Fatalf("size = %q, want 1088x608 for 16:9 1K", size)
+	}
+}
+
+func TestSizePrefersExplicitPixelsOverAspectRatio(t *testing.T) {
+	_, size := prompt.Compile("t2i", "一只猫", map[string]any{
+		"size":            "1536x1024",
+		"aspectRatio":     "16:9",
+		"resolutionScale": "1K",
+	})
+	if size != "1536x1024" {
+		t.Fatalf("size = %q, want explicit 1536x1024", size)
+	}
+}
+
+func TestAutoAspectRatioUsesAutoSize(t *testing.T) {
+	_, size := prompt.Compile("t2i", "一只猫", map[string]any{"aspectRatio": "auto", "resolutionScale": "1K"})
+	if size != "auto" {
+		t.Fatalf("size = %q, want auto", size)
+	}
+}
+
 func TestAutoAspectRatioCandidatesConstrainPrompt(t *testing.T) {
 	p, _ := prompt.Compile("t2i", "山谷中的建筑", map[string]any{
 		"aspectRatio":               "auto",

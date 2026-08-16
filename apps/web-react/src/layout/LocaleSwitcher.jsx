@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocale } from "../i18n/index.js";
 import "@react/legacy-styles/generated/components/layout/LocaleSwitcher.css";
-
-const options = [
-  { value: "zh-CN", short: "简", label: "简体中文" },
-  { value: "zh-TW", short: "繁", label: "繁體中文" },
-  { value: "en", short: "EN", label: "English" },
-];
 
 export function LocaleSwitcher() {
   const rootRef = useRef(null);
   const [open, setOpen] = useState(false);
-  const [locale, setLocale] = useState(() => localStorage.getItem("starclouds-locale") || "zh-CN");
-  const current = options.find((option) => option.value === locale) || options[0];
+  const { locale, option: current, options, setLocale } = useLocale();
 
   useEffect(() => {
     const close = (event) => {
@@ -23,7 +17,6 @@ export function LocaleSwitcher() {
 
   function select(next) {
     setLocale(next);
-    localStorage.setItem("starclouds-locale", next);
     setOpen(false);
   }
 

@@ -183,6 +183,9 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 		{ID: "t2i-model", Name: "文生图模型", ProviderID: "provider", UpstreamModel: "upstream-a", Kind: "image", Resolutions: []string{"1K", "2K"}, Public: true, Enabled: true},
 		{ID: "game-model", Name: "游戏模型", ProviderID: "provider", UpstreamModel: "upstream-b", Kind: "image", Resolutions: []string{"4K"}, Public: true, Enabled: true},
 		{ID: "ui-analysis", Name: "元素分析模型", ProviderID: "provider", UpstreamModel: "upstream-chat", Kind: "chat", Public: true, Enabled: true},
+		{ID: "ecommerce-analysis", Name: "商品分析模型", ProviderID: "provider", UpstreamModel: "upstream-commerce-chat", Kind: "chat", Public: true, Enabled: true},
+		{ID: "canvas-image", Name: "画布生图模型", ProviderID: "provider", UpstreamModel: "upstream-canvas-image", Kind: "image", Public: true, Enabled: true},
+		{ID: "canvas-chat", Name: "画布文本模型", ProviderID: "provider", UpstreamModel: "upstream-canvas-chat", Kind: "chat", Public: true, Enabled: true},
 	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
 		modelconfig.WorkspaceT2I:     {ModelIDs: []string{"t2i-model"}},
@@ -190,6 +193,17 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 		modelconfig.WorkspaceUIDesign: {
 			ModelIDs:        []string{"ui-analysis"},
 			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "ui-analysis"},
+		},
+		modelconfig.WorkspaceEcommerce: {
+			ModelIDs:        []string{"ecommerce-analysis"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "ecommerce-analysis"},
+		},
+		modelconfig.WorkspaceCanvas: {
+			ModelIDs: []string{"canvas-image", "canvas-chat"},
+			DefaultModelIDs: map[string]string{
+				modelconfig.ModelKindImage: "canvas-image",
+				modelconfig.ModelKindChat:  "canvas-chat",
+			},
 		},
 	}
 	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
@@ -218,6 +232,14 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 						Label   string `json:"label"`
 						Default bool   `json:"default"`
 					} `json:"analysisModels"`
+					ImageModels []struct {
+						ID      string `json:"id"`
+						Default bool   `json:"default"`
+					} `json:"imageModels"`
+					TextModels []struct {
+						ID      string `json:"id"`
+						Default bool   `json:"default"`
+					} `json:"textModels"`
 				} `json:"config"`
 			} `json:"features"`
 		} `json:"data"`
@@ -241,6 +263,19 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	if len(analysis) != 1 || analysis[0].ID != "ui-analysis" || analysis[0].Model != "ui-analysis" ||
 		analysis[0].Label != "元素分析模型" || !analysis[0].Default {
 		t.Fatalf("UI analysis models = %#v", analysis)
+	}
+	ecommerceAnalysis := response.Data.Features["ai.ecommerceDesign"].Config.AnalysisModels
+	if len(ecommerceAnalysis) != 1 || ecommerceAnalysis[0].ID != "ecommerce-analysis" ||
+		ecommerceAnalysis[0].Model != "ecommerce-analysis" || ecommerceAnalysis[0].Label != "商品分析模型" ||
+		!ecommerceAnalysis[0].Default {
+		t.Fatalf("ecommerce analysis models = %#v", ecommerceAnalysis)
+	}
+	canvas := response.Data.Features["ai.infiniteCanvas"].Config
+	if len(canvas.ImageModels) != 1 || canvas.ImageModels[0].ID != "canvas-image" || !canvas.ImageModels[0].Default {
+		t.Fatalf("canvas image models = %#v", canvas.ImageModels)
+	}
+	if len(canvas.TextModels) != 1 || canvas.TextModels[0].ID != "canvas-chat" || !canvas.TextModels[0].Default {
+		t.Fatalf("canvas text models = %#v", canvas.TextModels)
 	}
 }
 

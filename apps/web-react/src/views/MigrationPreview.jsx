@@ -11,7 +11,7 @@ const stages = [
     state: "待迁移",
   },
   { label: "AI 工作台", detail: "创作台及各生成工作台", state: "待迁移" },
-  { label: "智能画布", detail: "原生接入现有 React 画布", state: "待迁移" },
+  { label: "无限画布", detail: "原生接入现有 React 画布", state: "待迁移" },
 ];
 
 export function MigrationPreview() {

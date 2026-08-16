@@ -4,6 +4,7 @@ import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/AccountSettingsView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useIsDark } from "../hooks/useIsDark.js";
 
 function profileFromUser(user) {
   return {
@@ -81,6 +82,7 @@ async function createAvatarUpload(file) {
 
 export function AccountSettingsView() {
   const auth = useAuth();
+  const isDark = useIsDark();
   const avatarInputRef = useRef(null);
   const mountedRef = useRef(true);
   const [profile, setProfile] = useState(() => profileFromUser(auth.user));
@@ -189,7 +191,7 @@ export function AccountSettingsView() {
   };
 
   return (
-    <main className="account">
+    <main className={`account${isDark ? " is-dark" : ""}`}>
       <header className="account-top">
         <div>
           <h1>账号设置</h1>

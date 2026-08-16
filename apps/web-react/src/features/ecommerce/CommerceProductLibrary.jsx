@@ -6,9 +6,12 @@ import {
   updateCommerceProduct,
 } from "@react/legacy-modules/services/ecommerceApi.js";
 import { createUserAsset, deleteUserAsset } from "@react/legacy-modules/services/meApi.js";
+import { compressEcommerceUploadFile } from "@react/legacy-modules/features/ecommerce/compressEcommerceUpload.js";
+import { ECOMMERCE_IMAGE_TARGET_BYTES } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import "@react/legacy-styles/generated/components/ecommerce/CommerceProductLibrary.css";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { useContentReveal } from "../../components/motion/useContentReveal.js";
 
 const STATUS_OPTIONS = [
   { value: "active", label: "使用中" },
@@ -81,6 +84,15 @@ export function CommerceProductLibrary({
   const deleteCancelRef = useRef(null);
   const fileInputRef = useRef(null);
   const localPreviewsRef = useRef([]);
+  const rootRef = useRef(null);
+  useContentReveal({
+    rootRef,
+    selector: ".commerce-product-card",
+    ready: !loading,
+    resetKey: `${status}:${search.trim()}`,
+    contentKey: products.map((product) => product.id).join("|"),
+    stateAttribute: "data-products-content-motion-state",
+  });
 
   const load = useCallback(async () => {
     requestRef.current?.abort();
@@ -160,9 +172,7 @@ export function CommerceProductLibrary({
   function chooseFiles(event) {
     const incoming = [...(event.target.files || [])].filter(
       (file) =>
-        /^image\/(png|jpeg|webp)$/.test(file.type) &&
-        file.size > 0 &&
-        file.size <= 10 * 1024 * 1024,
+        /^image\/(png|jpeg|webp)$/.test(file.type) && file.size > 0,
     );
     event.target.value = "";
     const available = Math.max(
@@ -200,12 +210,15 @@ export function CommerceProductLibrary({
     const createdAssets = [];
     try {
       for (const [index, file] of pendingFiles.entries()) {
-        const uploaded = await uploadFile(file);
+        const ready = await compressEcommerceUploadFile(file, {
+          targetBytes: ECOMMERCE_IMAGE_TARGET_BYTES,
+        });
+        const uploaded = await uploadFile(ready);
         const asset = await createUserAsset({
           title: `${draft.title.trim()} ${index + 1}`,
           fileKey: uploaded.key,
           thumbnailKey: uploaded.thumbnailKey,
-          contentType: uploaded.contentType || file.type,
+          contentType: uploaded.contentType || ready.type,
           groupId: "",
         });
         createdAssets.push(asset);
@@ -286,7 +299,7 @@ export function CommerceProductLibrary({
       : "先建立一个商品";
 
   return (
-    <section className="commerce-products" aria-busy={loading || busy}>
+    <section ref={rootRef} className="commerce-products" aria-busy={loading || busy}>
       <header className="commerce-products__header">
         <div className="commerce-products__title">
           <span className="commerce-products__icon">

@@ -160,6 +160,12 @@ task 主要字段：
 
 商品字段包括 `sku`、`title`、`brand`、`category`、`sellingPoints`、`targetAudience`、`material`、`color`、`dimensions`、`platform`、`market`、`language`、`protectedElements` 和 `assetIds`。同一用户的非空 SKU 不区分大小写重复。商品被带入 `/ecommerce-design` 后，生成任务会在 `params.commerceProductId` 与 `params.commerceProductSnapshot` 中保存商品关联和生成时快照，避免后续修改商品资料影响历史任务解释。
 
+公开试衣目录与用户商品库相互独立。后台上传的默认模特、场景、服装图通过 `GET /api/v1/commerce/tryon-catalog` 下发；图片对象存储在 `ecommerce-tryon/` 前缀下，匿名可读。每种 `kind` 最多 40 张。
+
+| 方法   | 路径                              | 说明                                                                 |
+| ------ | --------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/api/v1/commerce/tryon-catalog`  | 返回已上架的 `{models,scenes,garments}`，每项含 `id`、`label`、`imageUrl`、`apparel` |
+
 ## 智能画布
 
 画布项目完全归属当前用户，服务端保存与具体图编辑器无关的 JSON 文档。服务端兼容版本 1（旧通用节点）、版本 2（TapCanvas 业务节点）和版本 3（React 画布节点），最多包含 5000 个节点和 10000 条连线，单次请求体上限为 5 MB。
@@ -267,6 +273,21 @@ task 主要字段：
 | PATCH | `/api/v1/admin/feedback/{id}`   | `{status,adminReply?,adopted?,rewardCents?}`；采纳产品建议时须解决/关闭并发放一次奖励              |
 
 反馈分类为 `bug|generation|account|billing|suggestion|other`，状态为 `open|in_progress|resolved|closed`。只有 `suggestion` 可标记为采纳，奖励上限由 `suggestionRewardMaxCents` 控制，重复处理不重复入账。
+
+## 管理端：电商试衣素材
+
+后台「电商素材」页维护虚拟试衣默认模特、场景和服装图。每种 `kind` 最多 40 张；图片写入 `ecommerce-tryon/` 前缀，用户端匿名可读。未配置时用户端继续使用内置兜底图；服装目录为空时用户只能自行上传。
+
+| 方法   | 路径                                            | 说明                                                                 |
+| ------ | ----------------------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/api/v1/admin/ecommerce/catalog`               | `?kind=model\|scene\|garment\|hand` 列表，含未上架项                   |
+| POST   | `/api/v1/admin/ecommerce/catalog`               | multipart：`kind`、`label`、`file`，可选 `apparel`、`sort`、`active` |
+| PATCH  | `/api/v1/admin/ecommerce/catalog/order`         | `{kind,ids}` 按当前分类槽位保存拖拽顺序                               |
+| PATCH  | `/api/v1/admin/ecommerce/catalog/{id}`          | `{label?,apparel?,sort?,active?}`                                    |
+| PUT    | `/api/v1/admin/ecommerce/catalog/{id}/image`    | multipart 替换图片                                                |
+| DELETE | `/api/v1/admin/ecommerce/catalog/{id}`          | 删除记录并删除对象存储文件                                           |
+
+`/api/v1/admin/ecommerce/tryon-catalog` 为同组别名。`kind` 为 `model`、`scene`、`garment` 或 `hand`。`apparel` 仅服装可用，取值为 `上装`、`下装`、`全身`。图片仅支持 png / jpg / webp，最大 8MB。多张上传由后台连续调用创建接口完成。
 
 ## 管理端：画廊与社区
 

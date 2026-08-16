@@ -93,7 +93,7 @@ func (s *Server) taskStream(c *gin.Context) {
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-	terminalCheck := time.NewTicker(3 * time.Second)
+	terminalCheck := time.NewTicker(time.Second)
 	defer terminalCheck.Stop()
 	events := pubsub.Channel()
 

@@ -1,0 +1,92 @@
+.canvas-native-view {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-native-view > .canvas-native-mount {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-overlay-root {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  pointer-events: none;
+  background: transparent;
+}
+
+.canvas-overlay-root .ant-modal-root,
+.canvas-overlay-root .ant-modal-wrap,
+.canvas-overlay-root .ant-modal-mask,
+.canvas-overlay-root .ant-image-preview-root,
+.canvas-overlay-root .ant-tooltip,
+.canvas-overlay-root .ant-dropdown,
+.canvas-overlay-root .ant-select-dropdown,
+.canvas-overlay-root .ant-popover,
+.canvas-overlay-root .ant-picker-dropdown,
+.canvas-overlay-root .canvas-float-menu,
+.canvas-overlay-root .canvas-anchor-popover,
+.canvas-overlay-root [data-canvas-resource-mention-menu] {
+  pointer-events: auto;
+}
+
+.canvas-native-mount > .ant-app {
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-native-route-entry {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-native-route-entry[data-canvas-route-motion-state="entering"] {
+  will-change: opacity;
+}
+
+.canvas-native-mount h1.font-semibold,
+.canvas-native-mount h2.font-semibold {
+  --font-weight-semibold: 500;
+}
+
+.canvas-native-mount textarea.text-base {
+  --text-base: 14px;
+  --text-base--line-height: 22px;
+  --leading-6: 22px;
+}
+
+.canvas-native-mount .canvas-liquid-glass button.h-8.text-xs {
+  --text-xs: 14px;
+  --text-xs--line-height: 22px;
+  --color-stone-300: var(--foreground);
+  --color-stone-600: var(--foreground);
+}
+
+html.color-scheme-dark .canvas-native-view,
+html.color-scheme-dark .canvas-native-view > .canvas-native-mount,
+html.color-scheme-dark .canvas-native-route-entry {
+  background: var(--canvas-app-surface, oklch(0.145 0 0));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-native-route-entry {
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+}
+
+html.settings-no-animations .canvas-native-route-entry {
+  opacity: 1 !important;
+  visibility: visible !important;
+}

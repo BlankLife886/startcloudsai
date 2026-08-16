@@ -25,6 +25,15 @@ async function mockBase(page) {
   }))
 }
 
+async function mockRuntime(page, publicModel = model) {
+  await page.route('**/api/v1/runtime-config', (route) => fulfillJson(route, {
+    routes: {},
+    features: { 'ai.ultraModelSheet': { enabled: true, config: { publicModels: [publicModel] } } },
+    aiModelCatalog: { providers: [], publicModels: [publicModel], featurePublicModels: [publicModel] },
+    blacklist: { blocked: false },
+  }))
+}
+
 test.describe('React model sheet interactions', () => {
   test('uploads references and creates grouped model_sheet view tasks', async ({ page }) => {
     await mockBase(page)
@@ -94,5 +103,123 @@ test.describe('React model sheet interactions', () => {
     await page.evaluate(() => history.pushState({}, '', '/pricing'))
     await page.dispatchEvent('body', 'popstate')
     await expect(page).toHaveURL(/\/pricing$/)
+  })
+
+  test('loads model sheet history after delayed authentication resolves', async ({ page }) => {
+    let historyRequests = 0
+    await page.route('**/api/v1/auth/session', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      await fulfillJson(route, { user })
+    })
+    await mockRuntime(page)
+    await page.route('**/api/v1/tasks**', (route) => {
+      historyRequests += 1
+      return fulfillJson(route, {
+        items: [{
+          id: 'delayed-auth-history',
+          type: 'model_sheet',
+          status: 'succeeded',
+          params: { _kind: 'ultra-reference-generation', aspectRatio: '16:9' },
+          outputUrls: ['/visual/delayed-auth-history.png'],
+          originalUrls: ['/visual/delayed-auth-history.png'],
+          thumbnailUrls: ['/visual/delayed-auth-history.png'],
+          createdAt: new Date().toISOString(),
+        }],
+        nextCursor: null,
+      })
+    })
+    await page.route('**/visual/delayed-auth-history.png', (route) => route.fulfill({ body: tinyPng, contentType: 'image/png' }))
+
+    await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+
+    await expect.poll(() => historyRequests).toBeGreaterThan(0)
+    await expect(page.getByAltText('模型设计')).toBeVisible()
+  })
+
+  test('does not expose the previous account model sheet data to guests', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('walleven_active_account_scope', 'user_previous')
+      localStorage.setItem('walleven_user_previous_local_ultra-model-sheet-studio-v1', JSON.stringify({
+        prompt: 'PREVIOUS_ACCOUNT_PRIVATE_PROMPT',
+        referenceItems: [{ id: 'private-ref', type: 'url', url: '/visual/private-reference.png' }],
+        activeSubjectId: 'private-subject',
+      }))
+      localStorage.setItem('walleven_user_previous_local_ultra-model-sheet-subjects-v1', JSON.stringify([{
+        id: 'private-subject',
+        name: 'PREVIOUS_ACCOUNT_PRIVATE_SUBJECT',
+        url: '/visual/private-subject.png',
+      }]))
+    })
+    await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: null }))
+    await mockRuntime(page)
+
+    await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.getByAltText('参考主体')).toHaveCount(0)
+    await expect(page.getByText('PREVIOUS_ACCOUNT_PRIVATE_SUBJECT', { exact: true })).toHaveCount(0)
+    await expect(page.locator('.ms3-textarea')).not.toHaveValue('PREVIOUS_ACCOUNT_PRIVATE_PROMPT')
+    expect(await page.evaluate(() => localStorage.getItem('walleven_active_account_scope'))).toBe('guest')
+  })
+
+  test('matches ratio, quality, transparency, and reference controls to model capabilities', async ({ page }) => {
+    const restrictedModel = {
+      ...model,
+      id: 'restricted-model',
+      publicModelKey: 'restricted-model',
+      aspectRatios: ['1:1'],
+      qualities: ['high'],
+      maxReferenceImages: 1,
+      transparentBackground: false,
+      outputFormats: ['jpeg'],
+    }
+    await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user }))
+    await mockRuntime(page, restrictedModel)
+    await page.route('**/api/v1/tasks**', (route) => fulfillJson(route, { items: [], nextCursor: null }))
+
+    await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '输出比例' }).click()
+
+    await expect(page.locator('.ratio-select__option')).toHaveCount(1)
+    await expect(page.locator('.ratio-select__option')).toHaveText('1:1')
+    await expect(page.getByRole('button', { name: '透明', exact: true })).toHaveCount(0)
+    await expect(page.locator('.ms3-upload')).toContainText('最多 1 张')
+    await expect(page.getByRole('slider', { name: '细节强度' })).toBeDisabled()
+  })
+
+  test('starts elapsed generation time only after the task enters running', async ({ page }) => {
+    await mockBase(page)
+    let pollCount = 0
+    await page.route('**/api/v1/tasks**', (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() === 'POST') {
+        return fulfillJson(route, {
+          task: {
+            id: 'timing-task',
+            type: 'model_sheet',
+            status: 'queued',
+            params: request.postDataJSON().params,
+            outputUrls: [],
+            originalUrls: [],
+            createdAt: new Date().toISOString(),
+          },
+        })
+      }
+      if (url.searchParams.get('ids')) {
+        pollCount += 1
+        if (pollCount < 2) {
+          return fulfillJson(route, { items: [{ id: 'timing-task', type: 'model_sheet', status: 'queued', outputUrls: [], originalUrls: [], createdAt: new Date().toISOString() }] })
+        }
+        return fulfillJson(route, { items: [{ id: 'timing-task', type: 'model_sheet', status: 'running', outputUrls: [], originalUrls: [], createdAt: new Date().toISOString(), startedAt: new Date(Date.now() - 2_000).toISOString() }] })
+      }
+      return fulfillJson(route, { items: [], nextCursor: null })
+    })
+
+    await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /生成设定板/ }).click()
+
+    await expect(page.locator('.ms3-render-timer')).toHaveText('--:--')
+    await expect.poll(() => pollCount, { timeout: 7_000 }).toBeGreaterThanOrEqual(2)
+    await expect(page.locator('.ms3-render-timer')).not.toHaveText('--:--')
   })
 })

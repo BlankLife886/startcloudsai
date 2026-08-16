@@ -33,6 +33,7 @@ const (
 	WorkspaceEcommerce  = "ecommerce_design"
 	WorkspaceModelSheet = "model_sheet"
 	WorkspaceGameArt    = "game_art"
+	WorkspaceCanvas     = "infinite_canvas"
 )
 
 var WorkspaceKeys = []string{
@@ -43,10 +44,11 @@ var WorkspaceKeys = []string{
 	WorkspaceEcommerce,
 	WorkspaceModelSheet,
 	WorkspaceGameArt,
+	WorkspaceCanvas,
 }
 
 var ImageTaskTypes = []string{
-	"t2i", "coloring", "ui_design", "ui_design_asset", "ecommerce_design", "model_sheet", "game_art",
+	"t2i", "infinite_canvas", "coloring", "ui_design", "ui_design_asset", "ecommerce_design", "model_sheet", "game_art",
 }
 
 var ImageAspectRatios = []string{
@@ -560,7 +562,7 @@ func ValidWorkspace(value string) bool {
 
 func workspaceAllowsKind(workspace, kind string) bool {
 	return kind == ModelKindImage ||
-		((workspace == WorkspaceAssistant || workspace == WorkspaceUIDesign) && kind == ModelKindChat)
+		((workspace == WorkspaceAssistant || workspace == WorkspaceUIDesign || workspace == WorkspaceEcommerce || workspace == WorkspaceCanvas) && kind == ModelKindChat)
 }
 
 func Validate(cfg Config) error {
@@ -1002,6 +1004,8 @@ func WorkspaceForTaskType(taskType string) (string, bool) {
 	switch strings.TrimSpace(taskType) {
 	case "t2i":
 		return WorkspaceT2I, true
+	case "infinite_canvas":
+		return WorkspaceCanvas, true
 	case "coloring":
 		return WorkspaceColoring, true
 	case "ui_design", "ui_design_asset":

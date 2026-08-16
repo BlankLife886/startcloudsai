@@ -18,6 +18,17 @@
     radial-gradient(circle at 96% 8%, rgb(255 186 120 / 16%), transparent 24%),
     linear-gradient(180deg, #fffaf3 0%, #f6f3ee 48%, #f3f4f7 100%);
 }
+.account.is-dark {
+  --ink: #f3f1ed;
+  --muted: #aaa39a;
+  --line: rgba(255, 255, 255, 0.11);
+  --orange: #ff914d;
+  --card: rgb(25 24 23 / 94%);
+  background:
+    radial-gradient(circle at 8% 0%, rgb(242 112 33 / 12%), transparent 28%),
+    radial-gradient(circle at 96% 8%, rgb(255 186 120 / 7%), transparent 24%),
+    linear-gradient(180deg, #121110 0%, #171614 48%, #111315 100%);
+}
 .account-top,
 .account-stage {
   width: min(1120px, calc(100% - 32px));
@@ -89,6 +100,14 @@
   opacity: 0.48;
   cursor: not-allowed;
 }
+.account.is-dark .account-btn {
+  color: var(--ink);
+  background: #201e1c;
+}
+.account.is-dark .account-btn.is-primary {
+  color: #15110e;
+  background: var(--orange);
+}
 .account-stage {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.75fr);
@@ -130,6 +149,9 @@
   overflow: hidden;
   cursor: pointer;
   background: #f3ebe1;
+}
+.account.is-dark .account-avatar__preview {
+  background: #2a2521;
 }
 .account-avatar__preview img {
   display: block;
@@ -209,6 +231,11 @@
   font-size: 0.84rem;
   outline: none;
 }
+.account.is-dark .account-fields input,
+.account.is-dark .account-fields textarea {
+  color: var(--ink);
+  background: #1d1b19;
+}
 .account-fields input:focus,
 .account-fields textarea:focus {
   border-color: #f2b27a;
@@ -257,6 +284,9 @@
   background: #fff7ef;
   cursor: pointer;
 }
+.account.is-dark .account-switch {
+  background: #211c18;
+}
 .account-switch span {
   display: grid;
   gap: 3px;
@@ -283,6 +313,9 @@
   flex: none;
   border-radius: 999px;
   background: #d7cfc4;
+}
+.account.is-dark .account-switch > i {
+  background: #4a4540;
 }
 .account-switch > i em {
   position: absolute;
@@ -324,6 +357,9 @@
   gap: 2px;
   padding: 10px 0;
   border-bottom: 1px solid #f0e8dc;
+}
+.account.is-dark .account-identity dl > div {
+  border-bottom-color: rgba(255, 255, 255, 0.09);
 }
 .account-identity dl > div:last-child {
   border-bottom: 0;

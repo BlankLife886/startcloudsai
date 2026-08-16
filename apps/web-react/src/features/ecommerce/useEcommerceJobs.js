@@ -4,11 +4,74 @@ import {
   createTask,
   deleteTask,
   listTasks,
+  subscribeTask,
   uploadFile,
   waitForTask,
 } from "@react/legacy-modules/services/tasksApi.js";
+import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
+import {
+  cancelHandheldJob,
+  createHandheldJob,
+  getHandheldJob,
+  retryHandheldItem as retryHandheldItemRequest,
+} from "./handheld/handheldApi.js";
+import { compressEcommerceUploadFile } from "@react/legacy-modules/features/ecommerce/compressEcommerceUpload.js";
+import {
+  attachEcommerceUploadKey,
+  ECOMMERCE_IMAGE_TARGET_BYTES,
+  isReusableTaskImageKey,
+  normalizeTaskImageKey,
+} from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
+
+async function uploadKeyFromFile(file, signal) {
+  const ready = await compressEcommerceUploadFile(file, {
+    targetBytes: ECOMMERCE_IMAGE_TARGET_BYTES,
+    signal,
+  });
+  const uploaded = await uploadFile(ready, { signal });
+  const key = normalizeTaskImageKey(uploaded?.key || uploaded?.url || "");
+  if (!isReusableTaskImageKey(key)) {
+    throw new Error("图片上传未返回有效文件，请重试");
+  }
+  return key;
+}
+
+async function resolveEcommerceUploadKey(file, signal) {
+  const cached = normalizeTaskImageKey(file?.uploadKey || "");
+  if (isReusableTaskImageKey(cached)) return cached;
+  const source = String(file?.sourceUrl || "").trim();
+  const hasBytes = file instanceof Blob && Number(file.size) > 0;
+  if (hasBytes) {
+    const key = await uploadKeyFromFile(file, signal);
+    attachEcommerceUploadKey(file, key);
+    return key;
+  }
+  if (source) {
+    try {
+      const blob = await fetchAuthenticatedMediaBlob(source, {
+        signal,
+        cache: "no-store",
+      });
+      const typed = new File([blob], file?.name || "ecommerce-source.png", {
+        type:
+          blob.type && String(blob.type).startsWith("image/")
+            ? blob.type
+            : "image/png",
+      });
+      const key = await uploadKeyFromFile(typed, signal);
+      attachEcommerceUploadKey(file, key);
+      attachEcommerceUploadKey(typed, key);
+      return key;
+    } catch {
+      const reused = normalizeTaskImageKey(source);
+      if (isReusableTaskImageKey(reused)) return reused;
+      throw new Error("参考图已失效，请重新上传衣服、模特或场景");
+    }
+  }
+  throw new Error("参考图未准备好，请重新选择模特、衣服或场景");
+}
 
 function taskOutputs(task = {}) {
   const originals = Array.isArray(task.originalUrls) ? task.originalUrls : [];
@@ -90,6 +153,7 @@ export function useEcommerceJobs() {
   const [runningIds, setRunningIds] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [lastError, setLastError] = useState("");
   const controllersRef = useRef(new Map());
   const mountedRef = useRef(true);
 
@@ -107,9 +171,11 @@ export function useEcommerceJobs() {
       setRunningIds((current) =>
         current.includes(id) ? current : [...current, id],
       );
+      const unsubscribe = subscribeTask(id, { onUpdate: upsert });
       void waitForTask(id, {
         signal: controller.signal,
         onUpdate: upsert,
+        intervalMs: 500,
       })
         .then(upsert)
         .catch((error) => {
@@ -122,6 +188,7 @@ export function useEcommerceJobs() {
           }
         })
         .finally(() => {
+          unsubscribe();
           controllersRef.current.delete(id);
           if (mountedRef.current)
             setRunningIds((current) => current.filter((item) => item !== id));
@@ -142,7 +209,7 @@ export function useEcommerceJobs() {
         const requestPage = () =>
           listTasks({
             type: "ecommerce_design",
-            limit: 12,
+            limit: 32,
             cursor: append ? historyCursor : "",
             signal: controller.signal,
           });
@@ -192,25 +259,47 @@ export function useEcommerceJobs() {
   }, []);
 
   const createBatch = useCallback(
-    async ({ files = [], items = [], modelId = "" }) => {
-      if (!items.length) return [];
+    async ({
+      files = [],
+      items = [],
+      modelId = "",
+      batchId = "",
+      batchSize = 0,
+    } = {}) => {
+      if (!items.length) {
+        throw new Error("没有可生成的内容");
+      }
+      if (
+        files.some(
+          (file) =>
+            !String(file?.sourceUrl || "") &&
+            (!file || !(file instanceof Blob) || !file.size),
+        )
+      ) {
+        throw new Error("参考图未准备好，请重新选择模特、衣服或场景");
+      }
       const prepareKey = `prepare-${Date.now()}`;
       const controller = new AbortController();
       controllersRef.current.set(prepareKey, controller);
+      const nextBatchId = String(batchId || crypto.randomUUID());
+      const nextBatchSize = Math.max(1, Number(batchSize) || items.length);
+      setLastError("");
       setSubmitting(true);
       try {
         const uploads = await Promise.all(
-          files.map(async (file) => {
-            const source = String(file?.sourceUrl || "");
-            const match = source.match(/\/api\/v1\/files\/(.+?)(?:\?|$)/);
-            if (match) return decodeURIComponent(match[1]);
-            return (await uploadFile(file, { signal: controller.signal })).key;
-          }),
+          files.map((file) =>
+            resolveEcommerceUploadKey(file, controller.signal),
+          ),
         );
-        const batchId = crypto.randomUUID();
+        if (uploads.some((key) => !isReusableTaskImageKey(key))) {
+          throw new Error("参考图上传失败，请重新选择模特、衣服或场景");
+        }
         const batchCreatedAt = new Date().toISOString();
-        const created = await Promise.all(
+        const settled = await Promise.allSettled(
           items.map(async (item, index) => {
+            const batchIndex = Number.isFinite(Number(item.batchIndex))
+              ? Number(item.batchIndex)
+              : index;
             const task = await createTask({
               type: "ecommerce_design",
               prompt: item.prompt,
@@ -218,9 +307,9 @@ export function useEcommerceJobs() {
                 ...item,
                 publicModelKey: modelId,
                 _kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
-                batchId,
-                batchIndex: index,
-                batchSize: items.length,
+                batchId: nextBatchId,
+                batchIndex,
+                batchSize: nextBatchSize,
                 batchCreatedAt,
               },
               inputKeys: uploads,
@@ -233,13 +322,167 @@ export function useEcommerceJobs() {
             return normalized;
           }),
         );
-        return created;
+        const created = settled
+          .filter((result) => result.status === "fulfilled")
+          .map((result) => result.value);
+        settled.forEach((result, index) => {
+          if (result.status !== "rejected") return;
+          const item = items[index] || {};
+          const batchIndex = Number.isFinite(Number(item.batchIndex))
+            ? Number(item.batchIndex)
+            : index;
+          upsert({
+            id: `local-failed-${nextBatchId}-${batchIndex}`,
+            status: "failed",
+            error: result.reason?.message || "创建任务失败",
+            kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
+            batchId: nextBatchId,
+            batchIndex,
+            batchSize: nextBatchSize,
+            params: {
+              _kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
+              batchId: nextBatchId,
+              batchIndex,
+              batchSize: nextBatchSize,
+            },
+            outputs: [],
+            previews: [],
+          });
+        });
+        if (!created.length) {
+          const message =
+            settled.find((result) => result.status === "rejected")?.reason
+              ?.message || "生成失败，请重试";
+          setLastError(message);
+          throw new Error(message);
+        }
+        return { batchId: nextBatchId, tasks: created };
+      } catch (error) {
+        const message = error?.message || "生成失败，请重试";
+        if (mountedRef.current) setLastError(message);
+        throw error;
       } finally {
         controllersRef.current.delete(prepareKey);
         if (mountedRef.current) setSubmitting(false);
       }
     },
     [upsert, watchTask],
+  );
+
+  const createHandheldBatch = useCallback(
+    async ({
+      roleFiles = [],
+      projectId = "",
+      productId = "",
+      modelId = "",
+      spec = {},
+      parentBatchId = "",
+    } = {}) => {
+      if (
+        !roleFiles.length ||
+        !Array.isArray(spec.shots) ||
+        !spec.shots.length
+      ) {
+        throw new Error("手持商品任务缺少商品图或生成项");
+      }
+      const controller = new AbortController();
+      const prepareKey = `handheld-${Date.now()}`;
+      controllersRef.current.set(prepareKey, controller);
+      setLastError("");
+      setSubmitting(true);
+      try {
+        const inputs = await Promise.all(
+          roleFiles.map(async ({ role, file }) => ({
+            role,
+            key: await resolveEcommerceUploadKey(file, controller.signal),
+          })),
+        );
+        const batch = await createHandheldJob(
+          {
+            ...(projectId ? { projectId } : {}),
+            ...(productId ? { productId } : {}),
+            ...(parentBatchId ? { parentBatchId } : {}),
+            modelId,
+            spec: { ...spec, inputs },
+          },
+          { signal: controller.signal },
+        );
+        const incoming = (Array.isArray(batch?.items) ? batch.items : [])
+          .map((item) => item?.task)
+          .filter(Boolean)
+          .map(normalizeTask);
+        incoming.forEach((task) => {
+          upsert(task);
+          if (ACTIVE_STATUSES.has(task.status)) watchTask(task);
+        });
+        return { batchId: String(batch?.id || ""), tasks: incoming, batch };
+      } catch (error) {
+        if (mountedRef.current)
+          setLastError(error?.message || "手持商品生成失败");
+        throw error;
+      } finally {
+        controllersRef.current.delete(prepareKey);
+        if (mountedRef.current) setSubmitting(false);
+      }
+    },
+    [upsert, watchTask],
+  );
+
+  const hydrateHandheldBatch = useCallback(
+    async (batchId, { signal } = {}) => {
+      const id = String(batchId || "").trim();
+      if (!id) return { batchId: "", tasks: [], batch: null };
+      const batch = await getHandheldJob(id, { signal });
+      const incoming = (Array.isArray(batch?.items) ? batch.items : [])
+        .map((item) => item?.task)
+        .filter(Boolean)
+        .map(normalizeTask);
+      incoming.forEach((task) => {
+        upsert(task);
+        if (ACTIVE_STATUSES.has(task.status)) watchTask(task);
+      });
+      return { batchId: String(batch?.id || id), tasks: incoming, batch };
+    },
+    [upsert, watchTask],
+  );
+
+  const retryHandheldItem = useCallback(
+    async (itemId, { signal } = {}) => {
+      const id = String(itemId || "").trim();
+      if (!id) throw new Error("缺少失败图片标识，请刷新后重试");
+      setLastError("");
+      try {
+        const result = await retryHandheldItemRequest(id, { signal });
+        const task = normalizeTask(result?.task || {});
+        if (!task.id) throw new Error("重试任务创建失败，请刷新后重试");
+        upsert(task);
+        if (ACTIVE_STATUSES.has(task.status)) watchTask(task);
+        return {
+          batchId: String(result?.batchId || task.batchId || ""),
+          itemId: String(result?.id || id),
+          task,
+        };
+      } catch (error) {
+        if (mountedRef.current)
+          setLastError(error?.message || "失败图片重试失败");
+        throw error;
+      }
+    },
+    [upsert, watchTask],
+  );
+
+  const cancelHandheldBatch = useCallback(
+    async (batchId) => {
+      if (!batchId) return;
+      setCancelling(true);
+      try {
+        await cancelHandheldJob(batchId);
+        await loadHistory({ retries: 2 });
+      } finally {
+        if (mountedRef.current) setCancelling(false);
+      }
+    },
+    [loadHistory],
   );
 
   const cancelAll = useCallback(async () => {
@@ -298,7 +541,13 @@ export function useEcommerceJobs() {
     historyHasMore: Boolean(historyCursor),
     refreshHistory: () => loadHistory({ retries: 6 }),
     loadMoreHistory: () => loadHistory({ append: true }),
+    lastError,
+    clearError: () => setLastError(""),
     createBatch,
+    createHandheldBatch,
+    retryHandheldItem,
+    hydrateHandheldBatch,
+    cancelHandheldBatch,
     cancelAll,
     remove,
   };

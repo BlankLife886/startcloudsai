@@ -4,6 +4,18 @@
   justify-content: center;
   min-height: 70vh;
   padding: 2rem 0;
+  color: #1b211f;
+  background: #f7f8f7;
+}
+
+html.color-scheme-dark .not-found-container {
+  color: #f2f4f3;
+  background: #0d100f;
+}
+
+html.color-scheme-dark .not-found-container h1,
+html.color-scheme-dark .not-found-container p {
+  color: #f2f4f3;
 }
 
 .not-found-container .error-code {

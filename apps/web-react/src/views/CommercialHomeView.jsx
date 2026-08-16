@@ -1,19 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
-import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
-import { GradientBlindsHero } from "../components/GradientBlindsHero.jsx";
 import "@react/legacy-static/features/home-commercial/commercial-home.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/CapabilityLoop.css";
-import "@react/legacy-styles/generated/features/home-commercial/components/CardSwapGallery.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/FlowingMenu.css";
-import "@react/legacy-styles/generated/features/home-commercial/components/GradientBlindsHero.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/StrandsBand.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import "./commercial-home-react.css";
 
 gsap.registerPlugin(useGSAP);
+
+const HOME_HERO_MEDIA_QUERY = "(min-width: 961px)";
+const GradientBlindsHero = lazy(() =>
+  import("../components/GradientBlindsHero.jsx").then((module) => ({
+    default: module.GradientBlindsHero,
+  })),
+);
+
+function useHomeHeroEnabled() {
+  const [enabled, setEnabled] = useState(() =>
+    window.matchMedia(HOME_HERO_MEDIA_QUERY).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(HOME_HERO_MEDIA_QUERY);
+    const update = () => setEnabled(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return enabled;
+}
 
 const studioEntries = [
   {
@@ -106,13 +125,24 @@ const studioEntries = [
 ];
 
 const capabilityItems = [
-  ["bi bi-cpu", "多模型目录", "按任务自由选择"],
-  ["bi bi-lightning-charge", "快速生成", "快速模型通道"],
-  ["bi bi-badge-hd", "2K / 4K", "支持高清输出"],
-  ["bi bi-aspect-ratio", "多种比例", "适配不同场景"],
-  ["bi bi-layers", "参考图工作流", "保持视觉一致性"],
-  ["bi bi-broadcast-pin", "任务状态回传", "结果逐张返回"],
-  ["bi bi-coin", "积分透明计费", "标准价与折扣价"],
+  ["bi bi-person-standing-dress", "AI 虚拟试衣", "AI 电商"],
+  ["bi bi-hand-index-thumb-fill", "手持商品图", "AI 电商"],
+  ["bi bi-gem", "AI 饰品穿戴", "AI 电商"],
+  ["bi bi-camera-fill", "AI 创意商拍", "AI 电商"],
+  ["bi bi-images", "商品套图", "AI 电商"],
+  ["bi bi-layout-text-window-reverse", "A+ / 详情页", "AI 电商"],
+  ["bi bi-megaphone-fill", "AI 营销图", "AI 电商"],
+  ["bi bi-card-image", "AI 背景图", "AI 电商"],
+  ["bi bi-layers-fill", "背景复刻", "AI 电商"],
+  ["bi bi-circle-half", "AI 商品阴影", "AI 电商"],
+  ["bi bi-arrows-angle-expand", "智能扩图", "AI 电商"],
+  ["bi bi-badge-hd-fill", "真实增强", "AI 电商"],
+  ["bi bi-chat-square-text-fill", "AI 助手", "图片设计"],
+  ["bi bi-person-bounding-box", "模型设计", "图片设计"],
+  ["bi bi-stars", "文生图", "图片设计"],
+  ["bi bi-brush-fill", "插画染色", "图片设计"],
+  ["bi bi-bezier2", "UI 设计稿", "图片设计"],
+  ["bi bi-controller", "游戏设计", "图片设计"],
 ];
 
 const processSteps = [
@@ -195,10 +225,6 @@ async function apiGet(path, signal) {
   return payload.data;
 }
 
-function formatPoints(points) {
-  return `${Math.round(Number(points || 0)).toLocaleString("zh-CN")} 积分`;
-}
-
 function CapabilityLoop() {
   return (
     <div className="capability-loop" role="region" aria-label="创作能力">
@@ -215,134 +241,6 @@ function CapabilityLoop() {
           </ul>
         ))}
       </div>
-    </div>
-  );
-}
-
-function CardSwapGallery({ items }) {
-  const rootRef = useRef(null);
-  const orderRef = useRef([]);
-  useGSAP(
-    (context, contextSafe) => {
-      const cards = [...rootRef.current.querySelectorAll("[data-swap-card]")];
-      orderRef.current = cards.map((_, index) => index);
-      cards.forEach((card, index) =>
-        gsap.set(card, {
-          width: 800,
-          height: 450,
-          x: index * 55,
-          y: -index * 120,
-          z: -index * 82.5,
-          xPercent: -50,
-          yPercent: -50,
-          zIndex: cards.length - index,
-          transformOrigin: "center center",
-          force3D: true,
-        }),
-      );
-      if (
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
-        document.documentElement.classList.contains("settings-no-animations") ||
-        cards.length < 2
-      )
-        return undefined;
-      let timeline = null;
-      const swap = contextSafe(() => {
-        const [front, ...rest] = orderRef.current;
-        const frontCard = cards[front];
-        timeline?.kill();
-        timeline = gsap.timeline();
-        timeline
-          .to(frontCard, {
-            y: "+=500",
-            duration: 2,
-            ease: "elastic.out(0.6,0.9)",
-          })
-          .addLabel("promote", "-=1.8");
-        rest.forEach((cardIndex, index) =>
-          timeline.to(
-            cards[cardIndex],
-            {
-              x: index * 55,
-              y: -index * 120,
-              z: -index * 82.5,
-              zIndex: cards.length - index,
-              duration: 2,
-              ease: "elastic.out(0.6,0.9)",
-            },
-            `promote+=${index * 0.15}`,
-          ),
-        );
-        timeline
-          .to(
-            frontCard,
-            {
-              x: (cards.length - 1) * 55,
-              y: -(cards.length - 1) * 120,
-              z: -(cards.length - 1) * 82.5,
-              zIndex: 1,
-              duration: 2,
-              ease: "elastic.out(0.6,0.9)",
-            },
-            "promote+=0.1",
-          )
-          .call(() => {
-            orderRef.current = [...rest, front];
-          });
-      });
-      const interval = window.setInterval(swap, 3000);
-      return () => {
-        window.clearInterval(interval);
-        timeline?.kill();
-      };
-    },
-    { scope: rootRef, dependencies: [items], revertOnUpdate: true },
-  );
-  return (
-    <div
-      ref={rootRef}
-      className="card-swap-gallery"
-      role="region"
-      aria-roledescription="carousel"
-      aria-label="创作工作台预览"
-      style={{ width: "800px", height: "450px" }}
-    >
-      {items.slice(0, 4).map((item, index) => (
-        <article
-          key={item.id}
-          data-swap-card
-          className={`swap-art-card tone-${item.tone || "mint"}${index === 0 ? " is-front" : ""}`}
-          aria-hidden={index === 0 ? undefined : "true"}
-          style={{
-            width: "800px",
-            height: "450px",
-            zIndex: 4 - index,
-            transform: `translate(-50%, -50%) translate3d(${index * 55}px, ${-index * 120}px, ${-index * 82.5}px)`,
-          }}
-        >
-          <div className="swap-art-card__windowbar">
-            <i className={item.icon || "bi bi-stars"} aria-hidden="true" />
-            <strong>{item.title || "AI 图像创作"}</strong>
-          </div>
-          {item.cover ? (
-            <ProgressiveImage
-              className="swap-art-card__media"
-              src={item.cover}
-              alt={item.title || "AI 生成作品"}
-              eager={index === 0}
-            />
-          ) : (
-            <div className="swap-art-card__placeholder" aria-hidden="true">
-              <span className="swap-art-card__fluid swap-art-card__fluid--one" />
-              <span className="swap-art-card__fluid swap-art-card__fluid--two" />
-              <span className="swap-art-card__fluid swap-art-card__fluid--three" />
-              <span className="swap-art-card__orb">
-                {item.index || String(index + 1).padStart(2, "0")}
-              </span>
-            </div>
-          )}
-        </article>
-      ))}
     </div>
   );
 }
@@ -640,54 +538,21 @@ function StrandsBand() {
 }
 
 export function CommercialHomeView() {
-  const [taskPrices, setTaskPrices] = useState({});
   const [user, setUser] = useState(null);
+  const heroEnabled = useHomeHeroEnabled();
   useEffect(() => {
     const controller = new AbortController();
-    Promise.allSettled([
-      apiGet("/pricing", controller.signal),
-      apiGet("/auth/session", controller.signal),
-    ]).then(([pricing, session]) => {
-      if (controller.signal.aborted) return;
-      setTaskPrices(
-        pricing.status === "fulfilled"
-          ? pricing.value?.taskPointPrices || pricing.value?.taskPrices || {}
-          : {},
-      );
-      setUser(
-        session.status === "fulfilled" ? session.value?.user || null : null,
-      );
-    });
+    apiGet("/auth/session", controller.signal)
+      .then((session) => {
+        if (!controller.signal.aborted) setUser(session?.user || null);
+      })
+      .catch(() => null);
     return () => controller.abort();
   }, []);
 
   const primaryCta = user
     ? { to: "/text-to-image", label: "开始创作" }
     : { to: "/auth", label: "登录开始创作" };
-  const heroArtworks = useMemo(
-    () => studioEntries.filter((entry) => entry.cover).slice(0, 4),
-    [],
-  );
-  const showcaseArtworks = useMemo(
-    () =>
-      studioEntries.map((entry) => {
-        if (!entry.taskType)
-          return {
-            ...entry,
-            priceAmount: entry.priceHint || "按用量计费",
-            priceSuffix: "",
-          };
-        const points = Number(taskPrices[entry.taskType]);
-        return Number.isFinite(points) && points > 0
-          ? {
-              ...entry,
-              priceAmount: formatPoints(points),
-              priceSuffix: "/ 张起",
-            }
-          : { ...entry, priceAmount: "价格待定", priceSuffix: "" };
-      }),
-    [taskPrices],
-  );
   const fallbacks = [
     "/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.webp",
     "/sucai/ai-wallpaper-server-459defa9-9acc-4f92-8d1b-9a6b8e96fdec-1.webp",
@@ -706,72 +571,56 @@ export function CommercialHomeView() {
 
   return (
     <div className="commercial-home">
-      <section
-        className="commercial-hero"
-        aria-labelledby="commercial-home-title"
-      >
-        <GradientBlindsHero gradientColors={heroGradientColors} />
-        <div className="commercial-hero__noise" aria-hidden="true" />
-        <div className="commercial-shell commercial-hero__layout">
-          <div className="commercial-hero__copy">
-            <h1 id="commercial-home-title" data-commercial-hero="title">
-              星空云绘
-            </h1>
-            <div data-commercial-hero="copy" className="commercial-hero__typed">
-              <TypeLine />
-            </div>
-            <p data-commercial-hero="copy" className="commercial-hero__summary">
-              AI 助手、文生图、插画染色、UI
-              设计稿、模型设计与游戏美术，由统一模型目录、任务系统和高清交付链路连接。
-            </p>
-            <div
-              data-commercial-hero="actions"
-              className="commercial-hero__actions"
-            >
-              <Link
-                className="commercial-button commercial-button--hero-cta"
-                to={primaryCta.to}
-              >
-                <span>{primaryCta.label}</span>
-                <span className="commercial-button__arrow" aria-hidden="true">
-                  <i className="bi bi-arrow-up-right" />
-                </span>
-              </Link>
-            </div>
-            <dl data-commercial-hero="proof" className="commercial-hero__proof">
-              <div>
-                <dt>多模型</dt>
-                <dd>按任务选择</dd>
-              </div>
-              <div>
-                <dt>2K / 4K</dt>
-                <dd>支持高清输出</dd>
-              </div>
-              <div>
-                <dt>持续回传</dt>
-                <dd>任务状态可见</dd>
-              </div>
-            </dl>
-          </div>
-          <div
-            data-commercial-hero="gallery"
-            className="commercial-hero__gallery"
-          >
-            <CardSwapGallery items={heroArtworks} />
-          </div>
-        </div>
-        <a
-          className="commercial-hero__scroll"
-          href="#creative-workflow"
-          aria-label="继续浏览创作工作流"
+      {heroEnabled && (
+        <section
+          className="commercial-hero"
+          aria-labelledby="commercial-home-title"
         >
-          <span>SCROLL</span>
-          <i className="bi bi-arrow-down" aria-hidden="true" />
-        </a>
-        <section className="commercial-capabilities" aria-label="平台能力">
-          <CapabilityLoop />
+          <Suspense fallback={null}>
+            <GradientBlindsHero gradientColors={heroGradientColors} />
+          </Suspense>
+          <div className="commercial-hero__noise" aria-hidden="true" />
+          <div className="commercial-shell commercial-hero__layout">
+            <div className="commercial-hero__copy">
+              <h1 id="commercial-home-title" data-commercial-hero="title">
+                星空云绘
+              </h1>
+              <div data-commercial-hero="copy" className="commercial-hero__typed">
+                <TypeLine />
+              </div>
+              <p data-commercial-hero="copy" className="commercial-hero__summary">
+                AI 助手、文生图、插画染色、UI
+                设计稿、模型设计与游戏美术，由统一模型目录、任务系统和高清交付链路连接。
+              </p>
+              <div
+                data-commercial-hero="actions"
+                className="commercial-hero__actions"
+              >
+                <Link
+                  className="commercial-button commercial-button--hero-cta"
+                  to={primaryCta.to}
+                >
+                  <span>{primaryCta.label}</span>
+                  <span className="commercial-button__arrow" aria-hidden="true">
+                    <i className="bi bi-arrow-up-right" />
+                  </span>
+                </Link>
+              </div>
+            </div>
+          </div>
+          <a
+            className="commercial-hero__scroll"
+            href="#creative-workflow"
+            aria-label="继续浏览创作工作流"
+          >
+            <span>SCROLL</span>
+            <i className="bi bi-arrow-down" aria-hidden="true" />
+          </a>
+          <section className="commercial-capabilities" aria-label="平台能力">
+            <CapabilityLoop />
+          </section>
         </section>
-      </section>
+      )}
 
       <section
         id="creative-workflow"
@@ -844,54 +693,6 @@ export function CommercialHomeView() {
               </li>
             ))}
           </ol>
-        </div>
-      </section>
-
-      <section
-        className="commercial-gallery commercial-band"
-        data-commercial-gallery-section
-        aria-labelledby="showcase-title"
-      >
-        <div className="commercial-shell">
-          <header className="commercial-section-head" data-commercial-reveal>
-            <div>
-              <h2 id="showcase-title">不同场景，各自保持完整语境</h2>
-            </div>
-            <p>从交互到最终画面，为不同创作目标保留清晰、独立的视觉语境。</p>
-          </header>
-          <div
-            data-commercial-parallax="gallery"
-            className="commercial-gallery__grid"
-          >
-            {showcaseArtworks.map((item) => (
-              <Link key={item.id} to={item.to} className="commercial-artwork">
-                {item.cover ? (
-                  <div className="commercial-artwork__media">
-                    <img
-                      src={item.cover}
-                      alt={item.title}
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </div>
-                ) : (
-                  <div
-                    className="commercial-artwork__placeholder"
-                    aria-hidden="true"
-                  >
-                    <span>{item.english}</span>
-                    <i className={item.icon} />
-                    <small>SC / {item.index}</small>
-                  </div>
-                )}
-                <div className="commercial-artwork__meta">
-                  <span>{item.title}</span>
-                  <strong>{item.priceAmount}</strong>
-                  <small>{item.priceSuffix || "查看详情"}</small>
-                </div>
-              </Link>
-            ))}
-          </div>
         </div>
       </section>
 

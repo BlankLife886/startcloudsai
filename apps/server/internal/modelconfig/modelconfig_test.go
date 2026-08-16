@@ -93,6 +93,24 @@ func TestValidateWorkspaceAssignmentKinds(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("UI design image and analysis model assignment should be valid: %v", err)
 	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceEcommerce: {
+			ModelIDs:        []string{"image-fast", "chat"},
+			DefaultModelIDs: map[string]string{ModelKindImage: "image-fast", ModelKindChat: "chat"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("ecommerce image and analysis model assignment should be valid: %v", err)
+	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceCanvas: {
+			ModelIDs:        []string{"image-fast", "chat"},
+			DefaultModelIDs: map[string]string{ModelKindImage: "image-fast", ModelKindChat: "chat"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("infinite canvas image and chat assignment should be valid: %v", err)
+	}
 }
 
 func TestLegacyProviderMigratesToSingleKeyAdapter(t *testing.T) {

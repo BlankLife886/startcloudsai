@@ -68,6 +68,11 @@ export async function markNotificationsRead(ids = null) {
   })
 }
 
+/** 清空当前用户可见通知（个人记录删除，全站公告仅对自己隐藏）。 */
+export async function clearNotifications() {
+  return apiDelete('/me/notifications', { fallbackMessage: '清空通知失败' })
+}
+
 /** 我的画廊投稿及审核状态。 */
 export async function listMyGallerySubmissions({ limit = 20, cursor = '', signal } = {}) {
   const data = await apiGet('/me/gallery/submissions', {

@@ -50,6 +50,42 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 	}
 }
 
+func TestAssistantConfigExposesAssignedPublicModelsWithoutLogin(t *testing.T) {
+	env := newCommunityEnv(t)
+	discount := int64(3)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://private.example.com", APIKey: "private-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "chat-model", Name: "Chat Model", ProviderID: "provider", UpstreamModel: "private-chat", Kind: modelconfig.ModelKindChat, PriceCents: 5, Public: true, Enabled: true},
+		{ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "private-image", Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount, Public: true, Enabled: true},
+	}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model"}},
+	}
+	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodGet, "/api/v1/assistant/config", nil, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, field := range []string{`"model":"chat-model"`, `"model":"image-model"`, `"pricePoints":3`} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("assistant public model field missing %s: %s", field, body)
+		}
+	}
+	for _, secret := range []string{"private-key", "private-chat", "private-image", "private.example.com"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("assistant config leaked private value %q: %s", secret, body)
+		}
+	}
+}
+
 func TestValidateAssistantMessages(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -581,6 +617,33 @@ func TestUIDesignAnalysisCanUseAssistantChatFallback(t *testing.T) {
 	}
 }
 
+func TestInfiniteCanvasSelectsItsAssignedChatModel(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "assistant-chat", Name: "Assistant", ProviderID: "provider", UpstreamModel: "assistant-upstream", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
+		{ID: "canvas-chat", Name: "Canvas", ProviderID: "provider", UpstreamModel: "canvas-upstream", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
+	}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"assistant-chat"}},
+		modelconfig.WorkspaceCanvas: {
+			ModelIDs:        []string{"canvas-chat"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "canvas-chat"},
+		},
+	}
+
+	selection, ok := selectAssistantServiceModel(cfg, modelconfig.WorkspaceCanvas, modelconfig.ModelKindChat, "canvas-chat", false)
+	if !ok || selection == nil || selection.Model.ID != "canvas-chat" {
+		t.Fatalf("canvas chat selection = %#v, %v", selection, ok)
+	}
+	if selection, ok := selectAssistantServiceModel(cfg, modelconfig.WorkspaceCanvas, modelconfig.ModelKindChat, "assistant-chat", false); ok || selection != nil {
+		t.Fatalf("assistant model must not leak into canvas assignment: %#v, %v", selection, ok)
+	}
+}
+
 func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
@@ -678,7 +741,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if err != nil || stored == nil || stored.Status != "succeeded" || stored.Stage != "complete" {
 		t.Fatalf("stored run = %#v, err = %v", stored, err)
 	}
-	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil)
+	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil, "")
 	if err != nil {
 		t.Fatalf("list admin assistant tasks: %v", err)
 	}
@@ -695,7 +758,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if listed.Params["stage"] != "complete" || listed.Params["resolvedMode"] != "chat" {
 		t.Fatalf("admin assistant params = %#v", listed.Params)
 	}
-	overview, err := store.GetAdminTaskOverview(ctx, env.st.Pool, "assistant", "", []uuid.UUID{user.ID})
+	overview, err := store.GetAdminTaskOverview(ctx, env.st.Pool, "assistant", "", []uuid.UUID{user.ID}, "")
 	if err != nil {
 		t.Fatalf("admin assistant overview: %v", err)
 	}

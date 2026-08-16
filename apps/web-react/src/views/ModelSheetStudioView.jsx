@@ -19,6 +19,10 @@ import { getScopedLocalItem, setScopedLocalItem } from "@react/legacy-modules/se
 import { listPromptLibrary, recordPromptEngagement } from "@react/legacy-modules/services/promptLibrary.js";
 import { listMyShareAssets, submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
 import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import {
+  coerceImageModelSettings,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/ModelSheetStudioView.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
@@ -40,7 +44,7 @@ const VIEW_OPTIONS = [
   { id: "material", label: "材质", en: "M", icon: "bi-layers" },
 ];
 const VIEW_EN = { front: "FRONT", side: "SIDE", back: "BACK", "three-quarter": "3/4", detail: "DETAIL", material: "MATERIAL" };
-const ASPECT_OPTIONS = ["16:9", "21:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
+const ASPECT_OPTIONS = ["auto", "16:9", "21:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 const BACKGROUND_OPTIONS = [
   { id: "gray", label: "浅灰" },
   { id: "white", label: "纯白" },
@@ -52,6 +56,39 @@ const BRIEF_EXAMPLES = [
   { label: "产品设备", text: "便携咖啡机产品，铝合金外壳，可拆卸水箱和滤杯，接缝与按键布局清晰" },
 ];
 const DEFAULT_PROMPT = "保留原始主体的身份、比例、材质和结构特征，制作可供后续建模与生产使用的超高清标准模型参考图。";
+
+function defaultStudioSettings() {
+  return {
+    prompt: DEFAULT_PROMPT,
+    subjectType: "character",
+    fidelity: "strict",
+    aspectRatio: "16:9",
+    detail: 85,
+    outputMode: "board",
+    boardCount: 1,
+    background: "gray",
+    selectedViews: ["front", "side", "back", "three-quarter"],
+    customViews: [],
+    referenceItems: [],
+    activeSubjectId: "",
+  };
+}
+
+function qualityForDetail(detail) {
+  return detail >= 75 ? "high" : detail >= 55 ? "medium" : "low";
+}
+
+function detailForQuality(quality) {
+  return quality === "high" ? 85 : quality === "medium" ? 65 : 48;
+}
+
+function supportedDetail(value, qualities) {
+  const requested = qualityForDetail(value);
+  if (qualities.includes(requested)) return value;
+  return qualities
+    .map((quality) => detailForQuality(quality))
+    .sort((left, right) => Math.abs(left - value) - Math.abs(right - value))[0] || 65;
+}
 
 function readJson(key, fallback) {
   try {
@@ -73,6 +110,7 @@ function featureModels(config = {}) {
       label: String(item.label || item.name || item.id || item.publicModelKey || ""),
       provider: String(item.providerName || item.provider || ""),
       creditCost: Math.max(0, Number(item.creditCost ?? item.pricePoints ?? payload.creditCost ?? 0)),
+      ...normalizeImageModelCapabilities(item),
     }))
     .filter((item) => item.id);
 }
@@ -120,31 +158,34 @@ export function ModelSheetStudioView() {
   const fileInputRef = useRef(null);
   const mountedRef = useRef(true);
   const referenceUrlsRef = useRef(new Set());
-  const settings = useMemo(() => readJson(SETTINGS_KEY, {}), []);
+  const pendingOverridesRef = useRef(new Set());
+  const initialSettings = useMemo(() => defaultStudioSettings(), []);
+  const hydratedScopeRef = useRef("");
+  const [storageScope, setStorageScope] = useState("");
   const [models, setModels] = useState([]);
   const [modelId, setModelId] = useState("");
   const activeModel = models.find((item) => item.id === modelId) || models[0] || null;
   const jobs = useModelSheetJobs({ model: activeModel, isAuthenticated: auth.isAuthenticated });
-  const [referenceItems, setReferenceItems] = useState(() => (Array.isArray(settings.referenceItems) ? settings.referenceItems : []).filter((item) => item?.type === "url" && item.url).slice(0, MAX_REFERENCES));
-  const [subjects, setSubjects] = useState(() => (Array.isArray(readJson(SUBJECTS_KEY, [])) ? readJson(SUBJECTS_KEY, []) : []).slice(0, 12));
-  const [activeSubjectId, setActiveSubjectId] = useState(String(settings.activeSubjectId || ""));
+  const [referenceItems, setReferenceItems] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [activeSubjectId, setActiveSubjectId] = useState("");
   const [subjectNameDraft, setSubjectNameDraft] = useState("");
   const [subjectSaveOpen, setSubjectSaveOpen] = useState(false);
   const [subjectSaving, setSubjectSaving] = useState(false);
   const [subjectDeleteArmId, setSubjectDeleteArmId] = useState("");
-  const [prompt, setPrompt] = useState(String(settings.prompt || DEFAULT_PROMPT));
-  const [subjectType, setSubjectType] = useState(["character", "object"].includes(settings.subjectType) ? settings.subjectType : "character");
-  const [fidelity, setFidelity] = useState(["strict", "enhance"].includes(settings.fidelity) ? settings.fidelity : "strict");
-  const [aspectRatio, setAspectRatio] = useState(ASPECT_OPTIONS.includes(settings.aspectRatio) ? settings.aspectRatio : "16:9");
-  const [detail, setDetail] = useState(Math.min(100, Math.max(40, Number(settings.detail) || 85)));
-  const [outputMode, setOutputMode] = useState(["board", "separate"].includes(settings.outputMode) ? settings.outputMode : "board");
-  const [boardCount, setBoardCount] = useState([1, 2, 3, 4].includes(Number(settings.boardCount)) ? Number(settings.boardCount) : 1);
-  const [background, setBackground] = useState(BACKGROUND_OPTIONS.some((item) => item.id === settings.background) ? settings.background : "gray");
-  const [selectedViews, setSelectedViews] = useState(Array.isArray(settings.selectedViews) && settings.selectedViews.length ? settings.selectedViews : ["front", "side", "back", "three-quarter"]);
-  const [customViews, setCustomViews] = useState(Array.isArray(settings.customViews) ? settings.customViews.slice(0, 8) : []);
+  const [prompt, setPrompt] = useState(initialSettings.prompt);
+  const [subjectType, setSubjectType] = useState(initialSettings.subjectType);
+  const [fidelity, setFidelity] = useState(initialSettings.fidelity);
+  const [aspectRatio, setAspectRatio] = useState(initialSettings.aspectRatio);
+  const [detail, setDetail] = useState(initialSettings.detail);
+  const [outputMode, setOutputMode] = useState(initialSettings.outputMode);
+  const [boardCount, setBoardCount] = useState(initialSettings.boardCount);
+  const [background, setBackground] = useState(initialSettings.background);
+  const [selectedViews, setSelectedViews] = useState(initialSettings.selectedViews);
+  const [customViews, setCustomViews] = useState(initialSettings.customViews);
   const [customViewDraft, setCustomViewDraft] = useState("");
   const [customViewInputOpen, setCustomViewInputOpen] = useState(false);
-  const [outputLabels, setOutputLabels] = useState(() => readJson(LABELS_KEY, {}));
+  const [outputLabels, setOutputLabels] = useState({});
   const [panelTab, setPanelTab] = useState("history");
   const [galleryQuery, setGalleryQuery] = useState("");
   const [promptQuery, setPromptQuery] = useState("");
@@ -170,12 +211,25 @@ export function ModelSheetStudioView() {
   const [lastBatchGroupId, setLastBatchGroupId] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
+  const modelCapabilities = useMemo(() => normalizeImageModelCapabilities(activeModel || {}), [activeModel]);
+  const aspectOptions = useMemo(() => {
+    const supported = new Set(modelCapabilities.aspectRatios);
+    const filtered = ASPECT_OPTIONS.filter((value) => supported.has(value));
+    return filtered.length ? filtered : [modelCapabilities.aspectRatios.find((value) => value !== "auto") || "1:1"];
+  }, [modelCapabilities.aspectRatios]);
+  const maxReferences = modelCapabilities.maxReferenceImages;
+  const backgroundOptions = useMemo(
+    () => BACKGROUND_OPTIONS.filter((item) => item.id !== "transparent" || modelCapabilities.transparentBackground),
+    [modelCapabilities.transparentBackground],
+  );
+  const detailLocked = modelCapabilities.qualities.length === 1;
   const allViewOptions = useMemo(() => [...VIEW_OPTIONS, ...customViews.map((view) => ({ ...view, en: view.label, icon: "bi-bookmark-star" }))], [customViews]);
   const referenceFiles = referenceItems.filter((item) => item.type === "file").map((item) => item.file);
   const referenceUrls = referenceItems.filter((item) => item.type === "url").map((item) => item.url);
   const activeSubject = subjects.find((item) => item.id === activeSubjectId) || null;
   const activeEntry = jobs.entries.find((item) => item.url === jobs.activeOutput) || null;
-  const qualityLevel = detail >= 75 ? "high" : detail >= 55 ? "medium" : "low";
+  const requestedQuality = qualityForDetail(detail);
+  const qualityLevel = coerceImageModelSettings(activeModel || {}, { quality: requestedQuality }).quality;
   const qualityLabel = qualityLevel === "high" ? "高" : qualityLevel === "medium" ? "中" : "低";
   const selectedViewLabels = selectedViews.map((id) => allViewOptions.find((view) => view.id === id)?.label || id).join("、");
   const hasReference = referenceItems.length > 0;
@@ -187,11 +241,15 @@ export function ModelSheetStudioView() {
   const totalCost = unitCost * estimatedUnits;
   const costPrice = totalCost ? `${totalCost} 积分` : activeModel ? "免费" : "价格待确认";
   const frameStyle = useMemo(() => {
-    const [width = 1, height = 1] = aspectRatio.split(":").map(Number);
-    return { aspectRatio: `${width} / ${height}`, width: `min(100%, calc((100vh - var(--app-header-offset, 64px) - 176px) * ${width / Math.max(1, height)}))` };
+    const [rawWidth = 1, rawHeight = 1] = aspectRatio.split(":").map(Number);
+    const width = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 1;
+    const height = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : 1;
+    return { aspectRatio: `${width} / ${height}`, width: `min(100%, calc((100vh - var(--app-header-offset, 64px) - 176px) * ${width / height}))` };
   }, [aspectRatio]);
   const silhouetteViews = selectedViews.slice(0, 4).map((id) => VIEW_EN[id] || allViewOptions.find((view) => view.id === id)?.label || id);
-  const elapsedLabel = `${String(Math.floor(elapsedSeconds / 60)).padStart(2, "0")}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+  const elapsedLabel = jobs.executionStartedAt
+    ? `${String(Math.floor(elapsedSeconds / 60)).padStart(2, "0")}:${String(elapsedSeconds % 60).padStart(2, "0")}`
+    : "--:--";
   const batchDoneCount = jobs.batchProgress.filter((item) => item.status === "done").length;
 
   const groups = useMemo(() => {
@@ -236,14 +294,16 @@ export function ModelSheetStudioView() {
   }, { scope: rootRef });
 
   useEffect(() => {
-    if (!jobs.running) { setElapsedSeconds(0); return undefined; }
-    const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1000);
+    if (!jobs.running || !jobs.executionStartedAt) { setElapsedSeconds(0); return undefined; }
+    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - jobs.executionStartedAt) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
-  }, [jobs.running]);
+  }, [jobs.executionStartedAt, jobs.running]);
 
   useEffect(() => {
     mountedRef.current = true;
-    Promise.all([fetchRuntimeConfig(), jobs.loadHistory()]).then(([config]) => {
+    fetchRuntimeConfig().then((config) => {
       if (!mountedRef.current) return;
       const available = featureModels(config);
       setModels(available);
@@ -251,11 +311,11 @@ export function ModelSheetStudioView() {
       const pending = takePendingPrompt("model_sheet");
       if (pending) {
         const launchPrompt = composePendingLaunchPrompt(pending, 1500);
-        if (launchPrompt) setPrompt(launchPrompt);
+        if (launchPrompt) { pendingOverridesRef.current.add("prompt"); setPrompt(launchPrompt); }
         const configValue = pending.config || {};
-        if (["character", "object"].includes(configValue.skill)) setSubjectType(configValue.skill);
-        if (ASPECT_OPTIONS.includes(configValue.ratio)) setAspectRatio(configValue.ratio);
-        if ([1, 2, 3, 4].includes(Number(configValue.count))) setBoardCount(Number(configValue.count));
+        if (["character", "object"].includes(configValue.skill)) { pendingOverridesRef.current.add("subjectType"); setSubjectType(configValue.skill); }
+        if (ASPECT_OPTIONS.includes(configValue.ratio)) { pendingOverridesRef.current.add("aspectRatio"); setAspectRatio(configValue.ratio); }
+        if ([1, 2, 3, 4].includes(Number(configValue.count))) { pendingOverridesRef.current.add("boardCount"); setBoardCount(Number(configValue.count)); }
         if (configValue.model && available.some((item) => item.id === configValue.model)) setModelId(configValue.model);
       }
     }).catch(() => undefined);
@@ -266,19 +326,76 @@ export function ModelSheetStudioView() {
   }, []);
 
   useEffect(() => {
+    if (auth.loading) return;
+    if (!auth.isAuthenticated) {
+      hydratedScopeRef.current = "guest";
+      setStorageScope("");
+      setReferenceItems([]);
+      setSubjects([]);
+      setActiveSubjectId("");
+      setOutputLabels({});
+      setPrompt(initialSettings.prompt);
+      setSubjectType(initialSettings.subjectType);
+      setFidelity(initialSettings.fidelity);
+      setAspectRatio(initialSettings.aspectRatio);
+      setDetail(initialSettings.detail);
+      setOutputMode(initialSettings.outputMode);
+      setBoardCount(initialSettings.boardCount);
+      setBackground(initialSettings.background);
+      setSelectedViews(initialSettings.selectedViews);
+      setCustomViews(initialSettings.customViews);
+      return;
+    }
+    const scope = `user_${auth.user.id}`;
+    if (hydratedScopeRef.current === scope) return;
+    const saved = { ...initialSettings, ...readJson(SETTINGS_KEY, {}) };
+    const savedReferences = (Array.isArray(saved.referenceItems) ? saved.referenceItems : [])
+      .filter((item) => item?.type === "url" && item.url)
+      .slice(0, MAX_REFERENCES);
+    const savedSubjects = Array.isArray(readJson(SUBJECTS_KEY, [])) ? readJson(SUBJECTS_KEY, []) : [];
+    setReferenceItems(savedReferences);
+    setSubjects(savedSubjects.filter((item) => item?.id && item?.url).slice(0, 12));
+    setActiveSubjectId(String(saved.activeSubjectId || ""));
+    setOutputLabels(readJson(LABELS_KEY, {}));
+    if (!pendingOverridesRef.current.has("prompt")) setPrompt(String(saved.prompt || initialSettings.prompt));
+    if (!pendingOverridesRef.current.has("subjectType")) setSubjectType(["character", "object"].includes(saved.subjectType) ? saved.subjectType : initialSettings.subjectType);
+    setFidelity(["strict", "enhance"].includes(saved.fidelity) ? saved.fidelity : initialSettings.fidelity);
+    if (!pendingOverridesRef.current.has("aspectRatio")) setAspectRatio(ASPECT_OPTIONS.includes(saved.aspectRatio) ? saved.aspectRatio : initialSettings.aspectRatio);
+    setDetail(Math.min(100, Math.max(40, Number(saved.detail) || initialSettings.detail)));
+    setOutputMode(["board", "separate"].includes(saved.outputMode) ? saved.outputMode : initialSettings.outputMode);
+    if (!pendingOverridesRef.current.has("boardCount")) setBoardCount([1, 2, 3, 4].includes(Number(saved.boardCount)) ? Number(saved.boardCount) : initialSettings.boardCount);
+    setBackground(BACKGROUND_OPTIONS.some((item) => item.id === saved.background) ? saved.background : initialSettings.background);
+    setSelectedViews(Array.isArray(saved.selectedViews) && saved.selectedViews.length ? saved.selectedViews : initialSettings.selectedViews);
+    setCustomViews(Array.isArray(saved.customViews) ? saved.customViews.slice(0, 8) : []);
+    hydratedScopeRef.current = scope;
+    setStorageScope(scope);
+  }, [auth.isAuthenticated, auth.loading, auth.user?.id, initialSettings]);
+
+  useEffect(() => {
+    if (!activeModel) return;
+    setAspectRatio((current) => aspectOptions.includes(current) ? current : aspectOptions[0]);
+    setBackground((current) => current === "transparent" && !modelCapabilities.transparentBackground ? "gray" : current);
+    setReferenceItems((current) => current.length > maxReferences ? current.slice(0, maxReferences) : current);
+    setDetail((current) => supportedDetail(current, modelCapabilities.qualities));
+  }, [activeModel, aspectOptions, maxReferences, modelCapabilities.qualities, modelCapabilities.transparentBackground]);
+
+  useEffect(() => {
+    if (!storageScope) return undefined;
     const timer = window.setTimeout(() => setScopedLocalItem(SETTINGS_KEY, JSON.stringify({
       prompt, subjectType, fidelity, aspectRatio, detail, outputMode, boardCount, background, selectedViews, customViews,
       referenceItems: referenceItems.filter((item) => item.type === "url").map(({ id, type, url }) => ({ id, type, url })),
       activeSubjectId,
     })), 400);
     return () => window.clearTimeout(timer);
-  }, [activeSubjectId, aspectRatio, background, boardCount, customViews, detail, fidelity, outputMode, prompt, referenceItems, selectedViews, subjectType]);
+  }, [activeSubjectId, aspectRatio, background, boardCount, customViews, detail, fidelity, outputMode, prompt, referenceItems, selectedViews, storageScope, subjectType]);
   useEffect(() => {
+    if (!storageScope) return;
     setScopedLocalItem(LABELS_KEY, JSON.stringify(outputLabels));
-  }, [outputLabels]);
+  }, [outputLabels, storageScope]);
   useEffect(() => {
+    if (!storageScope) return;
     setScopedLocalItem(SUBJECTS_KEY, JSON.stringify(subjects.slice(0, 12)));
-  }, [subjects]);
+  }, [storageScope, subjects]);
   useEffect(() => {
     const keydown = (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !jobs.running) { event.preventDefault(); void generate(); }
@@ -292,7 +409,7 @@ export function ModelSheetStudioView() {
     setReferenceItems((current) => {
       const next = [...current];
       incoming.forEach((file) => {
-        if (next.length >= MAX_REFERENCES) return;
+        if (next.length >= maxReferences) return;
         const preview = URL.createObjectURL(file);
         referenceUrlsRef.current.add(preview);
         next.push({ id: `ref-${crypto.randomUUID()}`, type: "file", file, preview });
@@ -300,7 +417,7 @@ export function ModelSheetStudioView() {
       return next;
     });
     setLocalError("");
-  }, []);
+  }, [maxReferences]);
 
   function buildSeparatePrompt(view, chained = false) {
     const sourceLine = chained ? "严格以提供的参考图为唯一主体来源，保持同一人物/物体、同一服装、同一材质。" : subjectLine;
@@ -408,11 +525,11 @@ export function ModelSheetStudioView() {
     <aside className="ms3-panel">
       <div className="ms3-panel-scroll">
         <section className="ms3-block">
-          <div className="ms3-block-head"><span>参考主体</span><em>{referenceItems.length ? `${referenceItems.length}/${MAX_REFERENCES} 张` : "可选"}</em></div>
+          <div className="ms3-block-head"><span>参考主体</span><em>{referenceItems.length ? `${referenceItems.length}/${maxReferences} 张` : maxReferences ? "可选" : "当前模型不支持"}</em></div>
           {referenceItems.length ? <div className="ms3-ref-grid" onDragOver={(event) => { event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={(event) => { event.preventDefault(); setDragOver(false); acceptFiles(event.dataTransfer.files); }}>
             {referenceItems.map((item, index) => <div key={item.id} className="ms3-ref-slot"><MediaImage src={item.type === "url" ? item.url : item.preview} alt="参考主体" maxDimension={240} loading="eager" />{index === 0 && <span className="ms3-ref-primary">主</span>}<button type="button" className="ms3-source-del" title="移除这张参考" onClick={() => setReferenceItems((current) => current.filter((entry) => entry.id !== item.id))}><i className="bi bi-x-lg" /></button></div>)}
-            {referenceItems.length < MAX_REFERENCES && <button type="button" className={`ms3-ref-add${dragOver ? " is-over" : ""}`} title="再添加一张参考图（正面照 / 侧面照 / 材质细节）" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button>}
-          </div> : <button type="button" className={`ms3-upload${dragOver ? " is-over" : ""}`} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={(event) => { event.preventDefault(); setDragOver(false); acceptFiles(event.dataTransfer.files); }}><i className="bi bi-image" /><strong>添加参考图</strong><small>最多 {MAX_REFERENCES} 张</small></button>}
+            {referenceItems.length < maxReferences && <button type="button" className={`ms3-ref-add${dragOver ? " is-over" : ""}`} title="再添加一张参考图（正面照 / 侧面照 / 材质细节）" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button>}
+          </div> : <button type="button" className={`ms3-upload${dragOver ? " is-over" : ""}`} disabled={!maxReferences} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { if (!maxReferences) return; event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={(event) => { if (!maxReferences) return; event.preventDefault(); setDragOver(false); acceptFiles(event.dataTransfer.files); }}><i className="bi bi-image" /><strong>{maxReferences ? "添加参考图" : "当前模型不支持参考图"}</strong>{maxReferences > 0 && <small>最多 {maxReferences} 张</small>}</button>}
           <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => { acceptFiles(event.target.files); event.target.value = ""; }} />
           <div className="ms3-subjects">
             <div className="ms3-subjects-head"><span><i className="bi bi-person-badge" />主体档案</span>{!subjectSaveOpen && <button type="button" disabled={!hasReference && !jobs.activeOutput} onClick={() => setSubjectSaveOpen(true)}><i className="bi bi-plus-lg" />存档</button>}</div>
@@ -426,10 +543,10 @@ export function ModelSheetStudioView() {
         <section className="ms3-block"><div className="ms3-block-head"><span>输出视角</span><em>{selectedViews.length}/6</em></div><div className="ms3-views">{allViewOptions.map((view) => <button key={view.id} type="button" className={`ms3-view-chip${selectedViews.includes(view.id) ? " is-on" : ""}`} aria-pressed={selectedViews.includes(view.id)} onClick={() => setSelectedViews((current) => current.includes(view.id) ? current.filter((id) => id !== view.id) : [...current, view.id])}><i className={`bi ${view.icon}`} /><span>{view.label}</span>{view.id.startsWith("custom-") && <b role="button" tabIndex={0} title="删除自定义视角" onClick={(event) => { event.stopPropagation(); setCustomViews((current) => current.filter((item) => item.id !== view.id)); setSelectedViews((current) => current.filter((id) => id !== view.id)); }}><i className="bi bi-x" /></b>}</button>)}{!customViewInputOpen && customViews.length < 8 && <button type="button" className="ms3-view-add" onClick={() => setCustomViewInputOpen(true)}><i className="bi bi-plus-lg" /><span>自定义</span></button>}</div>{customViewInputOpen && <div className="ms3-view-input"><input value={customViewDraft} maxLength={12} placeholder="如：俯视 / 战斗姿态" aria-label="自定义视角名称" onChange={(event) => setCustomViewDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && customViewDraft.trim()) { const view = { id: `custom-${crypto.randomUUID()}`, label: customViewDraft.trim() }; setCustomViews((current) => [...current, view]); setSelectedViews((current) => [...current, view.id]); setCustomViewDraft(""); setCustomViewInputOpen(false); } if (event.key === "Escape") setCustomViewInputOpen(false); }} /><button type="button" disabled={!customViewDraft.trim()} onClick={() => { const view = { id: `custom-${crypto.randomUUID()}`, label: customViewDraft.trim() }; setCustomViews((current) => [...current, view]); setSelectedViews((current) => [...current, view.id]); setCustomViewDraft(""); setCustomViewInputOpen(false); }}>添加</button><button type="button" className="is-ghost" onClick={() => setCustomViewInputOpen(false)}>取消</button></div>}</section>
         <section className="ms3-block">
           <div className="ms3-row"><span>主体类型</span><div className="ms3-seg is-mini"><button type="button" className={subjectType === "character" ? "is-on" : ""} onClick={() => setSubjectType("character")}>人物</button><button type="button" className={subjectType === "object" ? "is-on" : ""} onClick={() => setSubjectType("object")}>物体</button></div></div>
-          <div className="ms3-row"><span>输出比例</span><SelectPopover value={aspectRatio} options={ASPECT_OPTIONS.map((value) => ({ value, label: value }))} label="输出比例" onChange={setAspectRatio} light={!isDark} /></div>
-          <div className="ms3-row"><span>背景</span><div className="ms3-seg is-mini">{BACKGROUND_OPTIONS.map((item) => <button key={item.id} type="button" className={background === item.id ? "is-on" : ""} onClick={() => setBackground(item.id)}>{item.label}</button>)}</div></div>
+          <div className="ms3-row"><span>输出比例</span><SelectPopover value={aspectRatio} options={aspectOptions.map((value) => ({ value, label: value }))} label="输出比例" onChange={setAspectRatio} light={!isDark} /></div>
+          <div className="ms3-row"><span>背景</span><div className="ms3-seg is-mini">{backgroundOptions.map((item) => <button key={item.id} type="button" className={background === item.id ? "is-on" : ""} onClick={() => setBackground(item.id)}>{item.label}</button>)}</div></div>
           <div className="ms3-row"><span>还原策略</span><div className="ms3-seg is-mini"><button type="button" className={fidelity === "strict" ? "is-on" : ""} onClick={() => setFidelity("strict")}>严格</button><button type="button" className={fidelity === "enhance" ? "is-on" : ""} onClick={() => setFidelity("enhance")}>优化</button></div></div>
-          <div className="ms3-row is-slider"><span>细节强度</span><em>{detail} · {qualityLabel}档</em><input value={detail} type="range" min="40" max="100" aria-label="细节强度" onChange={(event) => setDetail(Number(event.target.value))} /></div>
+          <div className="ms3-row is-slider"><span>细节强度</span><em>{detail} · {qualityLabel}档</em><input value={detail} type="range" min="40" max="100" aria-label="细节强度" disabled={detailLocked} onChange={(event) => setDetail(supportedDetail(Number(event.target.value), modelCapabilities.qualities))} /></div>
           <div className="ms3-row"><span>生成模型</span><SelectPopover value={modelId} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} label="生成模型" onChange={setModelId} model light={!isDark} /></div>
         </section>
         <details className="ms3-prompt-preview" open={promptPreviewOpen}><summary onClick={(event) => { event.preventDefault(); setPromptPreviewOpen((value) => !value); }}><i className="bi bi-braces" />查看将要发送的完整提示词<i className={`bi bi-chevron-down${promptPreviewOpen ? " is-open" : ""}`} /></summary><pre>{outputMode === "board" ? finalPrompt : `独立视图模式：每个视角单独发送一条提示词。\n${buildSeparatePrompt(allViewOptions.find((view) => view.id === selectedViews[0]) || VIEW_OPTIONS[0])}`}</pre></details>
@@ -438,13 +555,13 @@ export function ModelSheetStudioView() {
     </aside>
     <section className="ms3-stage">
       <header className="ms3-stage-bar"><div className="ms3-stage-meta"><strong>模型设计</strong><span className="ms3-tag">{outputMode === "board" ? "设定板" : "独立视图"}</span><span className="ms3-tag">{aspectRatio}</span><span className="ms3-tag is-accent">NO.{String(jobs.activeOutput ? Math.max(0, jobs.entries.findIndex((entry) => entry.url === jobs.activeOutput)) + 1 : 0).padStart(3, "0")}</span></div><div className="ms3-stage-actions">
-        <button type="button" disabled={!jobs.activeOutput || jobs.running} title="以当前结果作为参考主体继续生成" onClick={() => { if (!referenceItems.some((item) => item.type === "url" && item.url === jobs.activeOutput) && referenceItems.length < MAX_REFERENCES) setReferenceItems((current) => [...current, { id: `ref-${crypto.randomUUID()}`, type: "url", url: jobs.activeOutput }]); }}><i className="bi bi-pin-angle" /><span>用作参考</span></button>
+        <button type="button" disabled={!jobs.activeOutput || jobs.running || !maxReferences} title={maxReferences ? "以当前结果作为参考主体继续生成" : "当前模型不支持参考图"} onClick={() => { if (!referenceItems.some((item) => item.type === "url" && item.url === jobs.activeOutput) && referenceItems.length < maxReferences) setReferenceItems((current) => [...current, { id: `ref-${crypto.randomUUID()}`, type: "url", url: jobs.activeOutput }]); }}><i className="bi bi-pin-angle" /><span>用作参考</span></button>
         <button type="button" disabled={!jobs.activeOutput || jobs.running} title="涂抹修正当前图的局部（其余保持不变）" onClick={() => setMaskEditorOpen(true)}><i className="bi bi-bandaid" /><span>修正</span></button>
         <div className={`ms3-enhance${enhanceMenuOpen ? " is-open" : ""}`}><button type="button" disabled={!jobs.activeOutput || enhanceBusy} title="本地高清增强导出（不调用模型）" onClick={() => setEnhanceMenuOpen((value) => !value)}><i className={`bi ${enhanceBusy ? "bi-arrow-repeat ms3-spin" : "bi-badge-hd"}`} /><span>{enhanceBusy ? `${enhanceProgress}%` : "增强"}</span></button>{enhanceMenuOpen && <div className="ms3-enhance-menu" role="menu" aria-label="高清增强档位">{["2K","4K","8K"].map((scale) => <button key={scale} type="button" role="menuitem" onClick={() => enhanceDownload(scale)}>{scale}<small>{scale === "2K" ? "快速" : scale === "4K" ? "高清" : "极致"}</small></button>)}</div>}</div>
         <button type="button" disabled={!jobs.activeOutput} title="全屏查看" onClick={() => setFullscreenOpen(true)}><i className="bi bi-arrows-fullscreen" /><span>大图</span></button><button type="button" disabled={!activeEntry?.jobId} title="发布到广场" onClick={() => setPublishOpen(true)}><i className="bi bi-broadcast" /><span>发布</span></button><button type="button" disabled={!jobs.activeOutput} title="下载当前模型图" onClick={() => downloadAuthenticatedMedia(jobs.activeOutput, `ultra-model-sheet-${Date.now()}.png`)}><i className="bi bi-download" /><span>下载</span></button>
       </div></header>
       {(localError || jobs.error) && <p className="ms3-error" role="alert"><i className="bi bi-exclamation-triangle" /><span>{localError || jobs.error}</span>{retryViews.length > 0 && !jobs.running && <button type="button" className="ms3-retry" onClick={() => runSeparateViews(retryViews, { groupId: lastBatchGroupId, sourceOverride: hasReference ? "" : jobs.activeOutput })}><i className="bi bi-arrow-clockwise" />重试失败视图（{retryViews.length}）</button>}</p>}
-      <div className="ms3-viewport"><div className="ms3-spec"><div><span>视角</span><b>{selectedViews.length} 组</b></div><div><span>质量</span><b>{qualityLabel}档 {detail}</b></div><div><span>背景</span><b>{BACKGROUND_OPTIONS.find((item) => item.id === background)?.label}</b></div></div><div className={`ms3-frame${jobs.activeOutput ? " has-output" : ""}`} style={frameStyle}><i className="ms3-ruler is-top" /><i className="ms3-ruler is-left" />
+      <div className="ms3-viewport"><div className="ms3-spec"><div><span>视角</span><b>{selectedViews.length} 组</b></div><div><span>质量</span><b>{qualityLabel}档 {detail}</b></div><div><span>背景</span><b>{backgroundOptions.find((item) => item.id === background)?.label || "浅灰"}</b></div></div><div className={`ms3-frame${jobs.activeOutput ? " has-output" : ""}`} style={frameStyle}><i className="ms3-ruler is-top" /><i className="ms3-ruler is-left" />
         {jobs.activeOutput ? <AuthenticatedImage className="model-sheet-stage-output" data-studio-output src={jobs.activeOutput} alt="模型设计" loading="eager" retryCount={2} onError={() => setLocalError("结果图加载失败，请选择其他版本或重新生成")} /> : <div className="ms3-silhouette" style={{ gridTemplateColumns: `repeat(${Math.max(1, silhouetteViews.length)}, 1fr)` }}>{(silhouetteViews.length ? silhouetteViews : ["FRONT","SIDE","BACK"]).map((view) => <div key={view}><i className={`bi ${subjectType === "character" ? "bi-person-standing" : "bi-box-seam"}`} /><span>{view}</span></div>)}</div>}
         {jobs.running && <div className="ms3-rendering" aria-live="polite"><span className="ms3-flash" /><i className="ms3-beam is-h" /><i className="ms3-beam is-v" /><div className="ms3-hud"><div className="ms3-render-bar"><i /></div><div className="ms3-hud-left"><span className="ms3-render-dot" /><strong className="ms3-render-phase">锁定 LOCK</strong><em className="ms3-hud-status">{jobs.status || "正在建立模型参考板…"}</em></div>{jobs.batchProgress.length > 1 && <div className="ms3-hud-chips">{jobs.batchProgress.map((entry, index) => <span key={index} className={`ms3-hud-chip is-${entry.status}`} title={`${entry.label} · ${entry.status}`}><i className={`bi ${entry.status === "done" ? "bi-check-lg" : entry.status === "failed" ? "bi-x-lg" : entry.status === "running" ? "bi-arrow-repeat ms3-spin" : "bi-circle"}`} />{entry.label}</span>)}</div>}<div className="ms3-hud-right">{jobs.batchProgress.length > 1 && <span className="ms3-render-count">{batchDoneCount}/{jobs.batchProgress.length}</span>}<b className="ms3-render-timer">{elapsedLabel}</b><button type="button" className="ms3-hud-cancel" disabled={jobs.cancelling} aria-label="停止后续生成" onClick={jobs.cancel}><i className={`bi ${jobs.cancelling ? "bi-arrow-repeat ms3-spin" : "bi-x-lg"}`} /></button></div></div></div>}
       </div>{activeGroup?.urls.length > 1 && !jobs.running && <div className="ms3-groupbar" aria-label="同组视图切换">{activeGroup.entries.map((entry, index) => <button key={entry.url} type="button" className={jobs.activeOutput === entry.url ? "is-on" : ""} title={outputLabels[entry.url] || entry.label} onClick={() => jobs.setActiveOutput(entry.url)}><AuthenticatedImage src={entry.previewUrl || entry.url} alt="" maxDimension={160} /><em>{outputLabels[entry.url] || entry.label || index + 1}</em></button>)}<button type="button" className="ms3-group-download" onClick={async () => { for (const [index, entry] of activeGroup.entries.entries()) await downloadAuthenticatedMedia(entry.url, `ultra-model-sheet-${index + 1}.png`); }}><i className="bi bi-download" /><em>整组</em></button></div>}</div>

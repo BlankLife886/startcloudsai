@@ -93,6 +93,16 @@ func GetUserAsset(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAsset, e
 	return nilOnNoRows(asset, err)
 }
 
+func GetUserAssetByFileKey(ctx context.Context, q Q, userID uuid.UUID, fileKey string) (*UserAsset, error) {
+	asset, err := scanUserAsset(q.QueryRow(ctx,
+		`SELECT `+userAssetCols+` FROM user_assets WHERE user_id = $1 AND file_key = $2`,
+		userID, fileKey))
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	return asset, err
+}
+
 func GetUserAssetForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAsset, error) {
 	asset, err := scanUserAsset(q.QueryRow(ctx,
 		`SELECT `+userAssetCols+` FROM user_assets WHERE user_id = $1 AND id = $2 FOR UPDATE`, userID, id))

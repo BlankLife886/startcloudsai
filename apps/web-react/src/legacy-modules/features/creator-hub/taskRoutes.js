@@ -1,5 +1,6 @@
 const PROMPT_TASK_ROUTES = {
   t2i: '/text-to-image',
+  infinite_canvas: '/canvas?mode=new',
   coloring: '/ai-illustration-coloring',
   ui_design: '/design-workshop',
   ecommerce_design: '/ecommerce-design',

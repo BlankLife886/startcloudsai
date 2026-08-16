@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -89,6 +90,34 @@ func TestValidateTaskInputImagesChecksStoredContent(t *testing.T) {
 		if err := validateTaskInputImages(context.Background(), userID, []string{key}, 16<<20, inspect); err == nil {
 			t.Fatalf("invalid task input %q unexpectedly accepted", key)
 		}
+	}
+}
+
+func TestValidateTaskInputImagesInspectErrorMessage(t *testing.T) {
+	userID := uuid.New()
+	key := fmt.Sprintf("uploads/%s/original/missing.png", userID)
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "missing", err: fmt.Errorf("%w: NoSuchKey", errTaskImageMissing), want: "图片不存在或尚未写入完成"},
+		{name: "format", err: fmt.Errorf("%w: gif", errTaskImageFormat), want: "图片格式不支持"},
+		{name: "content", err: fmt.Errorf("%w: decode", errTaskImageContent), want: "图片内容无法读取"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inspect := func(context.Context, string, int64) (int64, error) {
+				return 0, test.err
+			}
+			err := validateTaskInputImages(context.Background(), userID, []string{key}, 16<<20, inspect)
+			if err == nil {
+				t.Fatal("invalid image unexpectedly accepted")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("got %q, want substring %q", err.Error(), test.want)
+			}
+		})
 	}
 }
 

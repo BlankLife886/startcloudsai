@@ -255,6 +255,7 @@ export function BackgroundRemoveView() {
         type: "background_remove",
         status: "succeeded",
         limit: HISTORY_LIMIT,
+        excludeSource: "react_canvas",
         signal: controller.signal,
       });
       const next = (items || []).filter((task) => taskOriginalUrl(task) || taskCoverUrl(task));

@@ -108,6 +108,7 @@ export function normalizeImageModelCapabilities(model = {}) {
   const aspectRatios = IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio))
 
   return {
+    resolutions: supportedResolutions.length ? supportedResolutions : [...IMAGE_RESOLUTIONS],
     aspectRatios: aspectRatios.length ? aspectRatios : ['1:1'],
     aspectRatiosByResolution,
     qualities: qualities.length ? qualities : ['medium'],

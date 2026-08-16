@@ -18,6 +18,7 @@ import {
   Moon,
   Odometer,
   Picture,
+  ShoppingBag,
   Sunny,
   SwitchButton,
   Ticket,
@@ -78,6 +79,7 @@ const NAV_GROUPS = [
     items: [
       { path: "/content", label: "内容管理", icon: Document },
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
+      { path: "/ecommerce", label: "电商素材", icon: ShoppingBag },
       { path: "/community", label: "社区管理", icon: ChatDotRound },
       { path: "/gallery", label: "投稿审核", icon: Picture },
       { path: "/feedback", label: "用户反馈", icon: ChatDotRound },
@@ -477,6 +479,7 @@ async function submitPassword() {
           'content--workspace': [
             '/',
             '/prompt-library',
+            '/ecommerce',
             '/community',
             '/gallery',
             '/tasks',

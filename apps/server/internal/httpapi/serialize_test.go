@@ -114,4 +114,34 @@ func TestLedgerDictWithTaskIncludesUserFacingTaskDetails(t *testing.T) {
 	if taskDict["modelName"] != "背景移除" || taskDict["automaticBackgroundRemove"] != true || taskDict["settledCostPoints"] != int64(10) {
 		t.Fatalf("unexpected task details: %#v", taskDict)
 	}
+	if taskDict["displayName"] != "背景移除" {
+		t.Fatalf("displayName = %#v", taskDict["displayName"])
+	}
+}
+
+func TestLedgerDictWithTaskUsesCanvasDisplayName(t *testing.T) {
+	entry := &store.LedgerEntry{
+		ID:                uuid.New(),
+		Kind:              "spend",
+		DeltaCents:        0,
+		BalanceAfterCents: 90,
+		SourceType:        "task",
+		CreatedAt:         time.Now(),
+	}
+	task := &store.Task{
+		ID:     uuid.New(),
+		Type:   "t2i",
+		Status: "succeeded",
+		Model:  "gpt-image-2",
+		Count:  1,
+		Params: map[string]any{"_source": "react_canvas"},
+	}
+	dict := ledgerDictWithTask(entry, task)
+	taskDict, ok := dict["task"].(gin.H)
+	if !ok {
+		t.Fatalf("task details missing: %#v", dict)
+	}
+	if taskDict["displayName"] != "无限画布" || taskDict["source"] != "react_canvas" {
+		t.Fatalf("canvas ledger task = %#v", taskDict)
+	}
 }

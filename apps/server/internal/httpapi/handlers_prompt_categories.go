@@ -35,7 +35,7 @@ func promptCategoryDict(category *store.PromptCategory, count int64, includeAdmi
 
 func (s *Server) publicPromptCategories(c *gin.Context) {
 	taskType := c.Query("type")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}

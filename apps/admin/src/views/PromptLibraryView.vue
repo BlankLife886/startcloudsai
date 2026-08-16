@@ -26,7 +26,7 @@ import AdminDialog from '@/components/AdminDialog.vue'
 import PromptCategoryManager from '@/components/PromptCategoryManager.vue'
 import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { request, normalizeList, type Page } from '@/request'
-import { TASK_TYPES, taskTypeLabel } from '@/utils'
+import { PROMPT_TASK_TYPES, taskTypeLabel } from '@/utils'
 import draggable from 'vuedraggable'
 
 interface PromptItem {
@@ -1483,7 +1483,7 @@ onBeforeUnmount(() => {
         />
         <el-select v-model="typeFilter" class="toolbar-select" aria-label="投放功能">
           <el-option label="全部功能" value="all" />
-          <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+          <el-option v-for="type in PROMPT_TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
         </el-select>
         <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="状态">
           <el-option label="全部状态" value="all" />
@@ -1613,7 +1613,7 @@ onBeforeUnmount(() => {
                 placeholder="修改投放"
                 aria-label="批量修改投放功能"
               >
-                <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+                <el-option v-for="type in PROMPT_TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
               </el-select>
               <el-select
                 v-model="batchForm.active"
@@ -1759,7 +1759,7 @@ onBeforeUnmount(() => {
                       @change="quickChangeTaskType(entry.item, String($event))"
                     >
                       <el-option
-                        v-for="type in TASK_TYPES"
+                        v-for="type in PROMPT_TASK_TYPES"
                         :key="type"
                         :label="taskTypeLabel(type)"
                         :value="type"
@@ -1889,7 +1889,7 @@ onBeforeUnmount(() => {
           </el-select>
           <el-select v-model="sortType" aria-label="排序功能">
             <el-option label="全部功能" value="all" />
-            <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+            <el-option v-for="type in PROMPT_TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
           </el-select>
           <el-select v-model="sortStatus" aria-label="排序状态">
             <el-option label="全部状态" value="all" />
@@ -2040,7 +2040,7 @@ onBeforeUnmount(() => {
             <el-form-item label="投放功能" class="editor-task-field">
               <el-select v-model="form.taskType" placeholder="选择投放功能" style="width: 100%">
                 <el-option
-                  v-for="type in TASK_TYPES"
+                  v-for="type in PROMPT_TASK_TYPES"
                   :key="type"
                   :label="taskTypeLabel(type)"
                   :value="type"
@@ -2330,7 +2330,7 @@ onBeforeUnmount(() => {
         <div class="form-grid">
           <el-form-item label="导入到功能">
             <el-select v-model="sourceForm.taskType" style="width: 100%">
-              <el-option v-for="type in TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
+              <el-option v-for="type in PROMPT_TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
             </el-select>
           </el-form-item>
           <el-form-item label="默认标签（每行一个）">

@@ -3,15 +3,10 @@
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS build
 WORKDIR /repo
 
-# The host app embeds the existing React canvas package. Install each dependency
-# tree before copying source so dependency layers remain cacheable.
-COPY apps/canvas-react/package.json apps/canvas-react/package-lock.json apps/canvas-react/
 COPY apps/web-react/package.json apps/web-react/package-lock.json apps/web-react/
 RUN --mount=type=cache,target=/root/.npm \
-    npm --prefix apps/canvas-react ci --no-audit --no-fund && \
     npm --prefix apps/web-react ci --no-audit --no-fund
 
-COPY apps/canvas-react apps/canvas-react
 COPY apps/web-react apps/web-react
 RUN npm --prefix apps/web-react run build
 

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
@@ -63,7 +64,7 @@ func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
 		}
 		imageURLs = append(imageURLs, presigned)
 	}
-	client, err := s.assistantClient(c)
+	client, err := s.ecommerceAnalysisClient(c.Request.Context())
 	if err != nil {
 		fail(c, err)
 		return
@@ -99,6 +100,38 @@ func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
 		return
 	}
 	ok(c, brief)
+}
+
+func selectEcommerceAnalysisModel(cfg modelconfig.Config) (*modelconfig.Selection, bool) {
+	return modelconfig.SelectPublicForWorkspace(
+		cfg, modelconfig.WorkspaceEcommerce, modelconfig.ModelKindChat, "",
+	)
+}
+
+func (s *Server) ecommerceAnalysisClient(ctx context.Context) (*sub2api.Client, error) {
+	cfg, err := modelconfig.Runtime(ctx, s.St.Pool, s.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
+	}
+	selection, ok := selectEcommerceAnalysisModel(cfg)
+	if !ok {
+		return nil, apperr.E("assistant_unavailable", "AI 电商商品分析模型尚未配置", http.StatusServiceUnavailable)
+	}
+	provider := selection.Provider
+	if strings.TrimSpace(provider.APIKey) == "" {
+		return nil, apperr.E("assistant_unavailable", "商品分析模型服务商没有可用的 API Key", http.StatusServiceUnavailable)
+	}
+	client, err := sub2api.New(
+		provider.BaseURL, provider.APIKey, selection.Model.UpstreamModel,
+		s.Cfg.Sub2APIImageModel, provider.TimeoutSecs,
+	)
+	if err != nil {
+		return nil, apperr.E("assistant_unavailable", "商品分析模型配置无效", http.StatusServiceUnavailable)
+	}
+	if provider.Adapter == modelconfig.AdapterCRUN {
+		client = client.WithAPIKeyHeader("x-api-key")
+	}
+	return client, nil
 }
 
 func fallbackBriefContext(value, fallback string) string {

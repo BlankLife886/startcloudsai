@@ -10,7 +10,17 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestImageDownloadTimeoutAllowsSlowCompletedImages(t *testing.T) {
+	if got := imageDownloadTimeout(5 * time.Minute); got != 3*time.Minute {
+		t.Fatalf("capped timeout = %s, want 3m", got)
+	}
+	if got := imageDownloadTimeout(2 * time.Minute); got != 2*time.Minute {
+		t.Fatalf("configured timeout = %s, want 2m", got)
+	}
+}
 
 func TestEndpointURLAvoidsDuplicateVersionPath(t *testing.T) {
 	tests := []struct {
@@ -425,7 +435,7 @@ func TestPollImageTasksAcceptsResultsField(t *testing.T) {
 func TestPollImageTasksClassifiesMissingAndExplicitFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"items":[{"id":"failed","status":"error","error_code":"rejected","error":"rejected upstream"}],"missing_ids":["missing"]}`))
+		_, _ = w.Write([]byte(`{"items":[{"id":"failed","status":"failed","error_code":"rejected","error":"rejected upstream"}],"missing_ids":["missing"]}`))
 	}))
 	defer server.Close()
 
@@ -434,8 +444,54 @@ func TestPollImageTasksClassifiesMissingAndExplicitFailure(t *testing.T) {
 	if results["failed"].Pending || !results["failed"].ExplicitFailure || results["failed"].Err == nil {
 		t.Fatalf("explicit failure misclassified: %#v", results["failed"])
 	}
+	if !strings.Contains(results["failed"].Err.Error(), "rejected: rejected upstream") {
+		t.Fatalf("explicit failure lost upstream details: %v", results["failed"].Err)
+	}
 	if !results["missing"].Pending || !results["missing"].Missing || results["missing"].ExplicitFailure {
 		t.Fatalf("missing task misclassified: %#v", results["missing"])
+	}
+}
+
+func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	tests := []struct {
+		status          string
+		pending         bool
+		explicitFailure bool
+	}{
+		{status: "pending", pending: true},
+		{status: "processing", pending: true},
+		{status: "succeeded"},
+		{status: "completed"},
+		{status: "failed", explicitFailure: true},
+		{status: "cancelled", explicitFailure: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			task := imageTask{ID: "task-" + tc.status, Status: tc.status}
+			if !tc.pending && !tc.explicitFailure {
+				task.Data = []map[string]any{{"b64_json": "image-data"}}
+			}
+			images, done, err := client.completedTaskImages(context.Background(), task, 1)
+			if tc.pending {
+				if done || err != nil {
+					t.Fatalf("done=%v err=%v, want pending", done, err)
+				}
+				return
+			}
+			if !done {
+				t.Fatal("terminal status was left pending")
+			}
+			if tc.explicitFailure {
+				if err == nil || !imageTaskStatusFailed(normalizedImageTaskStatus(task)) {
+					t.Fatalf("err=%v, want explicit failure", err)
+				}
+				return
+			}
+			if err != nil || len(images) != 1 || images[0] != "image-data" {
+				t.Fatalf("images=%#v err=%v, want successful image", images, err)
+			}
+		})
 	}
 }
 

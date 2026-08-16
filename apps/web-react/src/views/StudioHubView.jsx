@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -6,6 +7,7 @@ import { Link, useNavigate } from "react-router";
 import { fetchAssistantConfig } from "@react/legacy-modules/services/assistantApi.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import {
+  listPromptCategories,
   listPromptLibrary,
   recordPromptEngagement,
 } from "@react/legacy-modules/services/promptLibrary.js";
@@ -16,6 +18,10 @@ import {
   normalizeRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
 import { listTasks, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import {
+  getScopedLocalItem,
+  setScopedLocalItem,
+} from "@react/legacy-modules/services/scopedLocalStorage.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { imageCountFromPrompt } from "@react/legacy-modules/features/assistant/domain/assistantMessages.js";
 import { ECOMMERCE_MODES } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
@@ -27,6 +33,10 @@ import {
   STUDIO_TOOLS,
   stashPendingPrompt,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
   taskOriginalUrl,
   taskThumbnailUrl,
@@ -47,6 +57,8 @@ const LEAD_LINES = [
   "提示词可复用，进度可回看，结果可继续迭代。",
 ];
 const COMPOSER_TOOLS = new Set(["assistant", "t2i"]);
+const COMPOSER_DRAFT_KEY = "studio-hub-composer-draft-v1";
+const MAX_COMPOSER_REFS = 4;
 const TOOL_WALL_ORDER = ["assistant", "model", "t2i", "coloring", "ui", "game"];
 const ECOMMERCE_MODE_IDS = [
   "shoot",
@@ -85,7 +97,106 @@ function featureEnabled(config, key) {
 function normalizeModel(item = {}) {
   const id = String(item.id || item.publicModelKey || item.model || "").trim();
   if (!id) return null;
-  return { ...item, id, label: String(item.label || item.name || id).trim() };
+  return {
+    ...item,
+    ...normalizeImageModelCapabilities(item),
+    id,
+    label: String(item.label || item.name || id).trim(),
+  };
+}
+
+function ratioPreviewStyle(value) {
+  if (String(value || "").toLowerCase() === "auto") return { aspectRatio: "1 / 1" };
+  const [width, height] = String(value || "").split(":").map(Number);
+  return { aspectRatio: `${width || 1} / ${height || 1}` };
+}
+
+function ratioPreviewClass(value) {
+  if (String(value || "").toLowerCase() === "auto") return "is-auto";
+  const [width, height] = String(value || "").split(":").map(Number);
+  if (width === height) return "is-square";
+  return width > height ? "is-landscape" : "is-portrait";
+}
+
+function ratioChipLabel(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "比例";
+  return normalized.toLowerCase() === "auto" ? "自动" : normalized;
+}
+
+const CAPTIONED_FIELDS = new Set([
+  "model",
+  "quality",
+  "ratio",
+  "resolution",
+  "count",
+  "skill",
+]);
+const STUDIO_PROMPT_PAGE_SIZE = 48;
+
+function promptLibraryType(tool) {
+  return String(tool?.taskType || "").trim();
+}
+
+function dialogTransitionClass(phase) {
+  if (phase === "entering") return "studio-prompt-enter-active studio-prompt-enter-from";
+  if (phase === "open") return "studio-prompt-enter-active";
+  if (phase === "closing") return "studio-prompt-leave-active studio-prompt-leave-to";
+  return "";
+}
+
+function useDialogPresence(open, duration = 240) {
+  const [mounted, setMounted] = useState(false);
+  const [phase, setPhase] = useState("closed");
+
+  useEffect(() => {
+    const reduceMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ||
+      document.documentElement.classList.contains("settings-no-animations");
+    let frame = 0;
+    let timer = 0;
+    if (open) {
+      setMounted(true);
+      if (reduceMotion) {
+        setPhase("open");
+        return undefined;
+      }
+      setPhase("entering");
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => setPhase("open"));
+      });
+    } else {
+      if (reduceMotion) {
+        setMounted(false);
+        setPhase("closed");
+        return undefined;
+      }
+      setPhase((current) => (current === "closed" ? current : "closing"));
+      timer = window.setTimeout(() => {
+        setMounted(false);
+        setPhase("closed");
+      }, duration);
+    }
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [duration, open]);
+
+  return { mounted, phase };
+}
+
+function mapPromptLibraryItems(items = []) {
+  return items
+    .filter((item) => item?.id && item?.prompt)
+    .map((item) => ({
+      id: item.id,
+      value: `library:${item.id}`,
+      label: item.title || item.label || "提示词素材",
+      prompt: String(item.prompt).trim(),
+      category: item.category || item.categoryKey || "",
+      coverUrl: item.coverUrl || item.imageUrl || "",
+    }));
 }
 
 function taskPrompt(task) {
@@ -116,6 +227,64 @@ function aspectScore(aspect) {
   return width > 0 && height > 0
     ? 1 / Math.max(0.35, Math.min(width / height, 3.2))
     : 1;
+}
+
+function readComposerDraft() {
+  try {
+    const raw = getScopedLocalItem(COMPOSER_DRAFT_KEY);
+    const draft = raw ? JSON.parse(raw) : null;
+    return draft && typeof draft === "object" ? draft : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistableReferences(items = []) {
+  return items
+    .map((item) => ({
+      id: String(item.id || crypto.randomUUID()),
+      name: String(item.name || "参考图"),
+      dataUrl: String(item.dataUrl || item.url || ""),
+      thumbnailUrl: String(item.thumbnailUrl || item.dataUrl || item.url || ""),
+      fileKey: String(item.fileKey || item.key || ""),
+    }))
+    .filter((item) => item.fileKey || item.dataUrl)
+    .slice(0, MAX_COMPOSER_REFS);
+}
+
+function defaultLaunchConfigs() {
+  return Object.fromEntries(
+    STUDIO_TOOLS.map((tool) => [tool.id, studioLaunchDefaults(tool.id)]),
+  );
+}
+
+function mergeLaunchConfigs(saved) {
+  const defaults = defaultLaunchConfigs();
+  if (!saved || typeof saved !== "object") return defaults;
+  return Object.fromEntries(
+    Object.entries(defaults).map(([id, fallback]) => [
+      id,
+      {
+        ...fallback,
+        ...(saved[id] && typeof saved[id] === "object" ? saved[id] : {}),
+      },
+    ]),
+  );
+}
+
+function clipboardImageFiles(data) {
+  if (!data) return [];
+  const fromFiles = Array.from(data.files || []).filter((file) =>
+    file.type?.startsWith("image/"),
+  );
+  if (fromFiles.length) return fromFiles;
+  const fromItems = [];
+  for (const item of data.items || []) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file?.type?.startsWith("image/")) fromItems.push(file);
+  }
+  return fromItems;
 }
 
 function balanceColumns(items, count) {
@@ -333,21 +502,49 @@ export function StudioHubView() {
   const uploadControllerRef = useRef(null);
   const recognitionRef = useRef(null);
   const [runtimeConfig, setRuntimeConfig] = useState(storedRuntimeConfig);
-  const [draftPrompt, setDraftPrompt] = useState("");
-  const [selectedToolId, setSelectedToolId] = useState("assistant");
+  const [draftPrompt, setDraftPrompt] = useState(() =>
+    String(readComposerDraft().prompt || "").slice(0, 2000),
+  );
+  const [selectedToolId, setSelectedToolId] = useState(
+    () => readComposerDraft().toolId || "assistant",
+  );
   const [activePanel, setActivePanel] = useState("");
   const [launchConfigs, setLaunchConfigs] = useState(() =>
-    Object.fromEntries(
-      STUDIO_TOOLS.map((tool) => [tool.id, studioLaunchDefaults(tool.id)]),
-    ),
+    mergeLaunchConfigs(readComposerDraft().configs),
   );
   const [assistantModels, setAssistantModels] = useState({
     conversation: [],
     image: [],
   });
-  const [promptItems, setPromptItems] = useState({});
+  const [promptLibrary, setPromptLibrary] = useState({
+    items: [],
+    page: 1,
+    hasMore: false,
+    total: 0,
+  });
+  const [promptCategories, setPromptCategories] = useState([]);
+  const [promptCategory, setPromptCategory] = useState("all");
+  const [promptSearchDraft, setPromptSearchDraft] = useState("");
+  const [promptSearch, setPromptSearch] = useState("");
   const [promptLoading, setPromptLoading] = useState(false);
-  const [references, setReferences] = useState([]);
+  const [promptLoadingMore, setPromptLoadingMore] = useState(false);
+  const promptRequestRef = useRef(0);
+  const promptListRef = useRef(null);
+  const promptCatsRef = useRef(null);
+  const promptCatsDragRef = useRef({
+    active: false,
+    moved: false,
+    startX: 0,
+    startLeft: 0,
+  });
+  const [promptCatsOverflow, setPromptCatsOverflow] = useState({
+    left: false,
+    right: false,
+  });
+  const promptDialog = useDialogPresence(activePanel === "prompts");
+  const [references, setReferences] = useState(() =>
+    persistableReferences(readComposerDraft().references),
+  );
   const [referenceUploading, setReferenceUploading] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
@@ -403,27 +600,64 @@ export function StudioHubView() {
     selectedTool?.id === "assistant"
       ? 4
       : Math.max(0, Number(selectedModel?.maxReferenceImages ?? 4) || 0);
-  const fields = useMemo(
-    () =>
-      studioLaunchFields(selectedTool?.id, selectedConfig).map((field) =>
-        field.key === "model"
-          ? {
-              ...field,
-              options: [
-                {
-                  value: "",
-                  label: modelOptions.length ? "自动匹配" : "默认模型",
-                },
-                ...modelOptions.map((model) => ({
-                  value: model.id,
-                  label: model.label,
-                })),
-              ],
-            }
-          : field,
-      ),
-    [modelOptions, selectedConfig, selectedTool?.id],
-  );
+  const fields = useMemo(() => {
+    const launchFields = studioLaunchFields(selectedTool?.id, selectedConfig);
+    const capabilities = normalizeImageModelCapabilities(selectedModel || {});
+    const allowedResolutions = new Set(capabilities.resolutions);
+    const allowedQualities = new Set(capabilities.qualities);
+    const allowedRatios = getModelAspectRatiosForResolution(
+      selectedModel || {},
+      selectedConfig.resolution,
+    );
+    const ratioLabels = new Map(
+      launchFields
+        .find((field) => field.key === "ratio")
+        ?.options.map((option) => [option.value, option.label]) || [],
+    );
+    const usesModelImageParams =
+      selectedTool?.id === "t2i" ||
+      (selectedTool?.id === "assistant" && selectedConfig.skill === "image");
+    return launchFields.map((field) => {
+      if (field.key === "model")
+        return {
+          ...field,
+          options: [
+            {
+              value: "",
+              label: modelOptions.length ? "自动匹配" : "默认模型",
+            },
+            ...modelOptions.map((model) => ({
+              value: model.id,
+              label: model.label,
+            })),
+          ],
+        };
+      if (!usesModelImageParams) return field;
+      if (field.key === "resolution")
+        return {
+          ...field,
+          options: field.options.filter((option) =>
+            allowedResolutions.has(String(option.value).toUpperCase()),
+          ),
+        };
+      if (field.key === "quality")
+        return {
+          ...field,
+          options: field.options.filter((option) =>
+            allowedQualities.has(String(option.value).toLowerCase()),
+          ),
+        };
+      if (field.key === "ratio")
+        return {
+          ...field,
+          options: allowedRatios.map((value) => ({
+            value,
+            label: ratioLabels.get(value) || ratioChipLabel(value),
+          })),
+        };
+      return field;
+    });
+  }, [modelOptions, selectedConfig, selectedModel, selectedTool?.id]);
   const wallTools = useMemo(() => {
     const map = new Map(visibleTools.map((tool) => [tool.id, tool]));
     const ordered = TOOL_WALL_ORDER.map((id) => map.get(id)).filter(Boolean);
@@ -432,6 +666,39 @@ export function StudioHubView() {
       ...visibleTools.filter((tool) => !TOOL_WALL_ORDER.includes(tool.id)),
     ].filter((tool) => tool.id !== "ecommerce");
   }, [visibleTools]);
+  const promptCategoryChips = useMemo(() => {
+    const seen = new Set();
+    const chips = [{ key: "all", label: "全部" }];
+    for (const item of promptCategories) {
+      const key = String(item.key || "").trim();
+      if (!key || key === "all" || seen.has(key)) continue;
+      seen.add(key);
+      chips.push({ key, label: item.label || key, count: item.count });
+    }
+    return chips;
+  }, [promptCategories]);
+  const promptCategoryLabel = (value) =>
+    promptCategoryChips.find((item) => item.key === String(value || ""))?.label ||
+    "";
+  const updatePromptCatsOverflow = useCallback(() => {
+    const node = promptCatsRef.current;
+    if (!node) {
+      setPromptCatsOverflow({ left: false, right: false });
+      return;
+    }
+    setPromptCatsOverflow({
+      left: node.scrollLeft > 4,
+      right: node.scrollLeft + node.clientWidth < node.scrollWidth - 4,
+    });
+  }, []);
+  const slidePromptCats = (direction) => {
+    const node = promptCatsRef.current;
+    if (!node) return;
+    node.scrollBy({
+      left: Math.round(node.clientWidth * 0.72) * direction,
+      behavior: "smooth",
+    });
+  };
   const ecommerceTool = visibleTools.find((tool) => tool.id === "ecommerce");
   const ecommerceModes = ECOMMERCE_MODE_IDS.map((id) =>
     ECOMMERCE_MODES.find((mode) => mode.id === id),
@@ -465,20 +732,108 @@ export function StudioHubView() {
     const key = field.configKey || field.key;
     const current = selectedConfig[key];
     if (field.multiple) {
-      if (!current?.length) return "不启用 Skill";
-      if (current.length > 1) return `${current.length} 个 Skills`;
-      return (
-        field.options.find(
-          (option) => String(option.value) === String(current[0]),
-        )?.label || "1 个 Skill"
-      );
+      if (!current?.length) return "Skills";
+      return `Skills · ${current.length}`;
     }
+    if (field.key === "ratio") return ratioChipLabel(current);
     return (
       field.options.find(
         (option) => String(option.value) === String(current ?? ""),
       )?.label || field.label
     );
   };
+  const fieldCaption = (field) => field.label;
+  const fieldValueText = (field) => {
+    if (field.key === "skill" && field.multiple) {
+      const count = selectedConfig.skills?.length || 0;
+      return count ? `${count} 项` : "未选";
+    }
+    return fieldLabel(field);
+  };
+  const renderField = (field) => (
+    <div
+      key={`${selectedToolId}-${field.key}`}
+      className="studio-composer__field-wrap"
+    >
+      <button
+        type="button"
+        className={`studio-composer__control is-field is-${field.key}${CAPTIONED_FIELDS.has(field.key) ? " is-captioned" : ""}${activePanel === `field:${field.key}` ? " is-open" : ""}`}
+        title={field.label}
+        aria-label={`${field.label} ${fieldValueText(field)}`}
+        aria-expanded={activePanel === `field:${field.key}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          setActivePanel((current) =>
+            current === `field:${field.key}` ? "" : `field:${field.key}`,
+          );
+        }}
+      >
+        {CAPTIONED_FIELDS.has(field.key) ? (
+          <small>{fieldCaption(field)}</small>
+        ) : null}
+        <span className="studio-composer__control-value">
+          {field.key === "ratio" ? (
+            <i
+              className={`studio-composer__ratio-preview ${ratioPreviewClass(selectedConfig.ratio)}`}
+              style={ratioPreviewStyle(selectedConfig.ratio)}
+              aria-hidden="true"
+            />
+          ) : null}
+          {field.key !== "ratio" && !CAPTIONED_FIELDS.has(field.key) ? (
+            <i className={`bi ${field.icon}`} />
+          ) : null}
+          <em>{fieldValueText(field)}</em>
+          <i className="bi bi-chevron-down" />
+        </span>
+      </button>
+      {activePanel === `field:${field.key}` && (
+        <div
+          className={`studio-composer__field-menu is-${field.key}`}
+          role="listbox"
+          aria-label={field.label}
+          aria-multiselectable={field.multiple || undefined}
+        >
+          {field.options.map((option) => (
+            <button
+              key={String(option.value)}
+              type="button"
+              role="option"
+              title={option.label}
+              aria-selected={optionSelected(field, option.value)}
+              className={optionSelected(field, option.value) ? "is-selected" : ""}
+              onClick={() => selectOption(field, option.value)}
+            >
+              {field.key === "ratio" ? (
+                <>
+                  <i
+                    className={`studio-composer__ratio-preview ${ratioPreviewClass(option.value)}`}
+                    style={ratioPreviewStyle(option.value)}
+                    aria-hidden="true"
+                  />
+                  <small>{ratioChipLabel(option.value)}</small>
+                </>
+              ) : (
+                <>
+                  {option.icon && (
+                    <i className={`bi ${option.icon}`} aria-hidden="true" />
+                  )}
+                  <span className="studio-composer__field-option-copy">
+                    <strong>{option.label}</strong>
+                    {field.multiple && option.description && (
+                      <small>{option.description}</small>
+                    )}
+                  </span>
+                  {optionSelected(field, option.value) && (
+                    <i className="bi bi-check2" />
+                  )}
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
   const selectOption = (field, value) => {
     const key = field.configKey || field.key;
     if (field.multiple) {
@@ -494,7 +849,12 @@ export function StudioHubView() {
               : [...current, value],
       });
     } else {
-      updateSelectedConfig({ [key]: value });
+      const patch = { [key]: value };
+      if (selectedTool?.id === "assistant" && key === "skill") {
+        patch.model = "";
+        patch.mode = value;
+      }
+      updateSelectedConfig(patch);
       setActivePanel("");
     }
   };
@@ -510,7 +870,7 @@ export function StudioHubView() {
     recentControllerRef.current = controller;
     setRecentLoading(true);
     try {
-      const result = await listTasks({ limit: 12, signal: controller.signal });
+      const result = await listTasks({ limit: 12, excludeSource: "react_canvas", signal: controller.signal });
       if (mountedRef.current && !controller.signal.aborted)
         setRecentTasks(
           (result.items || []).filter(
@@ -594,6 +954,155 @@ export function StudioHubView() {
       setSelectedToolId(composerTools[0].id);
   }, [composerTools, selectedToolId]);
 
+  useEffect(() => {
+    const usesImageParams =
+      selectedTool?.id === "t2i" ||
+      (selectedTool?.id === "assistant" && selectedConfig.skill === "image");
+    if (!usesImageParams) return;
+    const resolutionField = fields.find((field) => field.key === "resolution");
+    const qualityField = fields.find((field) => field.key === "quality");
+    const ratioField = fields.find((field) => field.key === "ratio");
+    const patch = {};
+    if (
+      resolutionField?.options.length &&
+      !resolutionField.options.some(
+        (option) => String(option.value) === String(selectedConfig.resolution),
+      )
+    )
+      patch.resolution = resolutionField.options[0].value;
+    if (
+      qualityField?.options.length &&
+      !qualityField.options.some(
+        (option) => String(option.value) === String(selectedConfig.quality),
+      )
+    )
+      patch.quality = qualityField.options[0].value;
+    if (
+      ratioField?.options.length &&
+      !ratioField.options.some(
+        (option) => String(option.value) === String(selectedConfig.ratio),
+      )
+    )
+      patch.ratio = ratioField.options[0].value;
+    if (Object.keys(patch).length) updateSelectedConfig(patch);
+  }, [
+    fields,
+    selectedConfig.quality,
+    selectedConfig.ratio,
+    selectedConfig.resolution,
+    selectedConfig.skill,
+    selectedTool?.id,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setScopedLocalItem(
+        COMPOSER_DRAFT_KEY,
+        JSON.stringify({
+          prompt: draftPrompt,
+          toolId: selectedToolId,
+          configs: launchConfigs,
+          references: persistableReferences(references),
+        }),
+      );
+    }, 240);
+    return () => window.clearTimeout(timer);
+  }, [draftPrompt, launchConfigs, references, selectedToolId]);
+
+  useEffect(() => {
+    setPromptCategory("all");
+    setPromptSearchDraft("");
+    setPromptSearch("");
+  }, [selectedToolId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setPromptSearch(promptSearchDraft.trim()),
+      280,
+    );
+    return () => window.clearTimeout(timer);
+  }, [promptSearchDraft]);
+
+  useEffect(() => {
+    if (!promptDialog.mounted) return undefined;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeydown = (event) => {
+      if (event.key === "Escape") setActivePanel("");
+    };
+    window.addEventListener("keydown", onKeydown);
+    return () => {
+      document.body.style.overflow = previous;
+      window.removeEventListener("keydown", onKeydown);
+    };
+  }, [promptDialog.mounted]);
+
+  useEffect(() => {
+    if (!promptDialog.mounted) return undefined;
+    const node = promptCatsRef.current;
+    if (!node) return undefined;
+    updatePromptCatsOverflow();
+    const onWheel = (event) => {
+      if (node.scrollWidth <= node.clientWidth) return;
+      event.preventDefault();
+      node.scrollLeft += event.deltaY + event.deltaX;
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePromptCatsOverflow);
+    observer?.observe(node);
+    return () => {
+      node.removeEventListener("wheel", onWheel);
+      observer?.disconnect();
+    };
+  }, [promptCategoryChips.length, promptDialog.mounted, updatePromptCatsOverflow]);
+
+  useEffect(() => {
+    if (activePanel !== "prompts" || !selectedTool) return;
+    const type = promptLibraryType(selectedTool);
+    let cancelled = false;
+    listPromptCategories({ type })
+      .then((items) => {
+        if (!cancelled && mountedRef.current) setPromptCategories(items || []);
+      })
+      .catch(() => {
+        if (!cancelled && mountedRef.current) setPromptCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePanel, selectedTool]);
+
+  useEffect(() => {
+    if (activePanel !== "prompts" || !selectedTool) return;
+    const type = promptLibraryType(selectedTool);
+    const requestId = ++promptRequestRef.current;
+    setPromptLoading(true);
+    setPromptLoadingMore(false);
+    listPromptLibrary(type, {
+      pageNumber: 1,
+      pageSize: STUDIO_PROMPT_PAGE_SIZE,
+      category: promptCategory,
+      search: promptSearch,
+    })
+      .then((result) => {
+        if (requestId !== promptRequestRef.current || !mountedRef.current) return;
+        setPromptLibrary({
+          items: mapPromptLibraryItems(result.items),
+          page: 1,
+          hasMore: result.hasMore === true,
+          total: Number(result.total || 0),
+        });
+      })
+      .catch(() => {
+        if (requestId !== promptRequestRef.current || !mountedRef.current) return;
+        setPromptLibrary({ items: [], page: 1, hasMore: false, total: 0 });
+      })
+      .finally(() => {
+        if (requestId === promptRequestRef.current && mountedRef.current)
+          setPromptLoading(false);
+      });
+  }, [activePanel, promptCategory, promptSearch, selectedTool]);
+
   useGSAP(
     () => {
       const media = gsap.matchMedia();
@@ -661,40 +1170,81 @@ export function StudioHubView() {
     { scope: rootRef },
   );
 
-  const openPromptLibrary = async () => {
-    if (activePanel === "prompts") {
-      setActivePanel("");
-      return;
-    }
-    setActivePanel("prompts");
-    if (!selectedTool?.taskType || promptItems[selectedTool.id]) return;
-    setPromptLoading(true);
-    try {
-      const result = await listPromptLibrary(selectedTool.taskType, {
-        pageNumber: 1,
-        pageSize: 8,
-      });
-      if (mountedRef.current)
-        setPromptItems((current) => ({
-          ...current,
-          [selectedTool.id]: (result.items || [])
-            .filter((item) => item.prompt)
-            .map((item) => ({
-              id: item.id,
-              value: `library:${item.id}`,
-              label: item.title || item.label || "提示词素材",
-              prompt: String(item.prompt).trim(),
-            })),
-        }));
-    } finally {
-      if (mountedRef.current) setPromptLoading(false);
-    }
+  const openPromptLibrary = () => {
+    setActivePanel((current) => (current === "prompts" ? "" : "prompts"));
   };
+
+  const applyPromptItem = (item) => {
+    setDraftPrompt(item.prompt);
+    if (item.id)
+      void recordPromptEngagement(item.id, "use", true).catch(() => null);
+    setActivePanel("");
+  };
+
+  const loadMorePrompts = useCallback(async () => {
+    const type = promptLibraryType(selectedTool);
+    if (!selectedTool || promptLoading || promptLoadingMore || !promptLibrary.hasMore)
+      return;
+    const requestId = promptRequestRef.current;
+    const nextPage = promptLibrary.page + 1;
+    setPromptLoadingMore(true);
+    try {
+      const result = await listPromptLibrary(type, {
+        pageNumber: nextPage,
+        pageSize: STUDIO_PROMPT_PAGE_SIZE,
+        category: promptCategory,
+        search: promptSearch,
+      });
+      if (!mountedRef.current || requestId !== promptRequestRef.current) return;
+      const incoming = mapPromptLibraryItems(result.items);
+      setPromptLibrary((current) => {
+        const seen = new Set(current.items.map((item) => item.id));
+        return {
+          ...current,
+          items: [
+            ...current.items,
+            ...incoming.filter((item) => !seen.has(item.id)),
+          ],
+          page: nextPage,
+          hasMore: result.hasMore === true && incoming.length > 0,
+          total: Number(result.total || current.total),
+        };
+      });
+    } finally {
+      if (mountedRef.current && requestId === promptRequestRef.current)
+        setPromptLoadingMore(false);
+    }
+  }, [
+    promptCategory,
+    promptLibrary.hasMore,
+    promptLibrary.page,
+    promptLoading,
+    promptLoadingMore,
+    promptSearch,
+    selectedTool,
+  ]);
+
+  useEffect(() => {
+    if (activePanel !== "prompts" || promptLoading || promptLoadingMore) return;
+    const node = promptListRef.current;
+    if (!node || !promptLibrary.hasMore) return;
+    if (node.scrollHeight <= node.clientHeight + 24) void loadMorePrompts();
+  }, [
+    activePanel,
+    loadMorePrompts,
+    promptLibrary.hasMore,
+    promptLibrary.items.length,
+    promptLoading,
+    promptLoadingMore,
+  ]);
 
   const addReferences = async (files) => {
     const incoming = Array.from(files || [])
       .filter((file) => file.type?.startsWith("image/"))
-      .slice(0, Math.max(0, maxReferences - references.length));
+      .slice(
+        0,
+        Math.max(0, Math.min(MAX_COMPOSER_REFS, maxReferences) - references.length),
+      );
     if (!incoming.length) return;
     uploadControllerRef.current?.abort();
     const controller = new AbortController();
@@ -704,13 +1254,15 @@ export function StudioHubView() {
       const uploaded = await Promise.all(
         incoming.map(async (file) => {
           const result = await uploadFile(file, { signal: controller.signal });
-          return {
-            id: crypto.randomUUID(),
-            name: file.name || "参考图",
-            dataUrl: result.url,
-            thumbnailUrl: result.thumbnailUrl || result.url,
-            fileKey: result.key,
-          };
+          return persistableReferences([
+            {
+              id: crypto.randomUUID(),
+              name: file.name || "参考图",
+              dataUrl: result.url,
+              thumbnailUrl: result.thumbnailUrl || result.url,
+              fileKey: result.key,
+            },
+          ])[0];
         }),
       );
       if (mountedRef.current && !controller.signal.aborted)
@@ -739,9 +1291,18 @@ export function StudioHubView() {
       autoStart: true,
       costConfirmed: true,
     };
-    if (selectedTool.id === "assistant")
+    if (selectedTool.id === "assistant") {
+      config.mode = selectedConfig.skill === "image" ? "image" : "agent";
+      config.skill = config.mode;
       config.count =
         imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2);
+      if (config.mode === "image") {
+        const resolution = String(config.resolution || "1K").toUpperCase();
+        config.resolution = resolution;
+        config.quality =
+          { "1K": "low", "2K": "medium", "4K": "high" }[resolution] || "high";
+      }
+    }
     setLaunchSubmitting(true);
     try {
       const [wallet, unit] = await Promise.all([
@@ -754,15 +1315,17 @@ export function StudioHubView() {
         selectedTool.id === "assistant"
           ? 1
           : Math.max(1, Math.min(4, Number(config.count) || 1));
-      const assistantModel =
-        assistantModels.conversation.find((item) => item.id === config.model) ||
-        assistantModels.conversation[0];
-      const imageModel = assistantModels.image[0];
-      const assistantTotal = Math.max(
-        Number(assistantModel?.pricePoints || 0),
-        Number(imageModel?.pricePoints || 0) *
-          Math.min(4, Number(config.count) || 2),
-      );
+      const assistantImageMode = selectedConfig.skill === "image";
+      const assistantModel = (
+        assistantImageMode ? assistantModels.image : assistantModels.conversation
+      ).find((item) => item.id === config.model) ||
+        (assistantImageMode
+          ? assistantModels.image[0]
+          : assistantModels.conversation[0]);
+      const assistantTotal = assistantImageMode
+        ? Number(assistantModel?.pricePoints || 0) *
+          Math.min(4, Number(config.count) || 2)
+        : Number(assistantModel?.pricePoints || 0);
       const unitPrice =
         selectedTool.id === "assistant"
           ? assistantTotal
@@ -776,7 +1339,11 @@ export function StudioHubView() {
         count,
         unitLabel: selectedTool.id === "assistant" ? "次" : "张",
         featureLabel:
-          selectedTool.id === "assistant" ? "AI 助手 Agent" : "文生图",
+          selectedTool.id === "assistant"
+            ? selectedConfig.skill === "image"
+              ? "AI 助手 图片生成"
+              : "AI 助手 Agent"
+            : "文生图",
         summary:
           selectedTool.id === "assistant"
             ? "确认后将进入一个全新的对话并立即执行；按实际路由结算，多余预留积分自动退回。"
@@ -817,10 +1384,28 @@ export function StudioHubView() {
         onPointerDown={(event) => {
           if (
             !event.target.closest(
-              ".studio-composer__popover, .studio-composer__field-wrap, .studio-composer__control.is-workflow, .studio-composer__control.is-library",
+              ".studio-composer__popover, .studio-composer__field-wrap, .studio-composer__control.is-workflow, .studio-composer__control.is-library, .studio-prompt-layer",
             )
           )
             setActivePanel("");
+        }}
+        onPaste={(event) => {
+          const inOtherField =
+            event.target.closest(
+              "input, textarea, [contenteditable='true']",
+            ) && !event.target.closest(".studio-composer");
+          if (inOtherField || maxReferences <= 0) return;
+          const files = clipboardImageFiles(event.clipboardData);
+          if (!files.length) return;
+          if (references.length >= maxReferences) {
+            notificationService.info(`参考图最多 ${maxReferences} 张`);
+            return;
+          }
+          event.preventDefault();
+          const text = String(event.clipboardData?.getData("text/plain") || "");
+          if (text && event.target.closest(".studio-composer__input"))
+            setDraftPrompt((current) => `${current}${text}`.slice(0, 2000));
+          void addReferences(files);
         }}
       >
         <div className="studio-hub__atmosphere" aria-hidden="true">
@@ -843,6 +1428,58 @@ export function StudioHubView() {
               data-studio-enter
               onSubmit={startCreate}
             >
+              {maxReferences > 0 && (
+                <div
+                  className={`studio-composer__ref-dock${references.length || referenceUploading ? " has-refs" : ""}`}
+                  aria-label="参考图"
+                >
+                  {references.map((item, index) => (
+                    <figure
+                      key={item.id}
+                      className="studio-composer__reference"
+                    >
+                      <AuthenticatedImage
+                        src={item.thumbnailUrl || item.dataUrl}
+                        alt={item.name}
+                        maxDimension={128}
+                      />
+                      <em>{index + 1}</em>
+                      <button
+                        type="button"
+                        title="移除参考图"
+                        aria-label="移除参考图"
+                        onClick={() =>
+                          setReferences((current) =>
+                            current.filter(
+                              (reference) => reference.id !== item.id,
+                            ),
+                          )
+                        }
+                      >
+                        <i className="bi bi-x-lg" />
+                      </button>
+                    </figure>
+                  ))}
+                  {referenceUploading && (
+                    <span
+                      className="studio-composer__reference is-loading"
+                      aria-label="正在上传"
+                    />
+                  )}
+                  {references.length < maxReferences && (
+                    <button
+                      type="button"
+                      className="studio-composer__add-ref"
+                      disabled={referenceUploading}
+                      title={`添加参考图，最多 ${maxReferences} 张`}
+                      aria-label="添加参考图"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <i className="bi bi-plus-lg" />
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="studio-composer__prompt">
                 <textarea
                   value={draftPrompt}
@@ -853,140 +1490,74 @@ export function StudioHubView() {
                   aria-label="创作描述"
                   onChange={(event) => setDraftPrompt(event.target.value)}
                 />
-                {(references.length > 0 || referenceUploading) && (
-                  <div
-                    className="studio-composer__references"
-                    aria-label="已添加的参考图"
-                  >
-                    {references.map((item) => (
-                      <figure
-                        key={item.id}
-                        className="studio-composer__reference"
-                      >
-                        <AuthenticatedImage
-                          src={item.thumbnailUrl || item.dataUrl}
-                          alt={item.name}
-                          maxDimension={160}
-                        />
-                        <button
-                          type="button"
-                          title="移除参考图"
-                          aria-label="移除参考图"
-                          onClick={() =>
-                            setReferences((current) =>
-                              current.filter(
-                                (reference) => reference.id !== item.id,
-                              ),
-                            )
-                          }
-                        >
-                          <i className="bi bi-x-lg" />
-                        </button>
-                      </figure>
-                    ))}
-                    {referenceUploading && (
-                      <span className="studio-composer__reference-loading">
-                        <i className="bi bi-arrow-repeat" />
-                        正在上传
-                      </span>
-                    )}
-                  </div>
-                )}
                 <div className="studio-composer__dock">
                   <div className="studio-composer__controls">
-                    <button
-                      type="button"
-                      className="studio-composer__control is-workflow"
-                      aria-expanded={activePanel === "tools"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setActivePanel((current) =>
-                          current === "tools" ? "" : "tools",
-                        );
-                      }}
-                    >
-                      <i className={`bi ${selectedTool?.icon || "bi-stars"}`} />
-                      <span>{selectedTool?.label}</span>
-                      <i className="bi bi-chevron-down" />
-                    </button>
-                    {fields.map((field) => (
-                      <div
-                        key={`${selectedToolId}-${field.key}`}
-                        className="studio-composer__field-wrap"
+                    <div className="studio-composer__rail">
+                    <div className="studio-composer__workflow-wrap">
+                      <button
+                        type="button"
+                        className={`studio-composer__control is-workflow${activePanel === "tools" ? " is-open" : ""}`}
+                        aria-expanded={activePanel === "tools"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setActivePanel((current) =>
+                            current === "tools" ? "" : "tools",
+                          );
+                        }}
                       >
-                        <button
-                          type="button"
-                          className={`studio-composer__control studio-composer__inline-field is-${field.key}`}
-                          title={field.label}
-                          aria-label={field.label}
-                          aria-expanded={activePanel === `field:${field.key}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setActivePanel((current) =>
-                              current === `field:${field.key}`
-                                ? ""
-                                : `field:${field.key}`,
-                            );
-                          }}
+                        <i className={`bi ${selectedTool?.icon || "bi-stars"}`} />
+                        <span>{selectedTool?.label}</span>
+                        <i className="bi bi-chevron-down" />
+                      </button>
+                      {activePanel === "tools" && (
+                        <div
+                          className="studio-composer__popover studio-composer__popover--tools"
+                          role="menu"
+                          aria-label="选择创作工具"
+                          onPointerDown={(event) => event.stopPropagation()}
                         >
-                          <i className={`bi ${field.icon}`} />
-                          <span>{fieldLabel(field)}</span>
-                          <i
-                            className={`bi ${activePanel === `field:${field.key}` ? "bi-chevron-up" : "bi-chevron-down"}`}
-                          />
-                        </button>
-                        {activePanel === `field:${field.key}` && (
-                          <div
-                            className="studio-composer__field-menu"
-                            role="listbox"
-                            aria-label={field.label}
-                            aria-multiselectable={field.multiple || undefined}
-                          >
-                            {field.options.map((option) => (
+                          <p className="studio-composer__popover-label">创作工具</p>
+                          <div className="studio-composer__tool-menu">
+                            {composerTools.map((tool) => (
                               <button
-                                key={String(option.value)}
+                                key={tool.id}
                                 type="button"
-                                role="option"
-                                aria-selected={optionSelected(
-                                  field,
-                                  option.value,
-                                )}
-                                className={
-                                  optionSelected(field, option.value)
-                                    ? "is-selected"
-                                    : ""
-                                }
-                                onClick={() =>
-                                  selectOption(field, option.value)
-                                }
+                                className={selectedToolId === tool.id ? "is-active" : ""}
+                                role="menuitem"
+                                onClick={() => {
+                                  setSelectedToolId(tool.id);
+                                  setActivePanel("");
+                                }}
                               >
-                                <span>{option.label}</span>
-                                {optionSelected(field, option.value) && (
-                                  <i className="bi bi-check2" />
-                                )}
+                                <i className={`bi ${tool.icon}`} />
+                                <span>
+                                  <strong>{tool.label}</strong>
+                                  <small>{tool.tagline}</small>
+                                </span>
+                                {selectedToolId === tool.id && <i className="bi bi-check2" />}
                               </button>
                             ))}
                           </div>
-                        )}
-                      </div>
-                    ))}
-                    {maxReferences > 0 && (
-                      <button
-                        type="button"
-                        className="studio-composer__control is-reference"
-                        disabled={
-                          referenceUploading ||
-                          references.length >= maxReferences
-                        }
-                        title={`添加参考图，最多 ${maxReferences} 张`}
-                        aria-label="添加参考图"
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        <i className="bi bi-image" />
-                        <span>参考图</span>
-                        {references.length > 0 && <em>{references.length}</em>}
-                      </button>
-                    )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="studio-composer__rail-group">
+                    {fields.map(renderField)}
+                    <button
+                      type="button"
+                      className={`studio-composer__control is-icon is-library${activePanel === "prompts" ? " is-open" : ""}`}
+                      title="提示词库"
+                      aria-label="提示词库"
+                      aria-expanded={activePanel === "prompts"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void openPromptLibrary();
+                      }}
+                    >
+                      <i className="bi bi-book" />
+                    </button>
+                    </div>
+                    </div>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -998,19 +1569,6 @@ export function StudioHubView() {
                         event.target.value = "";
                       }}
                     />
-                    <button
-                      type="button"
-                      className="studio-composer__control is-icon is-library"
-                      title="提示词库"
-                      aria-label="提示词库"
-                      aria-expanded={activePanel === "prompts"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void openPromptLibrary();
-                      }}
-                    >
-                      <i className="bi bi-journal-text" />
-                    </button>
                   </div>
                   <div className="studio-composer__commit">
                     {voiceListening && (
@@ -1021,147 +1579,54 @@ export function StudioHubView() {
                     <span
                       className={`studio-composer__count${draftPrompt.length ? " is-visible" : ""}`}
                     >
-                      {draftPrompt.length} / 2000
+                      {draftPrompt.length}
+                      <small>/2000</small>
                     </span>
-                    <button
-                      type="button"
-                      className={`studio-composer__control is-icon studio-composer__voice${voiceListening ? " is-listening" : ""}`}
-                      disabled={!voiceSupported}
-                      title={
-                        voiceSupported
-                          ? voiceListening
-                            ? "停止语音输入"
-                            : "语音输入"
-                          : "当前浏览器不支持语音输入"
-                      }
-                      aria-label={voiceListening ? "停止语音输入" : "语音输入"}
-                      aria-pressed={voiceListening}
-                      onClick={() => {
-                        if (voiceListening) recognitionRef.current?.stop?.();
-                        else {
-                          recognitionRef.current.lang = "zh-CN";
-                          recognitionRef.current?.start?.();
+                    <div className="studio-composer__actions">
+                      <button
+                        type="button"
+                        className={`studio-composer__voice${voiceListening ? " is-listening" : ""}`}
+                        disabled={!voiceSupported}
+                        title={
+                          voiceSupported
+                            ? voiceListening
+                              ? "停止语音输入"
+                              : "语音输入"
+                            : "当前浏览器不支持语音输入"
                         }
-                      }}
-                    >
-                      <i
-                        className={`bi ${voiceListening ? "bi-stop-fill" : "bi-mic-fill"}`}
-                      />
-                    </button>
-                    <button
-                      type="submit"
-                      className="studio-composer__submit"
-                      disabled={
-                        auth.isAuthenticated &&
-                        (!selectedTool ||
-                          !draftPrompt.trim() ||
-                          referenceUploading ||
-                          launchSubmitting)
-                      }
-                      title="开始创作"
-                      aria-label="开始创作"
-                    >
-                      <i className="bi bi-arrow-up" />
-                    </button>
+                        aria-label={voiceListening ? "停止语音输入" : "语音输入"}
+                        aria-pressed={voiceListening}
+                        onClick={() => {
+                          if (voiceListening) recognitionRef.current?.stop?.();
+                          else {
+                            recognitionRef.current.lang = "zh-CN";
+                            recognitionRef.current?.start?.();
+                          }
+                        }}
+                      >
+                        <i
+                          className={`bi ${voiceListening ? "bi-stop-fill" : "bi-mic"}`}
+                        />
+                      </button>
+                      <button
+                        type="submit"
+                        className="studio-composer__submit"
+                        disabled={
+                          auth.isAuthenticated &&
+                          (!selectedTool ||
+                            !draftPrompt.trim() ||
+                            referenceUploading ||
+                            launchSubmitting)
+                        }
+                        title="开始创作"
+                        aria-label="开始创作"
+                      >
+                        <i className="bi bi-arrow-up" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
-              {activePanel === "tools" && (
-                <div
-                  className="studio-composer__popover studio-composer__popover--tools"
-                  role="menu"
-                  aria-label="选择创作工具"
-                  onPointerDown={(event) => event.stopPropagation()}
-                >
-                  <div className="studio-composer__popover-head">
-                    <span>选择创作工具</span>
-                    <button
-                      type="button"
-                      title="关闭"
-                      aria-label="关闭"
-                      onClick={() => setActivePanel("")}
-                    >
-                      <i className="bi bi-x-lg" />
-                    </button>
-                  </div>
-                  <div className="studio-composer__tool-menu">
-                    {composerTools.map((tool) => (
-                      <button
-                        key={tool.id}
-                        type="button"
-                        className={
-                          selectedToolId === tool.id ? "is-active" : ""
-                        }
-                        role="menuitem"
-                        onClick={() => {
-                          setSelectedToolId(tool.id);
-                          setActivePanel("");
-                        }}
-                      >
-                        <i className={`bi ${tool.icon}`} />
-                        <span>
-                          <strong>{tool.label}</strong>
-                          <small>{tool.tagline}</small>
-                        </span>
-                        {selectedToolId === tool.id && (
-                          <i className="bi bi-check2" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {activePanel === "prompts" && (
-                <div
-                  className="studio-composer__popover studio-composer__popover--prompts"
-                  role="dialog"
-                  aria-label="提示词库"
-                  onPointerDown={(event) => event.stopPropagation()}
-                >
-                  <div className="studio-composer__popover-head">
-                    <span>{selectedTool?.label}提示词</span>
-                    <button
-                      type="button"
-                      title="关闭"
-                      aria-label="关闭"
-                      onClick={() => setActivePanel("")}
-                    >
-                      <i className="bi bi-x-lg" />
-                    </button>
-                  </div>
-                  {promptLoading ? (
-                    <div className="studio-composer__prompt-empty">
-                      正在加载提示词…
-                    </div>
-                  ) : promptItems[selectedToolId]?.length ? (
-                    <div className="studio-composer__prompt-menu">
-                      {promptItems[selectedToolId].map((item) => (
-                        <button
-                          key={item.value}
-                          type="button"
-                          onClick={() => {
-                            setDraftPrompt(item.prompt);
-                            if (item.id)
-                              void recordPromptEngagement(
-                                item.id,
-                                "use",
-                                true,
-                              ).catch(() => null);
-                            setActivePanel("");
-                          }}
-                        >
-                          <strong>{item.label}</strong>
-                          <span>{item.prompt}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="studio-composer__prompt-empty">
-                      当前工具暂无可用提示词
-                    </div>
-                  )}
-                </div>
-              )}
             </form>
           </header>
           <section
@@ -1346,6 +1811,209 @@ export function StudioHubView() {
           </section>
         </div>
       </main>
+      {promptDialog.mounted &&
+        createPortal(
+          <div
+            className={`studio-prompt-layer ${dialogTransitionClass(promptDialog.phase)}`}
+            role="presentation"
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) setActivePanel("");
+            }}
+          >
+            <section
+              className="studio-prompt-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="studio-prompt-title"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="studio-composer__popover-head">
+                <div className="studio-composer__prompt-title">
+                  <h2 id="studio-prompt-title">{selectedTool?.label}提示词</h2>
+                  {promptLibrary.total > 0 && (
+                    <small>{promptLibrary.total} 条</small>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  title="关闭"
+                  aria-label="关闭"
+                  onClick={() => setActivePanel("")}
+                >
+                  <i className="bi bi-x-lg" />
+                </button>
+              </div>
+              <label className="studio-composer__prompt-search">
+                <i className="bi bi-search" aria-hidden="true" />
+                <input
+                  type="search"
+                  value={promptSearchDraft}
+                  placeholder="搜索标题或提示词"
+                  autoComplete="off"
+                  onChange={(event) => setPromptSearchDraft(event.target.value)}
+                />
+                {promptSearchDraft && (
+                  <button
+                    type="button"
+                    title="清空搜索"
+                    aria-label="清空搜索"
+                    onClick={() => setPromptSearchDraft("")}
+                  >
+                    <i className="bi bi-x-lg" />
+                  </button>
+                )}
+              </label>
+              {promptCategoryChips.length > 1 && (
+                <div
+                  className={`studio-prompt-cats-wrap${promptCatsOverflow.left ? " has-left" : ""}${promptCatsOverflow.right ? " has-right" : ""}`}
+                >
+                  {promptCatsOverflow.left && (
+                    <button
+                      type="button"
+                      className="studio-prompt-cats-nav is-prev"
+                      title="向左查看分类"
+                      aria-label="向左查看分类"
+                      onClick={() => slidePromptCats(-1)}
+                    >
+                      <i className="bi bi-chevron-left" />
+                    </button>
+                  )}
+                  <div
+                    ref={promptCatsRef}
+                    className="studio-composer__prompt-cats"
+                    role="tablist"
+                    aria-label="提示词分类"
+                    onScroll={updatePromptCatsOverflow}
+                    onPointerDown={(event) => {
+                      if (event.pointerType === "mouse" && event.button !== 0) return;
+                      const node = promptCatsRef.current;
+                      if (!node) return;
+                      promptCatsDragRef.current = {
+                        active: true,
+                        moved: false,
+                        startX: event.clientX,
+                        startLeft: node.scrollLeft,
+                      };
+                      node.setPointerCapture?.(event.pointerId);
+                    }}
+                    onPointerMove={(event) => {
+                      const drag = promptCatsDragRef.current;
+                      const node = promptCatsRef.current;
+                      if (!drag.active || !node) return;
+                      const delta = event.clientX - drag.startX;
+                      if (Math.abs(delta) > 4) drag.moved = true;
+                      if (drag.moved) node.scrollLeft = drag.startLeft - delta;
+                    }}
+                    onPointerUp={() => {
+                      promptCatsDragRef.current.active = false;
+                    }}
+                    onPointerCancel={() => {
+                      promptCatsDragRef.current.active = false;
+                    }}
+                  >
+                    {promptCategoryChips.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={promptCategory === item.key}
+                        className={promptCategory === item.key ? "is-active" : ""}
+                        onClick={(event) => {
+                          if (promptCatsDragRef.current.moved) return;
+                          setPromptCategory(item.key);
+                          event.currentTarget.scrollIntoView({
+                            inline: "center",
+                            block: "nearest",
+                            behavior: "smooth",
+                          });
+                        }}
+                      >
+                        {item.label}
+                        {item.key !== "all" && item.count > 0 ? ` ${item.count}` : ""}
+                      </button>
+                    ))}
+                  </div>
+                  {promptCatsOverflow.right && (
+                    <button
+                      type="button"
+                      className="studio-prompt-cats-nav is-next"
+                      title="向右查看分类"
+                      aria-label="向右查看分类"
+                      onClick={() => slidePromptCats(1)}
+                    >
+                      <i className="bi bi-chevron-right" />
+                    </button>
+                  )}
+                </div>
+              )}
+              {promptLoading ? (
+                <div className="studio-composer__prompt-empty">
+                  正在加载提示词…
+                </div>
+              ) : promptLibrary.items.length ? (
+                <div
+                  ref={promptListRef}
+                  className="studio-prompt-scroll"
+                  onScroll={(event) => {
+                    const node = event.currentTarget;
+                    if (
+                      promptLibrary.hasMore &&
+                      !promptLoadingMore &&
+                      node.scrollTop + node.clientHeight >= node.scrollHeight - 120
+                    )
+                      void loadMorePrompts();
+                  }}
+                >
+                  <div className="studio-composer__prompt-menu">
+                    {promptLibrary.items.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => applyPromptItem(item)}
+                      >
+                        {item.coverUrl ? (
+                          <AuthenticatedImage
+                            src={item.coverUrl}
+                            alt=""
+                            loading="lazy"
+                            maxDimension={320}
+                          />
+                        ) : (
+                          <span className="studio-composer__prompt-cover" aria-hidden="true">
+                            <i className="bi bi-stars" />
+                          </span>
+                        )}
+                        <span className="studio-composer__prompt-copy">
+                          <strong>{item.label}</strong>
+                          {item.category ? (
+                            <small>{promptCategoryLabel(item.category)}</small>
+                          ) : null}
+                          <span>{item.prompt}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  {promptLoadingMore && (
+                    <p className="studio-composer__prompt-more">正在加载更多…</p>
+                  )}
+                  {!promptLibrary.hasMore && (
+                    <p className="studio-composer__prompt-more">已经到底了</p>
+                  )}
+                </div>
+              ) : (
+                <div className="studio-composer__prompt-empty">
+                  {promptSearch ? "没有匹配的提示词" : "暂无提示词"}
+                </div>
+              )}
+              <div className="studio-composer__prompt-foot">
+                <Link to="/prompts" onClick={() => setActivePanel("")}>
+                  查看完整词库
+                </Link>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
       <StudioCostDialog
         cost={cost}
         onConfirm={confirmLaunch}

@@ -67,12 +67,25 @@ test('closed campaign does not leave a stale entry in the navigation', async ({ 
 })
 
 test('trial query opens the same dialog and is consumed without changing the page', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
   await installRoutes(page)
   await page.goto('/pricing?source=inbox&trial=apply')
 
+  const dialogLayer = page.locator('.trial-dialog-layer')
   await expect(page.getByRole('dialog', { name: campaign.title })).toBeVisible()
+  await expect(dialogLayer).toHaveAttribute('data-dialog-motion-state', 'entered')
   await expect.poll(() => new URL(page.url()).pathname).toBe('/pricing')
   await expect.poll(() => new URL(page.url()).search).toBe('?source=inbox')
+
+  await dialogLayer.evaluate((node) => {
+    window.__trialDialogMotionStates = [node.dataset.dialogMotionState]
+    new MutationObserver(() => {
+      window.__trialDialogMotionStates.push(node.dataset.dialogMotionState)
+    }).observe(node, { attributes: true, attributeFilter: ['data-dialog-motion-state'] })
+  })
+  await page.getByRole('button', { name: '关闭体验资格弹窗' }).click()
+  await expect(dialogLayer).toHaveCount(0)
+  expect(await page.evaluate(() => window.__trialDialogMotionStates)).toContain('exiting')
 })
 
 test('authenticated user can submit an application from the restored entry', async ({ page }) => {

@@ -1,19 +1,16 @@
-import { useState } from "react";
 import "@react/legacy-styles/generated/components/layout/ThemeDayNightSwitch.css";
+import { useIsDark } from "../hooks/useIsDark.js";
+import { setAppearance } from "../theme/appearance.js";
 
 const circles = ["moon-dot--1", "moon-dot--2", "moon-dot--3"];
 const rays = ["light-ray--1", "light-ray--2", "light-ray--3"];
 const clouds = ["dark cloud--1", "dark cloud--2", "dark cloud--3", "light cloud--4", "light cloud--5", "light cloud--6"];
 
 export function ThemeSwitch() {
-  const [dark, setDark] = useState(() => localStorage.getItem("walleven-color-scheme") === "dark");
+  const dark = useIsDark();
 
   function toggle() {
-    const next = !dark;
-    setDark(next);
-    localStorage.setItem("walleven-color-scheme", next ? "dark" : "light");
-    document.documentElement.classList.toggle("color-scheme-dark", next);
-    document.documentElement.dataset.colorScheme = next ? "dark" : "light";
+    setAppearance(dark ? "light" : "dark");
   }
 
   return (

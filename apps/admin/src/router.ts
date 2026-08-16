@@ -82,6 +82,11 @@ const router = createRouter({
           meta: { title: "提示词库" },
         },
         {
+          path: "ecommerce",
+          component: () => import("@/views/EcommerceCatalogView.vue"),
+          meta: { title: "电商素材" },
+        },
+        {
           path: "community",
           component: () => import("@/views/CommunityView.vue"),
           meta: { title: "社区管理" },

@@ -25,7 +25,8 @@ type WorkspaceKey =
   | "ui_design"
   | "ecommerce_design"
   | "model_sheet"
-  | "game_art";
+  | "game_art"
+  | "infinite_canvas";
 
 interface ModelProvider {
   id: string;
@@ -238,8 +239,8 @@ const workspaceMeta: Array<{
   {
     key: "ecommerce_design",
     name: "AI 电商",
-    detail: "商品套图、详情页、模特与图片处理",
-    kinds: ["image"],
+    detail: "商品识别、套图、详情页、模特与图片处理",
+    kinds: ["image", "chat"],
   },
   {
     key: "model_sheet",
@@ -252,6 +253,12 @@ const workspaceMeta: Array<{
     name: "游戏设计",
     detail: "角色、道具和场景资产",
     kinds: ["image"],
+  },
+  {
+    key: "infinite_canvas",
+    name: "无限画布",
+    detail: "画布节点生图与文本助手",
+    kinds: ["image", "chat"],
   },
 ];
 
@@ -520,10 +527,7 @@ function workspaceDefaultSummary(workspace: (typeof workspaceMeta)[number]) {
       const id = binding.defaultModelIds[kind];
       if (!id) return "";
       const model = config.models.find((item) => item.id === id);
-      const label =
-        workspace.key === "ui_design" && kind === "chat"
-          ? "元素分析模型"
-          : `${kindName(kind)}默认`;
+      const label = workspaceDefaultLabel(workspace, kind);
       return model ? `${label}：${model.name}` : "";
     })
     .filter(Boolean);
@@ -669,6 +673,8 @@ function workspaceDefaultLabel(
   kind: ModelKind,
 ) {
   if (workspace.key === "ui_design" && kind === "chat") return "元素分析模型";
+  if (workspace.key === "ecommerce_design" && kind === "chat")
+    return "商品分析模型";
   return `默认${kindName(kind)}`;
 }
 

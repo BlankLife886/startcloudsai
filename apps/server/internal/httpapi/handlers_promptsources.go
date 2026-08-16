@@ -58,7 +58,7 @@ func validatePromptSourceFields(s *store.PromptSource) error {
 	if !store.Contains(store.PromptSourceFormats, s.Format) {
 		return apperr.E("validation_error", "format: 须为 json / markdown / html", 422)
 	}
-	if !store.Contains(store.TaskTypes, s.TaskType) {
+	if !store.Contains(store.PromptTaskTypes, s.TaskType) {
 		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
 	}
 	if len(s.DefaultTags) > 12 {

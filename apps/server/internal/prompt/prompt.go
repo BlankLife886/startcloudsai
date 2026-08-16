@@ -41,7 +41,13 @@ func styleSuffix(params map[string]any) string {
 }
 
 func sizeOf(params map[string]any) string {
-	return paramString(params, "size")
+	if size := strings.TrimSpace(paramString(params, "size")); size != "" {
+		return size
+	}
+	if size := strings.TrimSpace(paramString(params, "outputSize")); size != "" {
+		return size
+	}
+	return deriveImageSize(paramString(params, "aspectRatio"), firstNonEmpty(paramString(params, "resolutionScale"), paramString(params, "resolution")))
 }
 
 func paramStrings(params map[string]any, key string) []string {
@@ -192,6 +198,7 @@ func compileEcommerce(prompt string, params map[string]any) string {
 
 var compilers = map[string]func(string, map[string]any) string{
 	"t2i":              compileT2I,
+	"infinite_canvas":  compileT2I,
 	"coloring":         compileColoring,
 	"ui_design":        compileUIDesign,
 	"ecommerce_design": compileEcommerce,

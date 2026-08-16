@@ -274,8 +274,8 @@ export function PuzzleView() {
               <span>{exportWidth}px</span>
             </div>
             <div className="collage-history-btns">
-              <button type="button" title="撤销 (Ctrl+Z)" disabled={!editor.canUndo} onClick={editor.undo}><Icon name="arrow-counterclockwise" /></button>
-              <button type="button" title="重做 (Ctrl+Shift+Z)" disabled={!editor.canRedo} onClick={editor.redo}><Icon name="arrow-clockwise" /></button>
+              <button type="button" title="撤销 (Ctrl+Z)" data-click-guard="off" disabled={!editor.canUndo} onClick={editor.undo}><Icon name="arrow-counterclockwise" /></button>
+              <button type="button" title="重做 (Ctrl+Shift+Z)" data-click-guard="off" disabled={!editor.canRedo} onClick={editor.redo}><Icon name="arrow-clockwise" /></button>
             </div>
           </div>
           <div className="collage-topbar-right">

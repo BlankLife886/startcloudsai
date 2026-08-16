@@ -147,6 +147,8 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		}
 		return items
 	}
+	canvasImageModels := workspaceImageModels(modelconfig.WorkspaceCanvas)
+	canvasTextModels := workspaceChatModels(modelconfig.WorkspaceCanvas)
 	features := gin.H{
 		"ai.imageTools":           gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
 		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
@@ -156,11 +158,18 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"publicModels":   workspaceImageModels(modelconfig.WorkspaceUIDesign),
 			"analysisModels": workspaceChatModels(modelconfig.WorkspaceUIDesign),
 		}},
-		"ai.ecommerceDesign": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceEcommerce)}},
+		"ai.ecommerceDesign": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":   workspaceImageModels(modelconfig.WorkspaceEcommerce),
+			"analysisModels": workspaceChatModels(modelconfig.WorkspaceEcommerce),
+		}},
 		"ai.ultraModelSheet": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
 		"ai.gameDesign":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
 		"ai.optimize":        gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.puzzle":          gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
+		"ai.infiniteCanvas": gin.H{"enabled": len(canvasImageModels)+len(canvasTextModels) > 0, "config": gin.H{
+			"imageModels": canvasImageModels,
+			"textModels":  canvasTextModels,
+		}},
 	}
 	ok(c, gin.H{
 		"routes": gin.H{}, "features": features, "pageLayout": gin.H{},

@@ -79,6 +79,15 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/prompts");
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(6);
+  await expect(page.locator(".ch-page--prompts")).toHaveAttribute(
+    "data-prompt-motion-state",
+    "entered",
+  );
+  await expect(page.locator(".ch-prompt-masonry")).toHaveAttribute(
+    "data-prompt-feed-state",
+    "entered",
+  );
+  await expect(page.locator(".ch-prompt-card__image.is-loaded")).toHaveCount(5);
   await expect(page.getByText("电影感城市", { exact: true })).toBeVisible();
 
   const geometry = await page.locator(".ch-prompt-masonry__item").evaluateAll((cards) =>
@@ -113,6 +122,7 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
 
   await page.locator(".ch-prompt-card__media").first().click();
   await expect(page.getByRole("dialog", { name: "提示词详情" })).toBeVisible();
+  await expect(page.locator(".ch-preview-layer")).toHaveAttribute("data-dialog-motion-state", "entered");
   await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
   await expect(page.getByRole("button", { name: "上一条" })).toBeDisabled();
   await page.getByRole("button", { name: "下一条" }).click();
@@ -128,6 +138,8 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
   await page.keyboard.press("ArrowRight");
   await expect(dialog.getByRole("heading", { name: "方形产品摄影" })).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(page.locator(".ch-preview-layer")).toHaveAttribute("data-dialog-motion-state", "exiting");
+  await expect(dialog).toBeVisible();
   await expect(page.getByRole("dialog", { name: "提示词详情" })).toHaveCount(0);
   await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
 
@@ -160,6 +172,10 @@ test("preserves scope filters, mobile columns, and prompt handoff", async ({ pag
 
   await page.getByRole("button", { name: "今日最新" }).click();
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(2);
+  await expect(page.locator(".ch-prompt-masonry")).toHaveAttribute(
+    "data-prompt-feed-state",
+    "entered",
+  );
   await expect.poll(() => promptRequests.some((request) => request.scope === "today" && !request.category)).toBe(true);
 
   await page.getByRole("button", { name: "摄影" }).click();

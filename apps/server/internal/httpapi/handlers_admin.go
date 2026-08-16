@@ -796,7 +796,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	taskType := c.Query("type")
 	status := c.Query("status")
 	errorCode := strings.TrimSpace(c.Query("errorCode"))
-	if taskType != "" && !store.Contains(store.AdminTaskTypes, taskType) {
+	source := ""
+	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
+		source = store.CanvasTaskSource
+		taskType = ""
+	}
+	if taskType != "" && !store.Contains(store.AdminTaskFilters, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -822,12 +827,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		}
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor)
+	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor, source)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs)
+	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs, source)
 	if err != nil {
 		fail(c, err)
 		return

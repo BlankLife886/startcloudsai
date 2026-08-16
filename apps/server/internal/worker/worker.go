@@ -491,6 +491,13 @@ func deliverEncodedImages(images []string, onImage imageReadyFunc) error {
 	return firstErr
 }
 
+func ensureUpstreamOutputError(callErr error, outputKeys []string) error {
+	if callErr == nil && len(outputKeys) == 0 {
+		return &c2a.NetworkError{Message: "上游任务完成但未返回可保存图片"}
+	}
+	return callErr
+}
+
 func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client *sub2api.Client, model string, onImage imageReadyFunc) ([]string, error) {
 	if model != "" {
 		client = client.WithImageModel(model)
@@ -1280,7 +1287,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	ambiguousOpenAISubmit := attemptID != uuid.Nil && attemptAdapter == modelconfig.AdapterOpenAI &&
 		callErr != nil && isRetryableTaskError(callErr)
 	if errors.As(callErr, &pendingErr) || ambiguousOpenAISubmit {
-		delay := 2*time.Second + time.Duration(taskID[0]%3)*time.Second
+		delay := time.Second
 		providerID := taskParamString(task.Params, "_providerConfigId")
 		routeID := taskParamString(task.Params, "_providerRouteId")
 		routeKey := taskParamString(task.Params, "_providerRouteKey")
@@ -1320,6 +1327,8 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		log.Printf("task %s submitted asynchronously attempt=%s poll_in=%s", taskID, attemptID, delay)
 		return nil
 	}
+	outputKeys, thumbnailKeys := collector.completed()
+	callErr = ensureUpstreamOutputError(callErr, outputKeys)
 	if attemptID != uuid.Nil {
 		attemptStatus := store.UpstreamAttemptSucceeded
 		attemptMessage := ""
@@ -1329,7 +1338,6 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		}
 		_, _ = store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID, attemptStatus, attemptMessage, time.Now().UTC())
 	}
-	outputKeys, thumbnailKeys := collector.completed()
 	logTaskStage(taskID.String(), "upstream", upstreamStartedAt,
 		"provider=%s model=%s returned=%d persisted=%d", provider, model, len(imagesB64), len(outputKeys))
 	var outputProcessingErr *taskOutputProcessingError
@@ -1535,7 +1543,7 @@ func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
 		// Keep one lightweight route coordinator alive. A submit racing with an
 		// empty poll can otherwise have its enqueue deduplicated just before this
 		// handler exits, leaving completed upstream work without a successor poll.
-		return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, 5*time.Second)
+		return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, time.Second)
 	}
 	type providerTaskGroup struct {
 		provider *modelconfig.Provider
@@ -1568,8 +1576,7 @@ func (w *Worker) handlePollImageTask(ctx context.Context, t *asynq.Task) error {
 			w.pollCRUNProviderTasks(ctx, group.provider, group.tasks)
 		}
 	}
-	delay := 2*time.Second + time.Duration(len(tasks)%3)*time.Second
-	return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, delay)
+	return w.Queue.EnqueueImagePoll(ctx, provider.ID, provider.RouteID, routeKey, (payload.Generation+1)%2, time.Second)
 }
 
 func (w *Worker) providerForUpstreamAttempt(task *store.Task, fallback *modelconfig.Provider) (*modelconfig.Provider, error) {

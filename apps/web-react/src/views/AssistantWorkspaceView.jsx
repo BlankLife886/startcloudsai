@@ -42,7 +42,12 @@ import {
   loadAssistantWorkspaceState,
   saveAssistantWorkspaceState,
 } from "@react/legacy-modules/services/assistantHistory.js";
-import { normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import {
+  IMAGE_ASPECT_RATIOS,
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import "@react/legacy-static/features/assistant/styles/assistant-workspace.css";
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import "@react/legacy-styles/generated/features/ai-shared/ModelPointPrice.css";
@@ -63,39 +68,33 @@ const CREATION_TYPES = [
   { id: "image", label: "图片生成", icon: "bi-image" },
 ];
 
-const RATIOS = [
-  ["auto", "自动", "auto"],
-  ["1:1", "1:1", "square"],
-  ["2:3", "2:3", "portrait"],
-  ["3:2", "3:2", "wide"],
-  ["3:4", "3:4", "portrait"],
-  ["4:3", "4:3", "wide"],
-  ["4:5", "4:5", "portrait"],
-  ["5:4", "5:4", "wide"],
-  ["9:16", "9:16", "portrait"],
-  ["16:9", "16:9", "wide"],
-  ["9:21", "9:21", "portrait"],
-  ["21:9", "21:9", "wide"],
-].map(([id, label, shape]) => ({ id, label, shape }));
-
 const RESOLUTIONS = [
   { id: "1K", label: "标清 1K", quality: "low", longEdge: 1024 },
   { id: "2K", label: "高清 2K", quality: "medium", longEdge: 2048 },
   { id: "4K", label: "超清 4K", quality: "high", longEdge: 4096 },
 ];
 
+function ratioShape(value) {
+  if (String(value || "") === "auto") return "auto";
+  const [width, height] = String(value || "").split(":").map(Number);
+  if (width === height) return "square";
+  return width > height ? "wide" : "portrait";
+}
+
+function ratioPreviewStyle(value) {
+  if (String(value || "") === "auto") return { aspectRatio: "1 / 1" };
+  const [width, height] = String(value || "").split(":").map(Number);
+  return { aspectRatio: `${width || 1} / ${height || 1}` };
+}
+
+function ratioOption(value) {
+  const id = String(value || "").trim();
+  return { id, label: id === "auto" ? "自动" : id, shape: ratioShape(id) };
+}
+
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const MESSAGE_BATCH_SIZE = 24;
 
-function modelRatios(model, resolution) {
-  const scoped = model?.aspectRatiosByResolution?.[resolution];
-  const values = Array.isArray(scoped) && scoped.length
-    ? scoped
-    : Array.isArray(model?.aspectRatios)
-      ? model.aspectRatios
-      : [];
-  return values.map((value) => String(value || "").trim()).filter(Boolean);
-}
 
 function imageUrl(image = {}) {
   return String(image.dataUrl || image.url || "").trim();
@@ -207,6 +206,25 @@ function normalizeConfig(config = {}) {
   return { conversationModels, imageModels };
 }
 
+function ModelMenuPrice({ model, perImage }) {
+  const price = resolveModelPointPricing(model);
+  if (!price.configured) return <span className="model-menu-price is-empty">未定价</span>;
+  const suffix = perImage ? "/张" : "";
+  if (price.hasDiscount) {
+    return (
+      <span className="model-menu-price has-discount">
+        <strong>折扣 {price.discount} 积分{suffix}</strong>
+        <del>{price.standard} 积分{suffix}</del>
+      </span>
+    );
+  }
+  return (
+    <span className="model-menu-price">
+      <strong>{price.effective === 0 ? "免费" : `${price.effective} 积分${suffix}`}</strong>
+    </span>
+  );
+}
+
 function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
   const [skip, setSkip] = useState(false);
   if (!payload) return null;
@@ -277,13 +295,13 @@ function AssistantImageViewer({ value, onClose, onStep }) {
       <header className="image-viewer__head"><div className="image-viewer__title"><strong>全屏预览</strong>{gallery.length > 1 && <small>{index + 1} / {gallery.length}</small>}<small>{item.revisedPrompt || item.name || "AI 生成图片"}</small>{naturalSize.width > 0 && <small className="is-size">{naturalSize.width}×{naturalSize.height}</small>}</div></header>
       <div className="image-viewer__actions" aria-label="预览操作"><button type="button" title="下载原图" aria-label="下载原图" onClick={download}><i className="bi bi-download" /></button><button type="button" title="关闭预览" aria-label="关闭预览" onClick={onClose}><i className="bi bi-x-lg" /></button></div>
       <div className="image-viewer__stage">
-        {gallery.length > 1 && <button className="image-viewer__nav is-previous" type="button" title="上一张" aria-label="上一张" onClick={() => onStep(-1)}><i className="bi bi-chevron-left" /></button>}
+        {gallery.length > 1 && <button className="image-viewer__nav is-previous" type="button" title="上一张" aria-label="上一张" data-click-guard="off" onClick={() => onStep(-1)}><i className="bi bi-chevron-left" /></button>}
         <div className={`image-viewer__frame${zoom > 1 ? " is-zoomed" : ""}`} onWheel={(event) => { event.preventDefault(); setZoom((current) => Math.min(5, Math.max(0.5, current + (event.deltaY < 0 ? 0.25 : -0.25)))); }} onDoubleClick={() => setZoom((current) => current === 1 ? 2 : 1)}>
           <div className="image-viewer__image-layer" style={{ transform: `translate3d(0, 0, 0) scale(${zoom})` }}><img src={url} alt={item.revisedPrompt || item.name || "AI 生成图片"} draggable="false" onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} /></div>
         </div>
-        {gallery.length > 1 && <button className="image-viewer__nav is-next" type="button" title="下一张" aria-label="下一张" onClick={() => onStep(1)}><i className="bi bi-chevron-right" /></button>}
+        {gallery.length > 1 && <button className="image-viewer__nav is-next" type="button" title="下一张" aria-label="下一张" data-click-guard="off" onClick={() => onStep(1)}><i className="bi bi-chevron-right" /></button>}
       </div>
-      <div className="image-viewer__zoom-tools" aria-label="图片缩放工具"><button type="button" disabled={zoom <= 0.5} aria-label="缩小图片" onClick={() => setZoom((current) => Math.max(0.5, current - 0.25))}><i className="bi bi-zoom-out" /><span>缩小</span></button><output>{Math.round(zoom * 100)}%</output><button type="button" disabled={zoom >= 5} aria-label="放大图片" onClick={() => setZoom((current) => Math.min(5, current + 0.25))}><i className="bi bi-zoom-in" /><span>放大</span></button><button type="button" aria-label="适应屏幕" onClick={() => setZoom(1)}><i className="bi bi-arrows-angle-contract" /><span>适应屏幕</span></button></div>
+      <div className="image-viewer__zoom-tools" aria-label="图片缩放工具" data-click-guard="off"><button type="button" disabled={zoom <= 0.5} aria-label="缩小图片" onClick={() => setZoom((current) => Math.max(0.5, current - 0.25))}><i className="bi bi-zoom-out" /><span>缩小</span></button><output>{Math.round(zoom * 100)}%</output><button type="button" disabled={zoom >= 5} aria-label="放大图片" onClick={() => setZoom((current) => Math.min(5, current + 0.25))}><i className="bi bi-zoom-in" /><span>放大</span></button><button type="button" aria-label="适应屏幕" onClick={() => setZoom(1)}><i className="bi bi-arrows-angle-contract" /><span>适应屏幕</span></button></div>
     </div>,
     document.body,
   );
@@ -345,10 +363,10 @@ function AgentProposal({ message, imageModels, generating, executed, onChange, o
     return <div className="agent-proposal is-dismissed"><button type="button" className="agent-proposal-restore" onClick={onRestore}><i className="bi bi-magic" aria-hidden="true" /><span>创作方案已收起</span><i className="bi bi-chevron-down" aria-hidden="true" /></button></div>;
   }
   const selectedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
-  const supportedResolutions = new Set((selectedModel?.resolutions || []).map((item) => String(item).toUpperCase()));
-  const resolutions = RESOLUTIONS.filter((item) => !supportedResolutions.size || supportedResolutions.has(item.id));
-  const supportedRatios = modelRatios(selectedModel, proposal.resolution);
-  const ratios = supportedRatios.length ? RATIOS.filter((item) => supportedRatios.includes(item.id)) : RATIOS;
+  const resolutions = RESOLUTIONS.filter((item) =>
+    normalizeImageModelCapabilities(selectedModel || {}).resolutions.includes(item.id),
+  );
+  const ratios = getModelAspectRatiosForResolution(selectedModel, proposal.resolution).map(ratioOption);
   return <div className="agent-proposal">
     <header className="agent-proposal-head"><span className="agent-proposal-icon"><i className="bi bi-stars" /></span><div><strong>{proposal.action === "edit" ? "图片编辑方案" : "图片生成方案"}</strong><small>{proposal.planningSummary || proposal.reason}</small></div>{executed && <span className="agent-proposal-state">已执行</span>}</header>
     {proposal.reason && proposal.reason !== proposal.planningSummary && <p className="agent-proposal-reason"><i className="bi bi-signpost-split" /><span>{proposal.reason}</span></p>}
@@ -468,21 +486,25 @@ export function AssistantWorkspaceView() {
   const generationModels = mode === "image" ? imageModels : conversationModels;
   const generationModel = mode === "image" ? imageModel : conversationModel;
   const selectedModel = generationModels.find((item) => item.model === generationModel) || generationModels[0] || null;
-  const generationModelLabel = selectedModel?.label || "默认模型";
+  const generationModelLabel = selectedModel?.label || (loading ? "加载模型…" : "暂无可用模型");
   const filteredGenerationModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return query ? generationModels.filter((item) => `${item.label} ${item.model} ${item.description || ""}`.toLowerCase().includes(query)) : generationModels;
   }, [generationModels, modelSearch]);
   const selectedImageModel = imageModels.find((item) => item.model === imageModel) || imageModels[0] || null;
-  const availableRatios = useMemo(() => {
-    const supported = modelRatios(selectedImageModel, generationResolution);
-    return supported.length ? RATIOS.filter((item) => supported.includes(item.id)) : RATIOS;
-  }, [generationResolution, selectedImageModel]);
+  const availableRatios = useMemo(
+    () =>
+      getModelAspectRatiosForResolution(
+        selectedImageModel || {},
+        generationResolution,
+      ).map(ratioOption),
+    [generationResolution, selectedImageModel],
+  );
   const availableResolutions = useMemo(() => {
-    if (!selectedImageModel) return [];
-    const supported = new Set((selectedImageModel?.resolutions || []).map((item) => String(item || "").toUpperCase()));
-    const qualities = new Set(selectedImageModel?.qualities || []);
-    return RESOLUTIONS.filter((item) => (!supported.size || supported.has(item.id)) && (!qualities.size || qualities.has(item.quality)));
+    const supported = new Set(
+      normalizeImageModelCapabilities(selectedImageModel || {}).resolutions,
+    );
+    return RESOLUTIONS.filter((item) => supported.has(item.id));
   }, [selectedImageModel]);
   const filteredConversations = useMemo(() => {
     const query = conversationSearch.trim().toLowerCase();
@@ -699,10 +721,15 @@ export function AssistantWorkspaceView() {
     setLoading(true);
     setServiceError("");
     try {
+      const signedIn = auth.isAuthenticated;
       const [configResult, conversationResult, runResult] = await Promise.allSettled([
         fetchAssistantConfig(controller.signal),
-        listAssistantConversations({ signal: controller.signal }),
-        listActiveAssistantRuns({ signal: controller.signal }),
+        signedIn
+          ? listAssistantConversations({ signal: controller.signal })
+          : Promise.resolve([]),
+        signedIn
+          ? listActiveAssistantRuns({ signal: controller.signal })
+          : Promise.resolve([]),
       ]);
       if (controller.signal.aborted || !mountedRef.current) return;
       if (configResult.status !== "fulfilled") throw configResult.reason;
@@ -715,7 +742,7 @@ export function AssistantWorkspaceView() {
       let rows = conversationResult.status === "fulfilled"
         ? conversationResult.value.map(normalizeConversation)
         : [];
-      if (!rows.length && conversationResult.status === "fulfilled") {
+      if (signedIn && !rows.length && conversationResult.status === "fulfilled") {
         const legacy = await loadAssistantHistory(workspaceScope);
         if (legacy.length) {
           const prepared = await prepareLegacyConversations(legacy, controller.signal);
@@ -730,7 +757,7 @@ export function AssistantWorkspaceView() {
       setActiveId(rows.some((item) => item.id === workspaceState.activeId) ? workspaceState.activeId : rows.find((item) => item.messages.length)?.id || "");
       if (typeof workspaceState.draft === "string") setDraft(workspaceState.draft.slice(0, 12000));
       if (CREATION_TYPES.some((item) => item.id === workspaceState.creationType)) setCreationType(workspaceState.creationType);
-      if (RATIOS.some((item) => item.id === workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
+      if (IMAGE_ASPECT_RATIOS.includes(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
       if (RESOLUTIONS.some((item) => item.id === String(workspaceState.generationResolution || "").toUpperCase())) setGenerationResolution(String(workspaceState.generationResolution).toUpperCase());
       if (IMAGE_COUNTS.includes(Number(workspaceState.generationCount))) setGenerationCount(Number(workspaceState.generationCount));
       if (Number.isFinite(Number(workspaceState.customImageWidth))) setCustomImageWidth(Math.min(4096, Math.max(256, Number(workspaceState.customImageWidth))));
@@ -745,7 +772,7 @@ export function AssistantWorkspaceView() {
         setDraft(composePendingLaunchPrompt(pending, 12000));
         const pendingMode = pending.config?.mode === "image" || pending.config?.skill === "image" ? "image" : "agent";
         setCreationType(pendingMode);
-        if (RATIOS.some((item) => item.id === pending.config?.ratio)) setGenerationRatio(pending.config.ratio);
+        if (IMAGE_ASPECT_RATIOS.includes(pending.config?.ratio)) setGenerationRatio(pending.config.ratio);
         if (RESOLUTIONS.some((item) => item.id === String(pending.config?.resolution || "").toUpperCase())) {
           setGenerationResolution(String(pending.config.resolution).toUpperCase());
         }
@@ -767,7 +794,7 @@ export function AssistantWorkspaceView() {
     } finally {
       if (!controller.signal.aborted && mountedRef.current) setLoading(false);
     }
-  }, [workspaceScope]);
+  }, [auth.isAuthenticated, workspaceScope]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1291,9 +1318,9 @@ export function AssistantWorkspaceView() {
       if (message.id !== messageId || !message.proposal) return message;
       const next = { ...message.proposal, ...patch };
       const selected = imageModels.find((item) => item.model === next.model) || imageModels[0];
-      const resolutionIds = (selected?.resolutions || []).map((item) => String(item).toUpperCase());
-      if (resolutionIds.length && !resolutionIds.includes(String(next.resolution).toUpperCase())) next.resolution = resolutionIds[0];
-      const ratioIds = modelRatios(selected, next.resolution);
+      const resolutionIds = normalizeImageModelCapabilities(selected || {}).resolutions;
+      if (resolutionIds.length && !resolutionIds.includes(String(next.resolution || "").toUpperCase())) next.resolution = resolutionIds[0];
+      const ratioIds = getModelAspectRatiosForResolution(selected, next.resolution);
       if (ratioIds.length && !ratioIds.includes(next.ratio)) next.ratio = ratioIds[0];
       return { ...message, proposal: next };
     }) }));
@@ -1422,8 +1449,58 @@ export function AssistantWorkspaceView() {
           {serviceError && <div className="assistant-service-error"><i className="bi bi-exclamation-circle" /><span>{serviceError}</span><button type="button" onClick={() => void loadWorkspace()}><i className="bi bi-arrow-clockwise" />重试</button></div>}
           <div className={`assistant-composer${mode === "image" ? " is-image-mode" : ""}`}>
             {creationMenuOpen && <section className="composer-popover creation-type-menu"><p className="popover-eyebrow">创作类型</p>{CREATION_TYPES.map((type) => <button key={type.id} type="button" className={creationType === type.id ? "active" : ""} onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}><i className={`bi ${type.icon}`} /><span>{type.label}</span>{creationType === type.id && <i className="bi bi-check-lg menu-check" />}</button>)}</section>}
-            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "150px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong><span className="model-point-price is-compact"><strong>{Math.max(0, Number(model.pricePoints || 0))} 积分</strong></span></span>{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
-            {preferencesOpen && mode === "image" && <section className="composer-popover image-mode-preferences"><p className="preferences-label">选择比例</p><div className="ratio-options">{availableRatios.map((item) => <button key={item.id} type="button" className={generationRatio === item.id ? "active" : ""} onClick={() => setGenerationRatio(item.id)}><i className={`ratio-shape is-${item.shape}`} /><span>{item.label}</span></button>)}</div><p className="preferences-label">选择分辨率</p><div className="image-resolution-options">{availableResolutions.map((option) => <button key={option.id} type="button" className={generationResolution === option.id ? "active" : ""} onClick={() => setGenerationResolution(option.id)}>{option.label}<i className="bi bi-stars" /></button>)}</div><p className="preferences-label">选择生成数量</p><div className="image-count-options">{IMAGE_COUNTS.map((value) => <button key={value} type="button" className={generationCount === value ? "active" : ""} onClick={() => setGenerationCount(value)}>{value}</button>)}</div><p className="preferences-label">尺寸</p><div className="custom-image-size"><label><span>W</span><input aria-label="图片宽度" value={customImageWidth} type="number" min="256" max="4096" onChange={(event) => setCustomImageWidth(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} /></label><i className="bi bi-link-45deg" /><label><span>H</span><input aria-label="图片高度" value={customImageHeight} type="number" min="256" max="4096" onChange={(event) => setCustomImageHeight(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} /></label><span>PX</span></div></section>}
+            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "150px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong></span><ModelMenuPrice model={model} perImage={mode === "image"} /><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
+            {preferencesOpen && mode === "image" && (
+              <section className="composer-popover image-mode-preferences" aria-label="图片生成参数">
+                <div className="preferences-block">
+                  <p className="preferences-label">选择比例</p>
+                  <div className="ratio-options">
+                    {availableRatios.map((item) => (
+                      <button key={item.id} type="button" className={generationRatio === item.id ? "active" : ""} aria-pressed={generationRatio === item.id} onClick={() => setGenerationRatio(item.id)}>
+                        <i className={`ratio-shape is-${item.shape}`} style={ratioPreviewStyle(item.id)} />
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="preferences-split">
+                  <div className="preferences-block">
+                    <p className="preferences-label">选择分辨率</p>
+                    <div className="image-resolution-options">
+                      {availableResolutions.map((option) => (
+                        <button key={option.id} type="button" className={generationResolution === option.id ? "active" : ""} aria-pressed={generationResolution === option.id} onClick={() => setGenerationResolution(option.id)}>
+                          {option.label}
+                          <i className="bi bi-stars" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="preferences-block">
+                    <p className="preferences-label">选择生成数量</p>
+                    <div className="image-count-options">
+                      {IMAGE_COUNTS.map((value) => (
+                        <button key={value} type="button" className={generationCount === value ? "active" : ""} aria-pressed={generationCount === value} onClick={() => setGenerationCount(value)}>{value}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="preferences-block">
+                  <p className="preferences-label">尺寸</p>
+                  <div className="custom-image-size">
+                    <label>
+                      <span>W</span>
+                      <input aria-label="图片宽度" value={customImageWidth} type="number" min="256" max="4096" onChange={(event) => setCustomImageWidth(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} />
+                    </label>
+                    <i className="bi bi-link-45deg" aria-hidden="true" />
+                    <label>
+                      <span>H</span>
+                      <input aria-label="图片高度" value={customImageHeight} type="number" min="256" max="4096" onChange={(event) => setCustomImageHeight(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} />
+                    </label>
+                    <span>PX</span>
+                  </div>
+                </div>
+              </section>
+            )}
             <input ref={fileInputRef} className="reference-file-input" type="file" accept="image/*" multiple aria-label={mode === "image" ? "添加参考图" : "添加图片，支持识别、分析与编辑"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
             <div className={`reference-dock${references.length ? " has-images" : ""}${uploading ? " is-uploading" : ""}`}>{references.length === 0 ? <button className="composer-attachment" type="button" title="添加参考图" aria-label="添加参考图" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button> : <>{references.map((image) => <figure key={image.id} className="reference-card"><img src={image.thumbnailUrl || image.dataUrl} alt={image.name} /><button type="button" title="移除参考图" aria-label="移除参考图" onClick={() => setReferences((current) => current.filter((item) => item.id !== image.id))}><i className="bi bi-x" /></button></figure>)}{references.length < Math.min(4, Math.max(0, Number(selectedImageModel?.maxReferenceImages ?? 4))) && !uploading && <button className="reference-add-more" type="button" title="继续添加参考图" aria-label="继续添加参考图" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button>}</>}{uploading && <span className="reference-card reference-skeleton" aria-label="参考图上传中" />}</div>
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}

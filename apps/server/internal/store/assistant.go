@@ -347,6 +347,26 @@ func GetAssistantRun(ctx context.Context, q Q, id uuid.UUID) (*AssistantRun, err
 	return nilOnNoRows(item, err)
 }
 
+func GetAssistantRunsByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*AssistantRun, error) {
+	out := make(map[uuid.UUID]*AssistantRun, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		run, err := scanAssistantRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[run.ID] = run
+	}
+	return out, rows.Err()
+}
+
 func GetUserAssistantRunForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
 	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
 		FROM assistant_runs WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID))

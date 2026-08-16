@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
+  clearNotifications,
   listNotifications,
   markNotificationsRead,
 } from "@react/legacy-modules/services/meApi.js";
@@ -8,7 +9,12 @@ import { TASK_UPDATE_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { translateClientText } from "@react/legacy-modules/i18n/clientTranslations.js";
 import "@react/legacy-styles/generated/views/NotificationsView.css";
+import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import {
+  displayNotification,
+  displayNotificationBody,
+} from "../utils/notificationDisplay.js";
 
 const UPDATED_EVENT = "starclouds:notifications-updated";
 const POLL_MS = 20_000;
@@ -55,33 +61,69 @@ function formatClock(value) {
     : "—";
 }
 
-function kindIcon(item) {
+function kindMeta(item) {
   const kind = String(item?.kind || "").toLowerCase();
   const title = String(item?.title || "");
-  if (kind === "trial_access") return "bi-patch-check";
+  if (kind === "trial_access")
+    return { icon: "bi-patch-check", label: "试用", tone: "success" };
   if (kind.includes("redeem") || title.includes("兑换"))
-    return "bi-ticket-perforated";
+    return { icon: "bi-ticket-perforated", label: "兑换", tone: "gold" };
   if (
     kind.includes("wallet") ||
     ["入账", "积分", "充值"].some((text) => title.includes(text))
   )
-    return "bi-wallet2";
+    return { icon: "bi-wallet2", label: "账户", tone: "wallet" };
   if (
     kind.includes("task") ||
     ["任务", "生成"].some((text) => title.includes(text))
   )
-    return "bi-stars";
+    return { icon: "bi-stars", label: "任务", tone: "task" };
   if (
     kind.includes("gallery") ||
     ["投稿", "审核"].some((text) => title.includes(text))
   )
-    return "bi-send-check";
-  if (kind.includes("system") || title.includes("公告")) return "bi-megaphone";
-  return "bi-bell";
+    return { icon: "bi-send-check", label: "审核", tone: "review" };
+  if (kind.includes("system") || title.includes("公告"))
+    return { icon: "bi-megaphone", label: "公告", tone: "announce" };
+  return { icon: "bi-bell", label: "通知", tone: "default" };
+}
+
+function itemHref(item) {
+  const kind = String(item?.kind || "").toLowerCase();
+  if (kind === "trial_access") return null;
+  if (kind.includes("task")) return "/history";
+  if (kind.includes("wallet") || kind.includes("redeem")) return "/wallet";
+  if (kind.includes("gallery")) return "/submissions";
+  if (kind.includes("system")) return "/updates";
+  return null;
+}
+
+function itemScope(item) {
+  const kind = String(item?.kind || "").toLowerCase();
+  if (kind === "trial_access") return "trial";
+  if (kind.includes("task")) return "task";
+  if (kind.includes("wallet") || kind.includes("redeem")) return "wallet";
+  if (kind.includes("gallery")) return "review";
+  if (kind.includes("system")) return "announce";
+  return "other";
+}
+
+const SCOPE_FILTERS = [
+  ["all", "全部"],
+  ["unread", "未读"],
+  ["task", "任务"],
+  ["wallet", "账户"],
+  ["trial", "试用"],
+  ["review", "审核"],
+  ["announce", "公告"],
+];
+
+function readableBody(body) {
+  return displayNotificationBody(localizedText(body));
 }
 
 function extractAmount(body) {
-  const text = localizedText(body);
+  const text = readableBody(body);
   const match =
     text.match(/([\d,]+)\s*(?:分|积分|credits)/i) ||
     text.match(/(?:Added|added|Redeemed|—)\s*([\d,]+)/);
@@ -89,14 +131,14 @@ function extractAmount(body) {
 }
 
 function amountUnit(body) {
-  const text = localizedText(body);
+  const text = readableBody(body);
   if (/credits/i.test(text)) return "credits";
   if (/积分/.test(text) || /分/.test(text)) return "积分";
   return extractAmount(body) ? (locale() === "en" ? "credits" : "积分") : "";
 }
 
 function emphasizeParts(body) {
-  const text = localizedText(body);
+  const text = readableBody(body);
   if (!text) return [];
   const expression = /([\d,]+)\s*(分|积分|credits)/gi;
   const parts = [];
@@ -138,7 +180,10 @@ export function NotificationsView() {
   const [cursor, setCursor] = useState(null);
   const [error, setError] = useState("");
   const [marking, setMarking] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [unread, setUnread] = useState(0);
+  const [scope, setScope] = useState("all");
 
   const applyItems = (next) => {
     itemsRef.current = next;
@@ -274,10 +319,34 @@ export function NotificationsView() {
     return () => observer.disconnect();
   }, [cursor, items.length, loadList]);
 
+  const scopeCounts = useMemo(() => {
+    const counts = {
+      all: items.length,
+      unread: 0,
+      task: 0,
+      wallet: 0,
+      trial: 0,
+      review: 0,
+      announce: 0,
+      other: 0,
+    };
+    items.forEach((item) => {
+      if (!item.readAt) counts.unread += 1;
+      counts[itemScope(item)] += 1;
+    });
+    return counts;
+  }, [items]);
+
+  const visibleItems = useMemo(() => {
+    if (scope === "all") return items;
+    if (scope === "unread") return items.filter((item) => !item.readAt);
+    return items.filter((item) => itemScope(item) === scope);
+  }, [items, scope]);
+
   const dayGroups = useMemo(() => {
     const groups = [];
     const map = new Map();
-    items.forEach((item) => {
+    visibleItems.forEach((item) => {
       const date = parseDate(item.createdAt);
       const key = date ? dayKey(date) : "unknown";
       if (!map.has(key)) {
@@ -297,7 +366,7 @@ export function NotificationsView() {
       map.get(key).items.push(item);
     });
     return groups;
-  }, [items]);
+  }, [visibleItems]);
 
   const markAllRead = async () => {
     if (marking || unread <= 0) return;
@@ -319,52 +388,115 @@ export function NotificationsView() {
     }
   };
 
-  const openTrialAccess = async (item) => {
-    if (item?.id && !item.readAt) {
-      await markNotificationsRead([item.id]).catch(() => null);
-      applyItems(
-        itemsRef.current.map((entry) =>
-          entry.id === item.id
-            ? { ...entry, readAt: new Date().toISOString() }
-            : entry,
-        ),
-      );
-      applyUnread(Math.max(0, unread - 1), { source: "mark-items" });
+  const clearAll = async () => {
+    if (clearing || !items.length) return;
+    setClearing(true);
+    try {
+      await clearNotifications();
+      applyItems([]);
+      applyCursor(null);
+      applyUnread(0, { source: "clear-all" });
+      setClearOpen(false);
+      notificationService.success("通知已清空");
+    } catch (clearError) {
+      notificationService.error(clearError?.message || "清空失败");
+    } finally {
+      if (mountedRef.current) setClearing(false);
     }
+  };
+
+  const markItemRead = async (item) => {
+    if (!item?.id || item.readAt) return;
+    await markNotificationsRead([item.id]).catch(() => null);
+    applyItems(
+      itemsRef.current.map((entry) =>
+        entry.id === item.id
+          ? { ...entry, readAt: new Date().toISOString() }
+          : entry,
+      ),
+    );
+    applyUnread(Math.max(0, unread - 1), { source: "mark-items" });
+  };
+
+  const openTrialAccess = async (item) => {
+    await markItemRead(item);
     const query = new URLSearchParams(location.search);
     query.set("trial", "apply");
     navigate(`${location.pathname}?${query.toString()}${location.hash}`);
   };
 
+  const openItem = (item) => {
+    if (String(item?.kind || "").toLowerCase() === "trial_access") {
+      void openTrialAccess(item);
+      return;
+    }
+    void markItemRead(item);
+    const href = itemHref(item);
+    if (href) navigate(href);
+  };
+
   const badge = unread > 99 ? "99+" : String(unread);
   const empty = loaded && !loading && !items.length;
+  const emptyUnread = loaded && !loading && items.length > 0 && !visibleItems.length;
 
   return (
     <div className={`nt-page ${isDark ? "is-dark" : "is-light"}`}>
+      <div className="nt-atmosphere" aria-hidden="true">
+        <span className="nt-atmosphere__orb nt-atmosphere__orb--a" />
+        <span className="nt-atmosphere__orb nt-atmosphere__orb--b" />
+      </div>
       <div className="nt-shell">
         <header className="nt-hero">
           <div className="nt-hero__copy">
+            <span className="nt-hero__eyebrow">Inbox</span>
             <h1>通知{unread > 0 && <em>{badge}</em>}</h1>
-            <p>账号、任务与审核消息</p>
+            <p>账号、任务与审核消息集中在这里。</p>
           </div>
-          <div className="nt-hero__actions">
-            <button
-              type="button"
-              className="nt-btn"
-              disabled={marking || unread <= 0}
-              onClick={markAllRead}
-            >
-              全部已读
-            </button>
-            <button
-              type="button"
-              className="nt-btn"
-              disabled={loading}
-              onClick={() => loadList()}
-            >
-              <i className={`bi bi-arrow-repeat${loading ? " spin" : ""}`} />
-              刷新
-            </button>
+          <div className="nt-hero__side">
+            <div className="nt-hero__actions">
+              <button
+                type="button"
+                className={`nt-btn${unread > 0 ? " is-primary" : ""}`}
+                disabled={marking || unread <= 0}
+                onClick={markAllRead}
+              >
+                全部已读
+              </button>
+              <button
+                type="button"
+                className="nt-btn"
+                disabled={loading || !items.length || clearing}
+                onClick={() => setClearOpen(true)}
+              >
+                清空
+              </button>
+              <button
+                type="button"
+                className="nt-btn"
+                disabled={loading}
+                onClick={() => loadList()}
+              >
+                <i className={`bi bi-arrow-repeat${loading ? " spin" : ""}`} />
+                刷新
+              </button>
+            </div>
+          </div>
+          <div className="nt-hero__filters" role="tablist" aria-label="通知筛选">
+            {SCOPE_FILTERS.filter(
+              ([id]) => id === "all" || id === "unread" || scopeCounts[id] > 0,
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                className={`nt-filter${scope === id ? " is-active" : ""}`}
+                aria-selected={scope === id}
+                onClick={() => setScope(id)}
+              >
+                {label}
+                <em>{id === "unread" ? badge : scopeCounts[id]}</em>
+              </button>
+            ))}
           </div>
         </header>
         <section className="nt-board" aria-live="polite">
@@ -396,22 +528,34 @@ export function NotificationsView() {
                     <span>{group.items.length}</span>
                   </header>
                   <ol className="nt-day__items">
-                    {group.items.map((item) => (
+                    {group.items.map((item) => {
+                      const { title, body } = displayNotification(item);
+                      const kind = kindMeta(item);
+                      const href = itemHref(item);
+                      return (
                       <li
                         key={item.id}
-                        className={`nt-item${!item.readAt ? " is-unread" : ""}`}
+                        className={`nt-item is-${kind.tone}${!item.readAt ? " is-unread" : ""}${href || String(item.kind).toLowerCase() === "trial_access" ? " is-openable" : ""}`}
+                        role={href || String(item.kind).toLowerCase() === "trial_access" ? "button" : undefined}
+                        tabIndex={href || String(item.kind).toLowerCase() === "trial_access" ? 0 : undefined}
+                        onClick={() => openItem(item)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return;
+                          event.preventDefault();
+                          openItem(item);
+                        }}
                       >
-                        <span className="nt-item__icon">
-                          <i className={`bi ${kindIcon(item)}`} />
+                        <span className="nt-item__icon" data-tone={kind.tone}>
+                          <i className={`bi ${kind.icon}`} />
                         </span>
                         <div className="nt-item__body" data-no-translate>
                           <div className="nt-item__title-row">
-                            <strong>{localizedText(item.title)}</strong>
-                            <time>{formatClock(item.createdAt)}</time>
+                            <span className="nt-item__kind">{kind.label}</span>
+                            <strong>{localizedText(title)}</strong>
                           </div>
-                          {item.body && (
+                          {body && (
                             <p>
-                              {emphasizeParts(item.body).map((part, index) =>
+                              {emphasizeParts(body).map((part, index) =>
                                 part.highlight ? (
                                   <b key={index} className="nt-hl">
                                     {part.text}
@@ -422,33 +566,40 @@ export function NotificationsView() {
                               )}
                             </p>
                           )}
-                          <div className="nt-item__meta">
-                            {extractAmount(item.body) && (
-                              <span className="nt-item__amount">
-                                {extractAmount(item.body)}{" "}
-                                <small>{amountUnit(item.body)}</small>
-                              </span>
-                            )}
-                            {!item.readAt && (
-                              <span
-                                className="nt-item__dot"
-                                aria-label="未读"
-                              />
-                            )}
-                            {String(item.kind).toLowerCase() ===
-                              "trial_access" && (
-                              <button
-                                type="button"
-                                className="nt-item__action"
-                                onClick={() => openTrialAccess(item)}
-                              >
-                                查看体验资格 <i className="bi bi-arrow-right" />
-                              </button>
-                            )}
+                          <div className="nt-item__aside">
+                            <time>{formatClock(item.createdAt)}</time>
+                            <div className="nt-item__meta">
+                              {extractAmount(item.body) && (
+                                <span className="nt-item__amount">
+                                  {extractAmount(item.body)}{" "}
+                                  <small>{amountUnit(item.body)}</small>
+                                </span>
+                              )}
+                              {!item.readAt && (
+                                <span
+                                  className="nt-item__dot"
+                                  aria-label="未读"
+                                />
+                              )}
+                              {String(item.kind).toLowerCase() ===
+                                "trial_access" && (
+                                <button
+                                  type="button"
+                                  className="nt-item__action"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void openTrialAccess(item);
+                                  }}
+                                >
+                                  查看体验资格 <i className="bi bi-arrow-right" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ol>
                 </section>
               ))}
@@ -473,6 +624,16 @@ export function NotificationsView() {
                 <div className="nt-footer-status is-end">已加载全部通知</div>
               ) : null}
             </div>
+          ) : emptyUnread ? (
+            <div className="nt-empty">
+              <i className="bi bi-check2-circle" />
+              <strong>{scope === "unread" ? "暂无未读" : "暂无此类通知"}</strong>
+              <p>
+                {scope === "unread"
+                  ? "当前消息都已读完，可切回全部查看历史通知。"
+                  : "这一类暂时没有消息，可切回全部继续查看。"}
+              </p>
+            </div>
           ) : empty ? (
             <div className="nt-empty">
               <i className="bi bi-bell" />
@@ -482,6 +643,17 @@ export function NotificationsView() {
           ) : null}
         </section>
       </div>
+      <ConfirmDialog
+        open={clearOpen}
+        busy={clearing}
+        heading="清空全部通知？"
+        description="个人通知会删除，全站公告只对你隐藏。之后的新消息仍会进来。"
+        confirmLabel="确认清空"
+        busyLabel="清空中…"
+        light={!isDark}
+        onClose={() => !clearing && setClearOpen(false)}
+        onConfirm={clearAll}
+      />
     </div>
   );
 }

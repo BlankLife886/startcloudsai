@@ -111,24 +111,17 @@ test.describe('React public pages interaction contract', () => {
     await installVisualBaseline(page)
   })
 
-  test('home shader, card rotation, and flowing menu run in normal motion mode', async ({
+  test('home shader and flowing menu remain after removing the showcase sections', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' })
     await page.goto('/', { waitUntil: 'domcontentloaded' })
 
-    const canvas = page.locator('.gradient-blinds-hero canvas')
-    await expect(canvas).toBeVisible()
-    const canvasBox = await canvas.boundingBox()
-    expect(canvasBox.width).toBeGreaterThan(300)
-    expect(canvasBox.height).toBeGreaterThan(300)
-    const canvasCapture = await canvas.screenshot()
-    expect(canvasCapture.byteLength).toBeGreaterThan(10_000)
+    await expect(page.locator('.commercial-hero')).toBeVisible()
 
-    const firstCard = page.locator('[data-swap-card]').first()
-    const before = await firstCard.getAttribute('style')
-    await page.waitForTimeout(3_200)
-    await expect.poll(() => firstCard.getAttribute('style')).not.toBe(before)
+    await expect(page.locator('[data-swap-card]')).toHaveCount(0)
+    await expect(page.locator('.commercial-gallery')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '不同场景，各自保持完整语境' })).toHaveCount(0)
 
     const firstMenuItem = page.locator('.flowing-menu__item').first()
     await firstMenuItem.scrollIntoViewIfNeeded()
@@ -230,10 +223,10 @@ test.describe('React public pages interaction contract', () => {
 
     await page.getByRole('button', { name: /AI 助手/ }).click()
     await page.getByRole('menuitem', { name: /文生图/ }).click()
-    await page.getByRole('button', { name: 'Skill' }).click()
+    await page.getByRole('button', { name: 'Skills' }).click()
     await page.getByRole('option', { name: 'Style Director' }).click()
     await page.getByRole('option', { name: 'Detail QA' }).click()
-    await expect(page.getByRole('button', { name: 'Skill' })).toContainText('3 个 Skills')
+    await expect(page.getByRole('button', { name: 'Skills' })).toContainText('Skills · 3')
 
     await page.locator('.studio-composer input[type="file"]').setInputFiles({
       name: 'reference.png',
@@ -416,6 +409,14 @@ test.describe('React public pages interaction contract', () => {
     await expect(page.locator('.ai-cost-confirm-balance')).toContainText('支付后余额')
     await expect(page.getByLabel('不再每次确认')).toBeVisible()
     await expect(page.locator('.ai-cost-confirm-layer')).toHaveCSS('z-index', '2500')
+    await expect(page.locator('.ai-cost-confirm-layer')).toHaveAttribute('data-dialog-motion-state', 'entered')
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(page.locator('.ai-cost-confirm-layer')).toHaveAttribute('data-dialog-motion-state', 'exiting')
+    await expect(page.getByRole('dialog', { name: '确认生成费用' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '确认生成费用' })).toHaveCount(0)
+
+    await page.getByRole('button', { name: '立即生成' }).click()
+    await expect(page.locator('.ai-cost-confirm-layer')).toHaveAttribute('data-dialog-motion-state', 'entered')
     await page.getByRole('button', { name: '确认', exact: true }).click()
 
     await expect.poll(() => createBody).not.toBeNull()
@@ -460,11 +461,73 @@ test.describe('React public pages interaction contract', () => {
     await expect.poll(() => createCount).toBe(1)
   })
 
+  test('text-to-image uses provider-native settings when model formats are not declared', async ({
+    page,
+  }) => {
+    await mockTextToImageApis(page, { requireCostConfirm: false })
+    await page.route('**/api/v1/runtime-config', (route) =>
+      fulfillJson(route, {
+        routes: {},
+        features: {
+          'ai.wallpaperGeneration': {
+            enabled: true,
+            config: {
+              creditCost: 3,
+              publicModels: [
+                {
+                  ...textToImageModel,
+                  id: 'provider-native-format',
+                  label: 'Provider Native',
+                  creditCost: 3,
+                  pricePoints: 3,
+                  outputFormats: [],
+                  moderationLevels: [],
+                },
+              ],
+            },
+          },
+        },
+        pageLayout: {},
+        blacklist: { blocked: false },
+      }),
+    )
+    let createBody = null
+    await page.route('**/api/v1/tasks**', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { items: [], nextCursor: null })
+        return
+      }
+      createBody = route.request().postDataJSON()
+      await fulfillJson(route, {
+        task: {
+          id: 'provider-native-task',
+          type: 't2i',
+          status: 'queued',
+          prompt: createBody.prompt,
+          params: createBody.params,
+          createdAt: await page.evaluate(() => new Date().toISOString()),
+        },
+      })
+    })
+
+    await page.goto('/text-to-image', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('button', { name: /输出/ })).toContainText(
+      '模型内置 · 模型内置',
+    )
+    await page.getByLabel('创作描述').fill('使用模型内置输出格式生成图片')
+    await page.getByRole('button', { name: '立即生成' }).click()
+
+    await expect.poll(() => createBody).not.toBeNull()
+    expect(createBody.params.publicModelKey).toBe('provider-native-format')
+    expect(createBody.params).not.toHaveProperty('outputFormat')
+    expect(createBody.params).not.toHaveProperty('moderationLevel')
+  })
+
   test('text-to-image groups a batch without treating thumbnails as extra outputs', async ({
     page,
   }) => {
     await mockTextToImageApis(page, { requireCostConfirm: false })
-    const createdAt = new Date().toISOString()
+    const createdAt = await page.evaluate(() => new Date().toISOString())
     await page.route('**/api/v1/tasks**', (route) =>
       fulfillJson(route, {
         items: [
@@ -526,8 +589,92 @@ test.describe('React public pages interaction contract', () => {
     await expect(page.getByRole('dialog', { name: '全屏预览' })).toHaveCount(0)
   })
 
+  test('text-to-image canvas follows Vue image sizing and transparent output rules', async ({
+    page,
+  }) => {
+    await mockTextToImageApis(page, { requireCostConfirm: false })
+    const createdAt = await page.evaluate(() => new Date().toISOString())
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, {
+        items: [
+          {
+            id: 'natural-landscape',
+            type: 't2i',
+            status: 'succeeded',
+            prompt: '真实比例优先',
+            params: { aspectRatio: '1:1', transparentPngEnabled: true },
+            originalUrls: ['/sucai/home-intro-03.png'],
+            thumbnailUrls: ['/sucai/game-character-1785420185589.webp'],
+            thumbnailKeys: ['thumb/natural-landscape.webp'],
+            createdAt,
+            finishedAt: createdAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+    )
+
+    await page.goto('/text-to-image', { waitUntil: 'domcontentloaded' })
+    const media = page.locator('.t2i-stage-media')
+    await expect(media).toHaveClass(/is-transparent-output/)
+    await expect(media.locator('.progressive-authenticated-image')).toBeVisible()
+    await expect(media.locator('.progressive-authenticated-image__layer.is-original img')).toBeVisible()
+    await expect.poll(async () => {
+      const value = await page.locator('.t2i-stage-frame').evaluate((node) => {
+        const [width, height] = getComputedStyle(node).aspectRatio.split('/').map(Number)
+        return width / height
+      })
+      return value
+    }).toBeCloseTo(1928 / 816, 2)
+    await expect(media.locator('img').last()).toHaveCSS('object-fit', 'contain')
+  })
+
+  test('text-to-image canvas isolates a broken output from the remaining group', async ({
+    page,
+  }) => {
+    await mockTextToImageApis(page, { requireCostConfirm: false })
+    const createdAt = await page.evaluate(() => new Date().toISOString())
+    await page.route('**/missing-output.png', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      await route.fulfill({ status: 404, body: '' })
+    })
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, {
+        items: [
+          {
+            id: 'broken-output',
+            type: 't2i',
+            status: 'succeeded',
+            prompt: '坏图隔离',
+            params: { batchId: 'broken-group', batchIndex: 0, batchSize: 2 },
+            originalUrls: ['/missing-output.png'],
+            createdAt,
+            finishedAt: createdAt,
+          },
+          {
+            id: 'valid-output',
+            type: 't2i',
+            status: 'succeeded',
+            prompt: '坏图隔离',
+            params: { batchId: 'broken-group', batchIndex: 1, batchSize: 2 },
+            originalUrls: ['/sucai/home-intro-02.png'],
+            createdAt,
+            finishedAt: createdAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+    )
+
+    await page.goto('/text-to-image', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.t2i-stage-grid .t2i-stage-cell')).toHaveCount(2)
+    await expect(page.locator('.t2i-stage-grid')).toHaveCount(0, { timeout: 5_000 })
+    await expect(page.locator('.t2i-stage-media img')).toBeVisible()
+  })
+
   test('text-to-image queued work has no generation elapsed timer', async ({ page }) => {
     await mockTextToImageApis(page, { requireCostConfirm: false })
+    const createdAt = await page.evaluate(() => new Date().toISOString())
     let body = null
     await page.route('**/api/v1/tasks**', async (route) => {
       if (route.request().method() === 'POST') {
@@ -539,7 +686,7 @@ test.describe('React public pages interaction contract', () => {
             status: 'queued',
             prompt: body.prompt,
             params: body.params,
-            createdAt: new Date().toISOString(),
+            createdAt,
           },
         })
         return
@@ -554,7 +701,7 @@ test.describe('React public pages interaction contract', () => {
           status: 'queued',
           prompt: body?.prompt || '',
           params: body?.params || {},
-          createdAt: new Date().toISOString(),
+          createdAt,
           startedAt: '',
         },
       }),
@@ -593,6 +740,7 @@ test.describe('React public pages interaction contract', () => {
     page,
   }) => {
     await mockTextToImageApis(page, { requireCostConfirm: false })
+    const createdAt = await page.evaluate(() => new Date().toISOString())
     let cancelBody = null
     await page.route('**/api/v1/tasks**', async (route) => {
       const method = route.request().method()
@@ -605,7 +753,7 @@ test.describe('React public pages interaction contract', () => {
             status: 'queued',
             prompt: request.prompt,
             params: request.params,
-            createdAt: new Date().toISOString(),
+            createdAt,
           },
         })
         return
@@ -619,8 +767,8 @@ test.describe('React public pages interaction contract', () => {
             status: 'canceled',
             prompt: '取消任务测试',
             params: {},
-            createdAt: new Date().toISOString(),
-            finishedAt: new Date().toISOString(),
+            createdAt,
+            finishedAt: createdAt,
           },
         })
         return

@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import "@react/legacy-styles/generated/views/PricingView.css";
+
+gsap.registerPlugin(useGSAP);
 
 const sectionTabs = [
   ["plans", "套餐方案"],
@@ -9,6 +13,8 @@ const sectionTabs = [
   ["pay", "获取积分"],
   ["faq", "常见问题"],
 ];
+
+const heroHighlights = ["提交冻结", "完成结算", "失败返还"];
 
 const previewPlans = [
   {
@@ -187,6 +193,44 @@ export function PricingView() {
     });
     return () => observer.disconnect();
   }, []);
+
+  useGSAP(
+    () => {
+      const media = gsap.matchMedia();
+      media.add(
+        {
+          motion: "(prefers-reduced-motion: no-preference)",
+        },
+        () => {
+          if (
+            document.documentElement.classList.contains("settings-no-animations")
+          ) {
+            return undefined;
+          }
+          gsap
+            .timeline({ defaults: { ease: "power3.out" } })
+            .from(".pp-hero__copy", {
+              y: 18,
+              autoAlpha: 0,
+              duration: 0.5,
+            })
+            .from(
+              ".pp-wallet",
+              {
+                y: 18,
+                autoAlpha: 0,
+                duration: 0.45,
+                clearProps: "transform,opacity,visibility",
+              },
+              "-=0.28",
+            );
+          return undefined;
+        },
+      );
+      return () => media.revert();
+    },
+    { scope: pageRef },
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -393,6 +437,10 @@ export function PricingView() {
   return (
     <main ref={pageRef} className={`pp${dark ? " is-dark" : ""}`}>
       <section className="pp-hero">
+        <div className="pp-hero__atmosphere" aria-hidden="true">
+          <span className="pp-orb pp-orb--a" />
+          <span className="pp-orb pp-orb--b" />
+        </div>
         <div className="pp-shell pp-hero__grid">
           <div className="pp-hero__copy">
             <p className="pp-kicker">STARCLOUDS · BILLING</p>
@@ -400,6 +448,11 @@ export function PricingView() {
             <p>
               按模型与任务清晰计价。提交时冻结，完成后结算；失败或取消自动返还。
             </p>
+            <ul className="pp-hero__pills">
+              {heroHighlights.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
             <div className="pp-hero__actions">
               <button
                 type="button"
@@ -484,6 +537,7 @@ export function PricingView() {
         <div className="pp-shell">
           <header className="pp-head">
             <div>
+              <p className="pp-kicker">01 / PLANS</p>
               <h2 id="plans-title">套餐方案</h2>
               <p>价格与权益由运营后台配置；当前可申请体验或使用兑换码入账。</p>
             </div>
@@ -560,6 +614,7 @@ export function PricingView() {
         <div className="pp-shell">
           <header className="pp-head">
             <div>
+              <p className="pp-kicker">02 / MODELS</p>
               <h2 id="models-title">模型价格</h2>
               <p>各生图模型的单次积分；提交任务时按所选模型结算。</p>
             </div>
@@ -645,6 +700,7 @@ export function PricingView() {
         <div className="pp-shell">
           <header className="pp-head">
             <div>
+              <p className="pp-kicker">03 / UNITS</p>
               <h2 id="unit-title">创作单价</h2>
               <p>按工作台任务类型计价；有模型区间时显示最低至最高。</p>
             </div>
@@ -684,6 +740,7 @@ export function PricingView() {
         <div className="pp-shell">
           <header className="pp-head">
             <div>
+              <p className="pp-kicker">04 / CREDITS</p>
               <h2 id="pay-title">获取创作积分</h2>
               <p>在线支付接入前，也可以通过以下方式开始创作。</p>
             </div>
@@ -715,6 +772,7 @@ export function PricingView() {
       >
         <div className="pp-shell pp-faq-layout">
           <header className="pp-head is-stack">
+            <p className="pp-kicker">05 / FAQ</p>
             <h2 id="faq-title">常见问题</h2>
             <p>计费规则、积分获取与退款说明。</p>
           </header>
