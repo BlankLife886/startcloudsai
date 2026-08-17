@@ -9,7 +9,7 @@ export type AiTextMessage = {
 
 type RequestOptions = {
     signal?: AbortSignal;
-    onCreated?: (taskId: string) => void;
+    onCreated?: (taskId: string) => void | Promise<void>;
     onResolved?: (images: Array<{ id: string; dataUrl: string; storageKey?: string }>) => void | Promise<void>;
 };
 
@@ -22,5 +22,5 @@ export function requestEdit(config: AiConfig, prompt: string, references: Refere
 }
 
 export function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
-    return requestCanvasAssistant(messages, onDelta, options?.signal, config.model || config.textModel);
+    return requestCanvasAssistant(messages, onDelta, { signal: options?.signal, onCreated: options?.onCreated }, config.model || config.textModel);
 }

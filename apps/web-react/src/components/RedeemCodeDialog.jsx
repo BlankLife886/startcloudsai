@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { redeemWalletCode } from "@react/legacy-modules/services/meApi.js";
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
+import { publishWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
 import { DialogMotion } from "./motion/DialogMotion.jsx";
 import "@react/legacy-styles/generated/components/layout/RedeemCodeDialog.css";
 
@@ -49,9 +50,7 @@ export function RedeemCodeDialog({ open, isDark, onClose, onSuccess }) {
       notificationService.success(
         `已入账 ${formatPoints(result?.grantCents || 0)}`,
       );
-      window.dispatchEvent(
-        new CustomEvent("starclouds:wallet-updated", { detail: result }),
-      );
+      publishWalletSnapshot(result);
       await onSuccess?.(result);
       if (mountedRef.current) {
         setCode("");

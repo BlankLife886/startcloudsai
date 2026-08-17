@@ -609,6 +609,45 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 	ok(c, adminPlanDict(plan, store.PlanUsage{}))
 }
 
+type reorderPlansIn struct {
+	Kind string   `json:"kind"`
+	IDs  []string `json:"ids"`
+}
+
+func (s *Server) adminReorderPlans(c *gin.Context, _ *store.User) {
+	var body reorderPlansIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(body.Kind))
+	if kind != "topup" && kind != "subscription" {
+		fail(c, apperr.E("validation_error", "kind: 须为 topup/subscription", 422))
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 200 {
+		fail(c, apperr.E("validation_error", "ids: 数量须在 1-200 之间", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.IDs))
+	for _, raw := range body.IDs {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			fail(c, apperr.E("validation_error", "ids: 包含无效 UUID", 422))
+			return
+		}
+		ids = append(ids, id)
+	}
+	ctx := c.Request.Context()
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		return store.ReorderPlans(ctx, tx, kind, ids)
+	}); err != nil {
+		fail(c, apperr.E("plan_reorder_failed", "套餐排序保存失败，请刷新后重试", 409))
+		return
+	}
+	ok(c, gin.H{"updated": len(ids), "kind": kind})
+}
+
 type planPatchIn struct {
 	Code            Opt[string]   `json:"code"`
 	Name            Opt[string]   `json:"name"`
@@ -868,6 +907,51 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	ok(c, page)
 }
 
+func (s *Server) adminPurgeTasks(c *gin.Context, _ *store.User) {
+	taskType := c.Query("type")
+	status := c.Query("status")
+	errorCode := strings.TrimSpace(c.Query("errorCode"))
+	source := ""
+	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
+		source = store.CanvasTaskSource
+		taskType = ""
+	}
+	if taskType != "" && !store.Contains(store.AdminTaskFilters, taskType) {
+		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
+		return
+	}
+	if status != "" && !store.Contains(store.TaskStatuses, status) {
+		fail(c, apperr.E("validation_error", "无效的任务状态", 422))
+		return
+	}
+	if status == "queued" || status == "running" {
+		fail(c, apperr.E("validation_error", "只能清空已结束的任务记录", 422))
+		return
+	}
+	if len([]rune(errorCode)) > 120 {
+		fail(c, apperr.E("validation_error", "错误码筛选不能超过 120 个字符", 422))
+		return
+	}
+	var userIDs []uuid.UUID
+	var err error
+	if userQuery := c.Query("user"); userQuery != "" {
+		userIDs, err = s.matchUserIDsOrImpossible(c, userQuery)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
+	result, err := store.PurgeFinishedAdminTasks(c.Request.Context(), s.St, taskType, status, errorCode, userIDs, source)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{
+		"deleted": result.Deleted,
+		"skipped": result.Skipped,
+	})
+}
+
 func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 	taskID, err := parseUUIDParam(c, "id")
 	if err != nil {
@@ -959,11 +1043,7 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
 		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
 		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
-		if task := tasks[sub.TaskID]; task != nil {
-			d["taskType"] = task.Type
-			d["taskPrompt"] = task.Prompt
-			d["taskModel"] = task.Model
-		}
+		attachSubmissionTask(d, tasks[sub.TaskID])
 		if promptEntry := promptBySubmission[sub.ID]; promptEntry != nil {
 			d["promptEntryId"] = promptEntry.ID.String()
 		}

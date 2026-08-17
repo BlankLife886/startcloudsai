@@ -8,7 +8,7 @@ import {
   watch,
 } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Document, Picture, Refresh, Search } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Document, Picture, Refresh, Search, WarningFilled } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import TaskRuntimeSettingsDialog from '@/components/settings/TaskRuntimeSettingsDialog.vue'
 import { request, type Page } from '@/request'
@@ -276,8 +276,12 @@ function taskSourceLabel(task: AdminTask) {
 }
 
 function taskOperationName(task: AdminTask) {
+  if (
+    task.source === 'infinite_canvas' ||
+    String(task.params?._source || '') === 'react_canvas' ||
+    String(task.params?._kind || '').startsWith('canvas-')
+  ) return '无限画布任务'
   if (task.source === 'assistant') return 'AI 助手任务'
-  if (task.source === 'infinite_canvas') return '无限画布任务'
   return '任务'
 }
 
@@ -516,6 +520,56 @@ function openParamsDialog() {
 }
 
 const acting = ref(false)
+const purging = ref(false)
+const purgeDialogVisible = ref(false)
+
+const finishedCount = computed(() => {
+  if (filters.status === 'queued' || filters.status === 'running') return 0
+  if (filters.status === 'succeeded') return summary.value.succeeded
+  if (filters.status === 'failed') return summary.value.failed
+  if (filters.status === 'canceled') return summary.value.canceled
+  return summary.value.succeeded + summary.value.failed + summary.value.canceled
+})
+
+const canPurge = computed(
+  () =>
+    finishedCount.value > 0 &&
+    filters.status !== 'queued' &&
+    filters.status !== 'running',
+)
+
+const purgeScope = computed(() => {
+  if (filters.status === 'succeeded') return '已成功'
+  if (filters.status === 'failed') return '已失败'
+  if (filters.status === 'canceled') return '已取消'
+  return '已结束（成功 / 失败 / 取消）'
+})
+
+function openPurgeDialog() {
+  if (!canPurge.value) return
+  purgeDialogVisible.value = true
+}
+
+async function confirmPurge() {
+  if (purging.value || !canPurge.value) return
+  purging.value = true
+  try {
+    const result = await request<{ deleted: number; skipped: number }>('/api/v1/admin/tasks', {
+      method: 'DELETE',
+      query: {
+        type: filters.type,
+        status: filters.status,
+        user: filters.user,
+        errorCode: filters.errorCode,
+      },
+    })
+    purgeDialogVisible.value = false
+    ElMessage.success(`已从管理端清空 ${result.deleted} 条任务记录，用户历史仍保留`)
+    await reset()
+  } finally {
+    purging.value = false
+  }
+}
 
 async function requeue(task: AdminTask) {
   await ElMessageBox.confirm(
@@ -609,6 +663,16 @@ async function forceFail(task: AdminTask) {
             active-text="自动"
             inactive-text="手动"
           />
+          <el-button
+            type="danger"
+            plain
+            :icon="Delete"
+            :loading="purging"
+            :disabled="!canPurge || loading"
+            @click="openPurgeDialog"
+          >
+            清空记录
+          </el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
         </div>
       </template>
@@ -1173,6 +1237,29 @@ async function forceFail(task: AdminTask) {
             </div>
           </div>
         </section>
+      </div>
+    </AdminDialog>
+
+    <AdminDialog
+      v-model="purgeDialogVisible"
+      title="清空任务记录"
+      panel-class="task-purge-dialog"
+      width="460px"
+      confirm-text="清空记录"
+      confirm-type="danger"
+      :confirm-loading="purging"
+      :close-on-click-modal="false"
+      @confirm="confirmPurge"
+    >
+      <div class="task-purge-dialog__body">
+        <span class="task-purge-dialog__icon" aria-hidden="true">
+          <el-icon :size="16"><WarningFilled /></el-icon>
+        </span>
+        <p>
+          将按当前筛选从管理端列表移除{{ purgeScope }}的已结束任务，预计
+          <strong class="tnum">{{ finishedCount }}</strong>
+          条。用户历史、生成结果、钱包账本、画廊投稿和审核记录都会保留。排队中和运行中的任务不会被清空。
+        </p>
       </div>
     </AdminDialog>
   </div>
@@ -2163,4 +2250,80 @@ html.dark .status-tab.is-active em {
 }
 
 
+</style>
+
+<style>
+.task-purge-dialog.el-dialog {
+  overflow: hidden;
+}
+
+.task-purge-dialog .el-dialog__header {
+  padding: 20px 56px 6px 22px;
+}
+
+.task-purge-dialog .el-dialog__body {
+  padding: 8px 22px 6px;
+}
+
+.task-purge-dialog .el-dialog__footer {
+  padding: 14px 22px 20px;
+}
+
+.task-purge-dialog .admin-dialog__copy strong {
+  font-size: 17px;
+}
+
+.task-purge-dialog__body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.task-purge-dialog__icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--warning);
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--warning) 28%, transparent);
+}
+
+.task-purge-dialog__icon .el-icon {
+  font-size: 12px;
+}
+
+.task-purge-dialog__body p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.task-purge-dialog__body strong {
+  color: var(--ink);
+  font-weight: 740;
+}
+
+.task-purge-dialog .admin-dialog__btn {
+  min-width: 88px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+}
+
+.task-purge-dialog .admin-dialog__btn--ok {
+  min-width: 104px;
+  font-weight: 700;
+}
+
+.task-purge-dialog .el-button--danger {
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  color: #fff !important;
+}
 </style>

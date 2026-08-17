@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   ChatDotRound,
@@ -72,6 +73,71 @@ const categoryLabels = Object.fromEntries(
   ]),
 );
 
+const PAGE_LABELS: Record<string, string> = {
+  "/": "首页",
+  "/studio": "创作台",
+  "/text-to-image": "文生图",
+  "/canvas": "无限画布",
+  "/assistant": "AI 助手",
+  "/ai-illustration-coloring": "插画染色",
+  "/design-workshop": "UI 设计稿",
+  "/model-sheet": "模型设计",
+  "/game-art": "游戏设计",
+  "/ecommerce-design": "AI 电商",
+  "/tools/background-remove": "背景移除",
+  "/tools/image-compress": "图片压缩",
+  "/tools/puzzle": "拼图",
+  "/prompts": "提示词",
+  "/assets": "我的资产",
+  "/history": "历史记录",
+  "/check-in": "每日签到",
+  "/wallet": "钱包",
+  "/pricing": "创作价格",
+  "/profile": "个人中心",
+  "/account": "账号设置",
+  "/notifications": "通知中心",
+  "/submissions": "我的投稿",
+  "/incentive-plans": "创作激励",
+  "/incentive-plans/group": "好友拼团",
+  "/incentive-plans/membership": "会员计划",
+  "/incentive-plans/failure": "失败补偿",
+  "/incentive-plans/suggestion": "建议采纳",
+  "/incentive-plans/usage": "用量计划",
+  "/share": "社区",
+  "/updates": "更新说明",
+  "/app-space": "关于我们",
+  "/feedback": "问题反馈",
+};
+
+function pagePath(raw?: string | null) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    return (value.startsWith("http") ? new URL(value).pathname : value)
+      .replace(/\/+$/, "") || "/";
+  } catch {
+    return value;
+  }
+}
+
+function pageLabel(raw?: string | null) {
+  const path = pagePath(raw);
+  if (PAGE_LABELS[path]) return PAGE_LABELS[path];
+  if (path.startsWith("/canvas")) return PAGE_LABELS["/canvas"];
+  if (path.startsWith("/ecommerce-design")) return PAGE_LABELS["/ecommerce-design"];
+  if (path.startsWith("/incentive-plans")) return PAGE_LABELS["/incentive-plans"];
+  return valueOrEmpty(raw);
+}
+
+function valueOrEmpty(raw?: string | null) {
+  return String(raw || "").trim();
+}
+
+function isExternalPage(raw?: string | null) {
+  return /^https?:\/\//i.test(String(raw || "").trim());
+}
+
+const route = useRoute();
 const filters = reactive({ status: "open", category: "", search: "" });
 
 const {
@@ -117,13 +183,18 @@ function clearFilters() {
 const selected = ref<FeedbackItem | null>(null);
 const reviewOpen = ref(false);
 const reviewing = ref(false);
-const suggestionRewardMax = ref(5000);
+const savingLimit = ref(false);
+const suggestionRewardMax = ref(10000);
+const savedSuggestionRewardMax = ref(10000);
 const reviewForm = reactive({
   status: "in_progress",
   adminReply: "",
   adopted: false,
   rewardPoints: 100,
 });
+const limitDirty = () =>
+  normalizePoints(suggestionRewardMax.value) !==
+  normalizePoints(savedSuggestionRewardMax.value);
 
 function openReview(row: FeedbackItem) {
   selected.value = row;
@@ -187,15 +258,45 @@ async function loadSuggestionRewardLimit() {
       "/api/v1/admin/settings",
       { silent: true },
     );
-    suggestionRewardMax.value = normalizePoints(
-      settings.suggestionRewardMaxCents ?? 5000,
-    );
+    const value = normalizePoints(settings.suggestionRewardMaxCents ?? 10000);
+    suggestionRewardMax.value = value;
+    savedSuggestionRewardMax.value = value;
   } catch {
     // 列表仍可处理普通反馈，采纳时后端继续执行最终上限校验。
   }
 }
 
+async function saveSuggestionRewardLimit() {
+  const value = normalizePoints(suggestionRewardMax.value);
+  if (value < 0 || value > 1_000_000) {
+    ElMessage.warning("建议采纳上限须在 0-1000000 积分之间");
+    return;
+  }
+  savingLimit.value = true;
+  try {
+    const settings = await request<{ suggestionRewardMaxCents?: number }>(
+      "/api/v1/admin/settings",
+      {
+        method: "PUT",
+        body: { suggestionRewardMaxCents: value },
+      },
+    );
+    const next = normalizePoints(settings.suggestionRewardMaxCents ?? value);
+    suggestionRewardMax.value = next;
+    savedSuggestionRewardMax.value = next;
+    reviewForm.rewardPoints = Math.min(reviewForm.rewardPoints, Math.max(1, next));
+    ElMessage.success("建议采纳上限已生效，前台将展示该积分上限");
+  } finally {
+    savingLimit.value = false;
+  }
+}
+
 onMounted(() => {
+  const search = String(route.query.search || "").trim();
+  if (search) {
+    filters.search = search;
+    filters.status = "";
+  }
   void reset();
   void loadSuggestionRewardLimit();
 });
@@ -204,6 +305,33 @@ onMounted(() => {
 <template>
   <div class="page feedback-admin-page">
     <PageCard>
+      <div class="feedback-limit-bar">
+        <div class="feedback-limit-bar__copy">
+          <strong>建议采纳上限</strong>
+          <small>前台展示单次最高奖励，后台采纳时也不能超过这个数</small>
+        </div>
+        <div class="feedback-limit-bar__actions">
+          <div class="points-input">
+            <el-input-number
+              v-model="suggestionRewardMax"
+              :min="0"
+              :max="1000000"
+              :step="100"
+              :precision="0"
+              controls-position="right"
+            />
+            <b>积分</b>
+          </div>
+          <el-button
+            type="primary"
+            :loading="savingLimit"
+            :disabled="!limitDirty()"
+            @click="saveSuggestionRewardLimit"
+          >
+            保存上限
+          </el-button>
+        </div>
+      </div>
       <div class="feedback-toolbar">
         <div class="feedback-tabs" role="tablist" aria-label="反馈状态">
           <button
@@ -375,13 +503,14 @@ onMounted(() => {
           <h3>{{ selected.title }}</h3>
           <p>{{ selected.content }}</p>
           <a
-            v-if="selected.pageUrl"
+            v-if="selected.pageUrl && isExternalPage(selected.pageUrl)"
             :href="selected.pageUrl"
             target="_blank"
             rel="noopener noreferrer"
           >
-            <el-icon><Link /></el-icon>打开问题页面
+            <el-icon><Link /></el-icon>{{ pageLabel(selected.pageUrl) }}
           </a>
+          <span v-else-if="selected.pageUrl">{{ pageLabel(selected.pageUrl) }}</span>
         </div>
 
         <el-form label-width="92px" @submit.prevent="submitReview">
@@ -451,6 +580,50 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+.feedback-limit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  background: var(--el-fill-color-blank);
+}
+.feedback-limit-bar__copy {
+  min-width: 0;
+}
+.feedback-limit-bar__copy strong {
+  display: block;
+  font-size: 13px;
+}
+.feedback-limit-bar__copy small {
+  display: block;
+  margin-top: 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.feedback-limit-bar__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+.points-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.points-input :deep(.el-input-number) {
+  width: 148px;
+}
+.points-input b {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 600;
 }
 .feedback-toolbar {
   display: flex;
@@ -614,6 +787,10 @@ onMounted(() => {
   line-height: 1.5;
 }
 @media (max-width: 1100px) {
+  .feedback-limit-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .feedback-toolbar {
     align-items: flex-start;
     flex-direction: column;

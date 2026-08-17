@@ -54,6 +54,12 @@ func InsertUserFeedback(ctx context.Context, q Q, userID uuid.UUID, category, ti
 		userID, category, title, content, pageURL, userAgent))
 }
 
+func CountUserFeedback(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var count int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM user_feedback WHERE user_id = $1`, userID).Scan(&count)
+	return count, err
+}
+
 func CountRecentUserFeedback(ctx context.Context, q Q, userID uuid.UUID, since time.Time) (int64, error) {
 	var count int64
 	err := q.QueryRow(ctx,

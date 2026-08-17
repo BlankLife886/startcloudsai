@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -107,7 +108,7 @@ func ListPlans(ctx context.Context, q Q, activeOnly bool) ([]*Plan, error) {
 	if activeOnly {
 		sql += ` WHERE active = true`
 	}
-	sql += ` ORDER BY recommended DESC, sort, created_at, id`
+	sql += ` ORDER BY sort ASC, created_at ASC, id ASC`
 	rows, err := q.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -122,6 +123,71 @@ func ListPlans(ctx context.Context, q Q, activeOnly bool) ([]*Plan, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func applyPlanOrderedIDs(allIDs, orderedIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if len(orderedIDs) == 0 {
+		return allIDs, nil
+	}
+	selected := make(map[uuid.UUID]bool, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if selected[id] {
+			return nil, fmt.Errorf("duplicate plan id %s", id)
+		}
+		selected[id] = true
+	}
+	selectedSlots := make([]int, 0, len(orderedIDs))
+	for index, id := range allIDs {
+		if selected[id] {
+			selectedSlots = append(selectedSlots, index)
+		}
+	}
+	if len(selectedSlots) != len(orderedIDs) {
+		return nil, fmt.Errorf("one or more plan ids do not exist in this kind")
+	}
+	next := append([]uuid.UUID(nil), allIDs...)
+	for index, slot := range selectedSlots {
+		next[slot] = orderedIDs[index]
+	}
+	return next, nil
+}
+
+// ReorderPlans replaces the selected items in their current kind slots and
+// then normalizes sort values. Plans outside the selection keep their relative
+// positions, so filtered sorting is safe.
+func ReorderPlans(ctx context.Context, q Q, kind string, orderedIDs []uuid.UUID) error {
+	if kind == "" || len(orderedIDs) == 0 {
+		return nil
+	}
+	rows, err := q.Query(ctx,
+		`SELECT id FROM plans WHERE kind = $1 ORDER BY sort ASC, created_at ASC, id ASC FOR UPDATE`,
+		kind)
+	if err != nil {
+		return err
+	}
+	allIDs := make([]uuid.UUID, 0, len(orderedIDs))
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		allIDs = append(allIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	next, err := applyPlanOrderedIDs(allIDs, orderedIDs)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE plans AS plan
+		SET sort = (ordered.position * 10)::integer, updated_at = now()
+		FROM unnest($1::uuid[]) WITH ORDINALITY AS ordered(id, position)
+		WHERE plan.id = ordered.id`, next)
+	return err
 }
 
 func GetPlansByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Plan, error) {

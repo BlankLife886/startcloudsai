@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Collection,
@@ -8,8 +8,8 @@ import {
   Plus,
   Refresh,
   Search,
-  Star,
 } from "@element-plus/icons-vue";
+import draggable from "vuedraggable";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { normalizeList, request } from "@/request";
 import { formatPoints, formatTime, normalizePoints } from "@/utils";
@@ -62,7 +62,7 @@ const loadError = ref("");
 const saving = ref(false);
 const switchingId = ref("");
 const search = ref("");
-const kindFilter = ref<"" | PlanKind>("");
+const kindTab = ref<PlanKind>("subscription");
 const statusFilter = ref<"" | "active" | "inactive">("");
 
 function defaultForm(): PlanForm {
@@ -89,10 +89,9 @@ const dialogOpen = ref(false);
 const editingId = ref<string | null>(null);
 const dialogTitle = computed(() => (editingId.value ? "编辑套餐" : "新增套餐"));
 
-const filteredPlans = computed(() => {
+const searchedPlans = computed(() => {
   const keyword = search.value.trim().toLowerCase();
   return plans.value.filter((plan) => {
-    if (kindFilter.value && plan.kind !== kindFilter.value) return false;
     if (statusFilter.value === "active" && !plan.active) return false;
     if (statusFilter.value === "inactive" && plan.active) return false;
     if (!keyword) return true;
@@ -104,13 +103,43 @@ const filteredPlans = computed(() => {
   });
 });
 
-const stats = computed(() => ({
-  total: plans.value.length,
-  active: plans.value.filter((plan) => plan.active).length,
-  topup: plans.value.filter((plan) => plan.kind === "topup").length,
-  subscription: plans.value.filter((plan) => plan.kind === "subscription")
-    .length,
-}));
+const kindTabs = computed(() => [
+  {
+    key: "subscription" as const,
+    title: "订阅计划",
+    count: searchedPlans.value.filter((plan) => plan.kind === "subscription")
+      .length,
+  },
+  {
+    key: "topup" as const,
+    title: "积分包",
+    count: searchedPlans.value.filter((plan) => plan.kind === "topup").length,
+  },
+]);
+
+const visiblePlans = computed(() =>
+  searchedPlans.value
+    .filter((plan) => plan.kind === kindTab.value)
+    .slice()
+    .sort(
+      (left, right) =>
+        (left.sort || 0) - (right.sort || 0) ||
+        String(left.createdAt || "").localeCompare(String(right.createdAt || "")) ||
+        left.id.localeCompare(right.id),
+    ),
+);
+
+const dragPlans = ref<Plan[]>([]);
+const sorting = ref(false);
+
+watch(
+  visiblePlans,
+  (next) => {
+    if (sorting.value) return;
+    dragPlans.value = next.map((plan) => plan);
+  },
+  { immediate: true },
+);
 
 async function loadPlans() {
   loading.value = true;
@@ -132,8 +161,10 @@ async function loadPlans() {
 function openCreate() {
   editingId.value = null;
   Object.assign(form, defaultForm());
-  form.sort = plans.value.length
-    ? Math.max(...plans.value.map((plan) => plan.sort || 0)) + 10
+  form.kind = kindTab.value;
+  const sameKind = plans.value.filter((plan) => plan.kind === kindTab.value);
+  form.sort = sameKind.length
+    ? Math.max(...sameKind.map((plan) => plan.sort || 0)) + 10
     : 10;
   dialogOpen.value = true;
 }
@@ -299,8 +330,47 @@ async function removePlan(row: unknown) {
 
 function resetFilters() {
   search.value = "";
-  kindFilter.value = "";
   statusFilter.value = "";
+}
+
+const PLAN_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function onDragChange(event: { moved?: unknown }) {
+  if (!event?.moved) return;
+  void persistOrder();
+}
+
+async function persistOrder() {
+  const ids = dragPlans.value.map((plan) => String(plan.id || "").trim());
+  const current = visiblePlans.value.map((plan) => plan.id);
+  if (
+    ids.length < 2 ||
+    ids.length !== dragPlans.value.length ||
+    ids.some((id) => !PLAN_ID_RE.test(id)) ||
+    sorting.value ||
+    ids.every((id, index) => id === current[index])
+  ) {
+    return;
+  }
+  sorting.value = true;
+  try {
+    await request("/api/v1/admin/plan-order", {
+      method: "PATCH",
+      silent: true,
+      body: { kind: kindTab.value, ids },
+    });
+    dragPlans.value.forEach((plan, index) => {
+      plan.sort = (index + 1) * 10;
+      const current = plans.value.find((item) => item.id === plan.id);
+      if (current) current.sort = plan.sort;
+    });
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "套餐排序保存失败");
+    await loadPlans();
+  } finally {
+    sorting.value = false;
+  }
 }
 
 function formatMoney(cents: number) {
@@ -319,70 +389,57 @@ function valueSummary(row: unknown) {
   return `${formatPoints(total)} 积分${plan.bonusCents > 0 ? `（赠 ${formatPoints(plan.bonusCents)}）` : ""}`;
 }
 
+function badgeTone(badge: string) {
+  if (/热门|hot|popular/i.test(badge)) return "is-hot";
+  if (/限时|limited/i.test(badge)) return "is-limited";
+  if (/新品|new/i.test(badge)) return "is-new";
+  return "";
+}
+
 onMounted(loadPlans);
 </script>
 
 <template>
   <div class="page plans-page">
-    <section class="plans-hero">
-      <div>
-        <span class="plans-hero__eyebrow">COMMERCIAL CATALOG</span>
-        <h1>套餐管理</h1>
-        <p>统一管理用户价格页展示的积分包和订阅计划。</p>
-      </div>
-      <div class="plans-hero__actions">
-        <el-button :icon="Refresh" :loading="loading" @click="loadPlans">
-          刷新
-        </el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">
-          新增套餐
-        </el-button>
-      </div>
-    </section>
-
-    <section class="plans-metrics" aria-label="套餐统计">
-      <article>
-        <span>全部套餐</span><strong>{{ stats.total }}</strong
-        ><small>个</small>
-      </article>
-      <article>
-        <span>正在上架</span><strong>{{ stats.active }}</strong
-        ><small>个</small>
-      </article>
-      <article>
-        <span>积分包</span><strong>{{ stats.topup }}</strong
-        ><small>个</small>
-      </article>
-      <article>
-        <span>订阅计划</span><strong>{{ stats.subscription }}</strong
-        ><small>个</small>
-      </article>
-    </section>
-
     <PageCard>
       <div class="plans-toolbar">
-        <el-input
-          v-model="search"
-          :prefix-icon="Search"
-          placeholder="搜索套餐名称、代码或说明"
-          clearable
-        />
-        <el-select v-model="kindFilter" placeholder="套餐类型">
-          <el-option label="全部类型" value="" />
-          <el-option label="一次性积分包" value="topup" />
-          <el-option label="订阅计划" value="subscription" />
-        </el-select>
-        <el-select v-model="statusFilter" placeholder="上架状态">
-          <el-option label="全部状态" value="" />
-          <el-option label="已上架" value="active" />
-          <el-option label="已下架" value="inactive" />
-        </el-select>
-        <el-button
-          v-if="search || kindFilter || statusFilter"
-          @click="resetFilters"
-        >
-          清除筛选
-        </el-button>
+        <div class="plans-tabs" role="tablist" aria-label="套餐类型">
+          <button
+            v-for="tab in kindTabs"
+            :key="tab.key"
+            type="button"
+            role="tab"
+            class="plans-tab"
+            :class="{ 'is-active': kindTab === tab.key }"
+            :aria-selected="kindTab === tab.key"
+            @click="kindTab = tab.key"
+          >
+            {{ tab.title }}
+            <em>{{ tab.count }}</em>
+          </button>
+        </div>
+        <div class="plans-toolbar__right">
+          <el-input
+            v-model="search"
+            :prefix-icon="Search"
+            placeholder="搜索套餐名称、代码或说明"
+            clearable
+          />
+          <el-select v-model="statusFilter" placeholder="上架状态">
+            <el-option label="全部状态" value="" />
+            <el-option label="已上架" value="active" />
+            <el-option label="已下架" value="inactive" />
+          </el-select>
+          <el-button v-if="search || statusFilter" @click="resetFilters">
+            清除筛选
+          </el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="loadPlans">
+            刷新
+          </el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreate">
+            新增套餐
+          </el-button>
+        </div>
       </div>
 
       <div v-if="loadError" class="plans-error">
@@ -392,100 +449,76 @@ onMounted(loadPlans);
         <el-button @click="loadPlans">重新加载</el-button>
       </div>
 
-      <el-table
-        v-else
-        v-loading="loading"
-        :data="filteredPlans"
-        row-key="id"
-        class="plans-table"
-        empty-text="暂无套餐，点击右上角新增第一个套餐"
+      <div v-else v-loading="loading || sorting" class="plans-board">
+      <draggable
+        v-if="dragPlans.length"
+        v-model="dragPlans"
+        item-key="id"
+        filter=".plan-card__actions, .plan-card__switch, .el-button, .el-switch"
+        :prevent-on-filter="true"
+        :animation="180"
+        :disabled="dragPlans.length < 2 || sorting"
+        ghost-class="is-sort-ghost"
+        drag-class="is-sort-dragging"
+        class="plans-grid"
+        @change="onDragChange"
       >
-        <el-table-column label="套餐" min-width="250">
-          <template #default="{ row }">
-            <div class="plan-name-cell">
-              <span class="plan-name-cell__mark" :class="`is-${row.kind}`">
-                <el-icon
-                  ><Star v-if="row.recommended" /><Collection v-else
-                /></el-icon>
-              </span>
-              <div>
-                <strong>{{ row.name }}</strong>
-                <small data-no-translate>{{ row.code }}</small>
-                <p>{{ row.description || "未填写套餐说明" }}</p>
-              </div>
-              <el-tag v-if="row.badge" size="small" effect="plain">{{
-                row.badge
-              }}</el-tag>
-              <el-tag v-if="row.recommended" size="small" type="warning"
-                >推荐</el-tag
-              >
+        <template #item="{ element: row }">
+        <article
+          class="plan-card"
+          :class="{
+            'is-off': !row.active,
+            'is-recommended': row.recommended,
+          }"
+        >
+          <header class="plan-card__head">
+            <div class="plan-card__title">
+              <strong>{{ row.name }}</strong>
+              <small v-if="row.code" data-no-translate>{{ row.code }}</small>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="110">
-          <template #default="{ row }">
-            <el-tag
-              :type="row.kind === 'subscription' ? 'success' : 'info'"
-              effect="light"
-            >
-              {{ row.kind === "subscription" ? "订阅计划" : "积分包" }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="售价" width="120">
-          <template #default="{ row }">
-            <strong class="plan-price">{{
-              formatMoney(row.priceCents)
-            }}</strong>
-          </template>
-        </el-table-column>
-        <el-table-column label="发放权益" min-width="210">
-          <template #default="{ row }">
-            <div class="plan-value">
-              <strong>{{ valueSummary(row) }}</strong>
-              <small>{{ row.features?.length || 0 }} 条展示权益</small>
+            <div v-if="row.recommended || row.badge" class="plan-card__tags">
+              <span v-if="row.recommended" class="plan-chip is-recommend">推荐</span>
+              <span
+                v-if="row.badge"
+                class="plan-chip"
+                :class="badgeTone(row.badge)"
+              >{{ row.badge }}</span>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="使用记录" width="120" align="center">
-          <template #default="{ row }">
-            <div class="plan-usage">
-              <strong>{{ row.orderCount || 0 }}</strong>
-              <small>订单 · {{ row.subscriptionCount || 0 }} 订阅</small>
+          </header>
+
+          <div class="plan-card__price">
+            <b>{{ formatMoney(row.priceCents) }}</b>
+            <span>{{ valueSummary(row) }}</span>
+          </div>
+
+          <p class="plan-card__desc">
+            {{ row.description || "未填写套餐说明" }}
+          </p>
+
+          <ul v-if="row.features?.length" class="plan-card__features">
+            <li v-for="feature in row.features" :key="feature">{{ feature }}</li>
+          </ul>
+
+          <dl class="plan-card__meta">
+            <div>
+              <dt>使用</dt>
+              <dd>订单 {{ row.orderCount || 0 }} · 订阅 {{ row.subscriptionCount || 0 }}</dd>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="排序" width="78" align="center" prop="sort" />
-        <el-table-column label="上架" width="90" align="center">
-          <template #default="{ row }">
-            <el-switch
-              :model-value="row.active"
-              :loading="switchingId === row.id"
-              @change="toggleActive(row, Boolean($event))"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="145">
-          <template #default="{ row }">
-            <span class="plan-time">{{
-              formatTime(row.updatedAt || row.createdAt)
-            }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
-          <template #default="{ row }">
-            <div class="plan-actions">
-              <el-button
-                text
-                type="primary"
-                :icon="EditPen"
-                @click="openEdit(row)"
-              >
+            <div>
+              <dt>更新</dt>
+              <dd>{{ formatTime(row.updatedAt || row.createdAt) }}</dd>
+            </div>
+          </dl>
+
+          <footer class="plan-card__foot">
+            <div class="plan-card__actions">
+              <el-button size="small" :icon="EditPen" @click="openEdit(row)">
                 编辑
               </el-button>
               <el-button
-                text
+                size="small"
                 type="danger"
+                plain
                 :icon="Delete"
                 :title="row.deletable ? '永久删除' : '已有历史记录，只能下架'"
                 @click="removePlan(row)"
@@ -493,9 +526,22 @@ onMounted(loadPlans);
                 删除
               </el-button>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
+            <label class="plan-card__switch">
+              <span>{{ row.active ? "已上架" : "已下架" }}</span>
+              <el-switch
+                :model-value="row.active"
+                :loading="switchingId === row.id"
+                @change="toggleActive(row, Boolean($event))"
+              />
+            </label>
+          </footer>
+        </article>
+        </template>
+      </draggable>
+        <div v-else class="plans-empty">
+          暂无{{ kindTab === "subscription" ? "订阅计划" : "积分包" }}
+        </div>
+      </div>
     </PageCard>
 
     <AdminDialog
@@ -602,15 +648,6 @@ onMounted(loadPlans);
               placeholder="例如：热卖 / 限时"
             />
           </el-form-item>
-          <el-form-item label="展示排序">
-            <el-input-number
-              v-model="form.sort"
-              :min="0"
-              :max="1000000"
-              :step="10"
-              :precision="0"
-            />
-          </el-form-item>
         </div>
 
         <el-form-item label="套餐权益">
@@ -645,189 +682,369 @@ onMounted(loadPlans);
 
 <style scoped>
 .plans-page {
-  display: grid;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
 }
 
-.plans-hero {
+.plans-page :deep(.page-card) {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 24px 26px;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
-  border-radius: var(--radius-card);
-  color: #fff;
-  background:
-    radial-gradient(
-      circle at 80% -20%,
-      rgb(196 181 253 / 35%),
-      transparent 38%
-    ),
-    linear-gradient(135deg, #25203b, #14121f 72%);
-  box-shadow: var(--shadow-md);
 }
 
-.plans-hero__eyebrow {
-  color: #c4b5fd;
-  font:
-    750 11px/1 ui-monospace,
-    monospace;
-  letter-spacing: 0.12em;
-}
-
-.plans-hero h1 {
-  margin: 10px 0 0;
-  font-size: 30px;
-  letter-spacing: -0.04em;
-}
-
-.plans-hero p {
-  margin: 8px 0 0;
-  color: rgb(255 255 255 / 62%);
-  font-size: 13px;
-}
-
-.plans-hero__actions {
+.plans-page :deep(.page-card__body) {
   display: flex;
-  gap: 9px;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.plans-metrics {
+.plans-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+.plans-toolbar__right {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.plans-toolbar__right .el-input {
+  width: 220px;
+  min-width: 160px;
+  flex: 1 1 180px;
+}
+
+.plans-toolbar__right .el-select {
+  width: 120px;
+  flex: 0 0 120px;
+}
+
+.plans-toolbar__right :deep(.el-button) {
+  flex: 0 0 auto;
+}
+
+.plans-tabs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.plans-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plans-tab em {
+  font-style: normal;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.plans-tab.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.plans-tab.is-active em {
+  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+}
+
+.plans-board {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.plans-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  align-items: stretch;
+  align-content: start;
+  gap: 14px;
 }
 
-.plans-metrics article {
-  padding: 16px 18px;
+.plans-grid :deep(.is-sort-ghost) {
+  opacity: 0.4;
+}
+
+.plans-grid :deep(.is-sort-dragging) {
+  box-shadow: var(--shadow-lg);
+}
+
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  height: 100%;
+  padding: 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+  cursor: grab;
 }
 
-.plans-metrics span {
-  display: block;
-  margin-bottom: 9px;
+.plan-card:active {
+  cursor: grabbing;
+}
+
+.plan-card.is-recommended {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+  background: linear-gradient(
+    180deg,
+    var(--accent-soft) 0%,
+    var(--surface) 28%
+  );
+}
+
+.plan-card.is-off {
+  opacity: 0.62;
+}
+
+.plan-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plan-card__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.plan-card__title strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.plan-card__title small {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font:
+    600 11px/1.3 ui-monospace,
+    monospace;
+}
+
+.plan-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.plan-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.plan-chip.is-recommend {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.plan-chip.is-hot {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.plan-chip.is-limited {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.plan-chip.is-new {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.plan-card__price {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plan-card__price b {
+  color: var(--ink);
+  font-size: 24px;
+  font-weight: 760;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.plan-card__price span {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.plan-card__desc {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.plan-card__features {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-card__features li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plan-card__features li::before {
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
+
+.plan-card__meta {
+  display: grid;
+  gap: 8px;
+  margin: auto 0 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.plan-card__meta > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plan-card__meta dt {
+  flex: 0 0 auto;
   color: var(--ink-3);
   font-size: 12px;
 }
 
-.plans-metrics strong {
+.plan-card__meta dd {
+  margin: 0;
   color: var(--ink);
-  font-size: 25px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
-.plans-metrics small {
-  margin-left: 4px;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.plans-toolbar {
-  display: grid;
-  grid-template-columns: minmax(240px, 1fr) 160px 140px auto;
-  gap: 10px;
-  padding-bottom: 16px;
-}
-
-.plan-name-cell {
+.plan-card__foot {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  min-width: 0;
+  padding-top: 2px;
 }
 
-.plan-name-cell__mark {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  color: #6d5cf5;
-  background: #efedff;
-}
-
-.plan-name-cell__mark.is-subscription {
-  color: #059669;
-  background: #dcfce7;
-}
-
-.plan-name-cell > div {
-  min-width: 0;
-}
-
-.plan-name-cell strong,
-.plan-name-cell small {
-  display: block;
-}
-
-.plan-name-cell strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.plan-name-cell small {
-  margin-top: 2px;
-  color: var(--ink-3);
-  font:
-    600 10px ui-monospace,
-    monospace;
-}
-
-.plan-name-cell p {
-  margin: 5px 0 0;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plan-price,
-.plan-value strong,
-.plan-value small,
-.plan-usage strong,
-.plan-usage small {
-  display: block;
-}
-
-.plan-price {
-  color: var(--ink);
-  font-size: 14px;
-}
-
-.plan-value strong {
+.plan-card__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--ink-2);
   font-size: 12px;
   font-weight: 650;
 }
 
-.plan-value small,
-.plan-usage small,
-.plan-time {
-  margin-top: 4px;
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.plan-usage strong {
-  color: var(--ink);
-  font-size: 15px;
-}
-
-.plan-actions {
+.plan-card__actions {
   display: flex;
-  gap: 2px;
+  gap: 6px;
+}
+
+.plan-card__actions,
+.plan-card__switch {
+  cursor: default;
+}
+
+.plans-empty {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  color: var(--ink-3);
+  font-size: 13px;
 }
 
 .plans-error {
   display: grid;
+  flex: 1;
   place-items: center;
   gap: 8px;
-  min-height: 300px;
+  min-height: 0;
   color: var(--ink-3);
   text-align: center;
 }
@@ -884,30 +1101,29 @@ onMounted(loadPlans);
   font-size: 10px;
 }
 
-@media (max-width: 980px) {
-  .plans-metrics {
+@media (max-width: 1400px) {
+  .plans-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .plans-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
 
-  .plans-toolbar {
-    grid-template-columns: 1fr 1fr;
+@media (max-width: 980px) {
+  .plans-grid {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 680px) {
-  .plans-hero {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .plans-hero__actions > * {
-    flex: 1;
-  }
-
-  .plans-toolbar,
   .plan-form__grid,
   .plan-form__switches {
     grid-template-columns: 1fr;
   }
 }
+
 </style>

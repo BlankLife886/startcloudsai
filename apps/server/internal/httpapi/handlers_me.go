@@ -262,6 +262,17 @@ func (s *Server) myLedger(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	tasksByID, runsByID, err := loadLedgerRelated(c.Request.Context(), s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+		return decorateLedgerEntry(entry, tasksByID, runsByID)
+	}))
+}
+
+func loadLedgerRelated(ctx context.Context, q store.Q, rows []*store.LedgerEntry) (map[uuid.UUID]*store.Task, map[uuid.UUID]*store.AssistantRun, error) {
 	taskIDs := make([]uuid.UUID, 0, len(rows))
 	runIDs := make([]uuid.UUID, 0, len(rows))
 	seenTaskIDs := make(map[uuid.UUID]struct{}, len(rows))
@@ -286,30 +297,29 @@ func (s *Server) myLedger(c *gin.Context) {
 			runIDs = append(runIDs, sourceID)
 		}
 	}
-	ctx := c.Request.Context()
-	tasksByID, err := store.GetTasksByIDs(ctx, s.St.Pool, taskIDs)
+	tasksByID, err := store.GetTasksByIDs(ctx, q, taskIDs)
 	if err != nil {
-		fail(c, err)
-		return
+		return nil, nil, err
 	}
-	runsByID, err := store.GetAssistantRunsByIDs(ctx, s.St.Pool, runIDs)
+	runsByID, err := store.GetAssistantRunsByIDs(ctx, q, runIDs)
 	if err != nil {
-		fail(c, err)
-		return
+		return nil, nil, err
 	}
-	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
-		sourceID, ok := ledgerSourceUUID(entry)
-		if !ok {
-			return ledgerDict(entry)
-		}
-		if entry.SourceType == "assistant_run" {
-			return ledgerDictWithAssistantRun(entry, runsByID[sourceID])
-		}
-		if entry.SourceType != "task" {
-			return ledgerDict(entry)
-		}
-		return ledgerDictWithTask(entry, tasksByID[sourceID])
-	}))
+	return tasksByID, runsByID, nil
+}
+
+func decorateLedgerEntry(entry *store.LedgerEntry, tasksByID map[uuid.UUID]*store.Task, runsByID map[uuid.UUID]*store.AssistantRun) gin.H {
+	sourceID, ok := ledgerSourceUUID(entry)
+	if !ok {
+		return ledgerDict(entry)
+	}
+	if entry.SourceType == "assistant_run" {
+		return ledgerDictWithAssistantRun(entry, runsByID[sourceID])
+	}
+	if entry.SourceType != "task" {
+		return ledgerDict(entry)
+	}
+	return ledgerDictWithTask(entry, tasksByID[sourceID])
 }
 
 func ledgerSourceUUID(entry *store.LedgerEntry) (uuid.UUID, bool) {

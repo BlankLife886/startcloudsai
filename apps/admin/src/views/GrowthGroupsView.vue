@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { Check, Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { request } from "@/request";
 import { normalizePoints } from "@/utils";
@@ -55,10 +54,14 @@ const signature = () => JSON.stringify(form);
 const isDirty = computed(
   () => Boolean(savedSignature.value) && signature() !== savedSignature.value,
 );
-const rulePreview = computed(
-  () =>
-    `${form.targetMembers} 人成团 · 每人 ${normalizePoints(form.rewardPoints).toLocaleString("zh-CN")} 积分 · ${form.durationHours} 小时有效`,
-);
+const ruleChips = computed(() => [
+  { label: "成团", value: `${form.targetMembers} 人` },
+  {
+    label: "奖励",
+    value: `${normalizePoints(form.rewardPoints).toLocaleString("zh-CN")} 积分`,
+  },
+  { label: "有效期", value: `${form.durationHours} 小时` },
+]);
 const statusMeta = {
   active: { label: "进行中", type: "warning" as const },
   completed: { label: "已完成", type: "success" as const },
@@ -143,192 +146,560 @@ onMounted(load);
 <template>
   <div v-loading="loading" class="page group-admin-page">
     <PageCard>
-      <div class="page-toolbar">
+      <div class="group-toolbar">
         <div class="sync-state" :class="{ 'is-dirty': isDirty }">
           <i />{{ isDirty ? "有未保存变更" : "配置已同步" }}
         </div>
-        <div>
-          <el-button :icon="Refresh" @click="load">刷新</el-button>
-          <el-button type="primary" :icon="Check" :loading="saving" :disabled="!isDirty" @click="save">
+        <div class="group-toolbar__actions">
+          <el-button @click="load">刷新</el-button>
+          <el-button
+            type="primary"
+            :loading="saving"
+            :disabled="!isDirty"
+            @click="save"
+          >
             保存并生效
           </el-button>
         </div>
       </div>
 
-      <section class="activity-state">
-        <div class="activity-state__main">
-          <span class="activity-indicator" :class="{ 'is-open': form.enabled }" />
-          <div>
-            <small>当前用户端状态</small>
-            <h2>{{ form.enabled ? "活动开放中" : "活动已暂停" }}</h2>
-            <p>{{ form.enabled ? "用户可以发起新拼团或输入好友邀请码加入。" : "用户只能查看已有拼团，不能发起或加入。" }}</p>
-          </div>
-        </div>
-        <div class="activity-rule">
-          <small>用户端规则预览</small>
-          <strong>{{ rulePreview }}</strong>
-          <span>满员后系统自动向每位成员发放奖励，无需管理员操作。</span>
-        </div>
-      </section>
-
-      <section class="config-section">
-        <header>
-          <div><h2>活动配置</h2><p>保存后，新发起的拼团使用以下规则。</p></div>
-        </header>
-        <div class="config-grid">
-          <label class="config-control is-switch">
-            <div><strong>开放好友拼团</strong><small>控制用户端发起和加入入口</small></div>
-            <el-switch v-model="form.enabled" />
-          </label>
-          <label class="config-control">
-            <span>活动期标识（仅后台可见）</span>
-            <el-input v-model="form.campaignKey" maxlength="64" placeholder="例如 launch-2026" />
-            <small>更换并保存后开启新一期，用户可重新参团；旧一期数据仍保留。</small>
-          </label>
-          <label class="config-control">
-            <span>成团人数</span>
-            <el-input-number v-model="form.targetMembers" :min="2" :max="10" :precision="0" />
-            <small>达到该人数后立即完成并结算。</small>
-          </label>
-          <label class="config-control">
-            <span>每人奖励</span>
-            <div class="number-with-unit">
-              <el-input-number v-model="form.rewardPoints" :min="0" :max="1000000" :precision="0" />
-              <b>积分</b>
-            </div>
-            <small>仅满员时发放，每位成员只到账一次。</small>
-          </label>
-          <label class="config-control">
-            <span>拼团有效期</span>
-            <div class="number-with-unit">
-              <el-input-number v-model="form.durationHours" :min="1" :max="720" :precision="0" />
-              <b>小时</b>
-            </div>
-            <small>超时未满员后邀请码失效，用户可重新参与。</small>
-          </label>
-        </div>
-        <div class="config-warning">
-          <i class="bi bi-info-circle" />
-          <span>修改人数、奖励或有效期不会追溯已有拼团；修改活动期标识会开启全新一期。</span>
-        </div>
-      </section>
-
-      <section class="operations-section" v-loading="overviewLoading">
-        <header>
-          <div>
-            <h2>当期运行情况</h2>
-            <p>活动期 {{ overview?.campaignKey || form.campaignKey }}，只读展示，避免人工修改破坏奖励一致性。</p>
-          </div>
-          <el-button size="small" :icon="Refresh" @click="loadOverview">刷新数据</el-button>
-        </header>
-        <div class="metric-row">
-          <div><small>全部拼团</small><strong>{{ overview?.summary.totalGroups ?? 0 }}</strong></div>
-          <div><small>进行中</small><strong>{{ overview?.summary.activeGroups ?? 0 }}</strong></div>
-          <div><small>已完成</small><strong>{{ overview?.summary.completedGroups ?? 0 }}</strong></div>
-          <div><small>已过期</small><strong>{{ overview?.summary.expiredGroups ?? 0 }}</strong></div>
-          <div><small>参与人次</small><strong>{{ overview?.summary.participations ?? 0 }}</strong></div>
-        </div>
-
-        <el-table v-if="overview?.items.length" class="group-table" :data="overview.items" size="small">
-          <el-table-column label="邀请码" min-width="130">
-            <template #default="{ row }"><code>{{ row.code }}</code></template>
-          </el-table-column>
-          <el-table-column label="发起人" min-width="150">
-            <template #default="{ row }">
-              <div class="owner-cell">
-                <el-avatar :size="28" :src="row.owner.avatarUrl || undefined">{{ row.owner.username?.slice(0, 1) || "用" }}</el-avatar>
-                <span>{{ row.owner.username }}</span>
+      <div class="group-workspace">
+        <section class="group-config">
+          <div class="group-status" :class="{ 'is-open': form.enabled }">
+            <div class="group-status__copy">
+              <span class="group-status__dot" />
+              <div>
+                <strong>{{ form.enabled ? "活动开放中" : "活动已暂停" }}</strong>
+                <p>
+                  {{
+                    form.enabled
+                      ? "用户可以发起新拼团或输入邀请码加入"
+                      : "用户只能查看已有拼团，不能发起或加入"
+                  }}
+                </p>
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="进度" width="90">
-            <template #default="{ row }">{{ row.memberCount }} / {{ row.targetMembers }}</template>
-          </el-table-column>
-          <el-table-column label="每人奖励" width="110">
-            <template #default="{ row }">{{ normalizePoints(row.rewardCents) }} 积分</template>
-          </el-table-column>
-          <el-table-column label="状态" width="90">
-            <template #default="{ row }"><el-tag :type="statusOf(row.status).type" effect="plain" size="small">{{ statusOf(row.status).label }}</el-tag></template>
-          </el-table-column>
-          <el-table-column label="发起时间" width="130">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-          </el-table-column>
-          <el-table-column label="到期/完成" width="130">
-            <template #default="{ row }">{{ formatTime(row.completedAt || row.expiresAt) }}</template>
-          </el-table-column>
-        </el-table>
-        <div v-else class="empty-groups">当前活动期还没有用户发起拼团</div>
-      </section>
+            </div>
+            <el-switch v-model="form.enabled" />
+          </div>
+
+          <div class="group-rules">
+            <span v-for="chip in ruleChips" :key="chip.label">
+              <small>{{ chip.label }}</small>
+              <b>{{ chip.value }}</b>
+            </span>
+          </div>
+
+          <div class="group-fields">
+            <label class="group-field is-key">
+              <span>
+                <strong>活动期标识</strong>
+                <small>仅后台可见，更换后开启新一期</small>
+              </span>
+              <el-input
+                v-model="form.campaignKey"
+                maxlength="64"
+                placeholder="例如 launch-2026"
+              />
+            </label>
+            <label class="group-field">
+              <span>
+                <strong>成团人数</strong>
+                <small>满员后立即结算</small>
+              </span>
+              <el-input-number
+                v-model="form.targetMembers"
+                :min="2"
+                :max="10"
+                :precision="0"
+                controls-position="right"
+              />
+            </label>
+            <label class="group-field">
+              <span>
+                <strong>每人奖励</strong>
+                <small>仅满员发放一次</small>
+              </span>
+              <div class="group-field__unit">
+                <el-input-number
+                  v-model="form.rewardPoints"
+                  :min="0"
+                  :max="1000000"
+                  :precision="0"
+                  controls-position="right"
+                />
+                <em>积分</em>
+              </div>
+            </label>
+            <label class="group-field">
+              <span>
+                <strong>拼团有效期</strong>
+                <small>超时后邀请码失效</small>
+              </span>
+              <div class="group-field__unit">
+                <el-input-number
+                  v-model="form.durationHours"
+                  :min="1"
+                  :max="720"
+                  :precision="0"
+                  controls-position="right"
+                />
+                <em>小时</em>
+              </div>
+            </label>
+          </div>
+
+          <p class="group-note">
+            修改人数、奖励或有效期不会追溯已有拼团；修改活动期标识会开启全新一期。
+          </p>
+        </section>
+
+        <section v-loading="overviewLoading" class="group-ops">
+          <header class="group-ops__head">
+            <div>
+              <strong>当期运行</strong>
+              <small data-no-translate>{{
+                overview?.campaignKey || form.campaignKey
+              }}</small>
+            </div>
+          </header>
+
+          <div class="group-metrics">
+            <div>
+              <small>全部拼团</small>
+              <strong>{{ overview?.summary.totalGroups ?? 0 }}</strong>
+            </div>
+            <div>
+              <small>进行中</small>
+              <strong>{{ overview?.summary.activeGroups ?? 0 }}</strong>
+            </div>
+            <div>
+              <small>已完成</small>
+              <strong>{{ overview?.summary.completedGroups ?? 0 }}</strong>
+            </div>
+            <div>
+              <small>已过期</small>
+              <strong>{{ overview?.summary.expiredGroups ?? 0 }}</strong>
+            </div>
+            <div>
+              <small>参与人次</small>
+              <strong>{{ overview?.summary.participations ?? 0 }}</strong>
+            </div>
+          </div>
+
+          <div v-if="overview?.items.length" class="group-table-wrap">
+          <el-table
+            class="group-table"
+            :data="overview.items"
+            height="100%"
+            size="small"
+          >
+            <el-table-column label="邀请码" min-width="130">
+              <template #default="{ row }">
+                <code>{{ row.code }}</code>
+              </template>
+            </el-table-column>
+            <el-table-column label="发起人" min-width="150">
+              <template #default="{ row }">
+                <div class="owner-cell">
+                  <el-avatar
+                    :size="28"
+                    :src="row.owner.avatarUrl || undefined"
+                  >
+                    {{ row.owner.username?.slice(0, 1) || "用" }}
+                  </el-avatar>
+                  <span>{{ row.owner.username }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="进度" width="90">
+              <template #default="{ row }">
+                {{ row.memberCount }} / {{ row.targetMembers }}
+              </template>
+            </el-table-column>
+            <el-table-column label="每人奖励" width="110">
+              <template #default="{ row }">
+                {{ normalizePoints(row.rewardCents) }} 积分
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag
+                  :type="statusOf(row.status).type"
+                  effect="plain"
+                  size="small"
+                >
+                  {{ statusOf(row.status).label }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="发起时间" width="130">
+              <template #default="{ row }">
+                {{ formatTime(row.createdAt) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="到期/完成" width="130">
+              <template #default="{ row }">
+                {{ formatTime(row.completedAt || row.expiresAt) }}
+              </template>
+            </el-table-column>
+          </el-table>
+          </div>
+          <div v-else class="empty-groups">当前活动期还没有用户发起拼团</div>
+        </section>
+      </div>
     </PageCard>
   </div>
 </template>
 
 <style scoped>
-.group-admin-page { min-width: 0; }
-.page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
-.page-toolbar > div { display: flex; gap: 8px; }
-.sync-state { display: inline-flex; height: 32px; align-items: center; gap: 7px; padding: 0 11px; color: var(--ink-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; font-size: 12px; font-weight: 650; }
-.sync-state i { width: 7px; height: 7px; background: var(--success); border-radius: 50%; box-shadow: 0 0 0 3px var(--success-soft); }
-.sync-state.is-dirty { color: var(--warning); }
-.sync-state.is-dirty i { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
-.activity-state { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.activity-state__main,
-.activity-rule { display: flex; min-height: 118px; align-items: center; gap: 13px; padding: 20px; }
-.activity-state__main { background: var(--surface); border-right: 1px solid var(--border); }
-.activity-rule { align-items: flex-start; justify-content: center; flex-direction: column; background: var(--surface-2); }
-.activity-indicator { width: 11px; height: 11px; flex: 0 0 auto; background: var(--ink-3); border-radius: 50%; }
-.activity-indicator.is-open { background: var(--success); box-shadow: 0 0 0 5px var(--success-soft); }
-.activity-state small,
-.activity-state p,
-.activity-state span { color: var(--ink-3); font-size: 11px; }
-.activity-state h2 { margin: 4px 0 0; color: var(--ink); font-size: 18px; }
-.activity-state p { margin: 6px 0 0; line-height: 1.5; }
-.activity-rule strong { color: var(--ink); font-size: 14px; }
-.config-section,
-.operations-section { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
-.config-section > header,
-.operations-section > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
-.config-section h2,
-.operations-section h2 { margin: 0; color: var(--ink); font-size: 14px; }
-.config-section header p,
-.operations-section header p { margin: 4px 0 0; color: var(--ink-3); font-size: 11px; }
-.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.config-control { display: grid; min-width: 0; gap: 8px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.config-control.is-switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.config-control.is-switch div { display: flex; flex-direction: column; gap: 5px; }
-.config-control > span,
-.config-control strong { color: var(--ink); font-size: 12px; font-weight: 700; }
-.config-control small { color: var(--ink-3); font-size: 11px; line-height: 1.45; }
-.config-control :deep(.el-input-number) { width: 100%; }
-.number-with-unit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
-.number-with-unit b { color: var(--ink-3); font-size: 11px; }
-.config-warning { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px 12px; color: var(--ink-3); background: var(--warning-soft); border-radius: 6px; font-size: 11px; line-height: 1.5; }
-.config-warning i { color: var(--warning); }
-.metric-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.metric-row > div { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; background: var(--surface); border-right: 1px solid var(--border); }
-.metric-row > div:last-child { border-right: 0; }
-.metric-row small { color: var(--ink-3); font-size: 11px; }
-.metric-row strong { color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
-.group-table { width: 100%; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.group-table code { color: var(--accent-ink); font-size: 12px; font-weight: 750; letter-spacing: .04em; }
-.owner-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.owner-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty-groups { display: grid; min-height: 110px; margin-top: 12px; place-items: center; color: var(--ink-3); background: var(--surface-2); border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; }
-
-@media (max-width: 820px) {
-  .activity-state,
-  .config-grid { grid-template-columns: minmax(0, 1fr); }
-  .activity-state__main { border-right: 0; border-bottom: 1px solid var(--border); }
-  .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metric-row > div { border-bottom: 1px solid var(--border); }
+.group-admin-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
 }
 
-@media (max-width: 560px) {
-  .page-toolbar { align-items: stretch; flex-direction: column; }
-  .page-toolbar > div:last-child { display: grid; grid-template-columns: 1fr 1fr; }
-  .config-section > header,
-  .operations-section > header { align-items: flex-start; flex-direction: column; }
-  .metric-row { grid-template-columns: minmax(0, 1fr); }
-  .metric-row > div { border-right: 0; }
+.group-admin-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.group-admin-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.group-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+.group-toolbar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.group-toolbar__actions :deep(.el-button) {
+  margin: 0;
+  height: 32px;
+}
+
+.sync-state {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sync-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.sync-state.is-dirty {
+  color: var(--warning);
+}
+
+.sync-state.is-dirty i {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+}
+
+.group-workspace {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 20px;
+  min-height: 0;
+}
+
+.group-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.group-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+
+.group-status.is-open {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: var(--accent-soft);
+}
+
+.group-status__copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.group-status__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.group-status.is-open .group-status__dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.group-status strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.group-status p {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.group-rules {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.group-rules span {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.group-rules small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.group-rules b {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-fields {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.group-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.group-field:last-child {
+  border-bottom: 0;
+}
+
+.group-field.is-key {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.group-field > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.group-field strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.group-field small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.group-field :deep(.el-input-number) {
+  width: 108px;
+}
+
+.group-field__unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-field__unit em {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.group-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.group-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.group-ops__head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.group-ops__head strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.group-ops__head small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+  font:
+    600 11px/1.3 ui-monospace,
+    monospace;
+}
+
+.group-metrics {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.group-metrics > div {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.group-metrics small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.group-metrics strong {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.group-table-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.group-table {
+  width: 100%;
+  --el-table-border-color: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.group-table code {
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.owner-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.owner-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-groups {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  place-items: center;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 13px;
 }
 </style>

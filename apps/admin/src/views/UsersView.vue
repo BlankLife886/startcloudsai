@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
@@ -11,6 +12,7 @@ import {
   formatShortTime,
   formatTime,
   ledgerKindLabel,
+  ledgerReasonLabel,
   TASK_STATUS_LABELS,
   taskTypeLabel,
 } from '@/utils'
@@ -24,6 +26,61 @@ interface UserUsage {
   submissions: number
   assets: number
   orders: number
+  feedback?: number
+}
+
+interface UserWallet {
+  balanceCents: number
+  frozenCents: number
+  normalBalanceCents?: number
+  trialBalanceCents?: number
+  normalFrozenCents?: number
+  trialFrozenCents?: number
+  trialFeatureKey?: string | null
+  trialFeatureLabel?: string | null
+}
+
+interface UserSubscription {
+  active: boolean
+  planId?: string
+  planName?: string
+  planCode?: string
+  startsAt?: string | null
+  endsAt?: string | null
+  dailyGrantCents?: number
+  grantedToday?: boolean
+}
+
+interface UserTrialAccess {
+  id: string
+  status: string
+  occupation?: string
+  rewardCents?: number | null
+  rewardStatus?: string | null
+  rewardClaimedAt?: string | null
+  reviewedAt?: string | null
+  features?: { key: string; label: string }[]
+  feature?: { key: string; label: string } | null
+}
+
+interface UserCheckin {
+  totalDays: number
+  streak?: number
+  cycleDay?: number
+  lastDate?: string
+  lastRewardCents?: number
+}
+
+interface UserGrowthGroup {
+  id: string
+  code: string
+  status: string
+  role: string
+  memberCount: number
+  targetMembers: number
+  rewardCents: number
+  expiresAt?: string | null
+  completedAt?: string | null
 }
 
 interface AdminUser {
@@ -34,10 +91,11 @@ interface AdminUser {
   bio?: string
   location?: string
   websiteUrl?: string
+  requireCostConfirm?: boolean
   status: string
   lastLoginAt?: string | null
   submissionBannedUntil?: string | null
-  wallet?: { balanceCents: number; frozenCents: number }
+  wallet?: UserWallet
   /** 兼容旧版接口。 */
   balanceCents?: number
   createdAt: string
@@ -87,10 +145,16 @@ function showAvatar(user: AdminUser | null | undefined) {
   return Boolean(url && user?.id && !brokenAvatars.value.has(user.id))
 }
 
-function walletOf(user: AdminUser | null | undefined) {
+function walletOf(user: AdminUser | null | undefined): UserWallet {
   return {
     balanceCents: user?.wallet?.balanceCents ?? user?.balanceCents ?? 0,
     frozenCents: user?.wallet?.frozenCents ?? 0,
+    normalBalanceCents: user?.wallet?.normalBalanceCents ?? user?.wallet?.balanceCents ?? user?.balanceCents ?? 0,
+    trialBalanceCents: user?.wallet?.trialBalanceCents ?? 0,
+    normalFrozenCents: user?.wallet?.normalFrozenCents ?? 0,
+    trialFrozenCents: user?.wallet?.trialFrozenCents ?? 0,
+    trialFeatureKey: user?.wallet?.trialFeatureKey ?? null,
+    trialFeatureLabel: user?.wallet?.trialFeatureLabel ?? null,
   }
 }
 
@@ -203,7 +267,11 @@ async function submitAdjust() {
 // ---------- 用户详情抽屉 ----------
 interface UserDetail {
   user: AdminUser
-  wallet: { balanceCents: number; frozenCents: number }
+  wallet: UserWallet
+  subscription?: UserSubscription | null
+  trialAccess?: UserTrialAccess | null
+  checkin?: UserCheckin | null
+  growthGroup?: UserGrowthGroup | null
   counts: {
     orders: number
     tasksTotal: number
@@ -213,6 +281,7 @@ interface UserDetail {
     tasksCanceled: number
     submissions: number
     assets: number
+    feedback?: number
   }
   security: {
     activeSessions: number
@@ -232,6 +301,11 @@ interface LedgerEntry {
   sourceId: string | null
   reason: string | null
   createdAt: string
+  task?: {
+    displayName?: string
+    source?: string
+    type?: string
+  } | null
 }
 
 interface UserTask {
@@ -243,8 +317,11 @@ interface UserTask {
   costCents: number
   errorMessage?: string | null
   createdAt: string
+  source?: string
+  params?: Record<string, unknown> | null
 }
 
+const router = useRouter()
 const drawerVisible = ref(false)
 const drawerUser = ref<AdminUser | null>(null)
 const activeTab = ref('overview')
@@ -304,6 +381,58 @@ const taskSuccessRate = computed(() => {
   if (!counts?.tasksTotal) return 0
   return Math.round((counts.tasksSucceeded / counts.tasksTotal) * 100)
 })
+
+function openDrawerTab(tab: 'ledger' | 'tasks') {
+  activeTab.value = tab
+}
+
+function openRelatedPage(path: string, search?: string) {
+  void router.push({ path, query: search ? { search } : undefined })
+}
+
+function trialFeatureLabels(trial: UserTrialAccess | null | undefined) {
+  const features = trial?.features?.length
+    ? trial.features
+    : trial?.feature
+      ? [trial.feature]
+      : []
+  const labels = features.map((item) => item.label || item.key).filter(Boolean)
+  return labels.length ? labels.join('、') : '-'
+}
+
+function trialStatusLabel(status?: string | null) {
+  if (status === 'pending') return '待审核'
+  if (status === 'approved') return '已通过'
+  if (status === 'rejected') return '未通过'
+  return '未申请'
+}
+
+function trialRewardLabel(trial: UserTrialAccess | null | undefined) {
+  if (!trial || trial.status !== 'approved') return '-'
+  const points = trial.rewardCents != null ? `${formatPoints(trial.rewardCents)} 积分` : ''
+  if (trial.rewardStatus === 'redeemed') return points ? `已领取 ${points}` : '已领取'
+  if (trial.rewardStatus === 'expired') return '已过期'
+  if (trial.rewardStatus === 'active') return points ? `待领取 ${points}` : '待领取'
+  return points || '-'
+}
+
+function checkinLabel(checkin: UserCheckin | null | undefined) {
+  if (!checkin?.lastDate) return '未签到'
+  return `连续 ${checkin.streak ?? 0} 天 · 最近 ${checkin.lastDate} · 共 ${checkin.totalDays} 次`
+}
+
+function growthStatusLabel(status?: string | null) {
+  if (status === 'active') return '进行中'
+  if (status === 'completed') return '已成团'
+  if (status === 'expired') return '已过期'
+  return status || '未参与'
+}
+
+function growthLabel(group: UserGrowthGroup | null | undefined) {
+  if (!group) return '未参与'
+  const role = group.role === 'owner' ? '团长' : '成员'
+  return `${growthStatusLabel(group.status)} · ${role} · ${group.memberCount}/${group.targetMembers} · ${group.code}`
+}
 
 </script>
 
@@ -625,7 +754,10 @@ const taskSuccessRate = computed(() => {
                     </el-descriptions-item>
                     <el-descriptions-item label="注册时间">{{ formatTime(overview.user.createdAt) }}</el-descriptions-item>
                     <el-descriptions-item label="最近登录">{{ formatTime(overview.user.lastLoginAt) }}</el-descriptions-item>
-                    <el-descriptions-item label="投稿限制" :span="2">
+                    <el-descriptions-item label="消耗确认">
+                      {{ overview.user.requireCostConfirm ? '开启' : '关闭' }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="投稿限制">
                       {{
                         isSubmissionBanned(overview.user)
                           ? `禁投至 ${formatTime(overview.user.submissionBannedUntil)}`
@@ -639,8 +771,13 @@ const taskSuccessRate = computed(() => {
                   <header class="detail-section__title">资金概览</header>
                   <div class="wallet-overview">
                     <div>
-                      <small>可用余额</small>
-                      <strong class="tnum">{{ formatPoints(drawerWallet.balanceCents) }}</strong>
+                      <small>普通可用</small>
+                      <strong class="tnum">{{ formatPoints(drawerWallet.normalBalanceCents ?? 0) }}</strong>
+                      <span>积分</span>
+                    </div>
+                    <div>
+                      <small>体验可用</small>
+                      <strong class="tnum">{{ formatPoints(drawerWallet.trialBalanceCents ?? 0) }}</strong>
                       <span>积分</span>
                     </div>
                     <div>
@@ -654,35 +791,106 @@ const taskSuccessRate = computed(() => {
                       <span>积分</span>
                     </div>
                   </div>
+                  <p v-if="drawerWallet.trialFeatureLabel || drawerWallet.trialFeatureKey" class="wallet-note">
+                    体验功能：{{ drawerWallet.trialFeatureLabel || drawerWallet.trialFeatureKey }}
+                  </p>
+                </section>
+
+                <section class="detail-section">
+                  <header class="detail-section__title">套餐与活动</header>
+                  <el-descriptions :column="2" size="small" border>
+                    <el-descriptions-item label="当前套餐">
+                      {{ overview.subscription?.active ? overview.subscription.planName || overview.subscription.planCode : '无订阅' }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="到期时间">
+                      {{ overview.subscription?.active ? formatTime(overview.subscription.endsAt) : '-' }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="每日发放">
+                      {{
+                        overview.subscription?.active
+                          ? `${formatPoints(overview.subscription.dailyGrantCents ?? 0)} 积分`
+                          : '-'
+                      }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="今日发放">
+                      {{
+                        overview.subscription?.active
+                          ? overview.subscription.grantedToday
+                            ? '已发放'
+                            : '未发放'
+                          : '-'
+                      }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="体验申请">
+                      <button
+                        v-if="overview.trialAccess"
+                        type="button"
+                        class="detail-link"
+                        @click="openRelatedPage('/trial-applications', overview.user.email)"
+                      >
+                        {{ trialStatusLabel(overview.trialAccess.status) }}
+                      </button>
+                      <template v-else>未申请</template>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="体验功能">
+                      {{ trialFeatureLabels(overview.trialAccess) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="体验礼包">
+                      {{ trialRewardLabel(overview.trialAccess) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="签到">
+                      {{ checkinLabel(overview.checkin) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="拼团">
+                      <button
+                        v-if="overview.growthGroup"
+                        type="button"
+                        class="detail-link"
+                        @click="openRelatedPage('/growth-groups')"
+                      >
+                        {{ growthLabel(overview.growthGroup) }}
+                      </button>
+                      <template v-else>未参与</template>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="反馈">
+                      <button
+                        type="button"
+                        class="detail-link"
+                        @click="openRelatedPage('/feedback', overview.user.email)"
+                      >
+                        {{ overview.counts.feedback ?? 0 }} 条
+                      </button>
+                    </el-descriptions-item>
+                  </el-descriptions>
                 </section>
 
                 <section class="detail-section">
                   <header class="detail-section__title">使用情况</header>
                   <div class="count-cards">
-                    <div class="count-card is-emphasis">
+                    <button type="button" class="count-card is-emphasis" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ overview.counts.tasksTotal }}</div>
                       <div class="count-label">任务总数</div>
-                    </div>
-                    <div class="count-card">
+                    </button>
+                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ taskSuccessRate }}%</div>
                       <div class="count-label">任务成功率</div>
-                    </div>
-                    <div class="count-card">
+                    </button>
+                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ overview.counts.tasksSucceeded }}</div>
                       <div class="count-label">成功任务</div>
-                    </div>
-                    <div class="count-card">
+                    </button>
+                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ overview.counts.tasksFailed }}</div>
                       <div class="count-label">失败任务</div>
-                    </div>
-                    <div class="count-card">
+                    </button>
+                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ overview.counts.tasksRunning }}</div>
                       <div class="count-label">运行中</div>
-                    </div>
-                    <div class="count-card">
+                    </button>
+                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
                       <div class="count-value tnum">{{ overview.counts.tasksCanceled }}</div>
                       <div class="count-label">已取消</div>
-                    </div>
+                    </button>
                     <div class="count-card">
                       <div class="count-value tnum">{{ overview.counts.submissions }}</div>
                       <div class="count-label">投稿</div>
@@ -691,10 +899,10 @@ const taskSuccessRate = computed(() => {
                       <div class="count-value tnum">{{ overview.counts.assets }}</div>
                       <div class="count-label">素材</div>
                     </div>
-                    <div class="count-card">
+                    <button type="button" class="count-card" @click="openDrawerTab('ledger')">
                       <div class="count-value tnum">{{ overview.counts.orders }}</div>
                       <div class="count-label">订单记录</div>
-                    </div>
+                    </button>
                   </div>
                 </section>
 
@@ -776,7 +984,7 @@ const taskSuccessRate = computed(() => {
                   <el-table-column label="原因" min-width="220" align="left" header-align="left" show-overflow-tooltip>
                     <template #default="{ row }">
                       <div class="ledger-reason">
-                        <span class="cell-text">{{ row.reason || '-' }}</span>
+                        <span class="cell-text">{{ ledgerReasonLabel(row.reason, row.task) }}</span>
                         <small v-if="row.sourceType" class="drawer-id" :title="row.sourceId || ''">
                           {{ row.sourceType }}<template v-if="row.sourceId"> · {{ row.sourceId }}</template>
                         </small>
@@ -820,7 +1028,7 @@ const taskSuccessRate = computed(() => {
                   <el-table-column label="类型 / 模型" min-width="150" align="left" header-align="left">
                     <template #default="{ row }">
                       <div class="task-kind">
-                        <strong>{{ taskTypeLabel(row.type) }}</strong>
+                        <strong>{{ taskTypeLabel(row.type, row.params, row.source) }}</strong>
                         <small :title="row.model || ''">{{ row.model || '未记录模型' }}</small>
                       </div>
                     </template>
@@ -1368,7 +1576,7 @@ html.dark .status-tab.is-active {
 
 .wallet-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1408,6 +1616,26 @@ html.dark .status-tab.is-active {
   font-size: 10px;
 }
 
+.wallet-note {
+  margin: 8px 0 0;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.detail-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.detail-link:hover {
+  text-decoration: underline;
+}
+
 .count-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1421,6 +1649,17 @@ html.dark .status-tab.is-active {
   border-radius: 8px;
   text-align: left;
   background: var(--surface-2);
+}
+
+button.count-card {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.count-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
 .count-card.is-emphasis {

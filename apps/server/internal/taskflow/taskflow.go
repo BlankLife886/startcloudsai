@@ -494,8 +494,11 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			if err := store.LockTrialCampaignLifecycleShared(ctx, tx); err != nil {
 				return err
 			}
-			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents, taskFeature.Key,
-				strPtr(fmt.Sprintf("任务冻结（%s×%d）", in.Type, in.Count)))
+			reason := fmt.Sprintf("任务冻结（%s×%d）", in.Type, in.Count)
+			if store.IsCanvasOrigin(params) {
+				reason = fmt.Sprintf("无限画布冻结（×%d）", in.Count)
+			}
+			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents, taskFeature.Key, strPtr(reason))
 			if err != nil {
 				return err
 			}
@@ -712,7 +715,7 @@ func taskNotifyName(task *store.Task) string {
 	}
 	source := stringParam(task.Params, "_source")
 	kind := stringParam(task.Params, "_kind")
-	if source == "react_canvas" || strings.HasPrefix(kind, "canvas-") {
+	if source == "react_canvas" || strings.HasPrefix(kind, "canvas-") || store.IsCanvasOrigin(task.Params) {
 		if kind == "canvas-background-remove" {
 			return "画布去背"
 		}

@@ -43,7 +43,9 @@ const userName = computed(() => {
 
 const kindText = computed(() => {
   const taskType = cleanText(props.item.taskType)
-  return taskType ? taskTypeLabel(taskType) : 'AI 作品'
+  const source = cleanText(props.item.source || props.item.displayName)
+  if (!taskType && !source) return 'AI 作品'
+  return taskTypeLabel(taskType, props.item.params, source)
 })
 
 const coverUrl = computed(() => cleanText(props.item.coverUrl) || cleanText(props.item.mediaUrls?.[0]))
@@ -98,49 +100,46 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
     </div>
 
     <div class="share-card__body">
-      <header>
-        <strong class="share-card__title" :title="title">{{ title }}</strong>
-        <span v-if="categoryText" class="share-card__cat">{{ categoryText }}</span>
-      </header>
-
+      <strong class="share-card__title" :title="title">{{ title }}</strong>
       <div class="share-card__meta">
         <span :title="userName">{{ userName }}</span>
-        <i>·</i>
         <span>{{ kindText }}</span>
+        <span v-if="categoryText">{{ categoryText }}</span>
       </div>
-
       <p v-if="reviewNote" class="share-card__note" :title="reviewNote">{{ reviewNote }}</p>
+    </div>
 
-      <div class="share-card__actions">
-        <button
-          v-if="item.status === 'approved'"
-          type="button"
-          class="share-action is-prompt"
-          :disabled="operating || Boolean(item.promptEntryId)"
-          @click="emit('prompt', item)"
-        >
-          {{ item.promptEntryId ? '已入词库' : '入词库' }}
-        </button>
-        <button
-          type="button"
-          class="share-action is-approve"
-          :disabled="operating || !canApprove"
-          @click="emit('approve', item)"
-        >
-          {{ item.status === 'approved' ? '已通过' : '通过' }}
-        </button>
-        <button
-          type="button"
-          class="share-action is-reject"
-          :disabled="operating || !canReject"
-          @click="emit('reject', item)"
-        >
-          {{ item.status === 'rejected' ? '已拒绝' : '拒绝' }}
-        </button>
-        <button type="button" class="share-action is-violate" :disabled="operating" @click="emit('violation', item)">
-          违规
-        </button>
-      </div>
+    <div class="share-card__actions">
+      <button
+        v-if="item.status === 'approved'"
+        type="button"
+        class="share-action is-prompt"
+        :disabled="operating || Boolean(item.promptEntryId)"
+        @click="emit('prompt', item)"
+      >
+        {{ item.promptEntryId ? '已入' : '入词库' }}
+      </button>
+      <button
+        v-if="canApprove"
+        type="button"
+        class="share-action is-approve"
+        :disabled="operating"
+        @click="emit('approve', item)"
+      >
+        通过
+      </button>
+      <button
+        v-if="canReject"
+        type="button"
+        class="share-action is-reject"
+        :disabled="operating"
+        @click="emit('reject', item)"
+      >
+        拒绝
+      </button>
+      <button type="button" class="share-action is-violate" :disabled="operating" @click="emit('violation', item)">
+        违规
+      </button>
     </div>
   </article>
 </template>
@@ -148,15 +147,16 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
 <style scoped lang="scss">
 .share-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
   width: 100%;
+  height: 100%;
   min-width: 0;
   margin: 0;
-  padding: 8px;
+  padding: 8px 8px 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--surface);
   box-sizing: border-box;
   transition:
@@ -240,11 +240,12 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
   left: 8px;
   z-index: 2;
   padding: 3px 8px;
-  border-radius: 6px;
-  background: #1c1917;
+  border-radius: 999px;
+  background: rgb(18 20 26 / 78%);
   color: #fff;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 740;
+  letter-spacing: 0.02em;
   pointer-events: none;
 }
 
@@ -265,62 +266,45 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
   top: 8px;
   right: 8px;
   z-index: 2;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgb(28 25 23 / 78%);
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgb(18 20 26 / 72%);
   color: #fff;
   font-size: 10px;
   font-weight: 650;
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
 .share-card__body {
   display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 2px 2px 0;
-}
-
-.share-card__body > header {
-  display: flex;
-  align-items: flex-start;
+  align-content: start;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
+  padding: 12px 6px 10px;
 }
 
 .share-card__title {
-  flex: 1;
+  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
-  color: var(--text);
+  color: var(--ink);
   font-size: 13px;
-  font-weight: 700;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.share-card__cat {
-  flex: 0 0 auto;
-  max-width: 72px;
-  overflow: hidden;
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: 10px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 740;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .share-card__meta {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 0;
   min-width: 0;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
+  line-height: 1.3;
 
   span {
     overflow: hidden;
@@ -328,72 +312,75 @@ const categoryText = computed(() => cleanText(props.item.category?.name))
     white-space: nowrap;
   }
 
-  i {
-    flex: 0 0 auto;
-    font-style: normal;
-    opacity: 0.5;
+  span + span::before {
+    content: '·';
+    margin: 0 6px;
+    color: var(--ink-3);
   }
 }
 
 .share-card__note {
-  display: -webkit-box;
+  min-width: 0;
   overflow: hidden;
   margin: 0;
   color: var(--warning);
   font-size: 11px;
   line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .share-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-top: 2px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  margin: 0 -8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .share-action {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
-  transition: filter 0.15s ease;
+  transition: background-color 0.15s ease;
+
+  &:last-child {
+    border-right: 0;
+  }
 
   &:disabled {
-    opacity: 0.42;
+    opacity: 0.38;
     cursor: not-allowed;
   }
 
   &.is-approve {
-    border-color: color-mix(in srgb, var(--success) 30%, transparent);
-    background: var(--success-soft);
     color: var(--success);
   }
 
   &.is-prompt {
-    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-    background: var(--accent-soft);
     color: var(--accent-ink);
   }
 
   &.is-reject {
-    border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-    background: var(--danger-soft);
     color: var(--danger);
   }
 
   &.is-violate {
-    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
-    background: var(--warning-soft);
     color: var(--warning);
   }
 
   &:not(:disabled):hover {
-    filter: brightness(0.97);
+    background: color-mix(in srgb, currentColor 10%, transparent);
   }
 }
 </style>

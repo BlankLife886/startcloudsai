@@ -125,6 +125,11 @@ func (s *Server) myGrowthPrograms(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	campaignOrdinal, err := store.GrowthCampaignOrdinal(ctx, s.St.Pool, cfg.GroupCampaignKey)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	failureClaims, err := store.CountLedgerEntriesSince(ctx, s.St.Pool, user.ID, "task_failure_bonus", growth.DayStart(now))
 	if err != nil {
 		fail(c, err)
@@ -142,6 +147,7 @@ func (s *Server) myGrowthPrograms(c *gin.Context) {
 		"group":    growthGroupDict(group),
 		"rules": gin.H{
 			"groupEnabled": cfg.GroupEnabled, "groupCampaignKey": cfg.GroupCampaignKey,
+			"groupCampaignOrdinal": campaignOrdinal,
 			"groupTargetMembers": cfg.GroupTargetMembers, "groupRewardCents": cfg.GroupRewardCents,
 			"groupDurationHours":  cfg.GroupDurationHours,
 			"failureBonusEnabled": cfg.FailureBonusEnabled, "failureBonusCents": cfg.FailureBonusCents,

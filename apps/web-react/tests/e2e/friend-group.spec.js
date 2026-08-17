@@ -9,6 +9,7 @@ const user = {
 const rules = {
   groupEnabled: true,
   groupCampaignKey: 'launch-2026',
+  groupCampaignOrdinal: 1,
   groupTargetMembers: 3,
   groupRewardCents: 30,
   groupDurationHours: 48,
@@ -39,10 +40,13 @@ test('offers separate create and invite-code join paths', async ({ page }) => {
 
   await page.goto('/incentive-plans/group?code=AB12CD34EF')
 
-  await expect(page.getByRole('button', { name: '发起拼团' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '发起拼团' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '发起新团' })).toBeVisible()
   await expect(page.getByLabel('好友邀请码')).toHaveValue('AB12CD34EF')
-  await expect(page.getByRole('button', { name: '加入' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: /加入好友拼团/ })).toBeEnabled()
   await expect(page.getByText('一期一团')).toBeVisible()
+  await expect(page.getByText('当前第 1 期')).toBeVisible()
+  await expect(page.getByText('本期不能再发起或加入其他团')).toBeVisible()
 })
 
 test('shows the invite code, real members and mobile actions', async ({ page }) => {
@@ -95,5 +99,23 @@ test('shows the invite code, real members and mobile actions', async ({ page }) 
   await expect(page.getByText('设计师阿林', { exact: true })).toBeVisible()
   await expect(page.locator('.member-avatar img')).toHaveCount(1)
   await expect(page.getByRole('button', { name: '复制码' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '复制邀请文案' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '复制链接' })).toBeVisible()
   await expect(page.getByRole('button', { name: '邀请好友' })).toBeVisible()
+})
+
+test('asks before creating a group because each campaign allows one group', async ({ page }) => {
+  await page.route('**/api/v1/me/growth', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { rules, group: null, programs: [] } }),
+    }),
+  )
+
+  await page.goto('/incentive-plans/group')
+
+  await page.getByRole('button', { name: '发起拼团' }).click()
+  await expect(page.getByRole('button', { name: '确认发起' })).toBeVisible()
+  await expect(page.getByRole('alertdialog', { name: '发起好友拼团？' })).toBeVisible()
 })

@@ -22,6 +22,7 @@ export enum CanvasNodeType {
 export type CanvasNodeTypeId = CanvasNodeType | (string & {});
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 
@@ -79,6 +80,12 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     taskId?: string;
+    taskKind?: "image" | "assistant";
+    executionStatus?: CanvasNodeExecutionStatus;
+    generationQueuedAt?: string;
+    generationStartedAt?: string;
+    generationCompletedAt?: string;
+    generationDurationMs?: number;
     workflowOutputNodeIds?: string[];
     workflowProducerNodeId?: string;
 };

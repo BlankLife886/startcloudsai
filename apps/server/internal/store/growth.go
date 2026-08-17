@@ -37,6 +37,29 @@ func FindUserGrowthGroup(ctx context.Context, q Q, campaignKey string, userID uu
 	return nilOnNoRows(item, err)
 }
 
+type UserGrowthParticipation struct {
+	Group       GrowthGroup
+	Role        string
+	MemberCount int
+}
+
+func GetLatestUserGrowthParticipation(ctx context.Context, q Q, userID uuid.UUID) (*UserGrowthParticipation, error) {
+	var item UserGrowthParticipation
+	g := &item.Group
+	err := q.QueryRow(ctx, `SELECT `+growthGroupJoinedCols+`, m.role,
+		(SELECT count(*) FROM growth_group_members WHERE group_id = g.id)
+		FROM growth_groups g JOIN growth_group_members m ON m.group_id=g.id
+		WHERE m.user_id=$1
+		ORDER BY g.created_at DESC LIMIT 1`, userID).Scan(
+		&g.ID, &g.CampaignKey, &g.Code, &g.OwnerID, &g.Status,
+		&g.TargetMembers, &g.RewardCents, &g.ExpiresAt, &g.CompletedAt,
+		&g.CreatedAt, &g.UpdatedAt, &item.Role, &item.MemberCount)
+	if err != nil {
+		return nilOnNoRows(&item, err)
+	}
+	return &item, nil
+}
+
 func GetGrowthGroupByCodeForUpdate(ctx context.Context, q Q, campaignKey, code string) (*GrowthGroup, error) {
 	item, err := scanGrowthGroup(q.QueryRow(ctx, `SELECT `+growthGroupCols+`
 		FROM growth_groups WHERE campaign_key=$1 AND code=$2 FOR UPDATE`, campaignKey, code))
@@ -135,6 +158,22 @@ func GetGrowthGroupAdminOverview(ctx context.Context, q Q, campaignKey string, l
 		return nil, nil, err
 	}
 	return &summary, items, nil
+}
+
+func GrowthCampaignOrdinal(ctx context.Context, q Q, campaignKey string) (int, error) {
+	var ordinal int
+	err := q.QueryRow(ctx, `
+		WITH keys AS (
+			SELECT campaign_key, min(created_at) AS started_at
+			FROM growth_groups
+			GROUP BY campaign_key
+		)
+		SELECT 1 + count(*)
+		FROM keys
+		WHERE campaign_key <> $1
+			AND started_at < coalesce((SELECT started_at FROM keys WHERE campaign_key = $1), now())
+	`, campaignKey).Scan(&ordinal)
+	return ordinal, err
 }
 
 func CountSucceededTaskOutputsSince(ctx context.Context, q Q, userID uuid.UUID, since time.Time) (int64, error) {

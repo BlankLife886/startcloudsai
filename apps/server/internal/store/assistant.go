@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -356,15 +357,68 @@ func GetAssistantRunsByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	conversationIDs := make([]uuid.UUID, 0, len(ids))
+	seenConversations := make(map[uuid.UUID]struct{}, len(ids))
 	for rows.Next() {
 		run, err := scanAssistantRun(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out[run.ID] = run
+		if _, exists := seenConversations[run.ConversationID]; exists {
+			continue
+		}
+		seenConversations[run.ConversationID] = struct{}{}
+		conversationIDs = append(conversationIDs, run.ConversationID)
 	}
-	return out, rows.Err()
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	if len(conversationIDs) == 0 {
+		return out, nil
+	}
+	convRows, err := q.Query(ctx, `SELECT id, workspace FROM assistant_conversations WHERE id = ANY($1)`, conversationIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer convRows.Close()
+	workspaces := make(map[uuid.UUID]string, len(conversationIDs))
+	for convRows.Next() {
+		var id uuid.UUID
+		var workspace string
+		if err := convRows.Scan(&id, &workspace); err != nil {
+			return nil, err
+		}
+		workspaces[id] = workspace
+	}
+	if err := convRows.Err(); err != nil {
+		return nil, err
+	}
+	for _, run := range out {
+		applyAssistantConversationWorkspace(run, workspaces[run.ConversationID])
+	}
+	return out, nil
+}
+
+func applyAssistantConversationWorkspace(run *AssistantRun, workspace string) {
+	if run == nil {
+		return
+	}
+	if run.Params == nil {
+		run.Params = map[string]any{}
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return
+	}
+	if paramText(run.Params, "workspace") == "" {
+		run.Params["workspace"] = workspace
+	}
+	if workspace == PromptTaskTypeCanvas && paramText(run.Params, "_source", "source") == "" {
+		run.Params["_source"] = CanvasTaskSource
+	}
 }
 
 func GetUserAssistantRunForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {

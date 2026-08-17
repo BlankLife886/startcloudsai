@@ -46,13 +46,14 @@ import { clearPreviewCache, setCanvasPreviewScale } from "@/lib/canvas/canvas-pr
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { useAgentStore } from "@/stores/use-agent-store";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasPersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
+import { copyCanvasNodeMetadata } from "@/lib/canvas/canvas-node-copy";
 import { connectionLayerBox, findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     applyFailedCanvasTaskToNode,
@@ -71,11 +72,11 @@ import {
     imageExtension,
     isAudioFile,
     isGenerationCanceled,
-    pendingCanvasImageTasks,
+    pendingCanvasTasks,
     resetInterruptedGeneration,
     resolveMetadataReferences,
     sourceNodeReferenceImages,
-    type PendingCanvasImageTask,
+    type PendingCanvasTask,
 } from "@/lib/canvas/canvas-generation-helpers";
 import { getNodeDefinition, isBuiltinNodeType as isBuiltinType, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
@@ -84,7 +85,26 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasCostConfirmDialog, type CanvasCostPayload } from "@/components/canvas/canvas-cost-confirm-dialog";
 import { CanvasHomeDialog } from "@/components/canvas/canvas-home-dialog";
 import { estimateCanvasGenerationCost, type CanvasCostEstimate } from "@/lib/canvas/canvas-generation-cost";
-import { compileCanvasWorkflow, findWorkflowOutputNodes } from "@/lib/canvas/canvas-workflow";
+import {
+    advanceCanvasWorkflowCheckpoint,
+    compileCanvasWorkflow,
+    createCanvasWorkflowCheckpoint,
+    failCanvasWorkflowCheckpoint,
+    findCanvasWorkflowCancellationClosure,
+    findRunnableCanvasWorkflowNodeIds,
+    findWorkflowOutputNodes,
+    normalizeCanvasWorkflowCheckpoint,
+    reconcileCanvasWorkflowCheckpoint,
+    reconcileCanvasWorkflowFailureOutput,
+    reconcileCanvasWorkflowOutputs,
+    validateCanvasWorkflowNodeOutputs,
+    validateCanvasWorkflowNodeReadiness,
+    workflowPlanMatchesCheckpoint,
+    type CanvasWorkflowCheckpoint,
+    type CanvasWorkflowPlan,
+    type CanvasWorkflowNodeOutputIssue,
+    type CanvasWorkflowNodeReadinessIssue,
+} from "@/lib/canvas/canvas-workflow";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -104,8 +124,10 @@ import {
 } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
-import { applyCanvasTransparentRemoval, requestCanvasBackgroundRemoval, waitForCanvasTask, imagesFromCanvasTask } from "@/services/canvas-task-api";
+import { applyCanvasTransparentRemoval, requestCanvasBackgroundRemoval, waitForCanvasAssistantRun, waitForCanvasTask, imagesFromCanvasTask } from "@/services/canvas-task-api";
 import { fetchSiteBackgroundRemovalTools } from "@/services/site-model-catalog";
+import { acquireCanvasWorkflowRun, getActiveCanvasWorkflowRun, updateCanvasWorkflowRun, type CanvasWorkflowRunRecord } from "@/services/canvas-workflow-run-api";
+import { StarcloudsApiError } from "@/services/starclouds-api";
 
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
@@ -135,10 +157,16 @@ type CanvasGenerationRequest = {
 };
 
 type CanvasWorkflowRunState = {
-    status: "idle" | "running" | "success" | "error" | "canceled";
+    status: "idle" | "running" | "locked" | "refresh" | "success" | "error" | "canceled";
     completed: number;
     total: number;
     currentNodeId?: string;
+    currentNodeTitle?: string;
+    errorMessage?: string;
+    startedAt?: string;
+    running?: number;
+    queued?: number;
+    canceling?: boolean;
 };
 
 const VIDEO_NODE_MAX_WIDTH = 360;
@@ -159,6 +187,35 @@ const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
 const NODE_CONTROL_DRAG_THRESHOLD = 5;
+const CANVAS_WORKFLOW_OWNER_PREFIX = "infinite-canvas:workflow-owner:";
+
+function canvasWorkflowOwnerId(projectId: string) {
+    const key = `${CANVAS_WORKFLOW_OWNER_PREFIX}${projectId}`;
+    const existing = window.sessionStorage.getItem(key);
+    if (existing) return existing;
+    const ownerId = crypto.randomUUID();
+    window.sessionStorage.setItem(key, ownerId);
+    return ownerId;
+}
+
+function mergeWorkflowRunCheckpoint(checkpoint: CanvasWorkflowCheckpoint, run: CanvasWorkflowRunRecord): CanvasWorkflowCheckpoint {
+    const nodeIds = run.nodeIds.length ? run.nodeIds : checkpoint.nodeIds;
+    const validIds = new Set(nodeIds);
+    const completedNodeIds = [...new Set([...checkpoint.completedNodeIds, ...run.completedNodeIds])].filter((id) => validIds.has(id));
+    const currentNodeId = run.currentNodeId && validIds.has(run.currentNodeId) ? run.currentNodeId : checkpoint.currentNodeId;
+    return {
+        ...checkpoint,
+        status: "running",
+        runId: run.id,
+        nodeIds,
+        completedNodeIds,
+        ...(currentNodeId ? { currentNodeId } : { currentNodeId: undefined }),
+        errorNodeId: undefined,
+        errorMessage: undefined,
+        startedAt: run.startedAt || checkpoint.startedAt,
+        updatedAt: run.updatedAt || checkpoint.updatedAt,
+    };
+}
 
 function isCanvasTextEditTarget(target: EventTarget | null) {
     return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
@@ -189,6 +246,7 @@ function InfiniteCanvasPage() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const projectId = params.id || "";
+    const workflowOwnerId = useMemo(() => canvasWorkflowOwnerId(projectId), [projectId]);
     const localAgentConnected = useAgentStore((state) => state.connected);
     const localAgentActivity = useAgentStore((state) => state.activity);
     const localAgentEnabled = useAgentStore((state) => state.enabled);
@@ -259,7 +317,7 @@ function InfiniteCanvasPage() {
     const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [nodeCreatePosition, setNodeCreatePosition] = useState<Position | null>(null);
-    const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
+    const [runningNodeIds, setRunningNodeIds] = useState<Set<string>>(() => new Set());
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
@@ -359,11 +417,42 @@ function InfiniteCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
-    const workflowRunRef = useRef<{ canceled: boolean; currentNodeId?: string }>({ canceled: false });
-    const pendingResumeRef = useRef<PendingCanvasImageTask[]>([]);
-    const resumePendingCanvasTasksRef = useRef<(targets: PendingCanvasImageTask[]) => Promise<void>>(async () => undefined);
+    const workflowRunRef = useRef<{ cancelQueued: boolean; lockLost?: boolean; currentNodeId?: string; canceledNodeIds: Set<string> }>({ cancelQueued: false, canceledNodeIds: new Set() });
+    const workflowPlanRef = useRef<CanvasWorkflowPlan | null>(null);
+    const pendingResumeRef = useRef<PendingCanvasTask[]>([]);
+    const pendingWorkflowResumeRef = useRef<CanvasWorkflowCheckpoint | null>(null);
+    const resumePendingCanvasTasksRef = useRef<(targets: PendingCanvasTask[]) => Promise<void>>(async () => undefined);
+    const resumeWorkflowRef = useRef<(checkpoint: CanvasWorkflowCheckpoint) => Promise<void>>(async () => undefined);
+    const workflowCheckpointRef = useRef<CanvasWorkflowCheckpoint | null>(null);
+    const workflowBrowserLockReleaseRef = useRef<(() => void) | null>(null);
+    const pageActiveRef = useRef(true);
     const projectLoadedRef = useRef(false);
     projectLoadedRef.current = projectLoaded;
+
+    const releaseWorkflowBrowserLock = useCallback(() => {
+        workflowBrowserLockReleaseRef.current?.();
+        workflowBrowserLockReleaseRef.current = null;
+    }, []);
+
+    const acquireWorkflowBrowserLock = useCallback(async () => {
+        if (workflowBrowserLockReleaseRef.current) return true;
+        if (!navigator.locks) return true;
+        return new Promise<boolean>((resolve) => {
+            void navigator.locks.request(`startclouds-canvas-workflow:${projectId}`, { ifAvailable: true }, async (lock) => {
+                if (!lock) {
+                    resolve(false);
+                    return;
+                }
+                let release!: () => void;
+                const held = new Promise<void>((done) => {
+                    release = done;
+                });
+                workflowBrowserLockReleaseRef.current = release;
+                resolve(true);
+                await held;
+            });
+        });
+    }, [projectId]);
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -396,14 +485,29 @@ function InfiniteCanvasPage() {
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
-    const persistImageTaskId = useCallback((nodeId: string, taskId: string, imageId?: string) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? attachCanvasTaskId(node, taskId, imageId) : node)));
-    }, []);
+    const commitNodes = useCallback(
+        (updater: (current: CanvasNodeData[]) => CanvasNodeData[]) => {
+            const next = updater(nodesRef.current);
+            nodesRef.current = next;
+            setNodes(next);
+            updateProject(projectId, { nodes: next, connections: connectionsRef.current });
+            return next;
+        },
+        [projectId, updateProject],
+    );
+
+    const persistCanvasTaskId = useCallback(
+        async (nodeId: string, taskId: string, imageId?: string, taskKind: "image" | "assistant" = "image") => {
+            commitNodes((current) => current.map((node) => (node.id === nodeId ? attachCanvasTaskId(node, taskId, imageId, taskKind) : node)));
+            await flushCanvasPersistence();
+        },
+        [commitNodes],
+    );
 
     const resumePendingCanvasTasks = useCallback(
-        async (targets: PendingCanvasImageTask[]) => {
+        async (targets: PendingCanvasTask[]) => {
             if (!targets.length) return;
-            const byNode = new Map<string, PendingCanvasImageTask[]>();
+            const byNode = new Map<string, PendingCanvasTask[]>();
             for (const target of targets) {
                 const list = byNode.get(target.nodeId) || [];
                 list.push(target);
@@ -411,78 +515,93 @@ function InfiniteCanvasPage() {
             }
             await Promise.all(
                 [...byNode.entries()].map(async ([nodeId, nodeTargets]) => {
-                    const controller = startGenerationRequest(nodeId, nodeId, nodeId);
-                    setRunningNodeId(nodeId);
+                    const runningId = nodesRef.current.find((node) => node.id === nodeId)?.metadata?.workflowProducerNodeId || nodeId;
+                    const controller = startGenerationRequest(nodeId, nodeId, runningId);
+                    setRunningNodeIds((current) => new Set(current).add(runningId));
                     try {
                         await Promise.all(
                             nodeTargets.map(async (target) => {
                                 try {
-                                    const task = await waitForCanvasTask(target.taskId, controller.signal);
-                                    const [rawImage] = imagesFromCanvasTask(task);
-                                    const node = nodesRef.current.find((item) => item.id === target.nodeId);
-                                    const image = node?.metadata?.background === "transparent" ? await applyCanvasTransparentRemoval(rawImage, controller.signal) : rawImage;
-                                    const uploaded = await uploadImage(image.dataUrl);
-                                    setNodes((prev) => prev.map((node) => (node.id === target.nodeId ? applyUploadedImageToNode(node, uploaded, target.imageId) : node)));
+                                    if (target.kind === "assistant") {
+                                        const content = await waitForCanvasAssistantRun(target.taskId, () => undefined, controller.signal);
+                                        commitNodes((current) =>
+                                            current.map((node) =>
+                                                node.id === target.nodeId
+                                                    ? { ...node, metadata: { ...node.metadata, content, status: NODE_STATUS_SUCCESS, taskId: undefined, taskKind: undefined, errorDetails: undefined } }
+                                                    : node,
+                                            ),
+                                        );
+                                    } else {
+                                        const task = await waitForCanvasTask(target.taskId, controller.signal);
+                                        const [rawImage] = imagesFromCanvasTask(task);
+                                        const node = nodesRef.current.find((item) => item.id === target.nodeId);
+                                        const image = node?.metadata?.background === "transparent" ? await applyCanvasTransparentRemoval(rawImage, controller.signal) : rawImage;
+                                        const uploaded = await uploadImage(image.dataUrl);
+                                        commitNodes((current) => current.map((item) => (item.id === target.nodeId ? applyUploadedImageToNode(item, uploaded, target.imageId) : item)));
+                                    }
                                 } catch (error) {
                                     if (isGenerationCanceled(error)) return;
                                     const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                                    setNodes((prev) => prev.map((node) => (node.id === target.nodeId ? applyFailedCanvasTaskToNode(node, errorDetails, target.imageId) : node)));
+                                    commitNodes((current) => current.map((node) => (node.id === target.nodeId ? applyFailedCanvasTaskToNode(node, errorDetails, target.imageId) : node)));
                                 }
                             }),
                         );
+                        const producerIds = new Set(
+                            nodesRef.current
+                                .filter((node) => nodeTargets.some((target) => target.nodeId === node.id))
+                                .map((node) => node.metadata?.workflowProducerNodeId)
+                                .filter((id): id is string => Boolean(id)),
+                        );
+                        if (producerIds.size) {
+                            const completedAt = new Date();
+                            commitNodes((current) =>
+                                current.map((node) => {
+                                    if (!producerIds.has(node.id)) return node;
+                                    const outputIds = node.metadata?.workflowOutputNodeIds || [];
+                                    const outputs = outputIds.map((id) => current.find((item) => item.id === id)).filter((item): item is CanvasNodeData => Boolean(item));
+                                    const allSucceeded = outputs.length > 0 && outputs.every((item) => item.metadata?.status === NODE_STATUS_SUCCESS);
+                                    const anyLoading = outputs.some((item) => item.metadata?.status === NODE_STATUS_LOADING);
+                                    const firstError = outputs.find((item) => item.metadata?.status === NODE_STATUS_ERROR)?.metadata?.errorDetails;
+                                    return {
+                                        ...node,
+                                        metadata: {
+                                            ...node.metadata,
+                                            status: allSucceeded ? NODE_STATUS_SUCCESS : anyLoading ? NODE_STATUS_LOADING : NODE_STATUS_ERROR,
+                                            errorDetails: allSucceeded || anyLoading ? undefined : firstError || t("canvas.projectPage.generationFailed"),
+                                            executionStatus: allSucceeded ? "succeeded" : anyLoading ? "running" : "failed",
+                                            ...(!anyLoading
+                                                ? {
+                                                      generationCompletedAt: completedAt.toISOString(),
+                                                      generationDurationMs: Math.max(0, completedAt.getTime() - new Date(node.metadata?.generationStartedAt || completedAt).getTime()),
+                                                  }
+                                                : {}),
+                                        },
+                                    };
+                                }),
+                            );
+                        }
                     } finally {
                         finishGenerationRequest(nodeId, controller);
-                        setRunningNodeId((current) => (current === nodeId ? null : current));
+                        setRunningNodeIds((current) => {
+                            const next = new Set(current);
+                            next.delete(runningId);
+                            return next;
+                        });
                     }
                 }),
             );
+            await flushCanvasPersistence();
         },
-        [finishGenerationRequest, startGenerationRequest, t],
+        [commitNodes, finishGenerationRequest, startGenerationRequest, t],
     );
     resumePendingCanvasTasksRef.current = resumePendingCanvasTasks;
 
-    const stopGenerationByRunningId = useCallback((runningId: string) => {
-        const affectedNodeIds = new Set<string>();
-        generationRequestsRef.current.forEach((request) => {
-            if (request.runningNodeId !== runningId) return;
-            request.controller.abort();
-            generationRequestsRef.current.delete(request.targetNodeId);
-            affectedNodeIds.add(request.targetNodeId);
-            affectedNodeIds.add(request.originNodeId);
-        });
-        setRunningNodeId((current) => (current === runningId ? null : current));
-        if (!affectedNodeIds.size) return;
-        setNodes((prev) =>
-            prev.map((node) =>
-                affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
-                    ? {
-                          ...node,
-                          metadata: {
-                              ...node.metadata,
-                              status: NODE_STATUS_IDLE,
-                              taskId: undefined,
-                              errorDetails: undefined,
-                              images: node.metadata.images?.map((image) => (image.status === NODE_STATUS_LOADING ? { ...image, status: NODE_STATUS_ERROR, taskId: undefined, errorDetails: t("common.requestCanceled") } : image)),
-                          },
-                      }
-                    : node,
-            ),
-        );
-    }, [t]);
-
-    const confirmStopGeneration = useCallback(
-        (nodeId: string) => {
-            modal.confirm({
-                title: t("canvas.projectPage.stopTitle"),
-                content: t("canvas.projectPage.stopDescription"),
-                okText: t("canvas.projectPage.stop"),
-                cancelText: t("canvas.projectPage.continue"),
-                okButtonProps: { danger: true },
-                onOk: () => stopGenerationByRunningId(nodeId),
-            });
-        },
-        [modal, stopGenerationByRunningId, t],
-    );
+    useEffect(() => {
+        pageActiveRef.current = true;
+        return () => {
+            pageActiveRef.current = false;
+        };
+    }, []);
 
     useEffect(() => {
         if (!hydrated) return;
@@ -496,7 +615,12 @@ function InfiniteCanvasPage() {
 
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
-            pendingResumeRef.current = pendingCanvasImageTasks(restoredNodes);
+            const persistedCheckpoint = normalizeCanvasWorkflowCheckpoint(project.workflowRun);
+            const checkpoint = persistedCheckpoint ? reconcileCanvasWorkflowFailureOutput(persistedCheckpoint, restoredNodes, project.connections) : null;
+            if (checkpoint !== persistedCheckpoint) updateProject(projectId, { workflowRun: checkpoint });
+            pendingResumeRef.current = pendingCanvasTasks(restoredNodes);
+            pendingWorkflowResumeRef.current = checkpoint?.status === "running" ? checkpoint : null;
+            workflowCheckpointRef.current = checkpoint;
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             setNodes(restoredNodes);
             setConnections(project.connections);
@@ -505,6 +629,14 @@ function InfiniteCanvasPage() {
             setBackgroundMode(project.backgroundMode);
             setShowImageInfo(project.showImageInfo || false);
             setViewport(project.viewport);
+            workflowRunRef.current = checkpoint?.status === "running" ? { cancelQueued: false, currentNodeId: checkpoint.currentNodeId || "__workflow_resume__", canceledNodeIds: new Set() } : { cancelQueued: false, canceledNodeIds: new Set() };
+            setWorkflowRun(
+                checkpoint?.status === "running"
+                    ? { status: "running", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: checkpoint.currentNodeId, currentNodeTitle: restoredNodes.find((node) => node.id === checkpoint.currentNodeId)?.title, startedAt: checkpoint.startedAt }
+                    : checkpoint?.status === "failed"
+                      ? { status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: checkpoint.errorNodeId || checkpoint.currentNodeId, currentNodeTitle: restoredNodes.find((node) => node.id === (checkpoint.errorNodeId || checkpoint.currentNodeId))?.title, errorMessage: checkpoint.errorMessage, startedAt: checkpoint.startedAt }
+                    : { status: "idle", completed: 0, total: 0 },
+            );
             historyRef.current = { past: [], future: [] };
             if (historyCommitTimerRef.current) {
                 clearTimeout(historyCommitTimerRef.current);
@@ -523,14 +655,19 @@ function InfiniteCanvasPage() {
         };
         void restore();
         return () => clearPreviewCache();
-    }, [hydrated, navigate, openProject, projectId]);
+    }, [hydrated, navigate, openProject, projectId, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded) return;
         const targets = pendingResumeRef.current;
+        const checkpoint = pendingWorkflowResumeRef.current;
         pendingResumeRef.current = [];
-        if (!targets.length) return;
-        void resumePendingCanvasTasksRef.current(targets);
+        pendingWorkflowResumeRef.current = null;
+        if (!targets.length && !checkpoint) return;
+        void (async () => {
+            if (targets.length) await resumePendingCanvasTasksRef.current(targets);
+            if (checkpoint && pageActiveRef.current) await resumeWorkflowRef.current(checkpoint);
+        })();
         return () => {
             const nodeIds = new Set(targets.map((target) => target.nodeId));
             generationRequestsRef.current.forEach((request) => {
@@ -542,11 +679,12 @@ function InfiniteCanvasPage() {
 
     useEffect(() => {
         return () => {
+            releaseWorkflowBrowserLock();
             generationRequestsRef.current.forEach((request) => request.controller.abort());
             generationRequestsRef.current.clear();
             if (projectLoadedRef.current) updateProject(projectId, { nodes: nodesRef.current, connections: connectionsRef.current });
         };
-    }, [projectId, updateProject]);
+    }, [projectId, releaseWorkflowBrowserLock, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
@@ -918,7 +1056,7 @@ function InfiniteCanvasPage() {
             setMaskEditNodeId((current) => (current && allIds.has(current) ? null : current));
             setAngleNodeId((current) => (current && allIds.has(current) ? null : current));
             setPreviewNodeId((current) => (current && allIds.has(current) ? null : current));
-            setRunningNodeId((current) => (current && allIds.has(current) ? null : current));
+            setRunningNodeIds((current) => new Set([...current].filter((nodeId) => !allIds.has(nodeId))));
             setContextMenu((current) => (current?.type === "node" && allIds.has(current.nodeId) ? null : current));
             cleanupCanvasFiles({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
         },
@@ -952,7 +1090,7 @@ function InfiniteCanvasPage() {
         setMaskEditNodeId(null);
         setAngleNodeId(null);
         setPreviewNodeId(null);
-        setRunningNodeId(null);
+        setRunningNodeIds(new Set());
         deselectCanvas();
         setClearConfirmOpen(false);
         cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });
@@ -963,11 +1101,13 @@ function InfiniteCanvasPage() {
         if (!source) return;
 
         const id = `${source.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const idMap = new Map([[source.id, id]]);
         const next: CanvasNodeData = {
             ...source,
             id,
             title: `${source.title} Copy`,
             position: { x: source.position.x + 36, y: source.position.y + 36 },
+            metadata: copyCanvasNodeMetadata(source.metadata, idMap),
         };
 
         setNodes((prev) => [...prev, next]);
@@ -1024,14 +1164,14 @@ function InfiniteCanvasPage() {
                     x: node.position.x + dx,
                     y: node.position.y + dy,
                 },
-                metadata: node.metadata ? { ...node.metadata } : undefined,
             };
         });
 
         const pastedNodes = nextNodes.map((node) => {
+            const metadata = copyCanvasNodeMetadata(node.metadata, idMap);
             const groupId = node.metadata?.groupId;
-            if (!groupId) return node;
-            return { ...node, metadata: { ...node.metadata, groupId: idMap.get(groupId) } };
+            if (!groupId) return { ...node, metadata };
+            return { ...node, metadata: { ...metadata, groupId: idMap.get(groupId) } };
         });
 
         const nextConnections = clipboard.connections.flatMap((connection, index) => {
@@ -1941,7 +2081,7 @@ function InfiniteCanvasPage() {
             const source = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey };
             const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
             setMaskEditNodeId(null);
-            setRunningNodeId(childId);
+            setRunningNodeIds((current) => new Set(current).add(childId));
             setNodes((prev) => [
                 ...prev,
                 {
@@ -1960,7 +2100,7 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(childId, taskId) }).then((items) => items[0]);
+                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(childId, taskId) }).then((items) => items[0]);
                 const uploaded = await uploadImage(image.dataUrl);
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
             } catch (error) {
@@ -1970,10 +2110,14 @@ function InfiniteCanvasPage() {
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
             } finally {
                 finishGenerationRequest(childId, controller);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(childId);
+                    return next;
+                });
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistCanvasTaskId, requestCostConfirm, startGenerationRequest, t],
     );
 
     const upscaleImageNode = useCallback(
@@ -2021,7 +2165,7 @@ function InfiniteCanvasPage() {
                 dataUrl: node.metadata.content,
                 storageKey: node.metadata.storageKey,
             };
-            setRunningNodeId(childId);
+            setRunningNodeIds((current) => new Set(current).add(childId));
             setNodes((prev) => [
                 ...prev,
                 {
@@ -2039,7 +2183,7 @@ function InfiniteCanvasPage() {
             setSelectedConnectionId(null);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const removed = await requestCanvasBackgroundRemoval(source, backgroundRemovalModelKey, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(childId, taskId) });
+                const removed = await requestCanvasBackgroundRemoval(source, backgroundRemovalModelKey, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(childId, taskId) });
                 const meta = await readImageMeta(removed.dataUrl);
                 setNodes((prev) =>
                     prev.map((item) =>
@@ -2067,10 +2211,14 @@ function InfiniteCanvasPage() {
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
             } finally {
                 finishGenerationRequest(childId, controller);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(childId);
+                    return next;
+                });
             }
         },
-        [backgroundRemovalModelKey, backgroundRemovalPricePoints, effectiveConfig, finishGenerationRequest, message, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
+        [backgroundRemovalModelKey, backgroundRemovalPricePoints, effectiveConfig, finishGenerationRequest, message, persistCanvasTaskId, requestCostConfirm, startGenerationRequest, t],
     );
 
     const generateAngleNode = useCallback(
@@ -2086,7 +2234,7 @@ function InfiniteCanvasPage() {
                 { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey },
             ]);
             setAngleNodeId(null);
-            setRunningNodeId(childId);
+            setRunningNodeIds((current) => new Set(current).add(childId));
             setNodes((prev) => [
                 ...prev,
                 {
@@ -2109,7 +2257,7 @@ function InfiniteCanvasPage() {
                     prompt,
                     [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }],
                     undefined,
-                    { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(childId, taskId) },
+                    { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(childId, taskId) },
                 ).then((items) => items[0]);
                 const uploaded = await uploadImage(image.dataUrl);
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
@@ -2119,10 +2267,14 @@ function InfiniteCanvasPage() {
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
             } finally {
                 finishGenerationRequest(childId, controller);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(childId);
+                    return next;
+                });
             }
         },
-        [effectiveConfig, finishGenerationRequest, openConfigDialog, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, openConfigDialog, persistCanvasTaskId, requestCostConfirm, startGenerationRequest, t],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
@@ -2290,6 +2442,45 @@ function InfiniteCanvasPage() {
         setNodeCreatePosition(screenToCanvas(event.clientX, event.clientY));
     }, [screenToCanvas]);
 
+    const markGenerationStarted = useCallback((nodeId: string) => {
+        const startedAt = new Date().toISOString();
+        setNodes((current) =>
+            current.map((node) =>
+                node.id === nodeId
+                    ? {
+                          ...node,
+                          metadata: {
+                              ...node.metadata,
+                              executionStatus: "running",
+                              generationStartedAt: node.metadata?.executionStatus === "running" && node.metadata.generationStartedAt ? node.metadata.generationStartedAt : startedAt,
+                              generationCompletedAt: undefined,
+                              generationDurationMs: undefined,
+                          },
+                      }
+                    : node,
+            ),
+        );
+    }, []);
+
+    const markGenerationFinished = useCallback((nodeId: string) => {
+        const completedAt = new Date();
+        setNodes((current) =>
+            current.map((node) => {
+                if (node.id !== nodeId || node.metadata?.executionStatus !== "running") return node;
+                const startedAt = node.metadata.generationStartedAt ? new Date(node.metadata.generationStartedAt) : completedAt;
+                return {
+                    ...node,
+                    metadata: {
+                        ...node.metadata,
+                        executionStatus: node.metadata.status === NODE_STATUS_SUCCESS ? "succeeded" : "failed",
+                        generationCompletedAt: completedAt.toISOString(),
+                        generationDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+                    },
+                };
+            }),
+        );
+    }, []);
+
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: { skipCostConfirm?: boolean } = {}) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
@@ -2311,7 +2502,8 @@ function InfiniteCanvasPage() {
             if (sourceNode && builtinPanel?.writeBackToSelf && builtinPanel.mode === "image") {
                 const scene = prompt.trim();
                 if (!scene) return false;
-                setRunningNodeId(nodeId);
+                markGenerationStarted(nodeId);
+                setRunningNodeIds((current) => new Set(current).add(nodeId));
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
                 try {
@@ -2327,8 +2519,8 @@ function InfiniteCanvasPage() {
                             : [],
                     );
                     const image = refs.length
-                        ? await requestEdit({ ...generationConfig, count: "1" }, fullPrompt, refs, undefined, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(nodeId, taskId) }).then((items) => items[0])
-                        : await requestGeneration({ ...generationConfig, count: "1" }, fullPrompt, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(nodeId, taskId) }).then((items) => items[0]);
+                        ? await requestEdit({ ...generationConfig, count: "1" }, fullPrompt, refs, undefined, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(nodeId, taskId) }).then((items) => items[0])
+                        : await requestGeneration({ ...generationConfig, count: "1" }, fullPrompt, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(nodeId, taskId) }).then((items) => items[0]);
                     const uploaded = await uploadImage(image.dataUrl);
                     setNodes((prev) =>
                         prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...imageMetadata(uploaded), prompt: scene, model: generationConfig.model, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)),
@@ -2344,10 +2536,16 @@ function InfiniteCanvasPage() {
                     return false;
                 } finally {
                     finishGenerationRequest(nodeId, controller);
+                    markGenerationFinished(nodeId);
+                    setRunningNodeIds((current) => {
+                        const next = new Set(current);
+                        next.delete(nodeId);
+                        return next;
+                    });
                 }
             }
 
-            setRunningNodeId(nodeId);
+            setRunningNodeIds((current) => new Set(current).add(nodeId));
             const runController = startGenerationRequest(nodeId, nodeId, nodeId);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
@@ -2357,15 +2555,24 @@ function InfiniteCanvasPage() {
             const effectivePrompt = generationContext.prompt.trim();
             if (runController.signal.aborted) {
                 finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(nodeId);
+                    return next;
+                });
                 return false;
             }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
             if (!effectivePrompt && (mode === "text" || mode === "audio")) {
                 finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(nodeId);
+                    return next;
+                });
                 return false;
             }
+            markGenerationStarted(nodeId);
             let pendingChildIds: string[] = [];
             if (markSourceStatus)
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
@@ -2462,7 +2669,7 @@ function InfiniteCanvasPage() {
                             try {
                                 const requestOptions = {
                                     signal: controller.signal,
-                                    onCreated: (taskId: string) => persistImageTaskId(rootId, taskId, imageId),
+                                    onCreated: (taskId: string) => persistCanvasTaskId(rootId, taskId, imageId),
                                     onResolved: async (items: Array<{ dataUrl: string }>) => {
                                         if (items[0]?.dataUrl) await applyPreview(imageId, items[0].dataUrl);
                                     },
@@ -2690,7 +2897,7 @@ function InfiniteCanvasPage() {
                                 if (isConfigNode) return;
                                 setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
                             },
-                            { signal: controller.signal },
+                            { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(targetNodeId, taskId, undefined, "assistant") },
                         )
                             .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
                             .finally(() => finishGenerationRequest(targetNodeId, controller));
@@ -2701,7 +2908,7 @@ function InfiniteCanvasPage() {
                 setNodes((prev) =>
                     prev.map((node) =>
                         childIds.includes(node.id)
-                            ? { ...node, metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, status: NODE_STATUS_SUCCESS } }
+                            ? { ...node, metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, status: NODE_STATUS_SUCCESS, taskId: undefined, taskKind: undefined } }
                             : node.id === nodeId && isConfigNode
                               ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } }
                               : node.id === nodeId && !editingTextNode
@@ -2709,7 +2916,7 @@ function InfiniteCanvasPage() {
                                       ...node,
                                       type: CanvasNodeType.Text,
                                       title: prompt.slice(0, 32) || "Generated Text",
-                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, status: NODE_STATUS_SUCCESS },
+                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, status: NODE_STATUS_SUCCESS, taskId: undefined, taskKind: undefined },
                                   }
                                 : node,
                     ),
@@ -2725,11 +2932,390 @@ function InfiniteCanvasPage() {
                 return false;
             } finally {
                 finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
+                markGenerationFinished(nodeId);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(nodeId);
+                    return next;
+                });
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, markGenerationFinished, markGenerationStarted, message, openConfigDialog, persistCanvasTaskId, requestCostConfirm, startGenerationRequest, t],
     );
+
+    const persistWorkflowCheckpoint = useCallback(
+        async (checkpoint: CanvasWorkflowCheckpoint | null) => {
+            workflowCheckpointRef.current = checkpoint;
+            updateProject(projectId, {
+                workflowRun: checkpoint,
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+            });
+            await flushCanvasPersistence();
+        },
+        [projectId, updateProject],
+    );
+
+    const workflowReadinessErrorMessage = useCallback(
+        (issue: CanvasWorkflowNodeReadinessIssue) => {
+            const nodeName = nodesRef.current.find((node) => node.id === issue.nodeId)?.title || t("canvas.node.untitled");
+            const relatedName = nodesRef.current.find((node) => node.id === issue.relatedNodeId)?.title || issue.relatedNodeId;
+            if (issue.reason === "dependency_incomplete") return t("canvas.workflow.dependencyIncomplete", { name: nodeName, dependency: relatedName });
+            if (issue.reason === "reference_missing") return t("canvas.workflow.referenceMissing", { name: nodeName, reference: relatedName });
+            return t("canvas.workflow.referenceEmpty", { name: nodeName, reference: relatedName });
+        },
+        [t],
+    );
+
+    const workflowOutputErrorMessage = useCallback(
+        (issue: CanvasWorkflowNodeOutputIssue) => {
+            const nodeName = nodesRef.current.find((node) => node.id === issue.nodeId)?.title || t("canvas.node.untitled");
+            if (issue.errorDetails) return `${nodeName}: ${issue.errorDetails}`;
+            if (issue.reason === "output_missing") return t("canvas.workflow.outputMissing", { name: nodeName });
+            return t("canvas.workflow.outputIncomplete", { name: nodeName, expected: issue.expected, actual: issue.actual });
+        },
+        [t],
+    );
+
+    const syncServerWorkflowCheckpoint = useCallback(
+        async (checkpoint: CanvasWorkflowCheckpoint, status: CanvasWorkflowRunRecord["status"] = "running", errorMessage = "") => {
+            if (!checkpoint.runId) return;
+            let lastError: unknown;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    await updateCanvasWorkflowRun(projectId, checkpoint.runId, {
+                        ownerId: workflowOwnerId,
+                        status,
+                        completedNodeIds: checkpoint.completedNodeIds,
+                        currentNodeId: checkpoint.currentNodeId,
+                        errorMessage,
+                    });
+                    return;
+                } catch (error) {
+                    lastError = error;
+                    if (error instanceof StarcloudsApiError && error.code === "workflow_run_lock_lost") throw error;
+                    if (attempt < 2) await new Promise<void>((resolve) => window.setTimeout(resolve, 600 * (attempt + 1)));
+                }
+            }
+            throw lastError;
+        },
+        [projectId, workflowOwnerId],
+    );
+
+    const showLockedWorkflow = useCallback(
+        (checkpoint: CanvasWorkflowCheckpoint, run?: CanvasWorkflowRunRecord | null) => {
+            const lockedCheckpoint = run ? mergeWorkflowRunCheckpoint(checkpoint, run) : checkpoint;
+            workflowCheckpointRef.current = lockedCheckpoint;
+            workflowRunRef.current = { cancelQueued: false, canceledNodeIds: new Set() };
+            const currentNodeId = lockedCheckpoint.currentNodeId;
+            setWorkflowRun({
+                status: "locked",
+                completed: lockedCheckpoint.completedNodeIds.length,
+                total: lockedCheckpoint.nodeIds.length,
+                currentNodeId,
+                currentNodeTitle: nodesRef.current.find((node) => node.id === currentNodeId)?.title,
+                startedAt: lockedCheckpoint.startedAt,
+            });
+        },
+        [],
+    );
+
+    const acquireDurableWorkflowCheckpoint = useCallback(
+        async (source: CanvasWorkflowCheckpoint) => {
+            const browserLockAcquired = await acquireWorkflowBrowserLock();
+            if (!browserLockAcquired) {
+                const active = await getActiveCanvasWorkflowRun(projectId).catch(() => ({ run: null }));
+                showLockedWorkflow(source, active.run);
+                message.info(t("canvas.workflow.runningElsewhere"));
+                return null;
+            }
+
+            let response: Awaited<ReturnType<typeof acquireCanvasWorkflowRun>> | null = null;
+            let lastError: unknown;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    response = await acquireCanvasWorkflowRun(projectId, workflowOwnerId, source.nodeIds);
+                    break;
+                } catch (error) {
+                    lastError = error;
+                    const projectPending = error instanceof StarcloudsApiError && error.code === "not_found";
+                    if (!projectPending || attempt === 2) break;
+                    await new Promise<void>((resolve) => window.setTimeout(resolve, 700 * (attempt + 1)));
+                }
+            }
+            if (!response) {
+                releaseWorkflowBrowserLock();
+                throw lastError;
+            }
+            const checkpoint = mergeWorkflowRunCheckpoint(source, response.run);
+            if (!response.acquired) {
+                releaseWorkflowBrowserLock();
+                showLockedWorkflow(checkpoint, response.run);
+                message.info(t("canvas.workflow.runningElsewhere"));
+                return null;
+            }
+            return checkpoint;
+        },
+        [acquireWorkflowBrowserLock, message, projectId, releaseWorkflowBrowserLock, showLockedWorkflow, t, workflowOwnerId],
+    );
+
+    const executeWorkflow = useCallback(
+        async (sourceCheckpoint: CanvasWorkflowCheckpoint, resumed = false) => {
+            let checkpoint = normalizeCanvasWorkflowCheckpoint(sourceCheckpoint);
+            if (!checkpoint) return;
+            const retryingFailure = checkpoint.status === "failed";
+            checkpoint = { ...checkpoint, status: "running", ...(retryingFailure ? { currentNodeId: undefined } : {}), errorNodeId: undefined, errorMessage: undefined };
+            const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current);
+            if (!compiled.ok || !workflowPlanMatchesCheckpoint(compiled.plan, checkpoint)) {
+                const errorMessage = t("canvas.workflow.graphChanged");
+                setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            }
+            const executionPlan = compiled.plan;
+            workflowPlanRef.current = executionPlan;
+            try {
+                const durableCheckpoint = await acquireDurableWorkflowCheckpoint(checkpoint);
+                if (!durableCheckpoint) return;
+                checkpoint = durableCheckpoint;
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : t("canvas.workflow.syncFailed");
+                setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            }
+
+            const interrupted = t("canvas.generation.interrupted");
+            const reconciled = reconcileCanvasWorkflowCheckpoint(checkpoint, nodesRef.current, interrupted, connectionsRef.current);
+            if (!reconciled.ok) {
+                const current = nodesRef.current.find((node) => node.id === reconciled.nodeId);
+                const errorMessage = reconciled.reason === "missing" ? t("canvas.workflow.nodeMissing") : t("canvas.workflow.failed", { name: current?.title || t("canvas.node.untitled") });
+                checkpoint = failCanvasWorkflowCheckpoint(checkpoint, reconciled.nodeId, errorMessage);
+                workflowRunRef.current = { cancelQueued: false, canceledNodeIds: new Set() };
+                await persistWorkflowCheckpoint(checkpoint);
+                await syncServerWorkflowCheckpoint(checkpoint, "failed", errorMessage).catch(() => undefined);
+                releaseWorkflowBrowserLock();
+                setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: reconciled.nodeId, currentNodeTitle: current?.title, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            }
+
+            checkpoint = reconcileCanvasWorkflowOutputs(reconciled.checkpoint, nodesRef.current, connectionsRef.current);
+            const completedIds = new Set(checkpoint.completedNodeIds);
+            const pendingIds = new Set(checkpoint.nodeIds.filter((nodeId) => !completedIds.has(nodeId)));
+            const failedIds = new Set<string>();
+            const failures = new Map<string, string>();
+            workflowRunRef.current = { cancelQueued: false, currentNodeId: checkpoint.currentNodeId || "__workflow_resume__", canceledNodeIds: new Set() };
+            const queuedAt = new Date().toISOString();
+            commitNodes((current) =>
+                current.map((node) =>
+                    pendingIds.has(node.id) && node.metadata?.executionStatus !== "running"
+                        ? { ...node, metadata: { ...node.metadata, executionStatus: "queued", generationQueuedAt: node.metadata?.generationQueuedAt || queuedAt } }
+                        : node,
+                ),
+            );
+            await persistWorkflowCheckpoint(checkpoint);
+            try {
+                await syncServerWorkflowCheckpoint(checkpoint);
+            } catch (error) {
+                releaseWorkflowBrowserLock();
+                const errorMessage = error instanceof Error ? error.message : t("canvas.workflow.syncFailed");
+                setWorkflowRun({ status: "error", completed: completedIds.size, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            }
+            if (resumed) message.info(t("canvas.workflow.resumed"));
+
+            const updateProgress = (runningIds: string[] = []) => {
+                const first = runningIds[0];
+                setWorkflowRun({
+                    status: "running",
+                    completed: completedIds.size,
+                    total: checkpoint!.nodeIds.length,
+                    currentNodeId: first,
+                    currentNodeTitle: nodesRef.current.find((node) => node.id === first)?.title,
+                    startedAt: checkpoint!.startedAt,
+                    running: runningIds.length,
+                    queued: pendingIds.size,
+                    canceling: workflowRunRef.current.cancelQueued,
+                });
+            };
+            updateProgress();
+
+            const heartbeat = window.setInterval(() => {
+                if (workflowRunRef.current.lockLost) return;
+                const current = workflowCheckpointRef.current;
+                if (!current?.runId || current.status !== "running") return;
+                void syncServerWorkflowCheckpoint(current).catch((error) => {
+                    workflowRunRef.current.lockLost = true;
+                    generationRequestsRef.current.forEach((request) => request.controller.abort());
+                    if (error instanceof StarcloudsApiError && error.code === "workflow_run_lock_lost") {
+                        void getActiveCanvasWorkflowRun(projectId).then(({ run }) => showLockedWorkflow(current, run));
+                        return;
+                    }
+                    releaseWorkflowBrowserLock();
+                    const errorMessage = t("canvas.workflow.syncFailed");
+                    setWorkflowRun({ status: "error", completed: current.completedNodeIds.length, total: current.nodeIds.length, errorMessage, startedAt: current.startedAt });
+                    message.error(errorMessage);
+                });
+            }, 10_000);
+
+            const executeNode = async (nodeId: string) => {
+                const node = nodesRef.current.find((item) => item.id === nodeId);
+                if (!node) return { nodeId, ok: false as const, errorMessage: t("canvas.workflow.nodeMissing") };
+                const readiness = validateCanvasWorkflowNodeReadiness({ nodeId, nodes: nodesRef.current, connections: connectionsRef.current, dependencies: executionPlan.dependencies.get(nodeId) || new Set(), completedNodeIds: completedIds });
+                if (!readiness.ok) return { nodeId, ok: false as const, errorMessage: workflowReadinessErrorMessage(readiness.issue) };
+                const mode = node.metadata?.generationMode || "image";
+                const prompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+                const generationConfig = buildGenerationConfig(effectiveConfig, node, mode);
+                await handleGenerateNode(nodeId, mode, prompt, { skipCostConfirm: true });
+                if (!pageActiveRef.current || workflowRunRef.current.lockLost) return { nodeId, ok: false as const, errorMessage: t("canvas.workflow.syncFailed") };
+                let validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount: getGenerationCount(generationConfig.count), nodes: nodesRef.current, connections: connectionsRef.current });
+                for (let attempt = 0; !validation.ok && validation.issue.reason !== "output_failed" && attempt < 50; attempt += 1) {
+                    await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+                    validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount: getGenerationCount(generationConfig.count), nodes: nodesRef.current, connections: connectionsRef.current });
+                }
+                return validation.ok ? { nodeId, ok: true as const } : { nodeId, ok: false as const, errorMessage: workflowOutputErrorMessage(validation.issue) };
+            };
+
+            try {
+                while (pendingIds.size && !workflowRunRef.current.lockLost) {
+                    for (const nodeId of workflowRunRef.current.canceledNodeIds) pendingIds.delete(nodeId);
+                    if (workflowRunRef.current.cancelQueued) {
+                        pendingIds.forEach((nodeId) => workflowRunRef.current.canceledNodeIds.add(nodeId));
+                        pendingIds.clear();
+                        break;
+                    }
+                    const blockedQueuedIds = [...pendingIds].filter((nodeId) => [...(executionPlan.dependencies.get(nodeId) || [])].some((dependencyId) => failedIds.has(dependencyId) || workflowRunRef.current.canceledNodeIds.has(dependencyId)));
+                    blockedQueuedIds.forEach((nodeId) => {
+                        pendingIds.delete(nodeId);
+                        workflowRunRef.current.canceledNodeIds.add(nodeId);
+                    });
+                    if (blockedQueuedIds.length) {
+                        const blocked = new Set(blockedQueuedIds);
+                        commitNodes((current) => current.map((node) => (blocked.has(node.id) && node.metadata?.executionStatus === "queued" ? { ...node, metadata: { ...node.metadata, executionStatus: "canceled" } } : node)));
+                    }
+                    const runnable = findRunnableCanvasWorkflowNodeIds({ pendingNodeIds: pendingIds, completedNodeIds: completedIds, blockedNodeIds: failedIds, dependencies: executionPlan.dependencies });
+                    if (!runnable.length) break;
+                    runnable.forEach((nodeId) => pendingIds.delete(nodeId));
+                    const runningSet = new Set(runnable);
+                    const startedAt = new Date().toISOString();
+                    commitNodes((current) =>
+                        current.map((node) =>
+                            runningSet.has(node.id)
+                                ? { ...node, metadata: { ...node.metadata, executionStatus: "running", generationStartedAt: startedAt, generationCompletedAt: undefined, generationDurationMs: undefined } }
+                                : node,
+                        ),
+                    );
+                    checkpoint = { ...checkpoint, currentNodeId: runnable[0], updatedAt: new Date().toISOString() };
+                    workflowRunRef.current.currentNodeId = runnable[0];
+                    await persistWorkflowCheckpoint(checkpoint);
+                    await syncServerWorkflowCheckpoint(checkpoint);
+                    updateProgress(runnable);
+                    const results = await Promise.all(runnable.map(executeNode));
+                    for (const result of results) {
+                        if (result.ok) {
+                            completedIds.add(result.nodeId);
+                            checkpoint = advanceCanvasWorkflowCheckpoint(checkpoint, result.nodeId);
+                        } else {
+                            failedIds.add(result.nodeId);
+                            failures.set(result.nodeId, result.errorMessage);
+                        }
+                    }
+                    checkpoint = { ...checkpoint, completedNodeIds: [...completedIds], currentNodeId: undefined, updatedAt: new Date().toISOString() };
+                    workflowRunRef.current.currentNodeId = pendingIds.size ? "__workflow_queue__" : undefined;
+                    await persistWorkflowCheckpoint(checkpoint);
+                    await syncServerWorkflowCheckpoint(checkpoint);
+                    updateProgress();
+                }
+            } catch (error) {
+                if (!pageActiveRef.current) return;
+                const errorMessage = error instanceof Error ? error.message : t("canvas.workflow.syncFailed");
+                workflowRunRef.current = { cancelQueued: false, canceledNodeIds: new Set() };
+                releaseWorkflowBrowserLock();
+                setWorkflowRun({ status: "error", completed: completedIds.size, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            } finally {
+                window.clearInterval(heartbeat);
+            }
+
+            if (!pageActiveRef.current || workflowRunRef.current.lockLost) return;
+            const canceled = workflowRunRef.current.cancelQueued || workflowRunRef.current.canceledNodeIds.size > 0;
+            const firstFailure = failures.entries().next().value as [string, string] | undefined;
+            workflowRunRef.current = { cancelQueued: false, canceledNodeIds: new Set() };
+            workflowPlanRef.current = null;
+            if (firstFailure) checkpoint = failCanvasWorkflowCheckpoint(checkpoint, firstFailure[0], firstFailure[1]);
+            try {
+                await syncServerWorkflowCheckpoint(checkpoint, firstFailure ? "failed" : canceled ? "canceled" : "succeeded", firstFailure?.[1] || "");
+            } catch {
+                const errorMessage = t("canvas.workflow.syncFailed");
+                releaseWorkflowBrowserLock();
+                setWorkflowRun({ status: "error", completed: completedIds.size, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                message.error(errorMessage);
+                return;
+            }
+            await persistWorkflowCheckpoint(firstFailure ? checkpoint : null);
+            releaseWorkflowBrowserLock();
+            setWorkflowRun({ status: firstFailure ? "error" : canceled ? "canceled" : "success", completed: completedIds.size, total: checkpoint.nodeIds.length, currentNodeId: firstFailure?.[0], currentNodeTitle: nodesRef.current.find((node) => node.id === firstFailure?.[0])?.title, errorMessage: firstFailure?.[1], running: 0, queued: 0 });
+            if (firstFailure) message.error(firstFailure[1]);
+            else if (canceled) message.info(t("canvas.workflow.canceled"));
+            else message.success(t("canvas.workflow.completed", { count: completedIds.size }));
+        },
+        [acquireDurableWorkflowCheckpoint, commitNodes, effectiveConfig, handleGenerateNode, message, persistWorkflowCheckpoint, projectId, releaseWorkflowBrowserLock, showLockedWorkflow, syncServerWorkflowCheckpoint, t, workflowOutputErrorMessage, workflowReadinessErrorMessage],
+    );
+    resumeWorkflowRef.current = (checkpoint) => executeWorkflow(checkpoint, true);
+
+    useEffect(() => {
+        if (!projectLoaded || workflowCheckpointRef.current) return;
+        let disposed = false;
+        void getActiveCanvasWorkflowRun(projectId)
+            .then(({ run }) => {
+                if (disposed || !run?.nodeIds.length) return;
+                const checkpoint = normalizeCanvasWorkflowCheckpoint({
+                    status: "running",
+                    runId: run.id,
+                    nodeIds: run.nodeIds,
+                    completedNodeIds: run.completedNodeIds,
+                    currentNodeId: run.currentNodeId || undefined,
+                    startedAt: run.startedAt,
+                    updatedAt: run.updatedAt,
+                });
+                if (checkpoint) void resumeWorkflowRef.current(checkpoint);
+            })
+            .catch(() => undefined);
+        return () => {
+            disposed = true;
+        };
+    }, [projectId, projectLoaded]);
+
+    useEffect(() => {
+        if (workflowRun.status !== "locked") return;
+        let disposed = false;
+        const poll = async () => {
+            const { run } = await getActiveCanvasWorkflowRun(projectId);
+            if (disposed) return;
+            const current = workflowCheckpointRef.current;
+            if (run && current) {
+                if (!run.leaseExpiresAt || new Date(run.leaseExpiresAt).getTime() <= Date.now()) {
+                    void resumeWorkflowRef.current(mergeWorkflowRunCheckpoint(current, run));
+                    return;
+                }
+                showLockedWorkflow(current, run);
+                return;
+            }
+            if (!run) {
+                workflowCheckpointRef.current = null;
+                setWorkflowRun((state) => ({ ...state, status: "refresh", currentNodeId: undefined, currentNodeTitle: undefined }));
+                message.success(t("canvas.workflow.completedElsewhere"));
+            }
+        };
+        const timer = window.setInterval(() => void poll().catch(() => undefined), 3_000);
+        return () => {
+            disposed = true;
+            window.clearInterval(timer);
+        };
+    }, [message, projectId, showLockedWorkflow, t, workflowRun.status]);
 
     const runWorkflow = useCallback(async () => {
         if (workflowRunRef.current.currentNodeId) return;
@@ -2738,9 +3324,21 @@ function InfiniteCanvasPage() {
             message.warning(t(compiled.reason === "cycle" ? "canvas.workflow.cycle" : "canvas.workflow.empty"));
             return;
         }
+        const savedCheckpoint = workflowCheckpointRef.current;
+        const canResumeSaved = Boolean(savedCheckpoint?.nodeIds.length && workflowPlanMatchesCheckpoint(compiled.plan, savedCheckpoint));
+        const recoveredCheckpoint = canResumeSaved && savedCheckpoint ? reconcileCanvasWorkflowFailureOutput(savedCheckpoint, nodesRef.current, connectionsRef.current) : savedCheckpoint;
+        const checkpoint = canResumeSaved && recoveredCheckpoint
+            ? { ...recoveredCheckpoint, status: "running" as const, errorNodeId: undefined, errorMessage: undefined, updatedAt: new Date().toISOString() }
+            : createCanvasWorkflowCheckpoint(compiled.plan.nodeIds);
+        const remainingNodeIds = checkpoint.nodeIds.filter((nodeId) => !checkpoint.completedNodeIds.includes(nodeId));
+        const completedNodeIds = new Set(checkpoint.completedNodeIds);
+        if (!remainingNodeIds.length) {
+            await executeWorkflow(checkpoint, true);
+            return;
+        }
 
         const estimates: CanvasCostEstimate[] = [];
-        for (const nodeId of compiled.plan.nodeIds) {
+        for (const nodeId of remainingNodeIds) {
             const node = nodesRef.current.find((item) => item.id === nodeId);
             if (!node) {
                 message.error(t("canvas.workflow.nodeMissing"));
@@ -2761,15 +3359,41 @@ function InfiniteCanvasPage() {
                 message.warning(t("canvas.workflow.notReady", { name: node.title || t("canvas.node.untitled") }));
                 return;
             }
+            const readiness = validateCanvasWorkflowNodeReadiness({
+                nodeId,
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+                dependencies: compiled.plan.dependencies.get(nodeId) || new Set(),
+                completedNodeIds,
+                allowPendingDependencies: true,
+            });
+            if (!readiness.ok) {
+                setSelectedNodeIds(new Set([nodeId]));
+                setSelectedConnectionId(null);
+                message.warning(workflowReadinessErrorMessage(readiness.issue));
+                return;
+            }
             const config = buildGenerationConfig(effectiveConfig, node, mode);
-            estimates.push(
-                estimateCanvasGenerationCost({
-                    config,
-                    kind: mode === "text" ? "text" : "image",
-                    count: getGenerationCount(config.count),
-                    backgroundRemovalPricePoints,
-                }),
-            );
+            if (!isAiConfigReady(config, config.model)) {
+                setSelectedNodeIds(new Set([nodeId]));
+                setSelectedConnectionId(null);
+                openConfigDialog(true);
+                message.warning(t("canvas.workflow.modelUnavailable", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            const estimate = estimateCanvasGenerationCost({
+                config,
+                kind: mode === "text" ? "text" : "image",
+                count: getGenerationCount(config.count),
+                backgroundRemovalPricePoints,
+            });
+            if (estimate.pricingUnavailable) {
+                setSelectedNodeIds(new Set([nodeId]));
+                setSelectedConnectionId(null);
+                message.warning(t("canvas.workflow.pricingUnavailable", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            estimates.push(estimate);
         }
         const generationUnit = estimates.reduce((sum, estimate) => sum + estimate.generationUnit * estimate.count, 0);
         const removalUnit = estimates.reduce((sum, estimate) => sum + estimate.removalUnit * estimate.count, 0);
@@ -2786,52 +3410,47 @@ function InfiniteCanvasPage() {
             pricingUnavailable: estimates.some((estimate) => estimate.pricingUnavailable),
         });
         if (!costConfirmed) return;
+        await executeWorkflow(checkpoint, canResumeSaved);
+    }, [backgroundRemovalPricePoints, effectiveConfig, executeWorkflow, isAiConfigReady, message, openConfigDialog, requestCostEstimateConfirm, t, workflowReadinessErrorMessage]);
 
-        workflowRunRef.current = { canceled: false };
-        setWorkflowRun({ status: "running", completed: 0, total: compiled.plan.nodeIds.length });
-        let completed = 0;
-
-        for (const nodeId of compiled.plan.nodeIds) {
-            if (workflowRunRef.current.canceled) break;
-            const node = nodesRef.current.find((item) => item.id === nodeId);
-            if (!node) {
-                workflowRunRef.current = { canceled: false };
-                setWorkflowRun({ status: "error", completed, total: compiled.plan.nodeIds.length });
-                message.error(t("canvas.workflow.nodeMissing"));
-                return;
-            }
-
-            workflowRunRef.current.currentNodeId = nodeId;
-            setWorkflowRun({ status: "running", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
-            const mode = node.metadata?.generationMode || "image";
-            const prompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
-            const succeeded = await handleGenerateNode(nodeId, mode, prompt, { skipCostConfirm: true });
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-
-            if (workflowRunRef.current.canceled) break;
-            if (!succeeded) {
-                workflowRunRef.current = { canceled: false };
-                setWorkflowRun({ status: "error", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
-                message.error(t("canvas.workflow.failed", { name: node.title || t("canvas.node.untitled") }));
-                return;
-            }
-            completed += 1;
-            setWorkflowRun({ status: "running", completed, total: compiled.plan.nodeIds.length, currentNodeId: nodeId });
-        }
-
-        const canceled = workflowRunRef.current.canceled;
-        workflowRunRef.current = { canceled: false };
-        setWorkflowRun({ status: canceled ? "canceled" : "success", completed, total: compiled.plan.nodeIds.length });
-        if (!canceled) message.success(t("canvas.workflow.completed", { count: completed }));
-    }, [backgroundRemovalPricePoints, effectiveConfig, handleGenerateNode, message, requestCostEstimateConfirm, t]);
+    const cancelQueuedWorkflowNode = useCallback(
+        (nodeId: string) => {
+            const plan = workflowPlanRef.current;
+            if (!plan) return;
+            const queuedIds = nodesRef.current.filter((node) => node.metadata?.executionStatus === "queued").map((node) => node.id);
+            const canceledIds = findCanvasWorkflowCancellationClosure(nodeId, queuedIds, plan.dependencies);
+            if (!canceledIds.size) return;
+            canceledIds.forEach((id) => workflowRunRef.current.canceledNodeIds.add(id));
+            const completedAt = new Date().toISOString();
+            commitNodes((current) =>
+                current.map((node) =>
+                    canceledIds.has(node.id) && node.metadata?.executionStatus === "queued"
+                        ? { ...node, metadata: { ...node.metadata, executionStatus: "canceled", generationCompletedAt: completedAt, generationDurationMs: 0 } }
+                        : node,
+                ),
+            );
+            setWorkflowRun((current) => ({ ...current, queued: Math.max(0, (current.queued || 0) - canceledIds.size) }));
+            message.info(t("canvas.workflow.queuedNodesCanceled", { count: canceledIds.size }));
+        },
+        [commitNodes, message, t],
+    );
 
     const stopWorkflow = useCallback(() => {
-        workflowRunRef.current.canceled = true;
-        const currentNodeId = workflowRunRef.current.currentNodeId;
-        if (currentNodeId) stopGenerationByRunningId(currentNodeId);
-        setWorkflowRun((current) => ({ ...current, status: "canceled", currentNodeId: undefined }));
-        message.info(t("canvas.workflow.canceled"));
-    }, [message, stopGenerationByRunningId, t]);
+        const queuedIds = nodesRef.current.filter((node) => node.metadata?.executionStatus === "queued").map((node) => node.id);
+        if (!queuedIds.length) return;
+        workflowRunRef.current.cancelQueued = true;
+        queuedIds.forEach((nodeId) => workflowRunRef.current.canceledNodeIds.add(nodeId));
+        const completedAt = new Date().toISOString();
+        commitNodes((current) =>
+            current.map((node) =>
+                node.metadata?.executionStatus === "queued"
+                    ? { ...node, metadata: { ...node.metadata, executionStatus: "canceled", generationCompletedAt: completedAt, generationDurationMs: 0 } }
+                    : node,
+            ),
+        );
+        setWorkflowRun((current) => ({ ...current, queued: 0, canceling: true }));
+        message.info(t("canvas.workflow.queuedNodesCanceled", { count: queuedIds.length }));
+    }, [commitNodes, message, t]);
 
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -2885,7 +3504,7 @@ function InfiniteCanvasPage() {
             }
             const retryImages = retryReferenceImages || [];
 
-            setRunningNodeId(node.id);
+            setRunningNodeIds((current) => new Set(current).add(node.id));
             setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_LOADING, errorDetails: undefined } : image)) } } : item)));
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
 
@@ -2900,9 +3519,9 @@ function InfiniteCanvasPage() {
                             streamed = text;
                             setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
                         },
-                        { signal: controller.signal },
+                        { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(node.id, taskId, undefined, "assistant") },
                     );
-                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, status: NODE_STATUS_SUCCESS } } : item)));
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, status: NODE_STATUS_SUCCESS, taskId: undefined, taskKind: undefined } } : item)));
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
@@ -2940,8 +3559,8 @@ function InfiniteCanvasPage() {
                 }
 
                 const image = useReferenceImages
-                    ? await requestEdit(generationConfig, prompt, retryImages, undefined, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(node.id, taskId, imageId) }).then((items) => items[0])
-                    : await requestGeneration(generationConfig, prompt, { signal: controller.signal, onCreated: (taskId) => persistImageTaskId(node.id, taskId, imageId) }).then((items) => items[0]);
+                    ? await requestEdit(generationConfig, prompt, retryImages, undefined, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(node.id, taskId, imageId) }).then((items) => items[0])
+                    : await requestGeneration(generationConfig, prompt, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(node.id, taskId, imageId) }).then((items) => items[0]);
                 const uploadedImage = await uploadImage(image.dataUrl);
                 const retryImage: CanvasNodeImage = {
                     id: imageId || node.metadata?.primaryImageId || nanoid(),
@@ -2994,10 +3613,14 @@ function InfiniteCanvasPage() {
                 setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: item.metadata?.content ? undefined : errorDetails, images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : item)));
             } finally {
                 finishGenerationRequest(node.id, controller);
-                setRunningNodeId(null);
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(node.id);
+                    return next;
+                });
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTaskId, requestCostConfirm, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistCanvasTaskId, requestCostConfirm, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
@@ -3162,27 +3785,26 @@ function InfiniteCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
-                    isRunning={runningNodeId === panelNode.id}
+                    isRunning={runningNodeIds.has(panelNode.id)}
                     mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || EMPTY_REFERENCES}
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
                     onGenerate={handleGenerateNode}
-                    onStop={confirmStopGeneration}
                     modeOverride={getNodeDefinition(panelNode.type)?.useBuiltinPanel?.mode}
                 />
             ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeId],
+        [configInputsById, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, runningNodeIds],
     );
 
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
                 node={contentNode}
-                isRunning={runningNodeId === contentNode.id}
+                isRunning={runningNodeIds.has(contentNode.id)}
                 inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
-                onStop={confirmStopGeneration}
+                onCancelQueued={cancelQueuedWorkflowNode}
                 onGenerate={(nodeId) => {
                     const target = nodesRef.current.find((item) => item.id === nodeId);
                     const requested = target?.metadata?.generationMode || "image";
@@ -3191,14 +3813,14 @@ function InfiniteCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        [cancelQueuedWorkflowNode, configInputsById, handleConfigNodeChange, handleGenerateNode, runningNodeIds],
     );
 
     if (!projectLoaded) return <CanvasRefreshShell />;
 
     return (
         <main className="relative flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
-            <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
+            <CanvasSidePanel nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 <CanvasTopBar
                     onRename={() => startEditingProject(projectId, currentProjectTitle || t("canvas.projectPage.untitledCanvas"))}
@@ -3213,6 +3835,7 @@ function InfiniteCanvasPage() {
                     workflowRun={workflowRun}
                     onRunWorkflow={() => void runWorkflow()}
                     onStopWorkflow={stopWorkflow}
+                    onRefreshWorkflow={() => window.location.reload()}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
                 >

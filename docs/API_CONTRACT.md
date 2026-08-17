@@ -177,8 +177,13 @@ task 主要字段：
 | GET    | `/api/v1/canvas-projects/{id}` | 读取项目及完整 document                                               |
 | PATCH  | `/api/v1/canvas-projects/{id}` | 更新 `{title?,document?,revision}`；成功后 revision 加 1              |
 | DELETE | `/api/v1/canvas-projects/{id}` | 删除项目，成功返回 204                                                |
+| GET    | `/api/v1/canvas-projects/{id}/workflow-run` | 读取当前活动工作流运行；无活动运行时返回 `{run:null}` |
+| POST   | `/api/v1/canvas-projects/{id}/workflow-runs` | 以 `{ownerId,nodeIds}` 创建或取得运行租约，返回 `{run,acquired}` |
+| PATCH  | `/api/v1/canvas-projects/{id}/workflow-runs/{runId}` | 心跳并更新进度，或将运行标记为 `succeeded`、`failed`、`canceled` |
 
 `PATCH` 使用乐观锁。客户端必须提交最后读取到的 `revision`；版本落后时返回 HTTP 409 `revision_conflict`，不得静默覆盖云端版本。document 必须包含 `nodes:[]` 和 `version`；版本 1、2 使用 `edges:[]`，版本 3 使用 `connections:[]`。可选的 `viewport` 必须是对象。省略 document 时服务端创建空的版本 2 文档。
+
+同一画布最多存在一个 `running` 工作流运行。运行租约为 30 秒，执行页面每 10 秒续租；同一 owner 可在刷新后立即重新取得租约，其他页面只能观察或停止。租约过期后其他执行者可以接管，旧执行者的后续心跳返回 HTTP 409 `workflow_run_lock_lost`。
 
 ## 上传与文件
 
@@ -225,13 +230,14 @@ task 主要字段：
 | GET   | `/api/v1/admin/statistics`                    | 用户、任务、全站余额、运行中任务和类型分布                |
 | GET   | `/api/v1/admin/system/metrics`                | API、Go Runtime、数据库池、Asynq 队列和 Worker 实时快照   |
 | GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表；每项附带 `usage` 使用摘要 |
-| GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包、任务/投稿/素材/订单计数及最近会话摘要 |
+| GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包拆分、当前套餐、体验申请、签到/拼团、任务/投稿/素材/订单/反馈计数及最近会话摘要 |
 | PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?}`                                    |
 | GET   | `/api/v1/admin/users/{id}/wallet/entries` | 指定用户账本                                              |
 | POST  | `/api/v1/admin/users/{id}/wallet/entries` | `{deltaCents,reason}`，创建 admin_adjust 账本条目         |
 | GET   | `/api/v1/admin/wallet/entries`                   | 全站账本；筛选 `kind`、`sourceType`、`user`               |
-| GET   | `/api/v1/admin/tasks`                    | 按 `type`、`status`、`user` 筛选全站任务                  |
-| PATCH | `/api/v1/admin/tasks/{id}`                | `{status:"queued"}` 重新入队；`canceled` 取消；`failed` 强制失败             |
+| GET    | `/api/v1/admin/tasks`                    | 按 `type`、`status`、`user` 筛选全站任务                  |
+| DELETE | `/api/v1/admin/tasks`                    | 按当前筛选从管理端隐藏已结束记录（`succeeded`/`failed`/`canceled`）；用户历史、产物、账本、画廊/审核保留 |
+| PATCH  | `/api/v1/admin/tasks/{id}`                | `{status:"queued"}` 重新入队；`canceled` 取消；`failed` 强制失败             |
 | GET   | `/api/v1/admin/audit-logs`               | 按 `admin`、`path` 筛选审计日志                           |
 
 `stats` 包含 `{totalUsers,newUsersToday,taskDaily,walletBalanceCents,runningTasks,typeDistribution}` 等字段。管理任务列表提供扁平 `userEmail`。
@@ -360,6 +366,7 @@ JSON 导出格式为 `{schemaVersion,exportedAt,items}`；CSV 使用 UTF-8 BOM�
 | PUT          | `/api/v1/admin/settings`           | 保存运营配置                                       |
 | GET          | `/api/v1/admin/plans`              | 获取全部套餐及订单/订阅引用计数                    |
 | POST         | `/api/v1/admin/plans`              | 新增积分包或订阅套餐                               |
+| PATCH        | `/api/v1/admin/plan-order`         | 按类型拖动排序；`{ kind, ids }`                    |
 | PATCH        | `/api/v1/admin/plans/{id}`         | 编辑价格、积分、权益、推荐位、排序和上下架状态     |
 | DELETE       | `/api/v1/admin/plans/{id}`         | 删除未使用套餐；有历史记录时返回 `plan_in_use`     |
 | POST         | `/api/v1/admin/providers/{provider}/tests` | provider 为 `c2a`、`sub2api` 或 `crun`，执行连接测试 |

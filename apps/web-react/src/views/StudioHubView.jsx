@@ -48,6 +48,7 @@ import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.cs
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
+import { useLocale } from "../i18n/index.js";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
@@ -493,7 +494,9 @@ function StudioCostDialog({ cost, onConfirm, onCancel }) {
 export function StudioHubView() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
+  const { t } = useLocale();
   const navigate = useNavigate();
+  const leadLines = useMemo(() => LEAD_LINES.map((line) => t(line)), [t]);
   const rootRef = useRef(null);
   const composerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1420,7 +1423,7 @@ export function StudioHubView() {
               星空云绘
             </h1>
             <div className="studio-hero__lead" data-studio-enter>
-              <StudioTypeLine texts={LEAD_LINES} />
+              <StudioTypeLine texts={leadLines} />
             </div>
             <form
               ref={composerRef}

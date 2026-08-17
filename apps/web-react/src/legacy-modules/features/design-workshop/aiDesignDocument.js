@@ -981,6 +981,7 @@ export function buildRegionEditInstruction({
   userNote = '',
   viewport = null,
   action = 'remove',
+  hasStyleReference = false,
 } = {}) {
   const note = String(userNote || '').trim()
   const list = (Array.isArray(elements) ? elements : [])
@@ -995,9 +996,18 @@ export function buildRegionEditInstruction({
       return `${index + 1}. [${type}] ${name}${text ? `「${text}」` : ''}；${box}`
     })
     .filter(Boolean)
-  if (!list.length && !note && action !== 'replace-background') return ''
+  if (
+    !list.length &&
+    !note &&
+    action !== 'replace-background' &&
+    !(hasStyleReference && (action === 'improve-icon' || action === 'custom'))
+  ) {
+    return ''
+  }
   const parts = [
-    '这是图片编辑（image edit / inpainting），不是文生图。必须以第一张参考图（框选截图）为底图做最小改动。',
+    hasStyleReference
+      ? '这是按风格参考图重绘当前框选内容：第一张是该框选自己的截图（必须保留其主体和语义），其后是风格参考（只学画法，不抄主体）。'
+      : '这是图片编辑（image edit / inpainting），不是文生图。必须以第一张参考图（框选截图）为底图做最小改动。',
   ]
   if (action === 'remove' && list.length) {
     parts.push('请移除下列已点选元素，并用周围连续背景自然填补，不要留下灰块/白块/空洞：')
@@ -1008,13 +1018,23 @@ export function buildRegionEditInstruction({
     parts.push(
       '必须输出与第一张参考图相同的完整画面、画布边界和宽高比；禁止裁切、扩图、重新构图、改变留白或生成另一版布局。',
     )
-  } else if (action === 'improve-icon' && list.length) {
+  } else if (action === 'improve-icon' && (list.length || hasStyleReference)) {
+    if (list.length) {
+      parts.push(
+        hasStyleReference
+          ? '请只重绘下列已点选图标：保留各自原有语义、符号和识别特征，按风格参考图统一材质、光影、体积感和配色方法，不得把它们画成同一枚图标：'
+          : '请只重绘下列已点选图标：保持原语义、尺寸、中心位置和点击热区，替换为更精致、统一、清晰的现代图标，不得移动其它元素：',
+      )
+      parts.push(list.join('\n'))
+    } else {
+      parts.push(
+        '请按风格参考图重绘当前框选图标：保留该框选自己的语义、符号和识别特征，只统一材质、光影、体积感和配色方法。',
+      )
+    }
     parts.push(
-      '请只重绘下列已点选图标：保持原语义、尺寸、中心位置和点击热区，替换为更精致、统一、清晰的现代图标，不得移动其它元素：',
-    )
-    parts.push(list.join('\n'))
-    parts.push(
-      '必须输出与第一张参考图相同的完整画面和背景；禁止只输出图标、禁止抠图、禁止透明画布、禁止裁切或改变画布比例。',
+      hasStyleReference
+        ? '禁止复制风格参考图的主体或符号；禁止输出与其它框选相同的结果。必须输出与当前框选截图相同的完整画面和背景，禁止只输出参考图本身。'
+        : '必须输出与第一张参考图相同的完整画面和背景；禁止只输出图标、禁止抠图、禁止透明画布、禁止裁切或改变画布比例。',
     )
   } else if (action === 'replace-background') {
     if (list.length) {
@@ -1024,12 +1044,20 @@ export function buildRegionEditInstruction({
       parts.push('请只重新设计当前框选区域的背景，保持其中全部前景文字、图标和控件原样。')
     }
     parts.push('新背景应更有层次并符合原页面风格；禁止纯白背景、白色矩形和无内容占位块。')
-  } else if (action === 'custom' && list.length) {
-    parts.push('只对下列已点选元素执行用户补充要求：')
-    parts.push(list.join('\n'))
+  } else if (action === 'custom' && (list.length || hasStyleReference)) {
+    if (list.length) {
+      parts.push('只对下列已点选元素执行用户补充要求：')
+      parts.push(list.join('\n'))
+    } else if (hasStyleReference) {
+      parts.push('请按风格参考图重绘当前框选内容：保留该框选自己的主体和语义，只统一画法。')
+    }
   }
   if (note) parts.push(`补充要求：${note}`)
-  parts.push('未点选的内容必须保持原样（构图、颜色、材质、光影、其余文字与图标）。')
+  parts.push(
+    hasStyleReference
+      ? '每个框选必须输出该框选自己的内容；风格向参考图看齐，禁止抄参考图主体，禁止多框出成同一张图。'
+      : '未点选的内容必须保持原样（构图、颜色、材质、光影、其余文字与图标）。',
+  )
   return parts.join('\n')
 }
 
@@ -1043,12 +1071,17 @@ function regionImagePrompt({
   generationMode,
   userInstruction = '',
   preserveLayout = false,
+  hasDesignReference = false,
+  designReferenceIsFirstOutput = false,
+  styleReferenceCount = 0,
 }) {
   const isReplacement = generationMode === 'replace'
   const instruction = String(userInstruction || '').trim()
   const aspectW = Math.max(1, Math.round(region.width))
   const aspectH = Math.max(1, Math.round(region.height))
   const outputRatio = String(region.outputRatio || `${aspectW}:${aspectH}`)
+  const hasStyleReference = styleReferenceCount > 0
+  const followStyleOnly = hasStyleReference || designReferenceIsFirstOutput
   const localEditBlock = instruction
     ? `
 用户图片编辑要求：
@@ -1056,7 +1089,11 @@ ${instruction}
 
 图片编辑规则（最高优先级）：
 - 这是对已有截图的编辑，不是从零文生图；禁止重新设计整张海报。
-- 只改用户点名要改/移除的部分；其余像素尽量与第一张框选截图一致。
+- ${
+    followStyleOnly
+      ? '第一张框选截图决定“画什么”（主体、符号、识别特征）；风格参考只决定“怎么画”（材质、光影、体积、描边、配色方法）。禁止把风格参考的主体复制过来。'
+      : '只改用户点名要改/移除的部分；其余像素尽量与第一张框选截图一致。'
+  }
 - ${
     preserveLayout
       ? '布局已锁定：未点选区域的绝对坐标、尺寸、间距、留白和层级必须逐像素保持；删除后不得触发布局回流。'
@@ -1066,11 +1103,18 @@ ${instruction}
 - 禁止擅自去背，除非用户明确要求抠图/透明背景。
 `
     : ''
-  const prompt = `这是 UI 局部图片编辑任务。第一张参考图是用户框选截图（编辑底图，必须忠实）；${
-    preserveLayout
-      ? '本任务已启用布局锁定，不使用整页参考，禁止重新推断或重排布局。'
-      : '第二张若存在则为完整设计稿，仅作风格上下文。'
-  }
+  const designReferenceLine = hasStyleReference
+    ? `其后 ${styleReferenceCount} 张是用户风格参考图：只学画法，不抄主体；每个框选必须输出与该框选截图对应的不同内容，禁止多框出成同一张图。`
+    : designReferenceIsFirstOutput
+      ? transparent
+        ? '第二张是第一张出图的风格参考（已铺中性底便于看清主体，底色不是风格）：只学材质、光影、体积和配色方法；必须保留当前框选自己的主体；输出必须是真透明 PNG，禁止把中性底、棋盘格或任何背景画进像素，禁止把第一张出图的图标复制过来，禁止多框出成同一张图。'
+        : '第二张是第一张出图，仅作风格参考：只学材质、光影、体积和配色方法；必须保留当前框选自己的主体，禁止把第一张出图的图标复制过来，禁止多框出成同一张图。'
+      : hasDesignReference
+        ? '第二张若存在则为完整设计稿，仅作风格上下文。'
+        : preserveLayout
+          ? '本任务已启用布局锁定，不使用整页参考，禁止重新推断或重排布局。'
+          : '第二张若存在则为完整设计稿，仅作风格上下文。'
+  const prompt = `这是 UI 局部图片编辑任务。第一张参考图是用户当前框选截图（编辑底图，必须保留其主体）；${designReferenceLine}
 
 目标名称：${region.name}
 目标类型：${region.type}
@@ -1078,13 +1122,15 @@ ${instruction}
 目标像素约：${aspectW}×${aspectH}
 ${localEditBlock}
 要求：
-1. 只输出与框选截图同一块区域，不生成完整页面、浏览器窗口、标注框或样机。
+1. 只输出与当前框选截图同一块区域，不生成完整页面、浏览器窗口、标注框或样机。
 2. ${
-    instruction
-      ? '以第一张框选截图为底执行图片编辑；未要求改动的区域保持原构图、颜色、材质、光影与边缘细节。'
-      : isReplacement
-        ? '允许替换素材主体创意，但必须保持原区域宽高比、视觉重量与可放回界面的占位关系。'
-        : '执行严格还原：保持主体身份、造型、构图、比例、颜色、材质与光影。'
+    followStyleOnly
+      ? '按风格参考重绘当前框选自己的主体；禁止输出风格参考里的图标，禁止和其他框选输出同一张图。'
+      : instruction
+        ? '以第一张框选截图为底执行图片编辑；未要求改动的区域保持原构图、颜色、材质、光影与边缘细节。'
+        : isReplacement
+          ? '允许替换素材主体创意，但必须保持原区域宽高比、视觉重量与可放回界面的占位关系。'
+          : '执行严格还原：保持主体身份、造型、构图、比例、颜色、材质与光影。'
   }
 3. ${
     transparent
@@ -1108,7 +1154,10 @@ export async function generateDesignRegionImage({
   resolution = '',
   quality = 'high',
   preserveLayout = false,
-  retainConversation = false,
+  retainConversation = true,
+  designReferenceImage = '',
+  designReferenceName = '',
+  styleReferences = [],
   signal,
   onStage,
   onRun,
@@ -1126,10 +1175,22 @@ export async function generateDesignRegionImage({
     onConversation?.(conversation.id)
     // Crop first so upstream EditImages treats the selection as the primary canvas.
     const regionReference = referenceDescriptor(regionReferenceDataUrl, '框选截图（编辑底图）')
-    const fullReference = preserveLayout
-      ? null
-      : referenceDescriptor(referenceImage, '完整设计稿（风格上下文）')
-    const references = [regionReference, fullReference].filter(Boolean)
+    const designSource = String(designReferenceImage || '').trim()
+    const designReference = designSource
+      ? referenceDescriptor(
+          designSource,
+          designReferenceName || '完整设计稿（风格上下文）',
+        )
+      : preserveLayout
+        ? null
+        : referenceDescriptor(referenceImage, '完整设计稿（风格上下文）')
+    const extraReferences = (Array.isArray(styleReferences) ? styleReferences : [])
+      .map((item, index) => {
+        const url = typeof item === 'string' ? item : item?.dataUrl || item?.url || ''
+        return referenceDescriptor(url, item?.name || `用户参考图 ${index + 1}`)
+      })
+      .filter(Boolean)
+    const references = [regionReference, designReference, ...extraReferences].filter(Boolean)
     if (!references.length) throw new Error('缺少设计图参考，无法进行图片编辑')
     const safeRequestSize = resolveRegionImageRequestSize(requestSize, resolution)
     const created = await createAssistantRun(
@@ -1141,6 +1202,11 @@ export async function generateDesignRegionImage({
           generationMode,
           userInstruction,
           preserveLayout,
+          hasDesignReference: Boolean(designReference),
+          designReferenceIsFirstOutput: /第一张出图/.test(
+            String(designReference?.name || designReferenceName || ''),
+          ),
+          styleReferenceCount: extraReferences.length,
         }),
         mode: 'image',
         clientUserMessageId: uid('user'),

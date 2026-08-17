@@ -1077,9 +1077,9 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
   font-size: 0.9rem;
 }
 
-.ch-preview__media :deep(.authenticated-image),
-.ch-preview__media :deep(.authenticated-image-media),
-.ch-preview__media :deep(img),
+.ch-preview__media .authenticated-image,
+.ch-preview__media .authenticated-image-media,
+.ch-preview__media img,
 .ch-preview__media > img {
   position: static;
   inset: auto;

@@ -6,6 +6,7 @@ import { useGSAP } from "@gsap/react";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useLocale } from "../i18n/index.js";
 import {
   buildEcommerceGenerationPlan,
   buildEcommerceRevisionPrompt,
@@ -769,6 +770,7 @@ function ConfirmDelete({ open, busy, onClose, onConfirm }) {
 export function EcommerceBusinessSession({ businessId }) {
   const auth = useAuth();
   const isDark = useIsDark();
+  const { t } = useLocale();
   const { requestAuth } = useAuthPrompt();
   const [params, setParams] = useSearchParams();
   const mode = ecommerceModeById(businessId);
@@ -4310,7 +4312,7 @@ export function EcommerceBusinessSession({ businessId }) {
         {isTryonMode(mode.id) ? (
           <div className="commerce-header__tryon">
             <label className="commerce-header__model">
-              <span>生成模型</span>
+              <span>{t("生成模型")}</span>
               <CommerceSelect
                 value={modelId}
                 options={models.map((item) => ({
@@ -4324,7 +4326,7 @@ export function EcommerceBusinessSession({ businessId }) {
               />
             </label>
             <div className="commerce-header__ratio">
-              <span>画面比例</span>
+              <span>{t("画面比例")}</span>
               <div
                 className="choice-chip-grid tryon-ratio-grid"
                 role="group"
@@ -4345,14 +4347,14 @@ export function EcommerceBusinessSession({ businessId }) {
               </div>
             </div>
             <label className="commerce-header__lens">
-              <span>摄影镜头</span>
+              <span>{t("摄影镜头")}</span>
               <CommerceSelect
                 value={tryonLens}
                 options={TRYON_LENS_OPTIONS.map((item) => ({
                   value: item.id,
                   label: item.range
-                    ? `${item.label} ${item.range}`
-                    : item.label,
+                    ? `${t(item.label)} ${item.range}`
+                    : t(item.label),
                 }))}
                 onChange={setTryonLens}
                 ariaLabel="选择摄影镜头"
@@ -4360,7 +4362,7 @@ export function EcommerceBusinessSession({ businessId }) {
               />
             </label>
             <label className="commerce-header__light">
-              <span>光影调整</span>
+              <span>{t("光影调整")}</span>
               <CommerceSelect
                 value={tryonLight}
                 options={TRYON_LIGHT_OPTIONS.map((item) => ({
@@ -4376,7 +4378,7 @@ export function EcommerceBusinessSession({ businessId }) {
         ) : isHandheldMode(mode.id) ? (
           <div className="commerce-header__handheld">
             <label className="commerce-header__model">
-              <span>生成模型</span>
+              <span>{t("生成模型")}</span>
               <CommerceSelect
                 value={modelId}
                 options={models.map((item) => ({
@@ -4715,7 +4717,7 @@ export function EcommerceBusinessSession({ businessId }) {
               onClick={() => setMode(item)}
             >
               <i className={`bi ${item.icon}`} />
-              <span>{item.shortLabel || item.label}</span>
+              <span>{t(item.shortLabel || item.label)}</span>
             </button>
           ))}
         </nav>
@@ -4753,7 +4755,7 @@ export function EcommerceBusinessSession({ businessId }) {
                       <i className={`bi ${item.icon}`} />
                     </span>
                     <span className="commerce-rail__label">
-                      {item.shortLabel || item.label}
+                      {t(item.shortLabel || item.label)}
                     </span>
                   </button>
                 ))}
@@ -4939,7 +4941,7 @@ export function EcommerceBusinessSession({ businessId }) {
                     .filter((item) => fields.has(item.key))
                     .map((item) => (
                       <label key={item.key}>
-                        <span>{item.label}</span>
+                        <span>{t(item.label)}</span>
                         <CommerceSelect
                           value={item.value}
                           options={item.options}
@@ -4952,7 +4954,7 @@ export function EcommerceBusinessSession({ businessId }) {
                 </div>
                 <div className="select-row select-row--output">
                   <label>
-                    <span>画面比例</span>
+                    <span>{t("画面比例")}</span>
                     <CommerceSelect
                       value={aspectRatio}
                       options={OPTIONS.ratio}
@@ -4962,7 +4964,7 @@ export function EcommerceBusinessSession({ businessId }) {
                   </label>
                   {maxOutputCount > 1 && mode.id !== "listing" && (
                     <label>
-                      <span>生成张数</span>
+                      <span>{t("生成张数")}</span>
                       <CommerceSelect
                         value={outputCount}
                         options={Array.from(
@@ -4978,7 +4980,7 @@ export function EcommerceBusinessSession({ businessId }) {
                     </label>
                   )}
                   <label>
-                    <span>生成模型</span>
+                    <span>{t("生成模型")}</span>
                     <CommerceSelect
                       value={modelId}
                       options={models.map((item) => ({
@@ -4997,7 +4999,7 @@ export function EcommerceBusinessSession({ businessId }) {
                       .filter((item) => fields.has(item.key))
                       .map((item) => (
                         <label key={item.key}>
-                          <span>{item.label}</span>
+                          <span>{t(item.label)}</span>
                           <CommerceSelect
                             value={item.value}
                             options={item.options}

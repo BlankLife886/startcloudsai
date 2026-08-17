@@ -361,9 +361,9 @@ function downloadCodes() {
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="面值" width="110" align="left" header-align="left">
+            <el-table-column label="面值(积分)" width="120" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="cell-num tnum">{{ formatPoints(row.grantCents) }} 积分</span>
+                <span class="cell-num tnum">{{ formatPoints(row.grantCents) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="兑换信息" min-width="190" align="left" header-align="left">

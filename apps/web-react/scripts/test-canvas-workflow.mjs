@@ -1,11 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { defaultConfig, migrateConfigStore } from "../src/canvas/stores/use-config-store.ts";
 import { normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
-import { compileCanvasWorkflow, findWorkflowOutputNodes } from "../src/canvas/lib/canvas/canvas-workflow.ts";
+import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../src/canvas/lib/canvas/canvas-node-copy.ts";
+import {
+    advanceCanvasWorkflowCheckpoint,
+    compileCanvasWorkflow,
+    createCanvasWorkflowCheckpoint,
+    failCanvasWorkflowCheckpoint,
+    findCanvasWorkflowCancellationClosure,
+    findRunnableCanvasWorkflowNodeIds,
+    findWorkflowOutputNodes,
+    normalizeCanvasWorkflowCheckpoint,
+    reconcileCanvasWorkflowCheckpoint,
+    reconcileCanvasWorkflowFailureOutput,
+    reconcileCanvasWorkflowOutputs,
+    validateCanvasWorkflowNodeOutputs,
+    validateCanvasWorkflowNodeReadiness,
+    workflowPlanMatchesCheckpoint,
+} from "../src/canvas/lib/canvas/canvas-workflow.ts";
+import { mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
+import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
 const edge = (fromNodeId, toNodeId) => ({ id: `${fromNodeId}-${toNodeId}`, fromNodeId, toNodeId });
+
+test("groups disconnected canvas branches as separate collapsible workflows", () => {
+    const nodes = [node("input-a", "image"), node("config-a", "config"), node("output-a", "image"), node("input-b", "text"), node("config-b", "config"), node("output-b", "text"), node("guide", "text")];
+    const groups = buildCanvasSidePanelWorkflowGroups(nodes, [edge("input-a", "config-a"), edge("config-a", "output-a"), edge("input-b", "config-b"), edge("config-b", "output-b")]);
+    assert.deepEqual(groups.map((group) => group.nodes.map((item) => item.id)), [["input-a", "config-a", "output-a"], ["input-b", "config-b", "output-b"], ["guide"]]);
+    assert.deepEqual(groups.map((group) => group.firstConfig?.id), ["config-a", "config-b", undefined]);
+});
+
+test("defaults new and legacy canvas image generation to one image", () => {
+    assert.equal(defaultConfig.canvasImageCount, "1");
+    assert.equal(migrateConfigStore({ config: { canvasImageCount: "3" } }, 1).config.canvasImageCount, "1");
+    assert.equal(migrateConfigStore({ config: { canvasImageCount: "4" } }, 2).config.canvasImageCount, "4");
+});
 
 test("orders config nodes through generated resource nodes", () => {
     const nodes = [node("input", "image"), node("a", "config"), node("a-out", "image"), node("b", "config"), node("b-out", "image"), node("c", "config")];
@@ -40,6 +72,79 @@ test("adopts a connected placeholder as the stable output slot", () => {
     assert.deepEqual(findWorkflowOutputNodes("config", "image", nodes, [edge("config", "result")]).map((item) => item.id), ["result"]);
 });
 
+test("a copied config forgets its old output and adopts the newly connected text card", () => {
+    const metadata = copyCanvasNodeMetadata(
+        {
+            generationMode: "text",
+            composerContent: "write listing copy",
+            workflowOutputNodeIds: ["old-result"],
+            taskId: "old-task",
+            taskKind: "assistant",
+            executionStatus: "succeeded",
+            generationCompletedAt: "2026-08-17T00:00:00.000Z",
+        },
+        new Map([["config", "config-copy"]]),
+    );
+    const nodes = [node("old-result", "text"), node("config-copy", "config", metadata), node("new-result", "text")];
+    assert.equal(metadata.workflowOutputNodeIds, undefined);
+    assert.equal(metadata.taskId, undefined);
+    assert.equal(metadata.executionStatus, undefined);
+    assert.deepEqual(findWorkflowOutputNodes("config-copy", "text", nodes, [edge("config-copy", "new-result")]).map((item) => item.id), ["new-result"]);
+});
+
+test("an existing copied config prefers its current connection over a stale persisted output id", () => {
+    const nodes = [
+        node("config-copy", "config", { workflowOutputNodeIds: ["old-result"] }),
+        node("old-result", "text", { workflowProducerNodeId: "original-config" }),
+        node("new-result", "text"),
+    ];
+    assert.deepEqual(findWorkflowOutputNodes("config-copy", "text", nodes, [edge("config-copy", "new-result")]).map((item) => item.id), ["new-result"]);
+});
+
+test("copying a complete workflow remaps output ownership and composer references", () => {
+    const idMap = new Map([
+        ["input", "input-copy"],
+        ["config", "config-copy"],
+        ["result", "result-copy"],
+    ]);
+    const config = copyCanvasNodeMetadata({ composerContent: "use @[node:input]", workflowOutputNodeIds: ["result"] }, idMap);
+    const result = copyCanvasNodeMetadata({ workflowProducerNodeId: "config" }, idMap);
+    assert.equal(config.composerContent, "use @[node:input-copy]");
+    assert.deepEqual(config.workflowOutputNodeIds, ["result-copy"]);
+    assert.equal(result.workflowProducerNodeId, "config-copy");
+});
+
+test("repairs stale references in workflows copied before reference remapping", () => {
+    const nodes = [
+        node("original-input", "image", { content: "original.png" }),
+        node("copied-input", "image", { content: "copied.png" }),
+        node("original-output", "image", { workflowProducerNodeId: "original-config" }),
+        node("copied-output", "image", { content: "copied-output.png", workflowProducerNodeId: "copied-parent" }),
+        node("copied-config", "config", { composerContent: "use @[node:original-input] and @[node:original-output]" }),
+    ];
+    nodes[0].title = "商品图";
+    nodes[1].title = "商品图 Copy";
+    nodes[2].title = "输出 01｜透明母资产";
+    nodes[3].title = "输出 01｜透明母资产 Copy";
+    const connections = [edge("copied-input", "copied-config"), edge("copied-output", "copied-config")];
+    assert.equal(
+        resolveCopiedCanvasNodeReferences("copied-config", nodes[4].metadata.composerContent, nodes, connections),
+        "use @[node:copied-input] and @[node:copied-output]",
+    );
+    const pendingNodes = nodes.map((item) =>
+        item.id === "copied-output" ? { ...item, metadata: { ...item.metadata, content: "" } } : item,
+    );
+    const readiness = validateCanvasWorkflowNodeReadiness({
+        nodeId: "copied-config",
+        nodes: pendingNodes,
+        connections,
+        dependencies: new Set(["copied-parent"]),
+        completedNodeIds: new Set(),
+        allowPendingDependencies: true,
+    });
+    assert.equal(readiness.ok, true);
+});
+
 test("connects a config source handle to image and text outputs", () => {
     const nodes = [node("config", "config"), node("image", "image"), node("text", "text")];
     assert.deepEqual(normalizeConnection("config", "image", nodes, "source"), { fromNodeId: "config", toNodeId: "image" });
@@ -61,4 +166,141 @@ test("keeps config input direction from either drag direction", () => {
 test("rejects config-to-config connections", () => {
     const nodes = [node("a", "config"), node("b", "config")];
     assert.equal(normalizeConnection("a", "b", nodes, "source"), null);
+});
+
+test("blocks unresolved workflow references until their producer has completed", () => {
+    const nodes = [
+        node("input", "image", { content: "source.png", status: "success" }),
+        node("a", "config", { composerContent: "use @[node:input]" }),
+        node("a-out", "image", { workflowProducerNodeId: "a", status: "idle" }),
+        node("b", "config", { composerContent: "use @[node:a-out]" }),
+    ];
+    const pending = validateCanvasWorkflowNodeReadiness({ nodeId: "b", nodes, dependencies: new Set(["a"]), completedNodeIds: new Set(), allowPendingDependencies: true });
+    assert.equal(pending.ok, true);
+    const runtime = validateCanvasWorkflowNodeReadiness({ nodeId: "b", nodes, dependencies: new Set(["a"]), completedNodeIds: new Set(["a"]) });
+    assert.deepEqual(runtime, { ok: false, issue: { reason: "reference_empty", nodeId: "b", relatedNodeId: "a-out" } });
+});
+
+test("rejects missing references and incomplete dependencies", () => {
+    const missing = validateCanvasWorkflowNodeReadiness({ nodeId: "b", nodes: [node("b", "config", { composerContent: "use @[node:missing]" })], dependencies: new Set(), completedNodeIds: new Set() });
+    assert.deepEqual(missing, { ok: false, issue: { reason: "reference_missing", nodeId: "b", relatedNodeId: "missing" } });
+    const dependency = validateCanvasWorkflowNodeReadiness({ nodeId: "b", nodes: [node("b", "config")], dependencies: new Set(["a"]), completedNodeIds: new Set() });
+    assert.deepEqual(dependency, { ok: false, issue: { reason: "dependency_incomplete", nodeId: "b", relatedNodeId: "a" } });
+});
+
+test("requires the requested number of successful workflow outputs", () => {
+    const nodes = [
+        node("config", "config", { workflowOutputNodeIds: ["result"] }),
+        node("result", "image", { images: [{ id: "ok", status: "success", content: "ok.png" }, { id: "bad", status: "error", errorDetails: "provider failed" }] }),
+    ];
+    assert.deepEqual(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "image", expectedCount: 2, nodes, connections: [] }), {
+        ok: false,
+        issue: { reason: "output_failed", nodeId: "config", expected: 2, actual: 1, errorDetails: "provider failed" },
+    });
+    assert.equal(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "image", expectedCount: 1, nodes, connections: [] }).ok, true);
+});
+
+test("does not mark empty text output or a changed plan as complete", () => {
+    const nodes = [node("config", "config", { workflowOutputNodeIds: ["result"] }), node("result", "text", { content: "", status: "success" })];
+    assert.deepEqual(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "text", expectedCount: 1, nodes, connections: [] }), {
+        ok: false,
+        issue: { reason: "output_incomplete", nodeId: "config", expected: 1, actual: 0 },
+    });
+    const checkpoint = createCanvasWorkflowCheckpoint(["a", "b"]);
+    assert.equal(workflowPlanMatchesCheckpoint({ nodeIds: ["a", "b"], layers: [["a"], ["b"]], dependencies: new Map() }, checkpoint), true);
+    assert.equal(workflowPlanMatchesCheckpoint({ nodeIds: ["b", "a"], layers: [["b"], ["a"]], dependencies: new Map() }, checkpoint), false);
+});
+
+test("adopts a valid output from a falsely failed node without regenerating it", () => {
+    const failed = failCanvasWorkflowCheckpoint(createCanvasWorkflowCheckpoint(["config"]), "config", "stale state");
+    const nodes = [node("config", "config", { generationMode: "text", count: 1, workflowOutputNodeIds: ["result"] }), node("result", "text", { status: "success", content: "complete answer" })];
+    const recovered = reconcileCanvasWorkflowFailureOutput(failed, nodes, []);
+    assert.equal(recovered.status, "running");
+    assert.deepEqual(recovered.completedNodeIds, ["config"]);
+    assert.equal(recovered.errorNodeId, undefined);
+});
+
+test("adopts all completed concurrent outputs after refresh", () => {
+    const checkpoint = { ...createCanvasWorkflowCheckpoint(["a", "b", "c"]), currentNodeId: "a" };
+    const nodes = [
+        node("a", "config", { status: "success", workflowOutputNodeIds: ["a-out"] }),
+        node("a-out", "image", { status: "success", content: "a.png" }),
+        node("b", "config", { status: "success", workflowOutputNodeIds: ["b-out"] }),
+        node("b-out", "image", { status: "success", content: "b.png" }),
+        node("c", "config"),
+    ];
+    assert.deepEqual(reconcileCanvasWorkflowOutputs(checkpoint, nodes, []).completedNodeIds, ["a", "b"]);
+});
+
+test("schedules independent workflows together and cancels only queued dependents", () => {
+    const dependencies = new Map([
+        ["a", new Set()],
+        ["b", new Set(["a"])],
+        ["x", new Set()],
+        ["y", new Set(["x"])],
+    ]);
+    assert.deepEqual(findRunnableCanvasWorkflowNodeIds({ pendingNodeIds: ["a", "b", "x", "y"], completedNodeIds: new Set(), dependencies }), ["a", "x"]);
+    assert.deepEqual([...findCanvasWorkflowCancellationClosure("a", ["a", "b", "x", "y"], dependencies)], ["a", "b"]);
+});
+
+test("does not reuse stale text content from a newly failed retry", () => {
+    const nodes = [node("config", "config", { workflowOutputNodeIds: ["result"] }), node("result", "text", { status: "error", content: "old answer", errorDetails: "new request failed" })];
+    assert.deepEqual(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "text", expectedCount: 1, nodes, connections: [] }), {
+        ok: false,
+        issue: { reason: "output_failed", nodeId: "config", expected: 1, actual: 0, errorDetails: "new request failed" },
+    });
+});
+
+test("persists and advances workflow checkpoints", () => {
+    const started = createCanvasWorkflowCheckpoint(["a", "b", "c"], "2026-08-17T00:00:00.000Z");
+    const running = { ...started, currentNodeId: "a" };
+    const restored = normalizeCanvasWorkflowCheckpoint(JSON.parse(JSON.stringify(running)));
+    assert.deepEqual(restored, running);
+    assert.deepEqual(advanceCanvasWorkflowCheckpoint(running, "a", "2026-08-17T00:01:00.000Z"), {
+        ...started,
+        completedNodeIds: ["a"],
+        currentNodeId: undefined,
+        updatedAt: "2026-08-17T00:01:00.000Z",
+    });
+});
+
+test("keeps a failed workflow checkpoint retryable", () => {
+    const running = { ...createCanvasWorkflowCheckpoint(["config-a", "config-b"], "2026-08-17T00:00:00.000Z"), runId: "run-1" };
+    const failed = failCanvasWorkflowCheckpoint(advanceCanvasWorkflowCheckpoint(running, "config-a"), "config-b", "provider failed", "2026-08-17T00:01:00.000Z");
+    const restored = normalizeCanvasWorkflowCheckpoint(failed);
+    assert.equal(restored.status, "failed");
+    assert.equal(restored.runId, "run-1");
+    assert.deepEqual(restored.completedNodeIds, ["config-a"]);
+    assert.equal(restored.errorNodeId, "config-b");
+    assert.equal(restored.errorMessage, "provider failed");
+});
+
+test("reconciles a refreshed current node without replaying completed work", () => {
+    const checkpoint = { ...createCanvasWorkflowCheckpoint(["a", "b"]), currentNodeId: "a" };
+    const completed = reconcileCanvasWorkflowCheckpoint(
+        checkpoint,
+        [node("a", "config", { status: "success", generationMode: "image", count: 1, workflowOutputNodeIds: ["a-out"] }), node("a-out", "image", { status: "success", content: "done.png" }), node("b", "config")],
+        "interrupted",
+    );
+    assert.equal(completed.ok, true);
+    assert.deepEqual(completed.checkpoint.completedNodeIds, ["a"]);
+    const incomplete = reconcileCanvasWorkflowCheckpoint(checkpoint, [node("a", "config", { status: "success", workflowOutputNodeIds: ["a-out"] }), node("a-out", "image", { status: "success" })], "interrupted");
+    assert.equal(incomplete.ok, false);
+    assert.equal(incomplete.reason, "failed");
+    const interrupted = reconcileCanvasWorkflowCheckpoint(checkpoint, [node("a", "config", { status: "error", errorDetails: "interrupted" })], "interrupted");
+    assert.equal(interrupted.ok, true);
+    assert.equal(interrupted.checkpoint.currentNodeId, "a");
+    const failed = reconcileCanvasWorkflowCheckpoint(checkpoint, [node("a", "config", { status: "error", errorDetails: "provider failed" })], "interrupted");
+    assert.deepEqual({ ok: failed.ok, reason: failed.reason, nodeId: failed.nodeId }, { ok: false, reason: "failed", nodeId: "a" });
+});
+
+test("keeps an unsynced local workflow checkpoint during cloud hydration", () => {
+    const cloud = { id: "project", revision: 7, updatedAt: "2026-08-17T00:00:00.000Z", marker: "cloud" };
+    const local = { id: "project", revision: 7, updatedAt: "2026-08-17T00:00:01.000Z", marker: "checkpoint" };
+    const merged = mergeCanvasProjectSnapshots([cloud], [local]);
+    assert.equal(merged.projects[0].marker, "checkpoint");
+    assert.deepEqual(merged.localNewerIds, ["project"]);
+
+    const remoteAdvanced = { ...cloud, revision: 8, updatedAt: "2026-08-17T00:00:02.000Z", marker: "new-cloud" };
+    assert.equal(mergeCanvasProjectSnapshots([remoteAdvanced], [local]).projects[0].marker, "new-cloud");
 });

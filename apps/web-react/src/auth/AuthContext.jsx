@@ -4,6 +4,7 @@ import {
   getAuthSession,
 } from "@react/legacy-modules/services/auth.js";
 import storageService from "@react/legacy-modules/services/storage.js";
+import { subscribeUserTasks } from "@react/legacy-modules/services/tasksApi.js";
 
 const AuthContext = createContext(null);
 
@@ -53,6 +54,11 @@ export function AuthProvider({ children }) {
       disposed = true;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    return subscribeUserTasks();
+  }, [user?.id]);
 
   const value = useMemo(
     () => ({

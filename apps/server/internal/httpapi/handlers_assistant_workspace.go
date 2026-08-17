@@ -15,6 +15,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 const (
@@ -778,6 +779,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if insertErr != nil {
 			return insertErr
 		}
+		if _, _, err := store.SyncUIDesignAssetHistoryFromRun(c.Request.Context(), tx, run, nil); err != nil {
+			return err
+		}
 		if err := store.AddUserUploadReferences(c.Request.Context(), tx, user.ID,
 			store.UploadReferenceAssistantRun, run.ID, assistantUploadKeys); err != nil {
 			return err
@@ -806,6 +810,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			map[string]any{"runId": run.ID.String(), "pending": false, "statusStage": "failed", "error": message})
 		fail(c, apperr.E("queue_error", message, 503))
 		return
+	}
+	if history, histErr := store.GetTaskByIdemKey(c.Request.Context(), s.St.Pool, user.ID, store.UIDesignAssetHistoryIdempotencyKey(run.ID)); histErr == nil && history != nil {
+		event := taskstream.Event{Stage: history.Status, Status: history.Status}
+		taskstream.Publish(c.Request.Context(), s.assistantStreamRedis(), history.ID.String(), event)
+		taskstream.PublishUser(c.Request.Context(), s.assistantStreamRedis(), user.ID.String(), event)
 	}
 	respondCreated(c, gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
 		"assistantMessage": assistantMessageDict(assistantMessage)})

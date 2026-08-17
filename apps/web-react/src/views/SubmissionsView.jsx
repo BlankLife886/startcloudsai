@@ -5,11 +5,12 @@ import {
   listMyGallerySubmissions,
 } from "@react/legacy-modules/services/meApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
-import { TASK_TYPE_LABELS } from "@react/legacy-modules/services/tasksApi.js";
+import { taskOriginLabel } from "@react/legacy-modules/services/tasksApi.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { taskAspectCss } from "../features/history/taskAspectCss.js";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import { useIsDark } from "../hooks/useIsDark.js";
 import "./SubmissionsView.css";
@@ -40,8 +41,36 @@ function coverOf(submission) {
   return submission?.coverUrl || submission?.mediaUrls?.[0] || "";
 }
 
+function originalOf(submission) {
+  return submission?.mediaUrls?.[0] || submission?.coverUrl || "";
+}
+
+function aspectFromPrompt(text) {
+  const match = String(text || "").match(
+    /--ar\s+(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)/i,
+  );
+  if (!match) return "";
+  return `${match[1]} / ${match[2]}`;
+}
+
+function submissionAspect(submission) {
+  return (
+    taskAspectCss(submission, "") ||
+    aspectFromPrompt(submission?.title) ||
+    "1 / 1"
+  );
+}
+
+function cardPrompt(submission) {
+  const raw = String(submission?.prompt || submission?.title || "").trim();
+  if (!raw) return "AI 作品";
+  const chinese = raw.match(/\[中文\]\s*([\s\S]*?)(?=\s*\[English\]|$)/i);
+  if (chinese?.[1]?.trim()) return chinese[1].trim();
+  return raw.replace(/\s*\[(?:中文|English)\]\s*/gi, " ").trim();
+}
+
 function typeLabel(submission) {
-  return TASK_TYPE_LABELS[submission?.taskType] || "创作";
+  return taskOriginLabel(submission);
 }
 
 function readStoredLayout() {
@@ -52,6 +81,7 @@ function readStoredLayout() {
 function matchesQuery(submission, query) {
   if (!query) return true;
   const haystack = [
+    submission.prompt,
     submission.title,
     typeLabel(submission),
     STATUS_LABELS[submission.status] || submission.status,
@@ -105,18 +135,19 @@ export function SubmissionsView() {
         key: String(item.id),
         item,
         index,
-        aspect: 3 / 4,
+        aspect: submissionAspect(item),
       })),
     [visibleItems],
   );
+  const getMasonryAspect = useCallback((entry) => entry.aspect, []);
   const masonry = useVirtualMasonryFeed({
     items: masonryItems,
-    fallbackAspect: 3 / 4,
-    bodyHeight: 102,
+    fallbackAspect: 1 / 1,
+    bodyHeight: 0,
     minColumnWidth: 132,
     maxColumns: gridColumns,
     overscan: 2400,
-    getAspect: () => 3 / 4,
+    getAspect: getMasonryAspect,
   });
 
   const applyItems = useCallback((next) => {
@@ -189,10 +220,16 @@ export function SubmissionsView() {
     };
   }, [loadList]);
 
-  const revealCover = useCallback((id, event) => {
-    loadedCoverKeysRef.current.add(id);
-    event.currentTarget.classList.add("is-loaded");
-  }, []);
+  const revealCover = useCallback(
+    (id, event) => {
+      const key = String(id);
+      const alreadyLoaded = loadedCoverKeysRef.current.has(key);
+      loadedCoverKeysRef.current.add(key);
+      if (!alreadyLoaded) masonry.measureFromEvent(key, event);
+      event.currentTarget?.classList.add("is-loaded");
+    },
+    [masonry],
+  );
 
   const setLayout = (columns) => {
     setGridColumns(columns);
@@ -402,7 +439,7 @@ export function SubmissionsView() {
                   <li
                     key={entry.key}
                     data-submission-id={entry.key}
-                    className={`ch-card ch-history-masonry__item${selected ? " is-selected" : ""}${selectMode ? " is-selecting" : ""}`}
+                    className={`ch-card ch-history-masonry__item ps-submission-card${selected ? " is-selected" : ""}${selectMode ? " is-selecting" : ""}`}
                     style={{
                       width: `${entry.width}px`,
                       height: `${entry.height}px`,
@@ -424,7 +461,10 @@ export function SubmissionsView() {
                     <button
                       type="button"
                       className="ch-card__media ch-prompt-card__media"
-                      style={{ height: `${entry.mediaHeight}px` }}
+                      style={{
+                        height: `${entry.mediaHeight}px`,
+                        aspectRatio: "auto",
+                      }}
                       onClick={() =>
                         selectMode
                           ? toggleSelected(submission.id)
@@ -435,7 +475,7 @@ export function SubmissionsView() {
                         <img
                           className={`ch-prompt-card__image${loadedCover ? " is-loaded" : ""}`}
                           src={cover}
-                          alt={submission.title || "AI 作品"}
+                          alt={cardPrompt(submission)}
                           loading={
                             entry.index < Math.max(6, masonry.columnCount * 2)
                               ? "eager"
@@ -455,45 +495,59 @@ export function SubmissionsView() {
                       ) : (
                         <div className="ch-card__placeholder">
                           <i className="bi bi-image" aria-hidden="true" />
-                          {submission.title || "AI 作品"}
+                          {cardPrompt(submission)}
                         </div>
                       )}
                     </button>
                     <div className="ch-card__overlay">
-                      <span className="ch-card__overlay-start">
-                        <span className="ch-card__tag">{typeLabel(submission)}</span>
-                      </span>
-                      <span className="ch-card__overlay-end">
+                      <div className="ch-card__overlay-bar">
+                        <span className="ch-card__overlay-start">
+                          <span className="ch-card__tag">
+                            {typeLabel(submission)}
+                          </span>
+                        </span>
+                        <span className="ch-card__overlay-end">
+                          <span
+                            className="ps-submission__status ch-card__share"
+                            data-status={submission.status}
+                          >
+                            {STATUS_LABELS[submission.status] ||
+                              submission.status}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="ch-card__overlay-bar is-footer">
                         <span
-                          className="ps-submission__status ch-card__share"
-                          data-status={submission.status}
+                          className={
+                            submission.rejectReason
+                              ? "ps-submission__reason ch-card__file-meta"
+                              : "ch-card__file-meta"
+                          }
+                          title={
+                            submission.rejectReason
+                              ? submission.rejectReason
+                              : formatTime(submission.createdAt)
+                          }
                         >
-                          {STATUS_LABELS[submission.status] || submission.status}
+                          {submission.rejectReason ? (
+                            <>原因：{submission.rejectReason}</>
+                          ) : (
+                            <>
+                              <i className="bi bi-clock" aria-hidden="true" />
+                              {formatTime(submission.createdAt)}
+                            </>
+                          )}
                         </span>
-                      </span>
-                    </div>
-                    <div className="ch-card__body">
-                      <p className="ch-card__prompt">
-                        {submission.title || "AI 作品"}
-                      </p>
-                      {submission.rejectReason ? (
-                        <p className="ps-submission__reason ch-card__file-meta">
-                          原因：{submission.rejectReason}
-                        </p>
-                      ) : (
-                        <span className="ch-card__file-meta">
-                          {formatTime(submission.createdAt)}
-                        </span>
-                      )}
-                      <div className="ch-card__actions is-icon-row">
-                        <button
-                          type="button"
-                          className="ps-submission__remove"
-                          title="撤回/删除"
-                          onClick={() => setPendingDelete(submission)}
-                        >
-                          <i className="bi bi-trash3" />
-                        </button>
+                        {selectMode ? null : (
+                          <button
+                            type="button"
+                            className="ps-submission__remove"
+                            title="撤回/删除"
+                            onClick={() => setPendingDelete(submission)}
+                          >
+                            <i className="bi bi-trash3" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </li>
@@ -516,7 +570,7 @@ export function SubmissionsView() {
       <DialogMotion
         open={Boolean(preview)}
         variant="detail"
-        layerClassName="ch-preview-layer"
+        layerClassName="ch-preview-layer ps-preview-layer"
         panelClassName="ch-preview"
         ariaLabel="投稿预览"
         onClose={closePreview}
@@ -551,9 +605,9 @@ export function SubmissionsView() {
         {preview ? (
           <>
             <div className="ch-preview__media">
-              {coverOf(preview) ? (
+              {originalOf(preview) ? (
                 <img
-                  src={coverOf(preview)}
+                  src={originalOf(preview)}
                   alt={preview.title || "AI 作品"}
                   loading="eager"
                   decoding="async"
@@ -574,7 +628,7 @@ export function SubmissionsView() {
                 </div>
               </div>
               <div className="ch-preview__mid">
-                <p className="ch-preview__prompt">{preview.title || "AI 作品"}</p>
+                <p className="ch-preview__prompt">{cardPrompt(preview)}</p>
                 {preview.rejectReason ? (
                   <p className="ps-submission__reason">
                     原因：{preview.rejectReason}

@@ -55,11 +55,18 @@ test('canvas tasks resolve back to smart canvas, including existing source-only 
     existing: [isSmartCanvasTask(existingTask), studioRouteForTask(existingTask)],
     current: [isSmartCanvasTask(newTask), studioRouteForTask(newTask)],
     wallpaper: [isSmartCanvasTask(wallpaperTask), studioRouteForTask(wallpaperTask)],
+    missing: [isSmartCanvasTask(null), studioRouteForTask(null)],
+    nullParams: [
+      isSmartCanvasTask({ type: 'ui_design', params: null }),
+      studioRouteForTask({ type: 'ui_design', params: null }),
+    ],
   }
 
   expect(routes).toEqual({
     existing: [true, '/canvas'],
     current: [true, '/canvas'],
     wallpaper: [false, '/text-to-image'],
+    missing: [false, '/text-to-image'],
+    nullParams: [false, '/design-workshop'],
   })
 })

@@ -6,6 +6,7 @@
  * 状态机：queued → running → succeeded | failed | canceled
  */
 import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
+import { scheduleWalletRefresh } from './walletSync.js'
 
 export const TASK_TYPES = [
   't2i',
@@ -27,6 +28,33 @@ export const TASK_TYPE_LABELS = {
   game_art: '游戏设计',
   puzzle: '拼图',
   background_remove: '背景移除',
+}
+
+export function taskOriginLabel(item = {}) {
+  const record = item && typeof item === 'object' ? item : {}
+  const params = record.params && typeof record.params === 'object' && !Array.isArray(record.params)
+    ? record.params
+    : {}
+  const source = String(record.source || params._source || params.source || '')
+    .trim()
+    .toLowerCase()
+  const kind = String(params._kind || params.kind || '')
+    .trim()
+    .toLowerCase()
+  const workspace = String(params.workspace || '')
+    .trim()
+    .toLowerCase()
+  const displayName = String(record.displayName || '').trim()
+  if (displayName === '无限画布' || displayName === '画布去背') return displayName
+  if (
+    source === 'react_canvas' ||
+    source === 'infinite_canvas' ||
+    workspace === 'infinite_canvas' ||
+    kind.startsWith('canvas-')
+  ) {
+    return kind === 'canvas-background-remove' ? '画布去背' : '无限画布'
+  }
+  return TASK_TYPE_LABELS[record.taskType || record.type] || '创作'
 }
 
 export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
@@ -53,6 +81,7 @@ export function isTerminalTaskStatus(status = '') {
 function dispatchTaskUpdate(task, payload) {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent(TASK_UPDATE_EVENT, { detail: { task, payload } }))
+  if (isTerminalTaskStatus(task?.status)) scheduleWalletRefresh()
 }
 
 function runSubmissionQueue() {
@@ -123,6 +152,7 @@ export async function createTask({
     ...(idempotencyKey ? { idempotencyKey } : {}),
   }
   const data = await withSubmissionSlot(() => postTaskWithRecovery(body, idempotencyKey))
+  scheduleWalletRefresh()
   return data?.task || data
 }
 
@@ -248,6 +278,7 @@ function ensureTaskUpdateBridge() {
   if (taskUpdateBridgeReady || typeof window === 'undefined') return
   taskUpdateBridgeReady = true
   window.addEventListener(TASK_UPDATE_EVENT, (event) => {
+    if (event?.detail?.payload?.source === 'batch-poll') return
     applyWaitingTaskSnapshot(event?.detail?.task, event?.detail?.payload, false)
   })
 }

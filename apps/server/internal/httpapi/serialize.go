@@ -125,19 +125,38 @@ func adminTaskDict(t *store.Task, user *store.User) gin.H {
 }
 
 func assistantRunTaskSource(params map[string]any) string {
-	source, _ := params["_source"].(string)
-	workspace, _ := params["workspace"].(string)
-	if source == store.CanvasTaskSource || workspace == store.PromptTaskTypeCanvas {
+	if store.IsCanvasOrigin(params) {
 		return store.PromptTaskTypeCanvas
 	}
 	return store.PromptTaskTypeAssistant
 }
 
 func assistantRunTaskDisplayName(params map[string]any) string {
-	if assistantRunTaskSource(params) == store.PromptTaskTypeCanvas {
-		return "无限画布"
+	return store.AssistantProductName(params)
+}
+
+func rewriteAssistantLedgerReason(reason *string, params map[string]any) *string {
+	if reason == nil {
+		return nil
 	}
-	return "AI 助手"
+	product := store.AssistantProductName(params)
+	if product == "AI 助手" || !strings.Contains(*reason, "AI 助手") {
+		return reason
+	}
+	rewritten := strings.ReplaceAll(*reason, "AI 助手", product)
+	return &rewritten
+}
+
+func rewriteTaskLedgerReason(reason *string, task *store.Task) *string {
+	if reason == nil || task == nil || !store.IsCanvasOrigin(task.Params) {
+		return reason
+	}
+	rewritten := strings.NewReplacer(
+		"任务冻结", "无限画布冻结",
+		"任务结算", "无限画布结算",
+		"任务解冻", "无限画布解冻",
+	).Replace(*reason)
+	return &rewritten
 }
 
 func adminTaskServiceProvider(t *store.Task) string {
@@ -188,6 +207,7 @@ func ledgerDictWithTask(e *store.LedgerEntry, task *store.Task) gin.H {
 	if task == nil {
 		return d
 	}
+	d["reason"] = rewriteTaskLedgerReason(e.Reason, task)
 	params := task.Params
 	if params == nil {
 		params = map[string]any{}
@@ -229,6 +249,7 @@ func ledgerDictWithAssistantRun(e *store.LedgerEntry, run *store.AssistantRun) g
 	if params == nil {
 		params = map[string]any{}
 	}
+	d["reason"] = rewriteAssistantLedgerReason(e.Reason, params)
 	displayModel, _ := params["_modelDisplayName"].(string)
 	if strings.TrimSpace(displayModel) == "" {
 		displayModel, _ = params["model"].(string)
@@ -342,6 +363,25 @@ func notificationDict(n *store.Notification, globalReadAt *string) gin.H {
 		"body":      n.Body,
 		"readAt":    readAt,
 		"createdAt": isoValue(n.CreatedAt),
+	}
+}
+
+func attachSubmissionTask(d gin.H, task *store.Task) {
+	if task == nil {
+		return
+	}
+	d["taskType"] = task.Type
+	d["prompt"] = task.Prompt
+	d["taskPrompt"] = task.Prompt
+	d["taskModel"] = task.Model
+	if ar, ok := task.Params["aspectRatio"].(string); ok {
+		if trimmed := strings.TrimSpace(ar); trimmed != "" {
+			d["aspectRatio"] = trimmed
+		}
+	}
+	if store.IsCanvasOrigin(task.Params) {
+		d["source"] = store.CanvasTaskSource
+		d["displayName"] = taskflow.TaskDisplayName(task)
 	}
 }
 

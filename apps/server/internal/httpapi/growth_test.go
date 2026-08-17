@@ -140,6 +140,10 @@ func TestGrowthGroupReturnsMemberAvatarsAndAdminOverview(t *testing.T) {
 	if len(members) != 1 || members[0].(map[string]any)["avatarUrl"] != avatarURL {
 		t.Fatalf("group members = %#v", members)
 	}
+	rules := growthData["rules"].(map[string]any)
+	if rules["groupCampaignOrdinal"] != float64(1) {
+		t.Fatalf("groupCampaignOrdinal = %#v", rules["groupCampaignOrdinal"])
+	}
 
 	overviewResponse := env.do(t, http.MethodGet, "/api/v1/admin/growth/groups?campaignKey=launch-2026", nil, adminToken)
 	if overviewResponse.Code != http.StatusOK {

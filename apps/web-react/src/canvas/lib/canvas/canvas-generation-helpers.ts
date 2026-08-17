@@ -134,39 +134,40 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     return mode === "image" ? applyCanvasImageModelSettings(next, modelOptionMeta(next, next.model)) : next;
 }
 
-export type PendingCanvasImageTask = {
+export type PendingCanvasTask = {
     nodeId: string;
     taskId: string;
     imageId?: string;
+    kind: "image" | "assistant";
 };
 
 function hasResumableTask(node: CanvasNodeData) {
     return Boolean(node.metadata?.taskId) || Boolean(node.metadata?.images?.some((image) => image.status === "loading" && image.taskId));
 }
 
-export function pendingCanvasImageTasks(nodes: CanvasNodeData[]): PendingCanvasImageTask[] {
-    const targets: PendingCanvasImageTask[] = [];
+export function pendingCanvasTasks(nodes: CanvasNodeData[]): PendingCanvasTask[] {
+    const targets: PendingCanvasTask[] = [];
     for (const node of nodes) {
         for (const image of node.metadata?.images || []) {
             if (image.status === "loading" && image.taskId) {
-                targets.push({ nodeId: node.id, imageId: image.id, taskId: image.taskId });
+                targets.push({ nodeId: node.id, imageId: image.id, taskId: image.taskId, kind: "image" });
             }
         }
         if (node.metadata?.status === "loading" && node.metadata.taskId && !targets.some((target) => target.nodeId === node.id && target.taskId === node.metadata?.taskId)) {
-            targets.push({ nodeId: node.id, taskId: node.metadata.taskId });
+            targets.push({ nodeId: node.id, taskId: node.metadata.taskId, kind: node.metadata.taskKind || "image" });
         }
     }
     return targets;
 }
 
-export function attachCanvasTaskId(node: CanvasNodeData, taskId: string, imageId?: string): CanvasNodeData {
+export function attachCanvasTaskId(node: CanvasNodeData, taskId: string, imageId?: string, taskKind: "image" | "assistant" = "image"): CanvasNodeData {
     const images = node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, taskId } : image));
     const matchedImage = Boolean(imageId && images?.some((image) => image.id === imageId));
     return {
         ...node,
         metadata: {
             ...node.metadata,
-            ...(matchedImage ? {} : { taskId }),
+            ...(matchedImage ? {} : { taskId, taskKind }),
             images,
         },
     };
@@ -198,6 +199,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
                     status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
                     errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
                     taskId: stillLoading ? node.metadata.taskId : undefined,
+                    taskKind: stillLoading ? node.metadata.taskKind : undefined,
                 },
             };
         }
@@ -215,6 +217,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
                 status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
                 errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
                 taskId: stillLoading ? node.metadata.taskId : undefined,
+                taskKind: stillLoading ? node.metadata.taskKind : undefined,
             },
         };
     }
@@ -224,6 +227,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
             ...node.metadata,
             ...imageMetadata(uploaded),
             taskId: undefined,
+            taskKind: undefined,
             errorDetails: undefined,
         },
     };
@@ -242,6 +246,7 @@ export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: 
                 status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
                 errorDetails: stillLoading || hasSuccess ? undefined : errorDetails,
                 taskId: stillLoading ? node.metadata.taskId : undefined,
+                taskKind: stillLoading ? node.metadata.taskKind : undefined,
             },
         };
     }
@@ -252,6 +257,7 @@ export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: 
             status: "error",
             errorDetails,
             taskId: undefined,
+            taskKind: undefined,
         },
     };
 }

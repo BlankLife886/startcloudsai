@@ -526,6 +526,10 @@ body:has(.commercial-home) #vue-inspector-container {
   letter-spacing: 0.04em;
   will-change: transform, opacity;
 }
+.commercial-float-title.is-en {
+  flex-wrap: wrap;
+  white-space: normal;
+}
 
 .commercial-intro__narrative {
   max-width: min(36em, 62%);

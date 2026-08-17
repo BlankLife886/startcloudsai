@@ -483,6 +483,9 @@ async function submitPassword() {
             '/community',
             '/gallery',
             '/tasks',
+            '/plans',
+            '/growth-groups',
+            '/checkin-activity',
             '/model-config',
           ].includes(route.path),
         }"

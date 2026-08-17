@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { useIsDark } from "../../../../hooks/useIsDark.js";
+import { useLocale } from "../../../../i18n/index.js";
 import { AuthenticatedImage } from "../../../../components/AuthenticatedImage.jsx";
 import { CommerceSelect } from "../../CommerceSelect.jsx";
 
@@ -63,6 +64,7 @@ export function TryonChoicePicker({
   children,
 }) {
   const isDark = useIsDark();
+  const { t } = useLocale();
   const popupRootRef = useRef(null);
   const popupPanelRef = useRef(null);
   const [popupOpen, setPopupOpen] = useState(false);
@@ -159,11 +161,11 @@ export function TryonChoicePicker({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`上传${uploadLabel}`}
+          aria-label={`${t("上传")}${t(uploadLabel)}`}
           onClick={onPickUpload}
         >
           <i className="bi bi-cloud-arrow-up" />
-          上传
+          {t("上传")}
         </button>
         <button
           type="button"
@@ -178,7 +180,7 @@ export function TryonChoicePicker({
           aria-label={moreAria}
         >
           <i className="bi bi-grid" />
-          更多
+          {t("更多")}
         </button>
         {children}
       </div>
@@ -535,6 +537,7 @@ export function TryonLiveStage({
   onDropSlot,
   copy = TRYON_STAGE_COPY,
 }) {
+  const { locale, t } = useLocale();
   const [curtainHold, setCurtainHold] = useState(false);
   const [curtainRun, setCurtainRun] = useState(0);
   const [runSeconds, setRunSeconds] = useState(0);
@@ -574,7 +577,7 @@ export function TryonLiveStage({
   }
 
   return (
-    <div className="tryon-stage" aria-label={copy.aria}>
+    <div className="tryon-stage" aria-label={t(copy.aria)}>
       {uploadNotice ? (
         <p className="tryon-stage__notice" role="status">
           {uploadNotice}
@@ -588,7 +591,7 @@ export function TryonLiveStage({
           onDragOver={handleSlotDragOver}
           onDrop={(event) => handleSlotDrop(event, "model")}
         >
-          <span className="tryon-stage__tag">模特</span>
+          <span className="tryon-stage__tag">{t("模特")}</span>
           {modelImage ? (
             <button
               type="button"
@@ -609,7 +612,7 @@ export function TryonLiveStage({
           ) : (
             <>
               <i className="bi bi-person" />
-              <span>选择模特</span>
+              <span>{t("选择模特")}</span>
             </>
           )}
           {modelPicker}
@@ -621,7 +624,7 @@ export function TryonLiveStage({
           onDragOver={handleSlotDragOver}
           onDrop={(event) => handleSlotDrop(event, "garment")}
         >
-          <span className="tryon-stage__tag">{copy.centerTag}</span>
+          <span className="tryon-stage__tag">{t(copy.centerTag)}</span>
           {garment?.url ? (
             <button
               type="button"
@@ -648,7 +651,7 @@ export function TryonLiveStage({
               onClick={onUploadGarment}
             >
               <i className={`bi ${copy.emptyIcon}`} />
-              <span>{copy.centerEmpty}</span>
+              <span>{t(copy.centerEmpty)}</span>
               {copy.centerHint ? <small>{copy.centerHint}</small> : null}
             </button>
           )}
@@ -661,7 +664,7 @@ export function TryonLiveStage({
                 onClick={onUploadGarment}
               >
                 <i className="bi bi-cloud-arrow-up" />
-                上传
+                {t("上传")}
               </button>
               <label className="tryon-stage__apparel">
                 <CommerceSelect
@@ -682,7 +685,7 @@ export function TryonLiveStage({
           onDragOver={handleSlotDragOver}
           onDrop={(event) => handleSlotDrop(event, "scene")}
         >
-          <span className="tryon-stage__tag">场景</span>
+          <span className="tryon-stage__tag">{t("场景")}</span>
           {sceneImage ? (
             <button
               type="button"
@@ -707,7 +710,7 @@ export function TryonLiveStage({
           ) : (
             <>
               <i className="bi bi-image" />
-              <span>选择场景</span>
+              <span>{t("选择场景")}</span>
             </>
           )}
           {scenePicker}
@@ -773,7 +776,7 @@ export function TryonLiveStage({
           ) : (
             <>
               <i className="bi bi-stars" />
-              <span>生成结果</span>
+              <span>{t("生成结果")}</span>
             </>
           )}
           {resultUrl && !running && resultSeconds > 0 ? (
@@ -808,8 +811,14 @@ export function TryonLiveStage({
                       : "bi-stars"
                 }`}
               />
-              {running ? "停止" : failed ? "重试" : "生成"}
-              <small>{running ? "进行中" : `${shotCount}张`}</small>
+              {running ? t("停止") : failed ? t("重试") : t("生成")}
+              <small>
+                {running
+                  ? t("进行中")
+                  : locale === "en"
+                    ? `${shotCount} ${shotCount === 1 ? "image" : "images"}`
+                    : `${shotCount}张`}
+              </small>
             </button>
           </div>
         </div>

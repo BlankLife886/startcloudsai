@@ -13,14 +13,25 @@ export function studioRouteForTaskType(taskType = '') {
   return PROMPT_TASK_ROUTES[String(taskType)] || '/text-to-image'
 }
 
-export function isSmartCanvasTask(task = {}) {
-  const params = task?.params && typeof task.params === 'object' ? task.params : {}
-  const source = String(params._source || params.source || '').trim().toLowerCase()
-  const kind = String(params._kind || params.kind || '').trim().toLowerCase()
-  return source === 'react_canvas' || kind.startsWith('canvas-')
+function taskRecord(task) {
+  return task && typeof task === 'object' ? task : {}
 }
 
-export function studioRouteForTask(task = {}) {
+function taskParams(task) {
+  const params = taskRecord(task).params
+  return params && typeof params === 'object' && !Array.isArray(params) ? params : {}
+}
+
+export function isSmartCanvasTask(task) {
+  const item = taskRecord(task)
+  const params = taskParams(item)
+  const source = String(item.source || params._source || params.source || '').trim().toLowerCase()
+  const kind = String(params._kind || params.kind || '').trim().toLowerCase()
+  const workspace = String(params.workspace || item.workspace || '').trim().toLowerCase()
+  return source === 'react_canvas' || source === 'infinite_canvas' || workspace === 'infinite_canvas' || kind.startsWith('canvas-')
+}
+
+export function studioRouteForTask(task) {
   if (isSmartCanvasTask(task)) return '/canvas'
-  return studioRouteForTaskType(task?.type)
+  return studioRouteForTaskType(taskRecord(task).type)
 }

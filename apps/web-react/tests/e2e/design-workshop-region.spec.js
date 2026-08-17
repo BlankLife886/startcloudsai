@@ -113,6 +113,14 @@ test('region selection uses image-content coordinates and keeps controls usable'
   expect(editInstructions.icon).toContain('完整画面和背景')
   expect(editInstructions.icon).toContain('禁止只输出图标')
   expect(editInstructions.background).toContain('禁止纯白背景')
+  const styledIcon = buildRegionEditInstruction({
+    action: 'improve-icon',
+    hasStyleReference: true,
+  })
+  expect(styledIcon).toContain('按风格参考图重绘当前框选图标')
+  expect(styledIcon).toContain('禁止复制风格参考图的主体')
+  expect(styledIcon).toContain('禁止多框出成同一张图')
+  expect(styledIcon).not.toContain('禁止只输出图标')
   await expect(page.locator('.dws-region-box')).toBeVisible()
   await expect(page.locator('.dws-region-hit')).toHaveCount(2)
   await expect(page.locator('.dws-region-handle:visible')).toHaveCount(8)
@@ -123,6 +131,9 @@ test('region selection uses image-content coordinates and keeps controls usable'
   await expect(page.locator('.dws-region-composer__modes button')).toHaveCount(4)
   await expect(page.locator('.dws-region-composer textarea')).toHaveCSS('min-height', '112px')
   await expect(page.locator('.dws-region-composer__cost')).toContainText(/输出 \d+×\d+/)
+  await expect(page.locator('.dws-region-composer__ref-add')).toBeVisible()
+  await expect(page.getByRole('button', { name: '继续框选' })).toBeVisible()
+  await expect(page.locator('.dws-region-composer__refs')).toContainText('可继续框选，框几处出几张')
   await expect
     .poll(() =>
       page
@@ -269,6 +280,16 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
   const selection = await page.locator('.dws-region-box').boundingBox()
   expect(selection.width).toBeGreaterThanOrEqual(8)
   expect(selection.height).toBeGreaterThanOrEqual(8)
+
+  await page.mouse.move(startX + 80, startY + 16)
+  await page.mouse.down()
+  await page.mouse.move(startX + 120, startY + 48)
+  await page.mouse.up()
+  await expect(page.locator('.dws-region-box')).toHaveCount(2)
+  await expect(page.locator('.dws-region-composer__cost')).toContainText('预计消耗 2 张图费用')
+  await expect(page.locator('.dws-region-composer__refs')).toContainText(
+    '多框选各出一张：无参考图时，后续按第一张出图对齐风格',
+  )
 })
 
 async function mockDesignWorkshopApis(page) {

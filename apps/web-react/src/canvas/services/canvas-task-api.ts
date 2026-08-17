@@ -5,6 +5,7 @@ import { StarcloudsApiError, starcloudsJson, starcloudsRequest, uploadCloudFile 
 import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
 import { canvasImageRequestSize, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-config-store";
+import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
 
 type CanvasTask = {
@@ -21,9 +22,16 @@ type CanvasAssistantResponse = {
     assistantMessage?: { content?: string };
 };
 
+export type CanvasAssistantTaskOptions = {
+    signal?: AbortSignal;
+    onCreated?: (runId: string) => void | Promise<void>;
+};
+
 function abortError() {
     return new DOMException("Aborted", "AbortError");
 }
+
+class CanvasTerminalTaskError extends Error {}
 
 function wait(delay: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
@@ -55,7 +63,7 @@ async function ensureReferenceKey(reference: ReferenceImage) {
 
 export type CanvasTaskOptions = {
     signal?: AbortSignal;
-    onCreated?: (taskId: string) => void;
+    onCreated?: (taskId: string) => void | Promise<void>;
     onResolved?: (images: Array<{ id: string; dataUrl: string; storageKey?: string }>) => void | Promise<void>;
 };
 
@@ -113,7 +121,8 @@ export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, 
         count: 1,
         idempotencyKey: crypto.randomUUID(),
     });
-    onCreated?.(created.id);
+    scheduleWalletRefresh();
+    await onCreated?.(created.id);
     const task = await waitForTask(created.id, signal);
     const [image] = imagesFromCanvasTask(task);
     return {
@@ -153,11 +162,17 @@ async function waitForTask(id: string, signal?: AbortSignal) {
         try {
             const task = await starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, { signal: poll.signal });
             const status = taskStatus(task.status);
-            if (taskSucceeded(status) && taskHasOutput(task)) return { ...task, status: "succeeded" as const };
-            if (taskFailed(status)) throw new Error(task.errorMessage || (status.startsWith("cancel") ? "任务已取消" : "图片生成失败"));
+            if (taskSucceeded(status) && taskHasOutput(task)) {
+                scheduleWalletRefresh();
+                return { ...task, status: "succeeded" as const };
+            }
+            if (taskFailed(status)) {
+                scheduleWalletRefresh();
+                throw new CanvasTerminalTaskError(task.errorMessage || (status.startsWith("cancel") ? "任务已取消" : "图片生成失败"));
+            }
         } catch (error) {
             if (signal?.aborted) throw abortError();
-            if (error instanceof Error && (error.message.includes("图片生成失败") || error.message.includes("任务已取消"))) throw error;
+            if (error instanceof CanvasTerminalTaskError) throw error;
             if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
         } finally {
             poll.cleanup();
@@ -199,7 +214,8 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
         count,
         idempotencyKey: crypto.randomUUID(),
     });
-    onCreated?.(created.id);
+    scheduleWalletRefresh();
+    await onCreated?.(created.id);
     const task = await waitForTask(created.id, signal);
     const images = imagesFromCanvasTask(task);
     const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
@@ -250,7 +266,27 @@ function collectMessageReferenceImages(messages: Array<{ role: string; content: 
     return images.slice(0, 4);
 }
 
-export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, signal?: AbortSignal, model = "") {
+export async function waitForCanvasAssistantRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal) {
+    const deadline = Date.now() + 20 * 60 * 1000;
+    for (;;) {
+        if (signal?.aborted) throw abortError();
+        const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, { signal });
+        if (current.run.status === "succeeded") {
+            scheduleWalletRefresh();
+            const content = current.assistantMessage?.content?.trim() || "没有返回内容";
+            onDelta(content);
+            return content;
+        }
+        if (current.run.status === "failed" || current.run.status === "canceled") {
+            scheduleWalletRefresh();
+            throw new Error(current.run.errorMessage || "画布对话任务失败");
+        }
+        if (Date.now() >= deadline) throw new Error("画布对话任务仍在后台处理，请稍后重试");
+        await wait(700, signal);
+    }
+}
+
+export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, options?: CanvasAssistantTaskOptions, model = "") {
     const prompt = flattenMessages(messages).slice(-12_000);
     const referenceImages = collectMessageReferenceImages(messages);
     const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
@@ -268,17 +304,7 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         requestSize: "auto",
         quality: "high",
     });
-    const deadline = Date.now() + 20 * 60 * 1000;
-    for (;;) {
-        if (signal?.aborted) throw abortError();
-        const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(created.run.id)}`, { signal });
-        if (current.run.status === "succeeded") {
-            const content = current.assistantMessage?.content?.trim() || "没有返回内容";
-            onDelta(content);
-            return content;
-        }
-        if (current.run.status === "failed" || current.run.status === "canceled") throw new Error(current.run.errorMessage || "画布对话任务失败");
-        if (Date.now() >= deadline) throw new Error("画布对话任务仍在后台处理，请稍后重试");
-        await wait(700, signal);
-    }
+    scheduleWalletRefresh();
+    await options?.onCreated?.(created.run.id);
+    return waitForCanvasAssistantRun(created.run.id, onDelta, options?.signal);
 }

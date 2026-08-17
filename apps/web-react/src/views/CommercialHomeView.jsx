@@ -7,6 +7,7 @@ import "@react/legacy-styles/generated/features/home-commercial/components/Capab
 import "@react/legacy-styles/generated/features/home-commercial/components/FlowingMenu.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/StrandsBand.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
+import { useLocale } from "../i18n/index.js";
 import "./commercial-home-react.css";
 
 gsap.registerPlugin(useGSAP);
@@ -187,8 +188,12 @@ const usageSteps = [
 
 const narrative =
   "从选择模型、组织提示词和参考图，到持续接收生成结果、继续迭代与高清交付，星空云绘把分散的创作步骤收进一条清晰、可追踪的工作流。";
-const narrativeWords = narrative.split(/(\s+|(?<=[，。]))/u).filter(Boolean);
 const floatTitle = "一套工作流，覆盖整条创作链";
+
+function splitNarrative(text, locale) {
+  if (locale === "en") return text.split(/(\s+)/).filter(Boolean);
+  return text.split(/(\s+|(?<=[，。]))/u).filter(Boolean);
+}
 const introSlides = [
   "/sucai/home-intro-sticker-sheet.png",
   "/sucai/home-intro-02.png",
@@ -213,6 +218,8 @@ const footerAccount = [
   ["个人中心", "/profile"],
   ["AI 助手", "/assistant"],
 ];
+const FOOTER_DESC =
+  "一站式 AI 图像生产工作台。从模型选择到高清交付，把创作链路收进同一条可追踪流程。";
 
 async function apiGet(path, signal) {
   const response = await fetch(`/api/v1${path}`, {
@@ -406,13 +413,19 @@ function IntroMediaFlip() {
   );
 }
 
+const HERO_TYPE_LINES = [
+  "从一句描述，到可交付图像",
+  "让模型、进度与结果保持连续",
+  "一个入口，连接完整创作链",
+];
+const HERO_SUMMARY =
+  "AI 助手、文生图、插画染色、UI 设计稿、模型设计与游戏美术，由统一模型目录、任务系统和高清交付链路连接。";
+const HERO_TYPE_SR = "从想法到可交付图像的 AI 创作工作流";
+
 function TypeLine() {
   const rootRef = useRef(null);
-  const texts = [
-    "从一句描述，到可交付图像",
-    "让模型、进度与结果保持连续",
-    "一个入口，连接完整创作链",
-  ];
+  const { t } = useLocale();
+  const texts = useMemo(() => HERO_TYPE_LINES.map((line) => t(line)), [t]);
   const [text, setText] = useState(() =>
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
       ? texts[0]
@@ -456,10 +469,10 @@ function TypeLine() {
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [reduced]);
+  }, [reduced, texts]);
   return (
     <span ref={rootRef} className="type-line">
-      <span className="sr-only">从想法到可交付图像的 AI 创作工作流</span>
+      <span className="sr-only">{t(HERO_TYPE_SR)}</span>
       <span aria-hidden="true">
         {text}
         {!reduced && <i />}
@@ -538,6 +551,7 @@ function StrandsBand() {
 }
 
 export function CommercialHomeView() {
+  const { locale, t } = useLocale();
   const [user, setUser] = useState(null);
   const heroEnabled = useHomeHeroEnabled();
   useEffect(() => {
@@ -550,9 +564,15 @@ export function CommercialHomeView() {
     return () => controller.abort();
   }, []);
 
+  const workflowTitle = t(floatTitle);
+  const workflowNarrative = t(narrative);
+  const narrativeWords = useMemo(
+    () => splitNarrative(workflowNarrative, locale),
+    [locale, workflowNarrative],
+  );
   const primaryCta = user
-    ? { to: "/text-to-image", label: "开始创作" }
-    : { to: "/auth", label: "登录开始创作" };
+    ? { to: "/text-to-image", label: locale === "en" ? "START" : t("开始创作") }
+    : { to: "/auth", label: locale === "en" ? "START" : t("登录开始创作") };
   const fallbacks = [
     "/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.webp",
     "/sucai/ai-wallpaper-server-459defa9-9acc-4f92-8d1b-9a6b8e96fdec-1.webp",
@@ -589,8 +609,7 @@ export function CommercialHomeView() {
                 <TypeLine />
               </div>
               <p data-commercial-hero="copy" className="commercial-hero__summary">
-                AI 助手、文生图、插画染色、UI
-                设计稿、模型设计与游戏美术，由统一模型目录、任务系统和高清交付链路连接。
+                {t(HERO_SUMMARY)}
               </p>
               <div
                 data-commercial-hero="actions"
@@ -630,10 +649,10 @@ export function CommercialHomeView() {
           <div className="commercial-intro__copy">
             <h2
               data-commercial-float
-              className="commercial-float-title"
-              aria-label={floatTitle}
+              className={`commercial-float-title${locale === "en" ? " is-en" : ""}`}
+              aria-label={workflowTitle}
             >
-              {[...floatTitle].map((char, index) => (
+              {[...workflowTitle].map((char, index) => (
                 <span
                   key={`${char}-${index}`}
                   data-commercial-float-char
@@ -676,8 +695,8 @@ export function CommercialHomeView() {
         <div className="commercial-process__shade" aria-hidden="true" />
         <div className="commercial-shell commercial-process__content">
           <header className="commercial-process__head" data-commercial-reveal>
-            <h2 id="process-title">每一次生成，都能被看见、继续和交付</h2>
-            <p>任务状态、生成结果与版本路径保持连续，不再让等待打断创作。</p>
+            <h2 id="process-title">{t("每一次生成，都能被看见、继续和交付")}</h2>
+            <p>{t("任务状态、生成结果与版本路径保持连续，不再让等待打断创作。")}</p>
           </header>
           <ol className="commercial-process__steps">
             {processSteps.map(([index, icon, title, description, tone]) => (
@@ -688,8 +707,8 @@ export function CommercialHomeView() {
               >
                 <span>{index}</span>
                 <i className={icon} aria-hidden="true" />
-                <h3>{title}</h3>
-                <p>{description}</p>
+                <h3>{t(title)}</h3>
+                <p>{t(description)}</p>
               </li>
             ))}
           </ol>
@@ -702,8 +721,8 @@ export function CommercialHomeView() {
       >
         <div className="commercial-shell commercial-final__layout">
           <header className="commercial-final__head" data-commercial-reveal>
-            <h2 id="final-title">三步开始使用</h2>
-            <p>登录、选工作室、生成交付——把想法推进到成品。</p>
+            <h2 id="final-title">{t("三步开始使用")}</h2>
+            <p>{t("登录、选工作室、生成交付——把想法推进到成品。")}</p>
           </header>
           <ol className="commercial-final__steps" data-commercial-reveal>
             {usageSteps.map(([index, icon, title, description]) => (
@@ -716,9 +735,9 @@ export function CommercialHomeView() {
                 </span>
                 <div className="commercial-final__step-body">
                   <strong>
-                    <i className={icon} aria-hidden="true" /> {title}
+                    <i className={icon} aria-hidden="true" /> {t(title)}
                   </strong>
-                  <p>{description}</p>
+                  <p>{t(description)}</p>
                 </div>
               </li>
             ))}
@@ -735,7 +754,7 @@ export function CommercialHomeView() {
               className="commercial-button commercial-button--ghost"
               to="/pricing"
             >
-              <span>查看积分价格</span>
+              <span>{t("查看积分价格")}</span>
               <i className="bi bi-arrow-right" aria-hidden="true" />
             </Link>
           </div>
@@ -747,12 +766,12 @@ export function CommercialHomeView() {
           <div className="commercial-footer__top">
             <section
               className="commercial-footer__brand-block"
-              aria-label="品牌"
+              aria-label={t("品牌")}
             >
               <Link
                 className="commercial-footer__brand"
                 to="/"
-                aria-label="星空云绘首页"
+                aria-label={t("星空云绘首页")}
               >
                 <img
                   src="/brand/starcloud-logo.svg"
@@ -761,46 +780,43 @@ export function CommercialHomeView() {
                   height="36"
                 />
                 <span>
-                  <strong>星空云绘</strong>
+                  <strong>{t("星空云绘")}</strong>
                   <small>StarCloudIsAI</small>
                 </span>
               </Link>
-              <p className="commercial-footer__desc">
-                一站式 AI
-                图像生产工作台。从模型选择到高清交付，把创作链路收进同一条可追踪流程。
-              </p>
+              <p className="commercial-footer__desc">{t(FOOTER_DESC)}</p>
               <Link className="commercial-footer__cta" to={primaryCta.to}>
                 <span>{primaryCta.label}</span>
                 <i className="bi bi-arrow-up-right" aria-hidden="true" />
               </Link>
             </section>
-            <nav className="commercial-footer__columns" aria-label="站点地图">
+            <nav className="commercial-footer__columns" aria-label={t("站点地图")}>
               <section className="commercial-footer__col">
-                <h2>创作</h2>
+                <h2>{t("创作")}</h2>
                 <ul>
                   {studioEntries.map((entry) => (
                     <li key={entry.id}>
-                      <Link to={entry.to}>{entry.title}</Link>
+                      <Link to={entry.to}>{t(entry.title)}</Link>
                     </li>
                   ))}
                 </ul>
               </section>
               <section className="commercial-footer__col">
-                <h2>发现</h2>
+                <h2>{t("发现")}</h2>
                 <ul>
                   {footerDiscover.map(([label, to]) => (
                     <li key={to}>
-                      <Link to={to}>{label}</Link>
+                      <Link to={to}>{t(label)}</Link>
                     </li>
                   ))}
                 </ul>
               </section>
               <section className="commercial-footer__col">
-                <h2>支持</h2>
+                <h2>{t("支持")}</h2>
                 <ul>
                   {footerAccount.map(([label, to]) => (
                     <li key={to}>
-                      <Link to={to}>{label}</Link>
+                      <Link to={to}>{t(label)}</Link>
                     </li>
                   ))}
                   <li>
@@ -808,7 +824,7 @@ export function CommercialHomeView() {
                       type="button"
                       className="commercial-footer__text-btn"
                     >
-                      问题反馈
+                      {t("问题反馈")}
                     </button>
                   </li>
                 </ul>
@@ -822,7 +838,7 @@ export function CommercialHomeView() {
               <span>All rights reserved</span>
             </div>
             <button type="button" className="commercial-footer__text-btn">
-              反馈
+              {t("反馈")}
             </button>
           </div>
         </div>

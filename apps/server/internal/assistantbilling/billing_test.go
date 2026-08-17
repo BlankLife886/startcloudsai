@@ -155,3 +155,31 @@ func TestAssistantCancelAndRetryReleaseEveryReservation(t *testing.T) {
 		t.Fatalf("canceled wallet = %#v", state)
 	}
 }
+
+func TestCanvasAssistantReserveUsesCanvasLedgerReason(t *testing.T) {
+	st := testdb.Setup(t)
+	user := billingUser(t, st, 20)
+	billingRun(t, st, user.ID, 1, map[string]any{
+		"_source": "react_canvas", "workspace": "infinite_canvas", "_chatCostCents": int64(1),
+	})
+	entries, err := store.ListLedger(context.Background(), st.Pool, user.ID, 20, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Kind == "freeze" && entry.Reason != nil && *entry.Reason == "无限画布费用预留" {
+			return
+		}
+	}
+	t.Fatalf("canvas reserve reason missing: %#v", ledgerReasons(entries))
+}
+
+func ledgerReasons(entries []*store.LedgerEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Reason != nil {
+			out = append(out, entry.Kind+":"+*entry.Reason)
+		}
+	}
+	return out
+}

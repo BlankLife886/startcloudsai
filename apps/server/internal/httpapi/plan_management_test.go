@@ -82,6 +82,36 @@ func TestAdminPlanCRUDAndPublicCatalog(t *testing.T) {
 		t.Fatalf("public plans status=%d data=%#v", public.Code, publicData)
 	}
 
+	extraTopup := env.do(t, http.MethodPost, "/api/v1/admin/plans", gin.H{
+		"code": "creator_2000", "name": "创作者积分包 2", "kind": "topup",
+		"priceCents": 1990, "grantCents": 2000, "active": true, "sort": 30,
+	}, adminToken)
+	extraData, _ := decode(t, extraTopup)
+	if extraTopup.Code != http.StatusOK {
+		t.Fatalf("create extra topup status=%d body=%s", extraTopup.Code, extraTopup.Body.String())
+	}
+	extraID := extraData["id"].(string)
+	reordered := env.do(t, http.MethodPatch, "/api/v1/admin/plan-order", gin.H{
+		"kind": "topup", "ids": []string{extraID, firstID},
+	}, adminToken)
+	if reordered.Code != http.StatusOK {
+		t.Fatalf("reorder status=%d body=%s", reordered.Code, reordered.Body.String())
+	}
+	firstPlan, err := store.GetPlan(context.Background(), env.st.Pool, uuid.MustParse(firstID))
+	if err != nil || firstPlan == nil {
+		t.Fatalf("load first plan after reorder: %#v err=%v", firstPlan, err)
+	}
+	extraPlan, err := store.GetPlan(context.Background(), env.st.Pool, uuid.MustParse(extraID))
+	if err != nil || extraPlan == nil {
+		t.Fatalf("load extra plan after reorder: %#v err=%v", extraPlan, err)
+	}
+	if extraPlan.Sort >= firstPlan.Sort {
+		t.Fatalf("reordered sorts = %d, %d; want extra before first", extraPlan.Sort, firstPlan.Sort)
+	}
+	if removed := env.do(t, http.MethodDelete, "/api/v1/admin/plans/"+extraID, nil, adminToken); removed.Code != http.StatusNoContent {
+		t.Fatalf("delete extra topup status=%d body=%s", removed.Code, removed.Body.String())
+	}
+
 	patched := env.do(t, http.MethodPatch, "/api/v1/admin/plans/"+firstID, gin.H{
 		"name": "新名称", "active": false, "description": "下架维护中",
 	}, adminToken)

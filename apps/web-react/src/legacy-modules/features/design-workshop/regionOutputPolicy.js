@@ -113,6 +113,78 @@ export function resolveRegionImageRequestSize(value = 'auto', resolution = '1K')
   return `${normalized.width}x${normalized.height}`
 }
 
+export const MAX_REGION_STYLE_REFERENCES = 2
+
+function clampUnit(value) {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return 0
+  return Math.min(1, Math.max(0, next))
+}
+
+export function createRegionBox(rect = {}, index = 0) {
+  const width = clampUnit(rect.width)
+  const height = clampUnit(rect.height)
+  if (width <= 0 || height <= 0) return null
+  return {
+    id: String(rect.id || `region-${index + 1}`),
+    x: clampUnit(rect.x),
+    y: clampUnit(rect.y),
+    width,
+    height,
+    elements: Array.isArray(rect.elements) ? rect.elements : [],
+    marked: Array.isArray(rect.marked)
+      ? rect.marked
+      : Array.isArray(rect.markedIds)
+        ? rect.markedIds
+        : [],
+    viewport: rect.viewport || rect.elementViewport || null,
+    resultUrl: String(rect.resultUrl || ''),
+  }
+}
+
+export function normalizeRegionBoxesFromSession(session = {}) {
+  const raw =
+    Array.isArray(session.selections) && session.selections.length
+      ? session.selections
+      : session.selection
+        ? [
+            {
+              ...session.selection,
+              elements: session.elements,
+              marked: session.markedIds,
+              viewport: session.elementViewport,
+              resultUrl: session.resultUrl,
+            },
+          ]
+        : []
+  return raw.map((item, index) => createRegionBox(item, index)).filter(Boolean)
+}
+
+export function resolveRegionDesignReference({
+  index = 0,
+  firstResultUrl = '',
+  draftUrl = '',
+  preserveLayout = false,
+  hasStyleReferences = false,
+} = {}) {
+  const firstResult = String(firstResultUrl || '').trim()
+  const draft = String(draftUrl || '').trim()
+  if (hasStyleReferences) return null
+  if (Number(index) > 0 && firstResult) {
+    return {
+      url: firstResult,
+      name: '设计参考（第一张出图）',
+    }
+  }
+  if (!preserveLayout && draft) {
+    return {
+      url: draft,
+      name: '完整设计稿（风格上下文）',
+    }
+  }
+  return null
+}
+
 export function resolveRegionSelectionRequestSize(width, height) {
   let targetWidth = Math.max(1, Math.round(Number(width) || 1))
   let targetHeight = Math.max(1, Math.round(Number(height) || 1))

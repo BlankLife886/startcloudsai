@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { useLocale } from "../i18n/index.js";
 import { DialogMotion } from "./motion/DialogMotion.jsx";
 import "./LogoutDialog.css";
 
@@ -9,6 +10,7 @@ export function LogoutDialog({
   onClose,
   onConfirm,
 }) {
+  const { t } = useLocale();
   const cancelRef = useRef(null);
   return (
     <DialogMotion
@@ -22,24 +24,26 @@ export function LogoutDialog({
       closeDisabled={busy}
       onClose={onClose}
     >
-      <button
-        type="button"
-        className="logout-dialog__close"
-        aria-label="关闭"
-        disabled={busy}
-        onClick={onClose}
-      >
-        <i className="bi bi-x-lg" aria-hidden="true" />
-      </button>
-      <div className="logout-dialog__body" data-dialog-motion-item>
+      <div className="logout-dialog__head" data-dialog-motion-item>
         <div className="logout-dialog__icon" aria-hidden="true">
           <i className="bi bi-box-arrow-right" />
         </div>
-        <p className="logout-dialog__eyebrow">账号</p>
-        <h2 id="logout-dialog-title">退出当前账号？</h2>
-        <p id="logout-dialog-description">
-          退出后需要重新登录才能继续查看个人资料和创作记录。
-        </p>
+        <div className="logout-dialog__copy">
+          <p className="logout-dialog__eyebrow">{t("账号")}</p>
+          <h2 id="logout-dialog-title">{t("退出当前账号？")}</h2>
+          <p id="logout-dialog-description">
+            {t("退出后需要重新登录才能继续查看个人资料和创作记录。")}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="logout-dialog__close"
+          aria-label={t("关闭")}
+          disabled={busy}
+          onClick={onClose}
+        >
+          <i className="bi bi-x-lg" aria-hidden="true" />
+        </button>
       </div>
       <footer className="logout-dialog__actions" data-dialog-motion-item>
         <button
@@ -49,7 +53,7 @@ export function LogoutDialog({
           disabled={busy}
           onClick={onClose}
         >
-          取消
+          {t("取消")}
         </button>
         <button
           type="button"
@@ -60,7 +64,7 @@ export function LogoutDialog({
           {busy && (
             <i className="bi bi-arrow-repeat spin" aria-hidden="true" />
           )}
-          {busy ? "正在退出…" : "确认退出"}
+          {busy ? t("正在退出…") : t("确认退出")}
         </button>
       </footer>
     </DialogMotion>

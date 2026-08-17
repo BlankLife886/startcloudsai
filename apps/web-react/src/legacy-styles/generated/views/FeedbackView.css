@@ -281,19 +281,101 @@
   border-color: color-mix(in srgb, var(--fb-accent) 55%, var(--fb-line));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--fb-accent) 12%, transparent);
 }
-.feedback-url-input {
+.feedback-page-select {
   position: relative;
 }
-.feedback-url-input > i {
+.feedback-page-select__trigger {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 12px 42px 12px 14px;
+  border: 1px solid var(--fb-line);
+  border-radius: 13px;
+  color: var(--fb-ink);
+  background: var(--fb-soft);
+  font: inherit;
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.feedback-page-select__trigger::after {
   position: absolute;
   top: 50%;
-  left: 13px;
-  z-index: 1;
-  transform: translateY(-50%);
-  color: var(--fb-muted);
+  right: 16px;
+  width: 7px;
+  height: 7px;
+  margin-top: -6px;
+  border-right: 1.5px solid var(--fb-muted);
+  border-bottom: 1.5px solid var(--fb-muted);
+  transform: rotate(45deg);
+  content: "";
 }
-.feedback-url-input input {
-  padding-left: 38px;
+.feedback-page-select.is-open .feedback-page-select__trigger::after {
+  margin-top: -2px;
+  transform: rotate(225deg);
+}
+.feedback-page-select.is-open .feedback-page-select__trigger,
+.feedback-page-select__trigger:focus {
+  border-color: color-mix(in srgb, var(--fb-accent) 55%, var(--fb-line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fb-accent) 12%, transparent);
+  outline: none;
+}
+.feedback-page-select__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  left: 0;
+  z-index: 8;
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--fb-line);
+  border-radius: 16px;
+  background: var(--fb-surface);
+  box-shadow: var(--fb-shadow);
+}
+.feedback-page-select__group {
+  display: grid;
+  gap: 2px;
+  padding-top: 6px;
+}
+.feedback-page-select__group strong {
+  padding: 8px 12px 4px;
+  color: var(--fb-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.feedback-page-select__menu button {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--fb-ink);
+  background: transparent;
+  font: inherit;
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
+}
+.feedback-page-select__menu button:hover {
+  background: var(--fb-soft);
+}
+.feedback-page-select__menu button.is-active {
+  color: var(--fb-accent);
+  background: color-mix(in srgb, var(--fb-accent) 10%, var(--fb-surface));
+  font-weight: 700;
 }
 .feedback-form-notice {
   margin: 14px 0 0;

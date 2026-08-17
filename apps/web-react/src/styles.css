@@ -114,6 +114,19 @@ html.settings-no-animations .main-content > [data-route-motion-target] {
   overflow: hidden;
 }
 
+.app-container > .main-content.main--studio-console > .dws {
+  padding-top: 0;
+}
+
+body:has(.dws) .site-header,
+body:has(.dws) .site-header.is-scrolled,
+body:has(.dws) .site-header.is-dark,
+body:has(.dws) .site-header.is-dark.is-scrolled {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .app-container > .main-content.main--model-sheet {
   height: 100dvh;
   max-height: 100dvh;

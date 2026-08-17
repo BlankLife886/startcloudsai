@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import {
+  createRegionBox,
   nearestRegionOutputRatio,
+  normalizeRegionBoxesFromSession,
   normalizeRegionRecognitionTypes,
   regionNodeMatchesRecognitionTypes,
+  resolveRegionDesignReference,
   resolveRegionImageRequestSize,
   resolveRegionSelectionRequestSize,
 } from '../src/legacy-modules/features/design-workshop/regionOutputPolicy.js'
@@ -41,5 +44,96 @@ assert.equal(resolveRegionSelectionRequestSize(1310, 226), '1484x256')
 assert.equal(resolveRegionSelectionRequestSize(1920, 1080), '1920x1080')
 assert.equal(resolveRegionSelectionRequestSize(8000, 4000), '4096x2048')
 assert.equal(resolveRegionSelectionRequestSize(200, 100), '512x256')
+
+assert.equal(createRegionBox({ x: 0.1, y: 0.2, width: 0, height: 0.3 }), null)
+assert.equal(createRegionBox({ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }).id, 'region-1')
+assert.deepEqual(
+  normalizeRegionBoxesFromSession({
+    selection: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+    elements: [{ id: 'title' }],
+    markedIds: ['title'],
+    resultUrl: '/one.png',
+  }).map((item) => ({
+    id: item.id,
+    x: item.x,
+    width: item.width,
+    marked: item.marked,
+    resultUrl: item.resultUrl,
+  })),
+  [
+    {
+      id: 'region-1',
+      x: 0.1,
+      width: 0.8,
+      marked: ['title'],
+      resultUrl: '/one.png',
+    },
+  ],
+)
+assert.equal(
+  normalizeRegionBoxesFromSession({
+    selections: [
+      { id: 'a', x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+      { id: 'b', x: 0.5, y: 0.5, width: 0.2, height: 0.2 },
+    ],
+  }).length,
+  2,
+)
+assert.deepEqual(
+  resolveRegionDesignReference({
+    index: 0,
+    firstResultUrl: '/first.png',
+    draftUrl: '/draft.png',
+    preserveLayout: true,
+  }),
+  null,
+)
+assert.deepEqual(
+  resolveRegionDesignReference({
+    index: 0,
+    firstResultUrl: '/first.png',
+    draftUrl: '/draft.png',
+    preserveLayout: false,
+  }),
+  { url: '/draft.png', name: '完整设计稿（风格上下文）' },
+)
+assert.deepEqual(
+  resolveRegionDesignReference({
+    index: 1,
+    firstResultUrl: '/first.png',
+    draftUrl: '/draft.png',
+    preserveLayout: true,
+  }),
+  { url: '/first.png', name: '设计参考（第一张出图）' },
+)
+
+assert.deepEqual(
+  resolveRegionDesignReference({
+    index: 1,
+    firstResultUrl: '/first-flat.png',
+    draftUrl: '/draft.png',
+    preserveLayout: false,
+  }),
+  { url: '/first-flat.png', name: '设计参考（第一张出图）' },
+)
+
+assert.deepEqual(
+  resolveRegionDesignReference({
+    index: 1,
+    firstResultUrl: '/first-flat.png',
+    draftUrl: '/draft.png',
+    preserveLayout: true,
+  }),
+  { url: '/first-flat.png', name: '设计参考（第一张出图）' },
+)
+assert.equal(
+  resolveRegionDesignReference({
+    index: 1,
+    firstResultUrl: '/first.png',
+    draftUrl: '/draft.png',
+    hasStyleReferences: true,
+  }),
+  null,
+)
 
 console.log('region output policy tests passed')

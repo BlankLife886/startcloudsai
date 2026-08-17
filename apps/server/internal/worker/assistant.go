@@ -30,6 +30,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 const (
@@ -154,6 +155,9 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	}
 	if !failed {
 		return nil
+	}
+	if history, histErr := store.GetTaskByIdemKey(failureCtx, w.St.Pool, run.UserID, store.UIDesignAssetHistoryIdempotencyKey(runID)); histErr == nil && history != nil {
+		w.publishTaskEvent(failureCtx, history, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
 	}
 	assistantstream.Publish(context.Background(), w.Stream, runID.String(),
 		assistantstream.Event{Done: true, Status: "failed"})
@@ -1536,6 +1540,19 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 	}
 	if !completed {
 		return context.Canceled
+	}
+	settled := run
+	if latest, loadErr := store.GetAssistantRun(ctx, w.St.Pool, run.ID); loadErr == nil && latest != nil {
+		settled = latest
+	}
+	if _, _, persistErr := store.SyncUIDesignAssetHistoryFromRun(ctx, w.St.Pool, settled, assistantImageOutputKeys(stored)); persistErr != nil {
+		log.Printf("ui design asset history persist failed for run %s: %v", run.ID, persistErr)
+	} else if settled != nil {
+		if history, histErr := store.GetTaskByIdemKey(ctx, w.St.Pool, settled.UserID, store.UIDesignAssetHistoryIdempotencyKey(settled.ID)); histErr == nil && history != nil {
+			w.publishTaskEvent(ctx, history, taskstream.Event{
+				Stage: "complete", Status: history.Status, ImageCount: len(history.OutputKeys), Done: true,
+			})
+		}
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 		assistantstream.Event{Kind: "image", Done: true, Status: "succeeded", ImageTotal: expected})

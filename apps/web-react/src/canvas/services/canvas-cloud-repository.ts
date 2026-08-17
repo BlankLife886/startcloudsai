@@ -1,8 +1,9 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { StarcloudsApiError, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import { normalizeCanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
 
-type CanvasDocumentV3 = Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport"> & {
+type CanvasDocumentV3 = Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun"> & {
     version: 3;
 };
 
@@ -71,6 +72,7 @@ function projectDocument(project: CanvasProject): CanvasDocumentV3 {
         backgroundMode: project.backgroundMode,
         showImageInfo: project.showImageInfo,
         viewport: project.viewport,
+        workflowRun: project.workflowRun || null,
     };
 }
 
@@ -92,6 +94,7 @@ function fromResponse(item: CanvasProjectResponse): CanvasProject | null {
         backgroundMode: document.backgroundMode || "lines",
         showImageInfo: Boolean(document.showImageInfo),
         viewport: normalizeViewport(document.viewport),
+        workflowRun: normalizeCanvasWorkflowCheckpoint(document.workflowRun),
     };
 }
 

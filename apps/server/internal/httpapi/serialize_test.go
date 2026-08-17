@@ -29,6 +29,30 @@ func TestAttachShareSubmission(t *testing.T) {
 	}
 }
 
+func TestAttachSubmissionTaskMarksCanvasOrigin(t *testing.T) {
+	d := gin.H{}
+	attachSubmissionTask(d, &store.Task{
+		Type:   "t2i",
+		Prompt: "canvas prompt",
+		Model:  "gpt-image-2",
+		Params: map[string]any{"_source": "react_canvas", "aspectRatio": "16:9"},
+	})
+	if d["taskType"] != "t2i" {
+		t.Fatalf("taskType = %#v, canvas jobs stay t2i", d["taskType"])
+	}
+	if d["source"] != store.CanvasTaskSource || d["displayName"] != "无限画布" {
+		t.Fatalf("canvas origin = %#v", d)
+	}
+	if d["prompt"] != "canvas prompt" || d["aspectRatio"] != "16:9" {
+		t.Fatalf("canvas prompt/aspect = %#v", d)
+	}
+	plain := gin.H{}
+	attachSubmissionTask(plain, &store.Task{Type: "t2i", Prompt: "studio prompt"})
+	if plain["source"] != nil || plain["displayName"] != nil || plain["taskType"] != "t2i" {
+		t.Fatalf("plain t2i = %#v", plain)
+	}
+}
+
 func TestTaskDictIncludesUserDeletionMarker(t *testing.T) {
 	deletedAt := time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)
 	actor := "user"
@@ -169,8 +193,9 @@ func TestLedgerDictWithTaskUsesCanvasDisplayName(t *testing.T) {
 }
 
 func TestLedgerDictWithAssistantRunUsesCanvasDisplayName(t *testing.T) {
+	reason := "AI 助手结算（chat）"
 	entry := &store.LedgerEntry{
-		ID: uuid.New(), Kind: "spend", SourceType: "assistant_run", CreatedAt: time.Now(),
+		ID: uuid.New(), Kind: "spend", SourceType: "assistant_run", Reason: &reason, CreatedAt: time.Now(),
 	}
 	run := &store.AssistantRun{
 		ID: uuid.New(), Status: "succeeded",
@@ -180,5 +205,24 @@ func TestLedgerDictWithAssistantRunUsesCanvasDisplayName(t *testing.T) {
 	taskDict, ok := dict["task"].(gin.H)
 	if !ok || taskDict["displayName"] != "无限画布" || taskDict["source"] != "infinite_canvas" {
 		t.Fatalf("canvas assistant ledger task = %#v", dict["task"])
+	}
+	got, _ := dict["reason"].(*string)
+	if got == nil || *got != "无限画布结算（chat）" {
+		t.Fatalf("canvas assistant ledger reason = %#v", dict["reason"])
+	}
+}
+
+func TestLedgerDictWithTaskRewritesCanvasFreezeReason(t *testing.T) {
+	reason := "任务冻结（t2i×1）"
+	entry := &store.LedgerEntry{
+		ID: uuid.New(), Kind: "freeze", SourceType: "task", Reason: &reason, CreatedAt: time.Now(),
+	}
+	task := &store.Task{
+		ID: uuid.New(), Type: "t2i", Status: "running", Params: map[string]any{"_source": "react_canvas"},
+	}
+	dict := ledgerDictWithTask(entry, task)
+	got, _ := dict["reason"].(*string)
+	if got == nil || *got != "无限画布冻结（t2i×1）" {
+		t.Fatalf("canvas task ledger reason = %#v", dict["reason"])
 	}
 }

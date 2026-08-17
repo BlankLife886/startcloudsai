@@ -92,10 +92,17 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
 export function taskTypeLabel(
   type: string,
   params?: Record<string, unknown> | null,
+  source?: string,
 ): string {
-  const source = String(params?._source || "");
+  const origin = String(params?._source || params?.source || source || "");
   const kind = String(params?._kind || "");
-  if (source === "react_canvas" || kind.startsWith("canvas-")) {
+  const workspace = String(params?.workspace || "");
+  if (
+    origin === "react_canvas" ||
+    origin === "infinite_canvas" ||
+    workspace === "infinite_canvas" ||
+    kind.startsWith("canvas-")
+  ) {
     return kind === "canvas-background-remove" ? "画布去背" : "无限画布";
   }
   return TASK_TYPE_LABELS[type] ?? type;
@@ -136,6 +143,29 @@ export const LEDGER_KIND_LABELS: Record<string, string> = {
 
 export function ledgerKindLabel(kind: string): string {
   return LEDGER_KIND_LABELS[kind] ?? kind;
+}
+
+export function ledgerReasonLabel(
+  reason?: string | null,
+  task?: { displayName?: string; source?: string; type?: string } | null,
+): string {
+  const text = String(reason || "").trim();
+  const displayName = String(task?.displayName || "").trim();
+  const source = String(task?.source || "").trim();
+  const canvas =
+    displayName === "无限画布" ||
+    displayName === "画布去背" ||
+    source === "react_canvas" ||
+    source === "infinite_canvas";
+  if (canvas && text) {
+    return text
+      .replaceAll("AI 助手", displayName || "无限画布")
+      .replaceAll("任务冻结", "无限画布冻结")
+      .replaceAll("任务结算", "无限画布结算")
+      .replaceAll("任务解冻", "无限画布解冻")
+      .replaceAll("任务重跑冻结", "无限画布重跑冻结");
+  }
+  return text || displayName || "-";
 }
 
 export const SUBMISSION_STATUS_LABELS: Record<string, string> = {

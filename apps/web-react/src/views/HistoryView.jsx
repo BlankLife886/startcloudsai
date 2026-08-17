@@ -112,6 +112,7 @@ function cardPromptPreview(text) {
 }
 
 function taskTypeLabel(task) {
+  if (!task || typeof task !== "object") return "创作";
   return isSmartCanvasTask(task)
     ? "无限画布"
     : TASK_TYPE_LABELS[task?.type] || "创作";
@@ -202,6 +203,7 @@ export function HistoryView() {
   const visibleTasks = useMemo(() => {
     const query = search.trim().toLowerCase();
     return tasks
+      .filter((task) => task && typeof task === "object")
       .filter(
         (task) =>
           (!statusFilter || task.status === statusFilter) &&

@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import "@react/legacy-styles/generated/views/PricingView.css";
+import { useLocale } from "../i18n/index.js";
 
 gsap.registerPlugin(useGSAP);
 
@@ -204,6 +205,7 @@ function isUsagePlan(plan) {
 }
 
 export function PricingView() {
+  const { t } = useLocale();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const pageRef = useRef(null);
@@ -235,6 +237,14 @@ export function PricingView() {
       attributeFilter: ["class", "data-color-scheme"],
     });
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onWalletUpdated = (event) => {
+      if (event?.detail) setWallet((current) => ({ ...(current || {}), ...event.detail }));
+    };
+    window.addEventListener("starclouds:wallet-updated", onWalletUpdated);
+    return () => window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
   }, []);
 
   useGSAP(
@@ -565,7 +575,7 @@ export function PricingView() {
         </div>
         <div className="pp-shell pp-hero__grid">
           <div className="pp-hero__copy">
-            <h1>创作价格</h1>
+            <h1>{t("创作价格")}</h1>
             <div
               className={`pp-hero__chip${paymentEnabled ? " is-on" : ""}`}
               role="status"
@@ -574,7 +584,7 @@ export function PricingView() {
                 className={`bi ${paymentEnabled ? "bi-unlock" : "bi-lock"}`}
                 aria-hidden="true"
               />
-              {paymentEnabled ? "支付已接入" : "套餐暂不可用"}
+              {paymentEnabled ? t("支付已接入") : t("套餐暂不可用")}
             </div>
             <div className="pp-hero__actions">
               <button
@@ -582,17 +592,17 @@ export function PricingView() {
                 className="pp-btn is-primary"
                 onClick={() => navigate("/text-to-image")}
               >
-                开始创作
+                {t("开始创作")}
                 <i className="bi bi-arrow-up-right" aria-hidden="true" />
               </button>
             </div>
           </div>
-          <aside className="pp-wallet" aria-label="钱包概览">
+          <aside className="pp-wallet" aria-label={t("钱包概览")}>
             <div className="pp-wallet__top">
-              <span>我的钱包</span>
+              <span>{t("我的钱包")}</span>
               {user && (
                 <Link className="pp-wallet__link" to="/wallet">
-                  明细
+                  {t("明细")}
                   <i className="bi bi-arrow-right" aria-hidden="true" />
                 </Link>
               )}
@@ -600,10 +610,10 @@ export function PricingView() {
             {user ? (
               <>
                 <strong>{formatPoints(available, { withUnit: false })}</strong>
-                <span className="pp-wallet__unit">积分</span>
+                <span className="pp-wallet__unit">{t("积分")}</span>
                 {frozen > 0 && (
                   <span className="pp-wallet__frozen">
-                    {formatPoints(frozen)} 冻结
+                    {t(`${formatPoints(frozen)} 冻结`)}
                   </span>
                 )}
               </>
@@ -615,7 +625,7 @@ export function PricingView() {
                   className="pp-btn is-primary is-compact"
                   onClick={() => navigate("/auth")}
                 >
-                  前往登录
+                  {t("前往登录")}
                 </button>
               </>
             )}
@@ -623,7 +633,7 @@ export function PricingView() {
         </div>
       </section>
 
-      <nav className="pp-nav" aria-label="价格分区">
+      <nav className="pp-nav" aria-label={t("价格分区")}>
         <div className="pp-shell pp-nav__inner">
           {sectionTabs.map(([id, label]) => (
             <button
@@ -632,7 +642,7 @@ export function PricingView() {
               className={activeSection === id ? "is-active" : ""}
               onClick={() => scrollToSection(id)}
             >
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -646,8 +656,8 @@ export function PricingView() {
       >
         <div className="pp-shell">
           <header className="pp-head">
-            <h2 id="plans-title">套餐方案</h2>
-            <div className="pp-plan-tabs" role="tablist" aria-label="套餐类型">
+            <h2 id="plans-title">{t("套餐方案")}</h2>
+            <div className="pp-plan-tabs" role="tablist" aria-label={t("套餐类型")}>
               <button
                 type="button"
                 role="tab"
@@ -656,7 +666,7 @@ export function PricingView() {
                 onClick={() => setPlanKind("topup")}
               >
                 <i className="bi bi-box-seam" aria-hidden="true" />
-                额度包
+                {t("额度包")}
                 <span>{packPlans.length}</span>
               </button>
               <button
@@ -667,7 +677,7 @@ export function PricingView() {
                 onClick={() => setPlanKind("subscription")}
               >
                 <i className="bi bi-arrow-repeat" aria-hidden="true" />
-                订阅
+                {t("订阅")}
                 <span>{subscriptionPlans.length}</span>
               </button>
             </div>
@@ -690,16 +700,16 @@ export function PricingView() {
                   >
                     {(plan.badge || plan.popular) && (
                       <div className="pp-plan__badge">
-                        {plan.badge || "推荐"}
+                        {t(plan.badge || "推荐")}
                       </div>
                     )}
-                    <small>{plan.eyebrow}</small>
-                    <h3>{plan.name}</h3>
+                    <small>{t(plan.eyebrow)}</small>
+                    <h3>{t(plan.name)}</h3>
                     <div className="pp-plan__price">
-                      <strong>{planPrice(plan)}</strong>
-                      <span>{planSuffix(plan)}</span>
+                      <strong>{t(planPrice(plan))}</strong>
+                      <span>{t(planSuffix(plan))}</span>
                     </div>
-                    {quota && <b>{quota}</b>}
+                    {quota && <b>{t(quota)}</b>}
                     <ul>
                       {planFeatures(plan).map((feature) => (
                         <li key={feature}>
@@ -707,7 +717,7 @@ export function PricingView() {
                             className="bi bi-check2-circle"
                             aria-hidden="true"
                           />
-                          {feature}
+                          {t(feature)}
                         </li>
                       ))}
                     </ul>
@@ -721,10 +731,10 @@ export function PricingView() {
                       }
                     >
                       {locked
-                        ? "暂不可用"
+                        ? t("暂不可用")
                         : isUsagePlan(plan)
-                          ? "开始创作"
-                          : "选择此方案"}
+                          ? t("开始创作")
+                          : t("选择此方案")}
                       {!locked && (
                         <i className="bi bi-arrow-up-right" aria-hidden="true" />
                       )}
@@ -737,13 +747,13 @@ export function PricingView() {
             <div className="pp-empty">
               <i className="bi bi-box" aria-hidden="true" />
               <strong>
-                {planKind === "subscription" ? "暂无订阅方案" : "暂无额度包"}
+                {planKind === "subscription" ? t("暂无订阅方案") : t("暂无额度包")}
               </strong>
-              <p>可先用兑换码或体验资格获取积分。</p>
+              <p>{t("可先用兑换码或体验资格获取积分。")}</p>
             </div>
           )}
           {plansLoadFailed && (
-            <p className="pp-note">套餐暂时不可用，已显示预览方案。</p>
+            <p className="pp-note">{t("套餐暂时不可用，已显示预览方案。")}</p>
           )}
         </div>
       </section>
@@ -756,8 +766,8 @@ export function PricingView() {
       >
         <div className="pp-shell">
           <header className="pp-head">
-            <h2 id="models-title">模型价格</h2>
-            <div className="pp-model-filters" role="tablist" aria-label="模型类型">
+            <h2 id="models-title">{t("模型价格")}</h2>
+            <div className="pp-model-filters" role="tablist" aria-label={t("模型类型")}>
               {[
                 ["all", "全部"],
                 ["image", "生图"],
@@ -773,7 +783,7 @@ export function PricingView() {
                   disabled={id !== "all" && !modelKindCounts[id]}
                   onClick={() => setModelKindFilter(id)}
                 >
-                  {label}
+                  {t(label)}
                   <span>{modelKindCounts[id] || 0}</span>
                 </button>
               ))}
@@ -798,14 +808,14 @@ export function PricingView() {
                       <strong>{model.name}</strong>
                       <small>
                         {model.provider && <>{model.provider} · </>}
-                        {meta.label}
-                        {model.isDefault && <em>默认</em>}
-                        {model.fastMode && <em className="is-fast">极速</em>}
+                        {t(meta.label)}
+                        {model.isDefault && <em>{t("默认")}</em>}
+                        {model.fastMode && <em className="is-fast">{t("极速")}</em>}
                       </small>
                     </div>
                     <div className="pp-model-card__price">
-                      <b>{formatPoints(model.points)}</b>
-                      <span>{meta.unit}</span>
+                      <b>{t(formatPoints(model.points))}</b>
+                      <span>{t(meta.unit)}</span>
                     </div>
                   </article>
                 );
@@ -813,7 +823,7 @@ export function PricingView() {
             </div>
           ) : (
             <div className="pp-empty">
-              <strong>暂无已上架模型</strong>
+              <strong>{t("暂无已上架模型")}</strong>
             </div>
           )}
         </div>
@@ -828,7 +838,7 @@ export function PricingView() {
             aria-labelledby="unit-title"
           >
             <header className="pp-head">
-              <h2 id="unit-title">创作单价</h2>
+              <h2 id="unit-title">{t("创作单价")}</h2>
             </header>
             <div className="pp-unit-grid">
               {taskPriceCards.map((card) => (
@@ -840,11 +850,11 @@ export function PricingView() {
                   <span className="pp-unit__icon" aria-hidden="true">
                     <i className={`bi ${card.icon}`} />
                   </span>
-                  <strong>{card.label}</strong>
+                  <strong>{t(card.label)}</strong>
                   <div className="pp-unit__price">
-                    <b>{unitPrice(card)}</b>
+                    <b>{t(unitPrice(card))}</b>
                     {card.type !== "puzzle" && card.minPoints !== null && (
-                      <span>/ 张</span>
+                      <span>{t("/ 张")}</span>
                     )}
                   </div>
                 </article>
@@ -858,15 +868,15 @@ export function PricingView() {
             aria-labelledby="pay-title"
           >
             <header className="pp-head">
-              <h2 id="pay-title">获取积分</h2>
+              <h2 id="pay-title">{t("获取积分")}</h2>
             </header>
             <div className="pp-access">
               {accessMethods.map(([id, name, icon, action]) => (
                 <article key={id}>
                   <i className={`bi ${icon}`} aria-hidden="true" />
-                  <strong>{name}</strong>
+                  <strong>{t(name)}</strong>
                   <button type="button" onClick={() => useAccessMethod(id)}>
-                    {action}
+                    {t(action)}
                   </button>
                 </article>
               ))}
@@ -882,15 +892,15 @@ export function PricingView() {
         aria-labelledby="faq-title"
       >
         <div className="pp-shell pp-faq-layout">
-          <h2 id="faq-title">常见问题</h2>
+          <h2 id="faq-title">{t("常见问题")}</h2>
           <div className="pp-faq">
             {faqs.map(([question, answer], index) => (
               <details key={question} open={index === 0 ? true : undefined}>
                 <summary>
-                  <span>{question}</span>
+                  <span>{t(question)}</span>
                   <i className="bi bi-plus-lg" aria-hidden="true" />
                 </summary>
-                <p>{answer}</p>
+                <p>{t(answer)}</p>
               </details>
             ))}
           </div>

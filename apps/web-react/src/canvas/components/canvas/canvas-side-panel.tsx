@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
+import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { PromptDetailDialog } from "@/pages/prompts/components/prompt-detail-dialog";
@@ -17,7 +18,7 @@ import { uploadImage } from "@/services/image-storage";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 import type { InsertAssetPayload } from "./asset-picker-modal";
 import { CanvasPreviewImage } from "./canvas-preview-image";
@@ -31,6 +32,7 @@ type PanelTab = "canvas" | "assets" | "prompts";
 
 type Props = {
     nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
     selectedNodeIds: Set<string>;
     onFocusNode: (nodeId: string) => void;
     onPreviewNode: (nodeId: string) => void;
@@ -53,7 +55,7 @@ const STATUS_COLOR: Record<string, string> = {
     idle: "transparent",
 };
 
-export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onInsertAsset }: Props) {
+export function CanvasSidePanel({ nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onInsertAsset }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
@@ -171,7 +173,7 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreview
                             transition={{ duration: 0.24, ease: PANEL_EASE }}
                         >
                             {tab === "canvas" ? (
-                                <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} theme={theme} />
+                                <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} theme={theme} />
                             ) : tab === "assets" ? (
                                 <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
                             ) : (
@@ -225,7 +227,7 @@ function nodePreviewText(node: CanvasNodeData) {
     return getNodeDefinition(node.type)?.title || node.type;
 }
 
-function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, theme }: { nodes: CanvasNodeData[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; theme: CanvasTheme }) {
+function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, theme }: { nodes: CanvasNodeData[]; connections: CanvasConnection[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; theme: CanvasTheme }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const [keyword, setKeyword] = useState("");
@@ -233,11 +235,26 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
     const [selectMode, setSelectMode] = useState(false);
     const [checked, setChecked] = useState<Set<string>>(new Set());
     const [exporting, setExporting] = useState(false);
+    const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
-    const filtered = useMemo(() => {
+    const workflowGroups = useMemo(() => buildCanvasSidePanelWorkflowGroups(nodes, connections), [connections, nodes]);
+    const grouped = useMemo(() => {
         const query = keyword.trim().toLowerCase();
-        return nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
-    }, [nodes, keyword, typeFilter]);
+        return workflowGroups
+            .map((group, index) => ({
+                ...group,
+                workflowIndex: index + 1,
+                nodes: group.nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query))),
+            }))
+            .filter((group) => group.nodes.length);
+    }, [keyword, typeFilter, workflowGroups]);
+    const filtered = useMemo(() => grouped.flatMap((group) => group.nodes), [grouped]);
+    const toggleGroup = (groupId: string) =>
+        setCollapsedGroups((current) => {
+            const next = new Set(current);
+            next.has(groupId) ? next.delete(groupId) : next.add(groupId);
+            return next;
+        });
 
     const exitSelect = () => {
         setSelectMode(false);
@@ -305,38 +322,75 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {filtered.length ? (
                     <motion.div key={typeFilter} className="space-y-1" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: PANEL_EASE }}>
-                        {filtered.map((node) => {
-                            const Icon = NODE_TYPE_ICON[node.type] || FileText;
-                            const isImage = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content || node.metadata?.thumbnailUrl);
-                            const isChecked = checked.has(node.id);
-                            const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
+                        {grouped.map((group) => {
+                            const collapsed = collapsedGroups.has(group.id) && !keyword.trim();
+                            const workflowName = group.firstConfig?.title.replace(/^\d+\s*[|｜]\s*/, "") || "";
+                            const groupLabel = group.firstConfig ? t("canvas.sidePanel.workflowGroup", { index: group.workflowIndex, name: workflowName }) : t("canvas.sidePanel.standaloneNodes");
                             return (
-                                <div key={node.id} className="group flex w-full items-center rounded-2xl transition-[background-color,transform] duration-200 ease-out hover:translate-x-0.5 hover:bg-black/[.04] dark:hover:bg-white/[.05]" style={active ? { background: theme.toolbar.activeBg } : undefined}>
-                                    <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2.5 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
-                                        {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
-                                        <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl transition-transform duration-300 ease-out group-hover:scale-105" style={isImage ? { background: theme.node.fill } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
-                                            {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : <Icon className="size-4" />}
-                                        </span>
-                                        <span className="min-w-0 flex-1">
-                                            <span className="block truncate text-[13px] font-medium leading-5">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
-                                            <span className="mt-0.5 block truncate text-[11px] leading-4" style={{ color: theme.node.muted }}>
-                                                {nodePreviewText(node)}
-                                            </span>
-                                        </span>
-                                        {node.metadata?.status && node.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS_COLOR[node.metadata.status] || "transparent" }} /> : null}
+                                <div key={group.id}>
+                                    <button
+                                        type="button"
+                                        className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2 text-left text-[11px] font-semibold transition-colors hover:bg-black/[.04] disabled:cursor-default dark:hover:bg-white/[.05]"
+                                        style={{ color: theme.node.muted }}
+                                        onClick={() => toggleGroup(group.id)}
+                                        disabled={Boolean(keyword.trim())}
+                                        aria-expanded={!collapsed}
+                                    >
+                                        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", !collapsed && "rotate-90")} />
+                                        {group.firstConfig ? <Settings2 className="size-3.5 shrink-0" /> : <Square className="size-3.5 shrink-0" />}
+                                        <span className="min-w-0 flex-1 truncate" title={groupLabel}>{groupLabel}</span>
+                                        <span className="tabular-nums opacity-50">{group.nodes.length}</span>
                                     </button>
-                                    {selectMode || !isImage ? null : (
-                                        <button
-                                            type="button"
-                                            onClick={() => onPreviewNode(node.id)}
-                                            className="mr-1.5 grid size-7 place-items-center rounded-full opacity-0 transition-[opacity,transform,background-color] duration-200 ease-out group-hover:opacity-70 hover:!opacity-100 hover:scale-110 hover:bg-black/5 dark:hover:bg-white/10"
-                                            style={{ color: theme.node.muted }}
-                                            aria-label={t("canvas.sidePanel.preview")}
-                                            title={t("canvas.sidePanel.preview")}
-                                        >
-                                            <Eye className="size-3.5" />
-                                        </button>
-                                    )}
+                                    <AnimatePresence initial={false}>
+                                        {!collapsed ? (
+                                            <motion.div
+                                                key="nodes"
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{ height: "auto", opacity: 1 }}
+                                                exit={{ height: 0, opacity: 0 }}
+                                                transition={{ duration: 0.2, ease: PANEL_EASE }}
+                                                className="overflow-hidden"
+                                            >
+                                                <div className="space-y-1">
+                                                    {group.nodes.map((node) => {
+                                                        const Icon = NODE_TYPE_ICON[node.type] || FileText;
+                                                        const isImage = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content || node.metadata?.thumbnailUrl);
+                                                        const isChecked = checked.has(node.id);
+                                                        const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
+                                                        return (
+                                                            <div key={node.id} className="group flex w-full items-center rounded-2xl transition-[background-color,transform] duration-200 ease-out hover:translate-x-0.5 hover:bg-black/[.04] dark:hover:bg-white/[.05]" style={active ? { background: theme.toolbar.activeBg } : undefined}>
+                                                                <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2.5 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
+                                                                    {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
+                                                                    <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl transition-transform duration-300 ease-out group-hover:scale-105" style={isImage ? { background: theme.node.fill } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
+                                                                        {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : <Icon className="size-4" />}
+                                                                    </span>
+                                                                    <span className="min-w-0 flex-1">
+                                                                        <span className="block truncate text-[13px] font-medium leading-5">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
+                                                                        <span className="mt-0.5 block truncate text-[11px] leading-4" style={{ color: theme.node.muted }}>
+                                                                            {nodePreviewText(node)}
+                                                                        </span>
+                                                                    </span>
+                                                                    {node.metadata?.status && node.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS_COLOR[node.metadata.status] || "transparent" }} /> : null}
+                                                                </button>
+                                                                {selectMode || !isImage ? null : (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => onPreviewNode(node.id)}
+                                                                        className="mr-1.5 grid size-7 place-items-center rounded-full opacity-0 transition-[opacity,transform,background-color] duration-200 ease-out group-hover:opacity-70 hover:!opacity-100 hover:scale-110 hover:bg-black/5 dark:hover:bg-white/10"
+                                                                        style={{ color: theme.node.muted }}
+                                                                        aria-label={t("canvas.sidePanel.preview")}
+                                                                        title={t("canvas.sidePanel.preview")}
+                                                                    >
+                                                                        <Eye className="size-3.5" />
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </motion.div>
+                                        ) : null}
+                                    </AnimatePresence>
                                 </div>
                             );
                         })}

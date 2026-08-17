@@ -7,6 +7,8 @@ import {
 } from "@react/legacy-modules/services/trialAccessApi.js";
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
+import { publishWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
+import { TASK_UPDATE_EVENT, isTerminalTaskStatus } from "@react/legacy-modules/services/tasksApi.js";
 import "@react/legacy-styles/generated/views/WalletView.css";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import "./WalletView.css";
@@ -233,10 +235,7 @@ function categoryFor(entry, presentation) {
 }
 
 function publishWallet(snapshot) {
-  if (snapshot)
-    window.dispatchEvent(
-      new CustomEvent("starclouds:wallet-updated", { detail: snapshot }),
-    );
+  publishWalletSnapshot(snapshot);
 }
 
 export function WalletView() {
@@ -245,6 +244,7 @@ export function WalletView() {
   const walletControllerRef = useRef(null);
   const ledgerControllerRef = useRef(null);
   const trialControllerRef = useRef(null);
+  const ledgerRealtimeTimerRef = useRef(0);
   const [wallet, setWallet] = useState(null);
   const [walletLoading, setWalletLoading] = useState(true);
   const [walletError, setWalletError] = useState("");
@@ -345,13 +345,24 @@ export function WalletView() {
     const onWalletUpdated = (event) =>
       event.detail &&
       setWallet((current) => ({ ...(current || {}), ...event.detail }));
+    const onTaskUpdated = (event) => {
+      if (!isTerminalTaskStatus(event?.detail?.task?.status)) return;
+      if (ledgerRealtimeTimerRef.current) window.clearTimeout(ledgerRealtimeTimerRef.current);
+      ledgerRealtimeTimerRef.current = window.setTimeout(() => {
+        ledgerRealtimeTimerRef.current = 0;
+        void loadLedger(1, [""]);
+      }, 180);
+    };
     window.addEventListener("starclouds:wallet-updated", onWalletUpdated);
+    window.addEventListener(TASK_UPDATE_EVENT, onTaskUpdated);
     return () => {
       mountedRef.current = false;
       walletControllerRef.current?.abort();
       ledgerControllerRef.current?.abort();
       trialControllerRef.current?.abort();
+      if (ledgerRealtimeTimerRef.current) window.clearTimeout(ledgerRealtimeTimerRef.current);
       window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
+      window.removeEventListener(TASK_UPDATE_EVENT, onTaskUpdated);
     };
   }, []);
 

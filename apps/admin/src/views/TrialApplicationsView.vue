@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Check, Refresh, Search, Star, Warning } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -104,6 +105,7 @@ const statusTypes: Record<string, "warning" | "success" | "danger"> = {
   rejected: "danger",
 };
 
+const route = useRoute();
 const filters = reactive({ campaignId: "", status: "pending", search: "" });
 const campaign = ref<TrialCampaign | null>(null);
 const campaignOptions = ref<TrialCampaign[]>([]);
@@ -282,6 +284,11 @@ async function onCampaignsSaved() {
 }
 
 onMounted(async () => {
+  const search = String(route.query.search || "").trim();
+  if (search) {
+    filters.search = search;
+    filters.status = "";
+  }
   await loadCampaignOptions();
   await reset();
 });

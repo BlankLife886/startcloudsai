@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "@react/legacy-styles/generated/features/ecommerce/CommerceSelect.css";
+import { useLocale } from "../../i18n/index.js";
 
 export function CommerceSelect({
   value,
@@ -12,6 +13,7 @@ export function CommerceSelect({
   menuMinWidth = 0,
   treatEmptyAsPlaceholder = false,
 }) {
+  const { t } = useLocale();
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -21,10 +23,10 @@ export function CommerceSelect({
     () =>
       options.map((item) =>
         item && typeof item === "object"
-          ? { value: item.value, label: String(item.label ?? item.value ?? "") }
-          : { value: item, label: String(item ?? "") },
+          ? { value: item.value, label: t(String(item.label ?? item.value ?? "")) }
+          : { value: item, label: t(String(item ?? "")) },
       ),
-    [options],
+    [options, t],
   );
   const selectedIndex = normalized.findIndex((item) => item.value === value);
   const selected = normalized[selectedIndex] || null;
@@ -127,13 +129,13 @@ export function CommerceSelect({
         type="button"
         className={`commerce-select-trigger${open ? " is-open" : ""}${isPlaceholder ? " is-placeholder" : ""}`}
         disabled={disabled}
-        aria-label={ariaLabel}
+        aria-label={t(ariaLabel)}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={onKeyDown}
       >
-        <span>{selected?.label || placeholder}</span>
+        <span>{selected?.label || t(placeholder)}</span>
         <i className="bi bi-chevron-down" aria-hidden="true" />
       </button>
       {open &&
@@ -143,7 +145,7 @@ export function CommerceSelect({
             className="commerce-select-menu commerce-select-pop-enter-active"
             style={style}
             role="listbox"
-            aria-label={ariaLabel}
+            aria-label={t(ariaLabel)}
             tabIndex={-1}
             onKeyDown={onKeyDown}
           >

@@ -24,6 +24,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useLocale } from "../i18n/index.js";
 import "./MaterialsLibraryView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -191,6 +192,7 @@ async function mapPool(items, worker, concurrency = 4) {
 export function MaterialsLibraryView() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
+  const { t } = useLocale();
   const isDark = useIsDark();
   const mountedRef = useRef(true);
   const assetsControllerRef = useRef(null);
@@ -1081,10 +1083,10 @@ export function MaterialsLibraryView() {
             onKeyDown={(event) => event.key === "Escape" && closeUpload()}
           >
             <header className="ml-edit__head">
-              <h2 id="ml-upload-title">添加资产</h2>
+              <h2 id="ml-upload-title">{t("添加资产")}</h2>
               <button
                 type="button"
-                aria-label="关闭"
+                aria-label={t("关闭")}
                 disabled={uploading}
                 onClick={closeUpload}
               >
@@ -1093,13 +1095,13 @@ export function MaterialsLibraryView() {
             </header>
             <div className="ml-upload__body">
               <label className="ml-upload__field">
-                <span>添加到分组</span>
+                <span>{t("添加到分组")}</span>
                 <select
                   value={uploadGroupId}
                   disabled={uploading}
                   onChange={(event) => setUploadGroupId(event.target.value)}
                 >
-                  <option value="">未分组</option>
+                  <option value="">{t("未分组")}</option>
                   {groups.map((group) => (
                     <option key={group.id} value={group.id}>
                       {group.name}
@@ -1116,9 +1118,9 @@ export function MaterialsLibraryView() {
                 >
                   <i className="bi bi-image" aria-hidden="true" />
                   <strong>
-                    {pendingUploadFiles.length ? "重新选择图片" : "选择图片"}
+                    {t(pendingUploadFiles.length ? "重新选择图片" : "选择图片")}
                   </strong>
-                  <small>PNG / JPEG / WebP · 单张 ≤ 10MB · 最多 6 张</small>
+                  <small>{t("PNG / JPEG / WebP · 单张 ≤ 10MB · 最多 6 张")}</small>
                 </button>
                 {pendingUploadFiles.length > 0 && (
                   <ul className="ml-upload__files">
@@ -1128,7 +1130,7 @@ export function MaterialsLibraryView() {
                         <em>{formatBytes(file.size)}</em>
                         <button
                           type="button"
-                          aria-label="移除"
+                          aria-label={t("移除")}
                           disabled={uploading}
                           onClick={() =>
                             setPendingUploadFiles((files) =>
@@ -1152,7 +1154,7 @@ export function MaterialsLibraryView() {
                   disabled={uploading}
                   onClick={closeUpload}
                 >
-                  取消
+                  {t("取消")}
                 </button>
                 <button
                   type="button"
@@ -1164,12 +1166,12 @@ export function MaterialsLibraryView() {
                     <i className="bi bi-arrow-repeat spin" aria-hidden="true" />
                   )}
                   {uploading
-                    ? "上传中…"
+                    ? t("上传中…")
                     : pendingUploadFiles.length
                       ? uploadGroupId
-                        ? `上传到「${uploadTargetLabel}」`
-                        : `上传 ${pendingUploadFiles.length} 项`
-                      : "选择图片"}
+                        ? t(`上传到「${uploadTargetLabel}」`)
+                        : t(`上传 ${pendingUploadFiles.length} 项`)
+                      : t("选择图片")}
                 </button>
               </footer>
             </div>

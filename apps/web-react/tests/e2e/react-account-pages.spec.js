@@ -1336,6 +1336,7 @@ test.describe('React authenticated account pages', () => {
     group = null
     await page.goto('/incentive-plans/group', { waitUntil: 'domcontentloaded' })
     await page.getByRole('button', { name: /发起拼团/ }).click()
+    await page.getByRole('button', { name: /确认发起/ }).click()
     await expect(page.getByRole('button', { name: /邀请好友/ })).toBeVisible()
     expect(groupRequests[1]).toEqual({ path: '/api/v1/me/growth/groups', body: {} })
   })
@@ -1501,9 +1502,9 @@ test.describe('React authenticated account pages', () => {
     await expect.poll(() => styleCount('.compensation-page')).toBe(1)
 
     await page.getByRole('button', { name: '返回' }).click()
-    await page.locator('.benefit-card').filter({ hasText: '会员计划' }).click()
-    await expect(page.locator('.membership-page')).toBeVisible()
+    await page.locator('.benefit-card').filter({ hasText: '好友拼团' }).click()
+    await expect(page.locator('.group-page')).toBeVisible()
     await expect.poll(() => styleCount('.compensation-page')).toBe(0)
-    await expect.poll(() => styleCount('.membership-page')).toBe(1)
+    await expect.poll(() => styleCount('.group-page')).toBe(1)
   })
 })

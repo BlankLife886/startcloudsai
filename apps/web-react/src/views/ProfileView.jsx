@@ -91,6 +91,7 @@ export function ProfileView() {
         ...(current || {}),
         wallet: {
           ...(current?.wallet || {}),
+          ...snapshot,
           balanceCents: Number(snapshot.balanceCents || 0),
           frozenCents: Number(snapshot.frozenCents || 0),
         },

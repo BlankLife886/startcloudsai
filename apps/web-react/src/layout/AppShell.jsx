@@ -18,6 +18,7 @@ const documentScrollRoutes = new Set([
 
 const incentiveCanvasRoutes = new Set([
   "/incentive-plans",
+  "/incentive-plans/group",
   "/incentive-plans/membership",
   "/incentive-plans/failure",
   "/incentive-plans/suggestion",
@@ -27,7 +28,6 @@ const incentiveCanvasRoutes = new Set([
 
 const maskedStudioRoutes = new Set([
   "/ai-illustration-coloring",
-  "/design-workshop",
   "/model-sheet",
   "/game-art",
 ]);

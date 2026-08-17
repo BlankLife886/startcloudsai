@@ -834,7 +834,6 @@ export function NavBar() {
               <Link
                 to="/check-in"
                 className="nav-checkin-btn"
-                data-no-translate
                 title="每日签到领积分"
                 onClick={openCheckin}
               >
@@ -846,7 +845,6 @@ export function NavBar() {
               <button
                 type="button"
                 className="nav-redeem-btn"
-                data-no-translate
                 title="兑换码入账"
                 onClick={openRedeemDialog}
               >
@@ -859,7 +857,6 @@ export function NavBar() {
                 <button
                   type="button"
                   className="nav-trial-btn"
-                  data-no-translate
                   title="申请体验"
                   onClick={openTrialDialog}
                 >

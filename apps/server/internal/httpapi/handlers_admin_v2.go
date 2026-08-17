@@ -43,83 +43,6 @@ func (s *Server) adminPatchTask(c *gin.Context, admin *store.User) {
 	}
 }
 
-func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
-	userID, err := parseUUIDParam(c, "id")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ctx := c.Request.Context()
-	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if user == nil || user.Role != "user" {
-		fail(c, apperr.E("not_found", "用户不存在", 404))
-		return
-	}
-	wallet, err := store.GetWallet(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	byStatus, err := store.TaskCountsBy(ctx, s.St.Pool, userID, "status")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	orders, err := store.CountOrdersByUser(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	submissions, err := store.CountSubmissionsByUser(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	assets, err := store.CountUserAssets(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	sessions, err := store.GetUserSessionSummary(ctx, s.St.Pool, userID, time.Now().UTC())
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var tasksTotal int64
-	for _, n := range byStatus {
-		tasksTotal += n
-	}
-	walletOut := walletDict(nil)
-	if wallet != nil {
-		walletOut = walletDict(wallet)
-	}
-	ok(c, gin.H{
-		"user":   adminUserDict(user, nil),
-		"wallet": walletOut,
-		"security": gin.H{
-			"activeSessions":       sessions.ActiveCount,
-			"lastSessionIp":        sessions.LastIP,
-			"lastSessionUserAgent": sessions.LastUserAgent,
-			"lastSessionAt":        iso(sessions.LastCreatedAt),
-			"lastSessionExpiresAt": iso(sessions.LastExpiresAt),
-		},
-		"counts": gin.H{
-			"orders":         orders,
-			"tasksTotal":     tasksTotal,
-			"tasksSucceeded": byStatus["succeeded"],
-			"tasksFailed":    byStatus["failed"],
-			"tasksRunning":   byStatus["running"] + byStatus["queued"],
-			"tasksCanceled":  byStatus["canceled"],
-			"submissions":    submissions,
-			"assets":         assets,
-		},
-	})
-}
-
 func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 	userID, err := parseUUIDParam(c, "id")
 	if err != nil {
@@ -146,7 +69,14 @@ func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, ledgerDict))
+	tasksByID, runsByID, err := loadLedgerRelated(ctx, s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+		return decorateLedgerEntry(entry, tasksByID, runsByID)
+	}))
 }
 
 // ---------- ledger（全站） ----------
@@ -189,8 +119,13 @@ func (s *Server) adminSiteLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	tasksByID, runsByID, err := loadLedgerRelated(ctx, s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ok(c, buildPage(rows, limit, func(e *store.LedgerEntry) gin.H {
-		d := ledgerDict(e)
+		d := decorateLedgerEntry(e, tasksByID, runsByID)
 		d["userId"] = e.UserID.String()
 		if user := users[e.UserID]; user != nil {
 			d["userEmail"] = user.Email

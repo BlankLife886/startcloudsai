@@ -230,6 +230,9 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/canvas-projects/:id", s.getCanvasProject)
 	api.PATCH("/canvas-projects/:id", s.patchCanvasProject)
 	api.DELETE("/canvas-projects/:id", s.deleteCanvasProject)
+	api.GET("/canvas-projects/:id/workflow-run", s.activeCanvasWorkflowRun)
+	api.POST("/canvas-projects/:id/workflow-runs", s.acquireCanvasWorkflowRun)
+	api.PATCH("/canvas-projects/:id/workflow-runs/:runId", s.patchCanvasWorkflowRun)
 
 	// uploads & files
 	api.POST("/uploads", s.upload)
@@ -274,9 +277,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
 	admin.GET("/plans", s.adminOnly(s.adminListPlans))
 	admin.POST("/plans", s.adminOnly(s.adminCreatePlan))
+	admin.PATCH("/plan-order", s.adminOnly(s.adminReorderPlans))
+	admin.PATCH("/plans/order", s.adminOnly(s.adminReorderPlans))
 	admin.PATCH("/plans/:id", s.adminOnly(s.adminPatchPlan))
 	admin.DELETE("/plans/:id", s.adminOnly(s.adminDeletePlan))
 	admin.GET("/tasks", s.adminOnly(s.adminListTasks))
+	admin.DELETE("/tasks", s.adminOnly(s.adminPurgeTasks))
 	admin.PATCH("/tasks/:id", s.adminOnly(s.adminPatchTask))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
 	admin.POST("/redemption-code-batches", s.adminOnly(s.adminGenerateRedemptionCodes))

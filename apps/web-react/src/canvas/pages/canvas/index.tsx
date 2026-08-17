@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { App, Button } from "antd";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
-import { ArrowRight, Download, FileUp, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowRight, Download, FileUp, LayoutTemplate, Plus, Search, Trash2, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
@@ -15,6 +15,8 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { useCanvasHost } from "@/components/layout/canvas-host-context";
+import { CanvasWorkflowTemplateDialog } from "@/components/canvas/canvas-workflow-template-dialog";
+import { createCanvasProjectFromTemplate, type CanvasWorkflowTemplate } from "@/templates/canvas-workflow-templates";
 
 gsap.registerPlugin(useGSAP);
 
@@ -78,6 +80,7 @@ export default function CanvasPage() {
     const [entryState, setEntryState] = useState("waiting");
     const [cardEntryState, setCardEntryState] = useState("waiting");
     const [projectQuery, setProjectQuery] = useState("");
+    const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const createProject = useCanvasStore((state) => state.createProject);
@@ -192,6 +195,16 @@ export default function CanvasPage() {
         }
         enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
     };
+    const useWorkflowTemplate = (template: CanvasWorkflowTemplate) => {
+        if (!isAuthenticated) {
+            requestAuth();
+            return;
+        }
+        const id = importProject(createCanvasProjectFromTemplate(template));
+        setTemplateLibraryOpen(false);
+        message.success(`已创建「${template.title}」`);
+        enterProject(id);
+    };
     const importCanvas = async (file?: File) => {
         if (!file) return;
         if (!isAuthenticated) {
@@ -265,6 +278,9 @@ export default function CanvasPage() {
                             <Button className="canvas-hero__cta" type="primary" size="large" disabled={!hydrated} onClick={createAndEnter} icon={<ArrowRight className="size-4" />} iconPlacement="end">
                                 {t("home.start")}
                             </Button>
+                            <Button size="large" disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
+                                {t("canvas.workflowTemplates")}
+                            </Button>
                         </div>
                     </div>
                     <CanvasHeroStage />
@@ -323,6 +339,10 @@ export default function CanvasPage() {
                                 </>
                             ) : (
                                 <>
+                                    <button type="button" className="canvas-home-btn" disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)}>
+                                        <span className="canvas-home-btn__icon"><LayoutTemplate className="size-3.5" /></span>
+                                        {t("canvas.templateLibrary")}
+                                    </button>
                                     <button type="button" className="canvas-home-btn" disabled={!hydrated} onClick={() => (isAuthenticated ? inputRef.current?.click() : requestAuth())}>
                                         <span className="canvas-home-btn__icon">
                                             <FileUp className="size-3.5" />
@@ -369,6 +389,7 @@ export default function CanvasPage() {
             </div>
 
             <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
+            <CanvasWorkflowTemplateDialog open={templateLibraryOpen} onClose={() => setTemplateLibraryOpen(false)} onUse={useWorkflowTemplate} />
         </main>
     );
 }

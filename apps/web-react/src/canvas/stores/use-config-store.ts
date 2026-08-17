@@ -80,7 +80,7 @@ export const defaultConfig: AiConfig = {
     resolution: "1K",
     background: "",
     count: "1",
-    canvasImageCount: "3",
+    canvasImageCount: "1",
 };
 
 type ConfigStore = {
@@ -94,6 +94,17 @@ type ConfigStore = {
     setConfigDialogOpen: (isOpen: boolean) => void;
     clearPromptContinue: () => void;
 };
+
+export function migrateConfigStore(persisted: unknown, persistedVersion: number) {
+    const saved = (persisted || {}) as Partial<Pick<ConfigStore, "config">>;
+    return {
+        config: {
+            ...defaultConfig,
+            ...(saved.config || {}),
+            ...(persistedVersion < 2 ? { canvasImageCount: "1" } : {}),
+        },
+    };
+}
 
 function findChannelModel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
@@ -166,14 +177,11 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            version: 1,
+            version: 2,
             partialize: (state): Pick<ConfigStore, "config"> => ({
                 config: { ...state.config, channels: [], models: [], model: "", imageModel: "", videoModel: "", textModel: "", audioModel: "" },
             }),
-            migrate: (persisted) => {
-                const saved = (persisted || {}) as Partial<Pick<ConfigStore, "config">>;
-                return { config: { ...defaultConfig, ...(saved.config || {}) } };
-            },
+            migrate: migrateConfigStore,
             merge: (persisted, current) => {
                 const saved = (persisted || {}) as Partial<ConfigStore>;
                 return {

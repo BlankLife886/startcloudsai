@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Calendar, Check, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { request } from '@/request'
 import { normalizePoints } from '@/utils'
@@ -82,16 +81,15 @@ onMounted(load)
 
 <template>
   <div v-loading="loading" class="page checkin-settings-page">
-    <PageCard title="签到活动" subtitle="管理活动开放状态与连续 7 天积分奖励">
-      <template #actions>
-        <div class="checkin-actions">
-          <span class="checkin-save-state" :class="{ 'is-dirty': isDirty }">
-            <i />{{ isDirty ? '有未保存变更' : '配置已同步' }}
-          </span>
-          <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+    <PageCard>
+      <div class="checkin-toolbar">
+        <div class="sync-state" :class="{ 'is-dirty': isDirty }">
+          <i />{{ isDirty ? '有未保存变更' : '配置已同步' }}
+        </div>
+        <div class="checkin-toolbar__actions">
+          <el-button :loading="loading" @click="load">刷新</el-button>
           <el-button
             type="primary"
-            :icon="Check"
             :loading="saving"
             :disabled="!isDirty"
             @click="save"
@@ -99,48 +97,61 @@ onMounted(load)
             保存并生效
           </el-button>
         </div>
-      </template>
+      </div>
 
-      <div class="checkin-settings-form">
-        <section class="checkin-basics">
-          <div class="checkin-section-title">
-            <span class="checkin-section-icon"><el-icon><Calendar /></el-icon></span>
-            <div><strong>活动规则</strong><small>状态和标题会同步到用户签到页面</small></div>
+      <div class="checkin-workspace">
+        <div class="checkin-status" :class="{ 'is-open': form.checkinEnabled }">
+          <div>
+            <span class="checkin-status__dot" />
+            <div>
+              <strong>{{ form.checkinEnabled ? '活动开放中' : '活动已暂停' }}</strong>
+              <p>
+                {{
+                  form.checkinEnabled
+                    ? '状态和标题会同步到用户签到页面'
+                    : '关闭后保留历史记录，停止领取新奖励'
+                }}
+              </p>
+            </div>
           </div>
-          <div class="checkin-basic-fields">
-            <label>
-              <span><strong>开放签到活动</strong><small>关闭后保留历史记录，停止领取新奖励</small></span>
-              <el-switch v-model="form.checkinEnabled" />
-            </label>
-            <label>
-              <span><strong>活动标题</strong><small>2 至 40 个字符</small></span>
-              <el-input
-                v-model="form.checkinCampaignTitle"
-                maxlength="40"
-                show-word-limit
-                placeholder="连续签到领创作积分"
-              />
-            </label>
-          </div>
-        </section>
+          <el-switch v-model="form.checkinEnabled" />
+        </div>
+
+        <label class="checkin-title">
+          <span>
+            <strong>活动标题</strong>
+            <small>2 至 40 个字符，展示在用户签到页</small>
+          </span>
+          <el-input
+            v-model="form.checkinCampaignTitle"
+            maxlength="40"
+            show-word-limit
+            placeholder="连续签到领创作积分"
+          />
+        </label>
 
         <section class="checkin-rewards">
           <header>
-            <div><strong>7 天循环奖励</strong><small>连续第 7 天适合作为周期里程碑，之后重新从第 1 天计算</small></div>
-            <span>每周期 {{ weekTotal.toLocaleString('zh-CN') }} 积分</span>
+            <div>
+              <strong>7 天循环奖励</strong>
+              <small>连续第 7 天适合作为周期里程碑，之后重新从第 1 天计算</small>
+            </div>
+            <em>每周期 {{ weekTotal.toLocaleString('zh-CN') }} 积分</em>
           </header>
           <div class="checkin-reward-grid">
-            <label v-for="(_, index) in form.checkinRewards" :key="index">
-              <span>第 {{ index + 1 }} 天</span>
+            <label
+              v-for="(_, index) in form.checkinRewards"
+              :key="index"
+              :class="{ 'is-milestone': index === 6 }"
+            >
+              <span>{{ index === 6 ? '第 7 天 · 里程碑' : `第 ${index + 1} 天` }}</span>
               <el-input-number
                 v-model="form.checkinRewards[index]"
                 :min="0"
                 :max="1000000"
                 :step="index === 6 ? 10 : 5"
                 :precision="0"
-                controls-position="right"
               />
-              <small>{{ index === 6 ? '里程碑奖励' : '积分' }}</small>
             </label>
           </div>
         </section>
@@ -151,26 +162,69 @@ onMounted(load)
 
 <style scoped>
 .checkin-settings-page {
-  max-width: 1180px;
-}
-
-.checkin-actions {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
 }
 
-.checkin-save-state {
+.checkin-settings-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.checkin-settings-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.checkin-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+.checkin-toolbar__actions {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.checkin-toolbar__actions :deep(.el-button) {
+  margin: 0;
+  height: 32px;
+}
+
+.sync-state {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
   gap: 7px;
-  margin-right: 4px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
-.checkin-save-state i {
+.sync-state i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -178,149 +232,186 @@ onMounted(load)
   box-shadow: 0 0 0 3px var(--success-soft);
 }
 
-.checkin-save-state.is-dirty {
+.sync-state.is-dirty {
   color: var(--warning);
 }
 
-.checkin-save-state.is-dirty i {
+.sync-state.is-dirty i {
   background: var(--warning);
   box-shadow: 0 0 0 3px var(--warning-soft);
 }
 
-.checkin-settings-form {
-  display: grid;
-  gap: 26px;
-}
-
-.checkin-basics,
-.checkin-rewards {
-  display: grid;
-  gap: 14px;
-}
-
-.checkin-section-title {
+.checkin-workspace {
   display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.checkin-status {
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
 }
 
-.checkin-section-icon {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 8px;
+.checkin-status.is-open {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
   background: var(--accent-soft);
-  color: var(--accent-ink);
 }
 
-.checkin-section-title strong,
-.checkin-section-title small,
+.checkin-status > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.checkin-status__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.checkin-status.is-open .checkin-status__dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.checkin-status strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.checkin-status p {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.checkin-title {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.checkin-title span {
+  display: grid;
+  gap: 2px;
+}
+
+.checkin-title strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.checkin-title small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.checkin-rewards {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.checkin-rewards header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .checkin-rewards header strong,
 .checkin-rewards header small {
   display: block;
 }
 
-.checkin-section-title strong,
 .checkin-rewards header strong {
   color: var(--ink);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 750;
 }
 
-.checkin-section-title small,
 .checkin-rewards header small {
-  margin-top: 3px;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.checkin-basic-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-
-.checkin-basic-fields > label {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 18px;
-  min-height: 82px;
-}
-
-.checkin-basic-fields > label:last-child {
-  grid-template-columns: 150px minmax(0, 1fr);
-}
-
-.checkin-basic-fields strong,
-.checkin-basic-fields small {
-  display: block;
-}
-
-.checkin-basic-fields strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.checkin-basic-fields small {
   margin-top: 4px;
   color: var(--ink-3);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.checkin-rewards {
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
-}
-
-.checkin-rewards header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.checkin-rewards header > span {
-  color: var(--accent-ink);
   font-size: 12px;
-  font-weight: 700;
+  line-height: 1.45;
+}
+
+.checkin-rewards header em {
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 750;
 }
 
 .checkin-reward-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
 }
 
 .checkin-reward-grid > label {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 12px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
+  padding: 14px 10px 16px;
+  border-right: 1px solid var(--border);
 }
 
-.checkin-reward-grid > label > span,
-.checkin-reward-grid > label > small {
-  text-align: center;
-  font-size: 10px;
+.checkin-reward-grid > label:last-child {
+  border-right: 0;
+}
+
+.checkin-reward-grid > label.is-milestone {
+  background: var(--accent-soft);
 }
 
 .checkin-reward-grid > label > span {
-  color: var(--ink-2);
-  font-weight: 700;
-}
-
-.checkin-reward-grid > label > small {
-  color: var(--ink-3);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  text-align: center;
 }
 
 .checkin-reward-grid :deep(.el-input-number) {
   width: 100%;
+}
+
+.checkin-reward-grid :deep(.el-input-number .el-input__wrapper) {
+  padding-left: 0;
+  padding-right: 0;
 }
 </style>

@@ -6,6 +6,9 @@ export interface AdminSubmission {
   title: string
   status: string
   taskType?: string
+  source?: string
+  displayName?: string
+  params?: Record<string, unknown>
   taskPrompt?: string
   taskModel?: string
   promptEntryId?: string
@@ -25,7 +28,7 @@ export interface AdminSubmission {
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Close, Refresh, CircleCloseFilled, CollectionTag, WarningFilled } from '@element-plus/icons-vue'
+import { Check, Close, Refresh, CircleCloseFilled, CollectionTag, WarningFilled } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
 import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { formatTime, SUBMISSION_STATUS_LABELS, TASK_TYPES, taskTypeLabel } from '@/utils'
@@ -152,7 +155,7 @@ const {
 } = useVirtualMasonryFeed({
   items: masonryItems,
   fallbackAspect: 3 / 4,
-  bodyHeight: 128,
+  bodyHeight: 124,
   mediaInset: 8,
   minColumnWidth: 168,
   maxColumns: 6,
@@ -199,7 +202,8 @@ function itemTitle(item: AdminSubmission | null) {
 }
 
 function kindLabel(item: AdminSubmission | null) {
-  return item?.taskType ? taskTypeLabel(item.taskType) : 'AI 生成'
+  if (!item) return 'AI 生成'
+  return taskTypeLabel(item.taskType || '', item.params, item.source || item.displayName)
 }
 
 function mediaListOf(item: AdminSubmission) {
@@ -261,9 +265,15 @@ function openPromptCreator(item: AdminSubmission, mediaIndex = 0) {
     ElMessage.info('这张作品已经加入提示词库')
     return
   }
-  const taskType = TASK_TYPES.includes(item.taskType as (typeof TASK_TYPES)[number])
-    ? String(item.taskType)
-    : 't2i'
+  const canvas =
+    item.source === 'react_canvas' ||
+    item.displayName === '无限画布' ||
+    item.displayName === '画布去背'
+  const taskType = canvas
+    ? 'infinite_canvas'
+    : TASK_TYPES.includes(item.taskType as (typeof TASK_TYPES)[number])
+      ? String(item.taskType)
+      : 't2i'
   promptCreatorTarget.value = item
   promptCreatorMediaIndex.value = Math.max(0, Math.min(mediaIndex, mediaListOf(item).length - 1))
   promptCreatorForm.title = normalizePromptTitle(itemTitle(item))
@@ -437,6 +447,9 @@ const previewStatusText = computed(() =>
 )
 const previewMedias = computed(() => (previewItem.value ? mediaListOf(previewItem.value) : []))
 const previewMediaUrl = computed(() => previewMedias.value[previewMediaIndex.value] ?? '')
+const previewHasNeighbors = computed(() => items.value.length > 1)
+const previewCanApprove = computed(() => previewItem.value?.status !== 'approved')
+const previewCanReject = computed(() => previewItem.value?.status !== 'rejected')
 
 function openPreview(item: AdminSubmission) {
   const index = items.value.findIndex((row) => row.id === item.id)
@@ -478,6 +491,9 @@ function syncPreviewItem() {
 
 function onPreviewKeydown(event: KeyboardEvent) {
   if (!previewOpen.value || !previewItem.value) return
+  if (rejectOpen.value || violationOpen.value || promptCreatorOpen.value) return
+  const target = event.target as HTMLElement | null
+  if (target && (target.closest('input, textarea, [contenteditable="true"]'))) return
   if (event.key === 'Escape') {
     event.preventDefault()
     closePreview()
@@ -605,14 +621,17 @@ onUnmounted(() => {
               <span class="share-lightbox__avatar">{{ previewUserInitial }}</span>
               <div class="share-lightbox__copy">
                 <div class="share-lightbox__title-row">
-                  <strong>{{ itemTitle(previewItem) }}</strong>
+                  <strong :title="itemTitle(previewItem)">{{ itemTitle(previewItem) }}</strong>
                   <span class="share-lightbox__status" :class="`is-${previewItem.status || 'unknown'}`">
                     {{ previewStatusText }}
                   </span>
                 </div>
-                <small>
-                  {{ previewUserName }} · {{ kindLabel(previewItem) }} · {{ formatTime(previewItem.createdAt) }}
-                </small>
+                <div class="share-lightbox__facts">
+                  <span>{{ previewUserName }}</span>
+                  <span>{{ kindLabel(previewItem) }}</span>
+                  <span>{{ formatTime(previewItem.createdAt) }}</span>
+                  <span v-if="previewItem.category?.name">{{ previewItem.category.name }}</span>
+                </div>
               </div>
             </div>
             <div class="share-lightbox__tools">
@@ -626,7 +645,7 @@ onUnmounted(() => {
                   :class="{ 'is-active': previewMediaIndex === index }"
                   @click="previewMediaIndex = index"
                 >
-                  图 {{ index + 1 }}
+                  {{ index + 1 }}
                 </button>
               </div>
               <button type="button" class="share-lightbox__close" aria-label="关闭预览" @click="closePreview">
@@ -636,7 +655,14 @@ onUnmounted(() => {
           </header>
 
           <div class="share-lightbox__stage">
-            <button type="button" class="share-lightbox__nav is-prev" aria-label="上一张" title="上一张 ←" @click="jumpPreview(-1)">
+            <button
+              v-if="previewHasNeighbors"
+              type="button"
+              class="share-lightbox__nav is-prev"
+              aria-label="上一张"
+              title="上一张 ←"
+              @click="jumpPreview(-1)"
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   d="M14.5 5.5 8 12l6.5 6.5"
@@ -664,7 +690,14 @@ onUnmounted(() => {
               </Transition>
             </div>
 
-            <button type="button" class="share-lightbox__nav is-next" aria-label="下一张" title="下一张 →" @click="jumpPreview(1)">
+            <button
+              v-if="previewHasNeighbors"
+              type="button"
+              class="share-lightbox__nav is-next"
+              aria-label="下一张"
+              title="下一张 →"
+              @click="jumpPreview(1)"
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   d="M9.5 5.5 16 12l-6.5 6.5"
@@ -680,8 +713,11 @@ onUnmounted(() => {
 
           <footer class="share-lightbox__footer">
             <div class="share-lightbox__meta">
-              <span class="share-lightbox__index">{{ previewIndex + 1 }} / {{ items.length }}</span>
-              <span class="share-lightbox__hint">← → 切换 · A 通过 · R 拒绝 · Esc 关闭</span>
+              <span class="share-lightbox__index tnum">{{ previewIndex + 1 }} / {{ items.length }}</span>
+              <div class="share-lightbox__hint">
+                <span><kbd>←</kbd><kbd>→</kbd> 切换</span>
+                <span><kbd>Esc</kbd> 关闭</span>
+              </div>
             </div>
             <div class="share-lightbox__actions" role="group" aria-label="审核操作">
               <button
@@ -691,23 +727,28 @@ onUnmounted(() => {
                 :disabled="operatingId === previewItem.id || Boolean(previewItem.promptEntryId)"
                 @click="openPromptCreator(previewItem, previewMediaIndex)"
               >
+                <el-icon :size="14"><CollectionTag /></el-icon>
                 {{ previewItem.promptEntryId ? '已加入提示词库' : '作为提示词' }}
               </button>
               <button
                 type="button"
                 class="share-action is-approve"
-                :disabled="operatingId === previewItem.id || previewItem.status === 'approved'"
+                :disabled="operatingId === previewItem.id || !previewCanApprove"
                 @click="approve(previewItem)"
               >
-                通过
+                <el-icon :size="14"><Check /></el-icon>
+                {{ previewCanApprove ? '通过' : '已通过' }}
+                <kbd v-if="previewCanApprove">A</kbd>
               </button>
               <button
                 type="button"
                 class="share-action is-reject"
-                :disabled="operatingId === previewItem.id || previewItem.status === 'rejected'"
+                :disabled="operatingId === previewItem.id || !previewCanReject"
                 @click="openReject(previewItem)"
               >
-                拒绝
+                <el-icon :size="14"><CircleCloseFilled /></el-icon>
+                {{ previewCanReject ? '拒绝' : '已拒绝' }}
+                <kbd v-if="previewCanReject">R</kbd>
               </button>
               <button
                 type="button"
@@ -715,6 +756,7 @@ onUnmounted(() => {
                 :disabled="operatingId === previewItem.id"
                 @click="openViolation(previewItem)"
               >
+                <el-icon :size="14"><WarningFilled /></el-icon>
                 违规
               </button>
             </div>
@@ -1074,8 +1116,10 @@ onUnmounted(() => {
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100dvh;
   min-height: 0;
-  color: #fff;
-  background: #05070c;
+  color: #f4f6fa;
+  background:
+    radial-gradient(120% 80% at 50% 42%, rgb(28 34 48 / 0.55), transparent 62%),
+    #07090e;
 }
 
 .share-lightbox-enter-active {
@@ -1182,14 +1226,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
   min-width: 0;
   margin: 0;
-  padding: 12px 18px;
+  padding: 16px 24px;
   border: 0;
-  background: rgb(12 14 20 / 92%);
+  background: rgb(10 12 18 / 78%);
   box-shadow: none;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
 }
 
 .share-lightbox__bar {
@@ -1202,60 +1247,73 @@ onUnmounted(() => {
 
 .share-lightbox__user {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   min-width: 0;
 }
 
 .share-lightbox__copy {
   min-width: 0;
+}
 
-  small {
-    display: block;
-    overflow: hidden;
-    margin-top: 3px;
-    color: rgb(255 255 255 / 62%);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+.share-lightbox__facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: rgb(255 255 255 / 62%);
+  font-size: 12px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 8%);
   }
 }
 
 .share-lightbox__title-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   min-width: 0;
 
   strong {
+    display: -webkit-box;
+    min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     font-size: 15px;
     font-weight: 740;
-    line-height: 1.3;
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 }
 
 .share-lightbox__status {
   flex: 0 0 auto;
+  margin-top: 2px;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: 999px;
   background: rgb(255 255 255 / 12%);
   color: #fff;
   font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.02em;
 
   &.is-pending {
-    background: rgb(217 119 6 / 88%);
+    background: color-mix(in srgb, var(--warning) 88%, #000);
   }
 
   &.is-approved {
-    background: rgb(22 163 74 / 88%);
+    background: color-mix(in srgb, var(--success) 88%, #000);
   }
 
   &.is-rejected {
-    background: rgb(220 38 38 / 88%);
+    background: color-mix(in srgb, var(--danger) 88%, #000);
   }
 
   &.is-removed {
@@ -1267,12 +1325,13 @@ onUnmounted(() => {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
+  margin-top: 1px;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgb(129 140 248 / 70%), rgb(56 189 248 / 55%));
-  font-size: 13px;
-  font-weight: 700;
+  background: linear-gradient(135deg, rgb(129 140 248 / 78%), rgb(56 189 248 / 58%));
+  font-size: 14px;
+  font-weight: 740;
 }
 
 .share-lightbox__tools {
@@ -1289,14 +1348,16 @@ onUnmounted(() => {
   background: rgb(255 255 255 / 8%);
 
   button {
+    min-width: 30px;
     min-height: 30px;
-    padding: 0 12px;
+    padding: 0 10px;
     border: 0;
     border-radius: 999px;
     background: transparent;
     color: rgb(255 255 255 / 72%);
     font-size: 12px;
     font-weight: 650;
+    font-variant-numeric: tabular-nums;
     cursor: pointer;
     transition:
       background-color 0.15s ease,
@@ -1313,10 +1374,10 @@ onUnmounted(() => {
 .share-lightbox__close {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 50%;
   background: rgb(255 255 255 / 10%);
   color: #fff;
   cursor: pointer;
@@ -1325,7 +1386,7 @@ onUnmounted(() => {
     transform 0.15s ease;
 
   &:hover {
-    background: rgb(255 255 255 / 16%);
+    background: rgb(255 255 255 / 18%);
     transform: scale(1.04);
   }
 }
@@ -1336,12 +1397,12 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #0b0d12;
+  background: transparent;
 }
 
 .share-lightbox__viewport {
   position: absolute;
-  inset: 0;
+  inset: 18px 76px;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1379,6 +1440,7 @@ onUnmounted(() => {
   object-fit: contain;
   object-position: center;
   background: transparent;
+  filter: drop-shadow(0 18px 48px rgb(0 0 0 / 0.42));
 }
 
 .share-lightbox__empty {
@@ -1398,16 +1460,16 @@ onUnmounted(() => {
   z-index: 3;
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 52px;
+  height: 52px;
   padding: 0;
-  border: 1px solid rgb(255 255 255 / 12%);
+  border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 50%;
-  background: rgb(8 10 16 / 42%);
+  background: rgb(12 14 20 / 62%);
   color: #fff;
   cursor: pointer;
   transform: translateY(-50%);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(14px);
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease,
@@ -1419,8 +1481,8 @@ onUnmounted(() => {
   }
 
   &:hover {
-    background: rgb(255 255 255 / 14%);
-    border-color: rgb(255 255 255 / 24%);
+    background: rgb(255 255 255 / 16%);
+    border-color: rgb(255 255 255 / 28%);
   }
 
   &:active {
@@ -1447,92 +1509,146 @@ onUnmounted(() => {
 .share-lightbox__index {
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 30px;
+  padding: 0 12px;
   border-radius: 999px;
   background: rgb(255 255 255 / 12%);
   color: #fff;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 740;
   font-variant-numeric: tabular-nums;
 }
 
 .share-lightbox__hint {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
   color: rgb(255 255 255 / 52%);
   font-size: 12px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 6px;
+    background: rgb(255 255 255 / 8%);
+    color: rgb(255 255 255 / 78%);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
 }
 
 .share-lightbox__actions {
-  display: inline-grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(96px, 1fr);
-  gap: 0;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 12px;
-  background: rgb(255 255 255 / 7%);
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 
   .share-action {
-    min-height: 38px;
-    padding: 0 16px;
-    border: 0;
-    border-right: 1px solid rgb(255 255 255 / 10%);
-    background: transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 36px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: 999px;
     font-size: 13px;
     font-weight: 700;
     cursor: pointer;
     transition:
-      background-color 0.12s ease,
-      color 0.12s ease;
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease,
+      transform 0.15s ease;
 
-    &:last-child {
-      border-right: 0;
+    .el-icon {
+      flex: 0 0 auto;
+    }
+
+    kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      margin-left: 2px;
+      padding: 0 4px;
+      border-radius: 5px;
+      background: rgb(255 255 255 / 16%);
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 740;
+      line-height: 1;
     }
 
     &:disabled {
-      opacity: 0.4;
+      opacity: 0.42;
       cursor: not-allowed;
     }
 
-    &.is-approve {
-      color: #86efac;
+    &:not(:disabled):hover {
+      transform: translateY(-1px);
+    }
+
+    &:not(:disabled):active {
+      transform: scale(0.98);
     }
 
     &.is-prompt {
-      color: #c4b5fd;
+      border-color: color-mix(in srgb, var(--violet) 42%, transparent);
+      background: color-mix(in srgb, var(--violet) 22%, rgb(12 14 20 / 70%));
+      color: #ddd6fe;
     }
 
-    &.is-reject {
-      color: #fca5a5;
-    }
-
-    &.is-violate {
-      color: #fcd34d;
-    }
-
-    &:not(:disabled):hover.is-approve {
-      background: rgb(22 163 74 / 28%);
+    &.is-approve {
+      border-color: color-mix(in srgb, var(--success) 42%, transparent);
+      background: color-mix(in srgb, var(--success) 22%, rgb(12 14 20 / 70%));
       color: #bbf7d0;
     }
 
-    &:not(:disabled):hover.is-prompt {
-      background: rgb(124 58 237 / 28%);
-      color: #ede9fe;
-    }
-
-    &:not(:disabled):hover.is-reject {
-      background: rgb(220 38 38 / 28%);
+    &.is-reject {
+      border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+      background: color-mix(in srgb, var(--danger) 22%, rgb(12 14 20 / 70%));
       color: #fecaca;
     }
 
-    &:not(:disabled):hover.is-violate {
-      background: rgb(217 119 6 / 28%);
+    &.is-violate {
+      border-color: color-mix(in srgb, var(--warning) 42%, transparent);
+      background: color-mix(in srgb, var(--warning) 20%, rgb(12 14 20 / 70%));
       color: #fde68a;
+    }
+
+    &:not(:disabled):hover.is-prompt {
+      background: color-mix(in srgb, var(--violet) 34%, rgb(12 14 20 / 55%));
+    }
+
+    &:not(:disabled):hover.is-approve {
+      background: color-mix(in srgb, var(--success) 34%, rgb(12 14 20 / 55%));
+    }
+
+    &:not(:disabled):hover.is-reject {
+      background: color-mix(in srgb, var(--danger) 34%, rgb(12 14 20 / 55%));
+    }
+
+    &:not(:disabled):hover.is-violate {
+      background: color-mix(in srgb, var(--warning) 32%, rgb(12 14 20 / 55%));
     }
   }
 }
-
-
 
 /* 审核对话框（拒绝 / 违规）——样式挂在弹窗内容根节点，不依赖 teleport 外层 class */
 .share-review-panel {

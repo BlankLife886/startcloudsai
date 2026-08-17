@@ -1,3 +1,22 @@
+.dws {
+  height: 100%;
+  min-height: 0;
+}
+
+.dws-shell {
+  height: 100%;
+  min-height: 0;
+  padding-top: var(--app-header-offset, 64px);
+}
+
+@media (max-width: 1080px) {
+  .dws,
+  .dws-shell {
+    height: 100%;
+    min-height: 0;
+  }
+}
+
 .dws .authenticated-image-media,
 .dvd-drawer .authenticated-image-media {
   display: block;
@@ -249,6 +268,142 @@
   white-space: nowrap;
 }
 
+.dws-region-box {
+  box-shadow: none;
+}
+
+.dws-region-box.is-active {
+  z-index: 3;
+  box-shadow: 0 0 0 9999px rgba(5, 7, 10, 0.34);
+}
+
+.dws-region-box.is-draft {
+  border-style: dashed;
+  pointer-events: none;
+}
+
+.dws-region-box[data-index]::after {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  z-index: 4;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid rgba(224, 255, 244, 0.92);
+  border-radius: 50%;
+  background: #167f5e;
+  color: #fff;
+  content: attr(data-index);
+  font-size: 0.62rem;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.dws-region-composer__previews {
+  display: grid;
+  gap: 6px;
+}
+
+.dws-region-composer__previews.is-multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dws-region-composer__preview em {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(8, 12, 18, 0.78);
+  color: #dff7ec;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.dws-region-composer__refs {
+  display: grid;
+  gap: 6px;
+}
+
+.dws-region-composer__refs > strong {
+  color: #dff7ec;
+  font-size: 0.7rem;
+}
+
+.dws-region-composer__refs > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dws-region-composer__refs article {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #0b0e13;
+}
+
+.dws-region-composer__refs article img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dws-region-composer__refs article button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(8, 12, 18, 0.78);
+  color: #fff;
+  cursor: pointer;
+}
+
+.dws-region-composer__ref-add {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 1px dashed rgba(114, 213, 177, 0.42);
+  border-radius: 8px;
+  background: rgba(46, 174, 129, 0.08);
+  color: #baf4df;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dws-region-composer__ref-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dws-region-composer__refs > p {
+  margin: 0;
+  color: #9fe7c8;
+  font-size: 0.64rem;
+  line-height: 1.35;
+}
+
 @media (max-width: 700px) {
   .dws-region-composer {
     left: 8px !important;
@@ -267,4 +422,8 @@
     align-items: stretch;
     flex-direction: column;
   }
+}
+
+.dws-empty-editor i {
+  font-size: 0.85rem;
 }

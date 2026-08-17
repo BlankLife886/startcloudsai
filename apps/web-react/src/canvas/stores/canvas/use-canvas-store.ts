@@ -5,6 +5,8 @@ import i18n from "@/i18n";
 import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
+import { mergeCanvasProjectSnapshots } from "@/lib/canvas/canvas-project-sync";
 import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjects, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 
@@ -21,6 +23,7 @@ export type CanvasProject = {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     viewport: ViewportTransform;
+    workflowRun?: CanvasWorkflowCheckpoint | null;
 };
 
 type CanvasStore = {
@@ -33,7 +36,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -41,6 +44,7 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "ownerUserId" | "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let queuedPersistValue: StorageValue<CanvasStore> | null = null;
 const cloudSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const cloudSaveChains = new Map<string, Promise<void>>();
 let resolveLocalHydration!: () => void;
@@ -110,14 +114,15 @@ async function hydrateCloudProjects(userId: string, localProjects: CanvasProject
         const cloudProjects = await listCloudCanvasProjects();
         if (cloudSyncUserId !== userId) return;
         const cloudIds = new Set(cloudProjects.map((project) => project.id));
+        const merged = mergeCanvasProjectSnapshots(cloudProjects, localProjects);
         const localOnly = localProjects
             .filter((project) => !project.revision && !cloudIds.has(project.id))
             .map((project) => ({ ...project, id: isUuid(project.id) ? project.id : crypto.randomUUID() }));
         useCanvasStore.setState({
             ownerUserId: userId,
-            projects: [...cloudProjects, ...localOnly].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+            projects: [...merged.projects, ...localOnly].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
         });
-        localOnly.forEach((project) => scheduleCloudSave(project.id, 0));
+        [...localOnly.map((project) => project.id), ...merged.localNewerIds].forEach((id) => scheduleCloudSave(id, 0));
     } catch (error) {
         if (cloudSyncUserId === userId) console.error("Canvas cloud load failed; using local cache", error);
     } finally {
@@ -131,12 +136,14 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         if (!value) return null;
         const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
         queuedPersistState = parsed.state as PersistedCanvasState;
+        queuedPersistValue = parsed;
         return parsed;
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.ownerUserId === nextState.ownerUserId && queuedPersistState.projects === nextState.projects) return;
         queuedPersistState = nextState;
+        queuedPersistValue = value;
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
@@ -145,6 +152,15 @@ const canvasStorage: PersistStorage<CanvasStore> = {
     },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
+
+export async function flushCanvasPersistence() {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    if (!queuedPersistValue) return;
+    await localForageStorage.setItem(CANVAS_STORE_KEY, JSON.stringify(queuedPersistValue));
+}
 
 export const useCanvasStore = create<CanvasStore>()(
     persist(
@@ -167,6 +183,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: "lines",
                     showImageInfo: false,
                     viewport: initialViewport,
+                    workflowRun: null,
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 scheduleCloudSave(id, 0);
@@ -186,6 +203,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
+                    workflowRun: null,
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 scheduleCloudSave(project.id, 0);
@@ -231,6 +249,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     next.activeChatId === project.activeChatId &&
                     next.backgroundMode === project.backgroundMode &&
                     next.showImageInfo === project.showImageInfo &&
+                    next.workflowRun === project.workflowRun &&
                     next.viewport.x === project.viewport.x &&
                     next.viewport.y === project.viewport.y &&
                     next.viewport.k === project.viewport.k;

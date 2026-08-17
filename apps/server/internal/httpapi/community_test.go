@@ -435,6 +435,9 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		if item["status"] != want.status || item["taskType"] != want.taskType {
 			t.Fatalf("submission %q status/taskType = %#v/%#v, want %q/%q", title, item["status"], item["taskType"], want.status, want.taskType)
 		}
+		if strings.TrimSpace(fmt.Sprint(item["prompt"])) == "" || item["prompt"] == nil {
+			t.Fatalf("submission %q missing prompt", title)
+		}
 		coverURL, _ := item["coverUrl"].(string)
 		mediaURLs, _ := item["mediaUrls"].([]any)
 		if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
@@ -443,6 +446,49 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		if len(mediaURLs) != 1 {
 			t.Fatalf("mediaUrls = %#v, want one original image", mediaURLs)
 		}
+	}
+}
+
+func TestGallerySubmissionsExposeCanvasOrigin(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	ctx := context.Background()
+	taskID := env.newSucceededTask(t, user.ID)
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE tasks SET params = jsonb_build_object('_source', 'react_canvas') WHERE id = $1`, taskID); err != nil {
+		t.Fatalf("mark canvas origin: %v", err)
+	}
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": taskID.String(), "title": "画布投稿"}, userToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit canvas: status %d body %s", w.Code, w.Body.String())
+	}
+
+	mine := env.do(t, "GET", "/api/v1/me/gallery/submissions?limit=20", nil, userToken)
+	if mine.Code != http.StatusOK {
+		t.Fatalf("my submissions: status %d body %s", mine.Code, mine.Body.String())
+	}
+	mineData, _ := decode(t, mine)
+	mineItems, _ := mineData["items"].([]any)
+	if len(mineItems) != 1 {
+		t.Fatalf("my items = %#v", mineData["items"])
+	}
+	mineItem, _ := mineItems[0].(map[string]any)
+	if mineItem["taskType"] != "t2i" || mineItem["source"] != store.CanvasTaskSource || mineItem["displayName"] != "无限画布" {
+		t.Fatalf("my canvas submission = %#v", mineItem)
+	}
+
+	admin := env.do(t, "GET", "/api/v1/admin/gallery/submissions?limit=20", nil, adminToken)
+	if admin.Code != http.StatusOK {
+		t.Fatalf("admin submissions: status %d body %s", admin.Code, admin.Body.String())
+	}
+	adminData, _ := decode(t, admin)
+	adminItems, _ := adminData["items"].([]any)
+	if len(adminItems) != 1 {
+		t.Fatalf("admin items = %#v", adminData["items"])
+	}
+	adminItem, _ := adminItems[0].(map[string]any)
+	if adminItem["taskType"] != "t2i" || adminItem["source"] != store.CanvasTaskSource || adminItem["displayName"] != "无限画布" {
+		t.Fatalf("admin canvas submission = %#v", adminItem)
 	}
 }
 
@@ -488,13 +534,119 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	if userData["lastLoginAt"] == nil || userData["submissionBannedUntil"] == nil {
 		t.Fatalf("account timestamps missing: %#v", userData)
 	}
+	if userData["requireCostConfirm"] != true {
+		t.Fatalf("requireCostConfirm = %#v", userData["requireCostConfirm"])
+	}
 	counts := data["counts"].(map[string]any)
-	if counts["assets"] != float64(1) || counts["tasksSucceeded"] != float64(1) || counts["tasksCanceled"] != float64(1) {
+	if counts["assets"] != float64(1) || counts["tasksSucceeded"] != float64(1) || counts["tasksCanceled"] != float64(1) || counts["feedback"] != float64(0) {
 		t.Fatalf("counts = %#v", counts)
 	}
 	security := data["security"].(map[string]any)
 	if security["activeSessions"] != float64(2) || security["lastSessionIp"] != ip || security["lastSessionUserAgent"] != agent {
 		t.Fatalf("security = %#v", security)
+	}
+	subscription := data["subscription"].(map[string]any)
+	if subscription["active"] != false {
+		t.Fatalf("subscription = %#v", subscription)
+	}
+	if data["trialAccess"] != nil || data["growthGroup"] != nil {
+		t.Fatalf("empty entitlements = trial %#v growth %#v", data["trialAccess"], data["growthGroup"])
+	}
+	checkin := data["checkin"].(map[string]any)
+	if checkin["totalDays"] != float64(0) {
+		t.Fatalf("checkin = %#v", checkin)
+	}
+}
+
+func TestAdminUserDetailIncludesEntitlementsAndWalletSplit(t *testing.T) {
+	env := newCommunityEnv(t)
+	ctx := context.Background()
+	user, _ := env.newUserSession(t, "user")
+	admin, adminToken := env.newUserSession(t, "admin")
+	now := time.Now().UTC()
+
+	if err := store.InsertWallet(ctx, env.st.Pool, user.ID); err != nil {
+		t.Fatalf("insert wallet: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE wallets SET balance_cents = 80, trial_balance_cents = 20, trial_feature_key = 'ui_design' WHERE user_id = $1`,
+		user.ID); err != nil {
+		t.Fatalf("update wallet: %v", err)
+	}
+
+	plan, err := store.InsertPlan(ctx, env.st.Pool, &store.Plan{
+		Code: "sub-" + uuid.NewString()[:6], Name: "月度订阅", Kind: "subscription",
+		PriceCents: 2900, DurationDays: 30, DailyGrantCents: 150, Active: true,
+	})
+	if err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	sub, err := store.InsertSubscription(ctx, env.st.Pool, &store.Subscription{
+		UserID: user.ID, PlanID: plan.ID, StartsAt: now, EndsAt: now.Add(30 * 24 * time.Hour), DailyGrantCents: 150,
+	})
+	if err != nil {
+		t.Fatalf("insert subscription: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE subscriptions SET last_granted_date = (now() AT TIME ZONE 'Asia/Shanghai')::date WHERE id = $1`,
+		sub.ID); err != nil {
+		t.Fatalf("mark granted today: %v", err)
+	}
+
+	campaign, err := store.InsertTrialCampaign(ctx, env.st.Pool, "体验活动", []string{"ui_design"},
+		"restricted", 100, 0, now.Add(72*time.Hour), admin.ID, now)
+	if err != nil {
+		t.Fatalf("insert campaign: %v", err)
+	}
+	if _, err := store.InsertTrialAccessApplication(ctx, env.st.Pool, user.ID, campaign.ID, 1,
+		[]string{"ui_design"}, "设计师", "想试用 UI 设计功能"); err != nil {
+		t.Fatalf("insert trial application: %v", err)
+	}
+	if _, err := store.InsertDailyCheckin(ctx, env.st.Pool, user.ID, "2026-08-17", 3, 3, 10); err != nil {
+		t.Fatalf("insert checkin: %v", err)
+	}
+	if _, err := store.InsertUserFeedback(ctx, env.st.Pool, user.ID, "bug", "生成失败了", "提示报错，无法继续生成", nil, nil); err != nil {
+		t.Fatalf("insert feedback: %v", err)
+	}
+	group, err := store.InsertGrowthGroup(ctx, env.st.Pool, "launch-2026", "ABCD12", user.ID, 3, 50, now.Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("insert growth group: %v", err)
+	}
+	if err := store.InsertGrowthGroupMember(ctx, env.st.Pool, group.ID, "launch-2026", user.ID, "owner"); err != nil {
+		t.Fatalf("insert growth member: %v", err)
+	}
+
+	w := env.do(t, "GET", "/api/v1/admin/users/"+user.ID.String(), nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin user detail: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	wallet := data["wallet"].(map[string]any)
+	if wallet["normalBalanceCents"] != float64(80) || wallet["trialBalanceCents"] != float64(20) ||
+		wallet["balanceCents"] != float64(100) || wallet["trialFeatureKey"] != "ui_design" ||
+		wallet["trialFeatureLabel"] != "UI 设计稿" {
+		t.Fatalf("wallet = %#v", wallet)
+	}
+	subscription := data["subscription"].(map[string]any)
+	if subscription["active"] != true || subscription["planName"] != "月度订阅" ||
+		subscription["dailyGrantCents"] != float64(150) || subscription["grantedToday"] != true {
+		t.Fatalf("subscription = %#v", subscription)
+	}
+	trial := data["trialAccess"].(map[string]any)
+	if trial["status"] != "pending" || trial["featureKey"] != "ui_design" {
+		t.Fatalf("trialAccess = %#v", trial)
+	}
+	checkin := data["checkin"].(map[string]any)
+	if checkin["totalDays"] != float64(1) || checkin["streak"] != float64(3) || checkin["lastDate"] != "2026-08-17" {
+		t.Fatalf("checkin = %#v", checkin)
+	}
+	growth := data["growthGroup"].(map[string]any)
+	if growth["code"] != "ABCD12" || growth["role"] != "owner" || growth["memberCount"] != float64(1) || growth["status"] != "active" {
+		t.Fatalf("growthGroup = %#v", growth)
+	}
+	counts := data["counts"].(map[string]any)
+	if counts["feedback"] != float64(1) {
+		t.Fatalf("counts = %#v", counts)
 	}
 }
 

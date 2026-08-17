@@ -52,12 +52,24 @@ func ResolvedCost(run *store.AssistantRun, resolvedMode string) int64 {
 	return paramInt64(run.Params, "_chatCostCents")
 }
 
+func productName(run *store.AssistantRun) string {
+	if run == nil {
+		return "AI 助手"
+	}
+	return store.AssistantProductName(run.Params)
+}
+
+func productReason(run *store.AssistantRun, format string, args ...any) string {
+	all := append([]any{productName(run)}, args...)
+	return fmt.Sprintf(format, all...)
+}
+
 func Reserve(ctx context.Context, q store.Q, run *store.AssistantRun) error {
 	if run == nil || run.ReservedCents <= 0 {
 		return nil
 	}
 	_, err := wallet.FreezeNormalCredits(ctx, q, run.UserID, run.ReservedCents,
-		SourceType, sourceID(run, run.BillingGeneration), strPtr("AI 助手费用预留"))
+		SourceType, sourceID(run, run.BillingGeneration), strPtr(productReason(run, "%s费用预留")))
 	return err
 }
 
@@ -92,13 +104,13 @@ func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode s
 		billingID := sourceID(run, run.BillingGeneration)
 		if cost > 0 {
 			if _, err := wallet.SettleNormalCredits(ctx, tx, run.UserID, cost, SourceType, billingID,
-				strPtr(fmt.Sprintf("AI 助手结算（%s）", resolvedMode))); err != nil {
+				strPtr(productReason(run, "%s结算（%s）", resolvedMode))); err != nil {
 				return err
 			}
 		}
 		if remainder := run.ReservedCents - cost; remainder > 0 {
 			if _, err := wallet.ReleaseNormalCredits(ctx, tx, run.UserID, remainder, SourceType, billingID,
-				strPtr("AI 助手按实际模式退回多预留费用")); err != nil {
+				strPtr(productReason(run, "%s按实际模式退回多预留费用"))); err != nil {
 				return err
 			}
 		}
@@ -126,7 +138,14 @@ func FailTx(ctx context.Context, q store.Q, id uuid.UUID, code, message string) 
 	if err != nil || !changed {
 		return changed, err
 	}
-	if err := release(ctx, q, run, "AI 助手失败，费用已退回"); err != nil {
+	if err := release(ctx, q, run, productReason(run, "%s失败，费用已退回")); err != nil {
+		return false, err
+	}
+	latest, err := store.GetAssistantRun(ctx, q, id)
+	if err != nil {
+		return false, err
+	}
+	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -152,7 +171,14 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 	if err != nil || !changed {
 		return run, changed, err
 	}
-	if err := release(ctx, q, run, "AI 助手已停止，费用已退回"); err != nil {
+	if err := release(ctx, q, run, productReason(run, "%s已停止，费用已退回")); err != nil {
+		return run, false, err
+	}
+	latest, syncErr := store.GetAssistantRun(ctx, q, id)
+	if syncErr != nil {
+		return run, false, syncErr
+	}
+	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return run, false, err
 	}
 	return run, true, nil
@@ -178,7 +204,14 @@ func CancelAdminQueuedTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.A
 	if err != nil || !changed {
 		return run, changed, err
 	}
-	if err := release(ctx, q, run, "AI 助手已被管理员取消，费用已退回"); err != nil {
+	if err := release(ctx, q, run, productReason(run, "%s已被管理员取消，费用已退回")); err != nil {
+		return run, false, err
+	}
+	latest, syncErr := store.GetAssistantRun(ctx, q, id)
+	if syncErr != nil {
+		return run, false, syncErr
+	}
+	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return run, false, err
 	}
 	return run, true, nil
@@ -204,7 +237,14 @@ func ForceFailAdminTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.Assi
 	if err != nil || !changed {
 		return run, changed, err
 	}
-	if err := release(ctx, q, run, "AI 助手被管理员终止，费用已退回"); err != nil {
+	if err := release(ctx, q, run, productReason(run, "%s被管理员终止，费用已退回")); err != nil {
+		return run, false, err
+	}
+	latest, syncErr := store.GetAssistantRun(ctx, q, id)
+	if syncErr != nil {
+		return run, false, syncErr
+	}
+	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return run, false, err
 	}
 	return run, true, nil
@@ -218,7 +258,7 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 	nextGeneration := run.BillingGeneration + 1
 	if run.ReservedCents > 0 {
 		if _, err := wallet.FreezeNormalCredits(ctx, q, run.UserID, run.ReservedCents,
-			SourceType, sourceID(run, nextGeneration), strPtr("AI 助手重试费用预留")); err != nil {
+			SourceType, sourceID(run, nextGeneration), strPtr(productReason(run, "%s重试费用预留"))); err != nil {
 			return false, err
 		}
 	}

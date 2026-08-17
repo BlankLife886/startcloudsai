@@ -55,6 +55,220 @@ func InsertTask(ctx context.Context, q Q, n NewTask) (*Task, error) {
 		n.ID, n.UserID, n.Type, n.Model, n.Prompt, n.Params, n.Count, n.InputKeys, n.CostCents, max(n.WorkUnits, 1), n.IdempotencyKey))
 }
 
+const UIDesignRegionEditKind = "ui-design-region-edit"
+const UIDesignAssetHistoryLeaseOwner = "ui-design-asset-history"
+const UIDesignAssetHistoryIdemPrefix = "ui-design-asset:"
+
+func UIDesignAssetHistoryIdempotencyKey(runID uuid.UUID) string {
+	return UIDesignAssetHistoryIdemPrefix + runID.String()
+}
+
+const uiDesignAssetHistoryNotSQL = `COALESCE(params->>'_kind','') <> '` + UIDesignRegionEditKind + `'`
+
+func assistantReferenceFileKeys(params map[string]any) []string {
+	if params == nil {
+		return nil
+	}
+	raw, ok := params["referenceImages"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		ref, _ := item.(map[string]any)
+		if ref == nil {
+			continue
+		}
+		key := strings.TrimSpace(paramText(ref, "fileKey"))
+		if key == "" || (!strings.HasPrefix(key, "tasks/") && !strings.HasPrefix(key, "uploads/")) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func assistantRunImageCount(params map[string]any) int {
+	switch value := params["count"].(type) {
+	case int:
+		if value >= 1 && value <= 4 {
+			return value
+		}
+	case int32:
+		if value >= 1 && value <= 4 {
+			return int(value)
+		}
+	case int64:
+		if value >= 1 && value <= 4 {
+			return int(value)
+		}
+	case float64:
+		if value >= 1 && value <= 4 {
+			return int(value)
+		}
+	}
+	return 1
+}
+
+func normalizeHistoryOutputKeys(outputKeys []string) []string {
+	keys := make([]string, 0, len(outputKeys))
+	seen := make(map[string]struct{}, len(outputKeys))
+	for _, raw := range outputKeys {
+		key := strings.TrimSpace(raw)
+		if key == "" || !strings.HasPrefix(key, "tasks/") {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func uiDesignAssetHistoryParams(run *AssistantRun) map[string]any {
+	params := map[string]any{
+		"_kind":          UIDesignRegionEditKind,
+		"_source":        "ui_design",
+		"source":         "ui-design-workshop",
+		"workspace":      "ui_design",
+		"assistantRunId": run.ID.String(),
+		"_historyMirror": true,
+		"quality":        paramText(run.Params, "quality"),
+		"requestSize":    paramText(run.Params, "requestSize"),
+		"serviceKey":     "ui_design_asset",
+	}
+	if display := paramText(run.Params, "_imageModelDisplayName", "_modelDisplayName"); display != "" {
+		params["_modelDisplayName"] = display
+	}
+	return params
+}
+
+// SyncUIDesignAssetHistoryFromRun mirrors a UI 设计稿 region-edit assistant run
+// onto the user task list so 历史记录 shows queued/running work, not only the
+// finished image. The workshop still deletes the ephemeral conversation.
+func SyncUIDesignAssetHistoryFromRun(ctx context.Context, q Q, run *AssistantRun, outputKeys []string) (*Task, bool, error) {
+	if run == nil || paramText(run.Params, "serviceKey") != "ui_design_asset" {
+		return nil, false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(run.Status)) {
+	case "succeeded":
+		return upsertUIDesignAssetHistoryTask(ctx, q, run, "succeeded", normalizeHistoryOutputKeys(outputKeys))
+	case "failed", "canceled":
+		return upsertUIDesignAssetHistoryTask(ctx, q, run, run.Status, nil)
+	default:
+		return upsertUIDesignAssetHistoryTask(ctx, q, run, "running", nil)
+	}
+}
+
+func upsertUIDesignAssetHistoryTask(ctx context.Context, q Q, run *AssistantRun, status string, outputKeys []string) (*Task, bool, error) {
+	if status == "succeeded" && len(outputKeys) == 0 {
+		status = "running"
+	}
+	idempotencyKey := UIDesignAssetHistoryIdempotencyKey(run.ID)
+	existing, err := GetTaskByIdemKey(ctx, q, run.UserID, idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	count := assistantRunImageCount(run.Params)
+	if len(outputKeys) > 0 {
+		count = len(outputKeys)
+		if count > 4 {
+			count = 4
+		}
+	}
+	model := paramText(run.Params, "model", "_imageModelConfigId")
+	params := uiDesignAssetHistoryParams(run)
+	now := time.Now().UTC()
+	startedAt := run.StartedAt
+	if startedAt == nil {
+		startedAt = &now
+	}
+	createdAt := run.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	inputKeys := assistantReferenceFileKeys(run.Params)
+	if inputKeys == nil {
+		inputKeys = []string{}
+	}
+	if outputKeys == nil {
+		outputKeys = []string{}
+	}
+	cost := run.CostCents
+	if status == "running" && cost <= 0 {
+		cost = run.ReservedCents
+	}
+	var finishedAt *time.Time
+	if status == "succeeded" || status == "failed" || status == "canceled" {
+		finishedAt = run.FinishedAt
+		if finishedAt == nil {
+			finishedAt = &now
+		}
+	}
+	if existing != nil {
+		if existing.Status == status &&
+			(status != "succeeded" || (len(existing.OutputKeys) == len(outputKeys) && (len(outputKeys) == 0 || existing.OutputKeys[0] == outputKeys[0]))) {
+			return existing, false, nil
+		}
+		task, err := scanTask(q.QueryRow(ctx,
+			`UPDATE tasks SET
+				status = $2, model = $3, prompt = $4, params = $5, count = $6, work_units = $6,
+				input_keys = $7, output_keys = $8, thumbnail_keys = $8, cost_cents = $9,
+				error_code = $10, error_message = $11, started_at = $12, finished_at = $13,
+				lease_owner = CASE WHEN $2 IN ('queued','running') THEN $14::text ELSE NULL END,
+				heartbeat_at = CASE WHEN $2 IN ('queued','running') THEN $12::timestamptz ELSE NULL END,
+				lease_until = CASE WHEN $2 IN ('queued','running') THEN $15::timestamptz ELSE NULL END
+			 WHERE id = $1 AND deleted_at IS NULL
+			 RETURNING `+taskCols,
+			existing.ID, status, model, run.Prompt, params, count,
+			inputKeys, outputKeys, cost, run.ErrorCode, run.ErrorMessage,
+			startedAt, finishedAt, UIDesignAssetHistoryLeaseOwner, now.Add(30*24*time.Hour)))
+		if err != nil {
+			return nil, false, err
+		}
+		return task, false, nil
+	}
+	leaseUntil := now.Add(30 * 24 * time.Hour)
+	leaseOwner := any(nil)
+	var leaseUntilArg any
+	if status == "running" {
+		leaseOwner = UIDesignAssetHistoryLeaseOwner
+		leaseUntilArg = leaseUntil
+	}
+	task, err := scanTask(q.QueryRow(ctx,
+		`INSERT INTO tasks (
+			id, user_id, type, model, status, prompt, params, count,
+			input_keys, output_keys, thumbnail_keys, cost_cents, work_units,
+			idempotency_key, error_code, error_message, started_at, finished_at,
+			created_at, lease_owner, heartbeat_at, lease_until
+		) VALUES (
+			$1, $2, 'ui_design', $3, $4, $5, $6, $7,
+			$8, $9, $9, $10, $7, $11, $12, $13, $14, $15,
+			$16, $17, $14, $18
+		) RETURNING `+taskCols,
+		uuid.New(), run.UserID, model, status, run.Prompt, params, count,
+		inputKeys, outputKeys, cost, idempotencyKey, run.ErrorCode, run.ErrorMessage,
+		startedAt, finishedAt, createdAt, leaseOwner, leaseUntilArg))
+	if err != nil {
+		if existing, lookupErr := GetTaskByIdemKey(ctx, q, run.UserID, idempotencyKey); lookupErr == nil && existing != nil {
+			return existing, false, nil
+		}
+		return nil, false, err
+	}
+	return task, true, nil
+}
+
 func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1`, id))
 	return nilOnNoRows(t, err)
@@ -116,7 +330,10 @@ func ListUserTasksFinishedBetween(ctx context.Context, q Q, userID uuid.UUID, fr
 
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
-	return nilOnNoRows(t, err)
+	if item, err := nilOnNoRows(t, err); item != nil || err != nil {
+		return item, err
+	}
+	return getUserUIDesignAssetRunAsTask(ctx, q, userID, id)
 }
 
 // GetUserTaskForUpdate serializes terminal-task deletion with new references.
@@ -312,26 +529,26 @@ func GetTaskByIdemKey(ctx context.Context, q Q, userID uuid.UUID, key string) (*
 func CountActiveTasks(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx,
-		`SELECT count(*) FROM tasks WHERE user_id = $1 AND status IN ('queued', 'running')`, userID).Scan(&n)
+		`SELECT count(*) FROM tasks WHERE user_id = $1 AND status IN ('queued', 'running') AND `+uiDesignAssetHistoryNotSQL, userID).Scan(&n)
 	return n, err
 }
 
 func CountActiveTaskUnits(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx,
-		`SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE user_id = $1 AND status IN ('queued', 'running')`, userID).Scan(&n)
+		`SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE user_id = $1 AND status IN ('queued', 'running') AND `+uiDesignAssetHistoryNotSQL, userID).Scan(&n)
 	return n, err
 }
 
 func CountTasksInStatuses(ctx context.Context, q Q, statuses []string) (int64, error) {
 	var n int64
-	err := q.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE status = ANY($1)`, statuses).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE status = ANY($1) AND `+uiDesignAssetHistoryNotSQL, statuses).Scan(&n)
 	return n, err
 }
 
 func CountTaskUnitsInStatuses(ctx context.Context, q Q, statuses []string) (int64, error) {
 	var n int64
-	err := q.QueryRow(ctx, `SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE status = ANY($1)`, statuses).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE status = ANY($1) AND `+uiDesignAssetHistoryNotSQL, statuses).Scan(&n)
 	return n, err
 }
 
@@ -353,7 +570,7 @@ func GetTaskPressure(ctx context.Context, q Q) (TaskPressure, error) {
 			min(created_at) FILTER (WHERE status = 'queued'),
 			min(started_at) FILTER (WHERE status = 'running')
 		FROM tasks
-		WHERE status IN ('queued', 'running')`).Scan(
+		WHERE status IN ('queued', 'running') AND `+uiDesignAssetHistoryNotSQL).Scan(
 		&out.Queued, &out.Running, &out.ActiveUnits, &out.OldestQueuedAt, &out.OldestRunningAt,
 	)
 	return out, err
@@ -362,7 +579,7 @@ func GetTaskPressure(ctx context.Context, q Q) (TaskPressure, error) {
 func CountRunningTasks(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx,
-		`SELECT count(*) FROM tasks WHERE user_id = $1 AND status = 'running'`, userID).Scan(&n)
+		`SELECT count(*) FROM tasks WHERE user_id = $1 AND status = 'running' AND `+uiDesignAssetHistoryNotSQL, userID).Scan(&n)
 	return n, err
 }
 
@@ -487,9 +704,87 @@ func appendTaskOriginFilter(sql string, args []any, source, excludeSource string
 	return sql, args
 }
 
+const userHistoryTaskSourceSQL = `
+		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
+			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
+			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
+			deleted_at, deletion_actor, deleted_output_count
+		FROM tasks
+		UNION ALL
+		SELECT run.id, run.user_id, 'ui_design'::text AS type,
+			COALESCE(run.params->>'model', '') AS model, run.status, run.prompt,
+			(run.params - 'referenceImages') || jsonb_build_object(
+				'conversationId', run.conversation_id::text,
+				'mode', run.mode,
+				'resolvedMode', run.resolved_mode,
+				'stage', run.stage,
+				'workspace', conversation.workspace,
+				'_kind', '` + UIDesignRegionEditKind + `',
+				'_source', 'ui_design',
+				'source', 'ui-design-workshop',
+				'assistantRunId', run.id::text
+			) AS params,
+			CASE WHEN COALESCE(run.params->>'count', '') ~ '^[1-4]$'
+				THEN (run.params->>'count')::integer ELSE 1 END AS count,
+			COALESCE((
+				SELECT jsonb_agg(ref->>'fileKey')
+				FROM jsonb_array_elements(COALESCE(run.params->'referenceImages', '[]'::jsonb)) ref
+				WHERE COALESCE(ref->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS input_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS output_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS thumbnail_keys,
+			COALESCE(run.cost_cents, 0)::bigint AS cost_cents, 1::integer AS work_units, NULL::text AS idempotency_key,
+			run.error_code, run.error_message, 0::integer AS attempt,
+			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
+			NULL::timestamptz AS lease_until, run.finished_at, run.created_at,
+			NULL::timestamptz AS deleted_at, NULL::text AS deletion_actor,
+			0::integer AS deleted_output_count
+		FROM assistant_runs run
+		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
+		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
+		WHERE conversation.workspace = 'ui_design'
+		  AND run.mode = 'image'
+		  AND COALESCE(run.params->>'serviceKey', '') = 'ui_design_asset'
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks task
+			WHERE task.user_id = run.user_id
+			  AND task.deleted_at IS NULL
+			  AND task.idempotency_key = '` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
+		  )
+	`
+
+func getUserUIDesignAssetRunAsTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
+	t, err := scanTask(q.QueryRow(ctx,
+		`SELECT `+taskCols+` FROM (`+userHistoryTaskSourceSQL+`) user_history_tasks
+		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
+	return nilOnNoRows(t, err)
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
-	sql := `SELECT ` + taskCols + ` FROM tasks WHERE true`
+	from := "tasks"
+	if userID != nil {
+		from = "(" + userHistoryTaskSourceSQL + ") user_history_tasks"
+	}
+	sql := `SELECT ` + taskCols + ` FROM ` + from + ` WHERE true`
 	args := []any{}
 	if userID != nil {
 		args = append(args, *userID)
@@ -532,6 +827,7 @@ const adminTaskSourceSQL = `
 			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
 			deleted_at, deletion_actor, deleted_output_count
 		FROM tasks
+		WHERE admin_cleared_at IS NULL
 		UNION ALL
 		SELECT run.id, run.user_id, 'assistant'::text AS type,
 			COALESCE(run.params->>'model', '') AS model, run.status, run.prompt,
@@ -580,6 +876,13 @@ const adminTaskSourceSQL = `
 		FROM assistant_runs run
 		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
 		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
+		WHERE run.admin_cleared_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks task
+			WHERE task.deleted_at IS NULL
+			  AND task.admin_cleared_at IS NULL
+			  AND task.idempotency_key = '` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
+		  )
 	`
 
 // ListAdminTasks merges regular generation tasks with workspace-scoped model
@@ -670,6 +973,137 @@ func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, 
 		&overview.Failed, &overview.Canceled, &overview.Today,
 	)
 	return &overview, err
+}
+
+type AdminTaskPurgeResult struct {
+	Deleted int64 `json:"deleted"`
+	Skipped int64 `json:"skipped"`
+}
+
+// PurgeFinishedAdminTasks hides finished admin-visible records from the admin
+// monitor using the same filters as ListAdminTasks. User history, outputs,
+// wallet ledger, gallery submissions, and ecommerce reviews stay in place.
+func PurgeFinishedAdminTasks(ctx context.Context, st *Store, taskType, status, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskPurgeResult, error) {
+	if st == nil || st.Pool == nil {
+		return nil, errors.New("store is required")
+	}
+	if status == "queued" || status == "running" {
+		return &AdminTaskPurgeResult{}, nil
+	}
+	var result *AdminTaskPurgeResult
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		result, txErr = purgeFinishedAdminTasksTx(ctx, tx, taskType, status, errorCode, userIDs, source)
+		return txErr
+	})
+	if result == nil {
+		result = &AdminTaskPurgeResult{}
+	}
+	return result, err
+}
+
+func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskPurgeResult, error) {
+	if taskType == PromptTaskTypeAssistant && source == "" {
+		source = PromptTaskTypeAssistant
+	}
+	sql := `SELECT id, type FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	args := []any{}
+	if taskType != "" {
+		args = append(args, taskType)
+		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		sql += fmt.Sprintf(` AND status = $%d`, len(args))
+	} else {
+		sql += ` AND status IN ('succeeded','failed','canceled')`
+	}
+	if errorCode != "" {
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
+		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
+	}
+	sql, args = appendTaskOriginFilter(sql, args, source, "")
+	if userIDs != nil {
+		args = append(args, userIDs)
+		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+	}
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	taskIDs := make([]uuid.UUID, 0)
+	runIDs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		var rowType string
+		if err := rows.Scan(&id, &rowType); err != nil {
+			return nil, err
+		}
+		if rowType == PromptTaskTypeAssistant {
+			runIDs = append(runIDs, id)
+			continue
+		}
+		taskIDs = append(taskIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := &AdminTaskPurgeResult{}
+	if len(taskIDs) == 0 && len(runIDs) == 0 {
+		return result, nil
+	}
+	if len(taskIDs) > 0 {
+		tag, err := q.Exec(ctx, `UPDATE tasks
+			SET admin_cleared_at = now()
+			WHERE id = ANY($1)
+			  AND admin_cleared_at IS NULL
+			  AND status IN ('succeeded','failed','canceled')`, taskIDs)
+		if err != nil {
+			return nil, err
+		}
+		result.Deleted += tag.RowsAffected()
+	}
+	if len(runIDs) > 0 {
+		tag, err := q.Exec(ctx, `UPDATE assistant_runs
+			SET admin_cleared_at = now()
+			WHERE id = ANY($1)
+			  AND admin_cleared_at IS NULL
+			  AND status IN ('succeeded','failed','canceled')`, runIDs)
+		if err != nil {
+			return nil, err
+		}
+		result.Deleted += tag.RowsAffected()
+	}
+	return result, nil
+}
+
+func enqueueObjectCleanupInChunks(ctx context.Context, q Q, keys []string) error {
+	filtered := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, raw := range keys {
+		key := strings.TrimSpace(raw)
+		if key == "" || !strings.HasPrefix(key, "tasks/") || len(key) > 512 || strings.Contains(key, "..") || strings.Contains(key, `\`) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, key)
+	}
+	for start := 0; start < len(filtered); start += maxObjectCleanupKeys {
+		end := start + maxObjectCleanupKeys
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		if err := EnqueueObjectCleanup(ctx, q, filtered[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListRecentTasks 用户最近 n 条任务。
@@ -1217,6 +1651,7 @@ func RequeueExpiredRunningTasks(ctx context.Context, q Q, before time.Time) ([]u
 		`WITH expired AS (
 			SELECT id FROM tasks
 			WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= $1)
+			  AND `+uiDesignAssetHistoryNotSQL+`
 			ORDER BY lease_until NULLS FIRST, started_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 500
@@ -1225,6 +1660,7 @@ func RequeueExpiredRunningTasks(ctx context.Context, q Q, before time.Time) ([]u
 			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
 		FROM expired
 		WHERE task.id = expired.id AND task.status = 'running' AND (task.lease_until IS NULL OR task.lease_until <= $1)
+		  AND `+uiDesignAssetHistoryNotSQL+`
 		RETURNING task.id`, before)
 	if err != nil {
 		return nil, err
@@ -1311,7 +1747,7 @@ func DeleteTask(ctx context.Context, q Q, id uuid.UUID) error {
 // ListZombieTaskIDs 找出 running 且 started_at 早于阈值的任务。
 func ListZombieTaskIDs(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
 	return listTaskIDs(ctx, q,
-		`SELECT id FROM tasks WHERE status = 'running' AND (lease_until IS NULL OR lease_until < $1) ORDER BY started_at LIMIT 500`, before)
+		`SELECT id FROM tasks WHERE status = 'running' AND (lease_until IS NULL OR lease_until < $1) AND `+uiDesignAssetHistoryNotSQL+` ORDER BY started_at LIMIT 500`, before)
 }
 
 // ListStaleQueuedTaskIDs 找出 queued 且 created_at 早于阈值的任务（入队丢失回收）。

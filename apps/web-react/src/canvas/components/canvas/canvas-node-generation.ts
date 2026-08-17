@@ -6,6 +6,7 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import { resolveCopiedCanvasNodeReferences } from "@/lib/canvas/canvas-node-copy";
 
 export type NodeGenerationContext = {
     prompt: string;
@@ -32,7 +33,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
     if (sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim())) {
-        return buildComposerGenerationContext(inputs, prompt);
+        return buildComposerGenerationContext(inputs, resolveCopiedCanvasNodeReferences(nodeId, prompt, nodes, connections));
     }
 
     const upstreamText = inputs

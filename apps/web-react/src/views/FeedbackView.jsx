@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import {
   listMyFeedback,
@@ -34,6 +34,167 @@ const processSteps = [
   ["03", "结果通知", "站内通知同步处理结果"],
 ];
 
+const feedbackPageGroups = [
+  {
+    group: "创作",
+    items: [
+      { value: "/studio", label: "创作台" },
+      { value: "/text-to-image", label: "文生图" },
+      { value: "/canvas", label: "无限画布" },
+      { value: "/assistant", label: "AI 助手" },
+      { value: "/ai-illustration-coloring", label: "插画染色" },
+      { value: "/design-workshop", label: "UI 设计稿" },
+      { value: "/model-sheet", label: "模型设计" },
+      { value: "/game-art", label: "游戏设计" },
+      { value: "/ecommerce-design", label: "AI 电商" },
+    ],
+  },
+  {
+    group: "工具",
+    items: [
+      { value: "/tools/background-remove", label: "背景移除" },
+      { value: "/tools/image-compress", label: "图片压缩" },
+      { value: "/tools/puzzle", label: "拼图" },
+      { value: "/prompts", label: "提示词" },
+    ],
+  },
+  {
+    group: "账户",
+    items: [
+      { value: "/assets", label: "我的资产" },
+      { value: "/history", label: "历史记录" },
+      { value: "/check-in", label: "每日签到" },
+      { value: "/wallet", label: "钱包" },
+      { value: "/pricing", label: "创作价格" },
+      { value: "/profile", label: "个人中心" },
+      { value: "/account", label: "账号设置" },
+      { value: "/notifications", label: "通知中心" },
+      { value: "/submissions", label: "我的投稿" },
+    ],
+  },
+  {
+    group: "激励与其他",
+    items: [
+      { value: "/incentive-plans", label: "创作激励" },
+      { value: "/incentive-plans/group", label: "好友拼团" },
+      { value: "/incentive-plans/membership", label: "会员计划" },
+      { value: "/incentive-plans/failure", label: "失败补偿" },
+      { value: "/incentive-plans/suggestion", label: "建议采纳" },
+      { value: "/incentive-plans/usage", label: "用量计划" },
+      { value: "/share", label: "社区" },
+      { value: "/updates", label: "更新说明" },
+      { value: "/app-space", label: "关于我们" },
+      { value: "/feedback", label: "问题反馈" },
+      { value: "/", label: "首页" },
+    ],
+  },
+];
+
+const feedbackPageMap = Object.fromEntries(
+  feedbackPageGroups.flatMap((group) =>
+    group.items.map((item) => [item.value, item.label]),
+  ),
+);
+
+function normalizeFeedbackPage(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  let path = value;
+  try {
+    path = new URL(value, "http://local.invalid").pathname || value;
+  } catch {
+    path = value.split("?")[0] || value;
+  }
+  path = path.replace(/\/+$/, "") || "/";
+  if (feedbackPageMap[path]) return path;
+  if (path.startsWith("/canvas")) return "/canvas";
+  if (path.startsWith("/ecommerce-design")) return "/ecommerce-design";
+  if (path.startsWith("/incentive-plans")) {
+    return feedbackPageMap[path] ? path : "/incentive-plans";
+  }
+  return "";
+}
+
+function feedbackPageLabel(raw) {
+  const path = normalizeFeedbackPage(raw);
+  if (path && feedbackPageMap[path]) return feedbackPageMap[path];
+  return String(raw || "").trim();
+}
+
+function FeedbackPageSelect({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const selectedLabel = value ? feedbackPageMap[value] || value : "不指定页面";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const choose = (next) => {
+    onChange(next);
+    setOpen(false);
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className={`feedback-page-select${open ? " is-open" : ""}`}
+    >
+      <button
+        type="button"
+        className="feedback-page-select__trigger"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{selectedLabel}</span>
+      </button>
+      {open && (
+        <div className="feedback-page-select__menu" role="listbox">
+          <button
+            type="button"
+            role="option"
+            className={!value ? "is-active" : ""}
+            aria-selected={!value}
+            onClick={() => choose("")}
+          >
+            不指定页面
+          </button>
+          {feedbackPageGroups.map((group) => (
+            <div key={group.group} className="feedback-page-select__group">
+              <strong>{group.group}</strong>
+              {group.items.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  role="option"
+                  className={value === item.value ? "is-active" : ""}
+                  aria-selected={value === item.value}
+                  onClick={() => choose(item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatTime(value, locale) {
   if (!value) return "—";
   const date = new Date(value);
@@ -54,7 +215,7 @@ export function FeedbackView() {
     category: categoryMap[requestedCategory] ? requestedCategory : "bug",
     title: "",
     content: "",
-    pageUrl: query.get("from") || "",
+    pageUrl: normalizeFeedbackPage(query.get("from") || ""),
   });
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -216,19 +377,13 @@ export function FeedbackView() {
               <small>{form.content.trim().length} / 3000</small>
             </label>
 
-            <label className="feedback-field">
+            <div className="feedback-field">
               <span>问题发生页面 <i>可选</i></span>
-              <div className="feedback-url-input">
-                <i className="bi bi-link-45deg" aria-hidden="true" />
-                <input
-                  value={form.pageUrl}
-                  type="text"
-                  maxLength={500}
-                  placeholder="例如：https://example.com/text-to-image"
-                  onChange={(event) => updateForm("pageUrl", event.target.value)}
-                />
-              </div>
-            </label>
+              <FeedbackPageSelect
+                value={form.pageUrl}
+                onChange={(next) => updateForm("pageUrl", next)}
+              />
+            </div>
 
             {submitNotice && <p className="feedback-form-notice" role="status">{submitNotice}</p>}
             <div className="feedback-submit-row">
@@ -301,9 +456,9 @@ export function FeedbackView() {
                     <footer>
                       <span><i className="bi bi-clock" />{formatTime(item.createdAt, locale)}</span>
                       {item.pageUrl && (
-                        <a href={item.pageUrl} target="_blank" rel="noopener noreferrer">
-                          <i className="bi bi-box-arrow-up-right" />
-                          问题页面
+                        <a href={item.pageUrl}>
+                          <i className="bi bi-geo-alt" />
+                          {feedbackPageLabel(item.pageUrl)}
                         </a>
                       )}
                     </footer>

@@ -230,3 +230,57 @@ export async function materializeAiOutput({ rawOutput, notificationService, onSt
   }
   return normalized
 }
+
+/** Composite a transparent PNG onto a solid fill so models can read style without a checkerboard. */
+export async function flattenPngAlphaOntoSolid(sourceUrl, { color = '#ececec' } = {}) {
+  const source = String(sourceUrl || '').trim()
+  if (!source) return ''
+  const fetched = await fetchImageBlobForAi(source)
+  if (!fetched?.blob) return source
+
+  let width = 0
+  let height = 0
+  let paint = null
+  let dispose = () => {}
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(fetched.blob)
+      width = bitmap.width
+      height = bitmap.height
+      paint = (context) => context.drawImage(bitmap, 0, 0)
+      dispose = () => bitmap.close?.()
+    } catch {
+      paint = null
+    }
+  }
+
+  if (!paint) {
+    const objectUrl = URL.createObjectURL(fetched.blob)
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image()
+      img.decoding = 'async'
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error('风格参考铺底失败'))
+      img.src = objectUrl
+    })
+    width = image.naturalWidth
+    height = image.naturalHeight
+    paint = (context) => context.drawImage(image, 0, 0)
+    dispose = () => URL.revokeObjectURL(objectUrl)
+  }
+
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, width)
+    canvas.height = Math.max(1, height)
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('风格参考铺底失败')
+    context.fillStyle = color
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    paint(context)
+    return uploadAiTempBlob(await blobFromCanvas(canvas, 'image/png'))
+  } finally {
+    dispose()
+  }
+}

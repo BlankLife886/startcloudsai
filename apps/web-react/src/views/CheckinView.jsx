@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import {
@@ -21,7 +20,6 @@ const checkinArt = Object.freeze({
   medal: "/签到页面素材/ai-wallpaper-1786340142606-2-1.webp",
   target: "/签到页面素材/ai-wallpaper-1786340147405-3-1.webp",
   growth: "/签到页面素材/ai-wallpaper-1786340152625-4-1.webp",
-  tip: "/签到页面素材/ai-wallpaper-1786340912655-1-1.webp",
   coin: "/签到页面素材/ai-wallpaper-1786340924518-2-1.webp",
 });
 
@@ -345,13 +343,21 @@ export function CheckinView() {
               })}
             </div>
             <div className="ck-progress" aria-label="本周期签到进度"><span style={{ width: `${progressPercent}%` }} /></div>
-            <footer className="ck-reward-note"><img src={checkinArt.tip} alt="" width="128" height="85" loading="lazy" /><p>积分自动入账钱包，可用于全部 AI 创作工作台。</p><Link to="/wallet">查看钱包<i className="bi bi-arrow-right" aria-hidden="true" /></Link></footer>
           </section>
 
           <section className="ck-panel ck-calendar" aria-labelledby="ck-calendar-title">
             <header className="ck-panel__header">
-              <div><h2 id="ck-calendar-title">{monthTitle}</h2><p>已签到 {state.monthRecords?.length || 0} 天</p></div>
-              <span className="ck-user" title={auth.user?.email || displayName}><em>{displayName.slice(0, 1).toUpperCase()}</em><span>{displayName}</span></span>
+              <div><h2 id="ck-calendar-title">{monthTitle}</h2><p>{anonymous ? "已签到 -- 天 · 连续 -- 天" : `已签到 ${state.monthRecords?.length || 0} 天 · 连续 ${Number(state.currentStreak || 0)} 天`}</p></div>
+              <span className="ck-user" title={auth.user?.email || displayName}>
+                <img
+                  className="ck-user__avatar"
+                  src={auth.user?.avatarUrl || "/brand/avatar-placeholder.svg"}
+                  alt=""
+                  width="26"
+                  height="26"
+                />
+                <span>{displayName}</span>
+              </span>
             </header>
             <div className="ck-calendar__body">
               <div className="ck-week" aria-hidden="true">{weekLabels.map((label) => <span key={label}>{label}</span>)}</div>

@@ -40,6 +40,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"GET /api/v1/admin/prompts",
 		"POST /api/v1/admin/prompts",
 		"GET /api/v1/admin/prompts/export",
+		"DELETE /api/v1/admin/tasks",
 		"PATCH /api/v1/admin/tasks/:id",
 		"GET /api/v1/admin/system/metrics",
 		"GET /api/v1/commerce/catalog",

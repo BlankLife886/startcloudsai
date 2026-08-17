@@ -1,4 +1,5 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
+import { resolveCopiedCanvasNodeReferences } from "./canvas-node-copy.ts";
 
 export type CanvasWorkflowCompileError = "empty" | "cycle";
 
@@ -8,9 +9,246 @@ export type CanvasWorkflowPlan = {
     dependencies: Map<string, Set<string>>;
 };
 
+export type CanvasWorkflowCheckpoint = {
+    status: "running" | "failed";
+    runId?: string;
+    nodeIds: string[];
+    completedNodeIds: string[];
+    currentNodeId?: string;
+    errorNodeId?: string;
+    errorMessage?: string;
+    startedAt: string;
+    updatedAt: string;
+};
+
 export type CanvasWorkflowCompileResult =
     | { ok: true; plan: CanvasWorkflowPlan }
     | { ok: false; reason: CanvasWorkflowCompileError; nodeIds: string[] };
+
+export type CanvasWorkflowNodeReadinessIssue = {
+    reason: "dependency_incomplete" | "reference_missing" | "reference_empty";
+    nodeId: string;
+    relatedNodeId: string;
+};
+
+export type CanvasWorkflowNodeOutputIssue = {
+    reason: "output_missing" | "output_failed" | "output_incomplete";
+    nodeId: string;
+    expected: number;
+    actual: number;
+    errorDetails?: string;
+};
+
+export function createCanvasWorkflowCheckpoint(nodeIds: string[], now = new Date().toISOString()): CanvasWorkflowCheckpoint {
+    return { status: "running", nodeIds: [...nodeIds], completedNodeIds: [], startedAt: now, updatedAt: now };
+}
+
+export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflowCheckpoint | null {
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    if ((record.status !== "running" && record.status !== "failed") || !Array.isArray(record.nodeIds) || !Array.isArray(record.completedNodeIds)) return null;
+    const nodeIds = record.nodeIds.filter((id): id is string => typeof id === "string" && Boolean(id));
+    const validIds = new Set(nodeIds);
+    if (!nodeIds.length || validIds.size !== nodeIds.length) return null;
+    const completedNodeIds = record.completedNodeIds.filter((id): id is string => typeof id === "string" && validIds.has(id));
+    const currentNodeId = typeof record.currentNodeId === "string" && validIds.has(record.currentNodeId) ? record.currentNodeId : undefined;
+    const errorNodeId = typeof record.errorNodeId === "string" && validIds.has(record.errorNodeId) ? record.errorNodeId : undefined;
+    const now = new Date().toISOString();
+    return {
+        status: record.status,
+        ...(typeof record.runId === "string" && record.runId ? { runId: record.runId } : {}),
+        nodeIds,
+        completedNodeIds: [...new Set(completedNodeIds)],
+        ...(currentNodeId ? { currentNodeId } : {}),
+        ...(errorNodeId ? { errorNodeId } : {}),
+        ...(typeof record.errorMessage === "string" && record.errorMessage ? { errorMessage: record.errorMessage } : {}),
+        startedAt: typeof record.startedAt === "string" ? record.startedAt : now,
+        updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
+    };
+}
+
+export function failCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodeId: string, errorMessage: string, now = new Date().toISOString()): CanvasWorkflowCheckpoint {
+    return {
+        ...checkpoint,
+        status: "failed",
+        currentNodeId: nodeId,
+        errorNodeId: nodeId,
+        errorMessage,
+        updatedAt: now,
+    };
+}
+
+export function advanceCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodeId: string, now = new Date().toISOString()): CanvasWorkflowCheckpoint {
+    if (!checkpoint.nodeIds.includes(nodeId)) return checkpoint;
+    return {
+        ...checkpoint,
+        completedNodeIds: [...new Set([...checkpoint.completedNodeIds, nodeId])],
+        currentNodeId: undefined,
+        updatedAt: now,
+    };
+}
+
+export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], interruptedError: string, connections: CanvasConnection[] = []) {
+    const currentNodeId = checkpoint.currentNodeId;
+    if (!currentNodeId || checkpoint.completedNodeIds.includes(currentNodeId)) return { ok: true as const, checkpoint };
+    const current = nodes.find((node) => node.id === currentNodeId);
+    if (!current) return { ok: false as const, reason: "missing" as const, nodeId: currentNodeId, checkpoint };
+    if (current.metadata?.status === "success") {
+        const outputValidation = validateCanvasWorkflowNodeOutputs({
+            nodeId: currentNodeId,
+            mode: current.metadata?.generationMode || "image",
+            expectedCount: Number(current.metadata?.count) || 1,
+            nodes,
+            connections,
+        });
+        if (!outputValidation.ok) return { ok: false as const, reason: "failed" as const, nodeId: currentNodeId, checkpoint };
+        return { ok: true as const, checkpoint: advanceCanvasWorkflowCheckpoint(checkpoint, currentNodeId) };
+    }
+    if (current.metadata?.status === "error" && current.metadata.errorDetails && current.metadata.errorDetails !== interruptedError) {
+        return { ok: false as const, reason: "failed" as const, nodeId: currentNodeId, checkpoint };
+    }
+    return { ok: true as const, checkpoint };
+}
+
+export function workflowPlanMatchesCheckpoint(plan: CanvasWorkflowPlan, checkpoint: CanvasWorkflowCheckpoint) {
+    return plan.nodeIds.length === checkpoint.nodeIds.length && plan.nodeIds.every((nodeId, index) => checkpoint.nodeIds[index] === nodeId);
+}
+
+export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const failedNodeId = checkpoint.status === "failed" ? checkpoint.errorNodeId || checkpoint.currentNodeId : undefined;
+    if (!failedNodeId) return checkpoint;
+    const node = nodes.find((item) => item.id === failedNodeId);
+    if (!node) return checkpoint;
+    const validation = validateCanvasWorkflowNodeOutputs({
+        nodeId: failedNodeId,
+        mode: node.metadata?.generationMode || "image",
+        expectedCount: Number(node.metadata?.count) || 1,
+        nodes,
+        connections,
+    });
+    if (!validation.ok) return checkpoint;
+    return {
+        ...advanceCanvasWorkflowCheckpoint(checkpoint, failedNodeId),
+        status: "running" as const,
+        currentNodeId: undefined,
+        errorNodeId: undefined,
+        errorMessage: undefined,
+    };
+}
+
+/** Adopt every valid persisted output before scheduling. This prevents concurrent nodes from replaying after a refresh. */
+export function reconcileCanvasWorkflowOutputs(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    let next = checkpoint;
+    for (const nodeId of checkpoint.nodeIds) {
+        if (next.completedNodeIds.includes(nodeId)) continue;
+        const node = nodes.find((item) => item.id === nodeId);
+        if (!node || node.metadata?.status !== "success") continue;
+        const validation = validateCanvasWorkflowNodeOutputs({
+            nodeId,
+            mode: node.metadata?.generationMode || "image",
+            expectedCount: Number(node.metadata?.count) || 1,
+            nodes,
+            connections,
+        });
+        if (validation.ok) next = advanceCanvasWorkflowCheckpoint(next, nodeId);
+    }
+    return next;
+}
+
+export function findRunnableCanvasWorkflowNodeIds(options: {
+    pendingNodeIds: Iterable<string>;
+    completedNodeIds: Set<string>;
+    blockedNodeIds?: Set<string>;
+    dependencies: Map<string, Set<string>>;
+}) {
+    const blocked = options.blockedNodeIds || new Set<string>();
+    return [...options.pendingNodeIds].filter((nodeId) => {
+        const dependencies = options.dependencies.get(nodeId) || new Set<string>();
+        return ![...dependencies].some((dependencyId) => blocked.has(dependencyId)) && [...dependencies].every((dependencyId) => options.completedNodeIds.has(dependencyId));
+    });
+}
+
+export function findCanvasWorkflowCancellationClosure(nodeId: string, pendingNodeIds: Iterable<string>, dependencies: Map<string, Set<string>>) {
+    const pending = new Set(pendingNodeIds);
+    const canceled = new Set<string>(pending.has(nodeId) ? [nodeId] : []);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const pendingId of pending) {
+            if (canceled.has(pendingId)) continue;
+            if (![...(dependencies.get(pendingId) || [])].some((dependencyId) => canceled.has(dependencyId))) continue;
+            canceled.add(pendingId);
+            changed = true;
+        }
+    }
+    return canceled;
+}
+
+export function validateCanvasWorkflowNodeReadiness(options: {
+    nodeId: string;
+    nodes: CanvasNodeData[];
+    connections?: CanvasConnection[];
+    dependencies: Set<string>;
+    completedNodeIds: Set<string>;
+    allowPendingDependencies?: boolean;
+}): { ok: true } | { ok: false; issue: CanvasWorkflowNodeReadinessIssue } {
+    const { nodeId, nodes, dependencies, completedNodeIds, allowPendingDependencies = false } = options;
+    for (const dependencyId of dependencies) {
+        if (!completedNodeIds.has(dependencyId) && !allowPendingDependencies) {
+            return { ok: false, issue: { reason: "dependency_incomplete", nodeId, relatedNodeId: dependencyId } };
+        }
+    }
+
+    const node = nodes.find((item) => item.id === nodeId);
+    const composerContent = resolveCopiedCanvasNodeReferences(nodeId, node?.metadata?.composerContent ?? node?.metadata?.prompt ?? "", nodes, options.connections || []);
+    const referenceIds = [...composerContent.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]);
+    for (const referenceId of new Set(referenceIds)) {
+        const reference = nodes.find((item) => item.id === referenceId);
+        if (!reference) return { ok: false, issue: { reason: "reference_missing", nodeId, relatedNodeId: referenceId } };
+        if (workflowResourceReady(reference)) continue;
+        const producerId = reference.metadata?.workflowProducerNodeId;
+        if (allowPendingDependencies && producerId && dependencies.has(producerId) && !completedNodeIds.has(producerId)) continue;
+        return { ok: false, issue: { reason: "reference_empty", nodeId, relatedNodeId: referenceId } };
+    }
+    return { ok: true };
+}
+
+export function validateCanvasWorkflowNodeOutputs(options: {
+    nodeId: string;
+    mode: string;
+    expectedCount: number;
+    nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+}): { ok: true } | { ok: false; issue: CanvasWorkflowNodeOutputIssue } {
+    const { nodeId, mode, nodes, connections } = options;
+    const expected = Math.max(1, Math.floor(options.expectedCount || 1));
+    const outputType = mode === "text" ? "text" : mode === "video" ? "video" : mode === "audio" ? "audio" : "image";
+    const outputs = findWorkflowOutputNodes(nodeId, outputType, nodes, connections);
+    if (!outputs.length) return { ok: false, issue: { reason: "output_missing", nodeId, expected, actual: 0 } };
+
+    const actual = outputs.reduce((count, output) => count + workflowOutputSuccessCount(output), 0);
+    const errorDetails = [nodes.find((item) => item.id === nodeId), ...outputs]
+        .flatMap((item) => [item?.metadata?.errorDetails, ...(item?.metadata?.images || []).map((image) => image.errorDetails)])
+        .find((value): value is string => Boolean(value?.trim()));
+    if (actual < expected) {
+        return { ok: false, issue: { reason: errorDetails ? "output_failed" : "output_incomplete", nodeId, expected, actual, ...(errorDetails ? { errorDetails } : {}) } };
+    }
+    return { ok: true };
+}
+
+function workflowResourceReady(node: CanvasNodeData) {
+    if (node.type === "text") return Boolean((node.metadata?.content || node.metadata?.prompt || "").trim());
+    if (node.metadata?.content || node.metadata?.storageKey) return true;
+    return Boolean(node.metadata?.images?.some((image) => image.status === "success" && Boolean(image.content || image.storageKey)));
+}
+
+function workflowOutputSuccessCount(node: CanvasNodeData) {
+    if (node.type === "text") return node.metadata?.status === "success" && (node.metadata?.content || "").trim() ? 1 : 0;
+    if (node.metadata?.images?.length) {
+        return node.metadata.images.filter((image) => image.status === "success" && Boolean(image.content || image.storageKey)).length;
+    }
+    return node.metadata?.status === "success" && Boolean(node.metadata?.content || node.metadata?.storageKey) ? 1 : 0;
+}
 
 /** Compile generation-config nodes into a stable, dependency-ordered execution plan. */
 export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: CanvasConnection[]): CanvasWorkflowCompileResult {
@@ -52,6 +290,11 @@ export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: Canv
 
 export function findWorkflowOutputNodes(producerNodeId: string, outputType: string, nodes: CanvasNodeData[], connections: CanvasConnection[] = []) {
     const producer = nodes.find((node) => node.id === producerNodeId);
+    const connectedOutputIds = new Set(connections.filter((connection) => connection.fromNodeId === producerNodeId).map((connection) => connection.toNodeId));
+    const connected = nodes.filter((node) => node.type === outputType && connectedOutputIds.has(node.id));
+    // A copied config can still carry its source node's persisted output IDs. A
+    // connection the user created on the copy is the current source of truth.
+    if (connected.length) return connected;
     const explicitIds = producer?.metadata?.workflowOutputNodeIds || [];
     const explicit = explicitIds
         .map((id) => nodes.find((node) => node.id === id))
@@ -59,8 +302,7 @@ export function findWorkflowOutputNodes(producerNodeId: string, outputType: stri
     if (explicit.length) return explicit;
     const attributed = nodes.filter((node) => node.type === outputType && node.metadata?.workflowProducerNodeId === producerNodeId);
     if (attributed.length) return attributed;
-    const outputIds = new Set(connections.filter((connection) => connection.fromNodeId === producerNodeId).map((connection) => connection.toNodeId));
-    return nodes.filter((node) => node.type === outputType && outputIds.has(node.id));
+    return [];
 }
 
 function findConfigDependencies(nodeId: string, executableIds: Set<string>, nodeById: Map<string, CanvasNodeData>, incoming: Map<string, string[]>) {

@@ -28,12 +28,11 @@ type CanvasNodePromptPanelProps = {
     onPromptChange: (nodeId: string, prompt: string) => void;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
-    onStop: (nodeId: string) => void;
     mentionReferences?: CanvasResourceReference[];
     modeOverride?: CanvasNodeGenerationMode; // Plugin nodes set their generation type through useBuiltinPanel.mode.
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], modeOverride }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, mentionReferences = [], modeOverride }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -104,7 +103,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     </button>
                 </Tooltip>
                 <CanvasPromptLibrary onSelect={updatePrompt} />
-                <PromptSendButton isRunning={isRunning} mode={mode} disabled={!isRunning && (mediaLocked || !prompt.trim())} locked={mediaLocked} onClick={() => (isRunning ? onStop(node.id) : submit())} />
+                <PromptSendButton isRunning={isRunning} mode={mode} disabled={isRunning || mediaLocked || !prompt.trim()} locked={mediaLocked} onClick={submit} />
             </div>
             <Modal className="canvas-prompt-editor-modal" title={null} open={expanded} centered width={720} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom data-canvas-shortcuts-ignore onWheelCapture={(event) => event.stopPropagation()}>
@@ -154,14 +153,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         <PromptSendButton
                             isRunning={isRunning}
                             mode={mode}
-                            disabled={!isRunning && (mediaLocked || !prompt.trim())}
+                            disabled={isRunning || mediaLocked || !prompt.trim()}
                             locked={mediaLocked}
                             onClick={() => {
-                                if (isRunning) onStop(node.id);
-                                else {
-                                    submit();
-                                    setExpanded(false);
-                                }
+                                submit();
+                                setExpanded(false);
                             }}
                         />
                     </div>
@@ -243,11 +239,11 @@ function PromptSendButton({
         <button
             type="button"
             className="grid size-9 shrink-0 place-items-center rounded-full disabled:opacity-35"
-            style={{ background: isRunning ? "#ef4444" : nodeTypeColor(mode), color: "#fff" }}
+            style={{ background: nodeTypeColor(mode), color: "#fff" }}
             disabled={disabled}
             title={locked ? t("canvas.unavailable") : undefined}
             onClick={onClick}
-            aria-label={t(isRunning ? "canvas.promptPanel.stopGeneration" : "canvas.promptPanel.generate")}
+            aria-label={t(isRunning ? "canvas.node.generating" : "canvas.promptPanel.generate")}
         >
             {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
         </button>
