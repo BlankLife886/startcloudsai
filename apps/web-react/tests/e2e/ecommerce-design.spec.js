@@ -700,16 +700,16 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.getByLabel("选择目标市场")).toHaveCount(0);
   await expect(page.getByLabel("选择视觉风格")).toHaveCount(0);
   await expect(page.getByLabel("选择画面比例")).toBeVisible();
-  await expect(page.locator(".tryon-ratio-grid button")).toHaveText([
+  await expect(page.getByLabel("选择画面比例")).toContainText("2:3");
+  await page.getByLabel("选择画面比例").click();
+  await expect(page.getByRole("option")).toHaveText([
     "1:1",
     "2:3",
     "3:2",
     "16:9",
     "9:16",
   ]);
-  await expect(
-    page.locator(".tryon-ratio-grid button", { hasText: "2:3" }),
-  ).toHaveClass(/active/);
+  await page.keyboard.press("Escape");
   await expect(page.getByText("补充要求")).toHaveCount(0);
   await expect(page.getByLabel("选择拍摄场景")).toBeVisible();
   await expect(page.getByRole("button", { name: "更多场景" })).toBeVisible();
@@ -747,6 +747,9 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.locator(".tryon-compose__arrow")).toHaveCount(0);
   await expect(page.getByLabel("生成历史")).toBeVisible();
   await expect(page.locator(".tryon-history__empty")).toContainText("暂无记录");
+  await expect(
+    page.getByRole("button", { name: "补充说明当前结果" }),
+  ).toHaveCount(0);
   await expect(page.locator(".tryon-stage__frame")).toHaveAttribute(
     "data-scene",
     "纯色棚拍",
@@ -806,7 +809,8 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   );
   const inputBox = page.locator(".tryon-stage__frame");
   const inputBefore = await inputBox.boundingBox();
-  await page.getByRole("button", { name: "16:9", exact: true }).click();
+  await page.getByLabel("选择画面比例").click();
+  await page.getByRole("option", { name: "16:9", exact: true }).click();
   await expect(page.locator(".tryon-stage__result")).toHaveAttribute(
     "data-ratio",
     "16:9",
@@ -818,7 +822,8 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   expect(
     Math.abs((inputAfterWide?.height || 0) - (inputBefore?.height || 0)),
   ).toBeLessThan(2);
-  await page.getByRole("button", { name: "2:3", exact: true }).click();
+  await page.getByLabel("选择画面比例").click();
+  await page.getByRole("option", { name: "2:3", exact: true }).click();
   await expect(page.locator(".tryon-stage__result")).toHaveAttribute(
     "data-ratio",
     "2:3",
@@ -847,6 +852,43 @@ test("fashion try-on separates garment, model, and scene choices", async ({
     page.getByRole("button", { name: "查看服装大图" }),
   ).toBeVisible();
   await expect(page.locator(".tryon-stage__notice")).toHaveCount(0);
+});
+
+test("commerce sidebar switches businesses without remounting the page shell", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=tryon");
+
+  const studio = page.locator(".commerce-studio");
+  await expect(studio).toBeVisible();
+  await studio.evaluate((node) => {
+    node.dataset.sidebarSwitchProbe = "stable";
+  });
+
+  await page.getByRole("button", { name: "手持商品图" }).click();
+  await expect(page).toHaveURL(/tool=handheld/);
+  await expect(studio).toHaveAttribute("data-sidebar-switch-probe", "stable");
+});
+
+test("try-on generation timer resumes from the server start time", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=tryon&seedResult=runningTryon");
+
+  const timer = page.locator(".tryon-generating__time strong");
+  await expect(timer).toBeVisible();
+  const before = Number(await timer.textContent());
+  expect(before).toBeGreaterThanOrEqual(10);
+
+  await page.getByRole("button", { name: "手持商品图" }).click();
+  await expect(page).toHaveURL(/tool=handheld/);
+  await page.waitForTimeout(1200);
+  await page.getByRole("button", { name: "AI 虚拟试衣" }).click();
+  await expect(page).toHaveURL(/tool=tryon/);
+  await expect(timer).toBeVisible();
+  await expect
+    .poll(async () => Number(await timer.textContent()))
+    .toBeGreaterThan(before);
 });
 
 test("fashion try-on stays empty when the catalog is unavailable", async ({
@@ -1804,7 +1846,28 @@ async function mockEcommerceApis(page) {
   let failedHistoryRequests = 0;
   let productStatus = "active";
   let productBriefAttempts = 0;
+  let runningTryonSeeded = false;
   const commerceReviews = new Map();
+  const runningTryonStartedAt = new Date(Date.now() - 12_000).toISOString();
+  const runningTryonTask = () => ({
+    id: "e2e-running-tryon",
+    type: "ecommerce_design",
+    status: "running",
+    prompt: "测试运行中的虚拟试衣任务",
+    params: {
+      _kind: "ui-design-ecommerce-tryon-generation",
+      aspectRatio: "2:3",
+      batchId: "e2e-running-tryon-batch",
+      batchIndex: 0,
+      batchSize: 1,
+      batchCreatedAt: runningTryonStartedAt,
+    },
+    count: 1,
+    originalUrls: [],
+    outputUrls: [],
+    createdAt: runningTryonStartedAt,
+    startedAt: runningTryonStartedAt,
+  });
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1999,6 +2062,11 @@ async function mockEcommerceApis(page) {
     }
     if (path === "/api/v1/tasks") {
       const seedResult = new URL(page.url()).searchParams.get("seedResult");
+      if (seedResult === "runningTryon") runningTryonSeeded = true;
+      if (runningTryonSeeded) {
+        await fulfill(route, { items: [runningTryonTask()], nextCursor: null });
+        return;
+      }
       if (seedResult === "1" || seedResult === "multi") {
         const count = seedResult === "multi" ? 4 : 1;
         const requestedTool = new URL(page.url()).searchParams.get("tool");
@@ -2081,6 +2149,13 @@ async function mockEcommerceApis(page) {
         return;
       }
       await fulfill(route, { items: [], nextCursor: null });
+      return;
+    }
+    if (
+      path === "/api/v1/tasks/e2e-running-tryon" &&
+      request.method() === "GET"
+    ) {
+      await fulfill(route, runningTryonTask());
       return;
     }
     if (

@@ -77,6 +77,7 @@ export async function loadTryonDraft() {
     featuredTryonGarmentId: String(meta.featuredTryonGarmentId || ''),
     scene: String(meta.scene || ''),
     modelProfile: String(meta.modelProfile || ''),
+    aspectRatio: String(meta.aspectRatio || ''),
     slots,
   }
 }
@@ -99,6 +100,7 @@ export async function saveTryonDraft(draft = {}) {
     featuredTryonGarmentId: draft.featuredTryonGarmentId || '',
     scene: draft.scene || '',
     modelProfile: draft.modelProfile || '',
+    aspectRatio: draft.aspectRatio || '',
     slots: slotsMeta,
     savedAt: Date.now(),
   })

@@ -188,6 +188,9 @@ func LockReadyObjectCleanupJobs(ctx context.Context, q Q, now time.Time, limit i
 				SELECT 1 FROM ecommerce_tryon_catalog catalog WHERE catalog.image_key = locked.object_key
 		  )
 		  AND NOT EXISTS (
+				SELECT 1 FROM canvas_workflow_templates template WHERE template.cover_key = locked.object_key
+		  )
+		  AND NOT EXISTS (
 			SELECT 1 FROM canvas_projects project
 				WHERE project.document::text LIKE '%' || locked.object_key || '%'
 			  )

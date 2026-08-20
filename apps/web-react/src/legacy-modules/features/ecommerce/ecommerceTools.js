@@ -787,6 +787,149 @@ export function buildTryonLightingPrompt(light) {
   return `光影：${option.label}。${option.prompt}`;
 }
 
+export function buildTryonMentions({
+  apparel = "",
+  modelLabel = "",
+  sceneLabel = "",
+  lens,
+  light,
+  aspectRatio = "",
+  referenceStartIndex = 1,
+} = {}) {
+  const lensOption = tryonLensById(
+    lens && typeof lens === "object" ? lens.id : lens,
+  );
+  const lightOption = tryonLightById(
+    light && typeof light === "object" ? light.id : light,
+  );
+  const garmentIndex = Math.max(1, Number(referenceStartIndex) || 1);
+  const modelIndex = garmentIndex + 1;
+  const sceneIndex = garmentIndex + 2;
+  return [
+    {
+      id: "garment",
+      token: "衣服",
+      hint: apparel || "服装参考",
+      rule: `第 ${garmentIndex} 张参考图是服装身份依据（${apparel || "服装"}）；除非本轮明确要求修改某项服装属性，否则保持其版型、长度、领口、袖型、图案、颜色、面料与缝线`,
+    },
+    {
+      id: "model",
+      token: "模特",
+      hint: modelLabel || "模特参考",
+      rule: `第 ${modelIndex} 张参考图是模特身份依据（${modelLabel || "当前模特"}）；除非本轮明确要求修改某项人物属性，否则必须保持同一人的脸型、五官、肤色、发型和体型`,
+    },
+    {
+      id: "scene",
+      token: "场景",
+      hint: sceneLabel || "场景参考",
+      rule: `第 ${sceneIndex} 张参考图是场景依据（${sceneLabel || "当前场景"}）；除非本轮明确要求修改场景，否则保持空间、色温、材质和环境光，且不得把场景图中的人物或商品带入结果`,
+    },
+    {
+      id: "lens",
+      token: "镜头",
+      hint: lensOption.label,
+      rule: `当前镜头设置为${lensOption.label}；若本轮明确指定其他镜头或焦段，以本轮要求为准，否则沿用当前设置。${buildTryonPhotographyPrompt(lensOption)}`,
+    },
+    {
+      id: "light",
+      token: "光影",
+      hint: lightOption.label,
+      rule: `当前光影设置为${lightOption.label}；若本轮明确指定其他布光方式，以本轮要求为准，否则沿用当前设置。${buildTryonLightingPrompt(lightOption)}`,
+    },
+    {
+      id: "ratio",
+      token: "比例",
+      hint: aspectRatio || "画面比例",
+      rule: `当前画面比例为 ${aspectRatio || "当前比例"}；若本轮明确指定其他比例，以本轮指定比例为准`,
+    },
+  ];
+}
+
+function escapeTryonMentionToken(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function expandTryonBriefMentions(brief, mentions = []) {
+  let next = String(brief || "").trim();
+  if (!next) return "";
+  [...mentions]
+    .sort((a, b) => String(b.token || "").length - String(a.token || "").length)
+    .forEach((item) => {
+      const token = `@${item.token}`;
+      if (!token || token === "@") return;
+      const pattern = new RegExp(
+        `${escapeTryonMentionToken(token)}(?=$|[\\s，。,.!?！？；;:：、])`,
+        "g",
+      );
+      next = next.replace(pattern, item.rule);
+    });
+  return next;
+}
+
+export function buildTryonBriefConstraint(brief, mentions = []) {
+  const text = expandTryonBriefMentions(brief, mentions);
+  if (!text) return "";
+  return `补充说明规则（必须执行，优先级高于默认姿势和构图建议）：${text}。本轮未明确要求修改的服装身份、模特身份和场景空间事实必须保持不变。`;
+}
+
+export function shiftTryonReferenceIndexes(prompt, offset = 1) {
+  const amount = Math.max(0, Number(offset) || 0);
+  if (!amount) return String(prompt || "");
+  return String(prompt || "").replace(/第\s*([123])\s*张/g, (_, index) => {
+    return `第 ${Number(index) + amount} 张`;
+  });
+}
+
+export function tryonBriefAspectRatio(brief, fallback = "") {
+  const text = String(brief || "");
+  const mentionIndex = text.indexOf("@比例");
+  if (mentionIndex < 0) return String(fallback || "").trim();
+  const segment = text.slice(mentionIndex, mentionIndex + 48);
+  const match = segment.match(/(?:1\s*[:：]\s*1|2\s*[:：]\s*3|3\s*[:：]\s*2|16\s*[:：]\s*9|9\s*[:：]\s*16)/);
+  if (!match) return String(fallback || "").trim();
+  const beforeRatio = segment.slice(0, match.index);
+  if (/(?:不要|禁止).{0,6}(?:改|调整|换|设)/.test(beforeRatio)) {
+    return String(fallback || "").trim();
+  }
+  return match[0].replace(/\s/g, "").replace("：", ":");
+}
+
+export function buildTryonRevisionPlan({
+  basePrompt = "",
+  brief = "",
+  apparel = "",
+  modelLabel = "",
+  sceneLabel = "",
+  lens,
+  light,
+  aspectRatio = "",
+  versionNumber = 2,
+} = {}) {
+  const mentions = buildTryonMentions({
+    apparel,
+    modelLabel,
+    sceneLabel,
+    lens,
+    light,
+    aspectRatio,
+    referenceStartIndex: 2,
+  });
+  const constraint = buildTryonBriefConstraint(brief, mentions);
+  return {
+    aspectRatio: tryonBriefAspectRatio(brief, aspectRatio),
+    prompt: buildEcommerceRevisionPrompt({
+      basePrompt: shiftTryonReferenceIndexes(basePrompt, 1),
+      brief: constraint,
+      direction: "precise",
+      versionNumber,
+      referenceRoleSummary:
+        "第 1 张参考图是当前试衣成品，第 2 张是服装身份依据，第 3 张是模特身份依据，第 4 张是场景依据。必须继承当前成品，只按本轮要求修改，并用后三张原始参考校正对应身份。",
+      lockRule:
+        "除本轮明确要求修改的内容外，当前成品的构图、人物姿态、主体位置、画幅、服装身份、模特身份、场景空间、光线方向和其他已完成区域全部保持不变。禁止重新随机设计整张图片。",
+    }),
+  };
+}
+
 export {
   HANDHELD_ARCHITECTURE_OPTIONS,
   HANDHELD_CAMERA_OPTIONS,
@@ -942,6 +1085,8 @@ export function buildEcommerceRevisionPrompt({
   brief = "",
   direction = "precise",
   versionNumber = 2,
+  referenceRoleSummary = "",
+  lockRule = "",
 } = {}) {
   const instruction = String(brief || "").trim();
   if (!instruction) return "";
@@ -954,11 +1099,11 @@ export function buildEcommerceRevisionPrompt({
     `任务：基于当前电商成品生成第 V${version} 版定向调整。`,
     `本轮只修改：${instruction}。`,
     `调整方向：${directionConfig.label}。${directionConfig.prompt}`,
-    "参考图角色：第一张参考图是当前成品，其余参考图是原始商品身份依据。必须同时继承当前成品的整体设计，并以原始商品参考校正商品本体。",
-    "锁定规则：除本轮明确要求修改的内容外，商品造型、颜色、比例、Logo、包装文字、主体位置、画幅、品牌色、字体体系、光线方向和其他已完成区域全部保持不变。禁止重新随机设计整张图片。",
+    `参考图角色：${String(referenceRoleSummary || "").trim() || "第一张参考图是当前成品，其余参考图是原始商品身份依据。必须同时继承当前成品的整体设计，并以原始商品参考校正商品本体。"}`,
+    `锁定规则：${String(lockRule || "").trim() || "除本轮明确要求修改的内容外，商品造型、颜色、比例、Logo、包装文字、主体位置、画幅、品牌色、字体体系、光线方向和其他已完成区域全部保持不变。禁止重新随机设计整张图片。"}`,
     "修改结果必须是完整可交付成品，不展示对比图、编辑器、标注、修改说明、水印或版本号。",
     String(basePrompt || "").trim()
-      ? `原始业务要求仍然有效：\n${String(basePrompt).trim()}`
+      ? `除本轮明确修改项外，原始业务要求仍然有效：\n${String(basePrompt).trim()}`
       : "",
   ]
     .filter(Boolean)

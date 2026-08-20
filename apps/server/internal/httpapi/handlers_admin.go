@@ -894,14 +894,11 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	page := buildPage(rows, limit, func(t *store.Task) gin.H {
 		user := users[t.UserID]
 		d := adminTaskDict(t, user)
-		thumbKeys := t.ThumbnailKeys
-		if len(thumbKeys) == 0 {
-			thumbKeys = t.OutputKeys
-		}
-		thumbURLs := adminURLsForKeys(thumbKeys)
-		d["outputUrls"] = thumbURLs
+		thumbURLs := thumbURLsForTask(t, "/api/v1/admin/files/")
+		originalURLs := adminURLsForKeys(t.OutputKeys)
+		d["outputUrls"] = originalURLs
 		d["thumbnailUrls"] = thumbURLs
-		d["originalUrls"] = adminURLsForKeys(t.OutputKeys)
+		d["originalUrls"] = originalURLs
 		d["displayUrls"] = displayURLsForTask(t, "/api/v1/admin/files/")
 		if user != nil {
 			d["userEmail"] = user.Email

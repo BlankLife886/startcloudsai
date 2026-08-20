@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Modal } from "antd";
-import { Boxes, Layers3, Search, Sparkles } from "lucide-react";
+import { ArrowRight, Layers3, Search, Sparkles } from "lucide-react";
 
 import { listCanvasWorkflowTemplates, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
 
@@ -52,6 +52,7 @@ export function CanvasWorkflowTemplateDialog({ open, onClose, onUse }: TemplateD
             return [template.title, template.industry, template.summary, ...template.platforms, ...template.deliverables].join(" ").toLowerCase().includes(normalized);
         });
     }, [category, query, templates]);
+    const activeCategoryLabel = category === "all" ? "全部模板" : categories.find((item) => item.id === category)?.label || "模板";
     const useTemplate = async (template: CanvasWorkflowTemplateSummary) => {
         if (usingId) return;
         setUsingId(template.id);
@@ -63,65 +64,118 @@ export function CanvasWorkflowTemplateDialog({ open, onClose, onUse }: TemplateD
     };
 
     return (
-        <Modal open={open} onCancel={onClose} footer={null} width={1180} centered destroyOnHidden title={null} className="canvas-template-modal" rootClassName="canvas-template-modal-root">
+        <Modal
+            open={open}
+            onCancel={onClose}
+            footer={null}
+            width={1080}
+            centered
+            destroyOnHidden
+            title={null}
+            className="canvas-template-modal"
+            rootClassName="canvas-template-modal-root"
+            styles={{
+                container: {
+                    width: 1080,
+                    minWidth: 1080,
+                    maxWidth: 1080,
+                    height: 720,
+                    minHeight: 720,
+                    maxHeight: 720,
+                    padding: 0,
+                    overflow: "hidden",
+                },
+                body: {
+                    height: "100%",
+                    padding: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                },
+            }}
+        >
             <header className="canvas-template-modal__header">
-                <div>
-                    <span className="canvas-template-modal__eyebrow"><Sparkles className="size-3.5" />生产工作流模板</span>
-                    <h2>选择一条可重复执行的生产线</h2>
-                </div>
-                <div className="canvas-template-modal__metrics" aria-label="模板统计">
-                    <span><strong>{templates.length}</strong> 模板</span>
-                    <span><strong>{new Set(templates.map((item) => item.nodeCount)).size}</strong> 节点档位</span>
-                    <span><strong>0</strong> 音视频节点</span>
-                </div>
-            </header>
-
-            <div className="canvas-template-toolbar">
-                <div className="canvas-template-tabs" role="tablist" aria-label="模板分类">
-                    <button type="button" className={category === "all" ? "is-active" : ""} onClick={() => setCategory("all")}>全部 <span>{templates.length}</span></button>
-                    {categories.map((item) => (
-                        <button key={item.id} type="button" className={category === item.id ? "is-active" : ""} onClick={() => setCategory(item.id)}>{item.label} <span>{item.count}</span></button>
-                    ))}
+                <div className="canvas-template-modal__heading">
+                    <span className="canvas-template-modal__mark"><Sparkles className="size-4" /></span>
+                    <div>
+                        <h2>生产工作流模板</h2>
+                        <p>选择一条可重复执行的生产线</p>
+                    </div>
                 </div>
                 <label className="canvas-template-search">
                     <Search className="size-4" />
                     <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索行业、平台或交付物" />
                 </label>
-            </div>
+            </header>
 
-            <div className="canvas-template-grid" aria-live="polite">
-                {filtered.map((template) => (
-                    <article key={template.id} className="canvas-template-card" style={{ "--template-accent": template.accent } as CSSProperties}>
-                        <div className="canvas-template-card__visual" aria-hidden="true">
-                            <span className="canvas-template-card__accent" />
-                            <span className="canvas-template-card__flow is-input" />
-                            <span className="canvas-template-card__line is-first" />
-                            <span className="canvas-template-card__flow is-config" />
-                            <span className="canvas-template-card__line is-second" />
-                            <span className="canvas-template-card__flow is-output" />
-                            <span className="canvas-template-card__branch" />
+            <div className="canvas-template-layout">
+                <aside className="canvas-template-sidebar" aria-label="模板分类">
+                    <div className="canvas-template-sidebar__title">模板类型</div>
+                    <div className="canvas-template-tabs" role="tablist" aria-label="模板分类">
+                        <button type="button" role="tab" aria-selected={category === "all"} className={category === "all" ? "is-active" : ""} onClick={() => setCategory("all")}>
+                            <span>全部模板</span><strong>{templates.length}</strong>
+                        </button>
+                        {categories.map((item) => (
+                            <button key={item.id} type="button" role="tab" aria-selected={category === item.id} className={category === item.id ? "is-active" : ""} onClick={() => setCategory(item.id)}>
+                                <span>{item.label}</span><strong>{item.count}</strong>
+                            </button>
+                        ))}
+                    </div>
+                </aside>
+
+                <section className="canvas-template-content">
+                    <div className="canvas-template-toolbar">
+                        <div className="canvas-template-results">
+                            <strong>{activeCategoryLabel}</strong>
+                            <span>{loading ? "正在载入" : `${filtered.length} 个结果`}</span>
                         </div>
-                        <div className="canvas-template-card__body">
-                            <div className="canvas-template-card__meta">
-                                <span>{template.categoryLabel}</span>
-                                <span><Boxes className="size-3" />{template.nodeCount} 节点</span>
+                    </div>
+
+                    <div className="canvas-template-grid" aria-live="polite">
+                        {filtered.map((template) => (
+                            <article key={template.id} className="canvas-template-card" style={{ "--template-accent": template.accent } as CSSProperties}>
+                                <div className="canvas-template-card__visual">
+                                    {template.coverUrl ? (
+                                        <img src={template.coverUrl} alt="" className="canvas-template-card__cover" loading="lazy" />
+                                    ) : (
+                                        <div className="canvas-template-card__placeholder" aria-hidden="true">
+                                            <strong>{template.title.slice(0, 1)}</strong>
+                                        </div>
+                                    )}
+                                    <span className="canvas-template-card__badge">{template.categoryLabel}</span>
+                                </div>
+                                <div className="canvas-template-card__body">
+                                    {template.industry ? <span className="canvas-template-card__industry">{template.industry}</span> : null}
+                                    <h3>{template.title}</h3>
+                                    <p>{template.summary}</p>
+                                    <div className="canvas-template-card__footer">
+                                        <span className="canvas-template-card__stats">
+                                            <Layers3 className="size-3.5" />
+                                            {template.deliverables.length} 类交付物
+                                            {template.platforms.length ? ` · ${template.platforms.slice(0, 2).join(" / ")}` : ""}
+                                        </span>
+                                        <button type="button" disabled={Boolean(usingId)} onClick={() => void useTemplate(template)}>
+                                            {usingId === template.id ? "正在创建" : "使用模板"}
+                                            {usingId !== template.id ? <ArrowRight className="size-3.5" /> : null}
+                                        </button>
+                                    </div>
+                                </div>
+                            </article>
+                        ))}
+                        {loading && !templates.length ? (
+                            Array.from({ length: 4 }, (_, index) => <div key={index} className="canvas-template-card canvas-template-card--skeleton" aria-hidden="true" />)
+                        ) : null}
+                        {!loading && loadError ? <div className="canvas-template-empty">{loadError}</div> : null}
+                        {!loading && !loadError && !filtered.length ? (
+                            <div className="canvas-template-empty">
+                                <Search className="size-5" />
+                                <strong>{query.trim() ? "没有匹配的模板" : "后台暂未发布模板"}</strong>
+                                {query.trim() ? <button type="button" onClick={() => setQuery("")}>清除搜索</button> : null}
                             </div>
-                            <h3>{template.title}</h3>
-                            <p>{template.summary}</p>
-                            <div className="canvas-template-card__platforms">
-                                {template.platforms.slice(0, 4).map((platform) => <span key={platform}>{platform}</span>)}
-                            </div>
-                            <div className="canvas-template-card__footer">
-                                <span><Layers3 className="size-3.5" />{template.deliverables.length} 类交付物</span>
-                                <button type="button" disabled={Boolean(usingId)} onClick={() => void useTemplate(template)}>{usingId === template.id ? "正在创建" : "使用模板"}</button>
-                            </div>
-                        </div>
-                    </article>
-                ))}
+                        ) : null}
+                    </div>
+                </section>
             </div>
-            {loading ? <div className="canvas-template-empty">正在加载模板</div> : null}
-            {!loading && loadError ? <div className="canvas-template-empty">{loadError}</div> : null}
-            {!loading && !loadError && !filtered.length ? <div className="canvas-template-empty">后台暂未发布模板</div> : null}
         </Modal>
     );
 }

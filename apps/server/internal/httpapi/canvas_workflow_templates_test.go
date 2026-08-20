@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -65,6 +69,9 @@ func TestCanvasWorkflowTemplatesAdminLifecycleAndPublicVisibility(t *testing.T) 
 	summary, _ := items[0].(map[string]any)
 	if summary["id"] != templateID || summary["document"] != nil {
 		t.Fatalf("public summary = %#v, want matching metadata without document", summary)
+	}
+	if summary["coverUrl"] != nil {
+		t.Fatalf("public summary coverUrl = %#v, want empty until uploaded", summary["coverUrl"])
 	}
 
 	publicDetailResponse := env.do(t, http.MethodGet, "/api/v1/canvas-workflow-templates/"+templateID, nil, "")
@@ -182,5 +189,64 @@ func TestDefaultCanvasWorkflowTemplatesSeedOnce(t *testing.T) {
 	inserted, err = store.SeedDefaultCanvasWorkflowTemplates(context.Background(), env.st)
 	if err != nil || inserted != 0 {
 		t.Fatalf("second seed inserted = %d, err = %v", inserted, err)
+	}
+}
+
+func TestCanvasWorkflowTemplateCoverURLAndUploadValidation(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	createdResponse := env.do(t, http.MethodPost, "/api/v1/admin/canvas-workflow-templates", validCanvasWorkflowTemplatePayload(), adminToken)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create template: status %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	created, _ := decode(t, createdResponse)
+	templateID, _ := created["id"].(string)
+	if created["coverUrl"] != nil {
+		t.Fatalf("created coverUrl = %#v, want empty", created["coverUrl"])
+	}
+
+	coverKey := "canvas-template-covers/" + templateID + ".png"
+	if _, err := env.st.Pool.Exec(context.Background(), `UPDATE canvas_workflow_templates SET cover_key = $1 WHERE id = $2`, coverKey, templateID); err != nil {
+		t.Fatalf("set cover_key: %v", err)
+	}
+	publicListResponse := env.do(t, http.MethodGet, "/api/v1/canvas-workflow-templates", nil, "")
+	publicList, _ := decode(t, publicListResponse)
+	items, _ := publicList["items"].([]any)
+	summary, _ := items[0].(map[string]any)
+	if summary["coverUrl"] != "/api/v1/files/"+coverKey {
+		t.Fatalf("public coverUrl = %#v, want /api/v1/files/%s", summary["coverUrl"], coverKey)
+	}
+
+	missingFile := env.do(t, http.MethodPut, "/api/v1/admin/canvas-workflow-templates/"+templateID+"/cover", nil, adminToken)
+	if missingFile.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing cover file: status %d body %s", missingFile.Code, missingFile.Body.String())
+	}
+
+	unknownID := uuid.NewString()
+	unknown := env.do(t, http.MethodPut, "/api/v1/admin/canvas-workflow-templates/"+unknownID+"/cover", nil, adminToken)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown template cover: status %d body %s", unknown.Code, unknown.Body.String())
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "cover.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("not an image")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/canvas-workflow-templates/"+templateID+"/cover", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: adminToken})
+	w := httptest.NewRecorder()
+	env.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported cover: status %d body %s", w.Code, w.Body.String())
 	}
 }

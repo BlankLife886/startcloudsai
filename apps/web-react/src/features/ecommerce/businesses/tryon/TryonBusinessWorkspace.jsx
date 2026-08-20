@@ -35,6 +35,23 @@ function tryonAnimationsDisabled() {
   );
 }
 
+function mentionQueryAtCaret(value, caret) {
+  const before = String(value || "").slice(0, Math.max(0, Number(caret) || 0));
+  const match = /@([^\s@]*)$/.exec(before);
+  if (!match) return null;
+  return { start: before.length - match[0].length, query: match[1] || "" };
+}
+
+function filterTryonMentions(mentions, query) {
+  const q = String(query || "")
+    .trim()
+    .toLowerCase();
+  if (!q) return mentions;
+  return mentions.filter((item) =>
+    `${item.token} ${item.hint || ""}`.toLowerCase().includes(q),
+  );
+}
+
 function ecommerceOverlayRoot() {
   const id = "react-ecommerce-overlay-root";
   let root = document.getElementById(id);
@@ -280,13 +297,18 @@ function TryonGeneratingStage({
   failed = false,
   failCancelled = false,
   failMessage = "",
+  startedAt = "",
+  elapsedSeconds = 0,
   onRevealEnd,
   onElapsed,
 }) {
   const frame = modelImage || garmentUrl || sceneImage;
   const canPrefetch = Boolean(resultUrl) && !failed;
   const revealShot = canPrefetch ? resultUrl : "";
-  const startedRef = useRef(Date.now());
+  const parsedStartedAt = Date.parse(startedAt);
+  const hasStartedAt = Number.isFinite(parsedStartedAt);
+  const startedRef = useRef(hasStartedAt ? parsedStartedAt : Date.now());
+  if (hasStartedAt) startedRef.current = parsedStartedAt;
   const onRevealEndRef = useRef(onRevealEnd);
   const onElapsedRef = useRef(onElapsed);
   onRevealEndRef.current = onRevealEnd;
@@ -294,7 +316,9 @@ function TryonGeneratingStage({
   const [phase, setPhase] = useState("open");
   const [closed, setClosed] = useState(false);
   const [showClock, setShowClock] = useState(false);
-  const [seconds, setSeconds] = useState(0);
+  const [seconds, setSeconds] = useState(
+    Math.max(0, Number(elapsedSeconds) || 0),
+  );
   const [shotReady, setShotReady] = useState(false);
 
   useEffect(() => {
@@ -334,6 +358,10 @@ function TryonGeneratingStage({
 
   useEffect(() => {
     if (!showClock || phase === "opening") return undefined;
+    if (!hasStartedAt) {
+      setSeconds(Math.max(0, Number(elapsedSeconds) || 0));
+      return undefined;
+    }
     const tick = () => {
       setSeconds(
         Math.max(0, Math.floor((Date.now() - startedRef.current) / 1000)),
@@ -342,14 +370,16 @@ function TryonGeneratingStage({
     tick();
     const timer = setInterval(tick, 200);
     return () => clearInterval(timer);
-  }, [showClock, phase]);
+  }, [showClock, phase, hasStartedAt, startedAt, elapsedSeconds]);
 
   useEffect(() => {
     if (running && phase !== "opening") return;
     onElapsedRef.current?.(
-      Math.max(0, Math.floor((Date.now() - startedRef.current) / 1000)),
+      hasStartedAt
+        ? Math.max(0, Math.floor((Date.now() - startedRef.current) / 1000))
+        : Math.max(0, Number(elapsedSeconds) || 0),
     );
-  }, [running, phase]);
+  }, [running, phase, hasStartedAt, startedAt, elapsedSeconds]);
 
   useEffect(() => {
     if (!closed || phase === "opening") return undefined;
@@ -525,11 +555,13 @@ export function TryonLiveStage({
   failCancelled = false,
   failMessage = "",
   elapsedSeconds = 0,
+  runStartedAt = "",
   onPreview,
   onUploadGarment,
   onGenerate,
   onCancel,
   onSelectHistory,
+  onResultImageSize,
   generateDisabled,
   generateHint,
   shotCount,
@@ -539,6 +571,10 @@ export function TryonLiveStage({
   garmentPicker,
   uploadNotice = "",
   onDropSlot,
+  editBrief = "",
+  editMentions = [],
+  onChangeEdit,
+  revisionReady = false,
   copy = TRYON_STAGE_COPY,
 }) {
   const { locale, t } = useLocale();
@@ -546,6 +582,15 @@ export function TryonLiveStage({
   const [curtainRun, setCurtainRun] = useState(0);
   const [runSeconds, setRunSeconds] = useState(0);
   const [elapsedByUrl, setElapsedByUrl] = useState({});
+  const [historyRatios, setHistoryRatios] = useState({});
+  const [editOpen, setEditOpen] = useState(false);
+  const [editRendered, setEditRendered] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
+  const [mention, setMention] = useState(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const composingRef = useRef(false);
+  const editInputRef = useRef(null);
+  const composerRef = useRef(null);
   const modelRef = useRef(null);
   const garmentRef = useRef(null);
   const sceneRef = useRef(null);
@@ -556,7 +601,77 @@ export function TryonLiveStage({
     setCurtainHold(true);
     setCurtainRun((value) => value + 1);
     setRunSeconds(0);
+    setEditOpen(false);
   }, [running]);
+
+  useEffect(() => {
+    if (!editOpen) {
+      setMention(null);
+      setMentionIndex(0);
+      return undefined;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      editInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editOpen]);
+
+  useEffect(() => {
+    setEditDraft(editBrief);
+    setMention(null);
+    setMentionIndex(0);
+    setEditOpen(false);
+  }, [resultUrl, editBrief]);
+
+  useGSAP(
+    (context, contextSafe) => {
+      if (!editRendered) return undefined;
+      const panel = composerRef.current;
+      if (!panel) return undefined;
+      const reduced = tryonAnimationsDisabled();
+      gsap.killTweensOf(panel);
+      if (editOpen) {
+        if (reduced) {
+          gsap.set(panel, { autoAlpha: 1, y: 0, scale: 1 });
+          return undefined;
+        }
+        gsap.fromTo(
+          panel,
+          { autoAlpha: 0, y: 14, scale: 0.92 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            scale: 1,
+            duration: 0.26,
+            ease: "power3.out",
+            transformOrigin: "left bottom",
+          },
+        );
+        return undefined;
+      }
+      if (reduced) {
+        setEditRendered(false);
+        return undefined;
+      }
+      const finishClose = (contextSafe || ((callback) => callback))(() => {
+        setEditRendered(false);
+      });
+      gsap.to(panel, {
+        autoAlpha: 0,
+        y: 10,
+        scale: 0.94,
+        duration: 0.18,
+        ease: "power2.in",
+        transformOrigin: "left bottom",
+        onComplete: finishClose,
+      });
+      return undefined;
+    },
+    {
+      dependencies: [editOpen, editRendered],
+      revertOnUpdate: false,
+    },
+  );
 
   useEffect(() => {
     if (!resultUrl || !runSeconds) return;
@@ -569,6 +684,14 @@ export function TryonLiveStage({
   const resultSeconds =
     (resultUrl && elapsedByUrl[resultUrl]) || elapsedSeconds || 0;
 
+  function rememberImageSize(url, width, height) {
+    if (!url || !width || !height) return;
+    setHistoryRatios((current) =>
+      current[url] ? current : { ...current, [url]: `${width} / ${height}` },
+    );
+    onResultImageSize?.(url, width, height);
+  }
+
   function handleSlotDragOver(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -579,6 +702,68 @@ export function TryonLiveStage({
     const files = event.dataTransfer?.files;
     if (files?.length) onDropSlot?.(role, files);
   }
+  function openResultEdit() {
+    setEditDraft(editBrief);
+    setMention(null);
+    setMentionIndex(0);
+    setEditRendered(true);
+    setEditOpen(true);
+  }
+  function closeResultEdit() {
+    setEditDraft(editBrief);
+    setMention(null);
+    setMentionIndex(0);
+    setEditOpen(false);
+  }
+  function completeResultEdit() {
+    onChangeEdit?.(editDraft.trim());
+    setMention(null);
+    setMentionIndex(0);
+    setEditOpen(false);
+  }
+  function toggleResultEdit() {
+    if (editOpen) closeResultEdit();
+    else openResultEdit();
+  }
+  function syncMentionFromInput(value, caret) {
+    if (composingRef.current || !editMentions.length) {
+      setMention(null);
+      setMentionIndex(0);
+      return;
+    }
+    const next = mentionQueryAtCaret(value, caret);
+    const same =
+      Boolean(mention) === Boolean(next) &&
+      mention?.start === next?.start &&
+      mention?.query === next?.query;
+    setMention(next);
+    if (!same) setMentionIndex(0);
+  }
+  function insertMention(item) {
+    const input = editInputRef.current;
+    const caret = input?.selectionStart ?? editDraft.length;
+    const state = mentionQueryAtCaret(editDraft, caret) || mention;
+    if (!state || !item?.token) return;
+    const insert = `@${item.token} `;
+    const next = `${editDraft.slice(0, state.start)}${insert}${editDraft.slice(caret)}`;
+    const pos = state.start + insert.length;
+    setEditDraft(next);
+    setMention(null);
+    setMentionIndex(0);
+    window.requestAnimationFrame(() => {
+      const el = editInputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }
+  const mentionCandidates = mention
+    ? filterTryonMentions(editMentions, mention.query)
+    : [];
+  const mentionActive = Math.min(
+    mentionIndex,
+    Math.max(0, mentionCandidates.length - 1),
+  );
 
   return (
     <div className="tryon-stage" aria-label={t(copy.aria)}>
@@ -738,6 +923,8 @@ export function TryonLiveStage({
               failed={failed}
               failCancelled={failCancelled}
               failMessage={failMessage}
+              startedAt={runStartedAt}
+              elapsedSeconds={elapsedSeconds}
               onRevealEnd={() => setCurtainHold(false)}
               onElapsed={(value) => {
                 const seconds = Math.max(0, Number(value) || 0);
@@ -758,30 +945,39 @@ export function TryonLiveStage({
               <span>{failMessage || "请稍后重试"}</span>
             </div>
           ) : resultUrl ? (
-            <button
-              type="button"
-              className="tryon-stage__card-hit tryon-stage__result-hit"
-              aria-label="查看生成结果"
-              onClick={(event) =>
-                onPreview?.(event, {
-                  url: resultUrl,
-                  alt: copy.resultAlt || "生成结果",
-                  title: "生成结果",
-                })
-              }
-            >
-              <AuthenticatedImage
-                src={
-                  // 主舞台大图优先展示图（服务端压缩大图），404 回退原图
-                  history.find((row) => row.url === resultUrl)?.display ||
-                  resultUrl
+            <>
+              <button
+                type="button"
+                className="tryon-stage__card-hit tryon-stage__result-hit"
+                aria-label="查看生成结果"
+                onClick={(event) =>
+                  onPreview?.(event, {
+                    url: resultUrl,
+                    alt: copy.resultAlt || "生成结果",
+                    title: "生成结果",
+                  })
                 }
-                fallbackSrc={resultUrl}
-                alt={copy.resultAlt || "生成结果"}
-                loading="eager"
-                maxDimension={1600}
-              />
-            </button>
+              >
+                <AuthenticatedImage
+                  src={
+                    // 主舞台大图优先展示图（服务端压缩大图），404 回退原图
+                    history.find((row) => row.url === resultUrl)?.display ||
+                    resultUrl
+                  }
+                  fallbackSrc={resultUrl}
+                  alt={copy.resultAlt || "生成结果"}
+                  loading="eager"
+                  maxDimension={1600}
+                  onLoad={(event) => {
+                    rememberImageSize(
+                      resultUrl,
+                      event.currentTarget.naturalWidth,
+                      event.currentTarget.naturalHeight,
+                    );
+                  }}
+                />
+              </button>
+            </>
           ) : (
             <>
               <i className="bi bi-stars" />
@@ -796,18 +992,172 @@ export function TryonLiveStage({
               {formatTryonSeconds(resultSeconds)}秒
             </span>
           ) : null}
+          {editRendered ? (
+            <div
+              ref={composerRef}
+              className={`tryon-stage__result-composer${editOpen ? " is-open" : ""}${mentionCandidates.length ? " is-mentioning" : ""}`}
+            >
+              {editOpen && mentionCandidates.length ? (
+                <ul
+                  id="tryon-mention-list"
+                  className="tryon-stage__mention-menu"
+                  role="listbox"
+                  aria-label={t("引用输入信息")}
+                >
+                  {mentionCandidates.map((item, index) => (
+                    <li key={item.id} role="presentation">
+                      <button
+                        type="button"
+                        role="option"
+                        id={`tryon-mention-${item.id}`}
+                        aria-selected={index === mentionActive}
+                        className={
+                          index === mentionActive
+                            ? "tryon-stage__mention-item is-active"
+                            : "tryon-stage__mention-item"
+                        }
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseEnter={() => setMentionIndex(index)}
+                        onClick={() => insertMention(item)}
+                      >
+                        <strong>@{item.token}</strong>
+                        {item.hint ? <small>{item.hint}</small> : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <button
+                type="button"
+                className="tryon-stage__result-close"
+                aria-label={t("关闭补充说明")}
+                onClick={closeResultEdit}
+              >
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+              <textarea
+                ref={editInputRef}
+                className="tryon-stage__result-input"
+                value={editDraft}
+                maxLength={600}
+                placeholder={t(
+                  "输入补充说明，输入 @ 可引用衣服、模特、场景等",
+                )}
+                aria-label={t("补充说明")}
+                aria-autocomplete="list"
+                aria-expanded={Boolean(mentionCandidates.length)}
+                aria-controls={
+                  mentionCandidates.length ? "tryon-mention-list" : undefined
+                }
+                aria-activedescendant={
+                  mentionCandidates[mentionActive]
+                    ? `tryon-mention-${mentionCandidates[mentionActive].id}`
+                    : undefined
+                }
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                  composingRef.current = false;
+                  syncMentionFromInput(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart,
+                  );
+                }}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setEditDraft(value);
+                  syncMentionFromInput(value, event.target.selectionStart);
+                }}
+                onSelect={(event) => {
+                  syncMentionFromInput(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart,
+                  );
+                }}
+                onKeyDown={(event) => {
+                  if (composingRef.current) return;
+                  if (mention && mentionCandidates.length) {
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setMentionIndex(
+                        (index) => (index + 1) % mentionCandidates.length,
+                      );
+                      return;
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setMentionIndex(
+                        (index) =>
+                          (index - 1 + mentionCandidates.length) %
+                          mentionCandidates.length,
+                      );
+                      return;
+                    }
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      insertMention(mentionCandidates[mentionActive]);
+                      return;
+                    }
+                    if (event.key === "Tab") {
+                      event.preventDefault();
+                      insertMention(mentionCandidates[mentionActive]);
+                      return;
+                    }
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (mention) {
+                      setMention(null);
+                      setMentionIndex(0);
+                      return;
+                    }
+                    closeResultEdit();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="tryon-stage__result-done"
+                onClick={completeResultEdit}
+              >
+                {t("完成")}
+              </button>
+            </div>
+          ) : null}
           <div className="tryon-stage__card-actions">
+            {resultUrl && !showCurtain && !failed ? (
+              <button
+                type="button"
+                className={`tryon-stage__result-edit${editBrief.trim() ? " has-brief" : ""}${editOpen ? " is-open" : ""}`}
+                disabled={running}
+                aria-label={t("补充说明当前结果")}
+                aria-expanded={editOpen}
+                onClick={toggleResultEdit}
+              >
+                <i className="bi bi-pencil-square" aria-hidden="true" />
+                {t("补充说明")}
+              </button>
+            ) : null}
             <button
               type="button"
               className={`tryon-generate generate-button${running ? " is-running" : ""}${failed ? " is-failed" : ""}`}
               disabled={running ? cancelling : generateDisabled}
-              title={generateHint}
+              title={
+                revisionReady
+                  ? locale === "en"
+                    ? "Apply the notes to the current result"
+                    : "按补充说明修改当前结果"
+                  : generateHint
+              }
               aria-label={
                 running
                   ? "停止生成"
                   : failed
                     ? `重试生成（${shotCount}张）`
-                    : `一键生成（${shotCount}张）`
+                    : revisionReady
+                      ? "按补充说明修改当前结果"
+                      : `一键生成（${shotCount}张）`
               }
               onClick={running ? onCancel : onGenerate}
             >
@@ -820,10 +1170,22 @@ export function TryonLiveStage({
                       : "bi-stars"
                 }`}
               />
-              {running ? t("停止") : failed ? t("重试") : t("生成")}
+              {running
+                ? t("停止")
+                : failed
+                  ? t("重试")
+                  : revisionReady
+                    ? locale === "en"
+                      ? "Apply"
+                      : "应用"
+                    : t("生成")}
               <small>
                 {running
                   ? t("进行中")
+                  : revisionReady
+                    ? locale === "en"
+                      ? "new version"
+                      : "新版本"
                   : locale === "en"
                     ? `${shotCount} ${shotCount === 1 ? "image" : "images"}`
                     : `${shotCount}张`}
@@ -849,7 +1211,9 @@ export function TryonLiveStage({
                 type="button"
                 role="listitem"
                 className={`tryon-stage__card tryon-history__item${row.url === resultUrl ? " is-active" : ""}`}
-                style={{ aspectRatio: tryonHistoryRatio(row) }}
+                style={{
+                  aspectRatio: historyRatios[row.url] || tryonHistoryRatio(row),
+                }}
                 disabled={running}
                 aria-label="查看历史生成图"
                 aria-pressed={row.url === resultUrl}
@@ -861,6 +1225,13 @@ export function TryonLiveStage({
                     alt=""
                     loading="eager"
                     maxDimension={720}
+                    onLoad={(event) => {
+                      rememberImageSize(
+                        row.url,
+                        event.currentTarget.naturalWidth,
+                        event.currentTarget.naturalHeight,
+                      );
+                    }}
                   />
                 </figure>
               </button>

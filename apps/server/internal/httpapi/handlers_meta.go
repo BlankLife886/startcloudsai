@@ -175,6 +175,10 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		"ai.infiniteCanvas": gin.H{"enabled": len(canvasImageModels)+len(canvasTextModels) > 0, "config": gin.H{
 			"imageModels": canvasImageModels,
 			"textModels":  canvasTextModels,
+			"agentPricing": gin.H{
+				"standardMultiplier": canvasAgentStandardPriceMultiple,
+				"deepMultiplier":     canvasAgentDeepPriceMultiple,
+			},
 		}},
 	}
 	ok(c, gin.H{

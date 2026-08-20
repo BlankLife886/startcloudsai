@@ -2,12 +2,19 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime/multipart"
+	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -155,11 +162,12 @@ func validateCanvasTemplateDocument(raw json.RawMessage) (json.RawMessage, int, 
 }
 
 func canvasTemplateJSON(item *store.CanvasWorkflowTemplate, includeDocument bool) gin.H {
+	coverKey := item.CoverKey
 	result := gin.H{
 		"id": item.ID.String(), "slug": item.Slug, "title": item.Title, "category": item.Category,
 		"categoryLabel": item.CategoryLabel, "industry": item.Industry, "summary": item.Summary,
 		"platforms": item.Platforms, "deliverables": item.Deliverables, "accent": item.Accent,
-		"nodeCount": item.NodeCount, "enabled": item.Enabled, "sort": item.Sort,
+		"coverUrl": promptCoverURL(&coverKey), "nodeCount": item.NodeCount, "enabled": item.Enabled, "sort": item.Sort,
 		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt),
 	}
 	if includeDocument {
@@ -379,13 +387,118 @@ func (s *Server) adminPatchCanvasWorkflowTemplate(c *gin.Context, _ *store.User)
 	ok(c, canvasTemplateJSON(item, true))
 }
 
+func (s *Server) adminUploadCanvasWorkflowTemplateCover(c *gin.Context, _ *store.User) {
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	item, err := store.GetCanvasWorkflowTemplate(ctx, s.St.Pool, id, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if item == nil {
+		fail(c, apperr.E("not_found", "画布模板不存在", 404))
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		log.Printf("canvas template cover multipart parse failed: path=%s content_length=%d body_limit=%d err=%v",
+			c.Request.URL.Path, c.Request.ContentLength,
+			requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes), err)
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || errors.Is(err, multipart.ErrMessageTooLarge) {
+			fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
+			return
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			fail(c, apperr.E("invalid_upload", "图片上传数据不完整，请重新选择后重试", 400))
+			return
+		}
+		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
+		return
+	}
+	if fileHeader.Size > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, promptCoverMaxBytes+1))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if int64(len(data)) > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "封面不能超过 8MB", 413))
+		return
+	}
+	if len(data) == 0 {
+		fail(c, apperr.E("unsupported_file", "文件为空", 400))
+		return
+	}
+	ext, contentType := sniffImage(data)
+	if ext == "" {
+		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
+		return
+	}
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
+	if _, _, err := media.Dimensions(data); err != nil {
+		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
+		return
+	}
+	newKey := fmt.Sprintf("canvas-template-covers/%s.%s", item.ID, ext)
+	oldKey := item.CoverKey
+	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
+		fail(c, err)
+		return
+	}
+	updated, err := store.UpdateCanvasWorkflowTemplateCover(ctx, s.St.Pool, item.ID, newKey)
+	if err != nil {
+		if newKey != oldKey {
+			_ = s.Storage.DeleteKeys(ctx, []string{newKey})
+		}
+		fail(c, err)
+		return
+	}
+	if updated == nil {
+		if newKey != oldKey {
+			_ = s.Storage.DeleteKeys(ctx, []string{newKey})
+		}
+		fail(c, apperr.E("not_found", "画布模板不存在", 404))
+		return
+	}
+	if oldKey != "" && oldKey != newKey && !strings.HasPrefix(oldKey, "http://") && !strings.HasPrefix(oldKey, "https://") {
+		if derr := s.Storage.DeleteKeys(ctx, []string{oldKey}); derr != nil {
+			log.Printf("delete old canvas template cover %s: %v", oldKey, derr)
+		}
+	}
+	ok(c, canvasTemplateJSON(updated, true))
+}
+
 func (s *Server) adminDeleteCanvasWorkflowTemplate(c *gin.Context, _ *store.User) {
 	id, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	deleted, err := store.DeleteCanvasWorkflowTemplate(c.Request.Context(), s.St.Pool, id)
+	ctx := c.Request.Context()
+	item, err := store.GetCanvasWorkflowTemplate(ctx, s.St.Pool, id, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if item == nil {
+		fail(c, apperr.E("not_found", "画布模板不存在", 404))
+		return
+	}
+	deleted, err := store.DeleteCanvasWorkflowTemplate(ctx, s.St.Pool, id)
 	if err != nil {
 		fail(c, err)
 		return
@@ -393,6 +506,11 @@ func (s *Server) adminDeleteCanvasWorkflowTemplate(c *gin.Context, _ *store.User
 	if !deleted {
 		fail(c, apperr.E("not_found", "画布模板不存在", 404))
 		return
+	}
+	if item.CoverKey != "" && !strings.HasPrefix(item.CoverKey, "http://") && !strings.HasPrefix(item.CoverKey, "https://") {
+		if derr := s.Storage.DeleteKeys(ctx, []string{item.CoverKey}); derr != nil {
+			log.Printf("delete canvas template cover %s: %v", item.CoverKey, derr)
+		}
 	}
 	c.Status(204)
 }

@@ -26,6 +26,16 @@ export type ModelChannel = {
     models: ChannelModel[];
 };
 
+export type CanvasAgentPricing = {
+    standardMultiplier: number;
+    deepMultiplier: number;
+};
+
+export const defaultCanvasAgentPricing: CanvasAgentPricing = {
+    standardMultiplier: 3,
+    deepMultiplier: 5,
+};
+
 export type AiConfig = {
     channelMode: "remote";
     channels: ModelChannel[];
@@ -85,9 +95,10 @@ export const defaultConfig: AiConfig = {
 
 type ConfigStore = {
     config: AiConfig;
+    agentPricing: CanvasAgentPricing;
     isConfigOpen: boolean;
     shouldPromptContinue: boolean;
-    installSiteCatalog: (channel: ModelChannel, defaults: Partial<Record<ModelCapability, string>>) => void;
+    installSiteCatalog: (channel: ModelChannel, defaults: Partial<Record<ModelCapability, string>>, agentPricing?: Partial<CanvasAgentPricing>) => void;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean) => void;
@@ -147,15 +158,20 @@ export const useConfigStore = create<ConfigStore>()(
     persist(
         (set) => ({
             config: defaultConfig,
+            agentPricing: defaultCanvasAgentPricing,
             isConfigOpen: false,
             shouldPromptContinue: false,
-            installSiteCatalog: (channel, defaults) =>
+            installSiteCatalog: (channel, defaults, agentPricing) =>
                 set((state) => {
                     const channels = [channel];
                     const value = (capability: ModelCapability) => (defaults[capability] ? encodeChannelModel(channel.id, defaults[capability]!) : "");
                     const imageModel = value("image");
                     const textModel = value("text");
                     return {
+                        agentPricing: {
+                            standardMultiplier: agentPricing?.standardMultiplier || defaultCanvasAgentPricing.standardMultiplier,
+                            deepMultiplier: agentPricing?.deepMultiplier || defaultCanvasAgentPricing.deepMultiplier,
+                        },
                         config: {
                             ...state.config,
                             channelMode: "remote",

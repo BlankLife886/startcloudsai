@@ -269,6 +269,10 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 						ID      string `json:"id"`
 						Default bool   `json:"default"`
 					} `json:"textModels"`
+					AgentPricing struct {
+						StandardMultiplier int64 `json:"standardMultiplier"`
+						DeepMultiplier     int64 `json:"deepMultiplier"`
+					} `json:"agentPricing"`
 				} `json:"config"`
 			} `json:"features"`
 		} `json:"data"`
@@ -305,6 +309,10 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	}
 	if len(canvas.TextModels) != 1 || canvas.TextModels[0].ID != "canvas-chat" || !canvas.TextModels[0].Default {
 		t.Fatalf("canvas text models = %#v", canvas.TextModels)
+	}
+	if canvas.AgentPricing.StandardMultiplier != canvasAgentStandardPriceMultiple ||
+		canvas.AgentPricing.DeepMultiplier != canvasAgentDeepPriceMultiple {
+		t.Fatalf("canvas agent pricing = %#v", canvas.AgentPricing)
 	}
 }
 

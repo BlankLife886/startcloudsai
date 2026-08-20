@@ -41,6 +41,23 @@ func paramInt64(params map[string]any, key string) int64 {
 	}
 }
 
+func paramString(params map[string]any, key string) string {
+	value, _ := params[key].(string)
+	return value
+}
+
+func hasBillableCanvasAgentAction(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, error) {
+	if run == nil || run.Mode != "agent" || paramString(run.Params, "workspace") != "infinite_canvas" {
+		return false, nil
+	}
+	message, err := store.GetAssistantMessage(ctx, q, run.AssistantMessageID)
+	if err != nil || message == nil {
+		return false, err
+	}
+	billable, _ := message.Metadata["agentBillableAction"].(bool)
+	return billable, nil
+}
+
 // ResolvedCost returns the final charge for the worker's authoritative route.
 func ResolvedCost(run *store.AssistantRun, resolvedMode string) int64 {
 	if run == nil {
@@ -167,11 +184,36 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 	if err != nil || run == nil {
 		return run, false, err
 	}
-	changed, err := store.CancelAssistantRun(ctx, q, userID, id)
+	billable, err := hasBillableCanvasAgentAction(ctx, q, run)
+	if err != nil {
+		return run, false, err
+	}
+	cost := int64(0)
+	if billable {
+		cost = ResolvedCost(run, "chat")
+	}
+	var changed bool
+	if cost > 0 {
+		changed, err = store.CancelAssistantRunWithCost(ctx, q, userID, id, cost)
+	} else {
+		changed, err = store.CancelAssistantRun(ctx, q, userID, id)
+	}
 	if err != nil || !changed {
 		return run, changed, err
 	}
-	if err := release(ctx, q, run, productReason(run, "%s已停止，费用已退回")); err != nil {
+	if cost > 0 {
+		billingID := sourceID(run, run.BillingGeneration)
+		if _, err := wallet.SettleNormalCredits(ctx, q, run.UserID, cost, SourceType, billingID,
+			strPtr(productReason(run, "%s已停止，按已完成操作结算"))); err != nil {
+			return run, false, err
+		}
+		if remainder := run.ReservedCents - cost; remainder > 0 {
+			if _, err := wallet.ReleaseNormalCredits(ctx, q, run.UserID, remainder, SourceType, billingID,
+				strPtr(productReason(run, "%s已停止，未使用费用已退回"))); err != nil {
+				return run, false, err
+			}
+		}
+	} else if err := release(ctx, q, run, productReason(run, "%s已停止，费用已退回")); err != nil {
 		return run, false, err
 	}
 	latest, syncErr := store.GetAssistantRun(ctx, q, id)

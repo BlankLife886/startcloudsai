@@ -94,6 +94,19 @@
   color: #563cc8;
   font-weight: 750;
 }
+.commerce-select-menu button.has-hint {
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+}
+.commerce-select-menu .commerce-select-hint {
+  color: #6f6880;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.commerce-select-menu button.selected .commerce-select-hint {
+  color: #563cc8;
+  opacity: 0.78;
+}
 .commerce-select-menu button span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -124,6 +137,18 @@
   background: #302944;
 }
 :global(html.color-scheme-dark) .commerce-select-menu button.selected {
+  color: #c8bcff;
+}
+:global(html.color-scheme-dark) .commerce-select-menu .commerce-select-hint {
+  color: #c8c2d6;
+}
+:global(html.color-scheme-dark) .commerce-select-menu button.selected .commerce-select-hint {
+  color: #c8bcff;
+}
+html.color-scheme-dark .commerce-select-menu .commerce-select-hint {
+  color: #c8c2d6;
+}
+html.color-scheme-dark .commerce-select-menu button.selected .commerce-select-hint {
   color: #c8bcff;
 }
 @media (prefers-reduced-motion: reduce) {

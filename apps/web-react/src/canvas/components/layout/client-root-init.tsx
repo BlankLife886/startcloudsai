@@ -15,7 +15,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         if (loading.current) return;
         loading.current = true;
         void fetchSiteModelCatalog()
-            .then(({ channel, defaults }) => installSiteCatalog(channel, defaults))
+            .then(({ channel, defaults, agentPricing }) => installSiteCatalog(channel, defaults, agentPricing))
             .catch((error) => message.error(error instanceof Error ? error.message : "模型目录加载失败"));
         void loadCanvasBackgroundRemovalTool().catch(() => undefined);
     }, [installSiteCatalog, message]);

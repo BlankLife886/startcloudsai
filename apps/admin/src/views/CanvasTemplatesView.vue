@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { Delete, Edit, Plus, Upload } from "@element-plus/icons-vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { Delete, Edit, Picture, Plus, Upload } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -17,6 +17,7 @@ type TemplateItem = {
   platforms: string[];
   deliverables: string[];
   accent: string;
+  coverUrl?: string | null;
   nodeCount: number;
   enabled: boolean;
   sort: number;
@@ -39,6 +40,9 @@ const dialogOpen = ref(false);
 const editingId = ref("");
 const document = ref<CanvasDocument | null>(null);
 const fileName = ref("");
+const pendingCover = ref<File | null>(null);
+const previewUrl = ref("");
+const coverInputRef = ref<HTMLInputElement | null>(null);
 const form = reactive({
   slug: "",
   title: "",
@@ -86,6 +90,9 @@ function resetForm(item?: TemplateItem) {
   form.enabled = item?.enabled ?? true;
   document.value = null;
   fileName.value = "";
+  pendingCover.value = null;
+  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = item?.coverUrl || "";
   dialogOpen.value = true;
 }
 
@@ -143,6 +150,46 @@ async function onFileChange(event: Event) {
   }
 }
 
+function pickCover(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] ?? null;
+  input.value = "";
+  if (!file) return;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    ElMessage.warning("封面仅支持 PNG、JPG 或 WebP");
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    ElMessage.warning("模板封面不能超过 8MB");
+    return;
+  }
+  pendingCover.value = file;
+  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = URL.createObjectURL(file);
+}
+
+function triggerCoverPick() {
+  coverInputRef.value?.click();
+}
+
+async function uploadCover(id: string, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`/api/v1/admin/canvas-workflow-templates/${id}/cover`, {
+    method: "PUT",
+    credentials: "include",
+    body,
+  });
+  const payload = (await res.json().catch(() => null)) as
+    | { success?: boolean; data?: { coverUrl?: string }; code?: string; error?: string }
+    | null;
+  if (!res.ok || !payload?.success) {
+    const detail = payload?.error && payload.error !== "Not Found" ? payload.error : "";
+    throw new Error(detail || `封面上传失败（HTTP ${res.status}）`);
+  }
+  return payload.data?.coverUrl ?? "";
+}
+
 async function submit() {
   if (!form.slug || !form.title || !form.category || !form.categoryLabel) {
     ElMessage.warning("请填写模板标识、名称和分类");
@@ -160,15 +207,24 @@ async function submit() {
       deliverables: splitItems(form.deliverables),
       ...(document.value ? { document: document.value } : {}),
     };
-    await request(
+    const creating = !editingId.value;
+    const saved = await request<TemplateItem>(
       editingId.value
         ? `/api/v1/admin/canvas-workflow-templates/${editingId.value}`
         : "/api/v1/admin/canvas-workflow-templates",
-      { method: editingId.value ? "PATCH" : "POST", body },
+      { method: editingId.value ? "PATCH" : "POST", body, silent: true },
     );
+    const id = saved?.id || editingId.value;
+    if (creating && id) editingId.value = id;
+    if (pendingCover.value && id) {
+      previewUrl.value = (await uploadCover(id, pendingCover.value)) || previewUrl.value;
+      pendingCover.value = null;
+    }
     dialogOpen.value = false;
-    ElMessage.success(editingId.value ? "模板已更新" : "模板已上传");
+    ElMessage.success(creating ? "模板已上传" : "模板已更新");
     await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "模板保存失败");
   } finally {
     saving.value = false;
   }
@@ -191,6 +247,13 @@ async function remove(item: TemplateItem) {
 }
 
 onMounted(load);
+
+watch(dialogOpen, (open) => {
+  if (open) return;
+  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = "";
+  pendingCover.value = null;
+});
 </script>
 
 <template>
@@ -200,6 +263,12 @@ onMounted(load);
     </div>
 
     <el-table v-loading="loading" :data="items" row-key="id" class="template-table">
+      <el-table-column label="封面" width="88">
+        <template #default="{ row }">
+          <img v-if="row.coverUrl" class="cover-thumb" :src="row.coverUrl" :alt="row.title" />
+          <span v-else class="cover-missing">未上传</span>
+        </template>
+      </el-table-column>
       <el-table-column label="模板" min-width="280">
         <template #default="{ row }">
           <div class="template-name">
@@ -224,7 +293,7 @@ onMounted(load);
       </el-table-column>
     </el-table>
 
-    <AdminDialog v-model="dialogOpen" :title="dialogTitle" subtitle="模板正文仅在用户点击使用时下载" :icon="Upload" width="720px" confirm-text="保存模板" :confirm-loading="saving" @confirm="submit">
+    <AdminDialog v-model="dialogOpen" :title="dialogTitle" subtitle="封面会显示在无限画布的生产工作流模板弹窗中" :icon="Upload" width="720px" confirm-text="保存模板" :confirm-loading="saving" :footer-hint="pendingCover ? '已选择新封面，保存时一并上传' : ''" @confirm="submit">
       <el-form label-position="top" @submit.prevent="submit">
         <div class="form-grid">
           <el-form-item label="模板标识" required><el-input v-model="form.slug" placeholder="如 ecommerce-main-image" /></el-form-item>
@@ -248,6 +317,20 @@ onMounted(load);
           </label>
           <small v-if="document" class="file-meta">已读取 {{ document.nodes.length }} 个节点、{{ document.connections.length }} 条连线</small>
         </el-form-item>
+        <el-form-item label="模板封面">
+          <div class="cover-picker" :class="{ 'has-image': Boolean(previewUrl) }">
+            <button v-if="previewUrl" type="button" class="cover-picker__preview" @click="triggerCoverPick">
+              <img :src="previewUrl" alt="模板封面预览" />
+            </button>
+            <button v-else type="button" class="cover-picker__empty" @click="triggerCoverPick">
+              <el-icon :size="22"><Picture /></el-icon>
+              <strong>点击上传封面</strong>
+              <small>PNG / JPG / WebP · 8MB</small>
+            </button>
+            <button v-if="previewUrl" type="button" class="cover-picker__replace" @click="triggerCoverPick">更换图片</button>
+            <input ref="coverInputRef" type="file" accept="image/png,image/jpeg,image/webp" @change="pickCover" />
+          </div>
+        </el-form-item>
       </el-form>
     </AdminDialog>
   </section>
@@ -261,10 +344,43 @@ onMounted(load);
 .template-name .accent { width: 5px; height: 38px; border-radius: 3px; }
 .template-name div { display: grid; gap: 3px; }
 .template-name small { color: var(--text-muted); }
+.cover-thumb { width: 56px; height: 40px; object-fit: cover; border-radius: 6px; background: var(--surface-2, #f4f6f8); }
+.cover-missing { color: var(--text-muted); font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .file-picker { display: flex; align-items: center; gap: 8px; min-height: 40px; width: 100%; padding: 0 12px; border: 1px dashed var(--border); cursor: pointer; }
 .file-picker:hover { border-color: var(--accent); }
 .file-picker input { display: none; }
 .file-meta { display: block; margin-top: 6px; color: var(--text-muted); }
 .color-value { margin-left: 10px; color: var(--text-muted); font-family: monospace; }
+.cover-picker { position: relative; width: 100%; max-width: 320px; }
+.cover-picker input { display: none; }
+.cover-picker__preview,
+.cover-picker__empty {
+  display: grid;
+  width: 100%;
+  min-height: 168px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--surface-2, #f7f8fa);
+  cursor: pointer;
+}
+.cover-picker__preview { padding: 0; }
+.cover-picker__preview img { display: block; width: 100%; height: 168px; object-fit: cover; }
+.cover-picker__empty { gap: 6px; color: var(--text-muted); }
+.cover-picker__empty strong { color: var(--el-text-color-primary); font-size: 13px; }
+.cover-picker__empty small { font-size: 12px; }
+.cover-picker__replace {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
 </style>

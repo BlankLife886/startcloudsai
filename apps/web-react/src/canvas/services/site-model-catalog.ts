@@ -1,5 +1,5 @@
 import { starcloudsRequest } from "@/services/starclouds-api";
-import type { ChannelModel, ModelChannel } from "@/stores/use-config-store";
+import { defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel } from "@/stores/use-config-store";
 
 type SiteModel = {
     id?: unknown;
@@ -31,6 +31,10 @@ type RuntimeConfig = {
             config?: {
                 imageModels?: SiteModel[];
                 textModels?: SiteModel[];
+                agentPricing?: {
+                    standardMultiplier?: unknown;
+                    deepMultiplier?: unknown;
+                };
             };
         };
         "ai.imageTools"?: {
@@ -67,6 +71,7 @@ export type SiteBackgroundRemovalTool = {
 export type SiteModelCatalog = {
     channel: ModelChannel;
     defaults: Partial<Record<"image" | "text" | "video" | "audio", string>>;
+    agentPricing: CanvasAgentPricing;
 };
 
 export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
@@ -95,6 +100,10 @@ export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
             models,
         },
         defaults,
+        agentPricing: {
+            standardMultiplier: positiveNumber(feature?.config?.agentPricing?.standardMultiplier) || defaultCanvasAgentPricing.standardMultiplier,
+            deepMultiplier: positiveNumber(feature?.config?.agentPricing?.deepMultiplier) || defaultCanvasAgentPricing.deepMultiplier,
+        },
     };
 }
 
@@ -153,4 +162,9 @@ function stringListMap(value: unknown) {
 function finiteNumber(value: unknown) {
     const number = Number(value);
     return value === null || value === undefined || !Number.isFinite(number) ? undefined : Math.max(0, number);
+}
+
+function positiveNumber(value: unknown) {
+    const number = finiteNumber(value);
+    return number && number > 0 ? number : undefined;
 }

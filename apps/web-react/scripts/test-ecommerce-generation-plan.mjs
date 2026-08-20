@@ -35,6 +35,11 @@ const [
     TRYON_LIGHT_OPTIONS,
     buildTryonLightingPrompt,
     tryonLightById,
+    buildTryonMentions,
+    expandTryonBriefMentions,
+    buildTryonRevisionPlan,
+    shiftTryonReferenceIndexes,
+    tryonBriefAspectRatio,
     HANDHELD_DEFAULT_POSE_ID,
     HANDHELD_DEFAULT_STYLE_ID,
     HANDHELD_POSE_OPTIONS,
@@ -716,6 +721,54 @@ const tryonLightPlan = buildEcommerceGenerationPlan({
 })
 assert.ok(tryonLightPlan[0].prompt.includes('轮廓分离'))
 assert.ok(tryonLightPlan[0].prompt.includes('场景环境光不动'))
+const nonDefaultTryonMentions = buildTryonMentions({
+  apparel: '上装',
+  modelLabel: '自定义模特',
+  sceneLabel: '都市街头',
+  lens: tryonLensById('ultra-wide'),
+  light: tryonLightById('available'),
+  aspectRatio: '2:3',
+})
+assert.equal(
+  nonDefaultTryonMentions.find((item) => item.id === 'lens').hint,
+  '超广角 / 鱼眼',
+)
+assert.equal(
+  nonDefaultTryonMentions.find((item) => item.id === 'light').hint,
+  '现场光',
+)
+assert.ok(
+  expandTryonBriefMentions('@镜头 改成 35mm', nonDefaultTryonMentions).includes(
+    '超广角 / 鱼眼',
+  ),
+)
+assert.equal(
+  expandTryonBriefMentions('@衣服颜色更鲜艳', nonDefaultTryonMentions),
+  '@衣服颜色更鲜艳',
+)
+assert.equal(
+  shiftTryonReferenceIndexes('第 1 张服装，第 2 张模特，第 3 张场景。'),
+  '第 2 张服装，第 3 张模特，第 4 张场景。',
+)
+assert.equal(tryonBriefAspectRatio('@比例 改为 1：1', '2:3'), '1:1')
+assert.equal(tryonBriefAspectRatio('@比例 不要改为 1:1', '2:3'), '2:3')
+const tryonRevisionPlan = buildTryonRevisionPlan({
+  basePrompt:
+    '第 1 张是服装身份，第 2 张是模特身份，第 3 张是拍摄场景。',
+  brief: '@模特 改为坐姿，@比例 改为 1:1',
+  apparel: '上装',
+  modelLabel: '自定义模特',
+  sceneLabel: '都市街头',
+  lens: 'wide',
+  light: 'rim',
+  aspectRatio: '2:3',
+  versionNumber: 2,
+})
+assert.equal(tryonRevisionPlan.aspectRatio, '1:1')
+assert.ok(tryonRevisionPlan.prompt.includes('第 1 张参考图是当前试衣成品'))
+assert.ok(tryonRevisionPlan.prompt.includes('第 3 张参考图是模特身份依据'))
+assert.ok(tryonRevisionPlan.prompt.includes('第 4 张是拍摄场景'))
+assert.ok(tryonRevisionPlan.prompt.includes('本轮未明确要求修改'))
 assert.equal(HANDHELD_DEFAULT_POSE_ID, 'grip')
 assert.equal(handheldPoseById('present').label, '单手展示')
 assert.ok(HANDHELD_POSE_OPTIONS.some((item) => item.id === 'two-hands'))

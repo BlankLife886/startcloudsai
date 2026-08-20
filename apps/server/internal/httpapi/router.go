@@ -31,6 +31,8 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return 20 << 20
 	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
 		return 5 << 20
+	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
+		return promptCoverMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
 		// Template documents may be up to 1 MiB; leave room for metadata and JSON encoding.
 		return 2 << 20
@@ -308,6 +310,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/canvas-workflow-templates", s.adminOnly(s.adminCanvasWorkflowTemplates))
 	admin.POST("/canvas-workflow-templates", s.adminOnly(s.adminCreateCanvasWorkflowTemplate))
 	admin.PATCH("/canvas-workflow-templates/:id", s.adminOnly(s.adminPatchCanvasWorkflowTemplate))
+	admin.PUT("/canvas-workflow-templates/:id/cover", s.adminOnly(s.adminUploadCanvasWorkflowTemplateCover))
 	admin.DELETE("/canvas-workflow-templates/:id", s.adminOnly(s.adminDeleteCanvasWorkflowTemplate))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
 	admin.POST("/redemption-code-batches", s.adminOnly(s.adminGenerateRedemptionCodes))

@@ -322,6 +322,15 @@ func TestRunCanvasAgentToolReportsUnknownTool(t *testing.T) {
 	}
 }
 
+func TestCanvasAgentToolResultFailureIsNotBillable(t *testing.T) {
+	if !canvasAgentToolResultFailed("执行失败：附件不存在") {
+		t.Fatal("browser tool errors must not be treated as billable actions")
+	}
+	if canvasAgentToolResultFailed(`{"ok":true}`) {
+		t.Fatal("successful tool observations must remain billable")
+	}
+}
+
 // Without a stream backend the browser cannot execute anything, so the ops must
 // survive as pending work instead of silently vanishing.
 func TestDispatchCanvasOpsKeepsOpsPendingWhenBrowserIsUnreachable(t *testing.T) {

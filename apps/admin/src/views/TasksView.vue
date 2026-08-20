@@ -33,6 +33,7 @@ interface AdminTask {
   inputKeys?: string[]
   outputKeys?: string[]
   outputUrls?: string[]
+  thumbnailUrls?: string[]
   displayUrls?: string[]
   originalUrls?: string[]
   costCents: number
@@ -229,6 +230,28 @@ function taskMediaUrls(task: AdminTask) {
   const outputs = (task.outputUrls ?? []).filter(Boolean)
   if (outputs.length) return outputs
   return (task.inputKeys ?? []).filter(Boolean).map(adminFileUrl)
+}
+
+const failedThumbUrls = ref(new Set<string>())
+
+function taskThumbSrc(task: AdminTask, index = 0) {
+  const thumbs = (task.thumbnailUrls ?? []).filter(Boolean)
+  const originals = (task.originalUrls ?? task.outputUrls ?? []).filter(Boolean)
+  const thumb = thumbs[index] || ''
+  if (thumb && !failedThumbUrls.value.has(thumb)) return thumb
+  return originals[index] || originals[0] || taskMediaUrls(task)[index] || taskMediaUrls(task)[0] || ''
+}
+
+function markThumbFailed(url: string) {
+  if (!url || failedThumbUrls.value.has(url)) return
+  const next = new Set(failedThumbUrls.value)
+  next.add(url)
+  failedThumbUrls.value = next
+}
+
+function onTaskThumbError(task: AdminTask, index = 0) {
+  const thumb = (task.thumbnailUrls ?? []).filter(Boolean)[index]
+  if (thumb) markThumbFailed(thumb)
 }
 
 /** 点开大图用展示图（服务端压缩大图），没有再退回原图/小图 */
@@ -866,14 +889,15 @@ async function forceFail(task: AdminTask) {
             <el-table-column label="预览" width="72" align="left" header-align="left">
               <template #default="{ row }">
                 <el-image
-                  v-if="taskMediaUrls(row as AdminTask).length"
-                  :src="taskMediaUrls(row as AdminTask)[0]"
+                  v-if="taskThumbSrc(row as AdminTask) || taskMediaUrls(row as AdminTask).length"
+                  :src="taskThumbSrc(row as AdminTask)"
                   :preview-src-list="taskPreviewUrls(row as AdminTask)"
                   fit="cover"
                   class="task-thumb"
                   preview-teleported
                   hide-on-click-modal
                   @click.stop
+                  @error="onTaskThumbError(row as AdminTask)"
                 >
                   <template #error>
                     <div class="media-ph media-ph--sm" title="图片加载失败">
@@ -1186,13 +1210,14 @@ async function forceFail(task: AdminTask) {
             <el-image
               v-for="(url, index) in detailMediaUrls"
               :key="`${detailMediaMode}-${url}-${index}`"
-              :src="url"
+              :src="detailMediaMode === 'output' && detail ? taskThumbSrc(detail, index) : url"
               :preview-src-list="detailPreviewUrls"
               :initial-index="index"
               fit="cover"
               class="media-grid__item"
               preview-teleported
               hide-on-click-modal
+              @error="detailMediaMode === 'output' && detail ? onTaskThumbError(detail, index) : undefined"
             >
               <template #error>
                 <div class="media-ph media-ph--sm">

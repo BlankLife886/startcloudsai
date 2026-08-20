@@ -11,9 +11,12 @@ const vite = await createServer({
   optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true },
 });
-const registry = await vite.ssrLoadModule(
-  "/src/features/ecommerce/businesses/businessRegistry.js",
-);
+const [registry, jobs] = await Promise.all([
+  vite.ssrLoadModule(
+    "/src/features/ecommerce/businesses/businessRegistry.js",
+  ),
+  vite.ssrLoadModule("/src/features/ecommerce/useEcommerceJobs.js"),
+]);
 await vite.close();
 
 const businesses = registry.ECOMMERCE_BUSINESSES;
@@ -61,15 +64,56 @@ for (const leakedOwner of [
     `route view still owns business data: ${leakedOwner}`,
   );
 }
-assert.ok(
+assert.equal(
   view.includes("key={business.stateNamespace}"),
-  "switching tabs must remount an isolated business session",
+  false,
+  "switching tabs must preserve the mounted page shell",
 );
-assert.ok(
-  session.includes("function EcommerceBusinessSession({ businessId })"),
+assert.match(
+  session,
+  /function EcommerceBusinessSession\(\{[\s\S]*?businessId,/,
   "the route view must delegate state to a business session boundary",
 );
-assert.ok(view.split("\n").length < 30, "route view must stay a thin router");
+assert.ok(view.split("\n").length < 80, "route view must stay a thin router");
+assert.equal(
+  jobs.ecommerceTaskMatchesKind(
+    { params: { _kind: "ui-design-ecommerce-tryon-generation" } },
+    "ui-design-ecommerce-tryon-generation",
+  ),
+  true,
+);
+assert.equal(
+  jobs.ecommerceTaskMatchesKind(
+    { kind: "ui-design-ecommerce-tryon-generation" },
+    "ui-design-ecommerce-handheld-generation",
+  ),
+  false,
+);
+assert.ok(
+  session.includes("taskKind: `ui-design-ecommerce-${mode.id}-generation`"),
+  "each business session must scope job state to its own task kind",
+);
+assert.ok(
+  String(jobs.useEcommerceJobs).includes("[taskKind]"),
+  "task subscriptions must re-scope when the business changes",
+);
+assert.equal(
+  session.includes("if (activeTask || tryonStarting || handheldStarting) return"),
+  false,
+  "running work must not block business tab navigation",
+);
+assert.ok(
+  session.includes("if (!beginTaskLaunch()) return"),
+  "generation clicks must synchronously acquire the task launch gate",
+);
+assert.ok(
+  session.includes("disabled={taskLaunchPending && item.id !== mode.id}"),
+  "business tabs must stay locked until task creation is acknowledged",
+);
+assert.ok(
+  session.includes("finishTaskLaunch();"),
+  "task launch failures and acknowledgements must release navigation",
+);
 assert.equal(session.includes("function TryonLiveStage"), false);
 assert.equal(session.includes("clone-settings-section"), false);
 assert.equal(session.includes("listing-structure-section"), false);

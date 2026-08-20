@@ -36,6 +36,8 @@ import {
   TRYON_LIGHT_OPTIONS,
   buildTryonLightingPrompt,
   tryonLightById,
+  buildTryonMentions,
+  buildTryonRevisionPlan,
   HANDHELD_ARCHITECTURE_OPTIONS,
   HANDHELD_CAMERA_OPTIONS,
   HANDHELD_DEPTH_OPTIONS,
@@ -337,6 +339,56 @@ function catalogForRole(role, catalogs) {
   if (role === "model") return catalogs.models;
   if (role === "scene") return catalogs.scenes;
   return catalogs.garments;
+}
+
+function matchingRatio(value, options) {
+  const ratio = String(value || "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/[x×/]/gi, ":");
+  return options.some((item) => item.value === ratio) ? ratio : "";
+}
+
+function snapRatio(width, height, options, fallback = "") {
+  const ratio = Number(width) / Number(height);
+  if (!Number.isFinite(ratio) || ratio <= 0) return fallback;
+  let best = fallback;
+  let bestDiff = Infinity;
+  for (const item of options) {
+    const [w, h] = String(item.value || "")
+      .split(":")
+      .map(Number);
+    if (!w || !h) continue;
+    const diff = Math.abs(w / h - ratio);
+    if (diff < bestDiff) {
+      best = item.value;
+      bestDiff = diff;
+    }
+  }
+  return best;
+}
+
+function coerceRatioValue(value, options, fallback = "") {
+  const exact = matchingRatio(value, options);
+  if (exact) return exact;
+  const raw = String(value || "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/[x×/]/gi, ":");
+  const [width, height] = raw.split(":").map(Number);
+  return snapRatio(width, height, options, fallback);
+}
+
+function commerceModelOptions(list, fallbackPrice) {
+  const fallback = Number(fallbackPrice);
+  return (list || []).map((item) => {
+    const cost = Number(item?.creditCost ?? item?.pricePoints ?? fallback);
+    return {
+      value: item.id || item.publicModelKey,
+      label: item.label || item.name || item.id,
+      hint: Number.isFinite(cost) ? `${cost} 积分/张` : "",
+    };
+  });
 }
 
 function builtinCatalogSlot(file, option, extra = {}) {
@@ -812,6 +864,7 @@ export function EcommerceBusinessSession({
   const pageRef = useRef(null);
   const canvasRef = useRef(null);
   const pendingCostRunRef = useRef(null);
+  const taskLaunchPendingRef = useRef(false);
   useEffect(() => {
     if (!moduleUnavailable || !pageRef.current) return undefined;
     const guarded = pageRef.current.querySelectorAll(
@@ -960,6 +1013,7 @@ export function EcommerceBusinessSession({
   const [tone, setTone] = useState(OPTIONS.tone[0]);
   const [campaign, setCampaign] = useState(OPTIONS.campaign[0]);
   const [apparel, setApparel] = useState(OPTIONS.tryonApparel[0]);
+  const [tryonBriefs, setTryonBriefs] = useState({});
   const [modelProfile, setModelProfile] = useState(OPTIONS.model[0]);
   const [pose, setPose] = useState(OPTIONS.pose[0]);
   const {
@@ -1036,8 +1090,11 @@ export function EcommerceBusinessSession({
   currentModeIdRef.current = mode.id;
   sessionBatchIdRef.current = sessionBatchId;
   const handheldRestoreBatchRef = useRef("");
+  const tryonRatioHydratedRef = useRef(false);
+  const tryonInferredRatiosRef = useRef({});
   const [submitError, setSubmitError] = useState("");
   const [costConfirm, setCostConfirm] = useState(null);
+  const [taskLaunchPending, setTaskLaunchPending] = useState(false);
   const [deleteRow, setDeleteRow] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -1057,7 +1114,9 @@ export function EcommerceBusinessSession({
     groups: [],
     error: "",
   });
-  const jobs = useEcommerceJobs();
+  const jobs = useEcommerceJobs({
+    taskKind: `ui-design-ecommerce-${mode.id}-generation`,
+  });
 
   useGSAP(
     (context, contextSafe) => {
@@ -1246,6 +1305,7 @@ export function EcommerceBusinessSession({
   }, []);
 
   useEffect(() => {
+    tryonRatioHydratedRef.current = false;
     setAspectRatio(
       mode.id === "tryon"
         ? OPTIONS.tryonRatio.some((item) => item.value === mode.ratio)
@@ -1494,6 +1554,13 @@ export function EcommerceBusinessSession({
           }
           if (draft.scene) setScene(draft.scene);
           if (draft.modelProfile) setModelProfile(draft.modelProfile);
+          if (
+            currentModeIdRef.current === "tryon" &&
+            !tryonRatioHydratedRef.current &&
+            matchingRatio(draft.aspectRatio, OPTIONS.tryonRatio)
+          ) {
+            setAspectRatio(draft.aspectRatio);
+          }
           const restored = { garment: null, model: null, scene: null };
           for (const role of ["garment", "model", "scene"]) {
             const item = draft.slots?.[role];
@@ -1595,7 +1662,9 @@ export function EcommerceBusinessSession({
           )
             ? handheldDraft.aspectRatio
             : restoredPlatform?.ratio;
-          if (restoredRatio) setAspectRatio(restoredRatio);
+          if (restoredRatio && currentModeIdRef.current === "handheld") {
+            setAspectRatio(restoredRatio);
+          }
           if (
             HANDHELD_LANGUAGE_OPTIONS.some(
               (item) => item.id === handheldDraft.languageId,
@@ -1840,6 +1909,7 @@ export function EcommerceBusinessSession({
         featuredTryonGarmentId,
         scene,
         modelProfile,
+        aspectRatio,
       }).catch(() => {});
     }, 280);
     return () => window.clearTimeout(timer);
@@ -1852,6 +1922,7 @@ export function EcommerceBusinessSession({
     featuredTryonGarmentId,
     scene,
     modelProfile,
+    aspectRatio,
   ]);
   useEffect(() => {
     if (!handheldDraftReady) return undefined;
@@ -2149,6 +2220,30 @@ export function EcommerceBusinessSession({
               : Math.min(requestedCount, maxOutputCount);
   const tryonLensOption = tryonLensById(tryonLens);
   const tryonLightOption = tryonLightById(tryonLight);
+  const tryonMentionModelLabel =
+    tryonSlots.model?.source === "upload"
+      ? "自定义模特"
+      : (
+          catalogOptionById(tryonModelCatalog, featuredTryonModelId) ||
+          tryonModelCatalog[0]
+        )?.label || "";
+  const tryonMentionSceneLabel =
+    tryonSlots.scene?.source === "upload"
+      ? "自定义场景"
+      : (
+          catalogOptionById(tryonSceneCatalog, featuredTryonSceneId) ||
+          tryonSceneCatalog[0]
+        )?.label || "";
+  const tryonMentions = isTryonMode(mode.id)
+    ? buildTryonMentions({
+        apparel,
+        modelLabel: tryonMentionModelLabel,
+        sceneLabel: tryonMentionSceneLabel,
+        lens: tryonLens,
+        light: tryonLight,
+        aspectRatio,
+      })
+    : [];
   const handheldHasHandOrModel = Boolean(handheldSlots.model?.file);
   const handheldHasModel = Boolean(
     handheldHasHandOrModel && handheldCropNeedsPerson(handheldCrop),
@@ -2431,6 +2526,22 @@ export function EcommerceBusinessSession({
   const modeRows = jobs.outputRows.filter(
     (row) => outputModeId(row) === mode.id,
   );
+  const latestTryonUrl = isTryonMode(mode.id) ? modeRows[0]?.url || "" : "";
+  const latestTryonRatio = isTryonMode(mode.id)
+    ? coerceRatioValue(modeRows[0]?.aspectRatio, OPTIONS.tryonRatio)
+    : "";
+  useEffect(() => {
+    if (
+      !isTryonMode(mode.id) ||
+      jobs.historyLoading ||
+      tryonRatioHydratedRef.current
+    ) {
+      return;
+    }
+    if (!latestTryonRatio) return;
+    tryonRatioHydratedRef.current = true;
+    setAspectRatio(latestTryonRatio);
+  }, [mode.id, jobs.historyLoading, latestTryonUrl, latestTryonRatio]);
   useContentReveal({
     rootRef: pageRef,
     selector: ".workspace-library .asset-card",
@@ -2446,6 +2557,38 @@ export function EcommerceBusinessSession({
   });
   const currentRow =
     modeRows.find((row) => row.url === activeUrl) || modeRows[0] || null;
+  const tryonBriefKey = isTryonMode(mode.id) ? currentRow?.url || "" : "";
+  const tryonBrief = tryonBriefKey ? tryonBriefs[tryonBriefKey] || "" : "";
+  function updateCurrentTryonBrief(value) {
+    if (!tryonBriefKey) return;
+    const text = String(value || "").trim();
+    setTryonBriefs((current) => {
+      if (current[tryonBriefKey] === text) return current;
+      const next = { ...current };
+      if (text) next[tryonBriefKey] = text;
+      else delete next[tryonBriefKey];
+      return next;
+    });
+  }
+  function clearTryonBrief(key, expected) {
+    if (!key) return;
+    setTryonBriefs((current) => {
+      if (!(key in current) || current[key] !== expected) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+  useEffect(() => {
+    if (!isTryonMode(mode.id)) return;
+    if (matchingRatio(aspectRatio, OPTIONS.tryonRatio)) return;
+    const next =
+      coerceRatioValue(currentRow?.aspectRatio, OPTIONS.tryonRatio) ||
+      tryonInferredRatiosRef.current[currentRow?.url] ||
+      coerceRatioValue(aspectRatio, OPTIONS.tryonRatio) ||
+      "2:3";
+    setAspectRatio(next);
+  }, [mode.id, aspectRatio, currentRow?.url, currentRow?.aspectRatio]);
   const rowsByUrl = new Map(modeRows.map((row) => [row.url, row]));
   function rowVersion(row) {
     let version = 1;
@@ -2563,12 +2706,23 @@ export function EcommerceBusinessSession({
   const failedCount = slots.filter((slot) => slot.failed).length;
   const progressRatio = displayCount > 0 ? completedCount / displayCount : 0;
   const boardError = submitError || jobs.lastError || "";
-  const tryonSessionTasks = sessionBatchId
+  const tryonSessionBatchId = String(
+    sessionBatchId || (isTryonMode(mode.id) ? activeTask?.batchId || "" : ""),
+  );
+  const tryonSessionTasks = tryonSessionBatchId
     ? jobs.tasks.filter(
         (task) =>
-          String(task.batchId || task.params?.batchId || "") === sessionBatchId,
+          String(task.batchId || task.params?.batchId || "") ===
+          tryonSessionBatchId,
       )
     : [];
+  const tryonTimingTask =
+    tryonSessionTasks.find((task) =>
+      ["queued", "running", "waiting_provider"].includes(task.status),
+    ) ||
+    activeTask ||
+    currentRow?.task ||
+    null;
   const tryonSessionFailed = tryonSessionTasks.filter((task) =>
     ["failed", "canceled", "cancelled"].includes(
       String(task.status || "").toLowerCase(),
@@ -2601,7 +2755,7 @@ export function EcommerceBusinessSession({
     tryonRunFailed && !activeUrl
       ? ""
       : tryonBusy
-        ? modeRows.find((row) => row.groupId === sessionBatchId)?.url || ""
+        ? modeRows.find((row) => row.groupId === tryonSessionBatchId)?.url || ""
         : currentRow?.url || "";
   const handheldSessionTaskCandidates = sessionBatchId
     ? jobs.tasks.filter(
@@ -2693,7 +2847,9 @@ export function EcommerceBusinessSession({
           handheldHistorySpec?.aspectRatio ||
           aspectRatio ||
           "4:5"
-      : aspectRatio || "2:3",
+      : isTryonMode(mode.id)
+        ? aspectRatio || latestTryonRatio || "2:3"
+        : aspectRatio || "2:3",
   );
   const [shotRatioW, shotRatioH] = shotRatio.split(":").map(Number);
   const shotRatioStyle = {
@@ -2703,7 +2859,15 @@ export function EcommerceBusinessSession({
   };
 
   function setMode(next) {
-    if (activeTask || tryonStarting || handheldStarting) return;
+    if (
+      next.id !== mode.id &&
+      (taskLaunchPendingRef.current ||
+        jobs.submitting ||
+        tryonStarting ||
+        handheldStarting)
+    ) {
+      return;
+    }
     setParams({ tool: next.id }, { replace: true });
   }
   function showTryonUploadNotice(message) {
@@ -3324,10 +3488,33 @@ export function EcommerceBusinessSession({
       }));
     }
   }
-  async function requestCostThenRun(run, count, quotedUnit = unitPrice) {
-    if (requestAuth({ featureLabel: "AI 电商" })) return;
+  function beginTaskLaunch() {
+    if (taskLaunchPendingRef.current) return false;
+    taskLaunchPendingRef.current = true;
+    setTaskLaunchPending(true);
+    return true;
+  }
+  function finishTaskLaunch() {
+    taskLaunchPendingRef.current = false;
+    setTaskLaunchPending(false);
+  }
+  async function requestCostThenRun(
+    run,
+    count,
+    quotedUnit = unitPrice,
+    lockHeld = false,
+  ) {
+    if (!lockHeld && !beginTaskLaunch()) return;
+    if (requestAuth({ featureLabel: "AI 电商" })) {
+      finishTaskLaunch();
+      return;
+    }
     if (auth.user?.requireCostConfirm === false) {
-      await run();
+      try {
+        await run();
+      } finally {
+        finishTaskLaunch();
+      }
       return;
     }
     let available = null;
@@ -3343,7 +3530,13 @@ export function EcommerceBusinessSession({
       /* the task service remains authoritative */
     }
     const shotCount = Math.max(1, Number(count) || 1);
-    pendingCostRunRef.current = run;
+    pendingCostRunRef.current = async () => {
+      try {
+        await run();
+      } finally {
+        finishTaskLaunch();
+      }
+    };
     setCostConfirm({
       unit: quotedUnit,
       count: shotCount,
@@ -3367,10 +3560,28 @@ export function EcommerceBusinessSession({
       }
     }
     if (run) await run();
+    else finishTaskLaunch();
   }
   async function generate() {
     if (requestAuth({ featureLabel: "AI 电商" })) return;
     if (!canGenerate) return;
+    if (!beginTaskLaunch()) return;
+    if (mode.id === "tryon" && currentRow && tryonBrief.trim()) {
+      const sourceRow = currentRow;
+      const brief = tryonBrief.trim();
+      await requestCostThenRun(
+        () =>
+          executeTryonBriefRevision({
+            sourceRow,
+            brief,
+            briefKey: sourceRow.url,
+          }),
+        1,
+        unitPrice,
+        true,
+      );
+      return;
+    }
     if (mode.id === "handheld") {
       try {
         const reservedRoles =
@@ -3393,14 +3604,21 @@ export function EcommerceBusinessSession({
           executeGenerate,
           generationPlan.length,
           Number.isFinite(quotedUnit) ? quotedUnit : unitPrice,
+          true,
         );
         return;
       } catch (error) {
+        finishTaskLaunch();
         setSubmitError(error?.message || "手持商品报价失败，请重试");
         return;
       }
     }
-    await requestCostThenRun(executeGenerate, generationPlan.length);
+    await requestCostThenRun(
+      executeGenerate,
+      generationPlan.length,
+      unitPrice,
+      true,
+    );
   }
   async function fileFromCatalogImage(url, name) {
     const imageUrl =
@@ -3690,6 +3908,92 @@ export function EcommerceBusinessSession({
       setHandheldStarting(false);
     }
   }
+  async function executeTryonBriefRevision({
+    sourceRow,
+    brief,
+    briefKey,
+  } = {}) {
+    const text = String(brief || "").trim();
+    if (!sourceRow?.url || !text || jobs.running) return;
+    const nextVersion = rowVersion(sourceRow) + 1;
+    const revision = buildTryonRevisionPlan({
+      basePrompt: assembledPrompt,
+      brief: text,
+      apparel,
+      modelLabel: tryonMentionModelLabel,
+      sceneLabel: tryonMentionSceneLabel,
+      lens: tryonLens,
+      light: tryonLight,
+      aspectRatio: aspectRatio || sourceRow.aspectRatio,
+      versionNumber: nextVersion,
+    });
+    const batchId = crypto.randomUUID();
+    setSubmitError("");
+    jobs.clearError();
+    setSessionBatchId(batchId);
+    setSessionCount(1);
+    setWorkspace("result");
+    setPane("canvas");
+    setActiveUrl("");
+    setTryonStarting(true);
+    if (revision.aspectRatio) setAspectRatio(revision.aspectRatio);
+    try {
+      const sourceFiles = await resolveTryonInputFiles();
+      await jobs.createBatch({
+        files: [
+          remoteSourceFile(sourceRow.url, "tryon-current-result.png"),
+          ...sourceFiles,
+        ],
+        modelId,
+        batchId,
+        batchSize: 1,
+        items: [
+          {
+            prompt: revision.prompt,
+            kindVariant: mode.id,
+            aspectRatio:
+              revision.aspectRatio || sourceRow.aspectRatio || aspectRatio,
+            parentOutputUrl: sourceRow.url,
+            iterationMode: true,
+            viewId: `tryon-revision-v${nextVersion}`,
+            viewLabel: `${mode.shortLabel} · V${nextVersion}`,
+            batchIndex: 0,
+          },
+        ],
+      });
+      clearTryonBrief(briefKey, text);
+    } catch (error) {
+      setActiveUrl(sourceRow.url);
+      setSubmitError(error?.message || "试衣结果修改失败，请重试");
+    } finally {
+      setTryonStarting(false);
+    }
+  }
+  function applyTryonRatio(value, { hydrate = false } = {}) {
+    const ratio = coerceRatioValue(value, OPTIONS.tryonRatio);
+    if (!ratio) return false;
+    if (hydrate) tryonRatioHydratedRef.current = true;
+    setAspectRatio(ratio);
+    return true;
+  }
+  function selectTryonHistory(url) {
+    if (!url) return;
+    setActiveUrl(url);
+    const row = modeRows.find((item) => item.url === url);
+    if (applyTryonRatio(row?.aspectRatio, { hydrate: true })) return;
+    applyTryonRatio(tryonInferredRatiosRef.current[url], { hydrate: true });
+  }
+  function applyTryonImageSize(url, width, height) {
+    if (!url || !isTryonMode(mode.id)) return;
+    const snapped = snapRatio(width, height, OPTIONS.tryonRatio);
+    if (!snapped) return;
+    tryonInferredRatiosRef.current[url] = snapped;
+    const row = modeRows.find((item) => item.url === url);
+    if (matchingRatio(row?.aspectRatio, OPTIONS.tryonRatio)) return;
+    const viewing = url === (activeUrl || currentRow?.url || latestTryonUrl);
+    if (!viewing) return;
+    applyTryonRatio(snapped, { hydrate: true });
+  }
   function selectHandheldHistory(url) {
     if (!url) return;
     setActiveUrl(url);
@@ -3947,25 +4251,46 @@ export function EcommerceBusinessSession({
     return file;
   }
   async function reviseCurrent() {
-    const brief = revisionBrief.trim();
-    if (!currentRow || brief.length < 4 || jobs.running) return;
-    await requestCostThenRun(executeReviseCurrent, 1);
+    await reviseOutput({
+      brief: revisionBrief.trim(),
+      direction: revisionDirection,
+      clearBrief: true,
+    });
   }
-  async function executeReviseCurrent() {
-    const brief = revisionBrief.trim();
-    if (!currentRow || brief.length < 4 || jobs.running) return;
+  async function reviseOutput({
+    brief,
+    direction = "precise",
+    clearBrief = false,
+  } = {}) {
+    const text = String(brief || "").trim();
+    if (!currentRow || text.length < 4 || jobs.running) return;
+    await requestCostThenRun(
+      () => executeReviseOutput({ brief: text, direction, clearBrief }),
+      1,
+    );
+  }
+  async function executeReviseOutput({
+    brief,
+    direction = "precise",
+    clearBrief = false,
+  } = {}) {
+    const text = String(brief || "").trim();
+    if (!currentRow || text.length < 4 || jobs.running) return;
     const nextVersion = currentVersion + 1;
     const prompt = buildEcommerceRevisionPrompt({
       basePrompt: assembledPrompt,
-      brief,
-      direction: revisionDirection,
+      brief: text,
+      direction,
       versionNumber: nextVersion,
     });
     setSessionCount(1);
     setSubmitError("");
     try {
+      const sourceFiles = hidesCommerceSettings(mode.id)
+        ? await resolveLiveStageInputFiles()
+        : inputFiles;
       await jobs.createBatch({
-        files: [remoteSourceFile(currentRow.url), ...inputFiles.slice(0, 5)],
+        files: [remoteSourceFile(currentRow.url), ...sourceFiles.slice(0, 5)],
         modelId,
         batchSize: 1,
         items: [
@@ -3989,7 +4314,7 @@ export function EcommerceBusinessSession({
           },
         ],
       });
-      setRevisionBrief("");
+      if (clearBrief) setRevisionBrief("");
     } catch (error) {
       setSubmitError(error?.message || "继续优化失败，请重试");
     }
@@ -4301,42 +4626,34 @@ export function EcommerceBusinessSession({
         {isTryonMode(mode.id) ? (
           <div className="commerce-header__tryon">
             <label className="commerce-header__model">
-              <span>{t("生成模型")}</span>
+              <span>{t("模型")}</span>
               <CommerceSelect
                 value={modelId}
-                options={models.map((item) => ({
-                  value: item.id || item.publicModelKey,
-                  label: item.label || item.name || item.id,
-                }))}
+                options={commerceModelOptions(models, unitPrice)}
                 onChange={setModelId}
                 placeholder="请选择模型"
                 ariaLabel="选择生成模型"
+                menuMinWidth={240}
                 disabled={jobs.running}
               />
             </label>
-            <div className="commerce-header__ratio">
-              <span>{t("画面比例")}</span>
-              <div
-                className="choice-chip-grid tryon-ratio-grid"
-                role="group"
-                aria-label="选择画面比例"
-              >
-                {OPTIONS.tryonRatio.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    className={aspectRatio === item.value ? "active" : ""}
-                    disabled={jobs.running}
-                    onClick={() => setAspectRatio(item.value)}
-                  >
-                    <i className="bi bi-check-lg" />
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <label className="commerce-header__ratio">
+              <span>{t("比例")}</span>
+              <CommerceSelect
+                value={
+                  matchingRatio(aspectRatio, OPTIONS.tryonRatio) ||
+                  coerceRatioValue(aspectRatio, OPTIONS.tryonRatio) ||
+                  "2:3"
+                }
+                options={OPTIONS.tryonRatio}
+                onChange={setAspectRatio}
+                ariaLabel="选择画面比例"
+                menuMinWidth={160}
+                disabled={jobs.running}
+              />
+            </label>
             <label className="commerce-header__lens">
-              <span>{t("摄影镜头")}</span>
+              <span>{t("镜头")}</span>
               <CommerceSelect
                 value={tryonLens}
                 options={TRYON_LENS_OPTIONS.map((item) => ({
@@ -4347,11 +4664,12 @@ export function EcommerceBusinessSession({
                 }))}
                 onChange={setTryonLens}
                 ariaLabel="选择摄影镜头"
+                menuMinWidth={240}
                 disabled={jobs.running}
               />
             </label>
             <label className="commerce-header__light">
-              <span>{t("光影调整")}</span>
+              <span>{t("光影")}</span>
               <CommerceSelect
                 value={tryonLight}
                 options={TRYON_LIGHT_OPTIONS.map((item) => ({
@@ -4360,6 +4678,7 @@ export function EcommerceBusinessSession({
                 }))}
                 onChange={setTryonLight}
                 ariaLabel="选择光影调整"
+                menuMinWidth={160}
                 disabled={jobs.running}
               />
             </label>
@@ -4370,13 +4689,11 @@ export function EcommerceBusinessSession({
               <span>{t("生成模型")}</span>
               <CommerceSelect
                 value={modelId}
-                options={models.map((item) => ({
-                  value: item.id || item.publicModelKey,
-                  label: item.label || item.name || item.id,
-                }))}
+                options={commerceModelOptions(models, unitPrice)}
                 onChange={setModelId}
                 placeholder="请选择模型"
                 ariaLabel="选择生成模型"
+                menuMinWidth={240}
                 disabled={handheldCurrentRunning}
               />
             </label>
@@ -4527,10 +4844,7 @@ export function EcommerceBusinessSession({
         ) : isAccessoryMode(mode.id) ? (
           <AccessoryTopToolbar
             modelId={modelId}
-            modelOptions={models.map((item) => ({
-              value: item.id || item.publicModelKey,
-              label: item.label || item.name || item.id,
-            }))}
+            modelOptions={commerceModelOptions(models, unitPrice)}
             onChangeModelId={setModelId}
             pack={accessoryPack}
             packOptions={ACCESSORY_PACK_OPTIONS}
@@ -4612,11 +4926,6 @@ export function EcommerceBusinessSession({
               role="tab"
               className={workspace === id ? "active" : ""}
               aria-selected={workspace === id}
-              disabled={
-                (isHandheldMode(mode.id)
-                  ? handheldCurrentRunning
-                  : jobs.running) && id !== "result"
-              }
               onClick={() => openWorkspace(id)}
             >
               <i className={`bi ${icon}`} />
@@ -4703,6 +5012,7 @@ export function EcommerceBusinessSession({
               key={item.id}
               type="button"
               className={item.id === mode.id ? "active" : ""}
+              disabled={taskLaunchPending && item.id !== mode.id}
               onClick={() => setMode(item)}
             >
               <i className={`bi ${item.icon}`} />
@@ -4738,6 +5048,7 @@ export function EcommerceBusinessSession({
                     className={item.id === mode.id ? "active" : ""}
                     aria-label={item.label}
                     aria-current={item.id === mode.id ? "page" : undefined}
+                    disabled={taskLaunchPending && item.id !== mode.id}
                     onClick={() => setMode(item)}
                   >
                     <span className="commerce-rail__icon">
@@ -4972,13 +5283,11 @@ export function EcommerceBusinessSession({
                     <span>{t("生成模型")}</span>
                     <CommerceSelect
                       value={modelId}
-                      options={models.map((item) => ({
-                        value: item.id || item.publicModelKey,
-                        label: item.label || item.name || item.id,
-                      }))}
+                      options={commerceModelOptions(models, unitPrice)}
                       onChange={setModelId}
                       placeholder="请选择模型"
                       ariaLabel="选择生成模型"
+                      menuMinWidth={240}
                     />
                   </label>
                 </div>
@@ -5699,14 +6008,20 @@ export function EcommerceBusinessSession({
                   ? `${tryonFailMessage.slice(0, 88)}…`
                   : tryonFailMessage
               }
-              elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              elapsedSeconds={ecommerceElapsedSeconds(tryonTimingTask)}
+              runStartedAt={tryonTimingTask?.startedAt || ""}
               cancelling={jobs.cancelling}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
               shotCount={generationPlan.length}
               onGenerate={generate}
               onCancel={jobs.cancelAll}
-              onSelectHistory={setActiveUrl}
+              onSelectHistory={selectTryonHistory}
+              onResultImageSize={applyTryonImageSize}
+              editBrief={tryonBrief}
+              editMentions={tryonMentions}
+              onChangeEdit={updateCurrentTryonBrief}
+              revisionReady={Boolean(tryonBrief.trim())}
               onPreview={(event, payload) =>
                 setTryonPreview({
                   // 点开大图优先展示图，404 回退原图
@@ -6113,6 +6428,7 @@ export function EcommerceBusinessSession({
         onCancel={() => {
           pendingCostRunRef.current = null;
           setCostConfirm(null);
+          finishTaskLaunch();
         }}
         onConfirm={(options) => void confirmCost(options)}
       />

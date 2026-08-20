@@ -244,3 +244,32 @@ func TestLedgerDictWithTaskStripsInternalTypeCode(t *testing.T) {
 		t.Fatalf("task ledger reason = %#v", dict["reason"])
 	}
 }
+
+func TestThumbURLsForTaskPrefersStoredThumbsAndDerivesWhenMissing(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	taskID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	original := "tasks/" + userID.String() + "/" + taskID.String() + "/original/0.png"
+	storedThumb := "tasks/" + userID.String() + "/" + taskID.String() + "/thumb/0"
+	prefix := "/api/v1/admin/files/"
+
+	stored := thumbURLsForTask(&store.Task{OutputKeys: []string{original}, ThumbnailKeys: []string{storedThumb}}, prefix)
+	if len(stored) != 1 || stored[0] != prefix+storedThumb {
+		t.Fatalf("stored thumbs = %#v", stored)
+	}
+
+	derived := thumbURLsForTask(&store.Task{OutputKeys: []string{original}}, prefix)
+	if len(derived) != 1 || derived[0] != prefix+"tasks/"+userID.String()+"/"+taskID.String()+"/thumb/0" {
+		t.Fatalf("derived thumbs = %#v", derived)
+	}
+
+	copiedOriginals := thumbURLsForTask(&store.Task{OutputKeys: []string{original}, ThumbnailKeys: []string{original}}, prefix)
+	if len(copiedOriginals) != 1 || copiedOriginals[0] != prefix+"tasks/"+userID.String()+"/"+taskID.String()+"/thumb/0" {
+		t.Fatalf("copied original thumbs = %#v, want derived thumb", copiedOriginals)
+	}
+
+	assistantOriginal := "tasks/" + userID.String() + "/assistant/" + taskID.String() + "/1.png"
+	assistant := thumbURLsForTask(&store.Task{OutputKeys: []string{assistantOriginal}}, prefix)
+	if len(assistant) != 1 || assistant[0] != prefix+"tasks/"+userID.String()+"/assistant/"+taskID.String()+"/1-thumb" {
+		t.Fatalf("assistant thumbs = %#v", assistant)
+	}
+}

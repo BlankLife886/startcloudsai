@@ -122,20 +122,20 @@ func TestAssistantRunIsTerminal(t *testing.T) {
 
 func TestNormalizeAssistantReasoningEffort(t *testing.T) {
 	tests := []struct {
-		name        string
-		value       string
-		defaultHigh bool
-		want        string
-		wantErr     bool
+		name            string
+		value           string
+		defaultStandard bool
+		want            string
+		wantErr         bool
 	}{
-		{name: "canvas agent default", defaultHigh: true, want: "high"},
-		{name: "explicit maximum", value: " MAX ", defaultHigh: true, want: "max"},
+		{name: "canvas agent default", defaultStandard: true, want: "medium"},
+		{name: "explicit maximum", value: " MAX ", defaultStandard: true, want: "max"},
 		{name: "non agent remains unset"},
-		{name: "unsupported", value: "ultra", defaultHigh: true, wantErr: true},
+		{name: "unsupported", value: "ultra", defaultStandard: true, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeAssistantReasoningEffort(tt.value, tt.defaultHigh)
+			got, err := normalizeAssistantReasoningEffort(tt.value, tt.defaultStandard)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -747,6 +747,28 @@ func TestInfiniteCanvasSelectsItsAssignedChatModel(t *testing.T) {
 	}
 	if selection, ok := selectAssistantServiceModel(cfg, modelconfig.WorkspaceCanvas, modelconfig.ModelKindChat, "assistant-chat", false); ok || selection != nil {
 		t.Fatalf("assistant model must not leak into canvas assignment: %#v, %v", selection, ok)
+	}
+}
+
+func TestCanvasAgentPrice(t *testing.T) {
+	tests := []struct {
+		effort       string
+		wantMultiple int64
+		wantPrice    int64
+		wantTier     string
+	}{
+		{effort: "medium", wantMultiple: canvasAgentStandardPriceMultiple, wantPrice: 21, wantTier: "standard"},
+		{effort: "low", wantMultiple: canvasAgentStandardPriceMultiple, wantPrice: 21, wantTier: "standard"},
+		{effort: "xhigh", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
+		{effort: "high", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
+		{effort: "max", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
+	}
+	for _, tt := range tests {
+		price, multiple, tier := canvasAgentPrice(7, tt.effort)
+		if price != tt.wantPrice || multiple != tt.wantMultiple || tier != tt.wantTier {
+			t.Fatalf("canvasAgentPrice(7, %q) = (%d, %d, %q), want (%d, %d, %q)",
+				tt.effort, price, multiple, tier, tt.wantPrice, tt.wantMultiple, tt.wantTier)
+		}
 	}
 }
 

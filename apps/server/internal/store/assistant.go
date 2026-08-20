@@ -286,6 +286,16 @@ func UpdateAssistantMessage(ctx context.Context, q Q, id uuid.UUID, content, kin
 	return err
 }
 
+func MergeAssistantMessageMetadata(ctx context.Context, q Q, id uuid.UUID, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `UPDATE assistant_messages
+		SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+		WHERE id = $1`, id, fields)
+	return err
+}
+
 func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
 	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, false)
 	if err != nil {
@@ -511,6 +521,14 @@ func FailAssistantRun(ctx context.Context, q Q, id uuid.UUID, code, message stri
 func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped', finished_at = now()
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')`, id, userID)
+	return tag.RowsAffected() > 0, err
+}
+
+func CancelAssistantRunWithCost(ctx context.Context, q Q, userID, id uuid.UUID, costCents int64) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped',
+		cost_cents = $3, finished_at = now()
+		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')
+		AND $3 >= 0 AND $3 <= reserved_cents`, id, userID, costCents)
 	return tag.RowsAffected() > 0, err
 }
 

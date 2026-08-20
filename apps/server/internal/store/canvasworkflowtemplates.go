@@ -20,6 +20,7 @@ type CanvasWorkflowTemplate struct {
 	Platforms     json.RawMessage `json:"platforms"`
 	Deliverables  json.RawMessage `json:"deliverables"`
 	Accent        string          `json:"accent"`
+	CoverKey      string          `json:"coverKey"`
 	Document      json.RawMessage `json:"document,omitempty"`
 	NodeCount     int             `json:"nodeCount"`
 	Enabled       bool            `json:"enabled"`
@@ -29,15 +30,15 @@ type CanvasWorkflowTemplate struct {
 }
 
 const canvasWorkflowTemplateCols = `id, slug, title, category, category_label, industry, summary,
-	platforms, deliverables, accent, document, node_count, enabled, sort, created_at, updated_at`
+	platforms, deliverables, accent, cover_key, document, node_count, enabled, sort, created_at, updated_at`
 
 const canvasWorkflowTemplateSummaryCols = `id, slug, title, category, category_label, industry, summary,
-	platforms, deliverables, accent, 'null'::jsonb, node_count, enabled, sort, created_at, updated_at`
+	platforms, deliverables, accent, cover_key, 'null'::jsonb, node_count, enabled, sort, created_at, updated_at`
 
 func scanCanvasWorkflowTemplate(row pgx.Row) (*CanvasWorkflowTemplate, error) {
 	var item CanvasWorkflowTemplate
 	if err := row.Scan(&item.ID, &item.Slug, &item.Title, &item.Category, &item.CategoryLabel, &item.Industry,
-		&item.Summary, &item.Platforms, &item.Deliverables, &item.Accent, &item.Document, &item.NodeCount,
+		&item.Summary, &item.Platforms, &item.Deliverables, &item.Accent, &item.CoverKey, &item.Document, &item.NodeCount,
 		&item.Enabled, &item.Sort, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -110,6 +111,12 @@ func UpdateCanvasWorkflowTemplate(ctx context.Context, q Q, id uuid.UUID, patch 
 		WHERE id = $1 RETURNING `+canvasWorkflowTemplateCols,
 		id, patch.Slug, patch.Title, patch.Category, patch.CategoryLabel, patch.Industry, patch.Summary,
 		patch.Platforms, patch.Deliverables, patch.Accent, patch.Document, patch.NodeCount, patch.Enabled, patch.Sort))
+}
+
+func UpdateCanvasWorkflowTemplateCover(ctx context.Context, q Q, id uuid.UUID, coverKey string) (*CanvasWorkflowTemplate, error) {
+	return scanCanvasWorkflowTemplate(q.QueryRow(ctx, `UPDATE canvas_workflow_templates
+		SET cover_key = $2, updated_at = now()
+		WHERE id = $1 RETURNING `+canvasWorkflowTemplateCols, id, coverKey))
 }
 
 func DeleteCanvasWorkflowTemplate(ctx context.Context, q Q, id uuid.UUID) (bool, error) {

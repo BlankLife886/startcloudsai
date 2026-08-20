@@ -12,6 +12,7 @@ export type CanvasWorkflowTemplateSummary = {
     platforms: string[];
     deliverables: string[];
     accent: string;
+    coverUrl?: string | null;
     nodeCount: number;
     sort: number;
 };

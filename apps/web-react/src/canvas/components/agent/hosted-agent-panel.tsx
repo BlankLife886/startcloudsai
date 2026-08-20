@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { App, Button, Tooltip } from "antd";
-import { Bot, MessageSquare, PanelRightClose, Plus } from "lucide-react";
+import { Bot, Coins, MessageSquare, PanelRightClose, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
@@ -12,6 +12,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { cancelCanvasAssistantRun, clearHostedAgentConversationId, requestCanvasAgentTurn } from "@/services/canvas-task-api";
 import { useAgentStore, type AgentAttachment, type AgentCanvasContext, type AgentChatItem, type AgentReasoningEffort } from "@/stores/use-agent-store";
+import { modelOptionMeta, resolveModelForCapability, useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { attachmentPayloadBytes, promptWithAttachments, promptWithCanvasReferences } from "./agent-event-formatters";
 import { AgentChatTimeline } from "./agent-chat";
@@ -24,9 +25,9 @@ const HOSTED_REASONING_EFFORT_KEY = "canvas-hosted-agent-reasoning-effort";
 const HOSTED_REASONING_EFFORTS: AgentReasoningEffort[] = ["medium", "xhigh"];
 
 function initialHostedReasoningEffort(): AgentReasoningEffort {
-    if (typeof window === "undefined") return "xhigh";
+    if (typeof window === "undefined") return "medium";
     const saved = localStorage.getItem(HOSTED_REASONING_EFFORT_KEY) as AgentReasoningEffort | null;
-    return saved && HOSTED_REASONING_EFFORTS.includes(saved) ? saved : "xhigh";
+    return saved && HOSTED_REASONING_EFFORTS.includes(saved) ? saved : "medium";
 }
 
 type Translate = ReturnType<typeof useTranslation>["t"];
@@ -116,6 +117,8 @@ export function HostedAgentPanel() {
     const setAgentState = useAgentStore((state) => state.setAgentState);
     const addMessage = useAgentStore((state) => state.addMessage);
     const closePanel = useAgentStore((state) => state.closePanel);
+    const canvasConfig = useConfigStore((state) => state.config);
+    const agentPricing = useConfigStore((state) => state.agentPricing);
     const canvasContextRef = useRef<AgentCanvasContext | null>(useAgentStore.getState().canvasContext);
     const abortRef = useRef<AbortController | null>(null);
     const runIdRef = useRef("");
@@ -123,6 +126,10 @@ export function HostedAgentPanel() {
     const projectId = useAgentStore((state) => state.canvasContext?.snapshot.projectId || "");
     const [tab, setTab] = useState<"chat">("chat");
     const [reasoningEffort, setReasoningEffort] = useState<AgentReasoningEffort>(initialHostedReasoningEffort);
+    const hostedTextModel = modelOptionMeta(canvasConfig, resolveModelForCapability(canvasConfig, canvasConfig.textModel, "text"));
+    const standardTurnPrice = hostedTextModel?.pricePoints === undefined ? undefined : hostedTextModel.pricePoints * agentPricing.standardMultiplier;
+    const deepTurnPrice = hostedTextModel?.pricePoints === undefined ? undefined : hostedTextModel.pricePoints * agentPricing.deepMultiplier;
+    const currentTurnPrice = reasoningEffort === "xhigh" ? deepTurnPrice : standardTurnPrice;
 
     const lastProjectIdRef = useRef(projectId);
 
@@ -259,6 +266,7 @@ export function HostedAgentPanel() {
             const requestPrompt = appendAttachmentCatalog(promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences), files);
             const result = await requestCanvasAgentTurn(requestPrompt, {
                 projectId: context.snapshot.projectId,
+                model: canvasConfig.textModel,
                 snapshot: context.snapshot,
                 signal: controller.signal,
                 referenceImages,
@@ -317,7 +325,7 @@ export function HostedAgentPanel() {
             runIdRef.current = "";
             setAgentState({ sending: false, waiting: false });
         }
-    }, [addMessage, message, navigate, reasoningEffort, setAgentState, t]);
+    }, [addMessage, canvasConfig.textModel, message, navigate, reasoningEffort, setAgentState, t]);
 
     return (
         <>
@@ -376,7 +384,10 @@ export function HostedAgentPanel() {
                 theme={theme}
                 reasoningEffort={reasoningEffort}
                 reasoningEfforts={HOSTED_REASONING_EFFORTS}
-                reasoningEffortLabels={{ medium: t("agent.hosted.reasoningStandard"), xhigh: t("agent.hosted.reasoningExtended") }}
+                reasoningEffortLabels={{
+                    medium: standardTurnPrice === undefined ? t("agent.hosted.reasoningStandard") : t("agent.hosted.reasoningStandardWithPrice", { price: standardTurnPrice }),
+                    xhigh: deepTurnPrice === undefined ? t("agent.hosted.reasoningExtended") : t("agent.hosted.reasoningExtendedWithPrice", { price: deepTurnPrice }),
+                }}
                 onReasoningEffortChange={(effort) => {
                     localStorage.setItem(HOSTED_REASONING_EFFORT_KEY, effort);
                     setReasoningEffort(effort);
@@ -384,6 +395,12 @@ export function HostedAgentPanel() {
                 onPromptChange={(next) => setAgentState({ prompt: next })}
                 onAddFiles={(files) => void addAttachments(files)}
                 onRemoveAttachment={(id) => setAgentState({ attachments: useAgentStore.getState().attachments.filter((item) => item.id !== id) })}
+                left={currentTurnPrice === undefined ? null : (
+                    <span className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] font-semibold" style={{ color: theme.node.muted }} title={t("agent.hosted.generationChargedSeparately")}>
+                        <Coins className="size-3.5" />
+                        {t("agent.hosted.turnPrice", { price: currentTurnPrice })}
+                    </span>
+                )}
                 onSubmit={() => void sendPrompt()}
                 onStop={stopTurn}
             />

@@ -76,17 +76,83 @@ func nonNilStrings(s []string) []string {
 // displayURLsForTask 由原图 key 按约定推导展示图（压缩图）地址。
 // 旧任务没有展示图对象时前端加载 404 会回退到原图。
 func displayURLsForTask(t *store.Task, prefix string) []string {
+	return variantURLsForTask(t, prefix, outputVariantDisplay)
+}
+
+// thumbURLsForTask 列表预览用小图地址。优先用入库的 thumbnail_keys；
+// 若缺失或误存成原图 key，再按任务产物约定推导 thumb 路径。
+func thumbURLsForTask(t *store.Task, prefix string) []string {
+	if hasDedicatedThumbKeys(t.ThumbnailKeys, t.OutputKeys) {
+		return prefixedObjectURLs(t.ThumbnailKeys, prefix)
+	}
+	return variantURLsForTask(t, prefix, outputVariantThumb)
+}
+
+func variantURLsForTask(t *store.Task, prefix string, kind outputVariantKind) []string {
 	urls := make([]string, 0, len(t.OutputKeys))
 	for _, key := range t.OutputKeys {
 		key = strings.TrimLeft(strings.TrimSpace(key), "/")
 		if key == "" {
 			continue
 		}
-		display := store.DisplayKeyForOriginal(key)
-		if display == "" {
-			display = key
+		variant := outputVariantKey(key, kind)
+		if variant == "" {
+			variant = key
 		}
-		urls = append(urls, prefix+display)
+		urls = append(urls, prefix+variant)
+	}
+	return urls
+}
+
+type outputVariantKind int
+
+const (
+	outputVariantThumb outputVariantKind = iota
+	outputVariantDisplay
+)
+
+func outputVariantKey(key string, kind outputVariantKind) string {
+	if kind == outputVariantDisplay {
+		if display := store.DisplayKeyForOriginal(key); display != "" {
+			return display
+		}
+		if variants := store.AssistantVariantKeys(key); len(variants) == 2 {
+			return variants[1]
+		}
+		return ""
+	}
+	if thumb := store.ThumbKeyForOriginal(key); thumb != "" {
+		return thumb
+	}
+	if variants := store.AssistantVariantKeys(key); len(variants) > 0 {
+		return variants[0]
+	}
+	return ""
+}
+
+func hasDedicatedThumbKeys(thumbKeys, outputKeys []string) bool {
+	if len(thumbKeys) == 0 {
+		return false
+	}
+	if len(thumbKeys) != len(outputKeys) {
+		return true
+	}
+	for i, key := range thumbKeys {
+		if strings.TrimSpace(key) != strings.TrimSpace(outputKeys[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func prefixedObjectURLs(keys []string, prefix string) []string {
+	urls := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key == "" {
+			continue
+		}
+		urls = append(urls, prefix+key)
 	}
 	return urls
 }

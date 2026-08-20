@@ -553,6 +553,7 @@ export type CanvasAgentToolHandler = (call: CanvasAgentToolCall) => Promise<unkn
 export type CanvasAgentTurnOptions = {
     projectId: string;
     conversationId?: string;
+    model?: string;
     snapshot: CanvasAgentSnapshot;
     signal?: AbortSignal;
     onCreated?: (runId: string) => void | Promise<void>;
@@ -731,6 +732,7 @@ export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgen
             mode: "agent",
             workspace: "infinite_canvas",
             canvasSnapshot: snapshot,
+            ...(options.model ? { model: modelOptionName(options.model) } : {}),
             ...(options.referenceImages?.length ? { referenceImages: options.referenceImages.slice(0, 4) } : {}),
             count: 1,
             requestSize: "auto",

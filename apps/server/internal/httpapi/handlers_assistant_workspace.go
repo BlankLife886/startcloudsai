@@ -21,10 +21,30 @@ import (
 )
 
 const (
-	assistantConversationLimit = 40
-	assistantMessageLimit      = 160
-	assistantActiveRunLimit    = 4
+	assistantConversationLimit       = 40
+	assistantMessageLimit            = 160
+	assistantActiveRunLimit          = 4
+	canvasAgentStandardPriceMultiple = int64(3)
+	canvasAgentDeepPriceMultiple     = int64(5)
 )
+
+func canvasAgentPriceMultiple(reasoningEffort string) int64 {
+	switch strings.ToLower(strings.TrimSpace(reasoningEffort)) {
+	case "high", "xhigh", "max":
+		return canvasAgentDeepPriceMultiple
+	default:
+		return canvasAgentStandardPriceMultiple
+	}
+}
+
+func canvasAgentPrice(unitPrice int64, reasoningEffort string) (int64, int64, string) {
+	multiple := canvasAgentPriceMultiple(reasoningEffort)
+	tier := "standard"
+	if multiple == canvasAgentDeepPriceMultiple {
+		tier = "deep"
+	}
+	return unitPrice * multiple, multiple, tier
+}
 
 type createAssistantConversationIn struct {
 	Title     string `json:"title"`
@@ -686,6 +706,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if chatSelection != nil {
 		chatCostCents = modelconfig.EffectivePrice(chatSelection.Model)
 	}
+	if canvasAgent {
+		unitPrice := chatCostCents
+		pricedCost, priceMultiple, priceTier := canvasAgentPrice(unitPrice, body.ReasoningEffort)
+		chatCostCents = pricedCost
+		params["_agentChatUnitPriceCents"] = unitPrice
+		params["_agentPriceMultiple"] = priceMultiple
+		params["_agentPriceTier"] = priceTier
+	}
 	imageCostCents := int64(0)
 	if imageSelection != nil {
 		imageCostCents = modelconfig.EffectivePrice(imageSelection.Model) * int64(body.Count)
@@ -1027,10 +1055,10 @@ func assistantConversationWorkspace(value string) (string, error) {
 	return workspace, nil
 }
 
-func normalizeAssistantReasoningEffort(value string, defaultHigh bool) (string, error) {
+func normalizeAssistantReasoningEffort(value string, defaultStandard bool) (string, error) {
 	effort := strings.ToLower(strings.TrimSpace(value))
-	if effort == "" && defaultHigh {
-		effort = "high"
+	if effort == "" && defaultStandard {
+		effort = "medium"
 	}
 	if effort == "" {
 		return "", nil

@@ -23,8 +23,12 @@ export function CommerceSelect({
     () =>
       options.map((item) =>
         item && typeof item === "object"
-          ? { value: item.value, label: t(String(item.label ?? item.value ?? "")) }
-          : { value: item, label: t(String(item ?? "")) },
+          ? {
+              value: item.value,
+              label: t(String(item.label ?? item.value ?? "")),
+              hint: String(item.hint || "").trim(),
+            }
+          : { value: item, label: t(String(item ?? "")), hint: "" },
       ),
     [options, t],
   );
@@ -46,14 +50,14 @@ export function CommerceSelect({
       110,
       Math.min(264, (placeAbove ? above : below) - gap),
     );
-    const availableWidth = Math.max(120, window.innerWidth - padding * 2);
-    const menuWidth = Math.min(
-      availableWidth,
-      Math.max(rect.width, Number(menuMinWidth) || 0),
-    );
+    const availableWidth = Math.max(160, window.innerWidth - padding * 2);
+    const hasHint = normalized.some((item) => item.hint);
+    const floor =
+      Number(menuMinWidth) > 0 ? Number(menuMinWidth) : hasHint ? 220 : 160;
+    const menuWidth = Math.min(availableWidth, Math.max(rect.width, floor));
     setStyle({
       left: Math.min(
-        Math.max(padding, rect.right - menuWidth),
+        Math.max(padding, rect.left),
         Math.max(padding, window.innerWidth - menuWidth - padding),
       ),
       top: placeAbove
@@ -155,12 +159,15 @@ export function CommerceSelect({
                 type="button"
                 role="option"
                 aria-selected={option.value === value}
-                className={`${option.value === value ? "selected " : ""}${index === activeIndex ? "active" : ""}`}
+                className={`${option.value === value ? "selected " : ""}${index === activeIndex ? "active" : ""}${option.hint ? " has-hint" : ""}`}
                 data-active={index === activeIndex}
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => choose(option)}
               >
                 <span>{option.label}</span>
+                {option.hint ? (
+                  <small className="commerce-select-hint">{option.hint}</small>
+                ) : null}
                 {option.value === value && (
                   <i className="bi bi-check2" aria-hidden="true" />
                 )}

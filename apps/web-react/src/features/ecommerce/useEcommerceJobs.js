@@ -116,7 +116,7 @@ function normalizeTask(task = {}) {
       1,
       Number(params.batchSize ?? task.batchSize ?? outputs.length ?? 1) || 1,
     ),
-    aspectRatio: String(params.aspectRatio || task.aspectRatio || "1:1"),
+    aspectRatio: String(params.aspectRatio || task.aspectRatio || "").trim(),
     parentOutputUrl: String(params.parentOutputUrl || ""),
     outputs,
     displays,
@@ -157,7 +157,15 @@ function mergeTasks(current, incoming) {
   return newestFirst([...rows.values()]);
 }
 
-export function useEcommerceJobs() {
+export function ecommerceTaskMatchesKind(task, taskKind = "") {
+  const expected = String(taskKind || "").trim();
+  if (!expected) return true;
+  const params =
+    task?.params && typeof task.params === "object" ? task.params : {};
+  return String(task?.kind || params._kind || "").trim() === expected;
+}
+
+export function useEcommerceJobs({ taskKind = "" } = {}) {
   const [tasks, setTasks] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -244,6 +252,7 @@ export function useEcommerceJobs() {
         );
         setHistoryCursor(String(result.nextCursor || ""));
         incoming
+          .filter((task) => ecommerceTaskMatchesKind(task, taskKind))
           .filter((task) => ACTIVE_STATUSES.has(task.status))
           .forEach(watchTask);
       } catch (error) {
@@ -255,20 +264,28 @@ export function useEcommerceJobs() {
         if (mountedRef.current) setHistoryLoading(false);
       }
     },
-    [historyCursor, watchTask],
+    [historyCursor, taskKind, watchTask],
   );
 
   useEffect(() => {
     mountedRef.current = true;
+    setRunningIds([]);
     void loadHistory();
     return () => {
       mountedRef.current = false;
       controllersRef.current.forEach((controller) => controller.abort());
       controllersRef.current.clear();
     };
-    // Initial hydration is intentionally independent from pagination state.
+    // Business switches re-scope subscriptions without remounting the page shell.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [taskKind]);
+
+  useEffect(() => {
+    tasks
+      .filter((task) => ecommerceTaskMatchesKind(task, taskKind))
+      .filter((task) => ACTIVE_STATUSES.has(task.status))
+      .forEach(watchTask);
+  }, [taskKind, tasks, watchTask]);
 
   const createBatch = useCallback(
     async ({
@@ -497,8 +514,19 @@ export function useEcommerceJobs() {
     [loadHistory],
   );
 
+  const scopedTasks = useMemo(
+    () => tasks.filter((task) => ecommerceTaskMatchesKind(task, taskKind)),
+    [taskKind, tasks],
+  );
+  const scopedTaskIds = useMemo(
+    () => new Set(scopedTasks.map((task) => task.id)),
+    [scopedTasks],
+  );
+
   const cancelAll = useCallback(async () => {
-    const active = tasks.filter((task) => ACTIVE_STATUSES.has(task.status));
+    const active = scopedTasks.filter((task) =>
+      ACTIVE_STATUSES.has(task.status),
+    );
     if (!active.length) return;
     setCancelling(true);
     try {
@@ -511,7 +539,7 @@ export function useEcommerceJobs() {
     } finally {
       if (mountedRef.current) setCancelling(false);
     }
-  }, [tasks, upsert]);
+  }, [scopedTasks, upsert]);
 
   const remove = useCallback(async (taskId) => {
     await deleteTask(taskId, { cascade: true });
@@ -523,11 +551,11 @@ export function useEcommerceJobs() {
 
   const running =
     submitting ||
-    runningIds.length > 0 ||
-    tasks.some((task) => ACTIVE_STATUSES.has(task.status));
+    runningIds.some((id) => scopedTaskIds.has(id)) ||
+    scopedTasks.some((task) => ACTIVE_STATUSES.has(task.status));
   const outputRows = useMemo(
     () =>
-      tasks.flatMap((task) =>
+      scopedTasks.flatMap((task) =>
         task.outputs.map((url, index) => ({
           task,
           url,
@@ -542,13 +570,14 @@ export function useEcommerceJobs() {
           parentOutputUrl: task.parentOutputUrl,
         })),
       ),
-    [tasks],
+    [scopedTasks],
   );
 
   return {
-    tasks,
+    tasks: scopedTasks,
     outputRows,
     running,
+    submitting,
     cancelling,
     historyLoading,
     historyError,

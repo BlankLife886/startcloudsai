@@ -174,6 +174,31 @@ func TestCanvasAssistantReserveUsesCanvasLedgerReason(t *testing.T) {
 	t.Fatalf("canvas reserve reason missing: %#v", ledgerReasons(entries))
 }
 
+func TestCanvasAgentCancelAfterBillableActionSettlesReservedFee(t *testing.T) {
+	st := testdb.Setup(t)
+	user := billingUser(t, st, 100)
+	run := billingRun(t, st, user.ID, 15, map[string]any{
+		"_source": "react_canvas", "workspace": "infinite_canvas", "_chatCostCents": int64(15),
+	})
+	if claimed, err := store.ClaimAssistantRun(context.Background(), st.Pool, run.ID); err != nil || !claimed {
+		t.Fatalf("claim = %v err=%v", claimed, err)
+	}
+	if err := store.MergeAssistantMessageMetadata(context.Background(), st.Pool, run.AssistantMessageID,
+		map[string]any{"agentBillableAction": true, "canvasOpsApplied": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, canceled, err := assistantbilling.CancelUser(context.Background(), st, user.ID, run.ID); err != nil || !canceled {
+		t.Fatalf("cancel = %v err=%v", canceled, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 85 || state.FrozenCents != 0 {
+		t.Fatalf("settled canceled wallet = %#v", state)
+	}
+	stored, err := store.GetAssistantRun(context.Background(), st.Pool, run.ID)
+	if err != nil || stored == nil || stored.Status != "canceled" || stored.CostCents != 15 {
+		t.Fatalf("stored run = %#v err=%v", stored, err)
+	}
+}
+
 func ledgerReasons(entries []*store.LedgerEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {

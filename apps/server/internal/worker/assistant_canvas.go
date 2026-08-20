@@ -376,7 +376,7 @@ func canvasAgentBrowserTimeout(name string) time.Duration {
 
 func canvasAgentToolMutates(name string) bool {
 	switch name {
-	case canvasApplyOpsTool().Name, canvasRunGenerationTool().Name, canvasCreateAttachmentNodesTool().Name:
+	case canvasApplyOpsTool().Name, canvasRunGenerationTool().Name, canvasCreateAttachmentNodesTool().Name, assetsAddTool().Name:
 		return true
 	default:
 		return false
@@ -413,10 +413,26 @@ func canvasRunGenerationFallbackOps(arguments string) []map[string]any {
 // canvasAgentLoopState accumulates what the tool loop actually did, so the
 // closing message can describe real changes instead of intentions.
 type canvasAgentLoopState struct {
-	summary    string
-	appliedOps int
-	pendingOps []map[string]any
-	touched    bool
+	summary        string
+	appliedOps     int
+	pendingOps     []map[string]any
+	touched        bool
+	billableAction bool
+}
+
+func canvasAgentToolResultFailed(raw string) bool {
+	return strings.HasPrefix(strings.TrimSpace(raw), "执行失败：")
+}
+
+func (w *Worker) checkpointCanvasAgentAction(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState) {
+	if run == nil || loop == nil || !loop.billableAction {
+		return
+	}
+	fields := map[string]any{"agentBillableAction": true}
+	if loop.appliedOps > 0 {
+		fields["canvasOpsApplied"] = loop.appliedOps
+	}
+	_ = store.MergeAssistantMessageMetadata(ctx, w.St.Pool, run.AssistantMessageID, fields)
 }
 
 func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState, call *sub2api.ToolCall) string {
@@ -438,6 +454,10 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 			loop.pendingOps = append(loop.pendingOps, fallback...)
 			return "画布暂时没有响应，生成会在本轮结束后触发。不要重复调用，请直接用中文回复用户。"
 		}
+		if !canvasAgentToolResultFailed(raw) {
+			loop.billableAction = true
+			w.checkpointCanvasAgentAction(ctx, run, loop)
+		}
 		return "工具 canvas_run_generation 的返回：\n" + raw +
 			"\n生成是异步的，而且可能需要用户确认消耗。用 canvas_generation_status 查看结果，不要假设已经生成成功。"
 	default:
@@ -445,7 +465,8 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 			return "不存在名为 " + call.Name + " 的工具。可用工具：" + strings.Join(canvasAgentToolNames(), "、") + "。"
 		}
 		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentBrowserTimeout(call.Name))
-		if canvasAgentToolMutates(call.Name) {
+		mutates := canvasAgentToolMutates(call.Name)
+		if mutates {
 			loop.touched = true
 		}
 		if !ok {
@@ -456,6 +477,10 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 				return "画布没有及时响应，这一轮查不到生成状态。请告诉用户生成仍在进行，稍后可以自己查看。"
 			}
 			return "画布没有及时响应，工具 " + call.Name + " 没有执行。请告诉用户刷新页面后再试，不要假装已经完成。"
+		}
+		if mutates && !canvasAgentToolResultFailed(raw) {
+			loop.billableAction = true
+			w.checkpointCanvasAgentAction(ctx, run, loop)
 		}
 		return "工具 " + call.Name + " 的返回：\n" + raw
 	}
@@ -486,7 +511,12 @@ func (w *Worker) dispatchCanvasOps(ctx context.Context, run *store.AssistantRun,
 		loop.pendingOps = append(loop.pendingOps, ops...)
 		return "画布暂时没有响应，这批操作会在本轮结束后统一应用。不要重复提交同一批操作，请直接用中文回复用户。"
 	}
+	if canvasAgentToolResultFailed(raw) {
+		return "工具 canvas_apply_ops 的返回：\n" + raw
+	}
 	loop.appliedOps += len(ops)
+	loop.billableAction = true
+	w.checkpointCanvasAgentAction(ctx, run, loop)
 	return "工具 canvas_apply_ops 的返回：\n" + raw + "\n如果已经满足用户要求，就直接用中文回答，不要再调用工具。"
 }
 
@@ -881,6 +911,7 @@ func (w *Worker) executeCanvasAgent(
 	}
 	reasoningEffort := assistantParamString(run.Params, "reasoningEffort", "")
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
+	loop := canvasAgentLoopState{summary: "", pendingOps: nil}
 
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
@@ -919,6 +950,12 @@ func (w *Worker) executeCanvasAgent(
 		if latestReasoning != "" {
 			metadata["reasoning"] = latestReasoning
 		}
+		if loop.billableAction {
+			metadata["agentBillableAction"] = true
+		}
+		if loop.appliedOps > 0 {
+			metadata["canvasOpsApplied"] = loop.appliedOps
+		}
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	}
 	capabilities, capabilityErr := classifyCanvasAgentCapabilities(ctx, client, payload)
@@ -929,7 +966,6 @@ func (w *Worker) executeCanvasAgent(
 	forbidsMutation := canvasAgentForbidsMutation(run.Prompt)
 	turnTools := canvasAgentToolsForCapabilities(capabilities)
 	allowsCanvasWrite := capabilities[canvasCapabilityWrite]
-	loop := canvasAgentLoopState{summary: "", pendingOps: nil}
 	var result sub2api.AgentChatResult
 	reasoningParts := make([]string, 0, 2)
 	var reasoningTokens int64
@@ -1050,6 +1086,9 @@ func (w *Worker) executeCanvasAgent(
 	}
 	if loop.appliedOps > 0 {
 		metadata["canvasOpsApplied"] = loop.appliedOps
+	}
+	if loop.billableAction {
+		metadata["agentBillableAction"] = true
 	}
 	kind := "chat"
 	if loop.touched {
