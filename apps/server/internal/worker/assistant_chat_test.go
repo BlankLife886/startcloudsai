@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
@@ -36,6 +39,28 @@ func (c *scriptedAssistantChatClient) ChatTextWithImages(
 
 func leakedSearchResponse(prompt, suffix string) string {
 	return "search(" + strconv.QuoteToASCII(prompt) + ")" + suffix
+}
+
+func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前权威问题",
+	}
+	references := []string{"image-a"}
+	payload := assistantConversationPayload(nil, run, references, false)
+	if len(payload) != 1 || payload[0].Role != "user" || payload[0].Content != run.Prompt ||
+		len(payload[0].ReferenceImages) != 1 || payload[0].ReferenceImages[0] != "image-a" {
+		t.Fatalf("fallback payload = %#v", payload)
+	}
+
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "assistant", Content: "上一轮回答", Status: "complete"},
+		{ID: run.UserMessageID, Role: "user", Content: "过期展示文本", Status: "complete"},
+		{ID: run.AssistantMessageID, Role: "assistant", Content: "占位", Status: "running"},
+	}
+	payload = assistantConversationPayload(history, run, references, false)
+	if len(payload) != 2 || payload[1].Content != run.Prompt || len(payload[1].ReferenceImages) != 1 {
+		t.Fatalf("history payload = %#v", payload)
+	}
 }
 
 func TestRequestAssistantChatTextRemovesMatchingLeakedSearchPrefix(t *testing.T) {

@@ -41,15 +41,16 @@ import (
 )
 
 const (
-	typeCleanupSessions      = "cron:cleanup_sessions"
-	typeReapZombies          = "cron:reap_zombies"
-	typeEnsureImagePolls     = "cron:ensure_image_polls"
-	typeExpireTrialCampaigns = "cron:expire_trial_campaigns"
-	typeSyncPromptSources    = "cron:sync_prompt_sources"
-	typeBackfillPromptCovers = "cron:backfill_prompt_cover_dimensions"
-	typeCleanupUserUploads   = "cron:cleanup_user_uploads"
-	typeCleanupObjectJobs    = "cron:cleanup_object_jobs"
-	typeCleanupCanvasRuns    = "cron:cleanup_canvas_workflow_runs"
+	typeCleanupSessions         = "cron:cleanup_sessions"
+	typeReapZombies             = "cron:reap_zombies"
+	typeEnsureImagePolls        = "cron:ensure_image_polls"
+	typeExpireTrialCampaigns    = "cron:expire_trial_campaigns"
+	typeSyncPromptSources       = "cron:sync_prompt_sources"
+	typeBackfillPromptCovers    = "cron:backfill_prompt_cover_dimensions"
+	typeCleanupUserUploads      = "cron:cleanup_user_uploads"
+	typeCleanupObjectJobs       = "cron:cleanup_object_jobs"
+	typeCleanupCanvasRuns       = "cron:cleanup_canvas_workflow_runs"
+	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
 
 	taskCompletionLease      = 5 * time.Minute
 	taskLease                = 2 * time.Minute
@@ -173,6 +174,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupUserUploads, w.handleCleanupUserUploads)
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
+	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -242,6 +244,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupUserUploads, nil, asynq.MaxRetry(3))},
 		{Cronspec: "@every 5m", Task: asynq.NewTask(typeCleanupObjectJobs, nil, asynq.MaxRetry(3))},
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupCanvasRuns, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 15s", Task: asynq.NewTask(typeDispatchAssistantOutbox, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 

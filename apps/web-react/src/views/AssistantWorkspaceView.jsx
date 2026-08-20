@@ -1048,6 +1048,7 @@ export function AssistantWorkspaceView() {
     try {
       const created = await createAssistantRun({
         conversationId,
+        idempotencyKey: assistantMessage.id,
         prompt,
         userMessageContent: userMessage.content || prompt,
         mode: responseMode,

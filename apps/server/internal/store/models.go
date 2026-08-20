@@ -456,6 +456,8 @@ type AssistantRun struct {
 	ConversationID     uuid.UUID
 	UserMessageID      uuid.UUID
 	AssistantMessageID uuid.UUID
+	IdempotencyKey     *string
+	RequestFingerprint *string
 	Mode               string
 	ResolvedMode       string
 	Status             string
@@ -465,6 +467,10 @@ type AssistantRun struct {
 	ReservedCents      int64
 	CostCents          int64
 	BillingGeneration  int
+	Attempt            int
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	HeartbeatAt        *time.Time
 	ErrorCode          *string
 	ErrorMessage       *string
 	StartedAt          *time.Time

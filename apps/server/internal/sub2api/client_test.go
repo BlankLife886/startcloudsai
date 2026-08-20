@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +125,69 @@ func TestChatTextWithImagesFinalMessageReplacesStreamedText(t *testing.T) {
 	}
 	if text != "你好，世界" {
 		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestChatTextWithImagesRejectsPrematureEOF(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"半截回答"}}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	text, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if !errors.Is(err, errChatStreamIncomplete) || text != "半截回答" || requests != 1 {
+		t.Fatalf("text=%q requests=%d err=%v", text, requests, err)
+	}
+}
+
+func TestChatTextWithImagesAcceptsFinishReasonWithoutDoneMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"完整回答"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"finish_reason":"stop"}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	text, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil || text != "完整回答" {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestChatTextWithImagesRejectsTruncatedFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"过长"},"finish_reason":"length"}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if !errors.Is(err, errChatStreamTruncated) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestChatTextWithImagesEnforcesIdleTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, ": connected\n\n")
+		flusher.Flush()
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	client.streamIdleTimeout = 20 * time.Millisecond
+	_, err := client.ChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if !errors.Is(err, errChatStreamIdle) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -256,6 +320,9 @@ func TestChatAgentWithToolsSendsReasoningEffortAndReadsUsage(t *testing.T) {
 		if streamOptions["include_usage"] != true {
 			t.Fatalf("stream_options = %#v", body["stream_options"])
 		}
+		if body["parallel_tool_calls"] != false {
+			t.Fatalf("parallel_tool_calls = %#v", body["parallel_tool_calls"])
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"真实分析"}}]}`+"\n\n")
 		fmt.Fprint(w, `data: {"choices":[],"usage":{"completion_tokens":42,"completion_tokens_details":{"reasoning_tokens":17}}}`+"\n\n")
@@ -326,6 +393,24 @@ func TestChatAgentWithImagesRetriesTransientFailureBeforeOutput(t *testing.T) {
 	}
 	if requests != 2 || result.Text != "恢复成功" {
 		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestChatAgentRejectsMultipleToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[`+
+			`{"index":0,"function":{"name":"first","arguments":"{}"}},`+
+			`{"index":1,"function":{"name":"second","arguments":"{}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.ChatAgentWithTools(context.Background(), []Message{{Role: "user", Content: "run"}}, nil,
+		[]FunctionTool{{Name: "first", Parameters: map[string]any{"type": "object"}}, {Name: "second", Parameters: map[string]any{"type": "object"}}}, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "multiple tool calls") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

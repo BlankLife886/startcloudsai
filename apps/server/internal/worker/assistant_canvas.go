@@ -885,7 +885,7 @@ func (w *Worker) executeCanvasAgent(
 	history []*store.AssistantMessage,
 ) error {
 	run.ResolvedMode = "agent"
-	if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "agent", "thinking"); err != nil {
+	if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
 		return err
 	}
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "agent", "running",
@@ -894,21 +894,9 @@ func (w *Worker) executeCanvasAgent(
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "agent", Stage: "thinking"})
 
-	payload := make([]sub2api.Message, 0, len(history)+1)
+	payload := make([]sub2api.Message, 0, len(history)+2)
 	payload = append(payload, sub2api.Message{Role: "system", Content: canvasAgentInstructions(run)})
-	for _, message := range history {
-		if message == nil || message.ID == run.AssistantMessageID || strings.TrimSpace(message.Content) == "" || message.Status == "failed" {
-			continue
-		}
-		if message.Role == "assistant" && canvasAgentLooksLikeRefusal(message.Content) {
-			continue
-		}
-		item := sub2api.Message{Role: message.Role, Content: message.Content}
-		if message.ID == run.UserMessageID {
-			item.ReferenceImages = references
-		}
-		payload = append(payload, item)
-	}
+	payload = append(payload, assistantConversationPayload(history, run, references, true)...)
 	reasoningEffort := assistantParamString(run.Params, "reasoningEffort", "")
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
 	loop := canvasAgentLoopState{summary: "", pendingOps: nil}
@@ -929,7 +917,7 @@ func (w *Worker) executeCanvasAgent(
 			}
 		}
 		if !answering {
-			if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "agent", "answering"); err != nil {
+			if err := w.setAssistantRunStage(ctx, run, "agent", "answering"); err != nil {
 				return err
 			}
 			answering = true
@@ -1043,7 +1031,7 @@ func (w *Worker) executeCanvasAgent(
 			sub2api.Message{Role: "assistant", Content: canvasAgentToolCallTranscript(next)},
 			sub2api.Message{Role: "user", Content: observation},
 		)
-		if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "agent", "thinking"); err != nil {
+		if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
 			return err
 		}
 	}
@@ -1097,7 +1085,7 @@ func (w *Worker) executeCanvasAgent(
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, kind, "complete", metadata); err != nil {
 		return err
 	}
-	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "chat")
+	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "chat")
 	if err != nil {
 		return err
 	}

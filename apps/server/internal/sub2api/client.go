@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,13 +24,14 @@ const (
 )
 
 type Client struct {
-	baseURL         string
-	apiKey          string
-	apiKeyHeader    string
-	chatModel       string
-	reasoningEffort string
-	imageModel      string
-	httpClient      *http.Client
+	baseURL           string
+	apiKey            string
+	apiKeyHeader      string
+	chatModel         string
+	reasoningEffort   string
+	imageModel        string
+	httpClient        *http.Client
+	streamIdleTimeout time.Duration
 }
 
 type Message struct {
@@ -74,6 +76,14 @@ type UpstreamError struct {
 
 func (e *UpstreamError) Error() string { return e.Message }
 
+var (
+	errChatStreamIncomplete = errors.New("chat stream ended before a completion marker")
+	errChatStreamTruncated  = errors.New("chat stream reached the model output limit")
+	errChatStreamFiltered   = errors.New("chat stream was blocked by content filtering")
+	errChatStreamEmpty      = errors.New("chat stream completed without output")
+	errChatStreamIdle       = errors.New("chat stream timed out while waiting for data")
+)
+
 func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -90,12 +100,17 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	if timeoutSecs < 30 {
 		timeoutSecs = 300
 	}
+	timeout := time.Duration(timeoutSecs) * time.Second
+	idleTimeout := min(timeout, 90*time.Second)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = min(timeout, 30*time.Second)
 	return &Client{
-		baseURL:    baseURL,
-		apiKey:     strings.TrimSpace(apiKey),
-		chatModel:  fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
-		imageModel: fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
-		httpClient: &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second},
+		baseURL:           baseURL,
+		apiKey:            strings.TrimSpace(apiKey),
+		chatModel:         fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
+		imageModel:        fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
+		httpClient:        &http.Client{Timeout: timeout, Transport: transport},
+		streamIdleTimeout: idleTimeout,
 	}, nil
 }
 
@@ -246,7 +261,10 @@ func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, ima
 }
 
 func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, bool, error) {
-	resp, err := c.ChatStreamWithImages(ctx, messages, imageURLs)
+	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
+	defer cancelStream()
+	defer idleTimer.Stop()
+	resp, err := c.ChatStreamWithImages(streamCtx, messages, imageURLs)
 	if err != nil {
 		return "", false, err
 	}
@@ -256,21 +274,33 @@ func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, ima
 	scanner.Buffer(make([]byte, 64*1024), 2<<20)
 	fullText := ""
 	receivedOutput := false
+	completed := false
 	for scanner.Scan() {
+		idleTimer.Reset(c.effectiveStreamIdleTimeout())
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
+		if raw == "" {
+			continue
+		}
+		if raw == "[DONE]" {
+			completed = true
 			continue
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-			continue
+			return fullText, receivedOutput, fmt.Errorf("decode chat stream event: %w", err)
 		}
 		if message := streamError(payload); message != "" {
 			return fullText, receivedOutput, errors.New(message)
+		}
+		if reason := streamFinishReason(payload); reason != "" {
+			if err := validateChatFinishReason(reason); err != nil {
+				return fullText, receivedOutput, err
+			}
+			completed = true
 		}
 		changed := false
 		for _, fragment := range streamTextFragments(payload) {
@@ -290,7 +320,16 @@ func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, ima
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if idleTimedOut.Load() && ctx.Err() == nil {
+			return fullText, receivedOutput, errChatStreamIdle
+		}
 		return fullText, receivedOutput, err
+	}
+	if !completed {
+		return fullText, receivedOutput, errChatStreamIncomplete
+	}
+	if strings.TrimSpace(fullText) == "" {
+		return fullText, receivedOutput, errChatStreamEmpty
 	}
 	return fullText, receivedOutput, nil
 }
@@ -338,12 +377,13 @@ func (c *Client) ChatAgentWithTools(
 		})
 	}
 	payload := map[string]any{
-		"model":          c.chatModel,
-		"messages":       chatPayloadMessages(messages, imageURLs),
-		"stream":         true,
-		"stream_options": map[string]any{"include_usage": true},
-		"tools":          declarations,
-		"tool_choice":    "auto",
+		"model":               c.chatModel,
+		"messages":            chatPayloadMessages(messages, imageURLs),
+		"stream":              true,
+		"stream_options":      map[string]any{"include_usage": true},
+		"tools":               declarations,
+		"tool_choice":         "auto",
+		"parallel_tool_calls": false,
 	}
 	if c.reasoningEffort != "" {
 		payload["reasoning_effort"] = c.reasoningEffort
@@ -382,7 +422,10 @@ func (c *Client) chatAgentWithPayload(
 	payload map[string]any,
 	onUpdate func(text, reasoning string) error,
 ) (AgentChatResult, bool, error) {
-	resp, err := c.chatStreamWithPayload(ctx, payload)
+	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
+	defer cancelStream()
+	defer idleTimer.Stop()
+	resp, err := c.chatStreamWithPayload(streamCtx, payload)
 	if err != nil {
 		return AgentChatResult{}, false, err
 	}
@@ -393,23 +436,35 @@ func (c *Client) chatAgentWithPayload(
 	toolNames := map[int]string{}
 	toolArguments := map[int]string{}
 	minToolIndex := -1
+	completed := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2<<20)
 	for scanner.Scan() {
+		idleTimer.Reset(c.effectiveStreamIdleTimeout())
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
+		if raw == "" {
+			continue
+		}
+		if raw == "[DONE]" {
+			completed = true
 			continue
 		}
 		var event map[string]any
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			continue
+			return result, receivedOutput, fmt.Errorf("decode chat agent stream event: %w", err)
 		}
 		if message := streamError(event); message != "" {
 			return result, receivedOutput, errors.New(message)
+		}
+		if reason := streamFinishReason(event); reason != "" {
+			if err := validateChatFinishReason(reason); err != nil {
+				return result, receivedOutput, err
+			}
+			completed = true
 		}
 		if reasoningTokens := streamReasoningTokens(event); reasoningTokens > result.ReasoningTokens {
 			result.ReasoningTokens = reasoningTokens
@@ -456,12 +511,61 @@ func (c *Client) chatAgentWithPayload(
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if idleTimedOut.Load() && ctx.Err() == nil {
+			return result, receivedOutput, errChatStreamIdle
+		}
 		return result, receivedOutput, err
+	}
+	if !completed {
+		return result, receivedOutput, errChatStreamIncomplete
+	}
+	if len(toolNames) > 1 || len(toolArguments) > 1 {
+		return result, receivedOutput, errors.New("provider returned multiple tool calls while parallel tool calls are disabled")
 	}
 	if minToolIndex >= 0 {
 		result.ToolCall = &ToolCall{Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
 	}
 	return result, receivedOutput, nil
+}
+
+func (c *Client) effectiveStreamIdleTimeout() time.Duration {
+	if c != nil && c.streamIdleTimeout > 0 {
+		return c.streamIdleTimeout
+	}
+	return 90 * time.Second
+}
+
+func (c *Client) chatStreamContext(ctx context.Context) (context.Context, context.CancelFunc, *time.Timer, *atomic.Bool) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	timedOut := &atomic.Bool{}
+	timer := time.AfterFunc(c.effectiveStreamIdleTimeout(), func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	return streamCtx, cancel, timer, timedOut
+}
+
+func streamFinishReason(payload map[string]any) string {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return ""
+	}
+	choice, _ := choices[0].(map[string]any)
+	reason, _ := choice["finish_reason"].(string)
+	return strings.TrimSpace(reason)
+}
+
+func validateChatFinishReason(reason string) error {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "stop", "tool_calls", "function_call":
+		return nil
+	case "length", "max_tokens":
+		return errChatStreamTruncated
+	case "content_filter", "safety":
+		return errChatStreamFiltered
+	default:
+		return fmt.Errorf("unsupported chat finish reason %q", reason)
+	}
 }
 
 type streamStringFragment struct {
@@ -530,6 +634,9 @@ func transientChatError(ctx context.Context, err error) bool {
 		return false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, errChatStreamIncomplete) || errors.Is(err, errChatStreamIdle) {
 		return true
 	}
 	var upstream *UpstreamError

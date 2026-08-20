@@ -12,8 +12,10 @@ import (
 
 const assistantConversationCols = `id, user_id, title, workspace, created_at, updated_at`
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
-const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id, mode, resolved_mode,
-	status, stage, prompt, params, reserved_cents, cost_cents, billing_generation,
+const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id,
+	idempotency_key, request_fingerprint, mode, resolved_mode,
+	status, stage, prompt, params, reserved_cents, cost_cents, billing_generation, attempt,
+	lease_owner, lease_until, heartbeat_at,
 	error_code, error_message, started_at, finished_at, created_at`
 
 func scanAssistantConversation(row pgx.Row) (*AssistantConversation, error) {
@@ -36,8 +38,10 @@ func scanAssistantMessage(row pgx.Row) (*AssistantMessage, error) {
 func scanAssistantRun(row pgx.Row) (*AssistantRun, error) {
 	var item AssistantRun
 	if err := row.Scan(&item.ID, &item.UserID, &item.ConversationID, &item.UserMessageID,
-		&item.AssistantMessageID, &item.Mode, &item.ResolvedMode, &item.Status, &item.Stage,
+		&item.AssistantMessageID, &item.IdempotencyKey, &item.RequestFingerprint,
+		&item.Mode, &item.ResolvedMode, &item.Status, &item.Stage,
 		&item.Prompt, &item.Params, &item.ReservedCents, &item.CostCents, &item.BillingGeneration,
+		&item.Attempt, &item.LeaseOwner, &item.LeaseUntil, &item.HeartbeatAt,
 		&item.ErrorCode, &item.ErrorMessage, &item.StartedAt,
 		&item.FinishedAt, &item.CreatedAt); err != nil {
 		return nil, err
@@ -354,9 +358,16 @@ func InsertAssistantRun(ctx context.Context, q Q, item AssistantRun) (*Assistant
 	}
 	return scanAssistantRun(q.QueryRow(ctx,
 		`INSERT INTO assistant_runs (id, user_id, conversation_id, user_message_id, assistant_message_id,
-			 mode, prompt, params, reserved_cents) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+assistantRunCols,
+			 idempotency_key, request_fingerprint, mode, prompt, params, reserved_cents)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+assistantRunCols,
 		item.ID, item.UserID, item.ConversationID, item.UserMessageID, item.AssistantMessageID,
-		item.Mode, item.Prompt, item.Params, item.ReservedCents))
+		item.IdempotencyKey, item.RequestFingerprint, item.Mode, item.Prompt, item.Params, item.ReservedCents))
+}
+
+func GetUserAssistantRunByIdempotencyKey(ctx context.Context, q Q, userID uuid.UUID, key string) (*AssistantRun, error) {
+	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
+		FROM assistant_runs WHERE user_id = $1 AND idempotency_key = $2`, userID, key))
+	return nilOnNoRows(item, err)
 }
 
 func GetUserAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
@@ -492,41 +503,78 @@ func LockAssistantRunsForUser(ctx context.Context, q Q, userID uuid.UUID) error 
 	return err
 }
 
+func ClaimAssistantRunWithLease(ctx context.Context, q Q, id uuid.UUID, owner string, now time.Time, lease time.Duration) (*AssistantRun, error) {
+	item, err := scanAssistantRun(q.QueryRow(ctx, `UPDATE assistant_runs
+		SET status = 'running', stage = 'routing', started_at = COALESCE(started_at, $3),
+			attempt = attempt + 1, lease_owner = $2, heartbeat_at = $3, lease_until = $4
+		WHERE id = $1 AND status = 'queued'
+		RETURNING `+assistantRunCols, id, owner, now, now.Add(lease)))
+	return nilOnNoRows(item, err)
+}
+
 func ClaimAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
-	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'running', stage = 'routing', started_at = now()
-		WHERE id = $1 AND status = 'queued'`, id)
+	item, err := ClaimAssistantRunWithLease(ctx, q, id, "legacy:"+uuid.NewString(), time.Now().UTC(), 15*time.Minute)
+	return item != nil, err
+}
+
+func RenewAssistantRunLease(ctx context.Context, q Q, id uuid.UUID, attempt int, owner string, now time.Time, lease time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET heartbeat_at = $4, lease_until = $5
+		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_owner = $3 AND lease_until > $4`,
+		id, attempt, owner, now, now.Add(lease))
 	return tag.RowsAffected() > 0, err
 }
 
 func SetAssistantRunStage(ctx context.Context, q Q, id uuid.UUID, resolvedMode, stage string) error {
-	_, err := q.Exec(ctx, `UPDATE assistant_runs SET resolved_mode = $2, stage = $3 WHERE id = $1 AND status = 'running'`,
-		id, resolvedMode, stage)
+	_, err := SetAssistantRunStageAttempt(ctx, q, id, 0, resolvedMode, stage)
 	return err
 }
 
+func SetAssistantRunStageAttempt(ctx context.Context, q Q, id uuid.UUID, attempt int, resolvedMode, stage string) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET resolved_mode = $3, stage = $4
+		WHERE id = $1 AND status = 'running'
+		AND ($2 = 0 OR (attempt = $2 AND lease_until > now()))`, id, attempt, resolvedMode, stage)
+	return tag.RowsAffected() > 0, err
+}
+
 func CompleteAssistantRun(ctx context.Context, q Q, id uuid.UUID, resolvedMode string, costCents int64) (bool, error) {
+	return CompleteAssistantRunAttempt(ctx, q, id, 0, resolvedMode, costCents)
+}
+
+func CompleteAssistantRunAttempt(ctx context.Context, q Q, id uuid.UUID, attempt int, resolvedMode string, costCents int64) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'succeeded', resolved_mode = $2,
-		stage = 'complete', cost_cents = $3, finished_at = now(), error_code = NULL, error_message = NULL
-		WHERE id = $1 AND status = 'running' AND $3 >= 0 AND $3 <= reserved_cents`, id, resolvedMode, costCents)
+		stage = 'complete', cost_cents = $3, finished_at = now(), error_code = NULL, error_message = NULL,
+		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
+		WHERE id = $1 AND status = 'running'
+		AND ($4 = 0 OR (attempt = $4 AND lease_until > now()))
+		AND $3 >= 0 AND $3 <= reserved_cents`, id, resolvedMode, costCents, attempt)
 	return tag.RowsAffected() > 0, err
 }
 
 func FailAssistantRun(ctx context.Context, q Q, id uuid.UUID, code, message string) (bool, error) {
+	return FailAssistantRunAttempt(ctx, q, id, 0, code, message)
+}
+
+func FailAssistantRunAttempt(ctx context.Context, q Q, id uuid.UUID, attempt int, code, message string) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'failed', stage = 'failed',
-		error_code = $2, error_message = $3, finished_at = now()
-		WHERE id = $1 AND status IN ('queued','running')`, id, code, message)
+		error_code = $2, error_message = $3, finished_at = now(),
+		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
+		WHERE id = $1 AND (
+			($4 = 0 AND status IN ('queued','running'))
+			OR ($4 > 0 AND status = 'running' AND attempt = $4 AND lease_until > now())
+		)`, id, code, message, attempt)
 	return tag.RowsAffected() > 0, err
 }
 
 func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
-	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped', finished_at = now()
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped', finished_at = now(),
+		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')`, id, userID)
 	return tag.RowsAffected() > 0, err
 }
 
 func CancelAssistantRunWithCost(ctx context.Context, q Q, userID, id uuid.UUID, costCents int64) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped',
-		cost_cents = $3, finished_at = now()
+		cost_cents = $3, finished_at = now(), lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')
 		AND $3 >= 0 AND $3 <= reserved_cents`, id, userID, costCents)
 	return tag.RowsAffected() > 0, err
@@ -536,6 +584,7 @@ func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
 		cost_cents = 0, billing_generation = billing_generation + 1,
 		error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
+		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
 		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
 		WHERE id = $1 AND status = 'failed'`, id)
 	return tag.RowsAffected() > 0, err
@@ -564,9 +613,19 @@ func AdminForceFailAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, e
 	return tag.RowsAffected() > 0, err
 }
 
-func RequeueRunningAssistantRuns(ctx context.Context, q Q) ([]uuid.UUID, error) {
-	rows, err := q.Query(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', started_at = NULL
-		WHERE status = 'running' RETURNING id`)
+func RequeueExpiredAssistantRuns(ctx context.Context, q Q, now time.Time) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx, `WITH expired AS (
+		UPDATE assistant_runs SET status = 'queued', stage = 'queued', started_at = NULL,
+			lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
+		WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= $1)
+		RETURNING id
+	), queued AS (
+		INSERT INTO assistant_run_outbox (run_id)
+		SELECT id FROM expired
+		ON CONFLICT (run_id) DO UPDATE SET next_attempt_at = now(), updated_at = now()
+		RETURNING run_id
+	)
+	SELECT run_id FROM queued`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -580,6 +639,44 @@ func RequeueRunningAssistantRuns(ctx context.Context, q Q) ([]uuid.UUID, error) 
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func InsertAssistantRunOutbox(ctx context.Context, q Q, runID uuid.UUID) error {
+	_, err := q.Exec(ctx, `INSERT INTO assistant_run_outbox (run_id) VALUES ($1)
+		ON CONFLICT (run_id) DO UPDATE SET next_attempt_at = now(), updated_at = now()`, runID)
+	return err
+}
+
+func DeleteAssistantRunOutbox(ctx context.Context, q Q, runID uuid.UUID) error {
+	_, err := q.Exec(ctx, `DELETE FROM assistant_run_outbox WHERE run_id = $1`, runID)
+	return err
+}
+
+func ListReadyAssistantRunOutboxIDs(ctx context.Context, q Q, now time.Time, limit int) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx, `SELECT outbox.run_id FROM assistant_run_outbox outbox
+		JOIN assistant_runs run ON run.id = outbox.run_id
+		WHERE outbox.next_attempt_at <= $1 AND run.status = 'queued'
+		ORDER BY outbox.created_at ASC, outbox.run_id ASC LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func RecordAssistantRunOutboxFailure(ctx context.Context, q Q, runID uuid.UUID, message string, retryAt time.Time) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_run_outbox
+		SET attempts = attempts + 1, last_error = $2, next_attempt_at = $3, updated_at = now()
+		WHERE run_id = $1`, runID, message, retryAt)
+	return err
 }
 
 func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID, error) {

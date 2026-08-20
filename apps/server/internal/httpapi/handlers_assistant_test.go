@@ -667,6 +667,30 @@ func TestValidateAssistantRunCapacity(t *testing.T) {
 	}
 }
 
+func TestAssistantRunIdempotencyKeyAndFingerprint(t *testing.T) {
+	key, err := normalizeAssistantIdempotencyKey("", " client-message-id ")
+	if err != nil || key != "client-message-id" {
+		t.Fatalf("fallback key = %q err=%v", key, err)
+	}
+	if _, err := normalizeAssistantIdempotencyKey("bad\nkey", ""); err == nil {
+		t.Fatal("expected control-character key rejection")
+	}
+	body := assistantRunIn{ConversationID: uuid.NewString(), IdempotencyKey: key, Prompt: "问题", Mode: "chat"}
+	first, err := assistantRunRequestFingerprint(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := assistantRunRequestFingerprint(body)
+	if err != nil || first != second || len(first) != 64 {
+		t.Fatalf("fingerprints = %q %q err=%v", first, second, err)
+	}
+	body.Prompt = "另一个问题"
+	changed, err := assistantRunRequestFingerprint(body)
+	if err != nil || changed == first {
+		t.Fatalf("changed fingerprint = %q err=%v", changed, err)
+	}
+}
+
 func TestSelectAssistantRunModelFallsBackForHistoricalRetry(t *testing.T) {
 	cfg := modelconfig.Empty()
 	cfg.Providers = []modelconfig.Provider{{

@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -63,6 +66,7 @@ type importAssistantConversationsIn struct {
 
 type assistantRunIn struct {
 	ConversationID           string           `json:"conversationId"`
+	IdempotencyKey           string           `json:"idempotencyKey"`
 	Prompt                   string           `json:"prompt"`
 	UserMessageContent       string           `json:"userMessageContent"`
 	Mode                     string           `json:"mode"`
@@ -421,6 +425,16 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的创作模式", 422))
 		return
 	}
+	body.IdempotencyKey, err = normalizeAssistantIdempotencyKey(body.IdempotencyKey, body.ClientAssistantMessageID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	requestFingerprint, err := assistantRunRequestFingerprint(body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	body.ServiceKey = strings.TrimSpace(body.ServiceKey)
 	if body.ServiceKey != "" && body.ServiceKey != "assistant_image" &&
 		body.ServiceKey != "ui_design_analysis" && body.ServiceKey != "ui_design_asset" {
@@ -469,6 +483,39 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if conversation.Workspace != workspace {
 		fail(c, apperr.E("validation_error", "workspace: 与对话工作区不一致", 422))
 		return
+	}
+	if body.IdempotencyKey != "" {
+		existing, getErr := store.GetUserAssistantRunByIdempotencyKey(
+			c.Request.Context(), s.St.Pool, user.ID, body.IdempotencyKey,
+		)
+		if getErr != nil {
+			fail(c, getErr)
+			return
+		}
+		if existing != nil {
+			if existing.RequestFingerprint == nil || *existing.RequestFingerprint != requestFingerprint {
+				fail(c, apperr.E("assistant_idempotency_conflict", "相同幂等键已用于不同的助手请求", 409))
+				return
+			}
+			userMessage, messageErr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, existing.UserMessageID)
+			if messageErr != nil {
+				fail(c, messageErr)
+				return
+			}
+			assistantMessage, messageErr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, existing.AssistantMessageID)
+			if messageErr != nil {
+				fail(c, messageErr)
+				return
+			}
+			if userMessage == nil || assistantMessage == nil {
+				fail(c, apperr.E("assistant_run_corrupt", "助手任务关联消息不存在", 500))
+				return
+			}
+			s.enqueueAssistantRunFromOutbox(c.Request.Context(), existing)
+			ok(c, gin.H{"run": assistantRunDict(existing), "userMessage": assistantMessageDict(userMessage),
+				"assistantMessage": assistantMessageDict(assistantMessage)})
+			return
+		}
 	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {
@@ -729,9 +776,40 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	params["_reservedCostCents"] = reservedCents
 	var userMessage, assistantMessage *store.AssistantMessage
 	var run *store.AssistantRun
+	replayed := false
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
 		if err := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); err != nil {
 			return err
+		}
+		if body.IdempotencyKey != "" {
+			existing, err := store.GetUserAssistantRunByIdempotencyKey(
+				c.Request.Context(), tx, user.ID, body.IdempotencyKey,
+			)
+			if err != nil {
+				return err
+			}
+			if existing != nil {
+				if existing.RequestFingerprint == nil || *existing.RequestFingerprint != requestFingerprint {
+					return apperr.E("assistant_idempotency_conflict", "相同幂等键已用于不同的助手请求", 409)
+				}
+				userMessage, err = store.GetAssistantMessage(c.Request.Context(), tx, existing.UserMessageID)
+				if err != nil {
+					return err
+				}
+				if userMessage == nil {
+					return apperr.E("assistant_run_corrupt", "助手任务的用户消息不存在", 500)
+				}
+				assistantMessage, err = store.GetAssistantMessage(c.Request.Context(), tx, existing.AssistantMessageID)
+				if err != nil {
+					return err
+				}
+				if assistantMessage == nil {
+					return apperr.E("assistant_run_corrupt", "助手任务的回复消息不存在", 500)
+				}
+				run = existing
+				replayed = true
+				return nil
+			}
 		}
 		objectReferenceKeys := append(append([]string(nil), taskOutputReferenceKeys...), assistantOutputKeys...)
 		if len(objectReferenceKeys) > 0 {
@@ -829,13 +907,21 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if insertErr != nil {
 			return insertErr
 		}
-		run, insertErr = store.InsertAssistantRun(c.Request.Context(), tx, store.AssistantRun{
+		newRun := store.AssistantRun{
 			ID: runID, UserID: user.ID, ConversationID: conversationID, UserMessageID: userMessageID,
 			AssistantMessageID: assistantMessageID, Mode: body.Mode, Prompt: body.Prompt, Params: params,
 			ReservedCents: reservedCents,
-		})
+		}
+		if body.IdempotencyKey != "" {
+			newRun.IdempotencyKey = &body.IdempotencyKey
+			newRun.RequestFingerprint = &requestFingerprint
+		}
+		run, insertErr = store.InsertAssistantRun(c.Request.Context(), tx, newRun)
 		if insertErr != nil {
 			return insertErr
+		}
+		if err := store.InsertAssistantRunOutbox(c.Request.Context(), tx, run.ID); err != nil {
+			return err
 		}
 		if _, _, err := store.SyncUIDesignAssetHistoryFromRun(c.Request.Context(), tx, run, nil); err != nil {
 			return err
@@ -858,24 +944,39 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if err := s.Queue.EnqueueAssistantRun(c.Request.Context(), run.ID.String()); err != nil {
-		message := "任务入队失败，请稍后重试"
-		if _, failErr := assistantbilling.Fail(c.Request.Context(), s.St, run.ID, "queue_error", message); failErr != nil {
-			fail(c, failErr)
-			return
+	enqueued := s.enqueueAssistantRunFromOutbox(c.Request.Context(), run)
+	if enqueued {
+		if history, histErr := store.GetTaskByIdemKey(c.Request.Context(), s.St.Pool, user.ID, store.UIDesignAssetHistoryIdempotencyKey(run.ID)); histErr == nil && history != nil {
+			event := taskstream.Event{Stage: history.Status, Status: history.Status}
+			taskstream.Publish(c.Request.Context(), s.assistantStreamRedis(), history.ID.String(), event)
+			taskstream.PublishUser(c.Request.Context(), s.assistantStreamRedis(), user.ID.String(), event)
 		}
-		_ = store.UpdateAssistantMessage(c.Request.Context(), s.St.Pool, assistantMessage.ID, "", body.Mode, "failed",
-			map[string]any{"runId": run.ID.String(), "pending": false, "statusStage": "failed", "error": message})
-		fail(c, apperr.E("queue_error", message, 503))
+	}
+	payload := gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
+		"assistantMessage": assistantMessageDict(assistantMessage)}
+	if replayed {
+		ok(c, payload)
 		return
 	}
-	if history, histErr := store.GetTaskByIdemKey(c.Request.Context(), s.St.Pool, user.ID, store.UIDesignAssetHistoryIdempotencyKey(run.ID)); histErr == nil && history != nil {
-		event := taskstream.Event{Stage: history.Status, Status: history.Status}
-		taskstream.Publish(c.Request.Context(), s.assistantStreamRedis(), history.ID.String(), event)
-		taskstream.PublishUser(c.Request.Context(), s.assistantStreamRedis(), user.ID.String(), event)
+	respondCreated(c, payload)
+}
+
+func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.AssistantRun) bool {
+	if run == nil || run.Status != "queued" {
+		return false
 	}
-	respondCreated(c, gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
-		"assistantMessage": assistantMessageDict(assistantMessage)})
+	if err := s.Queue.EnqueueAssistantRun(ctx, run.ID.String()); err != nil {
+		log.Printf("assistant run %s enqueue deferred to outbox: %v", run.ID, err)
+		if recordErr := store.RecordAssistantRunOutboxFailure(ctx, s.St.Pool, run.ID,
+			err.Error(), time.Now().UTC().Add(5*time.Second)); recordErr != nil {
+			log.Printf("assistant run %s outbox failure record failed: %v", run.ID, recordErr)
+		}
+		return false
+	}
+	if err := store.DeleteAssistantRunOutbox(ctx, s.St.Pool, run.ID); err != nil {
+		log.Printf("assistant run %s outbox cleanup failed: %v", run.ID, err)
+	}
+	return true
 }
 
 func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID uuid.UUID) error {
@@ -1173,6 +1274,33 @@ func parseAssistantUUID(value string) uuid.UUID {
 		return id
 	}
 	return uuid.New()
+}
+
+func normalizeAssistantIdempotencyKey(value, fallback string) (string, error) {
+	key := strings.TrimSpace(value)
+	if key == "" {
+		key = strings.TrimSpace(fallback)
+	}
+	if key == "" {
+		return "", nil
+	}
+	if len([]rune(key)) > 160 || strings.IndexFunc(key, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return "", apperr.E("validation_error", "idempotencyKey 格式无效", 422)
+	}
+	return key, nil
+}
+
+func assistantRunRequestFingerprint(body assistantRunIn) (string, error) {
+	rawSnapshot := append([]byte(nil), body.CanvasSnapshot...)
+	body.CanvasSnapshot = nil
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	payload = append(payload, 0)
+	payload = append(payload, rawSnapshot...)
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func parseAssistantTime(value string) time.Time {

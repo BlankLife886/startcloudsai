@@ -101,6 +101,10 @@ func release(ctx context.Context, q store.Q, run *store.AssistantRun, reason str
 
 // Complete settles only the actual routed cost and returns any over-reservation.
 func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode string) (bool, error) {
+	return CompleteAttempt(ctx, st, id, 0, resolvedMode)
+}
+
+func CompleteAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string) (bool, error) {
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		run, err := store.GetAssistantRunForUpdate(ctx, tx, id)
@@ -110,11 +114,14 @@ func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode s
 		if run.Status != "running" {
 			return nil
 		}
+		if expectedAttempt > 0 && run.Attempt != expectedAttempt {
+			return nil
+		}
 		cost := ResolvedCost(run, resolvedMode)
 		if cost < 0 || cost > run.ReservedCents {
 			return apperr.E("assistant_billing_invalid", "AI 助手结算金额超过预留金额", 500)
 		}
-		changed, err = store.CompleteAssistantRun(ctx, tx, id, resolvedMode, cost)
+		changed, err = store.CompleteAssistantRunAttempt(ctx, tx, id, expectedAttempt, resolvedMode, cost)
 		if err != nil || !changed {
 			return err
 		}
@@ -147,11 +154,18 @@ func Fail(ctx context.Context, st *store.Store, id uuid.UUID, code, message stri
 }
 
 func FailTx(ctx context.Context, q store.Q, id uuid.UUID, code, message string) (bool, error) {
+	return FailTxAttempt(ctx, q, id, 0, code, message)
+}
+
+func FailTxAttempt(ctx context.Context, q store.Q, id uuid.UUID, expectedAttempt int, code, message string) (bool, error) {
 	run, err := store.GetAssistantRunForUpdate(ctx, q, id)
 	if err != nil || run == nil {
 		return false, err
 	}
-	changed, err := store.FailAssistantRun(ctx, q, id, code, message)
+	if expectedAttempt > 0 && run.Attempt != expectedAttempt {
+		return false, nil
+	}
+	changed, err := store.FailAssistantRunAttempt(ctx, q, id, expectedAttempt, code, message)
 	if err != nil || !changed {
 		return changed, err
 	}

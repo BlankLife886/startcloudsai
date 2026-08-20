@@ -50,7 +50,7 @@ type assistantC2AImageResult struct {
 }
 
 func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
-	running, err := store.RequeueRunningAssistantRuns(ctx, w.St.Pool)
+	running, err := store.RequeueExpiredAssistantRuns(ctx, w.St.Pool, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,9 @@ func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
 		seen[id] = true
 		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
 			log.Printf("recover assistant run %s failed: %v", id, err)
+			continue
 		}
+		_ = store.DeleteAssistantRunOutbox(ctx, w.St.Pool, id)
 	}
 	for _, id := range queued {
 		if seen[id] {
@@ -71,9 +73,32 @@ func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
 		}
 		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
 			log.Printf("recover queued assistant run %s failed: %v", id, err)
+			continue
+		}
+		_ = store.DeleteAssistantRunOutbox(ctx, w.St.Pool, id)
+	}
+	return w.dispatchAssistantRunOutbox(ctx)
+}
+
+func (w *Worker) dispatchAssistantRunOutbox(ctx context.Context) error {
+	ids, err := store.ListReadyAssistantRunOutboxIDs(ctx, w.St.Pool, time.Now().UTC(), 200)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+			_ = store.RecordAssistantRunOutboxFailure(ctx, w.St.Pool, id, err.Error(), time.Now().UTC().Add(5*time.Second))
+			continue
+		}
+		if err := store.DeleteAssistantRunOutbox(ctx, w.St.Pool, id); err != nil {
+			log.Printf("assistant run %s outbox cleanup failed: %v", id, err)
 		}
 	}
 	return nil
+}
+
+func (w *Worker) handleDispatchAssistantOutbox(ctx context.Context, _ *asynq.Task) error {
+	return w.dispatchAssistantRunOutbox(ctx)
 }
 
 func (w *Worker) assistantClient(ctx context.Context) (*sub2api.Client, error) {
@@ -104,15 +129,20 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	if err != nil {
 		return fmt.Errorf("bad assistant run id: %w", err)
 	}
-	claimed, err := store.ClaimAssistantRun(ctx, w.St.Pool, runID)
-	if err != nil || !claimed {
-		return err
-	}
-	run, err := store.GetAssistantRun(ctx, w.St.Pool, runID)
+	leaseOwner := w.workerID + ":assistant:" + uuid.NewString()
+	run, err := store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease)
 	if err != nil || run == nil {
 		return err
 	}
-	err = w.executeAssistantRun(ctx, run)
+	workCtx, cancelWork := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		w.heartbeatAssistantRunLease(workCtx, run, leaseOwner, cancelWork)
+	}()
+	err = w.executeAssistantRun(workCtx, run)
+	cancelWork()
+	<-heartbeatDone
 	if err == nil {
 		return nil
 	}
@@ -129,6 +159,9 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 		if current.Status == "failed" {
 			return nil
 		}
+		if current.Attempt != run.Attempt || current.Status != "running" {
+			return nil
+		}
 	}
 	message := sanitizeUpstreamMessage(err.Error())
 	failureCtx, cancelFailure := context.WithTimeout(context.Background(), 30*time.Second)
@@ -137,7 +170,7 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	var failedContent string
 	failErr := w.St.Tx(failureCtx, func(tx pgx.Tx) error {
 		var err error
-		failed, err = assistantbilling.FailTx(failureCtx, tx, runID, "assistant_run_failed", message)
+		failed, err = assistantbilling.FailTxAttempt(failureCtx, tx, runID, run.Attempt, "assistant_run_failed", message)
 		if err != nil || !failed {
 			return err
 		}
@@ -161,6 +194,44 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	}
 	assistantstream.Publish(context.Background(), w.Stream, runID.String(),
 		assistantstream.Event{Done: true, Status: "failed"})
+	return nil
+}
+
+func (w *Worker) heartbeatAssistantRunLease(
+	ctx context.Context,
+	run *store.AssistantRun,
+	owner string,
+	cancelWork context.CancelFunc,
+) {
+	ticker := time.NewTicker(taskHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			ok, err := store.RenewAssistantRunLease(ctx, w.St.Pool, run.ID, run.Attempt, owner, now.UTC(), taskLease)
+			if err != nil {
+				log.Printf("assistant run %s lease heartbeat failed: %v", run.ID, err)
+				continue
+			}
+			if !ok {
+				log.Printf("assistant run %s lease was lost", run.ID)
+				cancelWork()
+				return
+			}
+		}
+	}
+}
+
+func (w *Worker) setAssistantRunStage(ctx context.Context, run *store.AssistantRun, resolvedMode, stage string) error {
+	changed, err := store.SetAssistantRunStageAttempt(ctx, w.St.Pool, run.ID, run.Attempt, resolvedMode, stage)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return context.Canceled
+	}
 	return nil
 }
 
@@ -226,7 +297,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	} else if len(references) > 0 {
 		stage = "analyzing-image"
 	}
-	if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, mode, stage); err != nil {
+	if err := w.setAssistantRunStage(ctx, run, mode, stage); err != nil {
 		return err
 	}
 	metadata := assistantMessageMetadata(run, nil, stage, "")
@@ -630,6 +701,38 @@ func assistantProposalFunctionTool() sub2api.FunctionTool {
 	}
 }
 
+func assistantConversationPayload(
+	history []*store.AssistantMessage,
+	run *store.AssistantRun,
+	references []string,
+	skipCanvasRefusals bool,
+) []sub2api.Message {
+	payload := make([]sub2api.Message, 0, len(history)+1)
+	currentIncluded := false
+	for _, message := range history {
+		if message == nil || message.ID == run.AssistantMessageID || strings.TrimSpace(message.Content) == "" || message.Status == "failed" {
+			continue
+		}
+		if skipCanvasRefusals && message.Role == "assistant" && canvasAgentLooksLikeRefusal(message.Content) {
+			continue
+		}
+		item := sub2api.Message{Role: message.Role, Content: message.Content}
+		if message.ID == run.UserMessageID {
+			item.Role = "user"
+			item.Content = run.Prompt
+			item.ReferenceImages = references
+			currentIncluded = true
+		}
+		payload = append(payload, item)
+	}
+	if !currentIncluded {
+		payload = append(payload, sub2api.Message{
+			Role: "user", Content: run.Prompt, ReferenceImages: references,
+		})
+	}
+	return payload
+}
+
 func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
 	instructions := `你是图片创作 Agent，全程使用简体中文。
 直接在一次响应中完成判断：
@@ -665,7 +768,7 @@ func (w *Worker) executeAssistantAgent(
 	history []*store.AssistantMessage,
 ) error {
 	run.ResolvedMode = "agent"
-	if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "agent", "thinking"); err != nil {
+	if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
 		return err
 	}
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "agent", "running",
@@ -676,18 +779,9 @@ func (w *Worker) executeAssistantAgent(
 
 	imageCatalog := buildAssistantImageCatalog(history, run.AssistantMessageID)
 	modelCatalog := assistantProposalModelCatalog(run.Params)
-	payload := make([]sub2api.Message, 0, len(history)+1)
+	payload := make([]sub2api.Message, 0, len(history)+2)
 	payload = append(payload, sub2api.Message{Role: "system", Content: assistantAgentInstructions(run, imageCatalog, modelCatalog)})
-	for _, message := range history {
-		if message == nil || message.ID == run.AssistantMessageID || strings.TrimSpace(message.Content) == "" || message.Status == "failed" {
-			continue
-		}
-		item := sub2api.Message{Role: message.Role, Content: message.Content}
-		if message.ID == run.UserMessageID {
-			item.ReferenceImages = references
-		}
-		payload = append(payload, item)
-	}
+	payload = append(payload, assistantConversationPayload(history, run, references, false)...)
 
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
@@ -708,7 +802,7 @@ func (w *Worker) executeAssistantAgent(
 			}
 		}
 		if !answering {
-			if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "agent", "answering"); err != nil {
+			if err := w.setAssistantRunStage(ctx, run, "agent", "answering"); err != nil {
 				return err
 			}
 			answering = true
@@ -785,7 +879,7 @@ func (w *Worker) executeAssistantAgent(
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 			return err
 		}
-		completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "proposal")
+		completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "proposal")
 		if err != nil {
 			return err
 		}
@@ -809,7 +903,7 @@ func (w *Worker) executeAssistantAgent(
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, "chat", "complete", metadata); err != nil {
 		return err
 	}
-	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "chat")
+	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "chat")
 	if err != nil {
 		return err
 	}
@@ -870,7 +964,7 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 		return err
 	}
-	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "proposal")
+	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "proposal")
 	if err != nil {
 		return err
 	}
@@ -1391,20 +1485,11 @@ func requestAssistantChatText(
 func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string) error {
 	messages, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, 60)
 	if err != nil {
-		return err
+		// The current run prompt is authoritative; history is optional context.
+		messages = nil
 	}
 	messages = assistantMessagesAfterContextBoundary(messages)
-	payload := make([]sub2api.Message, 0, len(messages))
-	for _, message := range messages {
-		if message.ID == run.AssistantMessageID || strings.TrimSpace(message.Content) == "" || message.Status == "failed" {
-			continue
-		}
-		item := sub2api.Message{Role: message.Role, Content: message.Content}
-		if message.ID == run.UserMessageID {
-			item.ReferenceImages = references
-		}
-		payload = append(payload, item)
-	}
+	payload := assistantConversationPayload(messages, run, references, false)
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
@@ -1426,7 +1511,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 			}
 		}
 		if !answering {
-			if err := store.SetAssistantRunStage(ctx, w.St.Pool, run.ID, "chat", "answering"); err != nil {
+			if err := w.setAssistantRunStage(ctx, run, "chat", "answering"); err != nil {
 				return err
 			}
 			answering = true
@@ -1457,7 +1542,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		assistantMessageMetadata(run, nil, "complete", "")); err != nil {
 		return err
 	}
-	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "chat")
+	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "chat")
 	if err != nil {
 		return err
 	}
@@ -1564,7 +1649,7 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 		w.enqueueAssistantOutputCleanup(assistantImageOutputKeys(stored))
 		return err
 	}
-	completed, err := assistantbilling.Complete(ctx, w.St, run.ID, "image")
+	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "image")
 	if err != nil {
 		return err
 	}
