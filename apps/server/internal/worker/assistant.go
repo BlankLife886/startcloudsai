@@ -130,7 +130,10 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 		return fmt.Errorf("bad assistant run id: %w", err)
 	}
 	leaseOwner := w.workerID + ":assistant:" + uuid.NewString()
-	run, err := store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease)
+	run, err := w.claimAssistantRun(ctx, runID, leaseOwner)
+	if errors.Is(err, errAssistantRoutesExhausted) {
+		return w.failQueuedAssistantRun(ctx, runID, "对话模型的可用线路均已失败，请稍后重试或切换模型")
+	}
 	if err != nil || run == nil {
 		return err
 	}
@@ -144,6 +147,16 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	cancelWork()
 	<-heartbeatDone
 	if err == nil {
+		return nil
+	}
+	failoverCtx, cancelFailover := context.WithTimeout(context.Background(), 30*time.Second)
+	requeued, failoverErr := w.retryAssistantProviderRoute(failoverCtx, run, err)
+	cancelFailover()
+	if failoverErr != nil {
+		return failoverErr
+	}
+	if requeued {
+		log.Printf("assistant run %s switching provider route after %s", run.ID, assistantRouteDescription(run))
 		return nil
 	}
 
@@ -279,7 +292,10 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		if err != nil {
 			return err
 		}
-		history, histErr := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, 20)
+		client = client.WithMaxOutputTokens(
+			assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
+		)
+		history, histErr := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
 		if histErr != nil {
 			// 历史加载失败时退化为仅使用本轮输入，不阻塞本次运行。
 			history = nil
@@ -350,6 +366,9 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 			return err
 		}
 	}
+	client = client.WithMaxOutputTokens(
+		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
+	)
 	return w.executeAssistantChat(ctx, client, run, references)
 }
 
@@ -371,7 +390,8 @@ func (w *Worker) configuredAssistantModelSelection(ctx context.Context, run *sto
 	if err != nil {
 		return nil, false, err
 	}
-	selection, found := modelconfig.FindExecution(cfg, providerID, modelID)
+	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
+	selection, found := modelconfig.FindExecutionRoute(cfg, providerID, modelID, routeID)
 	if !found {
 		return nil, false, errors.New("助手任务绑定的模型或服务商配置已失效")
 	}
@@ -701,38 +721,6 @@ func assistantProposalFunctionTool() sub2api.FunctionTool {
 	}
 }
 
-func assistantConversationPayload(
-	history []*store.AssistantMessage,
-	run *store.AssistantRun,
-	references []string,
-	skipCanvasRefusals bool,
-) []sub2api.Message {
-	payload := make([]sub2api.Message, 0, len(history)+1)
-	currentIncluded := false
-	for _, message := range history {
-		if message == nil || message.ID == run.AssistantMessageID || strings.TrimSpace(message.Content) == "" || message.Status == "failed" {
-			continue
-		}
-		if skipCanvasRefusals && message.Role == "assistant" && canvasAgentLooksLikeRefusal(message.Content) {
-			continue
-		}
-		item := sub2api.Message{Role: message.Role, Content: message.Content}
-		if message.ID == run.UserMessageID {
-			item.Role = "user"
-			item.Content = run.Prompt
-			item.ReferenceImages = references
-			currentIncluded = true
-		}
-		payload = append(payload, item)
-	}
-	if !currentIncluded {
-		payload = append(payload, sub2api.Message{
-			Role: "user", Content: run.Prompt, ReferenceImages: references,
-		})
-	}
-	return payload
-}
-
 func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
 	instructions := `你是图片创作 Agent，全程使用简体中文。
 直接在一次响应中完成判断：
@@ -779,9 +767,9 @@ func (w *Worker) executeAssistantAgent(
 
 	imageCatalog := buildAssistantImageCatalog(history, run.AssistantMessageID)
 	modelCatalog := assistantProposalModelCatalog(run.Params)
-	payload := make([]sub2api.Message, 0, len(history)+2)
-	payload = append(payload, sub2api.Message{Role: "system", Content: assistantAgentInstructions(run, imageCatalog, modelCatalog)})
-	payload = append(payload, assistantConversationPayload(history, run, references, false)...)
+	payload, _ := buildAssistantContext(
+		assistantAgentInstructions(run, imageCatalog, modelCatalog), history, run, references, false,
+	)
 
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
@@ -822,7 +810,7 @@ func (w *Worker) executeAssistantAgent(
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	})
 	if err != nil {
-		return err
+		return &assistantProviderError{err: err, outputStarted: result.Text != "" || result.Reasoning != "" || result.ToolCall != nil}
 	}
 	if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
 		if err != nil {
@@ -1483,13 +1471,13 @@ func requestAssistantChatText(
 }
 
 func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string) error {
-	messages, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, 60)
+	messages, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
 	if err != nil {
 		// The current run prompt is authoritative; history is optional context.
 		messages = nil
 	}
 	messages = assistantMessagesAfterContextBoundary(messages)
-	payload := assistantConversationPayload(messages, run, references, false)
+	payload, _ := buildAssistantContext(assistantChatSystemPrompt, messages, run, references, false)
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
@@ -1527,7 +1515,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 			run.ID, client.ChatModel(), attempt, hasUsableSuffix)
 	})
 	if err != nil {
-		return err
+		return &assistantProviderError{err: err, outputStarted: strings.TrimSpace(text) != ""}
 	}
 	if strings.TrimSpace(text) == "" {
 		text = "没有收到模型回复，请重试。"
@@ -2028,6 +2016,9 @@ func assistantMessageMetadata(run *store.AssistantRun, images []map[string]any, 
 	metadata["statusStage"] = stage
 	metadata["pending"] = stage != "complete" && stage != "failed" && stage != "stopped"
 	metadata["routing"] = stage == "routing"
+	if run.Mode == "chat" {
+		metadata["systemPromptVersion"] = assistantChatSystemPromptVersion
+	}
 	if images != nil {
 		metadata["images"] = images
 	}

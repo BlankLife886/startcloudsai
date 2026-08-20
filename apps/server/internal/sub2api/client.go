@@ -32,6 +32,7 @@ type Client struct {
 	imageModel        string
 	httpClient        *http.Client
 	streamIdleTimeout time.Duration
+	maxOutputTokens   int
 }
 
 type Message struct {
@@ -144,6 +145,15 @@ func (c *Client) WithReasoningEffort(effort string) *Client {
 	}
 	clone := *c
 	clone.reasoningEffort = strings.ToLower(strings.TrimSpace(effort))
+	return &clone
+}
+
+func (c *Client) WithMaxOutputTokens(tokens int) *Client {
+	if c == nil || tokens <= 0 {
+		return c
+	}
+	clone := *c
+	clone.maxOutputTokens = tokens
 	return &clone
 }
 
@@ -385,6 +395,7 @@ func (c *Client) ChatAgentWithTools(
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,
 	}
+	c.applyChatOutputLimit(payload)
 	if c.reasoningEffort != "" {
 		payload["reasoning_effort"] = c.reasoningEffort
 	}
@@ -636,7 +647,7 @@ func transientChatError(ctx context.Context, err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	if errors.Is(err, errChatStreamIncomplete) || errors.Is(err, errChatStreamIdle) {
+	if errors.Is(err, errChatStreamIncomplete) || errors.Is(err, errChatStreamIdle) || errors.Is(err, errChatStreamEmpty) {
 		return true
 	}
 	var upstream *UpstreamError
@@ -658,6 +669,18 @@ func transientChatError(ctx context.Context, err error) bool {
 		strings.Contains(message, "rate limit") ||
 		strings.Contains(message, "connection reset") ||
 		strings.Contains(message, "unexpected eof")
+}
+
+func RetryableOnAlternateRoute(ctx context.Context, err error) bool {
+	if transientChatError(ctx, err) {
+		return true
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden ||
+			upstream.Status == http.StatusRequestTimeout
+	}
+	return false
 }
 
 type toolCallFragment struct {
@@ -737,10 +760,24 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	payload := map[string]any{
 		"model": c.chatModel, "messages": chatPayloadMessages(messages, imageURLs), "stream": true,
 	}
+	c.applyChatOutputLimit(payload)
 	if c.reasoningEffort != "" {
 		payload["reasoning_effort"] = c.reasoningEffort
 	}
 	return c.chatStreamWithPayload(ctx, payload)
+}
+
+func (c *Client) applyChatOutputLimit(payload map[string]any) {
+	if c == nil || c.maxOutputTokens <= 0 || payload == nil {
+		return
+	}
+	model := strings.ToLower(strings.TrimSpace(c.chatModel))
+	if strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		payload["max_completion_tokens"] = c.maxOutputTokens
+		return
+	}
+	payload["max_tokens"] = c.maxOutputTokens
 }
 
 func chatPayloadMessages(messages []Message, imageURLs []string) []any {

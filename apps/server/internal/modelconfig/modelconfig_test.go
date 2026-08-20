@@ -41,6 +41,18 @@ func TestSelectPublicUsesRequestedOrDefaultModel(t *testing.T) {
 	}
 }
 
+func TestChatModelContextDefaultsAndValidation(t *testing.T) {
+	cfg := testConfig()
+	selected, ok := SelectPublic(cfg, ModelKindChat, "chat")
+	if !ok || selected.Model.ContextWindowTokens != 128_000 || selected.Model.MaxOutputTokens != 8_192 {
+		t.Fatalf("chat context defaults = %#v", selected)
+	}
+	cfg.Models[2].ContextWindowTokens = 3_000
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "上下文窗口") {
+		t.Fatalf("expected invalid context window, got %v", err)
+	}
+}
+
 func TestWorkspaceSelectionUsesAssignedModelsAndPageDefault(t *testing.T) {
 	cfg := testConfig()
 	cfg.Workspaces = map[string]WorkspaceBinding{

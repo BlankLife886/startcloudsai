@@ -153,6 +153,8 @@ type Model struct {
 	OutputFormats               []string            `json:"outputFormats"`
 	ModerationLevels            []string            `json:"moderationLevels"`
 	MaxReferenceImages          int                 `json:"maxReferenceImages"`
+	ContextWindowTokens         int                 `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens             int                 `json:"maxOutputTokens,omitempty"`
 	Public                      bool                `json:"public"`
 	Default                     bool                `json:"default"`
 	Enabled                     bool                `json:"enabled"`
@@ -342,6 +344,17 @@ func normalize(cfg *Config) {
 			model.Tool = ""
 		}
 		model.Description = strings.TrimSpace(model.Description)
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens <= 0 {
+				model.ContextWindowTokens = 128_000
+			}
+			if model.MaxOutputTokens <= 0 {
+				model.MaxOutputTokens = 8_192
+			}
+		} else {
+			model.ContextWindowTokens = 0
+			model.MaxOutputTokens = 0
+		}
 		model.Resolutions = cleanStrings(model.Resolutions)
 		if model.Kind == ModelKindImage {
 			if !model.transparentBackgroundSet {
@@ -631,6 +644,14 @@ func Validate(cfg Config) error {
 		}
 		if model.MinSeconds < 0 || model.MaxSeconds < model.MinSeconds || model.MaxSeconds > 3600 {
 			return fmt.Errorf("模型 %s 的预计耗时无效", model.Name)
+		}
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens < 4_096 || model.ContextWindowTokens > 2_000_000 {
+				return fmt.Errorf("对话模型 %s 的上下文窗口须在 4096-2000000 tokens 之间", model.Name)
+			}
+			if model.MaxOutputTokens < 256 || model.MaxOutputTokens >= model.ContextWindowTokens {
+				return fmt.Errorf("对话模型 %s 的最大输出 tokens 无效", model.Name)
+			}
 		}
 		if model.Default {
 			if !model.Enabled || !model.Public {

@@ -73,6 +73,8 @@ interface ModelItem {
   outputFormats: string[];
   moderationLevels: string[];
   maxReferenceImages: number;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
   public: boolean;
   default: boolean;
   enabled: boolean;
@@ -374,6 +376,10 @@ function hydrate(value: ModelConfig) {
     moderationLevels: model.kind === "image" ? model.moderationLevels || [] : [],
     maxReferenceImages:
       model.kind === "image" ? Number(model.maxReferenceImages ?? 4) : 0,
+    contextWindowTokens:
+      model.kind === "chat" ? Number(model.contextWindowTokens ?? 128000) : 0,
+    maxOutputTokens:
+      model.kind === "chat" ? Number(model.maxOutputTokens ?? 8192) : 0,
     public: model.public !== false,
     default: model.default === true,
   }));
@@ -1054,6 +1060,8 @@ const modelDraft = reactive<ModelDraft>({
   moderationLevels: [...IMAGE_MODERATION_LEVELS],
   moderationEnabled: true,
   maxReferenceImages: 4,
+  contextWindowTokens: 0,
+  maxOutputTokens: 0,
   public: true,
   default: false,
   enabled: true,
@@ -1094,6 +1102,8 @@ function openModel(index = -1) {
           moderationLevels: [...(source.moderationLevels || [])],
           moderationEnabled: (source.moderationLevels || []).length > 0,
           maxReferenceImages: Number(source.maxReferenceImages ?? 4),
+          contextWindowTokens: Number(source.contextWindowTokens ?? (source.kind === "chat" ? 128000 : 0)),
+          maxOutputTokens: Number(source.maxOutputTokens ?? (source.kind === "chat" ? 8192 : 0)),
           public: source.public,
           default: source.default,
           enabled: source.enabled,
@@ -1130,6 +1140,8 @@ function openModel(index = -1) {
           moderationLevels: [...IMAGE_MODERATION_LEVELS],
           moderationEnabled: true,
           maxReferenceImages: 4,
+          contextWindowTokens: kindFilter.value === "chat" ? 128000 : 0,
+          maxOutputTokens: kindFilter.value === "chat" ? 8192 : 0,
           public: true,
           default: false,
           enabled: true,
@@ -1166,6 +1178,8 @@ function selectModelKind(kind: ModelKind) {
 function onModelKindChange(value: unknown) {
   const kind = String(value) as ModelKind;
 	modelDraft.tool = kind === "image_tool" ? "background_remove" : "";
+	modelDraft.contextWindowTokens = kind === "chat" ? Math.max(4096, modelDraft.contextWindowTokens || 128000) : 0;
+	modelDraft.maxOutputTokens = kind === "chat" ? Math.max(256, modelDraft.maxOutputTokens || 8192) : 0;
 	if (kind !== "image") {
     modelDraft.resolutions = [];
     modelDraft.fastMode = false;
@@ -1358,6 +1372,17 @@ function saveModelDraft() {
     maxReferenceImages:
       modelDraft.kind === "image"
         ? Math.min(16, Math.max(0, Math.round(modelDraft.maxReferenceImages)))
+        : 0,
+    contextWindowTokens:
+      modelDraft.kind === "chat"
+        ? Math.min(2000000, Math.max(4096, Math.round(modelDraft.contextWindowTokens)))
+        : 0,
+    maxOutputTokens:
+      modelDraft.kind === "chat"
+        ? Math.min(
+            Math.max(256, Math.round(modelDraft.contextWindowTokens) - 1),
+            Math.max(256, Math.round(modelDraft.maxOutputTokens)),
+          )
         : 0,
     public: modelDraft.public,
     default: modelDraft.default,
@@ -2393,6 +2418,45 @@ onBeforeUnmount(() => {
               </span>
               <el-switch v-model="modelDraft.enabled" />
             </label>
+          </div>
+        </section>
+
+        <section
+          v-if="modelDraft.kind === 'chat'"
+          id="model-capabilities-section"
+          class="model-section"
+        >
+          <header class="model-section__head">
+            <strong>对话上下文</strong>
+            <small>控制助手可使用的历史消息预算与单轮输出预留</small>
+          </header>
+          <div class="model-capability-tiles">
+            <div class="model-capability-tile">
+              <div class="model-capability-copy">
+                <strong>上下文窗口</strong>
+                <span>模型输入与输出的总 token 上限</span>
+              </div>
+              <el-input-number
+                v-model="modelDraft.contextWindowTokens"
+                :min="4096"
+                :max="2000000"
+                :step="4096"
+                :precision="0"
+              />
+            </div>
+            <div class="model-capability-tile">
+              <div class="model-capability-copy">
+                <strong>最大输出</strong>
+                <span>每轮为模型回答预留的 token 数</span>
+              </div>
+              <el-input-number
+                v-model="modelDraft.maxOutputTokens"
+                :min="256"
+                :max="Math.max(256, modelDraft.contextWindowTokens - 1)"
+                :step="256"
+                :precision="0"
+              />
+            </div>
           </div>
         </section>
 

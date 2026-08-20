@@ -747,6 +747,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_chatProviderDisplayName"] = chatSelection.Provider.Name
 		params["_chatModel"] = chatSelection.Model.UpstreamModel
 		params["_chatModelDisplayName"] = chatSelection.Model.Name
+		params["_chatContextWindowTokens"] = chatSelection.Model.ContextWindowTokens
+		params["_chatMaxOutputTokens"] = chatSelection.Model.MaxOutputTokens
 		params["_modelDisplayName"] = chatSelection.Model.Name
 	}
 	chatCostCents := int64(0)

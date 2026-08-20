@@ -894,9 +894,7 @@ func (w *Worker) executeCanvasAgent(
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "agent", Stage: "thinking"})
 
-	payload := make([]sub2api.Message, 0, len(history)+2)
-	payload = append(payload, sub2api.Message{Role: "system", Content: canvasAgentInstructions(run)})
-	payload = append(payload, assistantConversationPayload(history, run, references, true)...)
+	payload, _ := buildAssistantContext(canvasAgentInstructions(run), history, run, references, true)
 	reasoningEffort := assistantParamString(run.Params, "reasoningEffort", "")
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
 	loop := canvasAgentLoopState{summary: "", pendingOps: nil}

@@ -46,20 +46,73 @@ func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t 
 		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前权威问题",
 	}
 	references := []string{"image-a"}
-	payload := assistantConversationPayload(nil, run, references, false)
+	payload, _ := buildAssistantContext("", nil, run, references, false)
 	if len(payload) != 1 || payload[0].Role != "user" || payload[0].Content != run.Prompt ||
 		len(payload[0].ReferenceImages) != 1 || payload[0].ReferenceImages[0] != "image-a" {
 		t.Fatalf("fallback payload = %#v", payload)
 	}
 
 	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: "上一轮问题", Status: "complete"},
 		{ID: uuid.New(), Role: "assistant", Content: "上一轮回答", Status: "complete"},
 		{ID: run.UserMessageID, Role: "user", Content: "过期展示文本", Status: "complete"},
 		{ID: run.AssistantMessageID, Role: "assistant", Content: "占位", Status: "running"},
 	}
-	payload = assistantConversationPayload(history, run, references, false)
-	if len(payload) != 2 || payload[1].Content != run.Prompt || len(payload[1].ReferenceImages) != 1 {
+	payload, _ = buildAssistantContext("", history, run, references, false)
+	if len(payload) != 3 || payload[2].Content != run.Prompt || len(payload[2].ReferenceImages) != 1 {
 		t.Fatalf("history payload = %#v", payload)
+	}
+}
+
+func TestBuildAssistantContextAppliesTokenBudgetAndKeepsCurrentPrompt(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(),
+		Prompt: "必须保留的当前问题",
+		Params: map[string]any{"_chatContextWindowTokens": 4_096, "_chatMaxOutputTokens": 512},
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: strings.Repeat("旧问题", 700), Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: strings.Repeat("旧回答", 700), Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: "最近问题", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "最近回答", Status: "complete"},
+	}
+	payload, stats := buildAssistantContext("受控系统提示", history, run, nil, false)
+	if len(payload) < 2 || payload[0].Role != "system" || payload[len(payload)-1].Content != run.Prompt {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if stats.DroppedMessages == 0 || stats.EstimatedTokens > stats.InputBudget {
+		t.Fatalf("stats = %#v", stats)
+	}
+	if runes := assistantContextTextRunes(payload); runes >= assistantContextTextRunes([]sub2api.Message{
+		{Content: history[0].Content}, {Content: history[1].Content}, {Content: history[2].Content}, {Content: history[3].Content},
+	}) {
+		t.Fatalf("context was not trimmed: runes=%d payload=%#v", runes, payload)
+	}
+}
+
+func TestBuildAssistantContextDropsOrphanedAssistantTurns(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前问题",
+		Params: map[string]any{"_chatContextWindowTokens": 4_096, "_chatMaxOutputTokens": 512},
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "assistant", Content: "没有用户来源的回答", Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: strings.Repeat("超长旧问题", 500), Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "不能脱离旧问题保留", Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: "最近问题", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "最近回答", Status: "complete"},
+	}
+	payload, stats := buildAssistantContext("system", history, run, nil, false)
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content
+	}
+	if strings.Contains(joined, "没有用户来源") || strings.Contains(joined, "不能脱离旧问题保留") {
+		t.Fatalf("orphaned assistant message survived: %#v", payload)
+	}
+	if !strings.Contains(joined, "最近问题") || !strings.Contains(joined, "最近回答") ||
+		payload[len(payload)-1].Content != run.Prompt || stats.DroppedMessages < 3 {
+		t.Fatalf("payload=%#v stats=%#v", payload, stats)
 	}
 }
 

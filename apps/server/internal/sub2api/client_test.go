@@ -20,6 +20,45 @@ func TestUnexpectedEOFIsRetryableForImageRequests(t *testing.T) {
 	}
 }
 
+func TestRetryableOnAlternateRouteClassifiesRouteFailures(t *testing.T) {
+	for _, err := range []error{
+		&UpstreamError{Status: http.StatusUnauthorized, Message: "bad key"},
+		&UpstreamError{Status: http.StatusTooManyRequests, Message: "busy"},
+		errChatStreamIncomplete,
+	} {
+		if !RetryableOnAlternateRoute(context.Background(), err) {
+			t.Fatalf("expected retryable route error: %v", err)
+		}
+	}
+	if RetryableOnAlternateRoute(context.Background(), &UpstreamError{Status: http.StatusBadRequest, Message: "bad request"}) {
+		t.Fatal("400 validation errors must not fail over")
+	}
+}
+
+func TestApplyChatOutputLimitUsesModelCompatibleField(t *testing.T) {
+	tests := []struct {
+		model   string
+		field   string
+		missing string
+	}{
+		{model: "gpt-4.1", field: "max_tokens", missing: "max_completion_tokens"},
+		{model: "gpt-5.4", field: "max_completion_tokens", missing: "max_tokens"},
+		{model: "o3-mini", field: "max_completion_tokens", missing: "max_tokens"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			payload := map[string]any{}
+			(&Client{chatModel: tt.model, maxOutputTokens: 4096}).applyChatOutputLimit(payload)
+			if payload[tt.field] != 4096 {
+				t.Fatalf("payload = %#v", payload)
+			}
+			if _, exists := payload[tt.missing]; exists {
+				t.Fatalf("incompatible token field present: %#v", payload)
+			}
+		})
+	}
+}
+
 func TestChatStreamUsesOpenAIContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
@@ -27,7 +66,7 @@ func TestChatStreamUsesOpenAIContract(t *testing.T) {
 		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["model"] != "gpt-test" || body["stream"] != true {
+		if body["model"] != "gpt-test" || body["stream"] != true || body["max_tokens"] != float64(2048) {
 			t.Fatalf("body = %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -39,7 +78,9 @@ func TestChatStreamUsesOpenAIContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := client.ChatStream(context.Background(), []Message{{Role: "user", Content: "hello"}})
+	resp, err := client.WithMaxOutputTokens(2048).ChatStream(
+		context.Background(), []Message{{Role: "user", Content: "hello"}},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -481,6 +481,41 @@ func ListActiveUserAssistantRunsByWorkspace(ctx context.Context, q Q, userID uui
 	return scanAssistantRuns(rows, err)
 }
 
+func RunningAssistantRunsByProvider(ctx context.Context, q Q, providerKeys []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(providerKeys))
+	if len(providerKeys) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId'), count(*)
+		FROM assistant_runs
+		WHERE status = 'running'
+		AND COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId') = ANY($1)
+		GROUP BY 1`, providerKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var count int64
+		if err := rows.Scan(&key, &count); err != nil {
+			return nil, err
+		}
+		out[key] = count
+	}
+	return out, rows.Err()
+}
+
+func SetQueuedAssistantRunExecutionRoute(ctx context.Context, q Q, id uuid.UUID, fields map[string]any) (bool, error) {
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET params = COALESCE(params, '{}'::jsonb) || $2::jsonb
+		WHERE id = $1 AND status = 'queued'`, id, raw)
+	return tag.RowsAffected() > 0, err
+}
+
 func scanAssistantRuns(rows pgx.Rows, err error) ([]*AssistantRun, error) {
 	if err != nil {
 		return nil, err
@@ -587,6 +622,24 @@ func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
 		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
 		WHERE id = $1 AND status = 'failed'`, id)
+	return tag.RowsAffected() > 0, err
+}
+
+func RequeueRunningAssistantRunForRouteFailover(
+	ctx context.Context,
+	q Q,
+	id uuid.UUID,
+	attempt int,
+	failedRouteKeys []string,
+) (bool, error) {
+	raw, err := json.Marshal(failedRouteKeys)
+	if err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
+		started_at = NULL, lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
+		params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_failedChatProviderRouteKeys}', $3::jsonb, true)
+		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_until > now()`, id, attempt, raw)
 	return tag.RowsAffected() > 0, err
 }
 

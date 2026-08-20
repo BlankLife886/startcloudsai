@@ -48,6 +48,11 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err := store.InsertAssistantRunOutbox(ctx, st.Pool, run.ID); err != nil {
 		t.Fatal(err)
 	}
+	if updated, err := store.SetQueuedAssistantRunExecutionRoute(ctx, st.Pool, run.ID, map[string]any{
+		"_chatProviderConfigId": "provider", "_chatProviderRouteKey": "provider/route-a",
+	}); err != nil || !updated {
+		t.Fatalf("set route = %v err=%v", updated, err)
+	}
 	found, err := store.GetUserAssistantRunByIdempotencyKey(ctx, st.Pool, user.ID, key)
 	if err != nil || found == nil || found.ID != run.ID || found.RequestFingerprint == nil || *found.RequestFingerprint != fingerprint {
 		t.Fatalf("idempotent run = %#v err=%v", found, err)
@@ -60,6 +65,10 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	claimed, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "worker-a", now, time.Minute)
 	if err != nil || claimed == nil || claimed.Attempt != 1 || claimed.LeaseOwner == nil || *claimed.LeaseOwner != "worker-a" {
 		t.Fatalf("claimed run = %#v err=%v", claimed, err)
+	}
+	running, err := store.RunningAssistantRunsByProvider(ctx, st.Pool, []string{"provider/route-a", "provider/route-b"})
+	if err != nil || running["provider/route-a"] != 1 || running["provider/route-b"] != 0 {
+		t.Fatalf("running routes = %#v err=%v", running, err)
 	}
 	if renewed, err := store.RenewAssistantRunLease(ctx, st.Pool, run.ID, claimed.Attempt, "wrong-worker", now, time.Minute); err != nil || renewed {
 		t.Fatalf("wrong-owner renewal = %v err=%v", renewed, err)
@@ -87,8 +96,21 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if changed, err := store.CompleteAssistantRunAttempt(ctx, st.Pool, run.ID, claimed.Attempt, "chat", 0); err != nil || changed {
 		t.Fatalf("stale completion = %v err=%v", changed, err)
 	}
-	if changed, err := store.FailAssistantRunAttempt(ctx, st.Pool, run.ID, second.Attempt, "test", "done"); err != nil || !changed {
-		t.Fatalf("current failure = %v err=%v", changed, err)
+	if changed, err := store.RequeueRunningAssistantRunForRouteFailover(
+		ctx, st.Pool, run.ID, second.Attempt, []string{"provider/route-a"},
+	); err != nil || !changed {
+		t.Fatalf("route failover requeue = %v err=%v", changed, err)
+	}
+	reloaded, err = store.GetAssistantRun(ctx, st.Pool, run.ID)
+	if err != nil || reloaded == nil {
+		t.Fatalf("load failover run = %#v err=%v", reloaded, err)
+	}
+	failedRoutes, _ := reloaded.Params["_failedChatProviderRouteKeys"].([]any)
+	if reloaded.Status != "queued" || len(failedRoutes) != 1 || failedRoutes[0] != "provider/route-a" {
+		t.Fatalf("failover run = %#v routes=%#v err=%v", reloaded, failedRoutes, err)
+	}
+	if changed, err := store.FailAssistantRun(ctx, st.Pool, run.ID, "test", "done"); err != nil || !changed {
+		t.Fatalf("cleanup failure = %v err=%v", changed, err)
 	}
 	if err := store.DeleteAssistantRunOutbox(ctx, st.Pool, run.ID); err != nil {
 		t.Fatal(err)
