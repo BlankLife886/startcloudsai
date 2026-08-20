@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -104,6 +105,31 @@ func TestParseCanvasAgentOpsAcceptsGraphWithoutCoordinates(t *testing.T) {
 	}
 }
 
+func TestParseCanvasAgentOpsKeepsFiftyNodeWorkflow(t *testing.T) {
+	nodes := make([]map[string]any, 0, 50)
+	edges := make([]map[string]any, 0, 49)
+	for index := 1; index <= 50; index++ {
+		key := fmt.Sprintf("n%d", index)
+		nodes = append(nodes, map[string]any{"key": key, "type": "text", "text": fmt.Sprintf("步骤 %d", index)})
+		if index > 1 {
+			edges = append(edges, map[string]any{"from": fmt.Sprintf("n%d", index-1), "to": key})
+		}
+	}
+	raw, err := json.Marshal(map[string]any{"summary": "已创建 50 节点工作流", "ops": []any{map[string]any{"type": "create_graph", "nodes": nodes, "edges": edges}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ops, err := parseCanvasAgentOps(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphNodes, _ := ops[0]["nodes"].([]map[string]any)
+	graphEdges, _ := ops[0]["edges"].([]map[string]any)
+	if len(graphNodes) != 50 || len(graphEdges) != 49 {
+		t.Fatalf("nodes=%d edges=%d", len(graphNodes), len(graphEdges))
+	}
+}
+
 func TestParseCanvasAgentOpsDropsGraphWithoutNodes(t *testing.T) {
 	_, _, err := parseCanvasAgentOps(`{"ops":[{"type":"create_graph","nodes":[]}]}`)
 	if err == nil {
@@ -151,16 +177,7 @@ func TestParseCanvasAgentOpsAcceptsMoveAndResize(t *testing.T) {
 	}
 }
 
-func TestCanvasAgentWantsMutationAndRefusal(t *testing.T) {
-	if !canvasAgentWantsMutation("创建一条生图流程并把它们连起来") {
-		t.Fatal("expected mutation")
-	}
-	if !canvasAgentWantsMutation("从零搭一条电商主图工作流，搭好后跑一下出图") {
-		t.Fatal("expected workflow wording to count as mutation")
-	}
-	if canvasAgentWantsMutation("这个节点是做什么的") {
-		t.Fatal("question should not force mutation")
-	}
+func TestCanvasAgentRecognizesRefusal(t *testing.T) {
 	if !canvasAgentLooksLikeRefusal("当前环境无法执行画布修改操作（没有可用的画布工具）") {
 		t.Fatal("expected refusal")
 	}
@@ -169,18 +186,74 @@ func TestCanvasAgentWantsMutationAndRefusal(t *testing.T) {
 	}
 }
 
-func TestCanvasAgentFallbackGraphUsesQuotedPrompt(t *testing.T) {
-	prompt := "从零搭一条电商主图工作流：卖点提取 → 生图配置 → 主图，提示词写「白色运动鞋，棚拍，干净背景」，搭好后跑一下出图。"
-	if !canvasAgentWantsNewWorkflow(prompt) {
-		t.Fatal("expected new workflow")
+func TestCanvasAgentParsesCapabilities(t *testing.T) {
+	capabilities, err := parseCanvasAgentCapabilities("```json\n{\"capabilities\":[\"reply\",\"canvas_write\",\"unknown\"]}\n```")
+	if err != nil {
+		t.Fatal(err)
 	}
-	ops := canvasAgentFallbackGraphOps(prompt)
-	if len(ops) != 1 || ops[0]["type"] != "create_graph" {
-		t.Fatalf("ops = %#v", ops)
+	if !capabilities[canvasCapabilityReply] || !capabilities[canvasCapabilityWrite] || capabilities["unknown"] {
+		t.Fatalf("capabilities = %#v", capabilities)
 	}
-	nodes, _ := ops[0]["nodes"].([]map[string]any)
-	if len(nodes) != 3 || nodes[0]["text"] != "白色运动鞋，棚拍，干净背景" || nodes[1]["type"] != "config" || nodes[2]["type"] != "image" {
-		t.Fatalf("nodes = %#v", nodes)
+}
+
+func TestCanvasAgentCapabilityToolsEnforceLeastPrivilege(t *testing.T) {
+	replyTools := canvasAgentToolsForCapabilities(canvasAgentCapabilities{canvasCapabilityReply: true})
+	if len(replyTools) != 1 || replyTools[0].Name != canvasReplyTool().Name {
+		t.Fatalf("reply tools = %#v", replyTools)
+	}
+	if got := canvasAgentInitialToolChoice(canvasAgentCapabilities{canvasCapabilityReply: true}, replyTools); got != canvasReplyTool().Name {
+		t.Fatalf("reply choice = %q", got)
+	}
+
+	writeCapabilities := canvasAgentCapabilities{canvasCapabilityWrite: true}
+	writeTools := canvasAgentToolsForCapabilities(writeCapabilities)
+	if !canvasAgentToolAllowed(writeTools, canvasApplyOpsTool().Name) || !canvasAgentToolAllowed(writeTools, canvasReadStateTool().Name) {
+		t.Fatalf("write tools = %#v", writeTools)
+	}
+	if canvasAgentToolAllowed(writeTools, canvasRunGenerationTool().Name) {
+		t.Fatalf("generation tool leaked into write turn: %#v", writeTools)
+	}
+	if got := canvasAgentInitialToolChoice(writeCapabilities, writeTools); got != canvasApplyOpsTool().Name {
+		t.Fatalf("write choice = %q", got)
+	}
+
+	readTools := canvasAgentToolsForCapabilities(canvasAgentCapabilities{canvasCapabilityRead: true})
+	if canvasAgentToolAllowed(readTools, canvasApplyOpsTool().Name) {
+		t.Fatalf("write tool leaked into read turn: %#v", readTools)
+	}
+	if got := canvasAgentInitialToolChoice(canvasAgentCapabilities{canvasCapabilityRead: true}, readTools); got != sub2api.RequiredToolChoice {
+		t.Fatalf("read choice = %q", got)
+	}
+}
+
+func TestCanvasAgentExplicitNoMutationRemovesWriteCapabilities(t *testing.T) {
+	for _, prompt := range []string{
+		"帮我设计一个图标生成工作流，先讲方案，不要修改画布",
+		"先不执行，只解释一下会怎么连接",
+		"Explain only, do not modify the canvas",
+	} {
+		if !canvasAgentForbidsMutation(prompt) {
+			t.Fatalf("expected no-mutation boundary for %q", prompt)
+		}
+		capabilities := restrictCanvasAgentCapabilities(prompt, canvasAgentCapabilities{
+			canvasCapabilityReply: true, canvasCapabilityWrite: true, canvasCapabilityGeneration: true,
+		})
+		tools := canvasAgentToolsForCapabilities(capabilities)
+		if canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) || canvasAgentToolAllowed(tools, canvasRunGenerationTool().Name) {
+			t.Fatalf("mutating tools remained for %q: %#v", prompt, tools)
+		}
+	}
+	if canvasAgentForbidsMutation("不要只讲方案，直接修改画布") {
+		t.Fatal("negated explanation request must still allow a mutation")
+	}
+	for _, prompt := range []string{
+		"新增一个文本节点，不要改动现有节点",
+		"Add one text node. Do not change any existing node.",
+		"Create a group, but don't change existing nodes.",
+	} {
+		if canvasAgentForbidsMutation(prompt) {
+			t.Fatalf("existing-node constraint must still allow additive work: %q", prompt)
+		}
 	}
 }
 
@@ -201,13 +274,31 @@ func TestCanvasAgentExposesReadAndWriteTools(t *testing.T) {
 		names[tool.Name] = true
 	}
 	for _, want := range []string{
-		"canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_export_snapshot",
+		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_export_snapshot",
 		"canvas_run_generation", "canvas_generation_status", "canvas_create_attachment_nodes",
 		"site_navigate", "canvas_list_projects", "prompts_search", "assets_list", "assets_add",
 	} {
 		if !names[want] {
 			t.Fatalf("tool %s missing from %#v", want, names)
 		}
+	}
+}
+
+func TestCanvasAgentReplyContent(t *testing.T) {
+	if got := canvasAgentReplyContent(`{"content":" 这是说明，不修改画布。 "}`); got != "这是说明，不修改画布。" {
+		t.Fatalf("reply = %q", got)
+	}
+	if got := canvasAgentReplyContent("not json"); got != "" {
+		t.Fatalf("invalid reply = %q", got)
+	}
+}
+
+func TestCanvasAgentRecognizesOperationsPayloadAsNonUserFacingContent(t *testing.T) {
+	if !canvasAgentContentIsOpsPayload(`{"summary":"已创建工作流","ops":[{"type":"add_node","nodeType":"text"}]}`) {
+		t.Fatal("expected operations payload")
+	}
+	if canvasAgentContentIsOpsPayload("已创建工作流") {
+		t.Fatal("plain summary must stay user-facing")
 	}
 }
 

@@ -277,6 +277,8 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
 function AgentReasoningSummary({ text, detail, theme }: { text: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     const { t } = useTranslation();
     const status = String(objectField(detail, "status") || "");
+    const effort = String(objectField(detail, "effort") || "");
+    const tokens = Number(objectField(detail, "tokens") || 0);
     const running = ["inProgress", "in_progress", "running", "started", "pending"].includes(status);
     return (
         <details className="group min-w-0 text-left">
@@ -284,6 +286,8 @@ function AgentReasoningSummary({ text, detail, theme }: { text: string; detail?:
                 <div className="flex min-w-0 items-center gap-2">
                     {running ? <LoaderCircle className="size-4 shrink-0 animate-spin" /> : <Brain className="size-4 shrink-0" />}
                     <span>{t(running ? "agent.message.thinking" : "agent.events.reasoning")}</span>
+                    {effort ? <span className="text-[11px] opacity-70">{t(`agent.composer.effort.${effort}`)}</span> : null}
+                    {tokens > 0 ? <span className="text-[11px] opacity-70">{t("agent.message.reasoningTokens", { count: tokens })}</span> : null}
                     <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90" />
                 </div>
             </summary>

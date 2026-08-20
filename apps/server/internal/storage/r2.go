@@ -212,6 +212,49 @@ func (s *Storage) getBytesLimitOnce(ctx context.Context, key string, maxBytes in
 	return data, err
 }
 
+// GetBytesPrefix reads the first maxBytes of an object. Task input inspection
+// only needs the image header, so this avoids pulling a full 15MB original
+// through a 7s storage timeout.
+func (s *Storage) GetBytesPrefix(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("invalid prefix size")
+	}
+	var lastErr error
+	for attempt := 0; attempt < objectReadAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, objectReadAttemptTimeout)
+		data, err := s.getBytesPrefixOnce(attemptCtx, key, maxBytes)
+		cancel()
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !transientObjectReadError(err) || attempt == objectReadAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Storage) getBytesPrefixOnce(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(fmt.Sprintf("bytes=0-%d", maxBytes-1)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(io.LimitReader(out.Body, maxBytes+1))
+}
+
 func transientObjectReadError(err error) bool {
 	if err == nil || IsNotFound(err) || errors.Is(err, context.Canceled) {
 		return false

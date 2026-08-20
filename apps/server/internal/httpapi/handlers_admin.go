@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -1749,6 +1751,13 @@ var settingsCamel = map[string]string{
 	"crun_base_url":                               "crunBaseUrl",
 	"crun_api_key":                                "crunApiKey",
 	"crun_timeout_secs":                           "crunTimeoutSecs",
+	"lanjing_pay_enabled":                         "lanjingPayEnabled",
+	"lanjing_pay_base_url":                        "lanjingPayBaseUrl",
+	"lanjing_pay_secret":                          "lanjingPaySecret",
+	"lanjing_pay_notify_url":                      "lanjingPayNotifyUrl",
+	"lanjing_pay_timeout_secs":                    "lanjingPayTimeoutSecs",
+	"lanjing_pay_alipay_enabled":                  "lanjingPayAlipayEnabled",
+	"lanjing_pay_wechat_enabled":                  "lanjingPayWechatEnabled",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1795,7 +1804,7 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		if camel == "" {
 			camel = k
 		}
-		if k == "c2a_api_key" || k == "sub2api_api_key" || k == "crun_api_key" {
+		if k == "c2a_api_key" || k == "sub2api_api_key" || k == "crun_api_key" || k == "lanjing_pay_secret" {
 			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
 			var stored string
 			_ = json.Unmarshal(v, &stored)
@@ -1814,6 +1823,25 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 	ceiling := int64(s.workerConcurrencyCeiling())
 	out["workerConcurrencyCeiling"] = ceiling
 	out["effectiveGlobalConcurrency"] = max(configured, 1)
+	payment, err := settings.ResolveLanjingPay(c.Request.Context(), s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
+	}
+	out["lanjingPayEnabled"] = payment.Enabled
+	out["lanjingPayBaseUrl"] = payment.BaseURL
+	out["lanjingPaySecret"] = maskSecret(payment.Secret)
+	out["lanjingPayNotifyUrl"] = payment.NotifyURL
+	out["lanjingPayTimeoutSecs"] = payment.TimeoutSecs
+	out["lanjingPayAlipayEnabled"] = payment.AlipayEnabled
+	out["lanjingPayWechatEnabled"] = payment.WechatEnabled
 	return out, nil
 }
 
@@ -1984,7 +2012,7 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "growthFailureBonusDailyLimit: 须在 0-100 之间", 422))
 				return
 			}
-		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled":
+		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled", "lanjing_pay_enabled", "lanjing_pay_alipay_enabled", "lanjing_pay_wechat_enabled":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
@@ -2114,7 +2142,7 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				cleaned[key] = control
 			}
 			raw, _ = json.Marshal(cleaned)
-		case "c2a_base_url", "sub2api_base_url", "crun_base_url":
+		case "c2a_base_url", "sub2api_base_url", "crun_base_url", "lanjing_pay_base_url":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
@@ -2127,7 +2155,20 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			}
 			normalized, _ := json.Marshal(v)
 			raw = normalized
-		case "c2a_api_key", "sub2api_api_key", "crun_api_key":
+		case "lanjing_pay_notify_url":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", s.Cfg.AppEnv == "production") != nil {
+				fail(c, apperr.E("validation_error", camel+": 必须是有效的公网 HTTPS 地址", 422))
+				return
+			}
+			normalized, _ := json.Marshal(v)
+			raw = normalized
+		case "c2a_api_key", "sub2api_api_key", "crun_api_key", "lanjing_pay_secret":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
@@ -2153,6 +2194,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1800 {
 				fail(c, apperr.E("validation_error", camel+": 须在 0-1800 之间（0 = 使用默认）", 422))
+				return
+			}
+		case "lanjing_pay_timeout_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 60 {
+				fail(c, apperr.E("validation_error", camel+": 须在 1-60 之间", 422))
 				return
 			}
 		case "sub2api_chat_model", "sub2api_image_model":
@@ -2182,6 +2229,10 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		updates["trial_campaign_feature_keys"], _ = json.Marshal([]string{value})
 	}
 	ctx := c.Request.Context()
+	if err := s.validateLanjingPaySettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		for key, value := range updates {
 			if terr := settings.Set(ctx, tx, key, value); terr != nil {
@@ -2200,6 +2251,68 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, out)
+}
+
+func (s *Server) validateLanjingPaySettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	current, err := settings.ResolveLanjingPay(ctx, s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	for key, target := range map[string]*string{
+		"lanjing_pay_base_url":   &current.BaseURL,
+		"lanjing_pay_notify_url": &current.NotifyURL,
+	} {
+		if raw := updates[key]; raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw := updates["lanjing_pay_secret"]; raw != nil {
+		var stored string
+		_ = json.Unmarshal(raw, &stored)
+		plain, decryptErr := settings.DecryptSecret(stored, s.Cfg.AppSecret)
+		if decryptErr != nil {
+			return decryptErr
+		}
+		current.Secret = plain
+	}
+	for key, target := range map[string]*bool{
+		"lanjing_pay_enabled":        &current.Enabled,
+		"lanjing_pay_alipay_enabled": &current.AlipayEnabled,
+		"lanjing_pay_wechat_enabled": &current.WechatEnabled,
+	} {
+		if raw := updates[key]; raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw := updates["lanjing_pay_timeout_secs"]; raw != nil {
+		_ = json.Unmarshal(raw, &current.TimeoutSecs)
+	}
+	if !current.Enabled {
+		return nil
+	}
+	if !current.AlipayEnabled && !current.WechatEnabled {
+		return apperr.E("validation_error", "蓝鲸支付启用时至少开放一种支付方式", 422)
+	}
+	if current.Secret == "" || current.NotifyURL == "" || current.BaseURL == "" {
+		return apperr.E("validation_error", "蓝鲸支付启用时接口地址、通讯密钥和异步回调均为必填", 422)
+	}
+	_, err = lanjingpay.New(
+		current.BaseURL, current.Secret, current.NotifyURL,
+		time.Duration(current.TimeoutSecs)*time.Second,
+		s.Cfg.AppEnv != "production",
+	)
+	if err != nil {
+		return apperr.E("validation_error", "蓝鲸支付配置无效："+err.Error(), 422)
+	}
+	return nil
 }
 
 func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
@@ -2358,6 +2471,72 @@ func (s *Server) adminTestCRUN(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, gin.H{"ok": true, "balance": balance, "model": crun.DefaultModel})
+}
+
+func (s *Server) adminTestLanjingPay(c *gin.Context, _ *store.User) {
+	var override struct {
+		BaseURL     string `json:"baseUrl"`
+		Secret      string `json:"secret"`
+		NotifyURL   string `json:"notifyUrl"`
+		TimeoutSecs int    `json:"timeoutSecs"`
+	}
+	_ = c.ShouldBindJSON(&override)
+	ctx := c.Request.Context()
+	resolved, err := settings.ResolveLanjingPay(ctx, s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if value := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); value != "" {
+		resolved.BaseURL = value
+	}
+	if value := strings.TrimSpace(override.Secret); value != "" && !strings.HasPrefix(value, "****") {
+		resolved.Secret = value
+	}
+	if value := strings.TrimSpace(override.NotifyURL); value != "" {
+		resolved.NotifyURL = value
+	}
+	if override.TimeoutSecs > 0 {
+		resolved.TimeoutSecs = override.TimeoutSecs
+	}
+	client, err := lanjingpay.New(
+		resolved.BaseURL, resolved.Secret, resolved.NotifyURL,
+		time.Duration(resolved.TimeoutSecs)*time.Second,
+		s.Cfg.AppEnv != "production",
+	)
+	if err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
+		return
+	}
+	state, err := client.GetServerState(ctx)
+	if err != nil {
+		message := err.Error()
+		if runes := []rune(message); len(runes) > 500 {
+			message = string(runes[:500])
+		}
+		fail(c, apperr.E("lanjing_pay_test_failed", message, 502))
+		return
+	}
+	stateLabel := map[int]string{-1: "未绑定", 0: "离线", 1: "在线"}[state.State]
+	var heartbeatAt, lastPaymentAt any
+	if !state.LastHeartbeat.IsZero() {
+		heartbeatAt = isoValue(state.LastHeartbeat)
+	}
+	if !state.LastPayment.IsZero() {
+		lastPaymentAt = isoValue(state.LastPayment)
+	}
+	ok(c, gin.H{
+		"ok": true, "online": state.State == 1, "state": state.State,
+		"stateLabel": stateLabel, "lastHeartbeatAt": heartbeatAt, "lastPaymentAt": lastPaymentAt,
+	})
 }
 
 // adminModelList cleans, de-duplicates and sorts model IDs before exposing them

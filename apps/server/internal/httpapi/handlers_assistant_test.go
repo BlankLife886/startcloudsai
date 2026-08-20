@@ -120,6 +120,32 @@ func TestAssistantRunIsTerminal(t *testing.T) {
 	}
 }
 
+func TestNormalizeAssistantReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		defaultHigh bool
+		want        string
+		wantErr     bool
+	}{
+		{name: "canvas agent default", defaultHigh: true, want: "high"},
+		{name: "explicit maximum", value: " MAX ", defaultHigh: true, want: "max"},
+		{name: "non agent remains unset"},
+		{name: "unsupported", value: "ultra", defaultHigh: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAssistantReasoningEffort(tt.value, tt.defaultHigh)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateAssistantReferenceImages(t *testing.T) {
 	valid := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image"))
 	tests := []struct {

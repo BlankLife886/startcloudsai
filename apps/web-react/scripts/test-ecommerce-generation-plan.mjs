@@ -654,10 +654,21 @@ assert.equal(
   'uploads/11111111-1111-1111-1111-111111111111/original/a.jpg',
 )
 assert.equal(isReusableTaskImageKey('uploads/e2e-user-1/product.png'), true)
+assert.equal(
+  isReusableTaskImageKey('ecommerce-catalog/4be6463a-e469-4db5-82ff-bfd3e9071f85.png'),
+  true,
+)
+assert.equal(isReusableTaskImageKey('ecommerce-tryon/model.jpg'), true)
 assert.equal(isReusableTaskImageKey('mock-product.png'), false)
 assert.equal(
   isReusableTaskImageKey('/api/v1/files/uploads/e2e-user-1/product.png'),
   false,
+)
+assert.equal(
+  normalizeTaskImageKey(
+    '/api/v1/files/ecommerce-catalog/4be6463a-e469-4db5-82ff-bfd3e9071f85.png',
+  ),
+  'ecommerce-catalog/4be6463a-e469-4db5-82ff-bfd3e9071f85.png',
 )
 
 assert.equal(TRYON_DEFAULT_LENS_ID, 'portrait')

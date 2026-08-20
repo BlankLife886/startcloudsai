@@ -89,6 +89,12 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
         nextCursor: null,
       }),
     )
+    await page.route('**/api/v1/commerce/catalog**', (route) =>
+      fulfillJson(route, { models: [], scenes: [], garments: [], hands: [] }),
+    )
+    await page.route('**/api/v1/commerce/tryon-catalog**', (route) =>
+      fulfillJson(route, { models: [], scenes: [], garments: [], hands: [] }),
+    )
     await page.route('**/api/v1/commerce/products**', (route) =>
       fulfillJson(route, { items: [product], nextCursor: null }),
     )

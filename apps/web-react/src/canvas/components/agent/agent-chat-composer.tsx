@@ -28,6 +28,8 @@ export function AgentChatComposer({
     models,
     model,
     reasoningEffort,
+    reasoningEfforts,
+    reasoningEffortLabels,
     onModelChange,
     onReasoningEffortChange,
     left,
@@ -50,6 +52,8 @@ export function AgentChatComposer({
     models?: AgentModel[];
     model?: string;
     reasoningEffort?: AgentReasoningEffort | "";
+    reasoningEfforts?: AgentReasoningEffort[];
+    reasoningEffortLabels?: Partial<Record<AgentReasoningEffort, string>>;
     onModelChange?: (model: string) => void;
     onReasoningEffortChange?: (effort: AgentReasoningEffort) => void;
     left?: ReactNode;
@@ -92,6 +96,7 @@ export function AgentChatComposer({
                         {onConfirmToolsChange ? <ToolConfirmationMenu confirmTools={Boolean(confirmTools)} theme={theme} onChange={onConfirmToolsChange} /> : null}
                         {permissionMode && onPermissionModeChange ? <PermissionModeMenu permissionMode={permissionMode} theme={theme} onChange={onPermissionModeChange} /> : null}
                         {models?.length && model && reasoningEffort && onModelChange && onReasoningEffortChange ? <AgentModelControls models={models} model={model} reasoningEffort={reasoningEffort} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} /> : null}
+                        {!models?.length && reasoningEffort && reasoningEfforts?.length && onReasoningEffortChange ? <AgentReasoningControl reasoningEffort={reasoningEffort} reasoningEfforts={reasoningEfforts} reasoningEffortLabels={reasoningEffortLabels} onReasoningEffortChange={onReasoningEffortChange} /> : null}
                         {left}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
@@ -110,9 +115,7 @@ export function AgentChatComposer({
 function AgentModelControls({ models, model, reasoningEffort, onModelChange, onReasoningEffortChange }: { models: AgentModel[]; model: string; reasoningEffort: AgentReasoningEffort; onModelChange: (model: string) => void; onReasoningEffortChange: (effort: AgentReasoningEffort) => void }) {
     const { t } = useTranslation();
     const current = models.find((item) => item.model === model) || models[0];
-    const effortLabel = (effort: AgentReasoningEffort) => t(`agent.composer.effort.${effort}`);
     const [modelOpen, setModelOpen] = useState(false);
-    const [reasoningOpen, setReasoningOpen] = useState(false);
     return (
         <div className="flex min-w-0 items-center gap-1">
             <Tooltip title={t("agent.composer.model", { model: current.displayName || current.model })} placement="top" open={modelOpen ? false : undefined}>
@@ -129,21 +132,30 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
                     </Select>
                 </span>
             </Tooltip>
-            <Tooltip title={t("agent.composer.reasoning", { effort: effortLabel(reasoningEffort) })} placement="top" open={reasoningOpen ? false : undefined}>
-                <span className="inline-flex shrink-0">
-                    <Select value={reasoningEffort} open={reasoningOpen} onOpenChange={setReasoningOpen} onValueChange={(value) => onReasoningEffortChange(value as AgentReasoningEffort)}>
-                        <SelectTrigger hideChevron className="h-9 w-9 min-w-9 justify-center gap-0 rounded-full border-0 bg-transparent px-0 text-xs font-medium shadow-none hover:bg-black/5 focus:ring-0 @min-[660px]:w-auto @min-[660px]:min-w-[4.5rem] @min-[660px]:justify-start @min-[660px]:gap-1.5 @min-[660px]:px-2.5 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectReasoning", { effort: effortLabel(reasoningEffort) })}>
-                            <Gauge className="size-3.5 opacity-70" />
-                            <span className="hidden @min-[660px]:inline">{effortLabel(reasoningEffort)}</span>
-                            <ChevronUp className="hidden size-3 opacity-50 @min-[660px]:block" />
-                        </SelectTrigger>
-                        <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="canvas-float-menu z-[1200] min-w-32 rounded-2xl border p-1 shadow-xl">
-                            {current.supportedReasoningEfforts.map((item) => <SelectItem key={item.reasoningEffort} value={item.reasoningEffort}>{effortLabel(item.reasoningEffort)}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
-                </span>
-            </Tooltip>
+            <AgentReasoningControl reasoningEffort={reasoningEffort} reasoningEfforts={current.supportedReasoningEfforts.map((item) => item.reasoningEffort)} onReasoningEffortChange={onReasoningEffortChange} />
         </div>
+    );
+}
+
+function AgentReasoningControl({ reasoningEffort, reasoningEfforts, reasoningEffortLabels, onReasoningEffortChange }: { reasoningEffort: AgentReasoningEffort; reasoningEfforts: AgentReasoningEffort[]; reasoningEffortLabels?: Partial<Record<AgentReasoningEffort, string>>; onReasoningEffortChange: (effort: AgentReasoningEffort) => void }) {
+    const { t } = useTranslation();
+    const effortLabel = (effort: AgentReasoningEffort) => reasoningEffortLabels?.[effort] || t(`agent.composer.effort.${effort}`);
+    const [reasoningOpen, setReasoningOpen] = useState(false);
+    return (
+        <Tooltip title={t("agent.composer.reasoning", { effort: effortLabel(reasoningEffort) })} placement="top" open={reasoningOpen ? false : undefined}>
+            <span className="inline-flex shrink-0">
+                <Select value={reasoningEffort} open={reasoningOpen} onOpenChange={setReasoningOpen} onValueChange={(value) => onReasoningEffortChange(value as AgentReasoningEffort)}>
+                    <SelectTrigger hideChevron className="h-9 w-9 min-w-9 justify-center gap-0 rounded-full border-0 bg-transparent px-0 text-xs font-medium shadow-none hover:bg-black/5 focus:ring-0 @min-[660px]:w-auto @min-[660px]:min-w-[4.5rem] @min-[660px]:justify-start @min-[660px]:gap-1.5 @min-[660px]:px-2.5 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectReasoning", { effort: effortLabel(reasoningEffort) })}>
+                        <Gauge className="size-3.5 opacity-70" />
+                        <span className="hidden @min-[660px]:inline">{effortLabel(reasoningEffort)}</span>
+                        <ChevronUp className="hidden size-3 opacity-50 @min-[660px]:block" />
+                    </SelectTrigger>
+                    <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="canvas-float-menu z-[1200] min-w-32 rounded-2xl border p-1 shadow-xl">
+                        {reasoningEfforts.map((effort) => <SelectItem key={effort} value={effort}>{effortLabel(effort)}</SelectItem>)}
+                    </SelectContent>
+                </Select>
+            </span>
+        </Tooltip>
     );
 }
 

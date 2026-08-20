@@ -196,9 +196,19 @@ task 主要字段：
 
 用户只能读取属于自己的 `uploads/`、`tasks/` key；已审核画廊资源公开；管理员可读取任意业务 key。网关请求体上限为 20 MB，应用层限制仍是 15 MB。
 
-## 支付状态
+## 支付
 
-价格页和只读套餐列表已经恢复：`GET /api/v1/plans` 返回 `{items,paymentEnabled:false}`。套餐条目包含 `code`、`name`、`description`、`badge`、`kind`、销售价格、积分发放规则、权益、推荐状态与排序。支付、订单创建、订阅查询和 webhook 路由在开发、测试、生产环境仍不注册；价格页套餐按钮进入体验申请，积分获取区提供兑换码、签到和体验申请入口，不会创建订单、跳转收银台或扣款。钱包目前可通过管理员调整、兑换码、签到奖励或现有业务赠送入账。数据库保留历史订单/订阅数据用于兼容升级。
+`GET /api/v1/plans` 返回 `{items,paymentEnabled,paymentMethods}`。蓝鲸支付配置完整时，登录用户可通过 `POST /api/v1/orders` 创建支付宝或微信二维码订单；响应包含平台订单号、二维码内容、实际应付金额、是否需要手动确认金额以及失效时间。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/orders` | 创建订单；请求为 `{planId,paymentMethod}`，其中渠道为 `alipay` 或 `wechat` |
+| `GET` | `/api/v1/orders` | 当前用户订单列表 |
+| `GET` | `/api/v1/orders/{id}` | 查询本地订单并同步蓝鲸支付状态 |
+| `POST` | `/api/v1/orders/{id}/close` | 关闭仍在等待支付的订单 |
+| `GET` | `/api/v1/payments/lanjing/notify` | 蓝鲸支付异步通知；验签并完成幂等入账，成功返回纯文本 `success` |
+
+回调签名使用平台原始十进制金额文本校验，并要求商户订单号、自定义参数、本地订单 UUID 和套餐原价一致。完成订单复用钱包账本唯一幂等键；同一通知重复投递不会重复发放积分或重复延长订阅。
 
 ## 画廊与公开提示词
 
@@ -383,7 +393,7 @@ JSON 导出格式为 `{schemaVersion,exportedAt,items}`；CSV 使用 UTF-8 BOM�
 | PATCH        | `/api/v1/admin/plan-order`         | 按类型拖动排序；`{ kind, ids }`                    |
 | PATCH        | `/api/v1/admin/plans/{id}`         | 编辑价格、积分、权益、推荐位、排序和上下架状态     |
 | DELETE       | `/api/v1/admin/plans/{id}`         | 删除未使用套餐；有历史记录时返回 `plan_in_use`     |
-| POST         | `/api/v1/admin/providers/{provider}/tests` | provider 为 `c2a`、`sub2api` 或 `crun`，执行连接测试 |
+| POST         | `/api/v1/admin/providers/{provider}/tests` | provider 为 `c2a`、`sub2api`、`crun` 或 `lanjing-pay`，执行连接测试；蓝鲸支付仅调用 `/getState`，不创建订单 |
 | GET/PUT      | `/api/v1/admin/model-config`              | 获取或保存模型路由配置                                 |
 | POST         | `/api/v1/admin/model-config/discoveries`  | 创建一次上游模型发现请求                               |
 
@@ -417,11 +427,18 @@ settings 请求/响应：
   "dailyLimit": 0,
   "c2aBaseUrl": "",
   "c2aApiKey": "****abcd",
-  "c2aTimeoutSecs": 0
+  "c2aTimeoutSecs": 0,
+  "lanjingPayEnabled": false,
+  "lanjingPayBaseUrl": "https://2347537.pay.lanjingzf.com",
+  "lanjingPaySecret": "****abcd",
+  "lanjingPayNotifyUrl": "https://ai.example.com/api/v1/payments/lanjing/notify",
+  "lanjingPayTimeoutSecs": 10,
+  "lanjingPayAlipayEnabled": true,
+  "lanjingPayWechatEnabled": true
 }
 ```
 
-`checkinRewards` 必须是 7 个非负整数，单日最高 `1000000` 积分且至少一天大于 0；完成第 7 天后奖励从第 1 天循环，连续签到总天数继续累计，中断一天后从第 1 天重新开始。增长拼团人数为 `2-10`、有效期为 `1-720` 小时；更换 `growthGroupCampaignKey` 会开启新一期活动。失败补偿仅对有费用的真实任务失败生效，任务费用仍先全额退回，管理员强制失败不发额外奖励。用量里程碑最多 12 档，以北京时间自然月的成功交付图片数累计。`taskFailureRetryCount` 为连接、超时、429 或临时上游错误的额外尝试次数，范围 `0-100`。`crossProviderSameModelBalancingEnabled` 默认关闭；开启后，同类型、同显示名称且有效积分价格与任务单价快照完全一致的公开模型可以跨服务商参与容量调度，参数能力不兼容的候选会被排除，任务冻结积分不会变化。`c2aBaseUrl`、`c2aApiKey` 非空以及 `c2aTimeoutSecs > 0` 时覆盖环境变量；空值/0 使用环境变量。API Key 永不明文返回，已配置时只返回末四位掩码；PUT 省略该字段、提交空串或原掩码均不会覆盖现有 key。`dailyLimit=0` 表示投稿不限次数。
+`checkinRewards` 必须是 7 个非负整数，单日最高 `1000000` 积分且至少一天大于 0；完成第 7 天后奖励从第 1 天循环，连续签到总天数继续累计，中断一天后从第 1 天重新开始。增长拼团人数为 `2-10`、有效期为 `1-720` 小时；更换 `growthGroupCampaignKey` 会开启新一期活动。失败补偿仅对有费用的真实任务失败生效，任务费用仍先全额退回，管理员强制失败不发额外奖励。用量里程碑最多 12 档，以北京时间自然月的成功交付图片数累计。`taskFailureRetryCount` 为连接、超时、429 或临时上游错误的额外尝试次数，范围 `0-100`。`crossProviderSameModelBalancingEnabled` 默认关闭；开启后，同类型、同显示名称且有效积分价格与任务单价快照完全一致的公开模型可以跨服务商参与容量调度，参数能力不兼容的候选会被排除，任务冻结积分不会变化。`c2aBaseUrl`、`c2aApiKey` 非空以及 `c2aTimeoutSecs > 0` 时覆盖环境变量；空值/0 使用环境变量。蓝鲸支付后台配置同样优先于环境变量并按请求热生效；启用时必须提供网关地址、通讯密钥、HTTPS 异步通知地址，并至少开启一个渠道。API Key 和蓝鲸通讯密钥永不明文返回，已配置时只返回末四位掩码；PUT 省略字段、提交空串或原掩码均不会覆盖现有密钥。`dailyLimit=0` 表示投稿不限次数。
 
 ## 常见错误码
 

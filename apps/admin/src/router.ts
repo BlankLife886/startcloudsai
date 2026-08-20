@@ -118,7 +118,8 @@ const router = createRouter({
         },
         {
           path: "settings",
-          redirect: "/",
+          component: () => import("@/views/SettingsView.vue"),
+          meta: { title: "系统设置" },
         },
       ],
     },

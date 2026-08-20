@@ -28,10 +28,13 @@ var (
 	errTaskImageMissing = errors.New("task image missing")
 	errTaskImageFormat  = errors.New("task image unsupported")
 	errTaskImageContent = errors.New("task image unreadable")
+	errTaskImageTimeout = errors.New("task image timeout")
 )
 
+const taskImageHeaderBytes = 1 << 20
+
 // mp4FtypBrands 允许的 MP4 major brand 白名单。ftyp box 可以携带任意 brand
-//（如 heic、qt、3gp 等非 MP4 视频容器），只认 "ftyp" 四个字节会把它们全部
+// （如 heic、qt、3gp 等非 MP4 视频容器），只认 "ftyp" 四个字节会把它们全部
 // 当成 video/mp4 放行，因此这里显式收紧到常见的 MP4 视频 brand。
 var mp4FtypBrands = map[string]bool{
 	"isom": true, "iso2": true, "iso4": true, "iso5": true, "iso6": true,
@@ -123,6 +126,38 @@ func isOwnedTaskImageKey(userID uuid.UUID, key string) bool {
 		isOwnedAssistantOutputImageKey(userID, key)
 }
 
+func isPublicEcommerceCatalogImageKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	for _, prefix := range []string{"ecommerce-catalog/", "ecommerce-tryon/", "ecommerce-handheld/"} {
+		if strings.HasPrefix(key, prefix) && len(strings.TrimPrefix(key, prefix)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedTaskInputImageKey(userID uuid.UUID, key string) bool {
+	return isOwnedTaskImageKey(userID, key) || isPublicEcommerceCatalogImageKey(key)
+}
+
+func mapTaskImageReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if storagepkg.IsNotFound(err) {
+		return fmt.Errorf("%w: %v", errTaskImageMissing, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(strings.ToLower(err.Error()), "deadline exceeded") ||
+		strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		return fmt.Errorf("%w: %v", errTaskImageTimeout, err)
+	}
+	return fmt.Errorf("%w: %v", errTaskImageMissing, err)
+}
+
 // inspectOwnedUserUploadImage verifies the stored bytes instead of trusting a
 // client-provided content type or a key-shaped path.
 func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, string, error) {
@@ -154,24 +189,41 @@ func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UU
 	return 0, "", lastErr
 }
 
-// inspectOwnedTaskImage verifies both user uploads and task output images.
-// Task input validation must inspect bytes because a key-shaped path alone is
-// not evidence that the object is an image or that its contents are complete.
+// inspectOwnedTaskImage verifies user uploads, task outputs, and public
+// ecommerce catalog images. Task input validation inspects the image header
+// instead of downloading the full original, because a key-shaped path alone
+// is not evidence that the object is a complete image.
 func (s *Server) inspectOwnedTaskImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, error) {
 	key = strings.TrimSpace(key)
-	if !isOwnedTaskImageKey(userID, key) {
-		return 0, fmt.Errorf("%w: object key is not an owned task image", errTaskImageMissing)
+	if !isAllowedTaskInputImageKey(userID, key) {
+		return 0, fmt.Errorf("%w: object key is not an allowed task image", errTaskImageMissing)
 	}
-	data, err := s.readOwnedTaskImageBytes(ctx, key, maxBytes)
+	size, err := s.Storage.ObjectSize(ctx, key)
 	if err != nil {
 		log.Printf("inspect task image %s: %v", key, err)
-		return 0, err
+		return 0, mapTaskImageReadError(err)
 	}
-	size, _, err := inspectUserUploadImageData(data)
+	if size <= 0 || size > maxBytes {
+		return 0, fmt.Errorf("%w: object size %d", errTaskImageContent, size)
+	}
+	headerLimit := int64(taskImageHeaderBytes)
+	if size < headerLimit {
+		headerLimit = size
+	}
+	header, err := s.Storage.GetBytesPrefix(ctx, key, headerLimit)
 	if err != nil {
-		log.Printf("inspect task image %s content: %v", key, err)
+		log.Printf("inspect task image %s: %v", key, err)
+		return 0, mapTaskImageReadError(err)
 	}
-	return size, err
+	_, contentType := sniffImage(header)
+	if contentType == "" {
+		return 0, fmt.Errorf("%w: object is not a supported image", errTaskImageFormat)
+	}
+	if _, _, dimErr := media.Dimensions(header); dimErr != nil {
+		log.Printf("inspect task image %s content: %v", key, dimErr)
+		return 0, fmt.Errorf("%w: %v", errTaskImageContent, dimErr)
+	}
+	return size, nil
 }
 
 func (s *Server) readOwnedTaskImageBytes(ctx context.Context, key string, maxBytes int64) ([]byte, error) {

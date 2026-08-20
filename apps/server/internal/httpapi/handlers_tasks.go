@@ -111,6 +111,8 @@ func validateTaskImageKeys(ctx context.Context, userID uuid.UUID, field string, 
 		if sizeErrs[i] != nil {
 			message := field + ": 图片不存在、格式不支持或内容无法读取"
 			switch {
+			case errors.Is(sizeErrs[i], errTaskImageTimeout):
+				message = field + ": 参考图读取超时，请稍后重试"
 			case errors.Is(sizeErrs[i], errTaskImageMissing):
 				message = field + ": 图片不存在或尚未写入完成，请重试"
 			case errors.Is(sizeErrs[i], errTaskImageFormat):
@@ -142,7 +144,7 @@ func validateTaskInputKeys(ctx context.Context, userID uuid.UUID, keys []string,
 }
 
 func validateTaskInputImages(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, inspect taskImageInspector) error {
-	return validateTaskImageKeys(ctx, userID, "inputKeys", keys, maxTaskInputImages, maxObjectBytes, 32<<20, inspect, isOwnedTaskImageKey)
+	return validateTaskImageKeys(ctx, userID, "inputKeys", keys, maxTaskInputImages, maxObjectBytes, 32<<20, inspect, isAllowedTaskInputImageKey)
 }
 
 func taskImageParam(params map[string]any, key string) (string, bool, error) {

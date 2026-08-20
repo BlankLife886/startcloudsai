@@ -24,7 +24,12 @@ const STATUS_COPY = {
 
 function LoadingView() {
   return (
-    <div className="page-access-loading" role="status" aria-label="正在读取页面状态">
+    <div
+      className="page-access-loading"
+      role="status"
+      aria-label="正在读取页面状态"
+      data-route-motion-ignore
+    >
       <span />
     </div>
   );

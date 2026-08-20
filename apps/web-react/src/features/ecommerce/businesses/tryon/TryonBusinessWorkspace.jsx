@@ -170,7 +170,7 @@ export function TryonChoicePicker({
         <button
           type="button"
           className={popupOpen ? "is-active" : ""}
-          disabled={disabled}
+          disabled={disabled || !catalog.length}
           onClick={() => {
             if (popupOpen) closePopup();
             else openPopup();
@@ -213,33 +213,37 @@ export function TryonChoicePicker({
                   </button>
                 </header>
                 <div className="tryon-model-popup__grid">
-                  {catalog.map((option) => {
-                    const selected =
-                      source !== "upload" && featured.id === option.id;
-                    return (
-                      <article
-                        key={option.id}
-                        className={`tryon-model-popup__card${selected ? " is-active" : ""}`}
-                      >
-                        <button
-                          type="button"
-                          className="tryon-model-popup__hit"
-                          aria-label={option.label}
-                          onClick={() => {
-                            onSelectBuiltin(option);
-                            closePopup();
-                          }}
+                  {catalog.length ? (
+                    catalog.map((option) => {
+                      const selected =
+                        source !== "upload" && featured?.id === option.id;
+                      return (
+                        <article
+                          key={option.id}
+                          className={`tryon-model-popup__card${selected ? " is-active" : ""}`}
                         >
-                          <span className="tryon-model-popup__media">
-                            <img src={option.image} alt="" />
-                            <span className="tryon-model-popup__name">
-                              {option.label}
+                          <button
+                            type="button"
+                            className="tryon-model-popup__hit"
+                            aria-label={option.label}
+                            onClick={() => {
+                              onSelectBuiltin(option);
+                              closePopup();
+                            }}
+                          >
+                            <span className="tryon-model-popup__media">
+                              <img src={option.image} alt="" />
+                              <span className="tryon-model-popup__name">
+                                {option.label}
+                              </span>
                             </span>
-                          </span>
-                        </button>
-                      </article>
-                    );
-                  })}
+                          </button>
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <p className="tryon-model-popup__empty">暂无预设素材</p>
+                  )}
                 </div>
               </section>
             </div>,

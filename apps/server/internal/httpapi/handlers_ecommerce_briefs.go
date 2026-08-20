@@ -59,7 +59,7 @@ func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
 	inspect := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
 		return s.inspectOwnedTaskImage(ctx, user.ID, key, maxBytes)
 	}
-	if err := validateTaskImageKeys(c.Request.Context(), user.ID, "inputKeys", body.InputKeys, 4, s.Cfg.UploadMaxBytes, 24<<20, inspect, isOwnedTaskImageKey); err != nil {
+	if err := validateTaskImageKeys(c.Request.Context(), user.ID, "inputKeys", body.InputKeys, 4, s.Cfg.UploadMaxBytes, 24<<20, inspect, isAllowedTaskInputImageKey); err != nil {
 		fail(c, err)
 		return
 	}

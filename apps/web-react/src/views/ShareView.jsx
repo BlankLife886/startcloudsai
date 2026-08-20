@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
 import "@react/legacy-static/features/share/styles/share-view.css";
 
 const PAGE_SIZE = 16;
@@ -78,6 +79,7 @@ function formatDate(value) {
 }
 
 export function ShareView() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const pageRef = useRef(null);
@@ -99,7 +101,6 @@ export function ShareView() {
   const [pageCursors, setPageCursors] = useState([""]);
   const [heroIndex, setHeroIndex] = useState(0);
   const [categoryStuck, setCategoryStuck] = useState(false);
-  const [user, setUser] = useState(null);
   const [detailItem, setDetailItem] = useState(null);
   const [detailMediaIndex, setDetailMediaIndex] = useState(0);
 
@@ -292,8 +293,7 @@ export function ShareView() {
         controller.signal,
       ),
       apiGet("/gallery/categories", {}, controller.signal),
-      apiGet("/auth/session", {}, controller.signal),
-    ]).then(([listResult, featuredResult, categoryResult, sessionResult]) => {
+    ]).then(([listResult, featuredResult, categoryResult]) => {
       if (controller.signal.aborted) return;
       if (listResult.status === "fulfilled") {
         const rows = (
@@ -337,11 +337,6 @@ export function ShareView() {
             .filter((row) => row.id && row.name),
         );
       }
-      setUser(
-        sessionResult.status === "fulfilled"
-          ? sessionResult.value?.user || null
-          : null,
-      );
       setLoading(false);
     });
     return () => {

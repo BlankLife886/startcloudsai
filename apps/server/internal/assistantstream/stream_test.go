@@ -91,3 +91,17 @@ func TestWaitToolResultStopsWhenTheRunIsCanceled(t *testing.T) {
 		t.Fatalf("cancellation was not honored promptly: %s", elapsed)
 	}
 }
+
+func TestEventSerializesReasoning(t *testing.T) {
+	payload, err := json.Marshal(Event{Content: "answer", Reasoning: "actual reasoning", Kind: "chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["reasoning"] != "actual reasoning" {
+		t.Fatalf("event = %s", payload)
+	}
+}

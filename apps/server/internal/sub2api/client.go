@@ -23,12 +23,13 @@ const (
 )
 
 type Client struct {
-	baseURL      string
-	apiKey       string
-	apiKeyHeader string
-	chatModel    string
-	imageModel   string
-	httpClient   *http.Client
+	baseURL         string
+	apiKey          string
+	apiKeyHeader    string
+	chatModel       string
+	reasoningEffort string
+	imageModel      string
+	httpClient      *http.Client
 }
 
 type Message struct {
@@ -43,15 +44,18 @@ type FunctionTool struct {
 	Parameters  map[string]any
 }
 
+const RequiredToolChoice = "required"
+
 type ToolCall struct {
 	Name      string
 	Arguments string
 }
 
 type AgentChatResult struct {
-	Text      string
-	Reasoning string
-	ToolCall  *ToolCall
+	Text            string
+	Reasoning       string
+	ReasoningTokens int64
+	ToolCall        *ToolCall
 }
 
 type Image struct {
@@ -114,6 +118,17 @@ func (c *Client) WithChatModel(model string) *Client {
 	}
 	clone := *c
 	clone.chatModel = strings.TrimSpace(model)
+	return &clone
+}
+
+// WithReasoningEffort returns a request-scoped client that forwards the
+// OpenAI-compatible reasoning_effort parameter on chat requests.
+func (c *Client) WithReasoningEffort(effort string) *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.reasoningEffort = strings.ToLower(strings.TrimSpace(effort))
 	return &clone
 }
 
@@ -300,14 +315,14 @@ func (c *Client) ChatAgentWithImages(
 }
 
 // ChatAgentWithTools exposes several function tools in one streamed request so
-// callers can drive a multi-step tool loop. forcedTool, when set to a tool
-// name, requires the model to answer with that call instead of free text.
+// callers can drive a multi-step tool loop. toolChoice may be empty for auto,
+// RequiredToolChoice to require any declared tool, or a tool name to force it.
 func (c *Client) ChatAgentWithTools(
 	ctx context.Context,
 	messages []Message,
 	imageURLs []string,
 	tools []FunctionTool,
-	forcedTool string,
+	toolChoice string,
 	onUpdate func(text, reasoning string) error,
 ) (AgentChatResult, error) {
 	if len(tools) == 0 {
@@ -323,15 +338,22 @@ func (c *Client) ChatAgentWithTools(
 		})
 	}
 	payload := map[string]any{
-		"model":       c.chatModel,
-		"messages":    chatPayloadMessages(messages, imageURLs),
-		"stream":      true,
-		"tools":       declarations,
-		"tool_choice": "auto",
+		"model":          c.chatModel,
+		"messages":       chatPayloadMessages(messages, imageURLs),
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+		"tools":          declarations,
+		"tool_choice":    "auto",
 	}
-	if strings.TrimSpace(forcedTool) != "" {
+	if c.reasoningEffort != "" {
+		payload["reasoning_effort"] = c.reasoningEffort
+	}
+	choice := strings.TrimSpace(toolChoice)
+	if choice == RequiredToolChoice {
+		payload["tool_choice"] = RequiredToolChoice
+	} else if choice != "" {
 		payload["tool_choice"] = map[string]any{
-			"type": "function", "function": map[string]any{"name": strings.TrimSpace(forcedTool)},
+			"type": "function", "function": map[string]any{"name": choice},
 		}
 	}
 	var lastErr error
@@ -388,6 +410,9 @@ func (c *Client) chatAgentWithPayload(
 		}
 		if message := streamError(event); message != "" {
 			return result, receivedOutput, errors.New(message)
+		}
+		if reasoningTokens := streamReasoningTokens(event); reasoningTokens > result.ReasoningTokens {
+			result.ReasoningTokens = reasoningTokens
 		}
 		changed := false
 		for _, fragment := range streamTextFragments(event) {
@@ -488,6 +513,16 @@ func streamReasoningFragments(payload map[string]any) []streamStringFragment {
 		}
 	}
 	return fragments
+}
+
+func streamReasoningTokens(payload map[string]any) int64 {
+	usage, _ := payload["usage"].(map[string]any)
+	details, _ := usage["completion_tokens_details"].(map[string]any)
+	value, _ := details["reasoning_tokens"].(float64)
+	if value <= 0 {
+		return 0
+	}
+	return int64(value)
 }
 
 func transientChatError(ctx context.Context, err error) bool {
@@ -592,9 +627,13 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
-	return c.chatStreamWithPayload(ctx, map[string]any{
+	payload := map[string]any{
 		"model": c.chatModel, "messages": chatPayloadMessages(messages, imageURLs), "stream": true,
-	})
+	}
+	if c.reasoningEffort != "" {
+		payload["reasoning_effort"] = c.reasoningEffort
+	}
+	return c.chatStreamWithPayload(ctx, payload)
 }
 
 func chatPayloadMessages(messages []Message, imageURLs []string) []any {

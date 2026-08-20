@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
   )
 })
 
-test('text-to-image history and assets tabs complete the shared content reveal lifecycle', async ({ page }) => {
+test('text-to-image history tab completes the shared content reveal lifecycle', async ({ page }) => {
   await page.route('**/api/v1/tasks**', (route) =>
     fulfillJson(route, {
       items: [
@@ -70,13 +70,6 @@ test('text-to-image history and assets tabs complete the shared content reveal l
   await expect(page.locator('.t2i-history-card')).toHaveCount(1)
   await expect(page.locator('.t2i-page')).toHaveAttribute(
     'data-t2i-history-motion-state',
-    'entered',
-  )
-
-  await page.getByRole('tab', { name: '我的资产' }).click()
-  await expect(page.locator('.t2i-assets-view')).toBeVisible()
-  await expect(page.locator('.t2i-page')).toHaveAttribute(
-    'data-t2i-assets-motion-state',
     'entered',
   )
 })

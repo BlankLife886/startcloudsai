@@ -18,9 +18,15 @@ type Config struct {
 	// 验证码（developmentCode）。缺省关闭：即使 APP_ENV=development 也不回显，
 	// 避免 APP_ENV 缺省值把验证码泄露变成 fail-open 行为。生产环境强制关闭。
 	DevLoginCodeEcho bool
-	// Historical handlers keep these zero-valued; no environment loads payment settings.
-	PaymentMockEnabled   bool
-	PaymentWebhookSecret string
+	// Historical mock payment fields remain zero-valued. Real payments use the
+	// LanjingPay settings below and are enabled only when the secret and public
+	// notification URL are both configured.
+	PaymentMockEnabled    bool
+	PaymentWebhookSecret  string
+	LanjingPayBaseURL     string
+	LanjingPaySecret      string
+	LanjingPayNotifyURL   string
+	LanjingPayTimeoutSecs int
 
 	SMTPAddr     string
 	SMTPUser     string
@@ -140,7 +146,7 @@ func Load() *Config {
 		AppEnv:           appEnv,
 		DevLoginCodeEcho: getenvBool("DEV_LOGIN_CODE_ECHO", false),
 		AppSecret:        getenv("APP_SECRET", "dev-secret-change-me"),
-		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3105,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3105,http://127.0.0.1:3200"),
+		AllowedOrigins:   getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3105,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3105,http://127.0.0.1:3200"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
 		SMTPAddr:       getenv("SMTP_ADDR", ""),
@@ -151,6 +157,10 @@ func Load() *Config {
 			"TRIAL_APPLICATION_EMAIL",
 			getenv("SMTP_FROM", ""),
 		)),
+		LanjingPayBaseURL:     strings.TrimRight(strings.TrimSpace(getenv("LANJING_PAY_BASE_URL", "https://2347537.pay.lanjingzf.com")), "/"),
+		LanjingPaySecret:      strings.TrimSpace(getenv("LANJING_PAY_SECRET", "")),
+		LanjingPayNotifyURL:   strings.TrimSpace(getenv("LANJING_PAY_NOTIFY_URL", "")),
+		LanjingPayTimeoutSecs: getenvInt("LANJING_PAY_TIMEOUT_SECS", 10),
 
 		DatabaseURL:         getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
 		RedisURL:            getenv("REDIS_URL", "redis://localhost:6379/0"),
@@ -197,6 +207,12 @@ func Load() *Config {
 	if cfg.WorkerImageMemoryMiB < 64 {
 		log.Fatal("WORKER_IMAGE_MEMORY_MIB 不能小于 64")
 	}
+	if (cfg.LanjingPaySecret != "" || cfg.LanjingPayNotifyURL != "") && !cfg.LanjingPayEnabled() {
+		log.Fatal("蓝鲸支付配置不完整：LANJING_PAY_SECRET 与 LANJING_PAY_NOTIFY_URL 必须同时设置")
+	}
+	if cfg.LanjingPayTimeoutSecs <= 0 {
+		log.Fatal("LANJING_PAY_TIMEOUT_SECS 必须为正整数")
+	}
 	validateSecret(cfg.AppEnv, cfg.AppSecret)
 	if cfg.AppEnv == "production" {
 		for _, origin := range cfg.AllowedOriginsList() {
@@ -215,6 +231,12 @@ func Load() *Config {
 		log.Printf("========================================================")
 	}
 	return cfg
+}
+
+func (c *Config) LanjingPayEnabled() bool {
+	return strings.TrimSpace(c.LanjingPayBaseURL) != "" &&
+		strings.TrimSpace(c.LanjingPaySecret) != "" &&
+		strings.TrimSpace(c.LanjingPayNotifyURL) != ""
 }
 
 // AllowedOriginsList 返回去掉尾部斜杠的 Origin 白名单。

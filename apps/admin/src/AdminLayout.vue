@@ -21,6 +21,7 @@ import {
   Operation,
   Picture,
   ShoppingBag,
+  Setting,
   Sunny,
   SwitchButton,
   Ticket,
@@ -66,7 +67,10 @@ function toggleSidebar() {
 const NAV_GROUPS = [
   {
     title: "总览",
-    items: [{ path: "/", label: "仪表盘", icon: Odometer }],
+    items: [
+      { path: "/", label: "仪表盘", icon: Odometer },
+      { path: "/settings", label: "系统设置", icon: Setting },
+    ],
   },
   {
     title: "业务",

@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useLocation } from "react-router";
+import { useLocation, useNavigation } from "react-router";
 import { NavBar } from "./NavBar.jsx";
 import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
 import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
 import { PageAccessBoundary } from "../page-control/PageAccessBoundary.jsx";
 import { PageControlProvider } from "../page-control/PageControlContext.jsx";
+import { prefetchRoute } from "../routePrefetch.js";
 import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
@@ -30,7 +31,9 @@ const incentiveCanvasRoutes = new Set([
 
 export function AppShell() {
   const location = useLocation();
+  const navigation = useNavigation();
   const mainRef = useRef(null);
+  const navigating = navigation.state !== "idle";
   const documentScroll = documentScrollRoutes.has(location.pathname);
   const canvasHome = location.pathname === "/canvas";
   const canvasEditor = location.pathname.startsWith("/canvas/");
@@ -66,6 +69,25 @@ export function AppShell() {
     return () => {
       window.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const prefetchAnchor = (event) => {
+      const anchor =
+        event.target instanceof Element
+          ? event.target.closest("a[href]")
+          : null;
+      if (!anchor) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin === window.location.origin) void prefetchRoute(url.pathname);
+    };
+    document.addEventListener("pointerover", prefetchAnchor, { passive: true });
+    document.addEventListener("focusin", prefetchAnchor);
+
+    return () => {
+      document.removeEventListener("pointerover", prefetchAnchor);
+      document.removeEventListener("focusin", prefetchAnchor);
     };
   }, []);
 
@@ -118,8 +140,21 @@ export function AppShell() {
     <PageControlProvider>
       <AuthPromptProvider>
         <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
+          {navigating && (
+            <div
+              className="route-navigation-progress"
+              role="progressbar"
+              aria-label="页面切换中"
+            >
+              <span />
+            </div>
+          )}
           <NavBar />
-          <main ref={mainRef} className={mainClasses.join(" ")}>
+          <main
+            ref={mainRef}
+            className={mainClasses.join(" ")}
+            aria-busy={navigating ? "true" : undefined}
+          >
             <PageAccessBoundary />
           </main>
         </div>

@@ -181,3 +181,27 @@ func TestRemovedUserAuthRoutesAndProviders(t *testing.T) {
 		}
 	}
 }
+
+func TestEmailAuthenticationUnavailableWithoutDeliveryChannel(t *testing.T) {
+	s := newUserLoginTestServer(nil)
+	s.Cfg.DevLoginCodeEcho = false
+	engine := s.Router()
+
+	providers := authRequest(t, engine, http.MethodGet, "/api/v1/auth/providers", nil)
+	var payload struct {
+		Data struct {
+			Email bool `json:"email"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(providers.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("providers response: %v", err)
+	}
+	if payload.Data.Email {
+		t.Fatalf("email provider enabled without SMTP or development code echo: %s", providers.Body.String())
+	}
+
+	response := authRequest(t, engine, http.MethodPost, "/api/v1/auth/email-verification-codes", gin.H{"email": "unavailable@qq.com"})
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "email_unavailable") {
+		t.Fatalf("request without delivery channel = %d %s", response.Code, response.Body.String())
+	}
+}

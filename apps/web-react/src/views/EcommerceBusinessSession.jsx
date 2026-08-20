@@ -163,10 +163,6 @@ import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.j
 import { EcommerceFullscreenPreview } from "../features/ecommerce/EcommerceFullscreenPreview.jsx";
 import { TryonFlipLightbox } from "../features/ecommerce/TryonFlipLightbox.jsx";
 import { useEcommerceJobs } from "../features/ecommerce/useEcommerceJobs.js";
-import {
-  TRYON_MODEL_CATALOG,
-  TRYON_SCENE_CATALOG,
-} from "../features/ecommerce/businesses/tryon/catalog.js";
 import { useTryonBusinessState } from "../features/ecommerce/businesses/tryon/useTryonBusinessState.js";
 import {
   TryonChoicePicker,
@@ -341,6 +337,22 @@ function catalogForRole(role, catalogs) {
   if (role === "model") return catalogs.models;
   if (role === "scene") return catalogs.scenes;
   return catalogs.garments;
+}
+
+function builtinCatalogSlot(file, option, extra = {}) {
+  const preferred = isReusableTaskImageKey(extra.uploadKey)
+    ? extra.uploadKey
+    : normalizeTaskImageKey(option?.image);
+  attachEcommerceUploadKey(file, preferred);
+  return {
+    file,
+    url: extra.url || URL.createObjectURL(file),
+    local: true,
+    managed: "slot",
+    source: "builtin",
+    catalogId: option?.id,
+    uploadKey: isReusableTaskImageKey(file.uploadKey) ? file.uploadKey : "",
+  };
 }
 
 function ecommerceOverlayRoot() {
@@ -1427,8 +1439,8 @@ export function EcommerceBusinessSession({
   useEffect(() => {
     let alive = true;
     void (async () => {
-      let models = TRYON_MODEL_CATALOG;
-      let scenes = TRYON_SCENE_CATALOG;
+      let models = [];
+      let scenes = [];
       let garments = [];
       try {
         const [draft, handheldDraft, remote, handheldRemote] =
@@ -1469,13 +1481,13 @@ export function EcommerceBusinessSession({
             setApparel(draft.apparel);
           if (catalogOptionById(models, draft.featuredTryonModelId)) {
             setFeaturedTryonModelId(draft.featuredTryonModelId);
-          } else if (models[0]) {
-            setFeaturedTryonModelId(models[0].id);
+          } else {
+            setFeaturedTryonModelId(models[0]?.id || "");
           }
           if (catalogOptionById(scenes, draft.featuredTryonSceneId)) {
             setFeaturedTryonSceneId(draft.featuredTryonSceneId);
-          } else if (scenes[0]) {
-            setFeaturedTryonSceneId(scenes[0].id);
+          } else {
+            setFeaturedTryonSceneId(scenes[0]?.id || "");
           }
           if (catalogOptionById(garments, draft.featuredTryonGarmentId)) {
             setFeaturedTryonGarmentId(draft.featuredTryonGarmentId);
@@ -1508,21 +1520,17 @@ export function EcommerceBusinessSession({
                 `tryon-${role}-${option.id}.jpg`,
               );
               if (!alive) return;
-              attachEcommerceUploadKey(file, item.uploadKey);
-              restored[role] = {
-                file,
-                url: URL.createObjectURL(file),
-                local: true,
-                managed: "slot",
-                source: "builtin",
-                catalogId: option.id,
-                uploadKey: item.uploadKey || "",
-              };
+              restored[role] = builtinCatalogSlot(file, option, {
+                uploadKey: item.uploadKey,
+              });
             } catch {
               restored[role] = null;
             }
           }
           if (alive) setTryonSlots(restored);
+        } else {
+          setFeaturedTryonModelId(models[0]?.id || "");
+          setFeaturedTryonSceneId(scenes[0]?.id || "");
         }
         if (handheldDraft) {
           const optionalSelectionVersion = Number(
@@ -1727,16 +1735,9 @@ export function EcommerceBusinessSession({
                 `handheld-${role}-${option.id}.jpg`,
               );
               if (!alive) return;
-              attachEcommerceUploadKey(file, item.uploadKey);
-              restoredHandheld[role] = {
-                file,
-                url: URL.createObjectURL(file),
-                local: true,
-                managed: "slot",
-                source: "builtin",
-                catalogId: option.id,
-                uploadKey: item.uploadKey || "",
-              };
+              restoredHandheld[role] = builtinCatalogSlot(file, option, {
+                uploadKey: item.uploadKey,
+              });
             } catch {
               restoredHandheld[role] = null;
             }
@@ -1764,36 +1765,26 @@ export function EcommerceBusinessSession({
     const scene =
       catalogOptionById(tryonSceneCatalog, featuredTryonSceneId) ||
       tryonSceneCatalog[0];
-    if (!model || !scene) return undefined;
+    if (!model && !scene) return undefined;
     let alive = true;
     void (async () => {
       try {
         const [modelFile, sceneFile] = await Promise.all([
-          fileFromCatalogImage(model.image, `tryon-model-${model.id}.jpg`),
-          fileFromCatalogImage(scene.image, `tryon-scene-${scene.id}.jpg`),
+          model
+            ? fileFromCatalogImage(model.image, `tryon-model-${model.id}.jpg`)
+            : Promise.resolve(null),
+          scene
+            ? fileFromCatalogImage(scene.image, `tryon-scene-${scene.id}.jpg`)
+            : Promise.resolve(null),
         ]);
         if (!alive) return;
         setTryonSlots((current) => {
           const next = { ...current };
-          if (!current.model?.file) {
-            next.model = {
-              file: modelFile,
-              url: URL.createObjectURL(modelFile),
-              local: true,
-              managed: "slot",
-              source: "builtin",
-              catalogId: model.id,
-            };
+          if (modelFile && !current.model?.file) {
+            next.model = builtinCatalogSlot(modelFile, model);
           }
-          if (!current.scene?.file) {
-            next.scene = {
-              file: sceneFile,
-              url: URL.createObjectURL(sceneFile),
-              local: true,
-              managed: "slot",
-              source: "builtin",
-              catalogId: scene.id,
-            };
+          if (sceneFile && !current.scene?.file) {
+            next.scene = builtinCatalogSlot(sceneFile, scene);
           }
           return next;
         });
@@ -2377,7 +2368,7 @@ export function EcommerceBusinessSession({
     });
   const canGenerate =
     (mode.id === "tryon"
-      ? Boolean(tryonSlots.garment)
+      ? Boolean(tryonSlots.garment && tryonSlots.model && tryonSlots.scene)
       : mode.id === "handheld"
         ? Boolean(handheldSlots.product) &&
           (!handheldCropNeedsPerson(handheldCrop) || handheldHasModel)
@@ -2398,7 +2389,11 @@ export function EcommerceBusinessSession({
   const readiness =
     mode.id === "tryon" && !tryonSlots.garment
       ? "还需上传服装"
-      : mode.id === "accessory" && !accessoryPresence.hasProduct
+      : mode.id === "tryon" && !tryonSlots.model
+        ? "还需选择模特"
+        : mode.id === "tryon" && !tryonSlots.scene
+          ? "还需选择场景"
+          : mode.id === "accessory" && !accessoryPresence.hasProduct
         ? "还需上传饰品"
         : mode.id === "accessory" &&
             accessoryScale === "true" &&
@@ -3010,17 +3005,9 @@ export function EcommerceBusinessSession({
         option.image,
         `tryon-model-${option.id}.jpg`,
       );
-      const url = URL.createObjectURL(file);
       setSlots((current) => ({
         ...current,
-        model: {
-          file,
-          url,
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        model: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("model", file, setSlots);
     } catch {
@@ -3041,14 +3028,7 @@ export function EcommerceBusinessSession({
       );
       setHandheldSlots((current) => ({
         ...current,
-        model: {
-          file,
-          url: URL.createObjectURL(file),
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        model: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("model", file, setHandheldSlots);
     } catch {
@@ -3069,14 +3049,7 @@ export function EcommerceBusinessSession({
       );
       setHandheldSlots((current) => ({
         ...current,
-        model: {
-          file,
-          url: URL.createObjectURL(file),
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        model: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("model", file, setHandheldSlots);
     } catch {
@@ -3096,17 +3069,9 @@ export function EcommerceBusinessSession({
         option.image,
         `tryon-scene-${option.id}.jpg`,
       );
-      const url = URL.createObjectURL(file);
       setSlots((current) => ({
         ...current,
-        scene: {
-          file,
-          url,
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        scene: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("scene", file, setSlots);
     } catch {
@@ -3127,14 +3092,7 @@ export function EcommerceBusinessSession({
       );
       setHandheldSlots((current) => ({
         ...current,
-        scene: {
-          file,
-          url: URL.createObjectURL(file),
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        scene: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("scene", file, setHandheldSlots);
     } catch {
@@ -3155,17 +3113,9 @@ export function EcommerceBusinessSession({
         option.image,
         `tryon-garment-${option.id}.jpg`,
       );
-      const url = URL.createObjectURL(file);
       setTryonSlots((current) => ({
         ...current,
-        garment: {
-          file,
-          url,
-          local: true,
-          managed: "slot",
-          source: "builtin",
-          catalogId: option.id,
-        },
+        garment: builtinCatalogSlot(file, option),
       }));
       void prefetchSlotUpload("garment", file);
     } catch {
@@ -3473,7 +3423,9 @@ export function EcommerceBusinessSession({
     if (!buffer.byteLength || !sniffed) {
       throw new Error("内置参考图格式无效，请重新选择模特或场景");
     }
-    return new File([buffer], name, { type: sniffed.type });
+    const file = new File([buffer], name, { type: sniffed.type });
+    attachEcommerceUploadKey(file, imageUrl);
+    return file;
   }
   async function resolveTryonInputFiles() {
     if (!tryonSlots.garment?.file) {
@@ -3481,32 +3433,24 @@ export function EcommerceBusinessSession({
     }
     const next = { ...tryonSlots };
     if (!next.model?.file) {
+      if (!featuredTryonModel?.image) {
+        throw new Error("请先选择模特");
+      }
       const file = await fileFromCatalogImage(
         featuredTryonModel.image,
         `tryon-model-${featuredTryonModel.id}.jpg`,
       );
-      next.model = {
-        file,
-        url: URL.createObjectURL(file),
-        local: true,
-        managed: "slot",
-        source: "builtin",
-        catalogId: featuredTryonModel.id,
-      };
+      next.model = builtinCatalogSlot(file, featuredTryonModel);
     }
     if (!next.scene?.file) {
+      if (!featuredTryonScene?.image) {
+        throw new Error("请先选择场景");
+      }
       const file = await fileFromCatalogImage(
         featuredTryonScene.image,
         `tryon-scene-${featuredTryonScene.id}.jpg`,
       );
-      next.scene = {
-        file,
-        url: URL.createObjectURL(file),
-        local: true,
-        managed: "slot",
-        source: "builtin",
-        catalogId: featuredTryonScene.id,
-      };
+      next.scene = builtinCatalogSlot(file, featuredTryonScene);
     }
     const files = [next.garment.file, next.model.file, next.scene.file].filter(
       (file) => file instanceof Blob && file.size > 0,
@@ -3543,6 +3487,15 @@ export function EcommerceBusinessSession({
       throw new Error("商品未准备好，请重新上传后再生成");
     }
     attachEcommerceUploadKey(files[0], next.product.uploadKey);
+    if (includeModel && next.model?.file) {
+      attachEcommerceUploadKey(next.model.file, next.model.uploadKey);
+    }
+    if (next.scene?.file) {
+      attachEcommerceUploadKey(next.scene.file, next.scene.uploadKey);
+    }
+    if (next.layout?.file) {
+      attachEcommerceUploadKey(next.layout.file, next.layout.uploadKey);
+    }
     await Promise.all([
       prefetchSlotUpload("product", next.product.file, setHandheldSlots),
       includeModel && next.model?.file
@@ -4199,19 +4152,19 @@ export function EcommerceBusinessSession({
   const featuredTryonModel =
     catalogOptionById(tryonModelCatalog, featuredTryonModelId) ||
     tryonModelCatalog[0] ||
-    TRYON_MODEL_CATALOG[0];
+    null;
   const tryonModelPreview =
     tryonSlots.model?.source === "upload" && tryonSlots.model.url
       ? tryonSlots.model.url
-      : featuredTryonModel.image;
+      : featuredTryonModel?.image || "";
   const featuredTryonScene =
     catalogOptionById(tryonSceneCatalog, featuredTryonSceneId) ||
     tryonSceneCatalog[0] ||
-    TRYON_SCENE_CATALOG[0];
+    null;
   const tryonScenePreview =
     tryonSlots.scene?.source === "upload" && tryonSlots.scene.url
       ? tryonSlots.scene.url
-      : featuredTryonScene.image;
+      : featuredTryonScene?.image || "";
   const featuredTryonGarment =
     catalogOptionById(tryonGarmentCatalog, featuredTryonGarmentId) ||
     tryonGarmentCatalog[0] ||
@@ -4219,11 +4172,11 @@ export function EcommerceBusinessSession({
   const tryonModelLabel =
     tryonSlots.model?.source === "upload"
       ? "自定义模特"
-      : featuredTryonModel.label;
+      : featuredTryonModel?.label || "";
   const tryonSceneLabel =
     tryonSlots.scene?.source === "upload"
       ? "自定义场景"
-      : featuredTryonScene.label;
+      : featuredTryonScene?.label || "";
   const featuredHandheldModel =
     catalogOptionById(handheldModelCatalog, featuredHandheldModelId) ||
     handheldModelCatalog[0] ||
@@ -5773,7 +5726,7 @@ export function EcommerceBusinessSession({
                   uploadLabel="模特"
                   moreAria="更多模特"
                   popupTitle="选择模特"
-                  popupHint="选择内置模特，画布会同步更新"
+                  popupHint="选择模特，画布会同步更新"
                   popupTitleId="tryon-model-popup-title"
                   popupKind="model"
                   closeScrimLabel="关闭模特选择"
@@ -5791,7 +5744,7 @@ export function EcommerceBusinessSession({
                   uploadLabel="场景"
                   moreAria="更多场景"
                   popupTitle="选择拍摄场景"
-                  popupHint="选择内置场景，画布会同步更新"
+                  popupHint="选择场景，画布会同步更新"
                   popupTitleId="tryon-scene-popup-title"
                   popupKind="scene"
                   closeScrimLabel="关闭拍摄场景选择"

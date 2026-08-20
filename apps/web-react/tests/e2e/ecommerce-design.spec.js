@@ -849,6 +849,25 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.locator(".tryon-stage__notice")).toHaveCount(0);
 });
 
+test("fashion try-on stays empty when the catalog is unavailable", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=tryon&emptyCatalog=1");
+
+  await expect(page.locator(".tryon-stage__model.is-empty")).toBeVisible();
+  await expect(page.locator(".tryon-stage__scene-card.is-empty")).toBeVisible();
+  await expect(page.locator(".tryon-stage__garment.is-empty")).toBeVisible();
+  await expect(page.locator(".tryon-stage__frame")).toHaveAttribute(
+    "data-scene",
+    "",
+  );
+  await expect(page.getByRole("button", { name: "更多模特" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "更多场景" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "东亚女性" })).toHaveCount(0);
+  await expect(page.getByText("选择模特", { exact: true })).toBeVisible();
+  await expect(page.getByText("选择场景", { exact: true })).toBeVisible();
+});
+
 test("handheld product uses a setup board instead of the try-on stage", async ({
   page,
 }) => {
@@ -1831,6 +1850,39 @@ async function mockEcommerceApis(page) {
       await fulfill(route, {
         key: "uploads/e2e-user-1/product.png",
         url: "/api/v1/files/mock-product.png",
+      });
+      return;
+    }
+    if (
+      path === "/api/v1/commerce/catalog" ||
+      path === "/api/v1/commerce/tryon-catalog"
+    ) {
+      const empty =
+        new URL(page.url()).searchParams.get("emptyCatalog") === "1";
+      const imageUrl = "/api/v1/files/mock-product.png";
+      await fulfill(route, {
+        models: empty
+          ? []
+          : [
+              {
+                id: "east-asian-female",
+                label: "东亚女性",
+                imageUrl,
+              },
+              {
+                id: "european-male",
+                label: "欧美男性",
+                imageUrl,
+              },
+            ],
+        scenes: empty
+          ? []
+          : [
+              { id: "studio", label: "纯色棚拍", imageUrl },
+              { id: "street", label: "都市街头", imageUrl },
+            ],
+        garments: [],
+        hands: [],
       });
       return;
     }

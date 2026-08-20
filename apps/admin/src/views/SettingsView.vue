@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { Check, Delete, Plus, Refresh } from "@element-plus/icons-vue";
+import { Check, Connection, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { request } from "@/request";
 import { normalizePoints } from "@/utils";
@@ -34,6 +34,13 @@ interface AdminSettings {
   growthUsageRewardsEnabled?: boolean;
   growthUsageMilestones?: GrowthMilestone[];
   suggestionRewardMaxCents?: number;
+  lanjingPayEnabled?: boolean;
+  lanjingPayBaseUrl?: string;
+  lanjingPaySecret?: string;
+  lanjingPayNotifyUrl?: string;
+  lanjingPayTimeoutSecs?: number;
+  lanjingPayAlipayEnabled?: boolean;
+  lanjingPayWechatEnabled?: boolean;
 }
 
 interface GrowthMilestone {
@@ -41,10 +48,20 @@ interface GrowthMilestone {
   rewardCents: number;
 }
 
+interface PaymentTestResult {
+  online: boolean;
+  state: number;
+  stateLabel: string;
+  lastHeartbeatAt?: string | null;
+  lastPaymentAt?: string | null;
+}
+
 const loading = ref(false);
 const saving = ref(false);
 const savedSignature = ref("");
 const workerConcurrencyCeiling = ref(1);
+const testingPayment = ref(false);
+const paymentTest = ref<PaymentTestResult | null>(null);
 
 const form = reactive({
   userMaxRunningTasks: 100,
@@ -77,6 +94,13 @@ const form = reactive({
     { units: 100, rewardCents: 150 },
   ] as GrowthMilestone[],
   suggestionRewardMaxPoints: 5000,
+  lanjingPayEnabled: false,
+  lanjingPayBaseUrl: "https://2347537.pay.lanjingzf.com",
+  lanjingPaySecret: "",
+  lanjingPayNotifyUrl: "",
+  lanjingPayTimeoutSecs: 10,
+  lanjingPayAlipayEnabled: true,
+  lanjingPayWechatEnabled: true,
 });
 
 const settingsSignature = () =>
@@ -108,6 +132,13 @@ const settingsSignature = () =>
     growthUsageRewardsEnabled: form.growthUsageRewardsEnabled,
     growthUsageMilestones: form.growthUsageMilestones,
     suggestionRewardMaxPoints: form.suggestionRewardMaxPoints,
+    lanjingPayEnabled: form.lanjingPayEnabled,
+    lanjingPayBaseUrl: form.lanjingPayBaseUrl,
+    lanjingPaySecret: form.lanjingPaySecret,
+    lanjingPayNotifyUrl: form.lanjingPayNotifyUrl,
+    lanjingPayTimeoutSecs: form.lanjingPayTimeoutSecs,
+    lanjingPayAlipayEnabled: form.lanjingPayAlipayEnabled,
+    lanjingPayWechatEnabled: form.lanjingPayWechatEnabled,
   });
 
 const isDirty = computed(
@@ -205,6 +236,14 @@ function hydrate(settings: AdminSettings) {
   form.suggestionRewardMaxPoints = normalizePoints(
     settings.suggestionRewardMaxCents ?? 5000,
   );
+  form.lanjingPayEnabled = settings.lanjingPayEnabled ?? false;
+  form.lanjingPayBaseUrl =
+    settings.lanjingPayBaseUrl || "https://2347537.pay.lanjingzf.com";
+  form.lanjingPaySecret = settings.lanjingPaySecret || "";
+  form.lanjingPayNotifyUrl = settings.lanjingPayNotifyUrl || "";
+  form.lanjingPayTimeoutSecs = settings.lanjingPayTimeoutSecs ?? 10;
+  form.lanjingPayAlipayEnabled = settings.lanjingPayAlipayEnabled ?? true;
+  form.lanjingPayWechatEnabled = settings.lanjingPayWechatEnabled ?? true;
   savedSignature.value = settingsSignature();
 }
 
@@ -218,6 +257,23 @@ async function load() {
 }
 
 async function save() {
+  if (
+    form.lanjingPayEnabled &&
+    (!form.lanjingPayBaseUrl.trim() ||
+      !form.lanjingPaySecret.trim() ||
+      !form.lanjingPayNotifyUrl.trim())
+  ) {
+    ElMessage.warning("启用支付前请补全接口地址、通讯密钥和异步回调");
+    return;
+  }
+  if (
+    form.lanjingPayEnabled &&
+    !form.lanjingPayAlipayEnabled &&
+    !form.lanjingPayWechatEnabled
+  ) {
+    ElMessage.warning("启用支付时至少开放一种支付方式");
+    return;
+  }
   saving.value = true;
   try {
     hydrate(
@@ -260,6 +316,13 @@ async function save() {
           suggestionRewardMaxCents: normalizePoints(
             form.suggestionRewardMaxPoints,
           ),
+          lanjingPayEnabled: form.lanjingPayEnabled,
+          lanjingPayBaseUrl: form.lanjingPayBaseUrl.trim(),
+          lanjingPaySecret: form.lanjingPaySecret.trim(),
+          lanjingPayNotifyUrl: form.lanjingPayNotifyUrl.trim(),
+          lanjingPayTimeoutSecs: form.lanjingPayTimeoutSecs,
+          lanjingPayAlipayEnabled: form.lanjingPayAlipayEnabled,
+          lanjingPayWechatEnabled: form.lanjingPayWechatEnabled,
         },
       }),
     );
@@ -267,6 +330,43 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+async function testPaymentConnection() {
+  if (
+    !form.lanjingPayBaseUrl.trim() ||
+    !form.lanjingPaySecret.trim() ||
+    !form.lanjingPayNotifyUrl.trim()
+  ) {
+    ElMessage.warning("请先填写接口地址、通讯密钥和异步回调");
+    return;
+  }
+  testingPayment.value = true;
+  paymentTest.value = null;
+  try {
+    paymentTest.value = await request<PaymentTestResult>(
+      "/api/v1/admin/providers/lanjing-pay/tests",
+      {
+        method: "POST",
+        body: {
+          baseUrl: form.lanjingPayBaseUrl.trim(),
+          secret: form.lanjingPaySecret.trim(),
+          notifyUrl: form.lanjingPayNotifyUrl.trim(),
+          timeoutSecs: form.lanjingPayTimeoutSecs,
+        },
+      },
+    );
+    if (paymentTest.value.online) ElMessage.success("支付监听端在线");
+    else ElMessage.warning(`接口可用，监听端${paymentTest.value.stateLabel}`);
+  } finally {
+    testingPayment.value = false;
+  }
+}
+
+function formatPaymentTime(value?: string | null) {
+  if (!value) return "暂无记录";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "暂无记录" : date.toLocaleString("zh-CN");
 }
 
 onMounted(load);
@@ -294,6 +394,122 @@ onMounted(load);
       </div>
 
       <div class="settings-body">
+        <section class="settings-group payment-settings">
+          <header class="settings-group__head payment-settings__head">
+            <div>
+              <strong>支付</strong>
+              <span>蓝鲸支付渠道、回调和监听状态</span>
+            </div>
+            <div class="payment-settings__controls">
+              <span
+                class="payment-state"
+                :class="{
+                  'is-online': paymentTest?.online,
+                  'is-offline': paymentTest && !paymentTest.online,
+                }"
+              >
+                {{
+                  paymentTest
+                    ? `监听端${paymentTest.stateLabel}`
+                    : form.lanjingPayEnabled
+                      ? "等待检测"
+                      : "支付已停用"
+                }}
+              </span>
+              <el-switch
+                v-model="form.lanjingPayEnabled"
+                active-text="启用"
+                inactive-text="停用"
+              />
+            </div>
+          </header>
+
+          <div class="settings-grid settings-grid--pair payment-settings__grid">
+            <label class="setting-tile">
+              <div class="setting-tile__top setting-tile__top--stack">
+                <strong>接口地址</strong>
+                <el-input
+                  v-model="form.lanjingPayBaseUrl"
+                  placeholder="https://2347537.pay.lanjingzf.com"
+                />
+              </div>
+              <small>蓝鲸支付商户实例地址</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top setting-tile__top--stack">
+                <strong>通讯密钥</strong>
+                <el-input
+                  v-model="form.lanjingPaySecret"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  placeholder="输入商户后台通讯密钥"
+                />
+              </div>
+              <small>保存时加密；掩码原样保存不会更换密钥</small>
+            </label>
+
+            <label class="setting-tile payment-settings__callback">
+              <div class="setting-tile__top setting-tile__top--stack">
+                <strong>异步回调地址</strong>
+                <el-input
+                  v-model="form.lanjingPayNotifyUrl"
+                  placeholder="https://你的域名/api/v1/payments/lanjing/notify"
+                />
+              </div>
+              <small>生产环境必须为平台可访问的公网 HTTPS 地址</small>
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>请求超时</strong>
+                <div class="points-input">
+                  <el-input-number
+                    v-model="form.lanjingPayTimeoutSecs"
+                    class="settings-stepper"
+                    :min="1"
+                    :max="60"
+                    :precision="0"
+                  />
+                  <b>秒</b>
+                </div>
+              </div>
+              <small>创建、查询和关闭订单的服务端超时</small>
+            </label>
+
+            <div class="setting-tile payment-settings__methods">
+              <div class="setting-tile__top">
+                <strong>支付方式</strong>
+                <el-checkbox v-model="form.lanjingPayAlipayEnabled">
+                  支付宝
+                </el-checkbox>
+                <el-checkbox v-model="form.lanjingPayWechatEnabled">
+                  微信支付
+                </el-checkbox>
+              </div>
+              <small>至少开放一种；用户价格页只展示已开放渠道</small>
+            </div>
+
+            <div class="payment-settings__test">
+              <div v-if="paymentTest" class="payment-test-result">
+                <span>最近心跳</span>
+                <strong>{{ formatPaymentTime(paymentTest.lastHeartbeatAt) }}</strong>
+                <span>最近收款</span>
+                <strong>{{ formatPaymentTime(paymentTest.lastPaymentAt) }}</strong>
+              </div>
+              <span v-else>连接测试只查询监听状态，不创建支付订单</span>
+              <el-button
+                :icon="Connection"
+                :loading="testingPayment"
+                @click="testPaymentConnection"
+              >
+                测试连接
+              </el-button>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-group">
           <header class="settings-group__head">
             <strong>账号</strong>
@@ -893,6 +1109,86 @@ onMounted(load);
   flex-direction: column;
 }
 
+.payment-settings__head {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.payment-settings__head > div:first-child strong,
+.payment-settings__head > div:first-child span {
+  display: block;
+}
+
+.payment-settings__head > div:first-child span {
+  margin-top: 3px;
+}
+
+.payment-settings__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.payment-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--ink-3) !important;
+  background: var(--surface-2);
+  font-size: 11px !important;
+  font-weight: 650 !important;
+}
+
+.payment-state.is-online {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  color: var(--success) !important;
+  background: var(--success-soft);
+}
+
+.payment-state.is-offline {
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+  color: var(--warning) !important;
+  background: var(--warning-soft);
+}
+
+.payment-settings__methods .setting-tile__top {
+  justify-content: flex-start;
+}
+
+.payment-settings__methods .setting-tile__top > strong {
+  margin-right: auto;
+}
+
+.payment-settings__test {
+  grid-column: 1 / -1;
+  display: flex;
+  min-height: 52px;
+  padding: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.payment-test-result {
+  display: grid;
+  grid-template-columns: auto minmax(130px, 1fr) auto minmax(130px, 1fr);
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.payment-test-result strong {
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
 .growth-subsection {
   display: grid;
   gap: 12px;
@@ -1105,6 +1401,20 @@ onMounted(load);
   .settings-grid,
   .settings-grid--pair {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .payment-settings__head,
+  .payment-settings__test {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .payment-settings__test :deep(.el-button) {
+    width: 100%;
+  }
+
+  .payment-test-result {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .growth-subsection > header {

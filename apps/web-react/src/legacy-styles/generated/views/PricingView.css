@@ -41,6 +41,300 @@
     radial-gradient(circle at 96% 8%, rgba(139, 123, 255, 0.08), transparent 24%),
     #ffffff;
 }
+
+.pp-checkout-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(16 18 24 / 58%);
+  backdrop-filter: blur(8px);
+}
+.pp-checkout {
+  width: min(440px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 24px 72px rgb(15 18 28 / 28%);
+}
+.pp-checkout__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 76px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.pp-checkout__head small {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.pp-checkout__head h2 {
+  margin: 0;
+  font-size: 1.08rem;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+.pp-icon-button {
+  display: inline-grid;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+.pp-icon-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.pp-checkout__body,
+.pp-checkout__pay {
+  padding: 20px;
+}
+.pp-checkout__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 56px;
+  margin-bottom: 18px;
+  padding: 0 2px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.pp-checkout__summary span {
+  color: var(--body);
+  font-size: 0.84rem;
+}
+.pp-checkout__summary strong {
+  font-size: 1.42rem;
+  font-variant-numeric: tabular-nums;
+}
+.pp-pay-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.pp-pay-methods button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+}
+.pp-pay-methods button > .bi:first-child {
+  font-size: 1.45rem;
+}
+.pp-pay-methods button:first-child > .bi:first-child {
+  color: #1677ff;
+}
+.pp-pay-methods button:last-child > .bi:first-child {
+  color: #07c160;
+}
+.pp-pay-methods button span {
+  overflow-wrap: anywhere;
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+.pp-pay-methods button > .bi:last-child {
+  color: transparent;
+}
+.pp-pay-methods button.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.pp-pay-methods button.is-active > .bi:last-child {
+  color: var(--accent);
+}
+.pp-checkout__submit,
+.pp-checkout__success button,
+.pp-checkout__expired button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--accent);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.pp-checkout__submit:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.pp-checkout__qr {
+  display: grid;
+  width: 228px;
+  height: 228px;
+  margin: 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+.pp-checkout__amount {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 0 10px;
+}
+.pp-checkout__amount small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.pp-checkout__amount strong {
+  font-size: 1.8rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.pp-checkout__amount span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+.pp-checkout__notice,
+.pp-checkout__error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.pp-checkout__notice {
+  color: #8a4b00;
+  background: #fff7e6;
+}
+.pp.is-dark .pp-checkout__notice {
+  color: #ffd591;
+  background: rgb(250 173 20 / 12%);
+}
+.pp-checkout__error {
+  color: #b42318;
+  background: #fff1f0;
+}
+.pp.is-dark .pp-checkout__error {
+  color: #ffaaa5;
+  background: rgb(255 77 79 / 12%);
+}
+.pp-checkout__pay-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.pp-checkout__pay-actions a,
+.pp-checkout__pay-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 750;
+  cursor: pointer;
+  text-decoration: none;
+}
+.pp-checkout__pay-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.pp-checkout__success,
+.pp-checkout__expired {
+  display: flex;
+  min-height: 320px;
+  padding: 32px 24px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+.pp-checkout__success > svg {
+  color: #16a34a;
+}
+.pp-checkout__expired > svg {
+  color: #d97706;
+}
+.pp-checkout__success strong,
+.pp-checkout__expired strong {
+  font-size: 1.05rem;
+}
+.pp-checkout__success span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.pp-checkout__success button,
+.pp-checkout__expired button {
+  width: min(240px, 100%);
+  margin-top: 10px;
+}
+.is-spinning {
+  animation: pp-spin 800ms linear infinite;
+}
+@keyframes pp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 520px) {
+  .pp-checkout-backdrop {
+    padding: 8px;
+    align-items: end;
+  }
+  .pp-checkout {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+  .pp-checkout__body,
+  .pp-checkout__pay {
+    padding: 16px;
+  }
+  .pp-pay-methods {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning {
+    animation-duration: 1600ms;
+  }
+}
 .pp.is-dark {
   --ink: #f4f5f8;
   --muted: #9aa3b5;

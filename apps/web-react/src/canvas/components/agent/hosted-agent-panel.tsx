@@ -7,11 +7,11 @@ import { useNavigate } from "react-router";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { summarizeCanvasAgentOps, type CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
-import { parseCanvasAgentOpsPayload, runCanvasAgentTool } from "@/lib/canvas/canvas-hosted-agent";
+import { runCanvasAgentTool } from "@/lib/canvas/canvas-hosted-agent";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { cancelCanvasAssistantRun, clearHostedAgentConversationId, requestCanvasAgentTurn } from "@/services/canvas-task-api";
-import { useAgentStore, type AgentAttachment, type AgentCanvasContext, type AgentChatItem } from "@/stores/use-agent-store";
+import { useAgentStore, type AgentAttachment, type AgentCanvasContext, type AgentChatItem, type AgentReasoningEffort } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { attachmentPayloadBytes, promptWithAttachments, promptWithCanvasReferences } from "./agent-event-formatters";
 import { AgentChatTimeline } from "./agent-chat";
@@ -20,6 +20,14 @@ import { AgentPanelTabs } from "./agent-panel-tabs";
 
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 12 * 1024 * 1024;
+const HOSTED_REASONING_EFFORT_KEY = "canvas-hosted-agent-reasoning-effort";
+const HOSTED_REASONING_EFFORTS: AgentReasoningEffort[] = ["medium", "xhigh"];
+
+function initialHostedReasoningEffort(): AgentReasoningEffort {
+    if (typeof window === "undefined") return "xhigh";
+    const saved = localStorage.getItem(HOSTED_REASONING_EFFORT_KEY) as AgentReasoningEffort | null;
+    return saved && HOSTED_REASONING_EFFORTS.includes(saved) ? saved : "xhigh";
+}
 
 type Translate = ReturnType<typeof useTranslation>["t"];
 
@@ -114,6 +122,7 @@ export function HostedAgentPanel() {
     const turnAttachmentsRef = useRef<AgentAttachment[]>([]);
     const projectId = useAgentStore((state) => state.canvasContext?.snapshot.projectId || "");
     const [tab, setTab] = useState<"chat">("chat");
+    const [reasoningEffort, setReasoningEffort] = useState<AgentReasoningEffort>(initialHostedReasoningEffort);
 
     const lastProjectIdRef = useRef(projectId);
 
@@ -208,6 +217,7 @@ export function HostedAgentPanel() {
         abortRef.current = controller;
         const userId = randomId();
         const assistantId = randomId();
+        const reasoningId = randomId();
         const userText = text || t(files.length ? "agent.runtime.imagesSent" : "agent.runtime.canvasReferencesSent", { count: files.length || canvasReferences.length });
         addMessage({ id: userId, role: "user", text: userText, attachments: files });
         addMessage({ id: assistantId, role: "assistant", title: t("agent.hosted.subtitle"), text: "", streamId: assistantId });
@@ -218,6 +228,27 @@ export function HostedAgentPanel() {
             setAgentState({
                 messages: current.messages.map((item) => (item.id === assistantId ? { ...item, ...patch } : item)),
             });
+        };
+        const patchReasoning = (reasoning: string, status: "inProgress" | "completed", tokens = 0) => {
+            const text = reasoning.trim();
+            if (!text) return;
+            const current = useAgentStore.getState();
+            const detail = { kind: "reasoning", status, effort: reasoningEffort, ...(tokens > 0 ? { tokens } : {}) };
+            const existingIndex = current.messages.findIndex((item) => item.id === reasoningId);
+            if (existingIndex >= 0) {
+                setAgentState({ messages: current.messages.map((item) => (item.id === reasoningId ? { ...item, text, detail } : item)) });
+                return;
+            }
+            const nextMessages = [...current.messages];
+            const assistantIndex = nextMessages.findIndex((item) => item.id === assistantId);
+            nextMessages.splice(assistantIndex >= 0 ? assistantIndex : nextMessages.length, 0, {
+                id: reasoningId,
+                role: "tool",
+                title: t("agent.events.reasoning"),
+                text,
+                detail,
+            });
+            setAgentState({ messages: nextMessages });
         };
         try {
             let referenceImages = files.map((item) => ({ id: item.id, name: item.name, dataUrl: item.dataUrl }));
@@ -235,6 +266,7 @@ export function HostedAgentPanel() {
                     runIdRef.current = runId;
                 },
                 onDelta: (next) => patchAssistant({ text: next }),
+                onReasoning: (next) => patchReasoning(next, "inProgress"),
                 onToolCall: async (call) => {
                     const canvas = canvasContextRef.current;
                     if (!canvas) throw new Error(t("agent.hosted.failed"));
@@ -252,15 +284,21 @@ export function HostedAgentPanel() {
                     });
                     return observation;
                 },
+                reasoningEffort,
             });
             if (controller.signal.aborted) return;
-            const parsed = result.ops.length ? result : { ...result, ...parseCanvasAgentOpsPayload(result.text) };
-            const ops = (parsed.ops || []).filter((op): op is CanvasAgentOp => Boolean(op?.type));
-            const summary = parsed.summary || result.summary;
+            const ops = (result.ops || []).filter((op): op is CanvasAgentOp => Boolean(op?.type));
+            const summary = result.summary;
+            if (result.reasoning) {
+                patchReasoning(result.reasoning, "completed", result.reasoningTokens || 0);
+            } else if (result.reasoningTokens) {
+                patchReasoning(t("agent.hosted.reasoningNotReturned"), "completed", result.reasoningTokens);
+            }
             patchAssistant({ text: ops.length ? summary || t("agent.hosted.applied") : result.text, streamId: undefined });
             if (ops.length) {
-                const before = context.snapshot.connections.length;
-                const next = context.applyOps(ops);
+                const liveContext = canvasContextRef.current || context;
+                const before = liveContext.snapshot.connections.length;
+                const next = liveContext.applyOps(ops);
                 const linked = Math.max(0, next.connections.length - before);
                 addMessage({
                     id: randomId(),
@@ -279,7 +317,7 @@ export function HostedAgentPanel() {
             runIdRef.current = "";
             setAgentState({ sending: false, waiting: false });
         }
-    }, [addMessage, message, navigate, setAgentState, t]);
+    }, [addMessage, message, navigate, reasoningEffort, setAgentState, t]);
 
     return (
         <>
@@ -336,6 +374,13 @@ export function HostedAgentPanel() {
                 sending={sending || waiting}
                 placeholder={t("agent.hosted.placeholder")}
                 theme={theme}
+                reasoningEffort={reasoningEffort}
+                reasoningEfforts={HOSTED_REASONING_EFFORTS}
+                reasoningEffortLabels={{ medium: t("agent.hosted.reasoningStandard"), xhigh: t("agent.hosted.reasoningExtended") }}
+                onReasoningEffortChange={(effort) => {
+                    localStorage.setItem(HOSTED_REASONING_EFFORT_KEY, effort);
+                    setReasoningEffort(effort);
+                }}
                 onPromptChange={(next) => setAgentState({ prompt: next })}
                 onAddFiles={(files) => void addAttachments(files)}
                 onRemoveAttachment={(id) => setAgentState({ attachments: useAgentStore.getState().attachments.filter((item) => item.id !== id) })}

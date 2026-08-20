@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate, useNavigation } from "react-router";
 import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { TrialAccessDialog } from "../components/TrialAccessDialog.jsx";
@@ -201,6 +201,7 @@ function navMotionDisabled() {
 export function NavBar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigation = useNavigation();
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
@@ -250,6 +251,14 @@ export function NavBar() {
     const currentParams = new URLSearchParams(location.search);
     return [...new URLSearchParams(targetSearch)].every(
       ([key, value]) => currentParams.get(key) === value,
+    );
+  };
+  const isPending = (to) => {
+    if (navigation.state === "idle" || !navigation.location) return false;
+    const target = new URL(String(to || "/"), window.location.origin);
+    return (
+      target.pathname === navigation.location.pathname &&
+      target.search === (navigation.location.search || "")
     );
   };
   const groupLabel = (item) => {
@@ -646,6 +655,10 @@ export function NavBar() {
   }
 
   function openNavLink(event, item) {
+    if (isPending(item.to)) {
+      event.preventDefault();
+      return;
+    }
     closeMenu();
     if (item.requiresAuth && !auth.isAuthenticated) {
       event.preventDefault();
@@ -700,8 +713,9 @@ export function NavBar() {
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`nav-link${item.id === "home" ? " nav-home-link" : ""}${isActive(item.to) ? " active router-link-exact-active" : ""}`}
+                  className={`nav-link${item.id === "home" ? " nav-home-link" : ""}${isActive(item.to) ? " active router-link-exact-active" : ""}${isPending(item.to) ? " is-pending" : ""}`}
                   aria-current={isActive(item.to) ? "page" : undefined}
+                  aria-disabled={isPending(item.to) ? "true" : undefined}
                   onClick={(event) => openNavLink(event, item)}
                 >
                   <i className={`bi ${item.icon}`} />
@@ -760,9 +774,10 @@ export function NavBar() {
                             <Link
                               key={link.to}
                               to={link.to}
-                              className={`commerce-menu-card${isActive(link.to) ? " active" : ""}`}
+                              className={`commerce-menu-card${isActive(link.to) ? " active" : ""}${isPending(link.to) ? " is-pending" : ""}`}
                               role="menuitem"
-                              onClick={closeMenu}
+                              aria-disabled={isPending(link.to) ? "true" : undefined}
+                              onClick={(event) => openNavLink(event, link)}
                             >
                               <span className="commerce-menu-card__media">
                                 <img
@@ -790,9 +805,10 @@ export function NavBar() {
                           <Link
                             key={link.to}
                             to={link.to}
-                            className={`nav-bento-card is-${link.bento || "tile"} is-${link.id}${isActive(link.to) ? " active" : ""}`}
+                            className={`nav-bento-card is-${link.bento || "tile"} is-${link.id}${isActive(link.to) ? " active" : ""}${isPending(link.to) ? " is-pending" : ""}`}
                             role="menuitem"
-                            onClick={closeMenu}
+                            aria-disabled={isPending(link.to) ? "true" : undefined}
+                            onClick={(event) => openNavLink(event, link)}
                           >
                             <span className="nav-bento-card__media">
                               <img src={link.cover} alt="" decoding="async" />
@@ -821,9 +837,10 @@ export function NavBar() {
                         <Link
                           key={link.to}
                           to={link.to}
-                          className={`nav-dropdown-item${isActive(link.to) ? " active" : ""}`}
+                          className={`nav-dropdown-item${isActive(link.to) ? " active" : ""}${isPending(link.to) ? " is-pending" : ""}`}
                           role="menuitem"
-                          onClick={closeMenu}
+                          aria-disabled={isPending(link.to) ? "true" : undefined}
+                          onClick={(event) => openNavLink(event, link)}
                         >
                           <i className={`bi ${link.icon}`} />
                           <span>{link.label}</span>

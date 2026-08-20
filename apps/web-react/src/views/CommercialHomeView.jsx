@@ -8,6 +8,7 @@ import "@react/legacy-styles/generated/features/home-commercial/components/Stran
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
 import { COMMERCE_ENTRY_GROUPS } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { useLocale } from "../i18n/index.js";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./commercial-home-react.css";
 
@@ -233,17 +234,6 @@ const footerAccount = [
 const FOOTER_DESC =
   "一站式 AI 图像生产工作台。从模型选择到高清交付，把创作链路收进同一条可追踪流程。";
 
-async function apiGet(path, signal) {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "include",
-    signal,
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.success !== true)
-    throw new Error(payload?.error || "请求失败");
-  return payload.data;
-}
-
 function CapabilityLoop() {
   return (
     <div className="capability-loop" role="region" aria-label="创作能力">
@@ -463,18 +453,9 @@ function StrandsBand() {
 
 export function CommercialHomeView() {
   const { locale, t } = useLocale();
+  const { user } = useAuth();
   const { controls, isEntryVisible } = usePageControls();
-  const [user, setUser] = useState(null);
   const heroEnabled = useHomeHeroEnabled();
-  useEffect(() => {
-    const controller = new AbortController();
-    apiGet("/auth/session", controller.signal)
-      .then((session) => {
-        if (!controller.signal.aborted) setUser(session?.user || null);
-      })
-      .catch(() => null);
-    return () => controller.abort();
-  }, []);
 
   const workflowTitle = t(floatTitle);
   const workflowNarrative = t(narrative);

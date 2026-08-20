@@ -26,7 +26,7 @@ func TestMockPaymentRouteDisabled(t *testing.T) {
 	}
 }
 
-func TestPlansAreReadOnlyWhilePaymentIsDisabled(t *testing.T) {
+func TestPaymentRoutesFailClosedWithoutProviderConfiguration(t *testing.T) {
 	cfg := config.Load()
 	s := &Server{Cfg: cfg}
 	routes := s.Router().Routes()
@@ -35,16 +35,22 @@ func TestPlansAreReadOnlyWhilePaymentIsDisabled(t *testing.T) {
 	for _, route := range routes {
 		registered[route.Method+" "+route.Path] = true
 	}
-	if !registered[http.MethodGet+" /api/v1/plans"] {
-		t.Fatal("read-only plan list route is not registered")
-	}
 	for _, route := range []string{
+		http.MethodGet + " /api/v1/plans",
 		http.MethodPost + " /api/v1/orders",
-		http.MethodPost + " /api/v1/payments/webhook/:provider",
+		http.MethodGet + " /api/v1/orders/:id",
+		http.MethodPost + " /api/v1/orders/:id/close",
+		http.MethodGet + " /api/v1/payments/lanjing/notify",
 	} {
-		if registered[route] {
-			t.Fatalf("payment write route unexpectedly registered: %s", route)
+		if !registered[route] {
+			t.Fatalf("payment route is not registered: %s", route)
 		}
+	}
+	w := authRequest(t, s.Router(), http.MethodPost, "/api/v1/orders", gin.H{
+		"planId": "00000000-0000-0000-0000-000000000000", "paymentMethod": "alipay",
+	})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled payment create status = %d, want 503", w.Code)
 	}
 }
 

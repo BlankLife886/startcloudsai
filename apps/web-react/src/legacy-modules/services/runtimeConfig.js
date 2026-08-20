@@ -13,6 +13,9 @@ const STUDIO_FEATURE_KEYS = [
   'wallpaper',
 ]
 
+let cachedRuntimeConfig = null
+let runtimeConfigRequest = null
+
 function buildDefaultFeatures() {
   return Object.fromEntries(
     STUDIO_FEATURE_KEYS.map((key) => [key, { enabled: true, config: { publicModels: [] } }]),
@@ -49,9 +52,25 @@ export function normalizeRuntimeConfig(config = {}) {
   }
 }
 
-export async function fetchRuntimeConfig() {
-  const config = await apiGet('/runtime-config', {
+export function clearRuntimeConfigCache() {
+  cachedRuntimeConfig = null
+  runtimeConfigRequest = null
+}
+
+export async function fetchRuntimeConfig({ force = false } = {}) {
+  if (!force && cachedRuntimeConfig) return cachedRuntimeConfig
+  if (!force && runtimeConfigRequest) return runtimeConfigRequest
+
+  const request = apiGet('/runtime-config', {
     fallbackMessage: '模型配置读取失败',
+  }).then((config) => {
+    cachedRuntimeConfig = normalizeRuntimeConfig(config)
+    return cachedRuntimeConfig
   })
-  return normalizeRuntimeConfig(config)
+  runtimeConfigRequest = request
+  try {
+    return await request
+  } finally {
+    if (runtimeConfigRequest === request) runtimeConfigRequest = null
+  }
 }

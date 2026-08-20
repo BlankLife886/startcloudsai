@@ -76,8 +76,9 @@ func (s *Server) sendLoginCode(email, code string) error {
 }
 
 func (s *Server) authProviders(c *gin.Context) {
+	developmentCodeEcho := s.Cfg.AppEnv == "development" && s.Cfg.DevLoginCodeEcho && !s.smtpConfigured()
 	ok(c, gin.H{
-		"email":            s.Cfg.AppEnv == "development" || (s.Cfg.SMTPAddr != "" && s.Cfg.SMTPFrom != ""),
+		"email":            developmentCodeEcho || s.smtpConfigured(),
 		"verificationCode": true,
 		"emailDomains":     []string{"gmail.com", "googlemail.com", "qq.com"},
 	})
@@ -94,6 +95,11 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 	email, emailOK := normalizeLoginEmail(body.Email)
 	if !emailOK {
 		fail(c, apperr.E("validation_error", "仅支持 Gmail、Googlemail 和 QQ 邮箱", 422))
+		return
+	}
+	developmentCodeEcho := s.Cfg.AppEnv == "development" && s.Cfg.DevLoginCodeEcho && !s.smtpConfigured()
+	if !developmentCodeEcho && !s.smtpConfigured() {
+		fail(c, apperr.E("email_unavailable", "邮箱验证码服务暂不可用，请联系管理员", 503))
 		return
 	}
 	if remain, allowed := s.LoginLimiter.Reserve(email, c.ClientIP()); !allowed {
@@ -118,15 +124,17 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 		fail(c, apperr.E("rate_limited", "验证码发送过于频繁，请稍后再试", 429))
 		return
 	}
-	if err := s.sendLoginCode(email, code); err != nil {
-		_ = store.DeleteEmailLoginCode(ctx, s.St.Pool, email)
-		fail(c, apperr.E("email_unavailable", "验证码邮件发送失败，请稍后重试", 503))
-		return
+	if !developmentCodeEcho {
+		if err := s.sendLoginCode(email, code); err != nil {
+			_ = store.DeleteEmailLoginCode(ctx, s.St.Pool, email)
+			fail(c, apperr.E("email_unavailable", "验证码邮件发送失败，请稍后重试", 503))
+			return
+		}
 	}
 	result := gin.H{"expiresIn": int(emailCodeTTL.Seconds()), "resendAfter": 60}
 	// 验证码回显必须由 DEV_LOGIN_CODE_ECHO 显式开启（生产环境在 config 层强制
 	// 关闭），APP_ENV=development 本身不再触发回显。
-	if s.Cfg.DevLoginCodeEcho && s.Cfg.SMTPAddr == "" {
+	if developmentCodeEcho {
 		result["developmentCode"] = code
 	}
 	respondCreated(c, result)

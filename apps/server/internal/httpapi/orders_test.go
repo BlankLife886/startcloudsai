@@ -4,11 +4,16 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
@@ -74,6 +79,97 @@ func TestCompleteOrderCreditsOnce(t *testing.T) {
 	}
 	if grantCount != 1 {
 		t.Fatalf("grant count = %d, want 1", grantCount)
+	}
+}
+
+func TestLanjingPaymentCallbackCreditsOnce(t *testing.T) {
+	st := testdb.Setup(t)
+	user, order := makeOrder(t, st)
+	if _, err := st.Pool.Exec(context.Background(), `UPDATE orders SET provider = 'lanjing' WHERE id = $1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "callback-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
+	values := url.Values{
+		"payId":       {order.ID.String()},
+		"param":       {order.ID.String()},
+		"type":        {"2"},
+		"price":       {"9.90"},
+		"reallyPrice": {"9.91"},
+	}
+	values.Set("sign", client.CallbackSignature(
+		values.Get("payId"), values.Get("param"), values.Get("type"), values.Get("price"), values.Get("reallyPrice"),
+	))
+	path := "/api/v1/payments/lanjing/notify?" + values.Encode()
+	for attempt := 0; attempt < 2; attempt++ {
+		recorder := httptest.NewRecorder()
+		srv.Router().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
+			t.Fatalf("callback %d = %d %q", attempt, recorder.Code, recorder.Body.String())
+		}
+	}
+	wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.BalanceCents != order.GrantCents+order.BonusCents {
+		t.Fatalf("balance = %d", wallet.BalanceCents)
+	}
+	var entries int
+	if err := st.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM wallet_ledger WHERE source_type = 'order' AND source_id = $1`, order.ID.String()).Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 1 {
+		t.Fatalf("ledger entries = %d, want 1", entries)
+	}
+}
+
+func TestLanjingPaymentCallbackRejectsTamperedPrice(t *testing.T) {
+	st := testdb.Setup(t)
+	user, order := makeOrder(t, st)
+	if _, err := st.Pool.Exec(context.Background(), `UPDATE orders SET provider = 'lanjing' WHERE id = $1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	provider := httptest.NewServer(http.NotFoundHandler())
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "callback-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
+	values := url.Values{
+		"payId":       {order.ID.String()},
+		"param":       {order.ID.String()},
+		"type":        {"2"},
+		"price":       {"0.01"},
+		"reallyPrice": {"0.01"},
+	}
+	values.Set("sign", client.CallbackSignature(
+		values.Get("payId"), values.Get("param"), values.Get("type"), values.Get("price"), values.Get("reallyPrice"),
+	))
+	recorder := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodGet, "/api/v1/payments/lanjing/notify?"+values.Encode(), nil,
+	))
+	if recorder.Code != http.StatusBadRequest || recorder.Body.String() != "invalid_order" {
+		t.Fatalf("callback = %d %q", recorder.Code, recorder.Body.String())
+	}
+	wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.BalanceCents != 0 {
+		t.Fatalf("balance = %d, want 0", wallet.BalanceCents)
 	}
 }
 

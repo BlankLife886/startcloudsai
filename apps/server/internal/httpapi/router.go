@@ -13,6 +13,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -59,6 +60,7 @@ type Server struct {
 	RedeemLimiter     auth.AttemptLimiter
 	PromptSync        *promptsync.Engine
 	Metrics           *systemMetrics
+	LanjingPay        *lanjingpay.Client
 	limiterClosers    []func() error
 }
 
@@ -256,8 +258,13 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/prompts", s.publicPrompts)
 	api.POST("/prompts/:id/engagements", s.promptEngagement)
 
-	// plans（只读）。支付、订单创建和 webhook 仍未注册。
+	// plans & payments
 	api.GET("/plans", s.listPlans)
+	api.POST("/orders", s.createOrder)
+	api.GET("/orders", s.listOrders)
+	api.GET("/orders/:id", s.getOrder)
+	api.POST("/orders/:id/close", s.closeOrder)
+	api.GET("/payments/lanjing/notify", s.lanjingPaymentNotify)
 
 	// meta
 	api.GET("/pricing", s.pricing)
@@ -376,6 +383,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/providers/c2a/tests", s.adminOnly(s.adminTestC2A))
 	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
 	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))
+	admin.POST("/providers/lanjing-pay/tests", s.adminOnly(s.adminTestLanjingPay))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
 	admin.POST("/model-config/discoveries", s.adminOnly(s.adminDiscoverProviderModels))

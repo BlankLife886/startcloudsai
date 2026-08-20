@@ -6,6 +6,7 @@
 import { apiDelete, apiGet, apiPost } from './apiClient'
 
 const AUTH_SESSION_FALLBACK_KEY = 'sc_auth_session_cache'
+let currentAccountRequest = null
 
 export function getAuthSession() {
   try {
@@ -67,14 +68,22 @@ export async function verifyEmailAccount({ email, code }) {
 
 /** 当前用户；未登录返回 null（后端返回 data.user = null）。 */
 export async function fetchCurrentAccount() {
-  const data = await apiGet('/auth/session', { fallbackMessage: '登录状态读取失败' })
-  const user = data?.user || null
-  if (user?.id) {
-    setAuthSession({ user })
-    return user
+  if (currentAccountRequest) return currentAccountRequest
+  const request = apiGet('/auth/session', { fallbackMessage: '登录状态读取失败' }).then((data) => {
+    const user = data?.user || null
+    if (user?.id) {
+      setAuthSession({ user })
+      return user
+    }
+    clearAuthSession()
+    return null
+  })
+  currentAccountRequest = request
+  try {
+    return await request
+  } finally {
+    if (currentAccountRequest === request) currentAccountRequest = null
   }
-  clearAuthSession()
-  return null
 }
 
 export async function logoutAccount() {

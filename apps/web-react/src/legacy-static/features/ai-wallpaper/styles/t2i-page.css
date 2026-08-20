@@ -1568,9 +1568,9 @@
 .t2i-center-tabs {
   position: relative;
   grid-column: 2;
-  width: min(520px, 52vw);
+  width: min(400px, 48vw);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 4px;
   border-radius: 999px;
   overflow: hidden;
@@ -1593,7 +1593,7 @@
   position: absolute;
   inset: 4px auto 4px 4px;
   z-index: 0;
-  width: calc((100% - 8px) / 4);
+  width: calc((100% - 8px) / 3);
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 999px;
   background:
@@ -1647,9 +1647,6 @@
 }
 .t2i-center-tabs:has(button:nth-child(3).is-active)::before {
   transform: translate3d(200%, 0, 0);
-}
-.t2i-center-tabs:has(button:nth-child(4).is-active)::before {
-  transform: translate3d(300%, 0, 0);
 }
 
 .t2i-center-tabs button {
@@ -2235,6 +2232,46 @@
 /* 3 张拼贴布局：首图占满左列，避免出现空槽 */
 .t2i-stage-grid.is-collage .t2i-stage-cell:first-child {
   grid-row: span 2;
+}
+
+.t2i-stage-elapsed {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(8, 8, 14, 0.72);
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  line-height: 1.15;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
+}
+
+.t2i-stage-cell .t2i-stage-elapsed {
+  top: 6px;
+  left: 6px;
+  padding: 3px 7px;
+  font-size: 0.68rem;
+}
+
+.t2i-stage-frame:hover > .t2i-stage-elapsed,
+.t2i-stage-frame:focus-within > .t2i-stage-elapsed,
+.t2i-stage-cell:hover .t2i-stage-elapsed,
+.t2i-stage-cell:focus-within .t2i-stage-elapsed {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .t2i-stage-cell-media {
@@ -3797,8 +3834,7 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
-.t2i-library-view,
-.t2i-assets-view {
+.t2i-library-view {
   overflow-y: auto;
   padding: 8px 18px 24px;
 }

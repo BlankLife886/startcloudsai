@@ -170,8 +170,11 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 	c.Writer.Flush()
 
 	// 补发当前已生成内容，断线重连/迟到订阅都能立即对齐
-	if message, gerr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil && message.Content != "" {
-		writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Kind: message.Kind})
+	if message, gerr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil {
+		reasoning, _ := message.Metadata["reasoning"].(string)
+		if message.Content != "" || reasoning != "" {
+			writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind})
+		}
 	}
 	if terminal {
 		writeAssistantStreamEvent(c, assistantstream.Event{Done: true, Status: run.Status})
@@ -221,8 +224,11 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 				continue
 			}
 			if assistantRunIsTerminal(current.Status) {
-				if message, gerr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil && message.Content != "" {
-					writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Kind: message.Kind})
+				if message, gerr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil {
+					reasoning, _ := message.Metadata["reasoning"].(string)
+					if message.Content != "" || reasoning != "" {
+						writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind})
+					}
 				}
 				writeAssistantStreamEvent(c, assistantstream.Event{Done: true, Status: current.Status})
 				return

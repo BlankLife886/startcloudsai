@@ -447,6 +447,76 @@ type CRUNConfig struct {
 	TimeoutSecs int
 }
 
+type LanjingPayConfig struct {
+	Enabled       bool
+	BaseURL       string
+	Secret        string
+	NotifyURL     string
+	TimeoutSecs   int
+	AlipayEnabled bool
+	WechatEnabled bool
+}
+
+// ResolveLanjingPay returns the effective payment configuration. Persisted
+// admin settings override environment defaults and secrets stay encrypted at rest.
+func ResolveLanjingPay(ctx context.Context, q store.Q, env LanjingPayConfig, masterKey string) (LanjingPayConfig, error) {
+	cfg := env
+	read := func(key string) (json.RawMessage, error) {
+		return Get(ctx, q, key)
+	}
+	for key, target := range map[string]*string{
+		"lanjing_pay_base_url":   &cfg.BaseURL,
+		"lanjing_pay_notify_url": &cfg.NotifyURL,
+	} {
+		raw, err := read(key)
+		if err != nil {
+			return cfg, err
+		}
+		if raw != nil {
+			var value string
+			if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
+				*target = strings.TrimSpace(value)
+			}
+		}
+	}
+	if raw, err := read("lanjing_pay_secret"); err != nil {
+		return cfg, err
+	} else if raw != nil {
+		var stored string
+		if json.Unmarshal(raw, &stored) == nil && stored != "" {
+			plain, decryptErr := DecryptSecret(stored, masterKey)
+			if decryptErr != nil {
+				return cfg, decryptErr
+			}
+			cfg.Secret = plain
+		}
+	}
+	for key, target := range map[string]*bool{
+		"lanjing_pay_enabled":        &cfg.Enabled,
+		"lanjing_pay_alipay_enabled": &cfg.AlipayEnabled,
+		"lanjing_pay_wechat_enabled": &cfg.WechatEnabled,
+	} {
+		raw, err := read(key)
+		if err != nil {
+			return cfg, err
+		}
+		if raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw, err := read("lanjing_pay_timeout_secs"); err != nil {
+		return cfg, err
+	} else if raw != nil {
+		var timeout int
+		if json.Unmarshal(raw, &timeout) == nil && timeout > 0 {
+			cfg.TimeoutSecs = timeout
+		}
+	}
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	cfg.NotifyURL = strings.TrimSpace(cfg.NotifyURL)
+	return cfg, nil
+}
+
 // ResolveCRUN returns the effective CRUN configuration with admin settings
 // taking precedence over environment variables.
 func ResolveCRUN(ctx context.Context, q store.Q, env CRUNConfig, masterKey string) (CRUNConfig, error) {

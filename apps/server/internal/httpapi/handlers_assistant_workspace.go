@@ -60,6 +60,7 @@ type assistantRunIn struct {
 	Width                    int              `json:"width"`
 	Height                   int              `json:"height"`
 	Quality                  string           `json:"quality"`
+	ReasoningEffort          string           `json:"reasoningEffort"`
 	ServiceKey               string           `json:"serviceKey"`
 	Workspace                string           `json:"workspace"`
 	FastMode                 bool             `json:"fastMode"`
@@ -425,6 +426,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 		workspace = requestedWorkspace
 	}
+	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
+	body.ReasoningEffort, err = normalizeAssistantReasoningEffort(body.ReasoningEffort, canvasAgent)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	conversationID, err := uuid.Parse(body.ConversationID)
 	if err != nil {
 		fail(c, apperr.E("validation_error", "conversationId 无效", 422))
@@ -509,7 +516,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			chatSelection = selectedModel
 		}
 	}
-	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
 	if body.Mode == "agent" && !canvasAgent {
 		imageSelection, _ = modelconfig.SelectPublicForWorkspace(
 			modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "",
@@ -603,6 +609,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": body.Mode,
 		"workspace":     workspace,
+	}
+	if body.ReasoningEffort != "" {
+		params["reasoningEffort"] = body.ReasoningEffort
 	}
 	if parent := strings.TrimSpace(body.ParentOutputURL); parent != "" {
 		params["parentOutputUrl"] = parent
@@ -1016,6 +1025,20 @@ func assistantConversationWorkspace(value string) (string, error) {
 		return "", apperr.E("validation_error", "workspace: 不支持的会话工作区", 422)
 	}
 	return workspace, nil
+}
+
+func normalizeAssistantReasoningEffort(value string, defaultHigh bool) (string, error) {
+	effort := strings.ToLower(strings.TrimSpace(value))
+	if effort == "" && defaultHigh {
+		effort = "high"
+	}
+	if effort == "" {
+		return "", nil
+	}
+	if !containsString([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, effort) {
+		return "", apperr.E("validation_error", "reasoningEffort: 不支持的推理强度", 422)
+	}
+	return effort, nil
 }
 
 func assistantMessageDict(item *store.AssistantMessage) gin.H {

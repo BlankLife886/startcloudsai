@@ -35,6 +35,7 @@ scripts/                 # 运维/回填 SQL
 | --- | --- |
 | 应用 | `APP_ENV`、`APP_SECRET`、`ALLOWED_ORIGINS`、`TRUSTED_PROXIES` |
 | 用户认证 | `SMTP_*` |
+| 蓝鲸支付 | `LANJING_PAY_BASE_URL`、`LANJING_PAY_SECRET`、`LANJING_PAY_NOTIFY_URL`、`LANJING_PAY_TIMEOUT_SECS` |
 | 数据 | `DATABASE_URL`、`REDIS_URL`、`DB_MAX_CONNS`、`DB_MIN_CONNS`、`DB_MAX_CONN_LIFETIME`、`DB_MAX_CONN_IDLE_TIME`、`DB_HEALTH_CHECK_PERIOD` |
 | 图片上游 | `C2A_BASE_URL`、`C2A_API_KEY`、`C2A_TIMEOUT_SECS` |
 | 对话与生图工作区 | `SUB2API_BASE_URL`、`SUB2API_API_KEY`、`SUB2API_CHAT_MODEL`、`SUB2API_IMAGE_MODEL` |
@@ -44,6 +45,8 @@ scripts/                 # 运维/回填 SQL
 | 诊断 | `API_PPROF_ADDR`、`WORKER_PPROF_ADDR`（仅允许回环地址） |
 
 `serve` 还接受 `PORT`，默认 `8000`。生产环境会拒绝短于 32 位或仍为模板值的 `APP_SECRET`。
+
+蓝鲸支付可在管理后台的系统设置中配置启用状态、网关地址、通讯密钥、异步通知地址、超时及支付宝/微信渠道。后台值优先于环境变量并按请求热生效；环境变量仅作为未配置后台值时的兜底。通讯密钥使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密，读取时只返回末四位掩码。通知地址必须是支付平台可访问的 HTTPS 地址，并指向 `GET /api/v1/payments/lanjing/notify`。后台“测试连接”调用蓝鲸 `/getState`，不会创建支付订单。
 
 管理端通过 `GET /api/v1/admin/system/metrics` 查看 API、Runtime、连接池、队列和 Worker 实时指标。完整采集、pprof、Race Detector、Benchmark 与 PGO 流程见 [Go 性能与实时可观测性](../../docs/GO_PERFORMANCE_OBSERVABILITY.md)。
 
@@ -76,7 +79,7 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - 管理员使用独立账号、密码和 `sc_admin_session`；不使用管理员密钥。管理员与用户的账号表、密码、会话和 Cookie 均不能交叉访问。
 - `create-admin` 只创建或更新 `admin_accounts`，不会创建普通用户或钱包；更新密码时会撤销该管理员的全部旧会话。
 - 浏览器写请求校验 `Origin`，代理地址只信任 `TRUSTED_PROXIES`。
-- `GET /api/v1/plans` 只读套餐列表已开放；支付、订单创建、webhook 和后台人工补单路由在开发、测试、生产环境均未注册，历史表和内部结算代码仅用于已有数据兼容。
+- `GET /api/v1/plans` 返回可售套餐与当前可用支付渠道；蓝鲸支付配置完整并启用后，订单创建、状态查询、关闭及异步通知路由可用。支付完成复用钱包账本幂等约束，重复通知不会重复入账。
 - `/api/v1/assistant/*` 使用服务端保存的 Sub2API Key 代理流式对话和图片生成，浏览器不会取得该 Key；当前只要求用户已登录，不从站内钱包重复扣费。
 - 数据库中的 C2A API Key 使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密；启动时会自动迁移旧明文值。
 - 生产环境的登录与兑换限流保存在 Redis；开发和测试环境使用进程内限流。

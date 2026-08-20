@@ -39,6 +39,23 @@ func GetUserOrder(ctx context.Context, q Q, userID, id uuid.UUID) (*Order, error
 	return nilOnNoRows(o, err)
 }
 
+func SetOrderProviderID(ctx context.Context, q Q, id uuid.UUID, providerOrderID string) (*Order, error) {
+	return scanOrder(q.QueryRow(ctx,
+		`UPDATE orders SET provider_order_id = $2 WHERE id = $1 AND status = 'pending' RETURNING `+orderCols,
+		id, providerOrderID))
+}
+
+func TransitionPendingOrderStatus(ctx context.Context, q Q, id uuid.UUID, status string) (bool, error) {
+	if status != "failed" && status != "expired" {
+		return false, fmt.Errorf("unsupported pending order transition: %s", status)
+	}
+	tag, err := q.Exec(ctx, `UPDATE orders SET status = $2 WHERE id = $1 AND status = 'pending'`, id, status)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // CompleteOrderUpdate 条件更新 pending/paid → completed，返回是否抢到。
 func CompleteOrderUpdate(ctx context.Context, q Q, id uuid.UUID, now time.Time) (bool, error) {
 	tag, err := q.Exec(ctx,

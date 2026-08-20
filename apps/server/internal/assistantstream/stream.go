@@ -21,6 +21,7 @@ const (
 // 客户端只在长度增加时应用）；done=true 表示任务终结，SSE 应关闭。
 type Event struct {
 	Content    string         `json:"content,omitempty"`
+	Reasoning  string         `json:"reasoning,omitempty"`
 	Kind       string         `json:"kind,omitempty"`
 	Stage      string         `json:"stage,omitempty"`
 	Image      *ImageEvent    `json:"image,omitempty"`

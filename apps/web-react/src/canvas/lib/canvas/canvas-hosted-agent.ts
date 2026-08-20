@@ -91,8 +91,8 @@ const TYPE_ALIASES: Record<string, string> = {
     create_workflow: "create_graph",
     build_graph: "create_graph",
 };
-const MAX_GRAPH_NODES = 32;
-const MAX_GRAPH_EDGES = 64;
+const MAX_GRAPH_NODES = 128;
+const MAX_GRAPH_EDGES = 256;
 
 export function parseCanvasAgentOpsPayload(raw: string): { summary: string; ops: CanvasAgentOp[] } {
     const text = String(raw || "").trim();
@@ -111,6 +111,22 @@ export function parseCanvasAgentOpsPayload(raw: string): { summary: string; ops:
         return { summary: "", ops: [] };
     }
     return normalizeCanvasAgentOpsPayload(payload);
+}
+
+export function resolveCanvasAgentCompletion(input: {
+    content?: string;
+    canvasOps?: unknown;
+    canvasOpsSummary?: string;
+    executedTools?: number;
+    canvasOpsApplied?: boolean;
+}) {
+    const content = String(input.content || "").trim();
+    const parsed = input.executedTools ? { ops: [] as CanvasAgentOp[], summary: "" } : parseCanvasAgentOpsPayload(content);
+    const reported = input.canvasOpsApplied ? [] : normalizeCanvasAgentOps(input.canvasOps);
+    return {
+        ops: reported.length ? reported : parsed.ops,
+        summary: String(input.canvasOpsSummary || "").trim() || parsed.summary || undefined,
+    };
 }
 
 export function normalizeCanvasAgentOpsPayload(payload: unknown): { summary: string; ops: CanvasAgentOp[] } {

@@ -3,7 +3,6 @@ import {
   TRYON_DEFAULT_LENS_ID,
   TRYON_DEFAULT_LIGHT_ID,
 } from "../../ecommerceTools.js";
-import { TRYON_MODEL_CATALOG, TRYON_SCENE_CATALOG } from "./catalog.js";
 
 export function useTryonBusinessState() {
   const [tryonSlots, setTryonSlots] = useState({
@@ -14,18 +13,12 @@ export function useTryonBusinessState() {
   const [tryonUploadNotice, setTryonUploadNoticeState] = useState("");
   const [tryonDraftReady, setTryonDraftReady] = useState(false);
   const [tryonStarting, setTryonStarting] = useState(false);
-  const [featuredTryonModelId, setFeaturedTryonModelId] = useState(
-    TRYON_MODEL_CATALOG[0].id,
-  );
+  const [featuredTryonModelId, setFeaturedTryonModelId] = useState("");
   const [tryonModelBusy, setTryonModelBusy] = useState(false);
-  const [featuredTryonSceneId, setFeaturedTryonSceneId] = useState(
-    TRYON_SCENE_CATALOG[0].id,
-  );
+  const [featuredTryonSceneId, setFeaturedTryonSceneId] = useState("");
   const [tryonSceneBusy, setTryonSceneBusy] = useState(false);
-  const [tryonModelCatalog, setTryonModelCatalog] =
-    useState(TRYON_MODEL_CATALOG);
-  const [tryonSceneCatalog, setTryonSceneCatalog] =
-    useState(TRYON_SCENE_CATALOG);
+  const [tryonModelCatalog, setTryonModelCatalog] = useState([]);
+  const [tryonSceneCatalog, setTryonSceneCatalog] = useState([]);
   const [tryonGarmentCatalog, setTryonGarmentCatalog] = useState([]);
   const [featuredTryonGarmentId, setFeaturedTryonGarmentId] = useState("");
   const [tryonGarmentBusy, setTryonGarmentBusy] = useState(false);

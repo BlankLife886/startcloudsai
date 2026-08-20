@@ -217,6 +217,69 @@ func TestChatAgentWithImagesStreamsTextReasoningAndToolArguments(t *testing.T) {
 	}
 }
 
+func TestChatAgentWithToolsSupportsRequiredChoice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["tool_choice"] != RequiredToolChoice {
+			t.Fatalf("tool_choice = %#v", body["tool_choice"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"canvas_reply","arguments":"{\"content\":\"你好\"}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.ChatAgentWithTools(context.Background(), []Message{{Role: "user", Content: "你好"}}, nil,
+		[]FunctionTool{{Name: "canvas_reply", Parameters: map[string]any{"type": "object"}}}, RequiredToolChoice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCall == nil || result.ToolCall.Name != "canvas_reply" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestChatAgentWithToolsSendsReasoningEffortAndReadsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["reasoning_effort"] != "xhigh" {
+			t.Fatalf("reasoning_effort = %#v", body["reasoning_effort"])
+		}
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		if streamOptions["include_usage"] != true {
+			t.Fatalf("stream_options = %#v", body["stream_options"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"真实分析"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[],"usage":{"completion_tokens":42,"completion_tokens_details":{"reasoning_tokens":17}}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.WithReasoningEffort(" XHIGH ").ChatAgentWithTools(
+		context.Background(),
+		[]Message{{Role: "user", Content: "分析画布"}},
+		nil,
+		[]FunctionTool{{Name: "canvas_reply", Parameters: map[string]any{"type": "object"}}},
+		RequiredToolChoice,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reasoning != "真实分析" || result.ReasoningTokens != 17 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestChatAgentWithImagesFinalMessageReplacesStreamedSnapshots(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -51,6 +51,69 @@ func TestSettingsToCamelMasksSub2APIKey(t *testing.T) {
 	}
 }
 
+func TestAdminLanjingPaySettingsAreEncryptedAndResolved(t *testing.T) {
+	st := testdb.Setup(t)
+	const masterKey = "payment-settings-master-key"
+	srv := &Server{Cfg: &config.Config{
+		AppEnv: "development", AppSecret: masterKey,
+		LanjingPayBaseURL: "https://2347537.pay.lanjingzf.com", LanjingPayTimeoutSecs: 10,
+	}, St: st}
+
+	for _, body := range []string{
+		`{"lanjingPayEnabled":true}`,
+		`{"lanjingPayEnabled":true,"lanjingPayBaseUrl":"https://pay.example.com","lanjingPaySecret":"secret","lanjingPayNotifyUrl":"http://127.0.0.1/notify","lanjingPayAlipayEnabled":false,"lanjingPayWechatEnabled":false,"lanjingPayTimeoutSecs":10}`,
+	} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("invalid payment body status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	const validBody = `{
+		"lanjingPayEnabled":true,
+		"lanjingPayBaseUrl":"https://pay.example.com/",
+		"lanjingPaySecret":"merchant-secret-1234",
+		"lanjingPayNotifyUrl":"http://127.0.0.1/api/v1/payments/lanjing/notify",
+		"lanjingPayTimeoutSecs":12,
+		"lanjingPayAlipayEnabled":true,
+		"lanjingPayWechatEnabled":false
+	}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid payment settings status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	rawSecret, err := settings.Get(context.Background(), st.Pool, "lanjing_pay_secret")
+	if err != nil || strings.Contains(string(rawSecret), "merchant-secret-1234") {
+		t.Fatalf("secret stored in plaintext: %s err=%v", rawSecret, err)
+	}
+	resolved, err := settings.ResolveLanjingPay(context.Background(), st.Pool, settings.LanjingPayConfig{}, masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Enabled || resolved.Secret != "merchant-secret-1234" || resolved.BaseURL != "https://pay.example.com" || resolved.TimeoutSecs != 12 || !resolved.AlipayEnabled || resolved.WechatEnabled {
+		t.Fatalf("resolved payment settings = %#v", resolved)
+	}
+
+	getContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	getContext.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	out, err := srv.settingsToCamel(getContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["lanjingPaySecret"] != "****1234" {
+		t.Fatalf("masked payment secret = %#v", out["lanjingPaySecret"])
+	}
+}
+
 func TestAdminPutSettingsValidatesTaskFailureRetryCount(t *testing.T) {
 	st := testdb.Setup(t)
 	srv := &Server{Cfg: &config.Config{}, St: st}

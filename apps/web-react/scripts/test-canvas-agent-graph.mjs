@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { layoutCanvasGraph } from "../src/canvas/lib/canvas/canvas-graph-layout.ts";
-import { parseCanvasAgentOpsPayload } from "../src/canvas/lib/canvas/canvas-hosted-agent.ts";
+import { parseCanvasAgentOpsPayload, resolveCanvasAgentCompletion } from "../src/canvas/lib/canvas/canvas-hosted-agent.ts";
 
 const options = { originX: 0, originY: 0, columnGap: 72, rowGap: 48 };
 const sized = (keys) => keys.map((key) => ({ key, width: 300, height: 200 }));
@@ -62,6 +62,18 @@ test("parses a graph payload without coordinates and accepts edge pairs", () => 
     assert.deepEqual(ops[0].edges, [{ from: "a", to: "b" }, { from: "b", to: "c" }]);
 });
 
+test("keeps all nodes and edges in a fifty-node workflow", () => {
+    const nodes = Array.from({ length: 50 }, (_, index) => ({ key: `n${index + 1}`, type: "text", text: `步骤 ${index + 1}` }));
+    const edges = Array.from({ length: 49 }, (_, index) => ({ from: `n${index + 1}`, to: `n${index + 2}` }));
+    const { ops } = parseCanvasAgentOpsPayload(JSON.stringify({ summary: "已创建 50 节点工作流", ops: [{ type: "create_graph", nodes, edges }] }));
+    assert.equal(ops.length, 1);
+    assert.equal(ops[0].nodes.length, 50);
+    assert.equal(ops[0].edges.length, 49);
+    const layout = layoutCanvasGraph(sized(nodes.map((node) => node.key)), edges, options);
+    assert.equal(layout.positions.size, 50);
+    assert.equal(layout.edges.length, 49);
+});
+
 test("keeps the workflow alias and rejects a graph with no nodes", () => {
     const aliased = parseCanvasAgentOpsPayload(`{"ops":[{"type":"workflow","nodes":[{"key":"a","type":"image"}]}]}`);
     assert.equal(aliased.ops[0].type, "create_graph");
@@ -74,4 +86,27 @@ test("parses move and resize ops without inventing coordinates for graphs", () =
     assert.equal(ops[0].items[0].id, "text-1");
     assert.equal(ops[1].type, "resize_node");
     assert.equal(ops[1].width, 480);
+});
+
+test("does not return canvas ops that were already applied by a streamed tool call", () => {
+    const completion = resolveCanvasAgentCompletion({
+        content: "已创建图标工作流",
+        canvasOps: [{ type: "create_generation_flow", prompt: "生成一个图标" }],
+        canvasOpsSummary: "已创建图标工作流",
+        executedTools: 1,
+        canvasOpsApplied: true,
+    });
+    assert.deepEqual(completion.ops, []);
+    assert.equal(completion.summary, "已创建图标工作流");
+});
+
+test("keeps reported canvas ops after read-only tools", () => {
+    const completion = resolveCanvasAgentCompletion({
+        content: "已读取画布并准备修改",
+        canvasOps: [{ type: "add_node", nodeType: "text", metadata: { content: "图标提示词" } }],
+        executedTools: 1,
+        canvasOpsApplied: false,
+    });
+    assert.equal(completion.ops.length, 1);
+    assert.equal(completion.ops[0].type, "add_node");
 });

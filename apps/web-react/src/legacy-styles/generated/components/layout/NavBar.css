@@ -284,6 +284,44 @@ html.canvas-entry .site-header.is-dark.is-scrolled {
   transform: translateX(-50%);
   pointer-events: none;
 }
+
+.nav-link.is-pending,
+.nav-dropdown-item.is-pending,
+.nav-bento-card.is-pending,
+.commerce-menu-card.is-pending {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.nav-link.is-pending::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  bottom: 3px;
+  left: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--nav-accent);
+  transform-origin: left center;
+  animation: nav-route-pending 1s ease-in-out infinite alternate;
+}
+
+@keyframes nav-route-pending {
+  from { transform: scaleX(0.25); opacity: 0.45; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-link.is-pending::after {
+    animation: none;
+    transform: scaleX(0.72);
+  }
+}
+
+html.settings-no-animations .nav-link.is-pending::after {
+  animation: none;
+  transform: scaleX(0.72);
+}
 .nav-dropdown.open > .nav-dropdown-trigger .nav-dropdown-label {
   color: var(--nav-accent) !important;
   background: var(--nav-accent-soft);

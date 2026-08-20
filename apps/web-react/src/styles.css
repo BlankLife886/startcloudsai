@@ -25,11 +25,45 @@ body {
   min-height: 100vh;
 }
 
+.route-navigation-progress {
+  position: fixed;
+  z-index: 2200;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  overflow: hidden;
+  pointer-events: none;
+  background: color-mix(in srgb, #19a974 18%, transparent);
+}
+
+.route-navigation-progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: scaleX(0.08);
+  transform-origin: left center;
+  background: #19a974;
+  box-shadow: 0 0 8px color-mix(in srgb, #19a974 65%, transparent);
+  animation: route-navigation-progress 4s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+
+@keyframes route-navigation-progress {
+  0% { transform: scaleX(0.08); }
+  45% { transform: scaleX(0.56); }
+  100% { transform: scaleX(0.88); }
+}
+
 .main-content[data-route-motion-state="entering"] > [data-route-motion-target] {
   will-change: transform, opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .route-navigation-progress > span {
+    animation: none;
+    transform: scaleX(0.72);
+  }
+
   .main-content > [data-route-motion-target] {
     opacity: 1 !important;
     visibility: visible !important;
@@ -48,7 +82,6 @@ html.settings-no-animations .main-content > [data-route-motion-target] {
 [data-assets-content-motion-state="entering"] [data-content-reveal-target],
 [data-t2i-prompts-motion-state="entering"] [data-content-reveal-target],
 [data-t2i-history-motion-state="entering"] [data-content-reveal-target],
-[data-t2i-assets-motion-state="entering"] [data-content-reveal-target],
 [data-commerce-library-motion-state="entering"] [data-content-reveal-target],
 [data-products-content-motion-state="entering"] [data-content-reveal-target] {
   will-change: opacity;

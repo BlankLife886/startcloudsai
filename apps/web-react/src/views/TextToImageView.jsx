@@ -266,11 +266,26 @@ function taskGroupKey(task) {
   return task?.batchId ? `batch:${task.batchId}` : `task:${task?.id || "unknown"}`;
 }
 
-function taskMeta(task, now) {
+function looksLikeInternalModelId(value) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return /^model--/i.test(text) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text);
+}
+
+function taskModelLabel(task, models = []) {
+  const keys = [task?.publicModelKey, task?.model]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const match = models.find((item) => keys.includes(item.id) || keys.includes(item.publicModelKey));
+  if (match?.label) return match.label;
+  return keys.find((key) => !looksLikeInternalModelId(key)) || "文生图模型";
+}
+
+function taskMeta(task, now, models = [], totalElapsed = "") {
   const size = task.actualOutputSize || task.outputSize || "";
-  const elapsed = elapsedLabel(task, now);
+  const elapsed = totalElapsed || elapsedLabel(task, now);
   return [
-    task.model || task.publicModelKey || "未知模型",
+    taskModelLabel(task, models),
     task.resolutionScale,
     task.aspectRatio,
     size ? `实际 ${size}` : "",
@@ -282,7 +297,7 @@ function taskMeta(task, now) {
           minute: "2-digit",
         })
       : "",
-    elapsed ? `生成耗时 ${elapsed}` : "",
+    elapsed ? `总耗时 ${elapsed}` : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -313,17 +328,42 @@ function useClock(enabled) {
   return now;
 }
 
-function elapsedLabel(task, now) {
+function formatElapsed(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+}
+
+function elapsedSeconds(task, now) {
   // queued 没有真正 startedAt，不能计入生成耗时。
-  if (task.status === "queued" || !task.startedAt) return "";
+  if (!task || task.status === "queued" || !task.startedAt) return 0;
   const started = Date.parse(task.startedAt);
-  if (!Number.isFinite(started)) return "";
+  if (!Number.isFinite(started)) return 0;
   const finished = Date.parse(task.finishedAt || "");
-  const seconds = Math.max(
+  return Math.max(
     0,
     Math.floor(((Number.isFinite(finished) ? finished : now) - started) / 1000),
   );
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function elapsedLabel(task, now) {
+  if (task.status === "queued" || !task.startedAt) return "";
+  return formatElapsed(elapsedSeconds(task, now));
+}
+
+function groupTotalElapsedLabel(items, now) {
+  const seen = new Set();
+  let total = 0;
+  let counted = false;
+  for (const item of items || []) {
+    const task = item?.task;
+    const id = String(task?.id || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const seconds = elapsedSeconds(task, now);
+    if (seconds > 0 || (task.startedAt && task.status !== "queued")) counted = true;
+    total += seconds;
+  }
+  return counted ? formatElapsed(total) : "";
 }
 
 function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {}) {
@@ -1237,6 +1277,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const activeTask = featuredItem?.task || null;
   const activeOutput = featuredItem?.url || "";
   const stageGridItems = featuredGroup?.items.length > 1 ? featuredGroup.items : [];
+  const featuredTotalElapsed = groupTotalElapsedLabel(featuredGroup?.items, now);
   const featuredAspect = stageAspectValue(
     activeTask,
     featuredItem?.key ? featuredImageAspects[featuredItem.key] : "",
@@ -1330,15 +1371,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     resetKey: `${mainTab}:${promptCategory}:${promptSort}`,
     contentKey: visiblePromptItems.map((item) => item.id).join("|"),
     stateAttribute: "data-t2i-prompts-motion-state",
-  });
-  useContentReveal({
-    rootRef,
-    selector: ".t2i-assets-view > *",
-    ready: mainTab === "assets",
-    resetKey: mainTab,
-    contentKey: mainTab,
-    stateAttribute: "data-t2i-assets-motion-state",
-    maxItems: 4,
   });
   const promptColumns = useMemo(() => {
     return buildBalancedPromptColumns(promptFeedItems, promptColumnCount);
@@ -1945,7 +1977,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       <main className="t2i-main" aria-label="创作结果">
         <header className="t2i-main-head" data-motion>
           <div className="t2i-center-tabs" role="tablist" aria-label="主视图切换">
-            {[['prompts', '提示词库'], ['images', '图片生成'], ['history', '历史记录'], ['assets', '我的资产']].map(([id, label]) => (
+            {[['prompts', '提示词库'], ['images', '图片生成'], ['history', '历史记录']].map(([id, label]) => (
               <button key={id} type="button" role="tab" aria-selected={mainTab === id} className={mainTab === id ? "is-active" : ""} onClick={() => setMainTab(id)}>{label}</button>
             ))}
           </div>
@@ -1969,9 +2001,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     ? completed.length ? `${completed.length} 张` : "暂无作品"
                     : mainTab === "history"
                       ? historyItems.length ? `${historyItems.length} 条` : "暂无历史记录"
-                      : mainTab === "prompts"
-                        ? `${Math.max(promptTotal, visiblePromptItems.length)} 条提示词`
-                        : "暂无资产"}
+                      : `${Math.max(promptTotal, visiblePromptItems.length)} 条提示词`}
             </span>
           </div>
         </header>
@@ -2008,6 +2038,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                       onError={() => markImageUnavailable(item)}
                                     />
                                   </button>
+                                  {elapsedLabel(item.task, now) ? (
+                                    <span className="t2i-stage-elapsed">{elapsedLabel(item.task, now)}</span>
+                                  ) : null}
                                   <button
                                     type="button"
                                     className="t2i-stage-cell-delete"
@@ -2055,6 +2088,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                               onError={() => markImageUnavailable(featuredItem)}
                             />
                           </button>
+                          {elapsedLabel(activeTask, now) ? (
+                            <span className="t2i-stage-elapsed">{elapsedLabel(activeTask, now)}</span>
+                          ) : null}
                           <ImageQuickActions
                             item={featuredItem}
                             onEdit={() => editTask(activeTask)}
@@ -2074,7 +2110,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                   <div className="t2i-stage-bar">
                     <div className="t2i-stage-copy">
                       <strong title={activeTask.prompt}>{activeTask.prompt || "图片生成"}</strong>
-                      <small>{featuredItem.kind !== "image" ? `${statusLabel(activeTask)}${elapsedLabel(activeTask, now) ? ` · ${elapsedLabel(activeTask, now)}` : ""}` : taskMeta(activeTask, now)}</small>
+                      <small>{featuredItem.kind !== "image" ? `${statusLabel(activeTask)}${featuredTotalElapsed ? ` · 总耗时 ${featuredTotalElapsed}` : ""}` : taskMeta(activeTask, now, models, featuredTotalElapsed)}</small>
                     </div>
                     <div className="t2i-image-actions">
                       {featuredItem.kind === "image" ? (
@@ -2206,7 +2242,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             </div>
           </section>
         )}
-        {mainTab === "assets" && <section className="t2i-panel t2i-assets-view"><div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-collection" /></div><strong>还没有已发布资产</strong><span>从历史记录发布作品后，投稿与审核状态会集中显示在这里。</span></div></section>}
       </main>
       <CostConfirmDialog
         cost={cost}

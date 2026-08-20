@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"testing"
@@ -105,6 +108,43 @@ func TestIsOwnedAssistantOutputImageKey(t *testing.T) {
 				t.Fatalf("isOwnedAssistantOutputImageKey(%q) = %v, want %v", test.key, got, test.want)
 			}
 		})
+	}
+}
+
+func TestIsAllowedTaskInputImageKey(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	owned := "uploads/" + userID.String() + "/original/image.jpg"
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{name: "owned upload", key: owned, want: true},
+		{name: "catalog", key: "ecommerce-catalog/" + uuid.NewString() + ".png", want: true},
+		{name: "legacy tryon", key: "ecommerce-tryon/model.jpg", want: true},
+		{name: "handheld", key: "ecommerce-handheld/scene.webp", want: true},
+		{name: "empty catalog prefix", key: "ecommerce-catalog/"},
+		{name: "other bucket", key: "prompt-covers/cover.png"},
+		{name: "path traversal", key: "ecommerce-catalog/../uploads/x.png"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isAllowedTaskInputImageKey(userID, test.key); got != test.want {
+				t.Fatalf("isAllowedTaskInputImageKey(%q) = %v, want %v", test.key, got, test.want)
+			}
+		})
+	}
+}
+
+func TestMapTaskImageReadError(t *testing.T) {
+	if err := mapTaskImageReadError(context.DeadlineExceeded); !errors.Is(err, errTaskImageTimeout) {
+		t.Fatalf("deadline = %v, want timeout", err)
+	}
+	if err := mapTaskImageReadError(fmt.Errorf("GetObject: %w", context.DeadlineExceeded)); !errors.Is(err, errTaskImageTimeout) {
+		t.Fatalf("wrapped deadline = %v, want timeout", err)
+	}
+	if err := mapTaskImageReadError(fmt.Errorf("missing")); !errors.Is(err, errTaskImageMissing) {
+		t.Fatalf("generic = %v, want missing", err)
 	}
 }
 

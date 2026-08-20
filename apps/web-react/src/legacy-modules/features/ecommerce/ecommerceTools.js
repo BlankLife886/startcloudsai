@@ -1139,7 +1139,9 @@ export function isReusableTaskImageKey(key) {
   ) {
     return false;
   }
-  return /^(uploads|tasks)\//.test(value);
+  return /^(uploads|tasks|ecommerce-catalog|ecommerce-tryon|ecommerce-handheld)\//.test(
+    value,
+  );
 }
 
 export function attachEcommerceUploadKey(file, key) {

@@ -3,7 +3,7 @@ import { getLatestChangelog } from "@react/legacy-modules/services/metaApi.js";
 import { useLocale } from "../i18n/index.js";
 import "./ClientReleaseBanner.css";
 
-const POLL_MS = 8_000;
+const POLL_MS = 30 * 60 * 1000;
 const LOADED_AT_KEY = "starclouds-client-release-loaded-at";
 
 function pageLoadedAt() {

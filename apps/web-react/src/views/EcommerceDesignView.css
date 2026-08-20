@@ -2089,6 +2089,14 @@ html.color-scheme-dark .commerce-studio .showcase-demo__caption > button:hover:n
   overflow: auto;
   padding: 16px 18px 18px;
 }
+.tryon-model-popup__empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 28px 8px;
+  color: rgb(245 245 244 / 62%);
+  font-size: 13px;
+  text-align: center;
+}
 .tryon-model-popup__card,
 .tryon-model-popup__hit {
   display: block;
@@ -2172,6 +2180,9 @@ html.color-scheme-dark .commerce-studio .showcase-demo__caption > button:hover:n
 }
 .tryon-model-popup-root.is-light .tryon-model-popup__head small {
   color: #5c5668;
+}
+.tryon-model-popup-root.is-light .tryon-model-popup__empty {
+  color: #6b6575;
 }
 .tryon-model-popup-root.is-light .tryon-model-popup__head button {
   color: #1c1917;

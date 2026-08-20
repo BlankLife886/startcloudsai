@@ -5,9 +5,10 @@ import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
 import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
 import { canvasImageRequestSize, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import { compactCanvasSnapshot, normalizeCanvasAgentOps, parseCanvasAgentOpsPayload } from "@/lib/canvas/canvas-hosted-agent";
+import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
 import { uploadImage } from "@/services/image-storage";
 import { StarcloudsApiError, starcloudsApiUrl, starcloudsFileUrl, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
+import type { AgentReasoningEffort } from "@/stores/use-agent-store";
 import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-config-store";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
@@ -23,7 +24,7 @@ type CanvasTask = {
 
 type CanvasAssistantResponse = {
     run: { id: string; status: CanvasTask["status"]; errorMessage?: string };
-    assistantMessage?: { content?: string; canvasOps?: unknown; canvasOpsSummary?: string };
+    assistantMessage?: { content?: string; canvasOps?: unknown; canvasOpsSummary?: string; reasoning?: string; reasoningTokens?: number; reasoningEffort?: string };
 };
 
 export type CanvasAssistantTaskOptions = {
@@ -541,6 +542,9 @@ export type CanvasAgentTurnResult = {
     ops: CanvasAgentOp[];
     summary?: string;
     executedTools?: number;
+    reasoning?: string;
+    reasoningTokens?: number;
+    reasoningEffort?: string;
 };
 
 export type CanvasAgentToolCall = { requestId: string; name: string; arguments: string };
@@ -553,8 +557,10 @@ export type CanvasAgentTurnOptions = {
     signal?: AbortSignal;
     onCreated?: (runId: string) => void | Promise<void>;
     onDelta?: (text: string) => void;
+    onReasoning?: (reasoning: string) => void;
     onToolCall?: CanvasAgentToolHandler;
     referenceImages?: Array<{ id?: string; name?: string; dataUrl: string }>;
+    reasoningEffort?: AgentReasoningEffort;
 };
 
 function hostedAgentConversationKey(projectId: string) {
@@ -585,10 +591,6 @@ export function clearHostedAgentConversationId(projectId: string) {
     }
 }
 
-function asCanvasAgentOps(raw: unknown): CanvasAgentOp[] {
-    return normalizeCanvasAgentOps(raw);
-}
-
 async function ensureCanvasAgentConversation(projectId: string, prompt: string, conversationId = "") {
     const existing = conversationId || readHostedAgentConversationId(projectId);
     if (existing) return existing;
@@ -604,7 +606,7 @@ export async function cancelCanvasAssistantRun(runId: string) {
     await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}`, "PATCH", { status: "canceled" });
 }
 
-type CanvasAgentStreamPayload = { content?: string; done?: boolean; status?: string; tool?: CanvasAgentToolCall };
+type CanvasAgentStreamPayload = { content?: string; reasoning?: string; done?: boolean; status?: string; tool?: CanvasAgentToolCall };
 
 function openCanvasAssistantRunStream(runId: string, onEvent: (payload: CanvasAgentStreamPayload) => void) {
     try {
@@ -628,19 +630,28 @@ export async function postCanvasAgentToolResult(runId: string, requestId: string
     await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}/tool-results`, "POST", { requestId, ...payload });
 }
 
-export async function waitForCanvasAgentRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal, onToolCall?: CanvasAgentToolHandler): Promise<CanvasAgentTurnResult> {
+export async function waitForCanvasAgentRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal, onToolCall?: CanvasAgentToolHandler, onReasoning?: (reasoning: string) => void): Promise<CanvasAgentTurnResult> {
     const deadline = Date.now() + 20 * 60 * 1000;
     let pollDelay = 700;
     // The worker blocks on each tool result, so a duplicated SSE frame must not
     // trigger a second execution of the same mutation.
     const servedToolCalls = new Set<string>();
     let executedTools = 0;
+    let canvasOpsApplied = false;
+    let lastReasoning = "";
+    const emitReasoning = (value: string | undefined) => {
+        const reasoning = String(value || "").trim();
+        if (!reasoning || reasoning === lastReasoning) return;
+        lastReasoning = reasoning;
+        onReasoning?.(reasoning);
+    };
     const serveToolCall = async (call: CanvasAgentToolCall) => {
         if (!onToolCall || !call?.requestId || servedToolCalls.has(call.requestId)) return;
         servedToolCalls.add(call.requestId);
         try {
             const result = await onToolCall(call);
             executedTools += 1;
+            if (call.name === "canvas_apply_ops") canvasOpsApplied = true;
             await postCanvasAgentToolResult(runId, call.requestId, { result });
         } catch (error) {
             await postCanvasAgentToolResult(runId, call.requestId, { error: error instanceof Error ? error.message : "工具执行失败" }).catch(() => undefined);
@@ -648,6 +659,7 @@ export async function waitForCanvasAgentRun(runId: string, onDelta: (text: strin
     };
     const stream = openCanvasAssistantRunStream(runId, (payload) => {
         if (payload.content) onDelta(payload.content);
+        emitReasoning(payload.reasoning);
         if (payload.tool) void serveToolCall(payload.tool);
     });
     const closeStream = () => {
@@ -663,20 +675,24 @@ export async function waitForCanvasAgentRun(runId: string, onDelta: (text: strin
                 const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, { signal: poll.signal });
                 const content = current.assistantMessage?.content?.trim() || "";
                 if (content) onDelta(content);
+                emitReasoning(current.assistantMessage?.reasoning);
                 if (current.run.status === "succeeded") {
                     scheduleWalletRefresh();
-                    // Ops the tool loop already executed come back empty; only
-                    // fall back to parsing the reply when nothing ran, or the
-                    // same changes would be applied a second time.
-                    const parsed = executedTools ? { ops: [] as CanvasAgentOp[], summary: "" } : parseCanvasAgentOpsPayload(content);
-                    const reported = asCanvasAgentOps(current.assistantMessage?.canvasOps);
-                    const ops = reported.length ? reported : parsed.ops;
-                    const summary = current.assistantMessage?.canvasOpsSummary?.trim() || parsed.summary || undefined;
+                    const { ops, summary } = resolveCanvasAgentCompletion({
+                        content,
+                        canvasOps: current.assistantMessage?.canvasOps,
+                        canvasOpsSummary: current.assistantMessage?.canvasOpsSummary,
+                        executedTools,
+                        canvasOpsApplied,
+                    });
                     return {
                         text: ops.length ? summary || "已准备画布操作。" : content || "没有返回内容",
                         ops,
                         summary,
                         executedTools,
+                        reasoning: lastReasoning || undefined,
+                        reasoningTokens: Number(current.assistantMessage?.reasoningTokens || 0) || undefined,
+                        reasoningEffort: current.assistantMessage?.reasoningEffort,
                     };
                 }
                 if (current.run.status === "canceled") {
@@ -719,6 +735,7 @@ export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgen
             count: 1,
             requestSize: "auto",
             quality: "high",
+            ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
             idempotencyKey: crypto.randomUUID(),
         });
     let conversationId = await ensureCanvasAgentConversation(options.projectId, prompt, options.conversationId);
@@ -733,5 +750,5 @@ export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgen
     }
     scheduleWalletRefresh();
     await options.onCreated?.(created.run.id);
-    return waitForCanvasAgentRun(created.run.id, options.onDelta || (() => undefined), options.signal, options.onToolCall);
+    return waitForCanvasAgentRun(created.run.id, options.onDelta || (() => undefined), options.signal, options.onToolCall, options.onReasoning);
 }

@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useGSAP } from "@gsap/react";
+import { QRCode } from "antd";
+import {
+  CheckCircle2,
+  Clock3,
+  ExternalLink,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+  X,
+} from "lucide-react";
 import gsap from "gsap";
 import "@react/legacy-styles/generated/views/PricingView.css";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { useLocale } from "../i18n/index.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 
 gsap.registerPlugin(useGSAP);
 
@@ -79,7 +91,7 @@ const accessMethods = [
 const faqs = [
   [
     "现在可以购买套餐吗？",
-    "不可以。支付尚未接入，套餐暂不可用，也不会创建订单。",
+    "支付渠道启用后，选择额度包或订阅方案，可使用支付宝或微信扫码支付。",
   ],
   [
     "现在怎样获取积分？",
@@ -106,6 +118,23 @@ async function apiGet(path, signal) {
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success !== true)
     throw new Error(payload?.error || "请求失败");
+  return payload.data;
+}
+
+async function apiPost(path, body = null, signal) {
+  const response = await fetch(`/api/v1${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: body == null ? null : JSON.stringify(body),
+    signal,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success !== true) {
+    const error = new Error(payload?.error || "请求失败");
+    error.code = payload?.code || "request_failed";
+    throw error;
+  }
   return payload.data;
 }
 
@@ -147,7 +176,16 @@ function planFeatures(plan) {
   );
   return cleaned.length
     ? cleaned
-    : ["全平台创作工具通用", "积分进入个人钱包", "当前不会自动创建订单"];
+    : ["全平台创作工具通用", "支付成功自动入账", "失败订单不会发放积分"];
+}
+
+function checkoutCountdown(expiresAt, now) {
+  const remaining = Math.max(0, new Date(expiresAt || 0).getTime() - now);
+  const seconds = Math.ceil(remaining / 1000);
+  return {
+    expired: seconds <= 0,
+    label: `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`,
+  };
 }
 
 function collectRawModels(runtimeConfig) {
@@ -206,6 +244,7 @@ function isUsagePlan(plan) {
 
 export function PricingView() {
   const { t } = useLocale();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const pageRef = useRef(null);
@@ -214,14 +253,16 @@ export function PricingView() {
     searchParams.get("plan") === "subscription" ? "subscription" : "topup";
   const [plans, setPlans] = useState([]);
   const [paymentEnabled, setPaymentEnabled] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState([]);
   const [pricing, setPricing] = useState(null);
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [plansLoading, setPlansLoading] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [plansLoadFailed, setPlansLoadFailed] = useState(false);
   const [modelKindFilter, setModelKindFilter] = useState("all");
-  const [user, setUser] = useState(null);
   const [wallet, setWallet] = useState(null);
+  const [checkout, setCheckout] = useState(null);
+  const [checkoutNow, setCheckoutNow] = useState(Date.now());
   const [dark, setDark] = useState(
     () =>
       document.documentElement.classList.contains("color-scheme-dark") ||
@@ -238,6 +279,77 @@ export function PricingView() {
     });
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!checkout) return undefined;
+    const onKeydown = (event) => {
+      if (event.key === "Escape" && !checkout.loading) setCheckout(null);
+    };
+    document.addEventListener("keydown", onKeydown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeydown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [checkout]);
+
+  useEffect(() => {
+    if (!checkout?.order?.expiresAt || checkout.order.status !== "pending") return undefined;
+    setCheckoutNow(Date.now());
+    const timer = window.setInterval(() => setCheckoutNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [checkout?.order?.expiresAt, checkout?.order?.status]);
+
+  useEffect(() => {
+    const order = checkout?.order;
+    if (!order?.id || order.status !== "pending") return undefined;
+    const controller = new AbortController();
+    let stopped = false;
+    let timer = null;
+    const poll = async () => {
+      try {
+        const current = await apiGet(`/orders/${encodeURIComponent(order.id)}`, controller.signal);
+        if (stopped) return;
+        if (current?.status === "completed") {
+          const nextWallet = await apiGet("/me/wallet", controller.signal).catch(() => null);
+          if (stopped) return;
+          if (nextWallet) {
+            setWallet(nextWallet);
+            window.dispatchEvent(
+              new CustomEvent("starclouds:wallet-updated", { detail: nextWallet }),
+            );
+          }
+          setCheckout((value) =>
+            value?.order?.id === order.id
+              ? { ...value, order: { ...value.order, ...current }, error: "" }
+              : value,
+          );
+          return;
+        }
+        setCheckout((value) =>
+          value?.order?.id === order.id
+            ? { ...value, order: { ...value.order, ...current }, error: "" }
+            : value,
+        );
+        if (current?.status === "expired" || current?.status === "failed") return;
+      } catch (error) {
+        if (error?.name === "AbortError" || stopped) return;
+        setCheckout((value) =>
+          value?.order?.id === order.id
+            ? { ...value, error: "支付状态确认失败，正在重试" }
+            : value,
+        );
+      }
+      if (!stopped) timer = window.setTimeout(poll, 2000);
+    };
+    timer = window.setTimeout(poll, 1200);
+    return () => {
+      stopped = true;
+      controller.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [checkout?.order?.id, checkout?.order?.status]);
 
   useEffect(() => {
     const onWalletUpdated = (event) => {
@@ -306,10 +418,9 @@ export function PricingView() {
     Promise.allSettled([
       apiGet("/plans", controller.signal),
       apiGet("/pricing", controller.signal),
-      apiGet("/runtime-config", controller.signal),
-      apiGet("/auth/session", controller.signal),
+      fetchRuntimeConfig(),
     ]).then(
-      async ([plansResult, pricingResult, runtimeResult, sessionResult]) => {
+      ([plansResult, pricingResult, runtimeResult]) => {
         if (controller.signal.aborted) return;
         if (plansResult.status === "fulfilled") {
           setPlans(
@@ -318,29 +429,38 @@ export function PricingView() {
               : [],
           );
           setPaymentEnabled(plansResult.value?.paymentEnabled === true);
+          setPaymentMethods(
+            Array.isArray(plansResult.value?.paymentMethods)
+              ? plansResult.value.paymentMethods.filter((method) =>
+                  ["alipay", "wechat"].includes(method),
+                )
+              : [],
+          );
         } else setPlansLoadFailed(true);
         if (pricingResult.status === "fulfilled")
           setPricing(pricingResult.value || null);
         if (runtimeResult.status === "fulfilled")
           setRuntimeConfig(runtimeResult.value || null);
-        const nextUser =
-          sessionResult.status === "fulfilled"
-            ? sessionResult.value?.user || null
-            : null;
-        setUser(nextUser);
         setPlansLoading(false);
         setModelsLoading(false);
-        if (nextUser) {
-          apiGet("/me/wallet", controller.signal)
-            .then((value) => {
-              if (!controller.signal.aborted) setWallet(value || null);
-            })
-            .catch(() => null);
-        }
       },
     );
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setWallet(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    apiGet("/me/wallet", controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setWallet(value || null);
+      })
+      .catch(() => null);
+    return () => controller.abort();
+  }, [user?.id]);
 
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return undefined;
@@ -502,6 +622,55 @@ export function PricingView() {
     const next = new URLSearchParams(searchParams);
     next.set("trial", "apply");
     navigate(`/pricing?${next.toString()}`);
+  }
+  function startCheckout(plan) {
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+    setCheckout({
+      plan,
+      method: paymentMethods[0] || "alipay",
+      order: null,
+      loading: false,
+      error: "",
+    });
+  }
+  async function createPaymentOrder(method) {
+    if (!checkout?.plan?.id || checkout.loading) return;
+    setCheckout((value) => ({ ...value, method, loading: true, error: "" }));
+    try {
+      const order = await apiPost("/orders", {
+        planId: checkout.plan.id,
+        paymentMethod: method,
+      });
+      setCheckoutNow(Date.now());
+      setCheckout((value) => ({ ...value, method, order, loading: false, error: "" }));
+    } catch (error) {
+      setCheckout((value) => ({
+        ...value,
+        loading: false,
+        error: error?.message || "订单创建失败，请稍后重试",
+      }));
+    }
+  }
+  async function cancelPaymentOrder() {
+    const order = checkout?.order;
+    if (!order?.id || checkout.loading) {
+      setCheckout(null);
+      return;
+    }
+    setCheckout((value) => ({ ...value, loading: true, error: "" }));
+    try {
+      await apiPost(`/orders/${encodeURIComponent(order.id)}/close`);
+      setCheckout(null);
+    } catch (error) {
+      setCheckout((value) => ({
+        ...value,
+        loading: false,
+        error: error?.message || "订单关闭失败，请稍后重试",
+      }));
+    }
   }
   function setPlanKind(nextKind) {
     const next = new URLSearchParams(searchParams);
@@ -727,7 +896,7 @@ export function PricingView() {
                       onClick={() =>
                         isUsagePlan(plan)
                           ? navigate("/text-to-image")
-                          : requestTrial()
+                          : startCheckout(plan)
                       }
                     >
                       {locked
@@ -907,6 +1076,156 @@ export function PricingView() {
         </div>
       </section>
 
+      {checkout && (
+        <div
+          className="pp-checkout-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !checkout.loading) setCheckout(null);
+          }}
+        >
+          <section
+            className="pp-checkout"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pp-checkout-title"
+          >
+            <header className="pp-checkout__head">
+              <div>
+                <small>{checkout.order ? t("扫码支付") : t("确认方案")}</small>
+                <h2 id="pp-checkout-title">{t(checkout.plan.name)}</h2>
+              </div>
+              <button
+                type="button"
+                className="pp-icon-button"
+                aria-label={t("关闭")}
+                title={t("关闭")}
+                disabled={checkout.loading}
+                onClick={() => setCheckout(null)}
+              >
+                <X size={18} />
+              </button>
+            </header>
+
+            {checkout.order?.status === "completed" ? (
+              <div className="pp-checkout__success">
+                <CheckCircle2 size={44} aria-hidden="true" />
+                <strong>{t("支付成功，积分已到账")}</strong>
+                <span>{t(quotaLine(checkout.plan))}</span>
+                <button type="button" onClick={() => setCheckout(null)}>
+                  {t("完成")}
+                </button>
+              </div>
+            ) : checkout.order ? (
+              <PaymentQRCode
+                checkout={checkout}
+                now={checkoutNow}
+                onCancel={cancelPaymentOrder}
+                onRetry={() =>
+                  setCheckout((value) => ({ ...value, order: null, error: "" }))
+                }
+                t={t}
+              />
+            ) : (
+              <div className="pp-checkout__body">
+                <div className="pp-checkout__summary">
+                  <span>{t(quotaLine(checkout.plan))}</span>
+                  <strong>{t(formatCents(checkout.plan.priceCents))}</strong>
+                </div>
+                <div className="pp-pay-methods" role="radiogroup" aria-label={t("支付方式")}>
+                  {[
+                    ["alipay", "支付宝", "bi-alipay"],
+                    ["wechat", "微信支付", "bi-wechat"],
+                  ]
+                    .filter(([id]) => paymentMethods.includes(id))
+                    .map(([id, name, icon]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={checkout.method === id}
+                      className={checkout.method === id ? "is-active" : ""}
+                      onClick={() => setCheckout((value) => ({ ...value, method: id }))}
+                    >
+                      <i className={`bi ${icon}`} aria-hidden="true" />
+                      <span>{t(name)}</span>
+                      <i className="bi bi-check-circle-fill" aria-hidden="true" />
+                    </button>
+                    ))}
+                </div>
+                {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
+                <button
+                  type="button"
+                  className="pp-checkout__submit"
+                  disabled={checkout.loading}
+                  onClick={() => createPaymentOrder(checkout.method)}
+                >
+                  {checkout.loading ? (
+                    <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck size={18} aria-hidden="true" />
+                  )}
+                  {t(checkout.loading ? "正在创建订单" : `使用${checkout.method === "wechat" ? "微信" : "支付宝"}支付`)}
+                </button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
     </main>
+  );
+}
+
+function PaymentQRCode({ checkout, now, onCancel, onRetry, t }) {
+  const order = checkout.order;
+  const countdown = checkoutCountdown(order.expiresAt, now);
+  const terminal = countdown.expired || order.status === "expired" || order.status === "failed";
+  const paymentName = checkout.method === "wechat" ? "微信" : "支付宝";
+  const amount = formatCents(order.payAmountCents ?? order.amountCents);
+
+  if (terminal) {
+    return (
+      <div className="pp-checkout__expired">
+        <Clock3 size={38} aria-hidden="true" />
+        <strong>{t("支付订单已失效")}</strong>
+        <button type="button" onClick={onRetry}>
+          <RefreshCw size={17} aria-hidden="true" />
+          {t("重新创建")}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pp-checkout__pay">
+      <div className="pp-checkout__qr">
+        <QRCode value={String(order.payUrl || "")} size={212} bordered={false} />
+      </div>
+      <div className="pp-checkout__amount">
+        <small>{t("应付金额")}</small>
+        <strong>{amount}</strong>
+        <span>
+          <Clock3 size={14} aria-hidden="true" />
+          {t(`请在 ${countdown.label} 内完成`)}
+        </span>
+      </div>
+      {order.requiresManualAmount && (
+        <p className="pp-checkout__notice">
+          {t(`扫码后请确认金额为 ${amount}`)}
+        </p>
+      )}
+      {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
+      <div className="pp-checkout__pay-actions">
+        <a href={order.payUrl} target="_blank" rel="noreferrer">
+          <ExternalLink size={16} aria-hidden="true" />
+          {t(`打开${paymentName}`)}
+        </a>
+        <button type="button" disabled={checkout.loading} onClick={onCancel}>
+          {checkout.loading && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
+          {t("取消订单")}
+        </button>
+      </div>
+    </div>
   );
 }
