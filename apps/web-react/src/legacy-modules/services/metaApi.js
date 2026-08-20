@@ -8,11 +8,18 @@ export async function getTaskPricing({ signal } = {}) {
   return apiGet('/pricing', { signal, fallbackMessage: '价格读取失败' })
 }
 
-/** 更新说明条目（后台可维护）。 */
+/** 更新说明条目（后台发版）。 */
 export async function getRemoteChangelog({ signal } = {}) {
   const data = await apiGet('/changelog', { signal, fallbackMessage: '更新说明读取失败' })
   if (Array.isArray(data)) return data
   return Array.isArray(data?.items) ? data.items : []
+}
+
+/** 最近一次后台发版，供打开中的页面判断是否需要刷新。 */
+export async function getLatestChangelog({ signal } = {}) {
+  const data = await apiGet('/changelog/latest', { signal, fallbackMessage: '更新说明读取失败' })
+  if (!data || typeof data !== 'object' || !data.id) return null
+  return data
 }
 
 /** 生效中公告。 */

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot, CircleAlert, Download, Eraser, Info, ListX, LoaderCircle, Palette, Pencil, Play, RotateCcw, Upload } from "lucide-react";
+import { Bot, CircleAlert, Download, Eraser, Info, LoaderCircle, Palette, Pencil, Play, RotateCcw, Square, Upload } from "lucide-react";
 import { Switch, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import { canvasThemes, type CanvasBackgroundMode, type CanvasTheme } from "@/lib
 import { CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { CanvasShortcutsDialog } from "./canvas-shortcuts-dialog";
 
 export function CanvasTopBar({
@@ -43,6 +44,7 @@ export function CanvasTopBar({
         total: number;
         currentNodeTitle?: string;
         errorMessage?: string;
+        startedAt?: string;
         running?: number;
         queued?: number;
         canceling?: boolean;
@@ -75,13 +77,16 @@ export function CanvasTopBar({
     return (
         <>
             <div
-                className="pointer-events-none absolute left-0 right-0 top-3 z-50 flex h-11 items-center justify-end pr-4"
+                className="pointer-events-none absolute left-0 right-0 top-3 z-50 flex h-11 items-center justify-between pr-4"
                 style={{ paddingLeft: sidePanelOpen ? sidePanelWidth + 20 : 268, transition: "padding-left 380ms cubic-bezier(0.22, 1, 0.36, 1)" }}
             >
+                <div className="pointer-events-auto shrink-0">
+                    <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
+                </div>
+
                 {children ? <div className="pointer-events-auto absolute left-1/2 top-1/2 max-w-[min(720px,calc(100%-380px))] -translate-x-1/2 -translate-y-1/2">{children}</div> : null}
 
                 <div className="pointer-events-auto flex items-center gap-2">
-                    <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
                     <div ref={extrasRef} className="canvas-chrome-cluster relative" style={{ color: theme.toolbar.item }}>
                         <ChromeAction title={t("canvas.project.rename")} theme={theme} onClick={onRename}>
                             <Pencil className="size-3.5" />
@@ -143,6 +148,7 @@ function WorkflowControl({
         total: number;
         currentNodeTitle?: string;
         errorMessage?: string;
+        startedAt?: string;
         running?: number;
         queued?: number;
         canceling?: boolean;
@@ -153,56 +159,59 @@ function WorkflowControl({
 }) {
     const { t } = useTranslation();
     const active = workflowRun.status === "running" || workflowRun.status === "locked";
-    const progress = workflowRun.total > 0 ? Math.min(100, Math.max(0, (workflowRun.completed / workflowRun.total) * 100)) : 0;
+    const progress = workflowRun.total > 0 ? Math.min(1, Math.max(0, workflowRun.completed / workflowRun.total)) : 0;
+    const elapsedMs = useGenerationElapsed(workflowRun.startedAt, undefined, active);
+    const elapsedLabel = formatGenerationDuration(elapsedMs);
 
     if (active) {
+        const locked = workflowRun.status === "locked";
+        const label = locked
+            ? t("canvas.workflow.lockedShort")
+            : workflowRun.canceling
+              ? t("canvas.workflow.stopping")
+              : workflowRun.currentNodeTitle
+                ? t("canvas.workflow.running")
+                : t("canvas.workflow.preparing");
+        const detail = locked
+            ? t("canvas.workflow.backgroundRunning")
+            : workflowRun.canceling
+              ? t("canvas.workflow.finishingSubmitted", { count: workflowRun.running || 0 })
+              : (workflowRun.running || 0) > 1
+                ? t("canvas.workflow.parallelRunning", { count: workflowRun.running })
+                : workflowRun.currentNodeTitle || t("canvas.workflow.preparing");
         return (
-            <div
-                className="canvas-chrome-cluster flex h-9 w-[286px] items-center gap-2 px-2.5"
-                style={{ color: theme.node.text, background: theme.toolbar.panel, boxShadow: `inset 0 0 0 1px ${theme.toolbar.border}` }}
-            >
-                <LoaderCircle className="size-3.5 shrink-0 animate-spin" style={{ color: theme.node.activeStroke }} />
-                <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2 text-[10px] font-semibold">
-                        <span className="truncate">
-                            {workflowRun.status === "locked"
-                                ? t("canvas.workflow.backgroundRunning")
-                                : workflowRun.canceling
-                                  ? t("canvas.workflow.finishingSubmitted", { count: workflowRun.running || 0 })
-                                  : (workflowRun.running || 0) > 1
-                                    ? t("canvas.workflow.parallelRunning", { count: workflowRun.running })
-                                    : workflowRun.currentNodeTitle || t("canvas.workflow.preparing")}
-                        </span>
-                        <span className="shrink-0 tabular-nums" style={{ color: theme.node.faint }}>{workflowRun.completed}/{workflowRun.total}</span>
-                    </div>
-                    <div className="mt-1 h-1 overflow-hidden rounded-sm" style={{ background: theme.toolbar.itemHover }}>
-                        <div className="h-full rounded-sm transition-[width] duration-300" style={{ width: `${progress}%`, background: theme.node.activeStroke }} />
-                    </div>
-                </div>
-                {workflowRun.status !== "locked" && (workflowRun.queued || 0) > 0 && !workflowRun.canceling ? (
-                    <Tooltip title={t("canvas.workflow.cancelQueuedCount", { count: workflowRun.queued })} placement="bottom">
-                        <button type="button" className="grid size-6 shrink-0 place-items-center rounded-md transition hover:bg-black/5" onClick={onStop} aria-label={t("canvas.workflow.cancelQueuedCount", { count: workflowRun.queued })}>
-                            <ListX className="size-3.5" />
+            <div className="canvas-workflow-pill is-running" style={{ color: theme.node.text }}>
+                <WorkflowProgress value={progress} color={theme.node.activeStroke} />
+                <Tooltip title={detail} placement="bottom">
+                    <span className="canvas-workflow-pill__label">{label}</span>
+                </Tooltip>
+                {workflowRun.total > 0 ? (
+                    <span className="canvas-workflow-pill__meta">
+                        {workflowRun.completed}/{workflowRun.total}
+                    </span>
+                ) : null}
+                <span className="canvas-workflow-pill__meta tabular-nums">{elapsedLabel}</span>
+                {locked ? null : (
+                    <Tooltip title={t("canvas.workflow.stop")} placement="bottom">
+                        <button type="button" className="canvas-chrome-btn" onClick={onStop} aria-label={t("canvas.workflow.stop")} style={{ color: theme.toolbar.item }}>
+                            <Square className="size-2.5 fill-current" />
                         </button>
                     </Tooltip>
-                ) : null}
+                )}
             </div>
         );
     }
 
     if (workflowRun.status === "error") {
         return (
-            <Tooltip title={workflowRun.errorMessage || t("canvas.workflow.failedShort")} placement="bottom">
-                <button
-                    type="button"
-                    className="canvas-chrome-cluster flex h-9 max-w-[286px] items-center gap-2 px-3 text-xs font-semibold transition"
-                    style={{ color: "#b42318", background: "#fff1f0", boxShadow: "inset 0 0 0 1px #ffccc7" }}
-                    onClick={onRun}
-                    aria-label={t("canvas.workflow.retry")}
-                >
+            <Tooltip title={workflowRun.errorMessage || workflowRun.currentNodeTitle || t("canvas.workflow.failedShort")} placement="bottom">
+                <button type="button" className="canvas-workflow-pill is-error" onClick={onRun} aria-label={t("canvas.workflow.retry")}>
                     <CircleAlert className="size-3.5 shrink-0" />
-                    <span className="min-w-0 truncate">{workflowRun.currentNodeTitle || t("canvas.workflow.failedShort")}</span>
-                    <span className="ml-1 inline-flex shrink-0 items-center gap-1"><RotateCcw className="size-3" />{t("canvas.workflow.retry")}</span>
+                    <span className="canvas-workflow-pill__label">{t("canvas.workflow.failedLabel")}</span>
+                    <span className="canvas-workflow-pill__meta inline-flex items-center gap-1">
+                        <RotateCcw className="size-3" />
+                        {t("canvas.workflow.retryShort")}
+                    </span>
                 </button>
             </Tooltip>
         );
@@ -210,31 +219,41 @@ function WorkflowControl({
 
     if (workflowRun.status === "refresh") {
         return (
-            <button
-                type="button"
-                className="canvas-chrome-cluster flex h-9 items-center gap-2 px-3 text-xs font-semibold transition"
-                style={{ color: theme.node.text, background: theme.toolbar.panel, boxShadow: `inset 0 0 0 1px ${theme.toolbar.border}` }}
-                onClick={onRefresh}
-            >
-                <RotateCcw className="size-3.5" />
-                <span>{t("canvas.workflow.refreshResults")}</span>
+            <button type="button" className="canvas-workflow-run" onClick={onRefresh}>
+                <RotateCcw className="size-3.5 shrink-0" />
+                <span className="canvas-workflow-pill__label">{t("canvas.workflow.refreshResults")}</span>
             </button>
         );
     }
 
     return (
-        <Tooltip title={t("canvas.workflow.run")} placement="bottom">
-            <button
-                type="button"
-                className="canvas-chrome-cluster flex h-9 items-center gap-2 px-3 text-xs font-semibold transition"
-                style={{ color: theme.node.text, background: theme.toolbar.panel, boxShadow: `inset 0 0 0 1px ${theme.toolbar.border}` }}
-                onClick={onRun}
-                aria-label={t("canvas.workflow.run")}
-            >
-                <Play className="size-3.5" />
-                <span>{t("canvas.workflow.run")}</span>
-            </button>
-        </Tooltip>
+        <button type="button" className="canvas-workflow-run" onClick={onRun} aria-label={t("canvas.workflow.run")}>
+            <Play className="size-3.5 shrink-0 fill-current" />
+            <span className="canvas-workflow-pill__label">{t("canvas.workflow.run")}</span>
+        </button>
+    );
+}
+
+function WorkflowProgress({ value, color }: { value: number; color: string }) {
+    const radius = 8;
+    const circumference = 2 * Math.PI * radius;
+    return (
+        <span className="canvas-workflow-ring" aria-hidden>
+            <svg viewBox="0 0 22 22">
+                <circle cx="11" cy="11" r={radius} fill="none" stroke={color} strokeOpacity="0.16" strokeWidth="1.75" />
+                <circle
+                    cx="11"
+                    cy="11"
+                    r={radius}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeDasharray={`${circumference * value} ${circumference}`}
+                />
+            </svg>
+            <LoaderCircle className="size-2.5 animate-spin" style={{ color }} />
+        </span>
     );
 }
 

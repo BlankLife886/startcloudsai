@@ -87,15 +87,21 @@ func (s *Server) publicGallery(c *gin.Context) {
 			}
 		}
 		return gin.H{
-			"id":        sub.ID.String(),
-			"title":     sub.Title,
-			"coverUrl":  s.presignSafe(c, sub.CoverKey),
-			"mediaUrls": s.mediaURLsFor(c, sub.MediaKeys),
-			"author":    authorDict,
-			"featured":  sub.Featured,
-			"category":  categoryDict,
-			"tags":      nonNilStrings(sub.Tags),
-			"createdAt": isoValue(sub.CreatedAt),
+			"id":       sub.ID.String(),
+			"title":    sub.Title,
+			"coverUrl": s.presignSafe(c, sub.CoverKey),
+			// 小图/展示图变体（约定推导）：画廊网格用小图、点开大图用展示图，
+			// 旧数据取不到时前端回退原图。
+			"coverThumbUrl":    variantURLForKey(sub.CoverKey, store.ThumbKeyForOriginal),
+			"coverDisplayUrl":  variantURLForKey(sub.CoverKey, store.DisplayKeyForOriginal),
+			"mediaUrls":        s.mediaURLsFor(c, sub.MediaKeys),
+			"mediaThumbUrls":   variantURLsForKeys(sub.MediaKeys, store.ThumbKeyForOriginal),
+			"mediaDisplayUrls": variantURLsForKeys(sub.MediaKeys, store.DisplayKeyForOriginal),
+			"author":           authorDict,
+			"featured":         sub.Featured,
+			"category":         categoryDict,
+			"tags":             nonNilStrings(sub.Tags),
+			"createdAt":        isoValue(sub.CreatedAt),
 		}
 	}))
 }

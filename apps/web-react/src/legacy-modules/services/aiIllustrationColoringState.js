@@ -324,6 +324,8 @@ export function normalizeColoringHistoryItem(item = {}) {
     publicModelKey: String(item.publicModelKey || ''),
     resultRemoteUrl,
     resultUrl,
+    // 展示图（服务端压缩大图）：仅供大图预览；下载仍用 resultUrl 原图。
+    resultDisplayUrl: persistentMediaUrl(item.resultDisplayUrl),
     outputs,
     usageRecorded: item.usageRecorded === true,
     shareSubmitted: item.shareSubmitted === true,

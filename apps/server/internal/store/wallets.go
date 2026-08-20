@@ -132,12 +132,23 @@ func UpdateTaskCreditReservationRemaining(ctx context.Context, q Q, taskID uuid.
 }
 
 // CountTaskLedger 统计任务同 kind 账本条数（source_id = task_id 或 task_id/n）。
+// 前缀匹配依赖 ix_wallet_ledger_task_source(text_pattern_ops) 走索引扫描。
 func CountTaskLedger(ctx context.Context, q Q, taskID uuid.UUID, kind string) (int, error) {
 	var n int
 	err := q.QueryRow(ctx,
 		`SELECT count(*) FROM wallet_ledger
 		 WHERE kind = $1 AND source_type = 'task' AND (source_id = $2 OR source_id LIKE $3)`,
 		kind, taskID.String(), taskID.String()+"/%").Scan(&n)
+	return n, err
+}
+
+// CountTaskCreditReservations 返回任务的冻结代数（等于 freeze 账本条数）。
+// 每次 FreezeForTask 恰好插入一条 reservation，所以其行数即代数；走
+// task_credit_reservations 主键前缀，避免 wallet_ledger 上的前缀扫描。
+func CountTaskCreditReservations(ctx context.Context, q Q, taskID uuid.UUID) (int, error) {
+	var n int
+	err := q.QueryRow(ctx,
+		`SELECT count(*) FROM task_credit_reservations WHERE task_id = $1`, taskID).Scan(&n)
 	return n, err
 }
 
@@ -184,6 +195,39 @@ func ListLedgerFiltered(ctx context.Context, q Q, userID *uuid.UUID, kind, sourc
 	return out, rows.Err()
 }
 
+func CountUserLedger(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger WHERE user_id = $1`, userID).Scan(&n)
+	return n, err
+}
+
+func ListLedgerPage(ctx context.Context, q Q, userID uuid.UUID, limit, offset int) ([]*LedgerEntry, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+ledgerCols+` FROM wallet_ledger
+		 WHERE user_id = $1
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*LedgerEntry
+	for rows.Next() {
+		e, err := scanLedger(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SpendDailySince 每日任务结算消耗（UTC 日期 → 分）。
 // spend 账本 delta 为 0（结算只消耗冻结额），金额取关联图片任务或助手运行的
 // cost_cents；记录被删除时退化为 ABS(delta_cents)。
@@ -213,6 +257,134 @@ func FinanceTotalsSince(ctx context.Context, q Q, since time.Time) (grantCents, 
 		        COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release'), 0)
 		 FROM wallet_ledger WHERE created_at >= $1`, since).Scan(&grantCents, &refundCents)
 	return grantCents, refundCents, err
+}
+
+const walletLedgerExportBatch = 200
+const walletLedgerExportMax = 8000
+
+type WalletSourceTotal struct {
+	SourceType string
+	Cents      int64
+	Count      int64
+}
+
+type WalletLedgerStats struct {
+	ConsumedCents int64
+	ConsumedCount int64
+	RefundCents   int64
+	RefundCount   int64
+	IncomeCents   int64
+	IncomeCount   int64
+	EntryCount    int64
+	Income        []WalletSourceTotal
+}
+
+// UserWalletLedgerStats 按来源汇总当前用户的入账、结算消耗与失败退回。
+func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletLedgerStats, error) {
+	stats := &WalletLedgerStats{Income: []WalletSourceTotal{}}
+	err := q.QueryRow(ctx,
+		`SELECT
+			COUNT(*),
+			COUNT(*) FILTER (
+				WHERE kind = 'spend' OR (kind = 'admin_adjust' AND delta_cents < 0)
+			),
+			COALESCE(SUM(
+				CASE
+					WHEN kind = 'spend' AND ABS(delta_cents) > 0 THEN ABS(delta_cents)
+					WHEN kind = 'spend' THEN COALESCE(
+						NULLIF((regexp_match(COALESCE(reason, ''), '消耗冻结 ([0-9]+)'))[1], '')::bigint,
+						0
+					)
+					WHEN kind = 'admin_adjust' AND delta_cents < 0 THEN ABS(delta_cents)
+					ELSE 0
+				END
+			), 0),
+			COUNT(*) FILTER (WHERE kind = 'release'),
+			COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release'), 0),
+			COUNT(*) FILTER (
+				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
+			),
+			COALESCE(SUM(delta_cents) FILTER (
+				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
+			), 0)
+		 FROM wallet_ledger WHERE user_id = $1`, userID).Scan(
+		&stats.EntryCount,
+		&stats.ConsumedCount,
+		&stats.ConsumedCents,
+		&stats.RefundCount,
+		&stats.RefundCents,
+		&stats.IncomeCount,
+		&stats.IncomeCents,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := q.Query(ctx,
+		`SELECT source_type, COUNT(*), COALESCE(SUM(delta_cents), 0)
+		 FROM wallet_ledger
+		 WHERE user_id = $1
+		   AND (kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0))
+		 GROUP BY source_type
+		 ORDER BY SUM(delta_cents) DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item WalletSourceTotal
+		if err := rows.Scan(&item.SourceType, &item.Count, &item.Cents); err != nil {
+			return nil, err
+		}
+		stats.Income = append(stats.Income, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// spend 账本 delta 常为 0，补上关联任务 / 助手运行的实扣。
+	var joinedSpend int64
+	err = q.QueryRow(ctx,
+		`SELECT COALESCE(SUM(GREATEST(COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0))), 0)
+		 FROM wallet_ledger l
+		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
+		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
+		      AND a.id::text = split_part(COALESCE(l.source_id, ''), '/', 1)
+		 WHERE l.user_id = $1 AND l.kind = 'spend' AND l.delta_cents = 0
+		   AND COALESCE((regexp_match(COALESCE(l.reason, ''), '消耗冻结 ([0-9]+)'))[1], '') = ''`,
+		userID).Scan(&joinedSpend)
+	if err != nil {
+		return nil, err
+	}
+	stats.ConsumedCents += joinedSpend
+	return stats, nil
+}
+
+// ListAllUserLedger 导出用：按时间倒序拉齐当前用户账本，最多 walletLedgerExportMax 条。
+func ListAllUserLedger(ctx context.Context, q Q, userID uuid.UUID) ([]*LedgerEntry, error) {
+	out := make([]*LedgerEntry, 0, 64)
+	var cursor *Cursor
+	for len(out) < walletLedgerExportMax {
+		limit := walletLedgerExportBatch
+		if remain := walletLedgerExportMax - len(out); remain < limit {
+			limit = remain
+		}
+		batch, err := ListLedger(ctx, q, userID, limit, cursor)
+		if err != nil {
+			return nil, err
+		}
+		hasMore := len(batch) > limit
+		if hasMore {
+			batch = batch[:limit]
+		}
+		out = append(out, batch...)
+		if !hasMore || len(batch) == 0 {
+			break
+		}
+		createdAt, id := batch[len(batch)-1].CursorKey()
+		cursor = &Cursor{CreatedAt: createdAt, ID: id}
+	}
+	return out, nil
 }
 
 func scanDailyCents(rows pgx.Rows) (map[string]int64, error) {

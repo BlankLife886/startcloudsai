@@ -4,10 +4,11 @@ import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import "@react/legacy-static/features/home-commercial/commercial-home.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/CapabilityLoop.css";
-import "@react/legacy-styles/generated/features/home-commercial/components/FlowingMenu.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/StrandsBand.css";
 import "@react/legacy-styles/generated/features/home-commercial/components/TypeLine.css";
+import { COMMERCE_ENTRY_GROUPS } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { useLocale } from "../i18n/index.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./commercial-home-react.css";
 
 gsap.registerPlugin(useGSAP);
@@ -47,8 +48,7 @@ const studioEntries = [
     tone: "mint",
     taskType: null,
     priceHint: "按用量计费",
-    cover:
-      "/sucai/ai-wallpaper-server-459defa9-9acc-4f92-8d1b-9a6b8e96fdec-1.webp",
+    cover: "/sucai/studio-cover-assistant.webp",
   },
   {
     id: "text-to-image",
@@ -60,44 +60,43 @@ const studioEntries = [
     description: "选择模型、比例与清晰度，把描述快速变成可交付图像。",
     tone: "blue",
     taskType: "t2i",
-    cover:
-      "/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.webp",
+    cover: "/sucai/studio-cover-t2i.webp",
+  },
+  {
+    id: "canvas",
+    to: "/canvas",
+    icon: "bi bi-bounding-box-circles",
+    index: "03",
+    title: "无限画布",
+    english: "Infinite canvas",
+    description: "在同一张画布上摆参考、改图并连续生成。",
+    tone: "white",
+    taskType: "infinite_canvas",
+    cover: "/sucai/home-intro-sticker-sheet.png",
   },
   {
     id: "illustration-coloring",
     to: "/ai-illustration-coloring",
     icon: "bi bi-brush",
-    index: "03",
+    index: "04",
     title: "插画染色",
     english: "Coloring",
     description: "保留线稿结构，重建颜色、材质与完整光影。",
     tone: "coral",
     taskType: "coloring",
-    cover: "/sucai/game-character-1785420185589.webp",
+    cover: "/sucai/studio-cover-coloring.webp",
   },
   {
     id: "ui-design",
     to: "/design-workshop",
     icon: "bi bi-bezier2",
-    index: "04",
+    index: "05",
     title: "UI 设计稿",
     english: "UI design",
     description: "分析整张设计图，定位元素并衔接素材与前端还原。",
     tone: "yellow",
     taskType: "ui_design",
-    cover: "/sucai/ui-design-1785420316960.webp",
-  },
-  {
-    id: "model-sheet",
-    to: "/model-sheet",
-    icon: "bi bi-person-bounding-box",
-    index: "05",
-    title: "模型设计",
-    english: "Model design",
-    description: "生成清晰、统一的多视角角色与模型参考。",
-    tone: "violet",
-    taskType: "model_sheet",
-    cover: "/sucai/ultra-model-sheet-board-1785420340076.webp",
+    cover: "/sucai/studio-cover-ui.webp",
   },
   {
     id: "ecommerce-design",
@@ -109,41 +108,54 @@ const studioEntries = [
     description: "上传商品图，一次生成适配平台规范的主图、详情与营销视觉。",
     tone: "yellow",
     taskType: "ecommerce_design",
-    cover: "",
+    cover: "/sucai/studio-cover-ecom-create.webp",
+  },
+  {
+    id: "model-sheet",
+    to: "/model-sheet",
+    icon: "bi bi-person-bounding-box",
+    index: "07",
+    title: "模型设计",
+    english: "Model design",
+    description: "生成清晰、统一的多视角角色与模型参考。",
+    tone: "violet",
+    taskType: "model_sheet",
+    cover: "/sucai/studio-cover-model.webp",
   },
   {
     id: "game-art",
     to: "/game-art",
     icon: "bi bi-controller",
-    index: "07",
+    index: "08",
     title: "游戏设计",
     english: "Game art",
     description: "从角色、场景、道具到图标，组织完整游戏资产流程。",
     tone: "green",
     taskType: "game_art",
-    cover: "/sucai/game-ui-1785420083438.webp",
+    cover: "/sucai/studio-cover-game.webp",
   },
 ];
 
 const capabilityItems = [
-  ["bi bi-person-standing-dress", "AI 虚拟试衣", "AI 电商"],
-  ["bi bi-hand-index-thumb-fill", "手持商品图", "AI 电商"],
-  ["bi bi-gem", "AI 饰品穿戴", "AI 电商"],
-  ["bi bi-camera-fill", "AI 创意商拍", "AI 电商"],
-  ["bi bi-images", "商品套图", "AI 电商"],
-  ["bi bi-layout-text-window-reverse", "A+ / 详情页", "AI 电商"],
-  ["bi bi-megaphone-fill", "AI 营销图", "AI 电商"],
-  ["bi bi-card-image", "AI 背景图", "AI 电商"],
-  ["bi bi-layers-fill", "背景复刻", "AI 电商"],
-  ["bi bi-circle-half", "AI 商品阴影", "AI 电商"],
-  ["bi bi-arrows-angle-expand", "智能扩图", "AI 电商"],
-  ["bi bi-badge-hd-fill", "真实增强", "AI 电商"],
-  ["bi bi-chat-square-text-fill", "AI 助手", "图片设计"],
-  ["bi bi-person-bounding-box", "模型设计", "图片设计"],
-  ["bi bi-stars", "文生图", "图片设计"],
-  ["bi bi-brush-fill", "插画染色", "图片设计"],
-  ["bi bi-bezier2", "UI 设计稿", "图片设计"],
-  ["bi bi-controller", "游戏设计", "图片设计"],
+  ["/sucai/ecom-thumb-tryon.webp", "AI 虚拟试衣", "AI 电商"],
+  ["/sucai/ecom-thumb-handheld.webp", "手持商品图", "AI 电商"],
+  ["/sucai/ecom-thumb-accessory.webp", "AI 饰品穿戴", "AI 电商"],
+  ["/sucai/ecom-thumb-shoot.webp", "AI 创意商拍", "AI 电商"],
+  ["/sucai/ecom-thumb-listing.webp", "商品套图", "AI 电商"],
+  ["/sucai/ecom-thumb-detail.webp", "A+ / 详情页", "AI 电商"],
+  ["/sucai/ecom-thumb-campaign.webp", "AI 营销图", "AI 电商"],
+  ["/sucai/ecom-thumb-background.webp", "AI 背景图", "AI 电商"],
+  ["/sucai/ecom-thumb-backdrop.webp", "背景复刻", "AI 电商"],
+  ["/sucai/ecom-thumb-shadow.webp", "AI 商品阴影", "AI 电商"],
+  ["/sucai/ecom-thumb-outpaint.webp", "智能扩图", "AI 电商"],
+  ["/sucai/ecom-thumb-enhance.webp", "真实增强", "AI 电商"],
+  ["/sucai/studio-cover-assistant.webp", "AI 助手", "图片设计"],
+  ["/sucai/studio-cover-t2i.webp", "文生图", "图片设计"],
+  ["/sucai/home-intro-sticker-sheet.png", "无限画布", "图片设计"],
+  ["/sucai/studio-cover-coloring.webp", "插画染色", "图片设计"],
+  ["/sucai/studio-cover-ui.webp", "UI 设计稿", "图片设计"],
+  ["/sucai/studio-cover-model.webp", "模型设计", "图片设计"],
+  ["/sucai/studio-cover-game.webp", "游戏设计", "图片设计"],
 ];
 
 const processSteps = [
@@ -238,9 +250,9 @@ function CapabilityLoop() {
       <div className="capability-loop__track">
         {[1, 2].map((copy) => (
           <ul key={copy} aria-hidden={copy === 2 ? "true" : undefined}>
-            {capabilityItems.map(([icon, label, detail]) => (
+            {capabilityItems.map(([cover, label, detail]) => (
               <li key={`${copy}-${label}`}>
-                <i className={icon} aria-hidden="true" />
+                <img src={cover} alt="" width="36" height="36" />
                 <span>{label}</span>
                 <small>{detail}</small>
               </li>
@@ -248,107 +260,6 @@ function CapabilityLoop() {
           </ul>
         ))}
       </div>
-    </div>
-  );
-}
-
-function FlowingMenu({ items }) {
-  const rootRef = useRef(null);
-  const { contextSafe } = useGSAP(
-    () => {
-      if (
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
-        document.documentElement.classList.contains("settings-no-animations")
-      )
-        return;
-      rootRef.current
-        .querySelectorAll(".flowing-menu__marquee-inner")
-        .forEach((inner) => {
-          const width =
-            inner.querySelector(".flowing-menu__part")?.offsetWidth || 1;
-          gsap.to(inner, { x: -width, duration: 15, ease: "none", repeat: -1 });
-        });
-    },
-    { scope: rootRef, dependencies: [items], revertOnUpdate: true },
-  );
-  const findEdge = (event) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    return (x - rect.width / 2) ** 2 + y ** 2 <
-      (x - rect.width / 2) ** 2 + (y - rect.height) ** 2
-      ? "top"
-      : "bottom";
-  };
-  const enter = contextSafe((event) => {
-    const marquee = event.currentTarget.querySelector(".flowing-menu__marquee");
-    const inner = event.currentTarget.querySelector(
-      ".flowing-menu__marquee-inner",
-    );
-    const edge = findEdge(event);
-    gsap
-      .timeline({ defaults: { duration: 0.6, ease: "expo" } })
-      .set(marquee, { y: edge === "top" ? "-101%" : "101%" })
-      .set(inner, { y: edge === "top" ? "101%" : "-101%" }, 0)
-      .to([marquee, inner], { y: "0%" }, 0);
-  });
-  const leave = contextSafe((event) => {
-    const marquee = event.currentTarget.querySelector(".flowing-menu__marquee");
-    const inner = event.currentTarget.querySelector(
-      ".flowing-menu__marquee-inner",
-    );
-    const edge = findEdge(event);
-    gsap
-      .timeline({ defaults: { duration: 0.6, ease: "expo" } })
-      .to(marquee, { y: edge === "top" ? "-101%" : "101%" })
-      .to(inner, { y: edge === "top" ? "101%" : "-101%" }, 0);
-  });
-  return (
-    <div
-      ref={rootRef}
-      className="flowing-menu"
-      style={{ backgroundColor: "#111111" }}
-    >
-      <nav className="flowing-menu__nav" aria-label="创作入口">
-        {items.map((item, index) => (
-          <div
-            key={item.text}
-            className="flowing-menu__item"
-            style={{ borderTop: index === 0 ? "none" : "1px solid #ffffff" }}
-            onMouseEnter={enter}
-            onMouseLeave={leave}
-          >
-            <Link
-              className="flowing-menu__link"
-              to={item.link}
-              style={{ color: "#ffffff" }}
-            >
-              {item.text}
-            </Link>
-            <div
-              className="flowing-menu__marquee"
-              style={{ backgroundColor: "#ffffff" }}
-            >
-              <div className="flowing-menu__marquee-inner">
-                {[1, 2, 3, 4].map((copy) => (
-                  <div key={copy} className="flowing-menu__part">
-                    <span
-                      className="flowing-menu__label"
-                      style={{ color: "#111111" }}
-                    >
-                      {item.text}
-                    </span>
-                    <div
-                      className="flowing-menu__thumb"
-                      style={{ backgroundImage: `url(${item.image})` }}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ))}
-      </nav>
     </div>
   );
 }
@@ -419,7 +330,7 @@ const HERO_TYPE_LINES = [
   "一个入口，连接完整创作链",
 ];
 const HERO_SUMMARY =
-  "AI 助手、文生图、插画染色、UI 设计稿、模型设计与游戏美术，由统一模型目录、任务系统和高清交付链路连接。";
+  "AI 助手、文生图、无限画布、插画染色、UI 设计稿、模型设计、游戏美术与 AI 电商，由统一模型目录、任务系统和高清交付链路连接。";
 const HERO_TYPE_SR = "从想法到可交付图像的 AI 创作工作流";
 
 function TypeLine() {
@@ -552,6 +463,7 @@ function StrandsBand() {
 
 export function CommercialHomeView() {
   const { locale, t } = useLocale();
+  const { controls, isEntryVisible } = usePageControls();
   const [user, setUser] = useState(null);
   const heroEnabled = useHomeHeroEnabled();
   useEffect(() => {
@@ -570,25 +482,32 @@ export function CommercialHomeView() {
     () => splitNarrative(workflowNarrative, locale),
     [locale, workflowNarrative],
   );
-  const primaryCta = user
-    ? { to: "/text-to-image", label: locale === "en" ? "START" : t("开始创作") }
-    : { to: "/auth", label: locale === "en" ? "START" : t("登录开始创作") };
-  const fallbacks = [
-    "/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.webp",
-    "/sucai/ai-wallpaper-server-459defa9-9acc-4f92-8d1b-9a6b8e96fdec-1.webp",
-    "/sucai/ui-design-1785420323803.webp",
-    "/sucai/game-character-1785420168113.webp",
-  ];
-  const flowingItems = useMemo(
-    () =>
-      studioEntries.map((entry, index) => ({
-        link: entry.to,
-        text: entry.title,
-        image: entry.cover || fallbacks[index % fallbacks.length],
-      })),
-    [],
+  const visibleStudioEntries = useMemo(
+    () => studioEntries.filter((entry) => isEntryVisible(entry.to)),
+    [isEntryVisible],
   );
-
+  const visibleCommerceGroups = useMemo(
+    () =>
+      COMMERCE_ENTRY_GROUPS.map((group) => {
+        const ids = group.ids.filter((id) =>
+          isEntryVisible(`ecommerce.${id}`),
+        );
+        return ids.length
+          ? { ...group, ids, to: `/ecommerce-design?tool=${ids[0]}` }
+          : null;
+      }).filter(Boolean),
+    [controls, isEntryVisible],
+  );
+  const primaryCta = user
+    ? {
+        to: isEntryVisible("/text-to-image")
+          ? "/text-to-image"
+          : isEntryVisible("/studio")
+            ? "/studio"
+            : "/",
+        label: locale === "en" ? "START" : t("开始创作"),
+      }
+    : { to: "/auth", label: locale === "en" ? "START" : t("登录开始创作") };
   return (
     <div className="commercial-home">
       {heroEnabled && (
@@ -680,11 +599,79 @@ export function CommercialHomeView() {
       </section>
 
       <section
-        id="flowing-menu"
-        className="commercial-flowing commercial-band"
-        aria-label="创作入口菜单"
+        id="creative-modules"
+        className="commercial-studios commercial-band"
+        aria-labelledby="studios-title"
       >
-        <FlowingMenu items={flowingItems} />
+        <div className="commercial-shell">
+          <header className="commercial-section-head">
+            <div>
+              <span>STUDIOS</span>
+              <h2 id="studios-title">{t("创作模块")}</h2>
+            </div>
+            <p>{t("按目标进入对应工作台，覆盖对话、生图、画布与电商。")}</p>
+          </header>
+          <div className="commercial-studio-grid">
+            {visibleStudioEntries.map((entry) => (
+              <Link
+                key={entry.id}
+                to={entry.to}
+                className={`commercial-studio tone-${entry.tone}`}
+              >
+                <div className="commercial-studio__media">
+                  <img
+                    src={entry.cover}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </div>
+                <div className="commercial-studio__body">
+                  <div className="commercial-studio__meta">
+                    <span className="commercial-studio__index">{entry.index}</span>
+                    <i className={entry.icon} aria-hidden="true" />
+                    <small>{entry.english}</small>
+                    <i
+                      className="bi bi-arrow-up-right commercial-studio__arrow"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <h3>{t(entry.title)}</h3>
+                  <p>{t(entry.description)}</p>
+                </div>
+              </Link>
+            ))}
+          </div>
+          <div className="commercial-commerce">
+            <header className="commercial-commerce__head">
+              <div>
+                <span>COMMERCE</span>
+                <h3>{t("电商工作流")}</h3>
+              </div>
+              <p>{t("服饰模特、商品设计与图片处理，按业务分开进入。")}</p>
+            </header>
+            <div className="commercial-commerce-grid">
+              {visibleCommerceGroups.map((group) => (
+                <Link
+                  key={group.id}
+                  to={group.to}
+                  className={`commercial-commerce-card is-${group.id}`}
+                >
+                  <img
+                    src={group.cover}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span className="commercial-commerce-card__copy">
+                    <strong>{t(group.label)}</strong>
+                    <small>{t(group.description)}</small>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
 
       <section
@@ -750,13 +737,15 @@ export function CommercialHomeView() {
               <span>{primaryCta.label}</span>
               <i className="bi bi-arrow-up-right" aria-hidden="true" />
             </Link>
-            <Link
-              className="commercial-button commercial-button--ghost"
-              to="/pricing"
-            >
-              <span>{t("查看积分价格")}</span>
-              <i className="bi bi-arrow-right" aria-hidden="true" />
-            </Link>
+            {isEntryVisible("/pricing") && (
+              <Link
+                className="commercial-button commercial-button--ghost"
+                to="/pricing"
+              >
+                <span>{t("查看积分价格")}</span>
+                <i className="bi bi-arrow-right" aria-hidden="true" />
+              </Link>
+            )}
           </div>
         </div>
       </section>
@@ -794,7 +783,7 @@ export function CommercialHomeView() {
               <section className="commercial-footer__col">
                 <h2>{t("创作")}</h2>
                 <ul>
-                  {studioEntries.map((entry) => (
+                  {visibleStudioEntries.map((entry) => (
                     <li key={entry.id}>
                       <Link to={entry.to}>{t(entry.title)}</Link>
                     </li>
@@ -804,11 +793,13 @@ export function CommercialHomeView() {
               <section className="commercial-footer__col">
                 <h2>{t("发现")}</h2>
                 <ul>
-                  {footerDiscover.map(([label, to]) => (
+                  {footerDiscover
+                    .filter(([, to]) => isEntryVisible(to))
+                    .map(([label, to]) => (
                     <li key={to}>
                       <Link to={to}>{t(label)}</Link>
                     </li>
-                  ))}
+                    ))}
                 </ul>
               </section>
               <section className="commercial-footer__col">

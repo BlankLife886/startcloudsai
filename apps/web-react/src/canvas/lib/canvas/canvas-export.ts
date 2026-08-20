@@ -5,21 +5,29 @@ import { createZip } from "@/lib/zip";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import type { CanvasExportAsset, CanvasExportFile } from "@/types/canvas-export";
-import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { ensureCanvasProjectDocument, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 export async function exportCanvasProjects(projects: CanvasProject[], fileName = i18n.t("canvas.export.defaultProjectName")) {
     const zipFiles: { name: string; data: BlobPart }[] = [];
+    // Cloud list entries may not have their document downloaded yet.
+    const resolvedProjects = await Promise.all(
+        projects.map(async (project) => (project.documentPending || project.documentStale ? (await ensureCanvasProjectDocument(project.id).catch(() => null)) || project : project)),
+    );
     const exportedProjects = await Promise.all(
-        projects.map(async (project) => {
+        resolvedProjects.map(async (project) => {
             const files: CanvasExportAsset[] = [];
             await Promise.all(
                 collectStorageKeys(project).map(async (storageKey) => {
-                    const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-                    if (!blob) return;
-                    const path = `projects/${project.id}/files/${safeFileName(storageKey)}.${fileExtension(blob.type, storageKey)}`;
-                    files.push({ storageKey, path, mimeType: blob.type || "application/octet-stream", bytes: blob.size });
-                    zipFiles.push({ name: path, data: blob });
+                    try {
+                        const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+                        if (!blob) return;
+                        const path = `projects/${project.id}/files/${safeFileName(storageKey)}.${fileExtension(blob.type, storageKey)}`;
+                        files.push({ storageKey, path, mimeType: blob.type || "application/octet-stream", bytes: blob.size });
+                        zipFiles.push({ name: path, data: blob });
+                    } catch (error) {
+                        console.warn("Canvas export skipped a file", storageKey, error);
+                    }
                 }),
             );
             return { project, files };
@@ -47,14 +55,22 @@ export async function exportCanvasNodes(nodes: CanvasNodeData[], fileName = i18n
             const title = node.title || node.type;
             const storageKey = node.metadata?.storageKey || "";
             if (storageKey) {
-                const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-                if (blob) return void zipFiles.push({ name: uniqueName(title, fileExtension(blob.type, storageKey)), data: blob });
+                try {
+                    const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+                    if (blob) return void zipFiles.push({ name: uniqueName(title, fileExtension(blob.type, storageKey)), data: blob });
+                } catch (error) {
+                    console.warn("Canvas node export skipped a file", storageKey, error);
+                }
             }
             if (node.type === CanvasNodeType.Text) return void zipFiles.push({ name: uniqueName(title, "txt"), data: node.metadata?.content || node.metadata?.prompt || "" });
             const content = node.metadata?.content;
             if (content && content.startsWith("data:")) {
-                const blob = await (await fetch(content)).blob();
-                return void zipFiles.push({ name: uniqueName(title, fileExtension(blob.type, storageKey)), data: blob });
+                try {
+                    const blob = await (await fetch(content)).blob();
+                    return void zipFiles.push({ name: uniqueName(title, fileExtension(blob.type, storageKey)), data: blob });
+                } catch (error) {
+                    console.warn("Canvas node export skipped data URL", error);
+                }
             }
             zipFiles.push({ name: uniqueName(title, "json"), data: JSON.stringify(node, null, 2) });
         }),
@@ -82,6 +98,8 @@ function fileExtension(mimeType: string, storageKey: string) {
     if (mimeType.includes("gif")) return "gif";
     if (mimeType.includes("mp4")) return "mp4";
     if (mimeType.includes("webm")) return "webm";
+    if (mimeType.startsWith("audio/") && (mimeType.includes("mpeg") || mimeType.includes("mp3"))) return "mp3";
+    if (mimeType.startsWith("video/") && mimeType.includes("mpeg")) return "mpg";
     if (mimeType.includes("mpeg") || mimeType.includes("mp3")) return "mp3";
     if (mimeType.includes("wav")) return "wav";
     if (mimeType.includes("ogg")) return "ogg";

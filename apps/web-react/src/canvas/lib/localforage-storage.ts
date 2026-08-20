@@ -20,7 +20,11 @@ export const localForageStorage: StateStorage = {
         try {
             await localforage.setItem(name, value);
         } catch {
-            window.localStorage.setItem(name, value);
+            try {
+                window.localStorage.setItem(name, value);
+            } catch (error) {
+                console.warn("Canvas local persistence fallback failed", error);
+            }
         }
     },
     removeItem: async (name) => {

@@ -148,8 +148,14 @@ func uiDesignAssetHistoryParams(run *AssistantRun) map[string]any {
 		"requestSize":    paramText(run.Params, "requestSize"),
 		"serviceKey":     "ui_design_asset",
 	}
+	if run.ConversationID != uuid.Nil {
+		params["conversationId"] = run.ConversationID.String()
+	}
 	if display := paramText(run.Params, "_imageModelDisplayName", "_modelDisplayName"); display != "" {
 		params["_modelDisplayName"] = display
+	}
+	if parent := paramText(run.Params, "parentOutputUrl"); parent != "" {
+		params["parentOutputUrl"] = parent
 	}
 	return params
 }
@@ -549,6 +555,33 @@ func CountTasksInStatuses(ctx context.Context, q Q, statuses []string) (int64, e
 func CountTaskUnitsInStatuses(ctx context.Context, q Q, statuses []string) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx, `SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE status = ANY($1) AND `+uiDesignAssetHistoryNotSQL, statuses).Scan(&n)
+	return n, err
+}
+
+// The global admission/execution counts below use literal status predicates so
+// the planner can use the ix_tasks_active_admission partial index (which also
+// carries the _kind filter and work_units) as an index-only scan, instead of
+// scanning every active row and re-checking the JSONB filter on the heap.
+
+// CountActiveTasksGlobal counts cluster-wide queued+running admission-visible tasks.
+func CountActiveTasksGlobal(ctx context.Context, q Q) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE status IN ('queued','running') AND `+uiDesignAssetHistoryNotSQL).Scan(&n)
+	return n, err
+}
+
+// CountActiveTaskUnitsGlobal sums cluster-wide queued+running work units.
+func CountActiveTaskUnitsGlobal(ctx context.Context, q Q) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT COALESCE(sum(GREATEST(work_units, 1)), 0) FROM tasks WHERE status IN ('queued','running') AND `+uiDesignAssetHistoryNotSQL).Scan(&n)
+	return n, err
+}
+
+// CountRunningTasksGlobal counts cluster-wide running admission-visible tasks
+// (status='running' implies the partial index predicate).
+func CountRunningTasksGlobal(ctx context.Context, q Q) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE status = 'running' AND `+uiDesignAssetHistoryNotSQL).Scan(&n)
 	return n, err
 }
 
@@ -1367,7 +1400,7 @@ func SetTaskPartialOutputsOwned(ctx context.Context, q Q, id uuid.UUID, outputKe
 // objects for deletion in the same transaction. Callers should hold the task
 // row lock while deciding whether the transition won.
 func ClearTaskOutputsAndEnqueueCleanup(ctx context.Context, q Q, id uuid.UUID, outputKeys, thumbnailKeys []string) error {
-	cleanupKeys := append(append([]string(nil), outputKeys...), thumbnailKeys...)
+	cleanupKeys := WithDisplayKeys(append(append([]string(nil), outputKeys...), thumbnailKeys...))
 	if err := LockObjectReferenceKeys(ctx, q, cleanupKeys); err != nil {
 		return err
 	}
@@ -1644,13 +1677,28 @@ func requeueRunningTask(ctx context.Context, q Q, id uuid.UUID, owner string) (b
 	return tag.RowsAffected() > 0, nil
 }
 
+// nonIdempotentRetryGraceSQL widens the lease-expiry threshold for providers
+// whose upstream submission cannot be replayed idempotently (sub2api has no
+// client task key; CRUN is only replay-safe once _crunTaskIds is recorded).
+// Requeueing such a task while its original worker is merely partitioned (not
+// dead) would double-execute and double-bill upstream, so the reaper waits an
+// extra grace period before reclaiming them.
+const nonIdempotentRetryGraceSQL = `CASE
+	WHEN COALESCE(params->>'_serviceProvider','') = 'sub2api'
+	  OR (COALESCE(params->>'_serviceProvider','') = 'crun'
+	      AND (jsonb_typeof(params->'_crunTaskIds') IS DISTINCT FROM 'array'
+	           OR jsonb_array_length(params->'_crunTaskIds') = 0))
+	THEN $1::timestamptz - interval '2 minutes'
+	ELSE $1::timestamptz
+END`
+
 // RequeueExpiredRunningTasks only recovers rows whose lease has expired. This
 // keeps live tasks safe during rolling deploys and multi-worker startup.
 func RequeueExpiredRunningTasks(ctx context.Context, q Q, before time.Time) ([]uuid.UUID, error) {
 	rows, err := q.Query(ctx,
 		`WITH expired AS (
 			SELECT id FROM tasks
-			WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= $1)
+			WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= `+nonIdempotentRetryGraceSQL+`)
 			  AND `+uiDesignAssetHistoryNotSQL+`
 			ORDER BY lease_until NULLS FIRST, started_at
 			FOR UPDATE SKIP LOCKED

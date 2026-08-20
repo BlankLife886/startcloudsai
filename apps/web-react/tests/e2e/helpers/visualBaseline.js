@@ -1,5 +1,18 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect } from '@playwright/test'
 import { fulfillJson, mockAuthConfig, mockBootstrapConfig } from './authMocks.js'
+
+const changelogDefaults = JSON.parse(
+  readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../server/internal/store/changelog_defaults.json',
+    ),
+    'utf8',
+  ),
+)
 
 const baselineRuntimeConfig = {
   savedAt: 1786406400000,
@@ -10,6 +23,18 @@ const baselineRuntimeConfig = {
     blacklist: { blocked: false },
   },
 }
+
+const changelogItems = changelogDefaults.map((entry) => ({
+  id: entry.sourceKey,
+  version: entry.version,
+  date: entry.date,
+  tag: entry.tag,
+  title: entry.title,
+  summary: entry.summary,
+  items: entry.items,
+  highlight: entry.highlight,
+  sort: entry.sort,
+}))
 
 export async function installVisualBaseline(page) {
   await page.clock.setFixedTime(new Date('2026-08-11T12:00:00+08:00'))
@@ -33,6 +58,12 @@ export async function installVisualBaseline(page) {
       plans: [],
       paymentEnabled: false,
     }),
+  )
+  await page.route('**/api/v1/changelog/latest', (route) =>
+    fulfillJson(route, changelogItems[0] || null),
+  )
+  await page.route('**/api/v1/changelog', (route) =>
+    fulfillJson(route, { items: changelogItems }),
   )
 }
 

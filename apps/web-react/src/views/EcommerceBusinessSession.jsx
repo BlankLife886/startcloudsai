@@ -767,13 +767,26 @@ function ConfirmDelete({ open, busy, onClose, onConfirm }) {
   );
 }
 
-export function EcommerceBusinessSession({ businessId }) {
+export function EcommerceBusinessSession({
+  businessId,
+  availableModeIds = [],
+  moduleUnavailable = false,
+}) {
   const auth = useAuth();
   const isDark = useIsDark();
   const { t } = useLocale();
   const { requestAuth } = useAuthPrompt();
   const [params, setParams] = useSearchParams();
   const mode = ecommerceModeById(businessId);
+  const availableModeIdSet = useMemo(
+    () =>
+      new Set(
+        availableModeIds.length
+          ? availableModeIds
+          : ECOMMERCE_MODES.map((item) => item.id),
+      ),
+    [availableModeIds],
+  );
   const fields = useMemo(() => new Set(mode.fields || []), [mode]);
   const text = localeText();
   const fileInput = useRef(null);
@@ -787,6 +800,22 @@ export function EcommerceBusinessSession({ businessId }) {
   const pageRef = useRef(null);
   const canvasRef = useRef(null);
   const pendingCostRunRef = useRef(null);
+  useEffect(() => {
+    if (!moduleUnavailable || !pageRef.current) return undefined;
+    const guarded = pageRef.current.querySelectorAll(
+      ".commerce-header, .commerce-settings, .commerce-canvas",
+    );
+    guarded.forEach((node) => {
+      node.inert = true;
+      node.setAttribute("aria-hidden", "true");
+    });
+    return () => {
+      guarded.forEach((node) => {
+        node.inert = false;
+        node.removeAttribute("aria-hidden");
+      });
+    };
+  }, [mode.id, moduleUnavailable]);
   const [pane, setPane] = useState(
     hidesCommerceSettings(businessId) ? "canvas" : "settings",
   );
@@ -1140,7 +1169,7 @@ export function EcommerceBusinessSession({ businessId }) {
       };
     },
     {
-      dependencies: [mode.id, workspace],
+      dependencies: [workspace],
       scope: pageRef,
       revertOnUpdate: true,
     },
@@ -1226,6 +1255,9 @@ export function EcommerceBusinessSession({ businessId }) {
     }
     setPane(hidesCommerceSettings(mode.id) ? "canvas" : "settings");
     setWorkspace("result");
+    setFiles([]);
+    setPreviews([]);
+    setSelectedProduct(null);
     setSessionCount(0);
     setSessionBatchId("");
     setSubmitError("");
@@ -2396,7 +2428,11 @@ export function EcommerceBusinessSession({ businessId }) {
       (item) =>
         !ECOMMERCE_RAIL_MODES.some((railMode) => railMode.id === item.id),
     ),
-  ];
+  ].filter((item) => availableModeIdSet.has(item.id));
+  const railGroups = ECOMMERCE_RAIL_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => availableModeIdSet.has(item.id)),
+  })).filter((group) => group.items.length > 0);
   const modeRows = jobs.outputRows.filter(
     (row) => outputModeId(row) === mode.id,
   );
@@ -4733,7 +4769,7 @@ export function EcommerceBusinessSession({ businessId }) {
             className="commerce-rail__scroll"
             onScroll={updateRail}
           >
-            {ECOMMERCE_RAIL_GROUPS.map((group, groupIndex) => (
+            {railGroups.map((group, groupIndex) => (
               <div className="commerce-rail-react-group" key={group.id}>
                 {groupIndex > 0 && (
                   <div
@@ -5516,7 +5552,8 @@ export function EcommerceBusinessSession({ businessId }) {
                           >
                             <span className="result-image-skeleton" />
                             <AuthenticatedImage
-                              src={row.url}
+                              src={row.display || row.url}
+                              fallbackSrc={row.url}
                               alt={`${mode.label}第 ${index + 1} 张生成结果`}
                               loading="eager"
                               maxDimension={1600}
@@ -5719,7 +5756,9 @@ export function EcommerceBusinessSession({ businessId }) {
               onSelectHistory={setActiveUrl}
               onPreview={(event, payload) =>
                 setTryonPreview({
-                  url: payload.url,
+                  // 点开大图优先展示图，404 回退原图
+                  url: rowsByUrl.get(payload.url)?.display || payload.url,
+                  fallbackUrl: rowsByUrl.has(payload.url) ? payload.url : "",
                   alt: payload.alt,
                   title: payload.title,
                   origin: previewOriginFromEvent(event),
@@ -5901,7 +5940,9 @@ export function EcommerceBusinessSession({ businessId }) {
               onSelectHistory={selectHandheldHistory}
               onPreview={(event, payload) =>
                 setHandheldPreview({
-                  url: payload.url,
+                  // 点开大图优先展示图，404 回退原图
+                  url: rowsByUrl.get(payload.url)?.display || payload.url,
+                  fallbackUrl: rowsByUrl.has(payload.url) ? payload.url : "",
                   alt: payload.alt,
                   title: payload.title,
                   origin: previewOriginFromEvent(event),
@@ -5972,7 +6013,9 @@ export function EcommerceBusinessSession({ businessId }) {
               onPreview={setPreviewUrl}
               onResultPreview={(event, payload) =>
                 setAccessoryPreview({
-                  url: payload.url,
+                  // 点开大图优先展示图，404 回退原图
+                  url: rowsByUrl.get(payload.url)?.display || payload.url,
+                  fallbackUrl: rowsByUrl.has(payload.url) ? payload.url : "",
                   alt: payload.alt,
                   title: payload.title,
                   origin: previewOriginFromEvent(event),
@@ -6131,6 +6174,7 @@ export function EcommerceBusinessSession({ businessId }) {
           <TryonFlipLightbox
             origin={tryonPreview.origin}
             src={tryonPreview.url}
+            fallbackSrc={tryonPreview.fallbackUrl || ""}
             alt={tryonPreview.alt}
             title={tryonPreview.title}
             onClose={() => setTryonPreview(null)}
@@ -6142,6 +6186,7 @@ export function EcommerceBusinessSession({ businessId }) {
           <TryonFlipLightbox
             origin={handheldPreview.origin}
             src={handheldPreview.url}
+            fallbackSrc={handheldPreview.fallbackUrl || ""}
             alt={handheldPreview.alt}
             title={handheldPreview.title}
             onClose={() => setHandheldPreview(null)}
@@ -6153,6 +6198,7 @@ export function EcommerceBusinessSession({ businessId }) {
           <TryonFlipLightbox
             origin={accessoryPreview.origin}
             src={accessoryPreview.url}
+            fallbackSrc={accessoryPreview.fallbackUrl || ""}
             alt={accessoryPreview.alt}
             title={accessoryPreview.title}
             onClose={() => setAccessoryPreview(null)}
@@ -6163,6 +6209,10 @@ export function EcommerceBusinessSession({ businessId }) {
         createPortal(
           <EcommerceFullscreenPreview
             sourceUrl={previewUrl}
+            displaySourceUrl={
+              jobs.outputRows.find((row) => row.url === previewUrl)?.display ||
+              ""
+            }
             title={
               modeRows.some((row) => row.url === previewUrl)
                 ? `${mode.label} · V${currentVersion}`

@@ -91,6 +91,17 @@ function normalizeTask(task = {}) {
   const params =
     task.params && typeof task.params === "object" ? task.params : {};
   const outputs = taskOutputs(task);
+  // 展示图与 originalUrls 按下标对应；outputs 去过重，按原图地址重新对齐。
+  const originalList = (
+    Array.isArray(task.originalUrls) ? task.originalUrls : []
+  ).map(String);
+  const displayList = (
+    Array.isArray(task.displayUrls) ? task.displayUrls : []
+  ).map(String);
+  const displays = outputs.map((url) => {
+    const index = originalList.indexOf(url);
+    return (index >= 0 && displayList[index]) || "";
+  });
   return {
     ...task,
     id: String(task.id || ""),
@@ -108,6 +119,7 @@ function normalizeTask(task = {}) {
     aspectRatio: String(params.aspectRatio || task.aspectRatio || "1:1"),
     parentOutputUrl: String(params.parentOutputUrl || ""),
     outputs,
+    displays,
     previews: Array.isArray(task.thumbnailUrls)
       ? task.thumbnailUrls.map(String).filter(Boolean)
       : outputs,
@@ -519,6 +531,8 @@ export function useEcommerceJobs() {
         task.outputs.map((url, index) => ({
           task,
           url,
+          // 展示图：大图预览用；旧任务没有时直接用原图。
+          display: task.displays?.[index] || url,
           preview: task.previews[index] || task.previews[0] || url,
           index: task.batchSize > 1 ? task.batchIndex : index,
           groupId: task.batchId || task.id,

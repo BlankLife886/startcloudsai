@@ -139,7 +139,8 @@ func taskSourceID(taskID uuid.UUID, generation int) string {
 
 // FreezeForTask 冻结任务费用：只对匹配的真实功能使用体验积分，其余费用使用普通积分。
 func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, featureKey string, reason *string) (*store.LedgerEntry, error) {
-	gen, err := store.CountTaskLedger(ctx, q, taskID, "freeze")
+	// freeze 代数 = 已有 reservation 行数（每次冻结插一条），走主键索引。
+	gen, err := store.CountTaskCreditReservations(ctx, q, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +226,9 @@ func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 
 // ReleaseForTask 解冻（失败/取消）：幂等——本代已 release 则重放返回。
 func ReleaseForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, reason *string) (*store.LedgerEntry, error) {
-	freezeGen, err := store.CountTaskLedger(ctx, q, taskID, "freeze")
+	// freeze 代数走 reservation 主键；release 代数仍读账本（已由
+	// ix_wallet_ledger_task_source 索引化，不再全扫）。
+	freezeGen, err := store.CountTaskCreditReservations(ctx, q, taskID)
 	if err != nil {
 		return nil, err
 	}

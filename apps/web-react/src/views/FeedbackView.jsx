@@ -64,7 +64,7 @@ const feedbackPageGroups = [
       { value: "/assets", label: "我的资产" },
       { value: "/history", label: "历史记录" },
       { value: "/check-in", label: "每日签到" },
-      { value: "/wallet", label: "钱包" },
+      { value: "/wallet", label: "我的钱包" },
       { value: "/pricing", label: "创作价格" },
       { value: "/profile", label: "个人中心" },
       { value: "/account", label: "账号设置" },

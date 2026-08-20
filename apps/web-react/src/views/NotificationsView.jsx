@@ -5,6 +5,7 @@ import {
   listNotifications,
   markNotificationsRead,
 } from "@react/legacy-modules/services/meApi.js";
+import { getActiveAnnouncements } from "@react/legacy-modules/services/metaApi.js";
 import { TASK_UPDATE_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { translateClientText } from "@react/legacy-modules/i18n/clientTranslations.js";
@@ -14,6 +15,7 @@ import { useIsDark } from "../hooks/useIsDark.js";
 import {
   displayNotification,
   displayNotificationBody,
+  isAnnouncementNotification,
 } from "../utils/notificationDisplay.js";
 
 const UPDATED_EVENT = "starclouds:notifications-updated";
@@ -83,8 +85,6 @@ function kindMeta(item) {
     ["投稿", "审核"].some((text) => title.includes(text))
   )
     return { icon: "bi-send-check", label: "审核", tone: "review" };
-  if (kind.includes("system") || title.includes("公告"))
-    return { icon: "bi-megaphone", label: "公告", tone: "announce" };
   return { icon: "bi-bell", label: "通知", tone: "default" };
 }
 
@@ -94,7 +94,6 @@ function itemHref(item) {
   if (kind.includes("task")) return "/history";
   if (kind.includes("wallet") || kind.includes("redeem")) return "/wallet";
   if (kind.includes("gallery")) return "/submissions";
-  if (kind.includes("system")) return "/updates";
   return null;
 }
 
@@ -104,9 +103,13 @@ function itemScope(item) {
   if (kind.includes("task")) return "task";
   if (kind.includes("wallet") || kind.includes("redeem")) return "wallet";
   if (kind.includes("gallery")) return "review";
-  if (kind.includes("system")) return "announce";
   return "other";
 }
+
+const PAGE_TABS = [
+  ["inbox", "通知"],
+  ["announce", "公告"],
+];
 
 const SCOPE_FILTERS = [
   ["all", "全部"],
@@ -115,8 +118,33 @@ const SCOPE_FILTERS = [
   ["wallet", "账户"],
   ["trial", "试用"],
   ["review", "审核"],
-  ["announce", "公告"],
 ];
+
+function formatStamp(value) {
+  const date = parseDate(value);
+  if (!date) return "—";
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${formatClock(value)}`;
+}
+
+function inboxItemsOf(rows) {
+  return (Array.isArray(rows) ? rows : []).filter(
+    (item) => !isAnnouncementNotification(item),
+  );
+}
+
+function announcementCover(item) {
+  const assets = Array.isArray(item?.assets) ? item.assets : [];
+  const first = assets.find((asset) => String(asset?.url || "").trim());
+  return String(first?.url || item?.decorImageUrl || "").trim();
+}
+
+function announcementCta(item) {
+  const text = String(item?.ctaText || "").trim();
+  const url = String(item?.ctaUrl || "").trim();
+  if (!text || !url) return null;
+  if (!/^https?:\/\//i.test(url)) return null;
+  return { text, url };
+}
 
 function readableBody(body) {
   return displayNotificationBody(localizedText(body));
@@ -184,10 +212,31 @@ export function NotificationsView() {
   const [clearing, setClearing] = useState(false);
   const [unread, setUnread] = useState(0);
   const [scope, setScope] = useState("all");
+  const [announcements, setAnnouncements] = useState([]);
+  const [announcementsLoading, setAnnouncementsLoading] = useState(false);
+  const [announcementsLoaded, setAnnouncementsLoaded] = useState(false);
+  const [announcementsError, setAnnouncementsError] = useState("");
+
+  const pageTab =
+    new URLSearchParams(location.search).get("tab") === "announce"
+      ? "announce"
+      : "inbox";
+
+  const setPageTab = (id) => {
+    const query = new URLSearchParams(location.search);
+    if (id === "announce") query.set("tab", "announce");
+    else query.delete("tab");
+    const search = query.toString();
+    navigate(
+      `${location.pathname}${search ? `?${search}` : ""}${location.hash}`,
+      { replace: true },
+    );
+  };
 
   const applyItems = (next) => {
-    itemsRef.current = next;
-    setItems(next);
+    const inbox = inboxItemsOf(next);
+    itemsRef.current = inbox;
+    setItems(inbox);
   };
   const applyCursor = (next) => {
     cursorRef.current = next;
@@ -198,9 +247,11 @@ export function NotificationsView() {
     setUnread(next);
     publishNotifications(next, {
       ...detail,
-      previewItems: Array.isArray(detail.previewItems)
-        ? detail.previewItems
-        : itemsRef.current.slice(0, 8),
+      previewItems: inboxItemsOf(
+        Array.isArray(detail.previewItems)
+          ? detail.previewItems
+          : itemsRef.current.slice(0, 8),
+      ),
     });
   };
 
@@ -253,10 +304,29 @@ export function NotificationsView() {
     }
   }, []);
 
+  const loadAnnouncements = useCallback(async () => {
+    setAnnouncementsLoading(true);
+    setAnnouncementsError("");
+    try {
+      const rows = await getActiveAnnouncements();
+      if (!mountedRef.current) return;
+      setAnnouncements(Array.isArray(rows) ? rows : []);
+      setAnnouncementsLoaded(true);
+    } catch (loadError) {
+      if (mountedRef.current) {
+        setAnnouncementsError(loadError?.message || "公告读取失败");
+        setAnnouncementsLoaded(true);
+      }
+    } finally {
+      if (mountedRef.current) setAnnouncementsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     loadingRef.current = false;
     loadList();
+    loadAnnouncements();
     const onUpdated = (event) => {
       if (
         event?.detail?.source !== "preview" ||
@@ -278,12 +348,9 @@ export function NotificationsView() {
         setUnread(Math.max(0, Number(event.detail.unreadCount)));
     };
     const refresh = () => {
-      if (
-        document.visibilityState === "visible" &&
-        !loadingMoreRef.current &&
-        itemsRef.current.length <= 20
-      )
-        loadList();
+      if (document.visibilityState !== "visible") return;
+      if (!loadingMoreRef.current && itemsRef.current.length <= 20) loadList();
+      loadAnnouncements();
     };
     const onTaskUpdate = (event) => {
       if (
@@ -310,7 +377,7 @@ export function NotificationsView() {
       if (realtimeTimerRef.current)
         window.clearTimeout(realtimeTimerRef.current);
     };
-  }, [loadList]);
+  }, [loadList, loadAnnouncements]);
 
   useEffect(() => {
     if (!sentinelRef.current || !cursor) return undefined;
@@ -332,7 +399,6 @@ export function NotificationsView() {
       wallet: 0,
       trial: 0,
       review: 0,
-      announce: 0,
       other: 0,
     };
     items.forEach((item) => {
@@ -441,8 +507,11 @@ export function NotificationsView() {
   };
 
   const badge = unread > 99 ? "99+" : String(unread);
+  const onAnnounceTab = pageTab === "announce";
   const empty = loaded && !loading && !items.length;
   const emptyUnread = loaded && !loading && items.length > 0 && !visibleItems.length;
+  const emptyAnnouncements =
+    announcementsLoaded && !announcementsLoading && !announcements.length;
 
   return (
     <div className={`nt-page ${isDark ? "is-dark" : "is-light"}`}>
@@ -454,58 +523,155 @@ export function NotificationsView() {
         <header className="nt-hero">
           <div className="nt-hero__copy">
             <span className="nt-hero__eyebrow">Inbox</span>
-            <h1>通知{unread > 0 && <em>{badge}</em>}</h1>
-            <p>账号、任务与审核消息集中在这里。</p>
+            <h1>
+              {onAnnounceTab ? "公告" : "通知"}
+              {!onAnnounceTab && unread > 0 && <em>{badge}</em>}
+            </h1>
+            <p>
+              {onAnnounceTab
+                ? "平台公告单独放在这里，不会混进任务与账号消息。"
+                : "账号、任务与审核消息集中在这里。"}
+            </p>
           </div>
           <div className="nt-hero__side">
             <div className="nt-hero__actions">
-              <button
-                type="button"
-                className={`nt-btn${unread > 0 ? " is-primary" : ""}`}
-                disabled={marking || unread <= 0}
-                onClick={markAllRead}
-              >
-                全部已读
-              </button>
+              {!onAnnounceTab && (
+                <>
+                  <button
+                    type="button"
+                    className={`nt-btn${unread > 0 ? " is-primary" : ""}`}
+                    disabled={marking || unread <= 0}
+                    onClick={markAllRead}
+                  >
+                    全部已读
+                  </button>
+                  <button
+                    type="button"
+                    className="nt-btn"
+                    disabled={loading || !items.length || clearing}
+                    onClick={() => setClearOpen(true)}
+                  >
+                    清空
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="nt-btn"
-                disabled={loading || !items.length || clearing}
-                onClick={() => setClearOpen(true)}
+                disabled={onAnnounceTab ? announcementsLoading : loading}
+                onClick={() =>
+                  onAnnounceTab ? loadAnnouncements() : loadList()
+                }
               >
-                清空
-              </button>
-              <button
-                type="button"
-                className="nt-btn"
-                disabled={loading}
-                onClick={() => loadList()}
-              >
-                <i className={`bi bi-arrow-repeat${loading ? " spin" : ""}`} />
+                <i
+                  className={`bi bi-arrow-repeat${(onAnnounceTab ? announcementsLoading : loading) ? " spin" : ""}`}
+                />
                 刷新
               </button>
             </div>
           </div>
-          <div className="nt-hero__filters" role="tablist" aria-label="通知筛选">
-            {SCOPE_FILTERS.filter(
-              ([id]) => id === "all" || id === "unread" || scopeCounts[id] > 0,
-            ).map(([id, label]) => (
+          <div className="nt-hero__tabs" role="tablist" aria-label="通知中心">
+            {PAGE_TABS.map(([id, label]) => (
               <button
                 key={id}
                 type="button"
                 role="tab"
-                className={`nt-filter${scope === id ? " is-active" : ""}`}
-                aria-selected={scope === id}
-                onClick={() => setScope(id)}
+                className={`nt-tab${pageTab === id ? " is-active" : ""}`}
+                aria-selected={pageTab === id}
+                onClick={() => setPageTab(id)}
               >
                 {label}
-                <em>{id === "unread" ? badge : scopeCounts[id]}</em>
+                {id === "inbox" && unread > 0 ? <em>{badge}</em> : null}
+                {id === "announce" && announcements.length > 0 ? (
+                  <em>{announcements.length}</em>
+                ) : null}
               </button>
             ))}
           </div>
+          {!onAnnounceTab && (
+            <div className="nt-hero__filters" role="tablist" aria-label="通知筛选">
+              {SCOPE_FILTERS.filter(
+                ([id]) => id === "all" || id === "unread" || scopeCounts[id] > 0,
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  className={`nt-filter${scope === id ? " is-active" : ""}`}
+                  aria-selected={scope === id}
+                  onClick={() => setScope(id)}
+                >
+                  {label}
+                  <em>{id === "unread" ? badge : scopeCounts[id]}</em>
+                </button>
+              ))}
+            </div>
+          )}
         </header>
         <section className="nt-board" aria-live="polite">
-          {loading && !items.length ? (
+          {onAnnounceTab ? (
+            announcementsLoading && !announcements.length ? (
+              <div className="nt-skel" aria-hidden="true">
+                {Array.from({ length: 3 }, (_, index) => (
+                  <div key={index} className="nt-skel__row" />
+                ))}
+              </div>
+            ) : announcementsError && !announcements.length ? (
+              <div className="nt-empty is-error">
+                <strong>公告读取失败</strong>
+                <p>{announcementsError}</p>
+                <button
+                  type="button"
+                  className="nt-btn"
+                  onClick={() => loadAnnouncements()}
+                >
+                  重试
+                </button>
+              </div>
+            ) : announcements.length ? (
+              <div className="nt-announce-board">
+                {announcements.map((item) => {
+                  const cover = announcementCover(item);
+                  const cta = announcementCta(item);
+                  const body = String(item.body || "").trim();
+                  return (
+                    <article key={item.id} className="nt-announce-card">
+                      {cover ? (
+                        <div className="nt-announce-card__media">
+                          <img src={cover} alt="" />
+                        </div>
+                      ) : null}
+                      <div className="nt-announce-card__copy" data-no-translate>
+                        <header>
+                          <span className="nt-item__kind">公告</span>
+                          <time>{formatStamp(item.createdAt)}</time>
+                        </header>
+                        <h2>{localizedText(item.title)}</h2>
+                        {body ? <p>{localizedText(body)}</p> : null}
+                        {cta ? (
+                          <a
+                            className="nt-announce-card__cta"
+                            href={cta.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {cta.text}
+                            <i className="bi bi-arrow-up-right" />
+                          </a>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : emptyAnnouncements ? (
+              <div className="nt-empty">
+                <i className="bi bi-megaphone" />
+                <strong>暂无公告</strong>
+                <p>平台公告发布后会显示在这里，不会进入通知列表。</p>
+              </div>
+            ) : null
+          ) : loading && !items.length ? (
             <div className="nt-skel" aria-hidden="true">
               {Array.from({ length: 6 }, (_, index) => (
                 <div key={index} className="nt-skel__row" />
@@ -537,12 +703,15 @@ export function NotificationsView() {
                       const { title, body } = displayNotification(item);
                       const kind = kindMeta(item);
                       const href = itemHref(item);
+                      const openable =
+                        Boolean(href) ||
+                        String(item.kind).toLowerCase() === "trial_access";
                       return (
                       <li
                         key={item.id}
-                        className={`nt-item is-${kind.tone}${!item.readAt ? " is-unread" : ""}${href || String(item.kind).toLowerCase() === "trial_access" ? " is-openable" : ""}`}
-                        role={href || String(item.kind).toLowerCase() === "trial_access" ? "button" : undefined}
-                        tabIndex={href || String(item.kind).toLowerCase() === "trial_access" ? 0 : undefined}
+                        className={`nt-item is-${kind.tone}${!item.readAt ? " is-unread" : ""}${openable ? " is-openable" : ""}`}
+                        role={openable ? "button" : undefined}
+                        tabIndex={openable ? 0 : undefined}
                         onClick={() => openItem(item)}
                         onKeyDown={(event) => {
                           if (event.key !== "Enter" && event.key !== " ") return;
@@ -652,7 +821,7 @@ export function NotificationsView() {
         open={clearOpen}
         busy={clearing}
         heading="清空全部通知？"
-        description="个人通知会删除，全站公告只对你隐藏。之后的新消息仍会进来。"
+        description="个人通知会删除。之后的新消息仍会进来。"
         confirmLabel="确认清空"
         busyLabel="清空中…"
         light={!isDark}

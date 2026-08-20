@@ -1,6 +1,6 @@
 # 数据库设计
 
-数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00063`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
+数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00083`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
 
 ## 全局约定
 
@@ -122,6 +122,16 @@
 
 `puzzle` 仅为历史类型兼容；当前拼图在浏览器 Canvas 内执行，服务端拒绝创建新拼图任务并强制价格为 0。
 
+### `canvas_workflow_runs`
+
+保存每个画布项目当前工作流的节点计划、已完成节点、已取消节点、当前节点和浏览器所有权租约。`canceled_node_ids` 单调合并，后续心跳不能清除已经确认的取消操作；页面刷新或其他设备接管时，调度器会从待执行集合排除这些节点及其依赖闭包。
+
+### `canvas_workflow_templates`
+
+保存由管理后台上传的无限画布 v3 模板。`slug` 全局唯一；分类、行业、平台、交付物、强调色和节点数用于用户端模板库列表，完整 `document` 只在用户点击使用模板时读取。`enabled` 控制发布/下架，公开查询只返回已发布记录，并按 `sort`、创建时间排序。服务端校验文档版本、节点 ID、连线端点及数量上限，不接受空画布或悬空连线。
+
+服务首次升级到种子版本 1 时，会在单个事务中导入原有 41 个内置模板，并记录到 `canvas_workflow_template_seed_versions`。已有同名后台模板不会被覆盖；版本记录写入后，管理员后续删除、编辑或下架模板不会在服务重启时被还原。
+
 ### `assistant_runs`
 
 持久化助手对话运行状态、请求参数和最终路由结果。`reserved_cents` 是本代最大预留，`cost_cents` 是成功后的真实结算额且受 `cost_cents <= reserved_cents` 约束，`billing_generation` 在后台重试时递增。Agent 将对话总价与可能的图片总价同时快照进 `params`，Worker 根据最终 `resolved_mode` 选择真实费用。终态更新和钱包结算/退回必须位于同一事务。
@@ -188,7 +198,7 @@ Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务
 
 ### `changelog_entries`
 
-更新说明保存版本、日期、`feature|experience` 标签、标题、摘要、条目数组、highlight 与排序。
+更新说明保存版本、日期、`feature|experience` 标签、标题、摘要、条目数组、highlight 与排序。历史用户端日志在服务启动时按 `source_key` 导入一次；之后由后台发版维护。公开 `GET /changelog/latest` 返回最近创建的一条，供打开中的页面提示刷新。
 
 ## 提示词库
 

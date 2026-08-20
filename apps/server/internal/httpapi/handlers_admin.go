@@ -892,10 +892,15 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	page := buildPage(rows, limit, func(t *store.Task) gin.H {
 		user := users[t.UserID]
 		d := adminTaskDict(t, user)
-		outputURLs := s.urlsForKeys(c, t.OutputKeys)
-		d["outputUrls"] = outputURLs
-		d["thumbnailUrls"] = outputURLs
-		d["originalUrls"] = outputURLs
+		thumbKeys := t.ThumbnailKeys
+		if len(thumbKeys) == 0 {
+			thumbKeys = t.OutputKeys
+		}
+		thumbURLs := adminURLsForKeys(thumbKeys)
+		d["outputUrls"] = thumbURLs
+		d["thumbnailUrls"] = thumbURLs
+		d["originalUrls"] = adminURLsForKeys(t.OutputKeys)
+		d["displayUrls"] = displayURLsForTask(t, "/api/v1/admin/files/")
 		if user != nil {
 			d["userEmail"] = user.Email
 		} else {
@@ -983,6 +988,29 @@ func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 	ok(c, adminTaskDict(task, nil))
 }
 
+// adminURLsForKeys builds admin-scoped file URLs. The sc_admin_session cookie
+// is scoped to Path=/api/v1/admin, so the admin UI can only fetch stored
+// objects through /api/v1/admin/files/ — user-scoped /api/v1/files/ URLs would
+// always 401 in the admin browser.
+func adminURLsForKeys(keys []string) []string {
+	urls := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key != "" {
+			urls = append(urls, "/api/v1/admin/files/"+key)
+		}
+	}
+	return urls
+}
+
+func adminFileURL(key *string) *string {
+	if key == nil || strings.TrimSpace(*key) == "" {
+		return nil
+	}
+	u := "/api/v1/admin/files/" + strings.TrimLeft(strings.TrimSpace(*key), "/")
+	return &u
+}
+
 // ---------- gallery ----------
 
 func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
@@ -1041,8 +1069,8 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
-		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
-		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
+		d := submissionDict(sub, adminURLsForKeys(sub.MediaKeys))
+		d["coverUrl"] = adminFileURL(sub.CoverKey)
 		attachSubmissionTask(d, tasks[sub.TaskID])
 		if promptEntry := promptBySubmission[sub.ID]; promptEntry != nil {
 			d["promptEntryId"] = promptEntry.ID.String()
@@ -1338,11 +1366,7 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var ierr error
 		announcement, ierr = store.InsertAnnouncement(ctx, tx, body.Title, body.Body, active, startsAt, endsAt, config)
-		if ierr != nil {
-			return ierr
-		}
-		// 同步生成一条全站通知（user_id NULL），进入用户通知合并流
-		return store.InsertNotification(ctx, tx, nil, "announcement", body.Title, body.Body)
+		return ierr
 	})
 	if err != nil {
 		fail(c, err)
@@ -1456,7 +1480,12 @@ func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "公告不存在", 404))
 		return
 	}
-	if err := store.DeleteAnnouncement(ctx, s.St.Pool, announcementID); err != nil {
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if ierr := store.DeleteNotificationsBySource(ctx, tx, store.AnnouncementNotificationSource, announcementID); ierr != nil {
+			return ierr
+		}
+		return store.DeleteAnnouncement(ctx, tx, announcementID)
+	}); err != nil {
 		fail(c, err)
 		return
 	}
@@ -1525,15 +1554,27 @@ func (s *Server) adminCreateChangelog(c *gin.Context, _ *store.User) {
 	if body.Sort != nil {
 		sortVal = *body.Sort
 	}
-	entry, err := store.InsertChangelog(c.Request.Context(), s.St.Pool, &store.ChangelogEntry{
-		Version:   body.Version,
-		Date:      date,
-		Tag:       body.Tag,
-		Title:     body.Title,
-		Summary:   body.Summary,
-		Items:     body.Items,
-		Highlight: highlight,
-		Sort:      sortVal,
+	ctx := c.Request.Context()
+	var entry *store.ChangelogEntry
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		created, ierr := store.InsertChangelog(ctx, tx, &store.ChangelogEntry{
+			Version:   body.Version,
+			Date:      date,
+			Tag:       body.Tag,
+			Title:     body.Title,
+			Summary:   body.Summary,
+			Items:     body.Items,
+			Highlight: highlight,
+			Sort:      sortVal,
+		})
+		if ierr != nil {
+			return ierr
+		}
+		entry = created
+		if highlight {
+			return store.ClearOtherChangelogHighlights(ctx, tx, created.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		fail(c, err)
@@ -1615,7 +1656,16 @@ func (s *Server) adminPatchChangelog(c *gin.Context, _ *store.User) {
 	if body.Sort.Valid {
 		entry.Sort = body.Sort.Value
 	}
-	if err := store.UpdateChangelog(ctx, s.St.Pool, entry); err != nil {
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if ierr := store.UpdateChangelog(ctx, tx, entry); ierr != nil {
+			return ierr
+		}
+		if entry.Highlight {
+			return store.ClearOtherChangelogHighlights(ctx, tx, entry.ID)
+		}
+		return nil
+	})
+	if err != nil {
 		fail(c, err)
 		return
 	}
@@ -1656,6 +1706,14 @@ var settingsCamel = map[string]string{
 	"global_max_active_tasks":                     "globalMaxActiveTasks",
 	"global_max_active_images":                    "globalMaxActiveImages",
 	"task_failure_retry_count":                    "taskFailureRetryCount",
+	"task_retry_first_delay_secs":                 "taskRetryFirstDelaySecs",
+	"task_retry_backoff_secs":                     "taskRetryBackoffSecs",
+	"image_variant_format":                        "imageVariantFormat",
+	"image_display_lossless":                      "imageDisplayLossless",
+	"image_display_quality":                       "imageDisplayQuality",
+	"image_display_max_edge":                      "imageDisplayMaxEdge",
+	"image_thumb_max_edge":                        "imageThumbMaxEdge",
+	"image_fetch_concurrency":                     "imageFetchConcurrency",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
 	"signup_bonus_cents":                          "signupBonusCents",
 	"registration_enabled":                        "registrationEnabled",
@@ -1675,6 +1733,7 @@ var settingsCamel = map[string]string{
 	"growth_usage_rewards_enabled":                "growthUsageRewardsEnabled",
 	"growth_usage_milestones":                     "growthUsageMilestones",
 	"suggestion_reward_max_cents":                 "suggestionRewardMaxCents",
+	"page_controls":                               "pageControls",
 	"submission_enabled":                          "submissionEnabled",
 	"auto_approve":                                "autoApprove",
 	"daily_limit":                                 "dailyLimit",
@@ -1853,6 +1912,54 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "taskFailureRetryCount: 须在 0-100 之间", 422))
 				return
 			}
+		case "task_retry_first_delay_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 600 {
+				fail(c, apperr.E("validation_error", "taskRetryFirstDelaySecs: 须在 1-600 之间", 422))
+				return
+			}
+		case "task_retry_backoff_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 600 {
+				fail(c, apperr.E("validation_error", "taskRetryBackoffSecs: 须在 1-600 之间", 422))
+				return
+			}
+		case "image_variant_format":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil || (v != "webp" && v != "png") {
+				fail(c, apperr.E("validation_error", "imageVariantFormat: 仅支持 webp 或 png", 422))
+				return
+			}
+		case "image_display_lossless":
+			var v bool
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "imageDisplayLossless: 须为布尔值", 422))
+				return
+			}
+		case "image_display_quality":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100 {
+				fail(c, apperr.E("validation_error", "imageDisplayQuality: 须在 1-100 之间", 422))
+				return
+			}
+		case "image_display_max_edge":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 512 || v > 8192 {
+				fail(c, apperr.E("validation_error", "imageDisplayMaxEdge: 须在 512-8192 之间", 422))
+				return
+			}
+		case "image_thumb_max_edge":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 128 || v > 1024 {
+				fail(c, apperr.E("validation_error", "imageThumbMaxEdge: 须在 128-1024 之间", 422))
+				return
+			}
+		case "image_fetch_concurrency":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 32 {
+				fail(c, apperr.E("validation_error", "imageFetchConcurrency: 须在 1-32 之间", 422))
+				return
+			}
 		case "signup_bonus_cents", "daily_limit", "growth_group_reward_cents", "growth_failure_bonus_cents", "suggestion_reward_max_cents":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1_000_000 {
@@ -1978,6 +2085,35 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				}
 				seen[milestone.Units] = true
 			}
+		case "page_controls":
+			var controls map[string]settings.PageControl
+			if err := json.Unmarshal(raw, &controls); err != nil {
+				fail(c, apperr.E("validation_error", "pageControls: 格式不正确", 422))
+				return
+			}
+			if len(controls) > len(settings.PageControlKeys) {
+				fail(c, apperr.E("validation_error", "pageControls: 页面数量无效", 422))
+				return
+			}
+			cleaned := make(map[string]settings.PageControl, len(controls))
+			for key, control := range controls {
+				control.Status = strings.TrimSpace(control.Status)
+				control.Reason = strings.TrimSpace(control.Reason)
+				if !settings.ValidPageControlKey(key) {
+					fail(c, apperr.E("validation_error", "pageControls: 未知页面 "+key, 422))
+					return
+				}
+				if !settings.ValidPageStatus(control.Status) {
+					fail(c, apperr.E("validation_error", "pageControls: "+key+" 的状态无效", 422))
+					return
+				}
+				if len([]rune(control.Reason)) > 200 {
+					fail(c, apperr.E("validation_error", "pageControls: 原因不能超过 200 字", 422))
+					return
+				}
+				cleaned[key] = control
+			}
+			raw, _ = json.Marshal(cleaned)
 		case "c2a_base_url", "sub2api_base_url", "crun_base_url":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {

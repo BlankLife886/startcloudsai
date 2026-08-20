@@ -36,6 +36,12 @@ function previewMap(job, urls) {
   return Object.fromEntries(urls.map((url, index) => [url, values[index] || values[0] || url]));
 }
 
+// 展示图（服务端压缩大图）与原图按下标对应；旧任务没有，取用时回退原图。
+function displayMap(job, urls) {
+  const values = [...(Array.isArray(job.displayMediaUrls) ? job.displayMediaUrls : []), job.displayMediaUrl].filter(Boolean);
+  return Object.fromEntries(urls.map((url, index) => [url, values[index] || ""]));
+}
+
 function outputSize(aspectRatio = "1:1") {
   const [rawWidth = 1, rawHeight = 1] = String(aspectRatio).split(":").map(Number);
   const widthRatio = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 1;
@@ -51,8 +57,10 @@ function entriesFromJob(job, result = null) {
   const urls = resultUrls(job, result);
   const meta = taskMeta(job);
   const previews = previewMap(job, urls);
+  const displays = displayMap(job, urls);
   return urls.map((url, offset) => ({
     url,
+    displayUrl: displays[url] || "",
     previewUrl: previews[url] || url,
     jobId: String(job.id || ""),
     kindVariant: meta.kindVariant,

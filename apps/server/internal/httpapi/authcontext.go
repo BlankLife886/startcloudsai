@@ -41,6 +41,10 @@ func (s *Server) currentUser(c *gin.Context) (*store.User, error) {
 		if err := store.UpdateSessionExpiry(ctx, s.St.Pool, session.ID, newExpiry); err != nil {
 			return nil, err
 		}
+		// 数据库与浏览器必须同时续期：Cookie 的 Max-Age 是登录时刻起算的固定
+		// 值，若只延长 DB 里的 expires_at，浏览器会在 Max-Age 到期时删除
+		// Cookie，导致服务端会话仍有效但用户已“掉线”。属性与登录时完全一致。
+		s.setSessionCookie(c, token)
 	}
 	return user, nil
 }

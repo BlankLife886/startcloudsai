@@ -38,30 +38,58 @@ type AssetStore = {
 };
 
 const ASSET_STORE_KEY = "infinite-canvas:asset_store";
+let persistAssets = true;
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<AssetStore>;
-        parsed.state.assets = await Promise.all(
-            parsed.state.assets.map(async (asset) => {
-                if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: asset.data.url.startsWith("blob:") ? cloudFileUrl(asset.data.storageKey) || asset.data.storageKey : asset.data.url } };
-                if (asset.kind !== "image") return asset;
-                if (asset.data.storageKey)
-                    return {
-                        ...asset,
-                        coverUrl: asset.coverUrl.startsWith("blob:") ? cloudThumbnailUrl(asset.data.storageKey) || cloudFileUrl(asset.data.storageKey) : asset.coverUrl,
-                        data: { ...asset.data, dataUrl: canonicalImageSrc({ src: asset.data.dataUrl, storageKey: asset.data.storageKey }) },
-                    };
-                if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
-                const image = await uploadImage(asset.data.dataUrl);
-                return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
-            }),
-        );
-        return parsed;
+        try {
+            const value = await localForageStorage.getItem(name);
+            if (!value) {
+                persistAssets = true;
+                return null;
+            }
+            const parsed = JSON.parse(value) as StorageValue<AssetStore>;
+            let migrated = false;
+            parsed.state.assets = await Promise.all(
+                parsed.state.assets.map(async (asset) => {
+                    if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: asset.data.url.startsWith("blob:") ? cloudFileUrl(asset.data.storageKey) || asset.data.storageKey : asset.data.url } };
+                    if (asset.kind !== "image") return asset;
+                    if (asset.data.storageKey)
+                        return {
+                            ...asset,
+                            coverUrl: asset.coverUrl.startsWith("blob:") ? cloudThumbnailUrl(asset.data.storageKey) || cloudFileUrl(asset.data.storageKey) : asset.coverUrl,
+                            data: { ...asset.data, dataUrl: canonicalImageSrc({ src: asset.data.dataUrl, storageKey: asset.data.storageKey }) },
+                        };
+                    if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
+                    try {
+                        const image = await uploadImage(asset.data.dataUrl);
+                        migrated = true;
+                        return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+                    } catch (error) {
+                        console.warn("Canvas asset image migration failed", error);
+                        return asset;
+                    }
+                }),
+            );
+            if (migrated) {
+                try {
+                    await localForageStorage.setItem(name, JSON.stringify(parsed));
+                } catch (error) {
+                    console.warn("Canvas asset store write-back failed", error);
+                }
+            }
+            persistAssets = true;
+            return parsed;
+        } catch (error) {
+            persistAssets = false;
+            console.error("Canvas asset store failed to hydrate", error);
+            throw error;
+        }
     },
-    setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),
+    setItem: (name, value) => {
+        if (!persistAssets) return;
+        return localForageStorage.setItem(name, JSON.stringify(value));
+    },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
 
@@ -98,7 +126,11 @@ export const useAssetStore = create<AssetStore>()(
             name: ASSET_STORE_KEY,
             storage: assetStorage,
             partialize: (state) => ({ assets: state.assets }) as StorageValue<AssetStore>["state"],
-            onRehydrateStorage: () => () => {
+            onRehydrateStorage: () => (_state, error) => {
+                if (error) {
+                    persistAssets = false;
+                    console.error("Canvas asset store failed to hydrate", error);
+                }
                 useAssetStore.setState({ hydrated: true });
             },
         },

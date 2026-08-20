@@ -309,6 +309,7 @@ interface ChangelogEntry {
   title: string;
   summary: string;
   items: string[];
+  highlight?: boolean;
 }
 
 const TAG_LABELS: Record<string, string> = {
@@ -350,6 +351,7 @@ const logForm = reactive({
   title: "",
   summary: "",
   itemsText: "",
+  highlight: false,
 });
 
 function openLogCreate() {
@@ -361,6 +363,7 @@ function openLogCreate() {
     title: "",
     summary: "",
     itemsText: "",
+    highlight: true,
   });
   logDialogVisible.value = true;
 }
@@ -374,6 +377,7 @@ function openLogEdit(entry: ChangelogEntry) {
     title: entry.title,
     summary: entry.summary,
     itemsText: (entry.items ?? []).join("\n"),
+    highlight: Boolean(entry.highlight),
   });
   logDialogVisible.value = true;
 }
@@ -393,6 +397,7 @@ async function submitLog() {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean),
+    highlight: logForm.highlight,
   };
   logSubmitting.value = true;
   try {
@@ -404,7 +409,7 @@ async function submitLog() {
       ElMessage.success("更新说明已保存");
     } else {
       await request("/api/v1/admin/changelog", { method: "POST", body });
-      ElMessage.success("更新说明已发布");
+      ElMessage.success("版本已发布，打开中的用户端会收到刷新提示");
     }
     logDialogVisible.value = false;
     await loadChangelog();
@@ -444,7 +449,7 @@ onMounted(() => {
       <el-tab-pane label="公告" name="announcements">
         <PageCard
           title="全站公告"
-          subtitle="配置用户端公告的内容、展示形式、频率与有效期"
+          subtitle="发布后出现在用户通知中心的「公告」页签，不会混进通知列表"
         >
           <template #actions>
             <el-button type="primary" @click="openAnnCreate">发布公告</el-button>
@@ -525,9 +530,12 @@ onMounted(() => {
       </el-tab-pane>
 
       <el-tab-pane label="更新说明" name="changelog">
-        <PageCard title="更新说明" subtitle="用户端「更新说明」页的版本条目">
+        <PageCard
+          title="更新说明"
+          subtitle="用户端「更新说明」页的版本条目。开发完成用户端发版后，在这里发布版本；正在使用网站的用户会收到刷新提示。"
+        >
           <template #actions>
-            <el-button type="primary" @click="openLogCreate">新增条目</el-button>
+            <el-button type="primary" @click="openLogCreate">发布版本</el-button>
           </template>
 
           <ListError :error="logError || null" :loading="logLoading" @retry="loadChangelog" />
@@ -553,7 +561,7 @@ onMounted(() => {
               >
                 <template #empty>
                   <el-empty description="暂无更新说明" :image-size="60">
-                    <div class="empty-sub">点击右上角「新增条目」发布第一条更新说明</div>
+                    <div class="empty-sub">点击右上角「发布版本」写入第一条更新说明</div>
                   </el-empty>
                 </template>
                 <el-table-column label="版本" width="100" align="left" header-align="left">
@@ -576,6 +584,12 @@ onMounted(() => {
                 <el-table-column label="标题" min-width="160" align="left" header-align="left" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span class="cell-text">{{ row.title }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="焦点" width="80" align="left" header-align="left">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.highlight" type="warning" size="small">焦点</el-tag>
+                    <span v-else class="cell-muted">—</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="摘要" min-width="220" align="left" header-align="left" show-overflow-tooltip>
@@ -834,45 +848,62 @@ onMounted(() => {
 
     <AdminDialog
       v-model="logDialogVisible"
-      :title="logEditingId ? '编辑更新说明' : '新增更新说明'"
-      width="560px"
-      confirm-text="保存"
+      :title="logEditingId ? '编辑更新说明' : '发布版本'"
+      subtitle="发布新版本后，已打开网站的用户会收到刷新提示"
+      width="min(960px, calc(100vw - 32px))"
+      nested-scroll
+      :confirm-text="logEditingId ? '保存' : '发布'"
       :confirm-loading="logSubmitting"
       @confirm="submitLog"
     >
-      <el-form label-width="80px">
-        <el-form-item label="版本号" required>
-          <el-input
-            v-model="logForm.version"
-            placeholder="如 1.4.0"
-            style="width: 200px"
-          />
-        </el-form-item>
-        <el-form-item label="日期" required>
-          <el-date-picker
-            v-model="logForm.date"
-            type="date"
-            value-format="YYYY-MM-DD"
-          />
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="logForm.tag" style="width: 200px">
-            <el-option label="新功能" value="feature" />
-            <el-option label="体验优化" value="experience" />
-          </el-select>
-        </el-form-item>
+      <el-form class="changelog-editor" label-position="top">
+        <div class="changelog-editor__meta">
+          <el-form-item label="版本号" required>
+            <el-input v-model="logForm.version" placeholder="如 3.3.0" />
+          </el-form-item>
+          <el-form-item label="日期" required>
+            <el-date-picker
+              v-model="logForm.date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="类型">
+            <el-select v-model="logForm.tag" style="width: 100%">
+              <el-option label="新功能" value="feature" />
+              <el-option label="体验优化" value="experience" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="本期焦点">
+            <div class="changelog-editor__highlight">
+              <el-switch v-model="logForm.highlight" />
+              <span>置顶到用户端更新页</span>
+            </div>
+          </el-form-item>
+        </div>
         <el-form-item label="标题" required>
-          <el-input v-model="logForm.title" />
+          <el-input
+            v-model="logForm.title"
+            maxlength="200"
+            show-word-limit
+            placeholder="这一版用户能感知到的变化"
+          />
         </el-form-item>
         <el-form-item label="摘要">
-          <el-input v-model="logForm.summary" type="textarea" :rows="2" />
+          <el-input
+            v-model="logForm.summary"
+            type="textarea"
+            :autosize="{ minRows: 4, maxRows: 8 }"
+            placeholder="一两段话说明这次发版的重点"
+          />
         </el-form-item>
-        <el-form-item label="条目">
+        <el-form-item class="changelog-editor__items" label="条目">
           <el-input
             v-model="logForm.itemsText"
             type="textarea"
-            :rows="4"
-            placeholder="一行一条改动说明"
+            :autosize="{ minRows: 12, maxRows: 24 }"
+            placeholder="一行一条改动说明，会显示在用户端更新时间线里"
           />
         </el-form-item>
       </el-form>
@@ -1261,6 +1292,66 @@ onMounted(() => {
     min-height: 460px;
   }
 }
+
+.changelog-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: min(72vh, 760px);
+  padding: 8px 8px 4px;
+}
+
+.changelog-editor__meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.changelog-editor__highlight {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 10px;
+}
+
+.changelog-editor__highlight span {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.changelog-editor :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.changelog-editor :deep(.el-form-item__label) {
+  color: var(--ink-2);
+  font-weight: 650;
+}
+
+.changelog-editor :deep(.el-textarea__inner) {
+  line-height: 1.55;
+}
+
+.changelog-editor__items {
+  flex: 1 1 auto;
+}
+
+.changelog-editor__items :deep(.el-form-item__content),
+.changelog-editor__items :deep(.el-textarea),
+.changelog-editor__items :deep(.el-textarea__inner) {
+  min-height: 280px;
+}
+
+@media (max-width: 860px) {
+  .changelog-editor {
+    min-height: 0;
+  }
+
+  .changelog-editor__meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 
 
 </style>

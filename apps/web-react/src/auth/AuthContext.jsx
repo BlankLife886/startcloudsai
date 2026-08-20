@@ -1,7 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
+  clearAuthSession,
   fetchCurrentAccount,
   getAuthSession,
+  setAuthSession,
 } from "@react/legacy-modules/services/auth.js";
 import storageService from "@react/legacy-modules/services/storage.js";
 import { subscribeUserTasks } from "@react/legacy-modules/services/tasksApi.js";
@@ -10,6 +12,17 @@ const AuthContext = createContext(null);
 
 function accountScope(user) {
   return user?.id ? `user_${user.id}` : "guest";
+}
+
+function mergeAccountUser(current, account) {
+  if (!account?.id) return null;
+  if (Object.prototype.hasOwnProperty.call(account, "studioFigureUrl")) {
+    return account;
+  }
+  return {
+    ...account,
+    studioFigureUrl: current?.id === account.id ? current?.studioFigureUrl || null : null,
+  };
 }
 
 export function AuthProvider({ children }) {
@@ -25,6 +38,8 @@ export function AuthProvider({ children }) {
     const resolvedUser = typeof nextUser === "function" ? nextUser(userRef.current) : nextUser;
     userRef.current = resolvedUser || null;
     storageService.setActiveScope(accountScope(userRef.current));
+    if (userRef.current?.id) setAuthSession({ user: userRef.current });
+    else clearAuthSession();
     setUserState(userRef.current);
   }, []);
 
@@ -32,8 +47,8 @@ export function AuthProvider({ children }) {
     setLoading((current) => current && !getAuthSession()?.user);
     try {
       const account = await fetchCurrentAccount();
-      setUser(account || null);
-      return account || null;
+      setUser((current) => mergeAccountUser(current, account));
+      return userRef.current;
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) {
         setUser(null);
@@ -43,7 +58,7 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setUser]);
 
   useEffect(() => {
     let disposed = false;

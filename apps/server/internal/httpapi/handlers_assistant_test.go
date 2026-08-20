@@ -345,6 +345,27 @@ func TestValidateAssistantImageSize(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantCanvasSnapshot(t *testing.T) {
+	snapshot, err := sanitizeAssistantCanvasSnapshot(nil)
+	if err != nil || snapshot != nil {
+		t.Fatalf("empty snapshot = %#v err=%v", snapshot, err)
+	}
+	snapshot, err = sanitizeAssistantCanvasSnapshot([]byte(`{"title":"测试","nodes":[{"id":"n1"}]}`))
+	if err != nil {
+		t.Fatalf("valid snapshot: %v", err)
+	}
+	payload, _ := snapshot.(map[string]any)
+	if payload["title"] != "测试" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if _, err := sanitizeAssistantCanvasSnapshot([]byte(`{`)); err == nil {
+		t.Fatal("expected invalid snapshot error")
+	}
+	if _, err := sanitizeAssistantCanvasSnapshot([]byte(strings.Repeat("a", 20_001))); err == nil {
+		t.Fatal("expected oversized snapshot error")
+	}
+}
+
 func TestAssistantConversationLifecycle(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
@@ -460,6 +481,11 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 		ID: uuid.New(), UserID: user.ID, ConversationID: designUUID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
 		Mode: "chat", Prompt: "框选任务",
+		Params: map[string]any{
+			"serviceKey":      "ui_design_asset",
+			"workspace":       "ui_design",
+			"parentOutputUrl": "/api/v1/files/tasks/parent.png",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -476,6 +502,21 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	activeRuns, _ := activeRunsData["runs"].([]any)
 	if len(activeRuns) != 0 {
 		t.Fatalf("assistant active runs leaked ui design tasks: %#v", activeRuns)
+	}
+	designActiveResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs?workspace=ui_design", nil, token)
+	if designActiveResponse.Code != http.StatusOK {
+		t.Fatalf("list ui design runs: status %d body %s", designActiveResponse.Code, designActiveResponse.Body.String())
+	}
+	designActiveData, _ := decode(t, designActiveResponse)
+	designActiveRuns, _ := designActiveData["runs"].([]any)
+	if len(designActiveRuns) != 1 {
+		t.Fatalf("ui design active runs: %#v", designActiveRuns)
+	}
+	designActiveRun, _ := designActiveRuns[0].(map[string]any)
+	if designActiveRun["id"] != designRun.ID.String() ||
+		designActiveRun["parentOutputUrl"] != "/api/v1/files/tasks/parent.png" ||
+		designActiveRun["serviceKey"] != "ui_design_asset" {
+		t.Fatalf("ui design active run payload: %#v", designActiveRun)
 	}
 
 	deleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+id, nil, token)
@@ -570,8 +611,9 @@ func TestDeleteAssistantMessageQueuesLaterGeneratedImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locked) != 1 || !containsString(locked, key) {
-		t.Fatalf("message cleanup candidates = %#v, want [%q]", locked, key)
+	// 原图 + 约定推导的小图/展示图变体一并入队清理。
+	if len(locked) != 3 || !containsString(locked, key) {
+		t.Fatalf("message cleanup candidates = %#v, want %q plus 2 variants", locked, key)
 	}
 }
 
@@ -922,8 +964,9 @@ func TestCancelAssistantRunQueuesGeneratedImagesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locked) != 2 || !containsString(locked, imageKey) || !containsString(locked, proposalImageKey) {
-		t.Fatalf("assistant cleanup candidates = %#v, want %q and %q", locked, imageKey, proposalImageKey)
+	// 每个原图都会带 2 个变体 key 入队清理。
+	if len(locked) != 6 || !containsString(locked, imageKey) || !containsString(locked, proposalImageKey) {
+		t.Fatalf("assistant cleanup candidates = %#v, want %q and %q plus variants", locked, imageKey, proposalImageKey)
 	}
 }
 
@@ -1016,7 +1059,8 @@ func TestAdminAssistantTerminalActionsQueueGeneratedImagesAtomically(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locked) != 2 || !containsString(locked, queuedKey) || !containsString(locked, runningKey) {
-		t.Fatalf("admin cleanup candidates = %#v, want %q and %q", locked, queuedKey, runningKey)
+	// 每个原图都会带 2 个变体 key 入队清理。
+	if len(locked) != 6 || !containsString(locked, queuedKey) || !containsString(locked, runningKey) {
+		t.Fatalf("admin cleanup candidates = %#v, want %q and %q plus variants", locked, queuedKey, runningKey)
 	}
 }

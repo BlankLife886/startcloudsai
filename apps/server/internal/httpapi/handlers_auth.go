@@ -152,10 +152,14 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		return
 	}
 	if codeState == emailCodeLocked {
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
 		return
 	}
 	if codeState != emailCodeValid {
+		// 失败才计数：错误验证码计入邮箱/IP 失败窗口，配合下方成功时的
+		// SuccessAttempt 重置，形成 fail-to-count + success-to-reset。
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
 		return
 	}

@@ -64,6 +64,30 @@ const walletSnapshot = {
   trialFrozenCents: 20,
 }
 
+const walletSummary = {
+  consumedCents: 320,
+  consumedCount: 12,
+  refundCents: 40,
+  refundCount: 2,
+  incomeCents: 1620,
+  incomeCount: 18,
+  entryCount: 32,
+  items: [
+    { id: 'daily_checkin', label: '签到积分', hint: '每日签到到账，连续签到奖励更高', cents: 120, count: 8 },
+    { id: 'trial_access', label: '体验积分', hint: '体验活动领取，仅限获批功能使用', cents: 200, count: 1 },
+    { id: 'usage_milestone', label: '激励积分', hint: '创作用量达标后自动发放（越用越多）', cents: 50, count: 1 },
+    { id: 'growth_group', label: '拼团积分', hint: '好友拼团满员后到账', cents: 30, count: 1 },
+    { id: 'feedback_adoption', label: '建议采纳', hint: '产品建议被采纳后发放', cents: 80, count: 1 },
+    { id: 'task_failure_bonus', label: '失败补偿', hint: '生成失败后的补偿积分', cents: 8, count: 2 },
+    { id: 'redeem_code', label: '兑换码入账', hint: '使用兑换码充入的积分', cents: 260, count: 1 },
+    { id: 'order', label: '套餐入账', hint: '购买套餐到账', cents: 800, count: 1 },
+    { id: 'subscription_daily', label: '订阅每日发放', hint: '会员订阅按日发放', cents: 0, count: 0 },
+    { id: 'signup_bonus', label: '注册赠送', hint: '新账号注册奖励', cents: 72, count: 1 },
+    { id: 'admin', label: '人工调整', hint: '客服或管理员入账', cents: 0, count: 0 },
+    { id: 'other', label: '其他入账', hint: '未归入以上渠道的入账', cents: 0, count: 0 },
+  ],
+}
+
 const walletEntry = (id, overrides = {}) => ({
   id,
   kind: 'grant',
@@ -258,8 +282,9 @@ test.describe('React authenticated account pages', () => {
       }
       await fulfillJson(route, {
         items: [
-          historyTask('history-delete'),
+          historyTask('history-delete', { aspectRatio: '1:1' }),
           historyTask('history-user-deleted', {
+            aspectRatio: '16:9',
             outputUrls: [],
             originalUrls: [],
             thumbnailKeys: [],
@@ -273,20 +298,8 @@ test.describe('React authenticated account pages', () => {
     })
     await page.goto('/history', { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('.ch-card__placeholder.is-user-deleted')).toContainText(
-      '产物已被用户删除',
-    )
-    await expect(page.locator('.ch-history-masonry__item')).toHaveCount(3)
-    await expect(page.locator('.ch-page--history')).toHaveAttribute(
-      'data-history-content-motion-state',
-      'entered',
-    )
-    await page.getByRole('button', { name: '表格布局' }).click()
+    await expect(page.getByRole('button', { name: '列表布局' })).toHaveClass(/is-active/)
     await expect(page.locator('.ch-history-table tbody tr')).toHaveCount(3)
-    await expect(page.locator('.ch-page--history')).toHaveAttribute(
-      'data-history-content-motion-state',
-      'entered',
-    )
     const tableLayout = await page.locator('.ch-history-table-wrap').evaluate((wrapper) => {
       const preview = wrapper.querySelector('.ch-table-preview img')
       const actions = wrapper.querySelector('.ch-table-actions')
@@ -303,8 +316,35 @@ test.describe('React authenticated account pages', () => {
     expect(tableLayout.previewPosition).toBe('relative')
     expect(tableLayout.previewWidth).toBeGreaterThanOrEqual(50)
     expect(tableLayout.actionsRight).toBeLessThanOrEqual(tableLayout.wrapperRight + 1)
+
     await page.getByRole('button', { name: '4 列布局' }).click()
+    await expect(page.locator('.ch-card__placeholder.is-user-deleted')).toContainText(
+      '产物已被用户删除',
+    )
     await expect(page.locator('.ch-history-masonry__item')).toHaveCount(3)
+    const cardBoxes = await page.locator('.ch-history-masonry__item').evaluateAll((cards) =>
+      cards.map((card) => {
+        const bounds = card.getBoundingClientRect()
+        return { width: bounds.width, height: bounds.height }
+      }),
+    )
+    expect(new Set(cardBoxes.map(({ width }) => Math.round(width))).size).toBe(1)
+    expect(new Set(cardBoxes.map(({ height }) => Math.round(height))).size).toBe(1)
+    const cardIconMasks = await page
+      .locator('.ch-history-masonry__item')
+      .filter({ hasText: 'history-delete' })
+      .locator('.ch-history-icon')
+      .evaluateAll((icons) =>
+        icons.map(
+          (icon) =>
+            getComputedStyle(icon).maskImage ||
+            getComputedStyle(icon).webkitMaskImage ||
+            '',
+        ),
+      )
+    expect(cardIconMasks.some((source) => source.includes('download'))).toBeTruthy()
+    expect(cardIconMasks.some((source) => source.includes('publish'))).toBeTruthy()
+    expect(cardIconMasks.some((source) => source.includes('delete'))).toBeTruthy()
     await expect(page.locator('.ch-page--history')).toHaveAttribute(
       'data-history-content-motion-state',
       'entered',
@@ -388,6 +428,7 @@ test.describe('React authenticated account pages', () => {
       }),
     )
     await page.goto('/history', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '4 列布局' }).click()
 
     const approvedCard = page.locator('.ch-history-masonry__item').filter({ hasText: '已投稿作品' })
     await expect(approvedCard.locator('.ch-card__share').filter({ hasText: '已通过' })).toBeVisible()
@@ -418,7 +459,7 @@ test.describe('React authenticated account pages', () => {
       }),
     )
     await page.goto('/history', { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: '表格布局' }).click()
+    await expect(page.getByRole('button', { name: '列表布局' })).toHaveClass(/is-active/)
 
     const row = page.locator('.ch-history-table tbody tr').first()
     await expect(row).toBeVisible()
@@ -467,17 +508,21 @@ test.describe('React authenticated account pages', () => {
   test('wallet filters entries and follows cursor pagination in both directions', async ({
     page,
   }) => {
-    const ledgerCursors = []
+    const ledgerPages = []
     await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: account }))
     await page.route('**/api/v1/me/wallet**', (route) => {
       const url = new URL(route.request().url())
+      if (url.pathname.endsWith('/summary')) return fulfillJson(route, walletSummary)
       if (!url.pathname.endsWith('/entries')) return fulfillJson(route, walletSnapshot)
-      const cursor = url.searchParams.get('cursor') || ''
-      ledgerCursors.push(cursor)
-      if (cursor === 'wallet-page-2') {
+      const currentPage = url.searchParams.get('page') || '1'
+      ledgerPages.push(currentPage)
+      if (currentPage === '2') {
         return fulfillJson(route, {
           items: [walletEntry('ledger-refund', { kind: 'task_release', deltaCents: 18 })],
           nextCursor: null,
+          total: 24,
+          page: 2,
+          pageSize: 12,
         })
       }
       return fulfillJson(route, {
@@ -486,6 +531,9 @@ test.describe('React authenticated account pages', () => {
           walletEntry('ledger-spend', { kind: 'admin_adjust', deltaCents: -12 }),
         ],
         nextCursor: 'wallet-page-2',
+        total: 24,
+        page: 1,
+        pageSize: 12,
       })
     })
     await page.route('**/api/v1/me/trial-access-application', (route) =>
@@ -494,6 +542,8 @@ test.describe('React authenticated account pages', () => {
     await page.goto('/wallet', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.wallet-ledger__list > li')).toHaveCount(2)
+    await expect(page.locator('.wallet-pager__meta')).toContainText('共 24 条')
+    await expect(page.locator('.wallet-ledger__remain').first()).toContainText('1,260')
     await page.getByRole('tab', { name: /消费/ }).click()
     await expect(page.locator('.wallet-ledger__list > li')).toHaveCount(1)
     await page.getByRole('tab', { name: /全部/ }).click()
@@ -501,8 +551,46 @@ test.describe('React authenticated account pages', () => {
     await expect(page.locator('.wallet-pager__meta')).toContainText('第 2 页')
     await page.getByRole('button', { name: '上一页' }).click()
     await expect(page.locator('.wallet-pager__meta')).toContainText('第 1 页')
-    expect(ledgerCursors.filter(Boolean)).toEqual(['wallet-page-2'])
-    expect(ledgerCursors.at(-1)).toBe('')
+    expect(ledgerPages).toEqual(['1', '2', '1'])
+  })
+
+  test('wallet shows a channel summary and exports a csv bill', async ({ page }) => {
+    await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: account }))
+    await page.route('**/api/v1/me/wallet/export', (route) =>
+      route.fulfill({
+        status: 200,
+        headers: {
+          'content-type': 'text/csv; charset=utf-8',
+          'content-disposition': 'attachment; filename="starclouds-wallet-test.csv"',
+        },
+        body: '\uFEFF星空云绘积分账单\n合计消耗,320\n签到积分,120\n',
+      }),
+    )
+    await page.route('**/api/v1/me/wallet**', (route) => {
+      const pathname = new URL(route.request().url()).pathname
+      if (pathname.endsWith('/summary')) return fulfillJson(route, walletSummary)
+      if (pathname.endsWith('/entries')) {
+        return fulfillJson(route, { items: [walletEntry('ledger-income')], nextCursor: null })
+      }
+      return fulfillJson(route, walletSnapshot)
+    })
+    await page.route('**/api/v1/me/trial-access-application', (route) =>
+      fulfillJson(route, { application: null }),
+    )
+    await page.goto('/wallet', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.wallet-summary')).toContainText('合计消耗')
+    await expect(page.locator('.wallet-summary')).toContainText('320')
+    await expect(page.locator('.wallet-summary')).toContainText('签到积分')
+    await expect(page.locator('.wallet-summary ul')).not.toContainText('体验积分')
+    await expect(page.locator('.wallet-summary')).toContainText('激励积分')
+    await expect(page.locator('.wallet-summary')).toContainText('拼团积分')
+    await expect(page.locator('.wallet-summary')).toContainText('建议采纳')
+    await expect(page.locator('.wallet-summary')).toContainText('失败补偿')
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: '导出账单' }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toBe('starclouds-wallet-test.csv')
   })
 
   test('wallet redeems an uppercase code and synchronizes the header balance', async ({ page }) => {
@@ -530,7 +618,7 @@ test.describe('React authenticated account pages', () => {
     )
     await page.goto('/wallet', { waitUntil: 'domcontentloaded' })
 
-    await page.locator('.wallet-aside__cta').getByRole('button', { name: '兑换' }).click()
+    await page.locator('.wallet-ledger__tools').getByRole('button', { name: '兑换' }).click()
     await expect(page.locator('.redeem-dialog-layer')).toHaveAttribute(
       'data-dialog-motion-state',
       'entered',
@@ -1247,6 +1335,22 @@ test.describe('React authenticated account pages', () => {
 
     await expect(page.locator('.pp-soft-event')).toContainText('星云创作者')
     await expect(page.locator('.pp-soft-event')).toContainText('累计任务 18')
+    await expect(page.getByRole('button', { name: '更换形象' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '参考生成' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '装扮' })).toBeVisible()
+    await page.getByRole('button', { name: '装扮' }).click()
+    const dressup = page.getByRole('dialog', { name: '给当前立绘换衣服和配件' })
+    await expect(dressup).toBeVisible()
+    await expect(page.getByRole('navigation', { name: '装扮部位' })).toContainText('头戴')
+    await expect(page.getByRole('navigation', { name: '装扮部位' })).toContainText('武器')
+    await expect(page.getByRole('navigation', { name: '装扮部位' })).toContainText('尾巴')
+    await expect(dressup.getByRole('button', { name: '生成装扮' })).toBeDisabled()
+    await expect(dressup.getByRole('button', { name: '上传参考图' })).toBeVisible()
+    await expect(dressup.getByRole('button', { name: '我的资产' })).toBeVisible()
+    await dressup.locator('textarea').fill('双马尾，保持现在的发色')
+    await expect(dressup.getByRole('button', { name: '生成装扮' })).toBeEnabled()
+    await dressup.getByRole('button', { name: '关闭装扮' }).click()
+    await expect(dressup).toBeHidden()
     await expect(page.locator('.pp-soft-performance')).toContainText('成功率 80%')
     await expect(page.locator('.pp-soft-stats')).toContainText('过审投稿')
     const preference = page.locator('.pp-soft-switch input')

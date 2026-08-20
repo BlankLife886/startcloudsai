@@ -292,6 +292,9 @@ export function taskToLegacyJob(task = {}) {
   const originalUrls = Array.isArray(task.originalUrls)
     ? task.originalUrls.filter(Boolean)
     : outputUrls
+  // 展示图（服务端压缩大图）：与 outputKeys 一一对应；旧任务可能没有，
+  // 消费方需用对应原图兜底（AuthenticatedImage fallbackSrc）。
+  const displayUrls = Array.isArray(task.displayUrls) ? task.displayUrls.filter(Boolean) : []
   const outputKeys = Array.isArray(task.outputKeys) ? task.outputKeys : []
   const thumbnailKeys = Array.isArray(task.thumbnailKeys) ? task.thumbnailKeys : []
   thumbnailUrls.forEach((url, index) => {
@@ -320,6 +323,8 @@ export function taskToLegacyJob(task = {}) {
     resultMediaUrls: thumbnailUrls.length ? thumbnailUrls : outputUrls,
     originalMediaUrl: originalUrls[0] || '',
     originalMediaUrls: originalUrls,
+    displayMediaUrl: displayUrls[0] || '',
+    displayMediaUrls: displayUrls,
     error: task.errorMessage || '',
     errorCode: task.errorCode || '',
     costCents: Number(task.costCents || 0),
@@ -402,6 +407,8 @@ export async function createServerAiJob(payload = {}) {
     maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
   ])
 
+  const source = String(input._source || legacyParams._source || '').trim()
+  const storedKind = String(input._kind || legacyParams._kind || '').trim()
   const task = await createTask({
     type,
     prompt: String(payload.prompt || '').trim(),
@@ -409,7 +416,8 @@ export async function createServerAiJob(payload = {}) {
       ...legacyParams,
       ...input,
       count,
-      _kind: kind,
+      _kind: storedKind && storedKind !== kind ? storedKind : kind,
+      ...(source ? { _source: source } : {}),
       ...(maskKey ? { maskKey } : {}),
       ...(maskBaseKey ? { maskBaseKey } : {}),
     },

@@ -20,6 +20,7 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { useGrowthPrograms } from "../hooks/useGrowthPrograms.js";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 
 gsap.registerPlugin(useGSAP);
 
@@ -29,8 +30,12 @@ const allBenefits = [
     name: "好友拼团",
     category: "拼团裂变",
     icon: "bi-people-fill",
+    iconSrc: "/incentives/24.webp",
+    artSrc: "/incentives/11.webp",
+    tag: "一起拼团 · 更享优惠",
     description: "发起或加入限时拼团，满员后奖励自动发放到每位成员账户。",
     action: "进入拼团",
+    ctaSrc: "/incentives/7.webp",
     tone: "coral",
   },
   {
@@ -46,18 +51,26 @@ const allBenefits = [
     id: "failure",
     name: "失败补偿",
     category: "服务保障",
-    icon: "bi-shield-check",
+    icon: "bi-gift-fill",
+    iconSrc: "/incentives/21.webp",
+    artSrc: "/incentives/12.webp",
+    tag: "符合规则 · 自动退款",
     description: "符合规则的失败任务自动退款，并按活动配置发放额外补偿。",
     action: "查看保障",
-    tone: "teal",
+    ctaSrc: "/incentives/5.webp",
+    tone: "blue",
   },
   {
     id: "usage",
-    name: "用量计划",
+    name: "用量激励",
     category: "用量激励",
     icon: "bi-bar-chart-fill",
+    iconSrc: "/incentives/22.webp",
+    artSrc: "/incentives/14.webp",
+    tag: "按月发放 · 自动到账",
     description: "按本月成功交付量解锁档位奖励，达标后积分自动到账。",
     action: "查看计划",
+    ctaSrc: "/incentives/8.webp",
     tone: "amber",
   },
   {
@@ -65,16 +78,26 @@ const allBenefits = [
     name: "建议采纳",
     category: "产品共创",
     icon: "bi-lightbulb-fill",
+    iconSrc: "/incentives/23.webp",
+    artSrc: "/incentives/13.webp",
+    tag: "好建议，让产品更进一步",
     description: "提交产品建议，评审采纳后按价值等级发放创作积分。",
     action: "参与共创",
+    ctaSrc: "/incentives/6.webp",
     tone: "green",
   },
 ];
 
-const hiddenBenefitIds = new Set(["membership"]);
-const benefits = allBenefits.filter((benefit) => !hiddenBenefitIds.has(benefit.id));
+const benefitOrder = ["usage", "group", "suggestion", "failure"];
+const benefits = benefitOrder
+  .map((id) => allBenefits.find((benefit) => benefit.id === id))
+  .filter(Boolean);
 
-const heroHighlights = ["自动到账", "账户联动", "规则透明"];
+const heroHighlights = [
+  { icon: "bi-robot", label: "自动到账" },
+  { icon: "bi-shield-check", label: "公平透明" },
+  { icon: "bi-lightning-charge-fill", label: "快速激励" },
+];
 
 const previewPlans = [
   {
@@ -260,6 +283,7 @@ function useIncentiveEntrance(pageRef, targets, dependencies = []) {
 
 export function CreatorIncentivesView() {
   const auth = useAuth();
+  const { isEntryVisible } = usePageControls();
   const isDark = useIsDark();
   const pageRef = useRef(null);
   const { data } = useGrowthPrograms();
@@ -278,11 +302,23 @@ export function CreatorIncentivesView() {
           }
           gsap
             .timeline({ defaults: { ease: "power3.out" } })
-            .from(".rewards-hero", {
+            .from(".rewards-hero__copy > *", {
               y: 18,
               autoAlpha: 0,
-              duration: 0.55,
+              duration: 0.45,
+              stagger: 0.05,
+              clearProps: "transform,opacity,visibility",
             })
+            .from(
+              ".rewards-hero__visual",
+              {
+                x: 18,
+                autoAlpha: 0,
+                duration: 0.5,
+                clearProps: "transform,opacity,visibility",
+              },
+              "-=0.36",
+            )
             .from(
               ".benefit-card",
               {
@@ -332,6 +368,9 @@ export function CreatorIncentivesView() {
     Number(Number(data?.monthUnits || 0) > 0) +
     Number(Number(data?.failureClaims || 0) > 0) +
     Number(Boolean(data?.suggestion?.status));
+  const visibleBenefits = benefits.filter((benefit) =>
+    isEntryVisible(`/incentive-plans/${benefit.id}`),
+  );
   const stats = [
     [
       "points",
@@ -343,7 +382,7 @@ export function CreatorIncentivesView() {
         ),
         { withUnit: false },
       ),
-      "bi-hexagon-fill",
+      "/incentives/1.webp",
       "violet",
       "/wallet",
       "查看钱包",
@@ -354,7 +393,7 @@ export function CreatorIncentivesView() {
       formatPoints(Math.max(0, Number(wallet?.frozenCents || 0)), {
         withUnit: false,
       }),
-      "bi-wallet2",
+      "/incentives/2.webp",
       "blue",
       "/wallet",
       "查看冻结",
@@ -363,7 +402,7 @@ export function CreatorIncentivesView() {
       "joined",
       "已参与计划",
       String(joinedPlans),
-      "bi-calendar2-check",
+      "/incentives/4.webp",
       "green",
       "#reward-plans",
       "查看计划",
@@ -371,8 +410,8 @@ export function CreatorIncentivesView() {
     [
       "benefits",
       "可用权益",
-      String(benefits.length),
-      "bi-trophy-fill",
+      String(visibleBenefits.length),
+      "/incentives/3.webp",
       "orange",
       "#reward-plans",
       "浏览权益",
@@ -385,18 +424,16 @@ export function CreatorIncentivesView() {
     >
       <div className="rewards-shell">
         <section className="rewards-hero">
-          <div className="rewards-hero__atmosphere" aria-hidden="true">
-            <span className="rewards-orb rewards-orb--a" />
-            <span className="rewards-orb rewards-orb--b" />
-            <span className="rewards-orb rewards-orb--c" />
-          </div>
           <div className="rewards-hero__copy">
             <p>CREATOR REWARDS</p>
             <h1>创作激励</h1>
-            <span>选择一个激励计划，查看权益、进度与参与方式。</span>
+            <span>选择一个激励计划，查看权益、进度与参与方式，让每一份创作被看见。</span>
             <ul className="rewards-hero__pills">
               {heroHighlights.map((item) => (
-                <li key={item}>{item}</li>
+                <li key={item.label}>
+                  <i className={`bi ${item.icon}`} aria-hidden="true" />
+                  {item.label}
+                </li>
               ))}
             </ul>
             <div className="rewards-hero__actions">
@@ -406,6 +443,9 @@ export function CreatorIncentivesView() {
               </a>
             </div>
           </div>
+          <div className="rewards-hero__visual" aria-hidden="true">
+            <img src="/incentives/hero-trophy.webp" alt="" width="900" height="900" decoding="async" />
+          </div>
         </section>
         <section
           id="reward-plans"
@@ -413,44 +453,66 @@ export function CreatorIncentivesView() {
           aria-label="创作激励计划"
         >
           <div className="benefit-grid">
-            {benefits.map((benefit, index) => (
+            {visibleBenefits.map((benefit) => (
               <Link
                 key={benefit.id}
                 to={`/incentive-plans/${benefit.id}`}
                 className={`benefit-card is-${benefit.tone}`}
               >
-                <div className="benefit-card__top">
+                <div className="benefit-card__head">
                   <span className="benefit-card__icon" aria-hidden="true">
-                    <i className={`bi ${benefit.icon}`} />
+                    {benefit.iconSrc ? (
+                      <img src={benefit.iconSrc} alt="" width="160" height="160" />
+                    ) : (
+                      <i className={`bi ${benefit.icon}`} />
+                    )}
                   </span>
-                  <span className="benefit-card__number">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
+                  <div className="benefit-card__titles">
+                    <h2>{benefit.name}</h2>
+                    {benefit.tag ? (
+                      <span className="benefit-card__tag">{benefit.tag}</span>
+                    ) : null}
+                  </div>
                 </div>
-                <small>{benefit.category}</small>
-                <h2>{benefit.name}</h2>
                 <p>{benefit.description}</p>
                 <span className="benefit-card__cta">
-                  {benefit.action}
-                  <i className="bi bi-arrow-right" aria-hidden="true" />
+                  {benefit.ctaSrc ? (
+                    <img
+                      src={benefit.ctaSrc}
+                      alt={benefit.action}
+                      width="128"
+                      height="56"
+                      decoding="async"
+                    />
+                  ) : (
+                    <>
+                      {benefit.action}
+                      <i className="bi bi-arrow-right" aria-hidden="true" />
+                    </>
+                  )}
                 </span>
+                {benefit.artSrc ? (
+                  <div className="benefit-card__art" aria-hidden="true">
+                    <img
+                      src={benefit.artSrc}
+                      alt=""
+                      width="720"
+                      height="720"
+                      decoding="async"
+                    />
+                  </div>
+                ) : null}
               </Link>
             ))}
           </div>
         </section>
         <section className="rewards-summary" aria-label="激励概览">
-          {stats.map(([id, label, value, icon, tone, to, hint]) => {
+          {stats.map(([id, label, value, icon, tone, to]) => {
             const content = (
               <>
-                <div className="rewards-summary__head">
-                  <span className="rewards-summary__icon" aria-hidden="true">
-                    <i className={`bi ${icon}`} />
-                  </span>
-                  <span className="rewards-summary__hint">
-                    {hint}
-                    <i className="bi bi-arrow-right" aria-hidden="true" />
-                  </span>
-                </div>
+                <span className="rewards-summary__icon" aria-hidden="true">
+                  <img src={icon} alt="" width="128" height="128" />
+                </span>
                 <div className="rewards-summary__copy">
                   <small>{label}</small>
                   <strong>{auth.isAuthenticated ? value : "—"}</strong>
@@ -1062,6 +1124,8 @@ export function FriendGroupView() {
 
 export function MembershipPlanView() {
   const isDark = useIsDark();
+  const { isEntryVisible } = usePageControls();
+  const trialVisible = isEntryVisible("activity.trial");
   const navigate = useNavigate();
   const pageRef = useRef(null);
   const mountedRef = useRef(true);
@@ -1114,13 +1178,14 @@ export function MembershipPlanView() {
                 `发放 ${formatPoints(Number(plan.grantCents || 0) + Number(plan.bonusCents || 0))}`,
                 "全平台创作工具通用",
               ],
-        action: paymentEnabled ? "选择此计划" : "申请体验",
+        action: paymentEnabled ? "选择此计划" : trialVisible ? "申请体验" : "暂不可用",
         target: "trial",
         recommended: plan.recommended === true,
       }))
     : previewPlans;
   const recommended = displayPlans.find((plan) => plan.recommended);
-  const usePlan = (plan) =>
+  const usePlan = (plan) => {
+    if (!paymentEnabled && plan.target === "trial" && !trialVisible) return;
     navigate(
       plan.target === "create"
         ? "/text-to-image"
@@ -1128,6 +1193,7 @@ export function MembershipPlanView() {
           ? "/feedback"
           : "/pricing?trial=apply",
     );
+  };
   const tips = [
     ["bi-shield-check", "安全可靠", "数据加密存储，隐私有保障"],
     ["bi-arrow-repeat", "灵活自由", "随时升级、降级或取消"],
@@ -1173,7 +1239,13 @@ export function MembershipPlanView() {
                 <i className="bi bi-shield-check" />
                 <small>开通方式</small>
                 <strong>
-                  {loading ? "—" : paymentEnabled ? "在线开通" : "申请体验"}
+                  {loading
+                    ? "—"
+                    : paymentEnabled
+                      ? "在线开通"
+                      : trialVisible
+                        ? "申请体验"
+                        : "暂未开放"}
                 </strong>
               </span>
             </div>
@@ -1242,8 +1314,19 @@ export function MembershipPlanView() {
                       </li>
                     ))}
                   </ul>
-                  <button type="button" onClick={() => usePlan(plan)}>
-                    {plan.current ? "当前计划" : plan.action}
+                  <button
+                    type="button"
+                    disabled={
+                      plan.current ||
+                      (!paymentEnabled && plan.target === "trial" && !trialVisible)
+                    }
+                    onClick={() => usePlan(plan)}
+                  >
+                    {plan.current
+                      ? "当前计划"
+                      : !paymentEnabled && plan.target === "trial" && !trialVisible
+                        ? "暂不可用"
+                        : plan.action}
                   </button>
                 </article>
               ))}
@@ -1275,6 +1358,9 @@ const compensationArt = Object.freeze({
   release: "/failure-compensation/step-release.webp",
   bonus: "/failure-compensation/step-bonus.webp",
   ledger: "/failure-compensation/step-ledger.webp",
+  fee: "/failure-compensation/1.webp",
+  extra: "/failure-compensation/2.webp",
+  today: "/failure-compensation/3.webp",
 });
 
 export function FailureCompensationView() {
@@ -1293,19 +1379,19 @@ export function FailureCompensationView() {
   const bonusLabel = bonusEnabled ? bonusValue : "暂未开放";
   const items = [
     {
-      icon: "bi-arrow-counterclockwise",
+      icon: compensationArt.fee,
       title: "失败任务费用",
       value: "自动释放",
       copy: "任务失败或取消后，冻结积分按结算规则释放。",
     },
     {
-      icon: "bi-gift-fill",
+      icon: compensationArt.extra,
       title: "额外补偿积分",
       value: loading ? "—" : bonusLabel,
       copy: "符合活动规则的失败任务自动获得额外补偿。",
     },
     {
-      icon: "bi-calendar-check",
+      icon: compensationArt.today,
       title: "今日剩余补偿",
       value: loading ? "—" : `${remainingClaims} 次`,
       copy: `今日已触发 ${claimsToday} 次，每日上限 ${dailyLimit || "—"} 次。`,
@@ -1384,7 +1470,7 @@ export function FailureCompensationView() {
                     {items.map((item) => (
                       <li key={item.title}>
                         <span className="compensation-point__icon">
-                          <i className={`bi ${item.icon}`} />
+                          <img src={item.icon} alt="" />
                         </span>
                         <div>
                           <div className="compensation-point__head">

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  cancelAuthenticatedMediaResolve,
   isAuthenticatedAiMediaUrl,
   releaseAuthenticatedMediaUrl,
   resolveAuthenticatedMediaUrl,
@@ -13,6 +14,11 @@ export function AuthenticatedImage({
   rootMargin = "360px 0px",
   retryCount = 1,
   maxDimension = 0,
+  // 旧数据可能没有小图/展示图变体：主地址 404 时自动回退到该地址（一般传原图）。
+  fallbackSrc = "",
+  // 指定滚动容器，避免用视口当 root 时，侧栏内滚动判断错位。
+  observerRoot = null,
+  keepLoaded = false,
   onLoad,
   onError,
   className = "",
@@ -37,32 +43,45 @@ export function AuthenticatedImage({
       setActive(Boolean(src));
       return undefined;
     }
+    const scrollRoot = (
+      observerRoot && typeof observerRoot === "object" && "current" in observerRoot
+        ? observerRoot.current
+        : observerRoot
+    ) || root.closest(".t2i-panel") || null;
     const observer = new IntersectionObserver(
       (entries) => {
         const nextActive = entries.some((entry) => entry.isIntersecting);
-        setActive(nextActive);
-        if (!nextActive) {
-          setResolved("");
-          setState("placeholder");
+        if (nextActive) {
+          setActive(true);
+          return;
         }
+        if (keepLoaded) return;
+        setActive(false);
+        setResolved("");
+        setState("placeholder");
       },
-      { rootMargin, threshold: 0.01 },
+      { root: scrollRoot instanceof Element ? scrollRoot : null, rootMargin, threshold: 0.01 },
     );
     if (root) observer.observe(root);
     return () => observer.disconnect();
-  }, [loading, rootMargin, src]);
+  }, [keepLoaded, loading, observerRoot, rootMargin, src]);
 
   useEffect(() => {
     if (!src || !active) return undefined;
     const token = ++tokenRef.current;
     let disposed = false;
     retryRef.current = 0;
-    setResolved("");
-    setState("loading");
+    if (!keepLoaded || !resolvedRef.current) {
+      setResolved("");
+      setState("loading");
+    }
 
     const resolve = async () => {
       try {
-        const value = await resolveAuthenticatedMediaUrl(src, { maxDimension });
+        const value = await resolveAuthenticatedMediaUrl(src, {
+          maxDimension,
+          fallbackUrl: fallbackSrc,
+        });
         if (disposed || token !== tokenRef.current) return;
         resolvedRef.current = value;
         setResolved(value);
@@ -88,9 +107,13 @@ export function AuthenticatedImage({
           maxDimension,
         });
         resolvedRef.current = "";
+      } else {
+        // 尚未取到图就离开视口/卸载：注销等待，让排队中的请求立即出队，
+        // 不再占用浏览器连接阻塞页面切换。
+        cancelAuthenticatedMediaResolve(src, { maxDimension });
       }
     };
-  }, [active, maxDimension, retryCount, src]);
+  }, [active, fallbackSrc, keepLoaded, maxDimension, retryCount, src]);
 
   return (
     <span

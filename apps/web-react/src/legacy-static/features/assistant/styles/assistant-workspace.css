@@ -8245,16 +8245,6 @@
 .assistant-workspace .assistant-empty-state {
   background-image:
     radial-gradient(
-      ellipse clamp(520px, 38vw, 820px) clamp(470px, 34vw, 740px) at -54px -58px,
-      rgb(255 74 103 / 46%) 0%,
-      rgb(255 169 64 / 40%) 16%,
-      rgb(255 226 66 / 35%) 31%,
-      rgb(54 220 132 / 31%) 47%,
-      rgb(0 207 255 / 27%) 62%,
-      rgb(87 103 255 / 20%) 77%,
-      rgb(255 255 255 / 0%) 100%
-    ),
-    radial-gradient(
       ellipse clamp(620px, 44vw, 940px) clamp(560px, 42vw, 900px)
         at calc(100% + 58px) calc(100% + 62px),
       rgb(255 74 103 / 44%) 0%,
@@ -8270,16 +8260,6 @@
 
 .assistant-workspace.is-dark .assistant-empty-state {
   background-image:
-    radial-gradient(
-      ellipse clamp(520px, 38vw, 820px) clamp(470px, 34vw, 740px) at -54px -58px,
-      rgb(255 74 103 / 34%) 0%,
-      rgb(255 169 64 / 30%) 16%,
-      rgb(255 226 66 / 26%) 31%,
-      rgb(54 220 132 / 23%) 47%,
-      rgb(0 207 255 / 21%) 62%,
-      rgb(87 103 255 / 16%) 77%,
-      rgb(27 23 40 / 0%) 100%
-    ),
     radial-gradient(
       ellipse clamp(620px, 44vw, 940px) clamp(560px, 42vw, 900px)
         at calc(100% + 58px) calc(100% + 62px),
@@ -8300,40 +8280,18 @@
   overflow: hidden;
 }
 
-.assistant-workspace .assistant-empty-state::before,
 .assistant-workspace .assistant-empty-state::after {
   content: '';
   position: absolute;
+  right: -24%;
+  bottom: -25%;
   z-index: 0;
+  width: min(880px, 78vw);
+  height: min(760px, 70vw);
   border-radius: 50%;
   pointer-events: none;
   filter: blur(46px);
   opacity: 0.62;
-}
-
-.assistant-workspace .assistant-empty-state::before {
-  top: -24%;
-  left: -22%;
-  width: min(760px, 72vw);
-  height: min(640px, 62vw);
-  background: conic-gradient(
-    from 205deg at 50% 50%,
-    rgb(255 74 103 / 36%) 0deg,
-    rgb(255 169 64 / 34%) 54deg,
-    rgb(255 226 66 / 31%) 108deg,
-    rgb(54 220 132 / 29%) 162deg,
-    rgb(0 207 255 / 33%) 216deg,
-    rgb(87 103 255 / 34%) 270deg,
-    rgb(214 80 255 / 31%) 324deg,
-    rgb(255 74 103 / 36%) 360deg
-  );
-}
-
-.assistant-workspace .assistant-empty-state::after {
-  right: -24%;
-  bottom: -25%;
-  width: min(880px, 78vw);
-  height: min(760px, 70vw);
   background: conic-gradient(
     from 24deg at 50% 50%,
     rgb(255 74 103 / 34%) 0deg,
@@ -8352,7 +8310,6 @@
   z-index: 1;
 }
 
-.assistant-workspace.is-dark .assistant-empty-state::before,
 .assistant-workspace.is-dark .assistant-empty-state::after {
   opacity: 0.48;
   filter: blur(54px);

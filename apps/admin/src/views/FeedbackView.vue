@@ -91,7 +91,7 @@ const PAGE_LABELS: Record<string, string> = {
   "/assets": "我的资产",
   "/history": "历史记录",
   "/check-in": "每日签到",
-  "/wallet": "钱包",
+  "/wallet": "我的钱包",
   "/pricing": "创作价格",
   "/profile": "个人中心",
   "/account": "账号设置",

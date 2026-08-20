@@ -17,6 +17,7 @@ type CanvasWorkflowRun struct {
 	Status           string          `json:"status"`
 	NodeIDs          json.RawMessage `json:"nodeIds"`
 	CompletedNodeIDs json.RawMessage `json:"completedNodeIds"`
+	CanceledNodeIDs  json.RawMessage `json:"canceledNodeIds"`
 	CurrentNodeID    *string         `json:"currentNodeId"`
 	ErrorMessage     string          `json:"errorMessage"`
 	LeaseExpiresAt   *time.Time      `json:"leaseExpiresAt"`
@@ -25,13 +26,13 @@ type CanvasWorkflowRun struct {
 	FinishedAt       *time.Time      `json:"finishedAt"`
 }
 
-const canvasWorkflowRunCols = `id, project_id, user_id, owner_id, status, node_ids, completed_node_ids,
+const canvasWorkflowRunCols = `id, project_id, user_id, owner_id, status, node_ids, completed_node_ids, canceled_node_ids,
 	current_node_id, error_message, lease_expires_at, started_at, updated_at, finished_at`
 
 func scanCanvasWorkflowRun(row pgx.Row) (*CanvasWorkflowRun, error) {
 	var item CanvasWorkflowRun
 	if err := row.Scan(
-		&item.ID, &item.ProjectID, &item.UserID, &item.OwnerID, &item.Status, &item.NodeIDs, &item.CompletedNodeIDs,
+		&item.ID, &item.ProjectID, &item.UserID, &item.OwnerID, &item.Status, &item.NodeIDs, &item.CompletedNodeIDs, &item.CanceledNodeIDs,
 		&item.CurrentNodeID, &item.ErrorMessage, &item.LeaseExpiresAt, &item.StartedAt, &item.UpdatedAt, &item.FinishedAt,
 	); err != nil {
 		return nil, err
@@ -73,25 +74,66 @@ func AcquireCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, owner
 	return item, false, err
 }
 
-func UpdateCanvasWorkflowRunProgress(ctx context.Context, q Q, userID, projectID, runID, ownerID uuid.UUID, completedNodeIDs json.RawMessage, currentNodeID string, now time.Time, lease time.Duration) (*CanvasWorkflowRun, error) {
+func UpdateCanvasWorkflowRunProgress(ctx context.Context, q Q, userID, projectID, runID, ownerID uuid.UUID, completedNodeIDs, canceledNodeIDs json.RawMessage, currentNodeID string, now time.Time, lease time.Duration) (*CanvasWorkflowRun, error) {
 	return scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `UPDATE canvas_workflow_runs
-		SET completed_node_ids = $5, current_node_id = NULLIF($6, ''), lease_expires_at = $8, updated_at = $7
+		SET completed_node_ids = $5,
+			canceled_node_ids = (
+				SELECT COALESCE(jsonb_agg(value), '[]'::jsonb)
+				FROM (SELECT DISTINCT value FROM jsonb_array_elements_text(canvas_workflow_runs.canceled_node_ids || $6::jsonb) AS canceled(value)) merged
+			),
+			current_node_id = NULLIF($7, ''), lease_expires_at = $9, updated_at = $8
 		WHERE id = $3 AND project_id = $2 AND user_id = $1 AND owner_id = $4 AND status = 'running'
-		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, ownerID, completedNodeIDs, currentNodeID, now, now.Add(lease)))
+		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, ownerID, completedNodeIDs, canceledNodeIDs, currentNodeID, now, now.Add(lease)))
 }
 
-func FinishCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, runID, ownerID uuid.UUID, status string, completedNodeIDs json.RawMessage, currentNodeID, errorMessage string, now time.Time) (*CanvasWorkflowRun, error) {
+func FinishCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, runID, ownerID uuid.UUID, status string, completedNodeIDs, canceledNodeIDs json.RawMessage, currentNodeID, errorMessage string, now time.Time) (*CanvasWorkflowRun, error) {
 	return scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `UPDATE canvas_workflow_runs
-		SET status = $5, completed_node_ids = $6, current_node_id = NULLIF($7, ''), error_message = $8,
-			lease_expires_at = NULL, updated_at = $9, finished_at = $9
+		SET status = $5, completed_node_ids = $6,
+			canceled_node_ids = (
+				SELECT COALESCE(jsonb_agg(value), '[]'::jsonb)
+				FROM (SELECT DISTINCT value FROM jsonb_array_elements_text(canvas_workflow_runs.canceled_node_ids || $7::jsonb) AS canceled(value)) merged
+			),
+			current_node_id = NULLIF($8, ''), error_message = $9,
+			lease_expires_at = NULL, updated_at = $10, finished_at = $10
 		WHERE id = $3 AND project_id = $2 AND user_id = $1 AND owner_id = $4 AND status = 'running'
-		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, ownerID, status, completedNodeIDs, currentNodeID, errorMessage, now))
+		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, ownerID, status, completedNodeIDs, canceledNodeIDs, currentNodeID, errorMessage, now))
 }
 
-func CancelCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, runID uuid.UUID, completedNodeIDs json.RawMessage, currentNodeID string, now time.Time) (*CanvasWorkflowRun, error) {
+// FailAbandonedCanvasWorkflowRuns terminates running rows whose lease expired
+// before the cutoff (owner never came back). Lease takeover on acquire already
+// lets a returning client resume, so anything expired this long is abandoned.
+func FailAbandonedCanvasWorkflowRuns(ctx context.Context, q Q, leaseExpiredBefore, now time.Time) (int64, error) {
+	tag, err := q.Exec(ctx, `UPDATE canvas_workflow_runs
+		SET status = 'failed', error_message = 'workflow abandoned: lease expired',
+			lease_expires_at = NULL, updated_at = $2, finished_at = $2
+		WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1`,
+		leaseExpiredBefore, now)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteFinishedCanvasWorkflowRunsBefore removes terminal run rows past the
+// retention window; uses ix_canvas_workflow_runs_finished.
+func DeleteFinishedCanvasWorkflowRunsBefore(ctx context.Context, q Q, before time.Time) (int64, error) {
+	tag, err := q.Exec(ctx, `DELETE FROM canvas_workflow_runs
+		WHERE status <> 'running' AND finished_at IS NOT NULL AND finished_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func CancelCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, runID uuid.UUID, completedNodeIDs, canceledNodeIDs json.RawMessage, currentNodeID string, now time.Time) (*CanvasWorkflowRun, error) {
 	return scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `UPDATE canvas_workflow_runs
-		SET status = 'canceled', completed_node_ids = $4, current_node_id = NULLIF($5, ''),
-			lease_expires_at = NULL, updated_at = $6, finished_at = $6
+		SET status = 'canceled', completed_node_ids = $4,
+			canceled_node_ids = (
+				SELECT COALESCE(jsonb_agg(value), '[]'::jsonb)
+				FROM (SELECT DISTINCT value FROM jsonb_array_elements_text(canvas_workflow_runs.canceled_node_ids || $5::jsonb) AS canceled(value)) merged
+			),
+			current_node_id = NULLIF($6, ''),
+			lease_expires_at = NULL, updated_at = $7, finished_at = $7
 		WHERE id = $3 AND project_id = $2 AND user_id = $1 AND status = 'running'
-		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, completedNodeIDs, currentNodeID, now))
+		RETURNING `+canvasWorkflowRunCols, userID, projectID, runID, completedNodeIDs, canceledNodeIDs, currentNodeID, now))
 }

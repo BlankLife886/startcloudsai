@@ -208,6 +208,7 @@ export function MaterialsLibraryView() {
   const groupNameInputRef = useRef(null);
   const batchRenameInputRef = useRef(null);
   const pageRef = useRef(null);
+  const sentinelRef = useRef(null);
 
   const [materials, setMaterials] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -385,6 +386,18 @@ export function MaterialsLibraryView() {
     auth.loading,
     loadGroups,
   ]);
+
+  useEffect(() => {
+    if (!sentinelRef.current || !cursor || showDuplicatesOnly || query.trim()) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) =>
+        entries.some((entry) => entry.isIntersecting) &&
+        loadList({ append: true }),
+      { rootMargin: "160px 0px" },
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [cursor, loadList, query, showDuplicatesOnly]);
 
   useEffect(() => {
     filterRef.current = activeFilter;
@@ -1392,13 +1405,23 @@ export function MaterialsLibraryView() {
                 {selectMode ? "退出多选" : "多选"}
               </button>
               {activeCustomGroup && (
-                <button
-                  type="button"
-                  className="ch-chip"
-                  onClick={() => openEditGroup(activeCustomGroup)}
-                >
-                  编辑分组
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="ch-chip"
+                    onClick={() => openEditGroup(activeCustomGroup)}
+                  >
+                    编辑分组
+                  </button>
+                  <button
+                    type="button"
+                    className="ch-chip is-danger"
+                    disabled={bulkBusy}
+                    onClick={() => setPendingGroupDelete(activeCustomGroup)}
+                  >
+                    删除分组
+                  </button>
+                </>
               )}
               {canCreateGroup && (
                 <button
@@ -1691,15 +1714,10 @@ export function MaterialsLibraryView() {
               )}
             </div>
           )}
-          {cursor && !showDuplicatesOnly && !query.trim() && (
-            <button
-              type="button"
-              className="ch-btn is-ghost ml-more"
-              disabled={loadingMore}
-              onClick={() => loadList({ append: true })}
-            >
-              {loadingMore ? "加载中…" : "加载更多"}
-            </button>
+          {(cursor || loadingMore) && !showDuplicatesOnly && !query.trim() && (
+            <div ref={sentinelRef} className="ch-more ml-more" aria-live="polite">
+              {loadingMore ? <span className="ch-more__hint">加载中…</span> : null}
+            </div>
           )}
         </section>
       </div>
@@ -1815,20 +1833,10 @@ export function MaterialsLibraryView() {
           </label>
           <p className="ml-edit__hint">
             {editingGroup
-              ? `当前 ${editingGroup.assetCount || 0} 项资产。删除分组不会删除资产，只会移到未分组。`
+              ? `当前 ${editingGroup.assetCount || 0} 项资产。`
               : "最多 50 个分组，创建后可把资产移入其中。"}
           </p>
           <footer className="ml-edit__actions">
-            {editingGroup ? (
-              <button
-                type="button"
-                className="ml-btn is-danger-ghost"
-                disabled={creatingGroup || savingGroup}
-                onClick={() => setPendingGroupDelete(editingGroup)}
-              >
-                删除分组
-              </button>
-            ) : null}
             <button
               type="button"
               className="ml-btn is-ghost"

@@ -20,7 +20,15 @@ const form = reactive({
   globalMaxActiveTasks: 12000,
   globalMaxActiveImages: 12000,
   taskFailureRetryCount: 2,
+  taskRetryFirstDelaySecs: 3,
+  taskRetryBackoffSecs: 15,
   crossProviderSameModelBalancingEnabled: false,
+  imageVariantFormat: 'webp',
+  imageDisplayLossless: false,
+  imageDisplayQuality: 85,
+  imageDisplayMaxEdge: 2048,
+  imageThumbMaxEdge: 512,
+  imageFetchConcurrency: 2,
 })
 
 function hydrate(settings: AdminSettings) {
@@ -31,8 +39,16 @@ function hydrate(settings: AdminSettings) {
   form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 12000
   form.globalMaxActiveImages = settings.globalMaxActiveImages ?? 12000
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2
+  form.taskRetryFirstDelaySecs = settings.taskRetryFirstDelaySecs ?? 3
+  form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false
+  form.imageVariantFormat = settings.imageVariantFormat === 'png' ? 'png' : 'webp'
+  form.imageDisplayLossless = settings.imageDisplayLossless ?? false
+  form.imageDisplayQuality = settings.imageDisplayQuality ?? 85
+  form.imageDisplayMaxEdge = settings.imageDisplayMaxEdge ?? 2048
+  form.imageThumbMaxEdge = settings.imageThumbMaxEdge ?? 512
+  form.imageFetchConcurrency = settings.imageFetchConcurrency ?? 2
   workerConcurrencyCeiling.value = Math.max(1, settings.workerConcurrencyCeiling ?? 1)
   effectiveGlobalConcurrency.value = Math.max(
     1,
@@ -64,8 +80,16 @@ async function save() {
           globalMaxActiveTasks: form.globalMaxActiveTasks,
           globalMaxActiveImages: form.globalMaxActiveImages,
           taskFailureRetryCount: form.taskFailureRetryCount,
+          taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
+          taskRetryBackoffSecs: form.taskRetryBackoffSecs,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
+          imageVariantFormat: form.imageVariantFormat,
+          imageDisplayLossless: form.imageDisplayLossless,
+          imageDisplayQuality: form.imageDisplayQuality,
+          imageDisplayMaxEdge: form.imageDisplayMaxEdge,
+          imageThumbMaxEdge: form.imageThumbMaxEdge,
+          imageFetchConcurrency: form.imageFetchConcurrency,
         },
       }),
     )
@@ -121,6 +145,20 @@ async function save() {
         <div class="module-settings-grid">
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>任务失败重试</strong><small>上游返回失败时允许的自动重试次数</small></div><div class="module-settings-control"><el-input-number v-model="form.taskFailureRetryCount" :min="0" :max="100" :precision="0" /><span>次</span></div></div>
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>跨服务商均衡</strong><small>同模型存在多个服务商时分散请求</small></div><el-switch v-model="form.crossProviderSameModelBalancingEnabled" /></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>首次重试等待</strong><small>上游临时报错后第一次重试前的等待，越短用户等待越少</small></div><div class="module-settings-control"><el-input-number v-model="form.taskRetryFirstDelaySecs" :min="1" :max="600" :precision="0" /><span>秒</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>后续重试间隔</strong><small>第 N 次重试等待 (N-1)×该值 秒，避免持续打爆上游</small></div><div class="module-settings-control"><el-input-number v-model="form.taskRetryBackoffSecs" :min="1" :max="600" :precision="0" /><span>秒</span></div></div>
+        </div>
+      </section>
+
+      <section class="module-settings-section">
+        <header class="module-settings-section__head"><div><strong>图片处理</strong><small>生成结果和上传图片会额外产出「小图 + 展示图」，页面加载更快；下载始终是原图</small></div></header>
+        <div class="module-settings-grid">
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>压缩格式</strong><small>WebP 体积更小；PNG 兼容性最好，两者都支持透明底</small></div><div class="module-settings-control"><el-radio-group v-model="form.imageVariantFormat"><el-radio-button value="webp">WebP</el-radio-button><el-radio-button value="png">PNG</el-radio-button></el-radio-group></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>展示图无损压缩</strong><small>仅 WebP 生效：开启后画质零损失但体积更大；PNG 天生无损</small></div><el-switch v-model="form.imageDisplayLossless" :disabled="form.imageVariantFormat !== 'webp'" /></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>展示图质量</strong><small>仅有损 WebP 生效，85 基本看不出差别</small></div><div class="module-settings-control"><el-input-number v-model="form.imageDisplayQuality" :min="1" :max="100" :precision="0" :disabled="form.imageVariantFormat !== 'webp' || form.imageDisplayLossless" /><span>分</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>展示图最长边</strong><small>点开大图时看到的尺寸上限，超出等比缩小</small></div><div class="module-settings-control"><el-input-number v-model="form.imageDisplayMaxEdge" :min="512" :max="8192" :step="256" :precision="0" /><span>像素</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>小图最长边</strong><small>列表和网格缩略图的尺寸上限</small></div><div class="module-settings-control"><el-input-number v-model="form.imageThumbMaxEdge" :min="128" :max="1024" :step="64" :precision="0" /><span>像素</span></div></div>
+          <div class="module-settings-field module-settings-field--wide"><div class="module-settings-field__copy"><strong>上游出图后同时拉回</strong><small>同时从上游图床下载并入库的数量。图床较弱时建议 2；机器升级后可调高</small></div><div class="module-settings-control"><el-input-number v-model="form.imageFetchConcurrency" :min="1" :max="32" :precision="0" /><span>张</span></div></div>
         </div>
       </section>
     </div>

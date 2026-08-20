@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CANVAS_WORKFLOW_TEMPLATES, createCanvasProjectFromTemplate } from "../src/canvas/templates/canvas-workflow-templates.ts";
+import { createCanvasProjectFromUploadedTemplate } from "../src/canvas/lib/canvas/canvas-workflow-template-project.ts";
 
 function assertAcyclic(project) {
     const configs = new Set(project.nodes.filter((node) => node.type === "config").map((node) => node.id));
@@ -98,4 +99,71 @@ test("uses distinct workflow topology for every template", () => {
 test("covers major domestic and international commerce platforms", () => {
     const platforms = new Set(CANVAS_WORKFLOW_TEMPLATES.flatMap((template) => template.platforms));
     ["天猫", "淘宝", "京东", "拼多多", "抖音商城", "小红书", "Amazon", "Shopee", "Lazada", "Temu", "Shopify", "Etsy", "eBay", "Walmart", "Rakuten"].forEach((platform) => assert.ok(platforms.has(platform), platform));
+});
+
+test("creates a clean project from a backend-uploaded template", () => {
+    const project = createCanvasProjectFromUploadedTemplate({
+        id: "template-1",
+        slug: "queued-workflow",
+        title: "排队任务模板",
+        category: "test",
+        categoryLabel: "测试",
+        industry: "",
+        summary: "",
+        platforms: [],
+        deliverables: [],
+        accent: "#16a34a",
+        nodeCount: 1,
+        sort: 0,
+        document: {
+            version: 3,
+            backgroundMode: "dots",
+            showImageInfo: true,
+            viewport: { x: 10, y: 20, k: 0.5 },
+            connections: [],
+            nodes: [{
+                id: "config-1",
+                type: "config",
+                title: "生图",
+                position: { x: 20, y: 40 },
+                width: 320,
+                height: 240,
+                metadata: {
+                    status: "loading",
+                    taskId: "task-1",
+                    taskKind: "image",
+                    executionStatus: "queued",
+                    generationQueuedAt: "2026-08-19T00:00:00Z",
+                    errorDetails: "stale error",
+                    images: [{
+                        id: "image-1",
+                        status: "loading",
+                        errorDetails: "stale image error",
+                        content: "",
+                        storageKey: "",
+                        naturalWidth: 0,
+                        naturalHeight: 0,
+                        bytes: 0,
+                        mimeType: "",
+                        taskId: "task-1",
+                    }],
+                },
+            }],
+        },
+    });
+
+    assert.match(project.id, /^[0-9a-f-]{36}$/);
+    assert.equal(project.title, "模板｜排队任务模板");
+    assert.equal(project.workflowRun, null);
+    assert.deepEqual(project.chatSessions, []);
+    assert.equal(project.activeChatId, null);
+    assert.equal(project.backgroundMode, "dots");
+    assert.deepEqual(project.viewport, { x: 10, y: 20, k: 0.5 });
+    assert.equal(project.nodes[0].metadata.status, "idle");
+    assert.equal(project.nodes[0].metadata.taskId, undefined);
+    assert.equal(project.nodes[0].metadata.executionStatus, undefined);
+    assert.equal(project.nodes[0].metadata.errorDetails, undefined);
+    assert.equal(project.nodes[0].metadata.images[0].status, "idle");
+    assert.equal(project.nodes[0].metadata.images[0].taskId, undefined);
+    assert.equal(project.nodes[0].metadata.images[0].errorDetails, undefined);
 });

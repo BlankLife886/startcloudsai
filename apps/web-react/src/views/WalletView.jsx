@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { getWallet, listWalletLedger } from "@react/legacy-modules/services/meApi.js";
+import { downloadWalletBill, getWallet, getWalletSummary, listWalletLedger } from "@react/legacy-modules/services/meApi.js";
 import {
   claimTrialAccessReward,
   getTrialAccessApplication,
@@ -13,8 +13,19 @@ import "@react/legacy-styles/generated/views/WalletView.css";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import "./WalletView.css";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 
 const PAGE_SIZE = 12;
+const PAGE_SIZES = [12, 20, 50];
+const SUMMARY_LINKS = {
+  daily_checkin: "/check-in",
+  usage_milestone: "/incentive-plans/usage",
+  growth_group: "/incentive-plans/group",
+  feedback_adoption: "/incentive-plans/suggestion",
+  task_failure_bonus: "/incentive-plans/failure",
+  order: "/incentive-plans/membership",
+  subscription_daily: "/incentive-plans/membership",
+};
 const FILTERS = [
   ["all", "全部"],
   ["income", "入账"],
@@ -52,6 +63,22 @@ const KIND_LABELS = {
   subscription_grant: "订阅每日发放",
 };
 
+function visiblePages(current, total) {
+  if (!total || total < 1) return [current];
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  const picked = new Set([1, total, current]);
+  for (let page = current - 1; page <= current + 1; page += 1) {
+    if (page > 1 && page < total) picked.add(page);
+  }
+  const sorted = [...picked].sort((a, b) => a - b);
+  const result = [];
+  sorted.forEach((page, index) => {
+    if (index && page - sorted[index - 1] > 1) result.push("…");
+    result.push(page);
+  });
+  return result;
+}
+
 function formatClock(value) {
   const date = value ? new Date(value) : null;
   return date && !Number.isNaN(date.getTime())
@@ -61,6 +88,17 @@ function formatClock(value) {
         hour12: false,
       })
     : "—";
+}
+
+function generationDuration(entry) {
+  const started = Date.parse(entry?.task?.startedAt || "");
+  const finished = Date.parse(entry?.task?.finishedAt || "");
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return "";
+  const seconds = Math.max(0, Math.round((finished - started) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
 }
 
 function dayKey(date) {
@@ -97,99 +135,85 @@ function taskLabel(entry) {
   return TASK_TYPES[task.type] || "AI 任务";
 }
 
+function taskModel(entry) {
+  return String(entry?.task?.modelName || "").trim();
+}
+
 function taskMeta(entry) {
-  const task = entry?.task;
-  if (!task) return "";
-  return [
-    String(task.modelName || "").trim(),
-    Number(task.count || 1) > 1 ? `${task.count} 张` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const count = Number(entry?.task?.count || 1);
+  return count > 1 ? `${count} 张` : "";
+}
+
+function remainingCents(entry) {
+  const value = entry?.balanceAfterCents ?? entry?.balanceAfterPoints;
+  return value == null || value === "" ? null : Number(value);
+}
+
+function signedAmount(delta) {
+  const value = Number(delta) || 0;
+  const text = formatPoints(Math.abs(value));
+  if (value > 0) return { text: `+${text}`, tone: "income" };
+  if (value < 0) return { text: `-${text}`, tone: "spend" };
+  return { text: "0 积分", tone: "neutral" };
 }
 
 function presentationFor(entry) {
   const kind = String(entry?.kind || "").toLowerCase();
   const delta = Number(entry?.deltaCents || 0);
-  const amount = Math.abs(delta);
+  const amount = signedAmount(delta);
   const label = taskLabel(entry);
   const status = String(entry?.task?.status || "").toLowerCase();
   const statusLabel = TASK_STATUSES[status] || "";
-  const cost = Math.max(0, Number(entry?.task?.costPoints || amount));
+  const cost = Math.max(0, Number(entry?.task?.costPoints || Math.abs(delta)));
   const meta = taskMeta(entry);
-  const balance = `变动后可用 ${formatPoints(entry?.balanceAfterCents)}`;
+  const model = taskModel(entry);
+  const remaining = remainingCents(entry);
+  const remainingText = remaining == null ? "—" : formatPoints(remaining, { withUnit: false });
+  const reason = String(entry?.reason || "").trim();
 
-  if (entry?.task && Array.isArray(entry.relatedEntries)) {
-    if (status === "succeeded") {
-      const settled = Math.max(
-        0,
-        Number(entry.task.settledCostPoints ?? entry.task.costPoints ?? cost),
-      );
-      return {
-        icon: "bi-check2-circle",
-        tone: "settled",
-        title: label,
-        badge: "成功",
-        amount: `-${formatPoints(settled)}`,
-        amountTone: "spend",
-        description: `实际扣除 ${formatPoints(settled)}，从预扣中结算。`,
-        meta: [meta, balance].filter(Boolean).join(" · "),
-      };
-    }
-    if (status === "failed" || status === "canceled")
-      return {
-        icon: "bi-arrow-counterclockwise",
-        tone: "refund",
-        title: label,
-        badge: status === "canceled" ? "已取消并退款" : "失败已退款",
-        amount: "净支出 0",
-        amountTone: "income",
-        description: `预扣 ${formatPoints(cost)} 已全部退回。`,
-        meta: [meta, balance].filter(Boolean).join(" · "),
-      };
-    return {
-      icon: "bi-hourglass-split",
-      tone: "pending",
-      title: label,
-      badge: statusLabel || "处理中",
-      amount: `冻结 ${formatPoints(cost)}`,
-      amountTone: "neutral",
-      description: `暂时冻结 ${formatPoints(cost)}；成功结算，失败退回。`,
-      meta: [meta, balance].filter(Boolean).join(" · "),
-    };
-  }
   if (kind === "freeze" || kind === "task_freeze")
     return {
       icon: "bi-hourglass-split",
       tone: "pending",
-      title: `${label}费用预扣`,
+      kindLabel: "冻结",
+      title: label,
       badge: statusLabel || "处理中",
-      amount: `-${formatPoints(amount)}`,
+      amount: amount.text.startsWith("-") ? amount.text : `-${formatPoints(Math.abs(delta) || cost)}`,
       amountTone: "spend",
-      description: `提交时冻结 ${formatPoints(amount)}。`,
-      meta: [meta, balance].filter(Boolean).join(" · "),
+      description: `提交时预扣 ${formatPoints(Math.abs(delta) || cost)}。成功后从预扣结算，失败会退回。`,
+      meta,
+      model,
+      remainingText,
     };
   if (kind === "spend" || kind === "task_settle")
     return {
       icon: "bi-check2-circle",
       tone: "settled",
-      title: `${label}已完成`,
+      kindLabel: "消费",
+      title: label,
       badge: "已结算",
-      amount: "未再次扣费",
-      amountTone: "neutral",
-      description: `已从预扣 ${formatPoints(cost)} 中结算。`,
-      meta: [meta, balance].filter(Boolean).join(" · "),
+      amount: delta === 0 ? `结算 ${formatPoints(cost)}` : amount.text,
+      amountTone: delta === 0 ? "neutral" : "spend",
+      description: delta === 0 ? `已从预扣中结算 ${formatPoints(cost)}，可用余额不再另扣。` : `实际扣除 ${formatPoints(Math.abs(delta))}。`,
+      meta,
+      model,
+      remainingText,
     };
   if (["release", "task_release", "refund"].includes(kind))
     return {
       icon: "bi-arrow-counterclockwise",
       tone: "refund",
-      title: `${label}费用已退回`,
-      badge: statusLabel || "已退款",
-      amount: `+${formatPoints(amount)}`,
+      kindLabel: "退款",
+      title: label,
+      badge: status === "canceled" ? "已取消" : statusLabel || "已退回",
+      amount: amount.tone === "income" ? amount.text : `+${formatPoints(Math.abs(delta) || cost)}`,
       amountTone: "income",
-      description: `${formatPoints(amount)} 已退回可用余额。`,
-      meta: [meta, balance].filter(Boolean).join(" · "),
+      description: status === "canceled" || status === "failed"
+        ? `任务未完成，${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`
+        : `${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`,
+      meta,
+      model,
+      remainingText,
     };
   const sourceLabels = {
     order: "套餐入账",
@@ -198,19 +222,28 @@ function presentationFor(entry) {
     subscription_daily: "订阅积分发放",
     signup_bonus: "注册赠送",
     admin: "人工调整",
+    trial_access: "体验积分",
+    usage_milestone: "激励积分",
+    growth_group: "拼团积分",
+    feedback_adoption: "建议采纳",
+    task_failure_bonus: "失败补偿",
   };
+  const income = delta >= 0;
   return {
-    icon: delta >= 0 ? "bi-plus-circle" : "bi-dash-circle",
-    tone: delta >= 0 ? "income" : "spend",
+    icon: income ? "bi-plus-circle" : "bi-dash-circle",
+    tone: income ? "income" : "spend",
+    kindLabel: income ? "入账" : "消费",
     title:
       sourceLabels[entry?.sourceType] ||
       KIND_LABELS[kind] ||
-      (delta >= 0 ? "积分入账" : "积分扣减"),
-    badge: delta >= 0 ? "已入账" : "已扣减",
-    amount: `${delta >= 0 ? "+" : "-"}${formatPoints(amount)}`,
-    amountTone: delta >= 0 ? "income" : "spend",
-    description: String(entry?.reason || "").trim() || "账户积分发生变动。",
-    meta: balance,
+      (income ? "积分入账" : "积分扣减"),
+    badge: income ? "已入账" : "已扣减",
+    amount: amount.text,
+    amountTone: amount.tone,
+    description: reason || "账户积分发生变动。",
+    meta,
+    model,
+    remainingText,
   };
 }
 
@@ -240,24 +273,31 @@ function publishWallet(snapshot) {
 
 export function WalletView() {
   const isDark = useIsDark();
+  const { isEntryVisible } = usePageControls();
   const mountedRef = useRef(true);
   const walletControllerRef = useRef(null);
   const ledgerControllerRef = useRef(null);
   const trialControllerRef = useRef(null);
+  const summaryControllerRef = useRef(null);
   const ledgerRealtimeTimerRef = useRef(0);
   const [wallet, setWallet] = useState(null);
   const [walletLoading, setWalletLoading] = useState(true);
   const [walletError, setWalletError] = useState("");
+  const [summary, setSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState("");
   const [ledger, setLedger] = useState([]);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [ledgerError, setLedgerError] = useState("");
   const [ledgerFilter, setLedgerFilter] = useState("all");
   const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerTotal, setLedgerTotal] = useState(null);
   const [ledgerNextCursor, setLedgerNextCursor] = useState(null);
-  const [pageCursors, setPageCursors] = useState([""]);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [jumpPage, setJumpPage] = useState("");
   const [trial, setTrial] = useState(null);
   const [trialError, setTrialError] = useState("");
   const [claiming, setClaiming] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [redeemOpen, setRedeemOpen] = useState(false);
 
   const loadWallet = useCallback(async () => {
@@ -282,9 +322,7 @@ export function WalletView() {
   }, []);
 
   const loadLedger = useCallback(
-    async (page = 1, cursors = pageCursors) => {
-      const cursor = cursors[page - 1];
-      if (cursor === undefined) return;
+    async (page = 1, size = pageSize) => {
       ledgerControllerRef.current?.abort();
       const controller = new AbortController();
       ledgerControllerRef.current = controller;
@@ -292,19 +330,15 @@ export function WalletView() {
       setLedgerError("");
       try {
         const result = await listWalletLedger({
-          limit: PAGE_SIZE,
-          cursor: cursor || "",
+          limit: size,
+          page,
           signal: controller.signal,
         });
         if (!mountedRef.current) return;
         setLedger(result.items);
-        setLedgerPage(page);
+        setLedgerPage(Number(result.page || page) || 1);
+        setLedgerTotal(Number.isFinite(result.total) ? result.total : null);
         setLedgerNextCursor(result.nextCursor || null);
-        setPageCursors((current) => {
-          const next = current.slice(0, page);
-          if (result.nextCursor) next[page] = result.nextCursor;
-          return next;
-        });
       } catch (error) {
         if (error?.name !== "AbortError" && mountedRef.current)
           setLedgerError(error?.message || "账本读取失败");
@@ -313,7 +347,7 @@ export function WalletView() {
           setLedgerLoading(false);
       }
     },
-    [pageCursors],
+    [pageSize],
   );
 
   const loadTrial = useCallback(async () => {
@@ -332,16 +366,37 @@ export function WalletView() {
     }
   }, []);
 
+  const loadSummary = useCallback(async () => {
+    summaryControllerRef.current?.abort();
+    const controller = new AbortController();
+    summaryControllerRef.current = controller;
+    setSummaryError("");
+    try {
+      const result = await getWalletSummary({ signal: controller.signal });
+      if (mountedRef.current) setSummary(result);
+    } catch (error) {
+      if (error?.name !== "AbortError" && mountedRef.current) {
+        const message = String(error?.message || "");
+        setSummaryError(
+          error?.status === 404 || message === "Not Found"
+            ? "账单汇总读取失败，请稍后重试"
+            : message || "账单汇总读取失败",
+        );
+      }
+    }
+  }, []);
+
   const refreshAll = useCallback(
-    async () => Promise.all([loadWallet(), loadLedger(1, [""]), loadTrial()]),
-    [loadLedger, loadTrial, loadWallet],
+    async () => Promise.all([loadWallet(), loadLedger(1), loadTrial(), loadSummary()]),
+    [loadLedger, loadSummary, loadTrial, loadWallet],
   );
 
   useEffect(() => {
     mountedRef.current = true;
     loadWallet();
-    loadLedger(1, [""]);
+    loadLedger(1);
     loadTrial();
+    loadSummary();
     const onWalletUpdated = (event) =>
       event.detail &&
       setWallet((current) => ({ ...(current || {}), ...event.detail }));
@@ -350,7 +405,8 @@ export function WalletView() {
       if (ledgerRealtimeTimerRef.current) window.clearTimeout(ledgerRealtimeTimerRef.current);
       ledgerRealtimeTimerRef.current = window.setTimeout(() => {
         ledgerRealtimeTimerRef.current = 0;
-        void loadLedger(1, [""]);
+        void loadLedger(1);
+        void loadSummary();
       }, 180);
     };
     window.addEventListener("starclouds:wallet-updated", onWalletUpdated);
@@ -360,30 +416,25 @@ export function WalletView() {
       walletControllerRef.current?.abort();
       ledgerControllerRef.current?.abort();
       trialControllerRef.current?.abort();
+      summaryControllerRef.current?.abort();
       if (ledgerRealtimeTimerRef.current) window.clearTimeout(ledgerRealtimeTimerRef.current);
       window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
       window.removeEventListener(TASK_UPDATE_EVENT, onTaskUpdated);
     };
   }, []);
 
-  const ledgerRows = useMemo(() => {
-    const groups = new Map();
-    ledger.forEach((entry) => {
-      const taskId = String(entry?.task?.id || "").trim();
-      const key = taskId ? `task:${taskId}` : `entry:${entry.id}`;
-      if (!groups.has(key))
-        groups.set(key, { ...entry, id: key, relatedEntries: [] });
-      groups.get(key).relatedEntries.push(entry);
-    });
-    return [...groups.values()].map((entry) => {
-      const presentation = presentationFor(entry);
-      return {
-        ...entry,
-        presentation,
-        category: categoryFor(entry, presentation),
-      };
-    });
-  }, [ledger]);
+  const ledgerRows = useMemo(
+    () =>
+      ledger.map((entry) => {
+        const presentation = presentationFor(entry);
+        return {
+          ...entry,
+          presentation,
+          category: categoryFor(entry, presentation),
+        };
+      }),
+    [ledger],
+  );
   const filterCounts = useMemo(
     () =>
       ledgerRows.reduce(
@@ -431,6 +482,56 @@ export function WalletView() {
   const trialFrozen = Number(wallet?.trialFrozenCents || 0);
   const trialLabel = trial?.feature?.label || "体验";
   const showTrial = trial?.status === "approved" && trial?.rewardCents;
+  const summaryItems = (Array.isArray(summary?.items) ? summary.items : []).filter(
+    (item) => item.id !== "trial_access",
+  );
+  const pageCount =
+    ledgerTotal == null ? null : Math.max(1, Math.ceil(Math.max(0, ledgerTotal) / pageSize));
+  const canPrev = ledgerPage > 1;
+  const canNext = pageCount != null ? ledgerPage < pageCount : Boolean(ledgerNextCursor);
+  const showPager =
+    Boolean(ledger.length) || ledgerPage > 1 || Boolean(ledgerNextCursor) || (ledgerTotal != null && ledgerTotal > 0);
+
+  const goToPage = (page) => {
+    const next = Math.max(1, pageCount != null ? Math.min(pageCount, page) : page);
+    if (!ledgerLoading) void loadLedger(next);
+  };
+
+  const changePageSize = (size) => {
+    const nextSize = Number(size) || PAGE_SIZE;
+    setPageSize(nextSize);
+    setJumpPage("");
+    void loadLedger(1, nextSize);
+  };
+
+  const submitJump = (event) => {
+    event.preventDefault();
+    const next = Number.parseInt(jumpPage, 10);
+    if (!Number.isFinite(next)) return;
+    goToPage(next);
+    setJumpPage("");
+  };
+
+  const exportBill = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { blob, filename } = await downloadWalletBill();
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+      notificationService.success("账单已导出");
+    } catch (error) {
+      notificationService.error(error?.message || "账单导出失败");
+    } finally {
+      if (mountedRef.current) setExporting(false);
+    }
+  };
 
   const claimReward = async () => {
     if (
@@ -484,63 +585,65 @@ export function WalletView() {
   return (
     <main className={`wallet${isDark ? " is-dark" : ""}`}>
       <div className="wallet-layout">
-        <aside className="wallet-aside" aria-label="钱包概览">
+        <aside className="wallet-aside" aria-label="我的钱包">
           <div className="wallet-aside__card">
             <div className="wallet-aside__hero">
-              <span className="wallet-aside__label">可用余额</span>
-              <p className="wallet-aside__amount">
-                <strong>{formatPoints(available, { withUnit: false })}</strong>
-                <small>积分</small>
-              </p>
+              <img
+                className="wallet-aside__mascot"
+                src="/usage-plan/step-wallet.webp"
+                alt=""
+                width="128"
+                height="128"
+                decoding="async"
+              />
+              <div>
+                <span className="wallet-aside__label">可用余额</span>
+                <p className="wallet-aside__amount">
+                  <strong>{formatPoints(available, { withUnit: false })}</strong>
+                  <small>积分</small>
+                </p>
+                {frozen > 0 ? (
+                  <p className="wallet-aside__hint">
+                    另有 {formatPoints(frozen)} 冻结中，完成后结算或退回。
+                  </p>
+                ) : null}
+              </div>
             </div>
             <div className="wallet-metrics" aria-label="积分构成">
               <article>
-                <i className="bi bi-wallet2" />
+                <img src="/failure-compensation/step-release.webp" alt="" width="48" height="48" decoding="async" />
                 <span>账户总额</span>
-                <strong>{formatPoints(total)}</strong>
+                <strong>{formatPoints(total, { withUnit: false })}</strong>
+                <small>可用 + 冻结</small>
               </article>
               <article className={frozen > 0 ? "is-warn" : ""}>
-                <i className="bi bi-hourglass-split" />
+                <img src="/failure-compensation/step-fail.webp" alt="" width="48" height="48" decoding="async" />
                 <span>冻结中</span>
-                <strong>{formatPoints(frozen)}</strong>
+                <strong>{formatPoints(frozen, { withUnit: false })}</strong>
+                <small>{frozen > 0 ? "任务处理中预扣" : "当前无预扣"}</small>
               </article>
               <article>
-                <i className="bi bi-coin" />
+                <img src="/签到页面素材/ai-wallpaper-1786340924518-2-1.webp" alt="" width="48" height="48" decoding="async" />
                 <span>普通积分</span>
-                <strong>{formatPoints(normal)}</strong>
+                <strong>{formatPoints(normal, { withUnit: false })}</strong>
                 {normalFrozen > 0 ? (
-                  <small>含冻结 {formatPoints(normalFrozen)}</small>
-                ) : null}
+                  <small>含冻结 {formatPoints(normalFrozen, { withUnit: false })}</small>
+                ) : (
+                  <small>通用额度</small>
+                )}
               </article>
               <article className="is-trial">
-                <i className="bi bi-stars" />
+                <img src="/failure-compensation/step-bonus.webp" alt="" width="48" height="48" decoding="async" />
                 <span>体验积分</span>
-                <strong>{formatPoints(trialBalance)}</strong>
+                <strong>{formatPoints(trialBalance, { withUnit: false })}</strong>
                 {trialFrozen > 0 ? (
-                  <small>含冻结 {formatPoints(trialFrozen)}</small>
+                  <small>含冻结 {formatPoints(trialFrozen, { withUnit: false })}</small>
                 ) : trialBalance > 0 ? (
                   <small>仅限对应功能</small>
-                ) : null}
+                ) : (
+                  <small>暂无体验额度</small>
+                )}
               </article>
-            </div>
-            <div className="wallet-aside__cta">
-              <button
-                type="button"
-                className="wallet-btn is-primary"
-                onClick={() => setRedeemOpen(true)}
-              >
-                <i className="bi bi-ticket-perforated" />
-                兑换
-              </button>
-              <Link className="wallet-btn" to="/text-to-image">
-                去创作
-              </Link>
-              <Link className="wallet-btn is-ghost" to="/check-in">
-                签到
-              </Link>
-              <Link className="wallet-btn is-ghost" to="/incentive-plans">
-                激励
-              </Link>
             </div>
             {showTrial ? (
               <aside
@@ -575,19 +678,103 @@ export function WalletView() {
             ) : trialError ? (
               <p className="wallet-trial-error">{trialError}</p>
             ) : null}
+            <section className="wallet-summary" aria-label="账单汇总">
+              <header>
+                <img src="/failure-compensation/step-ledger.webp" alt="" width="56" height="56" decoding="async" />
+                <div>
+                  <strong>账单汇总</strong>
+                  <p>合计消耗不含冻结中预扣，入账按渠道分开统计</p>
+                </div>
+              </header>
+              {summaryError ? (
+                <div className="wallet-summary__error">
+                  <p>{summaryError}</p>
+                  <button type="button" className="wallet-btn is-light" onClick={loadSummary}>
+                    重新加载
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="wallet-summary__totals">
+                    <article className="is-spend">
+                      <span>合计消耗</span>
+                      <strong>{formatPoints(summary?.consumedCents || 0, { withUnit: false })}</strong>
+                      <small>{summary?.consumedCount || 0} 笔已结算</small>
+                    </article>
+                    <article className="is-income">
+                      <span>合计入账</span>
+                      <strong>{formatPoints(summary?.incomeCents || 0, { withUnit: false })}</strong>
+                      <small>{summary?.incomeCount || 0} 笔到账</small>
+                    </article>
+                    <article className="is-refund">
+                      <span>失败退回</span>
+                      <strong>{formatPoints(summary?.refundCents || 0, { withUnit: false })}</strong>
+                      <small>{summary?.refundCount || 0} 笔解冻</small>
+                    </article>
+                  </div>
+                  <ul>
+                    {summaryItems.map((item) => {
+                      const target = SUMMARY_LINKS[item.id];
+                      const href = target && isEntryVisible(target) ? target : "";
+                      const body = (
+                        <>
+                          <div>
+                            <span>{item.label}</span>
+                            <small>{item.hint}</small>
+                          </div>
+                          <b>{formatPoints(item.cents || 0, { withUnit: false })}</b>
+                          <em>{item.count || 0} 笔</em>
+                          {href ? <i className="bi bi-chevron-right" aria-hidden="true" /> : <i />}
+                        </>
+                      );
+                      return (
+                        <li key={item.id}>
+                          {href ? (
+                            <Link to={href} className="wallet-summary__row">
+                              {body}
+                            </Link>
+                          ) : (
+                            <div className="wallet-summary__row">{body}</div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+            </section>
           </div>
         </aside>
         <section className="wallet-ledger" aria-label="账本明细">
           <header className="wallet-ledger__head">
             <div>
               <h2>账本明细</h2>
-              <p>入账、消费、冻结与退款</p>
+              <p>每笔流水都会记下变动后的可用结余</p>
             </div>
-            {ledgerError ? (
-              <span className="wallet-ledger__error">{ledgerError}</span>
-            ) : ledgerLoading ? (
-              <span className="wallet-ledger__loading">更新中…</span>
-            ) : null}
+            <div className="wallet-ledger__tools">
+              {ledgerError ? (
+                <span className="wallet-ledger__error">{ledgerError}</span>
+              ) : ledgerLoading ? (
+                <span className="wallet-ledger__loading">更新中…</span>
+              ) : null}
+              <button
+                type="button"
+                className="wallet-btn"
+                onClick={() => setRedeemOpen(true)}
+              >
+                <i className="bi bi-ticket-perforated" aria-hidden="true" />
+                兑换
+              </button>
+              <button
+                type="button"
+                className="wallet-btn"
+                disabled={exporting}
+                onClick={exportBill}
+              >
+                <i className="bi bi-download" aria-hidden="true" />
+                {exporting ? "导出中…" : "导出账单"}
+              </button>
+            </div>
           </header>
           <div className="wallet-tabs" role="tablist" aria-label="账本分类">
             {FILTERS.map(([id, label]) => (
@@ -603,6 +790,16 @@ export function WalletView() {
                 {filterCounts[id] > 0 && <em>{filterCounts[id]}</em>}
               </button>
             ))}
+          </div>
+          <div className="wallet-ledger__cols" aria-hidden="true">
+            <span>时间</span>
+            <span>生成耗时</span>
+            <span>项目</span>
+            <span>说明</span>
+            <span>模型</span>
+            <span>类型</span>
+            <span>变动</span>
+            <span>结余</span>
           </div>
           <div className="wallet-ledger__scroll">
             {ledgerLoading && !ledger.length ? (
@@ -625,27 +822,39 @@ export function WalletView() {
                           key={entry.id}
                           className={`is-${entry.presentation.tone} cat-${entry.category}`}
                         >
-                          <span className="wallet-ledger__icon">
-                            <i className={`bi ${entry.presentation.icon}`} />
+                          <time dateTime={entry.createdAt || undefined}>
+                            {formatClock(entry.createdAt)}
+                          </time>
+                          <span className="wallet-ledger__generated">
+                            <strong>{generationDuration(entry) || "—"}</strong>
                           </span>
                           <div className="wallet-ledger__body">
                             <div className="wallet-ledger__main">
                               <strong>{entry.presentation.title}</strong>
-                              <span>{entry.presentation.badge}</span>
                               {entry.creditBucket === "trial" ? (
                                 <span className="is-trial">体验</span>
                               ) : entry.creditBucket === "mixed" ? (
                                 <span>混合</span>
                               ) : null}
                             </div>
-                            <small>
-                              {formatClock(entry.createdAt)}
-                              {taskMeta(entry) ? ` · ${taskMeta(entry)}` : ""}
-                            </small>
+                            {entry.presentation.meta ? (
+                              <small>{entry.presentation.meta}</small>
+                            ) : null}
                           </div>
+                          <p className="wallet-ledger__note">{entry.presentation.description}</p>
+                          <span className="wallet-ledger__model" title={entry.presentation.model || undefined}>
+                            {entry.presentation.model || "—"}
+                          </span>
+                          <em className={`wallet-ledger__kind is-${entry.category}`}>
+                            {entry.presentation.kindLabel}
+                          </em>
                           <b className={`is-${entry.presentation.amountTone}`}>
                             {entry.presentation.amount}
                           </b>
+                          <span className="wallet-ledger__remain">
+                            <small>结余</small>
+                            <strong>{entry.presentation.remainingText}</strong>
+                          </span>
                         </li>
                       ))}
                     </ul>
@@ -660,30 +869,102 @@ export function WalletView() {
               </p>
             ) : null}
           </div>
-          {(ledgerPage > 1 || ledgerNextCursor) && (
+          {showPager && (
             <nav className="wallet-pager" aria-label="账本分页">
-              <button
-                type="button"
-                className="wallet-pager__btn"
-                disabled={ledgerLoading || ledgerPage <= 1}
-                onClick={() => loadLedger(ledgerPage - 1)}
-              >
-                <i className="bi bi-chevron-left" />
-                上一页
-              </button>
+              <div className="wallet-pager__nav">
+                <button
+                  type="button"
+                  className="wallet-pager__btn"
+                  disabled={ledgerLoading || !canPrev}
+                  onClick={() => goToPage(ledgerPage - 1)}
+                >
+                  <i className="bi bi-chevron-left" aria-hidden="true" />
+                  上一页
+                </button>
+                {visiblePages(ledgerPage, pageCount).map((item, index) =>
+                  item === "…" ? (
+                    <span key={`ellipsis-${index}`} className="wallet-pager__ellipsis">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={item}
+                      type="button"
+                      className={`wallet-pager__num${item === ledgerPage ? " is-active" : ""}`}
+                      disabled={ledgerLoading || item === ledgerPage}
+                      onClick={() => goToPage(item)}
+                    >
+                      {item}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  className="wallet-pager__btn"
+                  disabled={ledgerLoading || !canNext}
+                  onClick={() => goToPage(ledgerPage + 1)}
+                >
+                  下一页
+                  <i className="bi bi-chevron-right" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="wallet-pager__btn"
+                  disabled={ledgerLoading || !canNext || pageCount == null}
+                  onClick={() => goToPage(pageCount)}
+                  aria-label="末页"
+                >
+                  末页
+                  <i className="bi bi-chevron-double-right" aria-hidden="true" />
+                </button>
+              </div>
               <div className="wallet-pager__meta">
                 <strong>第 {ledgerPage} 页</strong>
-                <small>{ledgerRows.length} 条本页</small>
+                {pageCount != null ? (
+                  <>
+                    <span>/</span>
+                    <small>{pageCount}</small>
+                  </>
+                ) : null}
+                <span>·</span>
+                <small>
+                  {ledgerTotal != null
+                    ? `共 ${ledgerTotal.toLocaleString("zh-CN")} 条`
+                    : `${ledgerRows.length} 条`}
+                </small>
               </div>
-              <button
-                type="button"
-                className="wallet-pager__btn"
-                disabled={ledgerLoading || !ledgerNextCursor}
-                onClick={() => loadLedger(ledgerPage + 1)}
-              >
-                下一页
-                <i className="bi bi-chevron-right" />
-              </button>
+              <form className="wallet-pager__jump" onSubmit={submitJump}>
+                <label>
+                  每页
+                  <select
+                    value={pageSize}
+                    disabled={ledgerLoading}
+                    onChange={(event) => changePageSize(event.target.value)}
+                  >
+                    {PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  跳至
+                  <input
+                    type="number"
+                    min="1"
+                    max={pageCount || undefined}
+                    inputMode="numeric"
+                    value={jumpPage}
+                    disabled={ledgerLoading}
+                    placeholder="页码"
+                    onChange={(event) => setJumpPage(event.target.value)}
+                  />
+                </label>
+                <button type="submit" className="wallet-pager__btn" disabled={ledgerLoading || !jumpPage}>
+                  确定
+                </button>
+              </form>
             </nav>
           )}
         </section>

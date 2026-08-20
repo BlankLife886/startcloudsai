@@ -147,6 +147,44 @@ func TestSelectExecutionCandidateExcludesAllPreviouslyFailedProviders(t *testing
 	}
 }
 
+func TestHasUnusedExecutionRouteSkipsCurrentAndFailedRoutes(t *testing.T) {
+	candidates := []modelconfig.Selection{
+		{Provider: modelconfig.Provider{ID: "provider-a", RouteID: "route-a", MaxConcurrency: 10}},
+		{Provider: modelconfig.Provider{ID: "provider-a", RouteID: "route-b", MaxConcurrency: 10}},
+	}
+	task := &store.Task{Params: map[string]any{
+		"_providerRouteKey":        "provider-a/route-a",
+		"_failedProviderConfigIds": []string{"provider-a/route-a"},
+	}}
+	if hasUnusedExecutionRoute(candidates[:1], task, []string{"provider-a/route-a"}) {
+		t.Fatal("single-route task must not fail over")
+	}
+	if !hasUnusedExecutionRoute(candidates, task, []string{"provider-a/route-a"}) {
+		t.Fatal("second route should remain available")
+	}
+}
+
+func TestImageFetchConcurrencyDefaultsAndClamps(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	w := &Worker{St: st}
+	if got := w.imageFetchConcurrency(ctx); got != 2 {
+		t.Fatalf("default = %d, want 2", got)
+	}
+	if err := settings.Set(ctx, st.Pool, "image_fetch_concurrency", json.RawMessage(`8`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.imageFetchConcurrency(ctx); got != 8 {
+		t.Fatalf("configured = %d, want 8", got)
+	}
+	if err := settings.Set(ctx, st.Pool, "image_fetch_concurrency", json.RawMessage(`99`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.imageFetchConcurrency(ctx); got != 32 {
+		t.Fatalf("clamped = %d, want 32", got)
+	}
+}
+
 func TestSelectExecutionCandidateDistributesSyntheticLoadByCapacity(t *testing.T) {
 	candidates := []modelconfig.Selection{
 		{Provider: modelconfig.Provider{ID: "a", MaxConcurrency: 200}},
@@ -714,4 +752,197 @@ func TestDisconnectedPollRouteCannotLeaveTaskRunning(t *testing.T) {
 	if attemptStatus != store.UpstreamAttemptSuperseded {
 		t.Fatalf("attempt status=%s", attemptStatus)
 	}
+}
+
+func TestMissingPollResubmitsSameRouteInsteadOfHanging(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`2`)); err != nil {
+		t.Fatal(err)
+	}
+	taskID, routeKey, owner := insertPollableOpenAITask(t, st, ctx, time.Now().UTC().Add(-45*time.Second))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer server.Close()
+	now := time.Now().UTC()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "queued" || task.Attempt != 1 {
+		t.Fatalf("missing task was not resubmitted: status=%s attempt=%d owner=%s", task.Status, task.Attempt, owner)
+	}
+	var attemptStatus string
+	if err := st.Pool.QueryRow(ctx, `SELECT status FROM task_upstream_attempts WHERE task_id=$1`, taskID).Scan(&attemptStatus); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStatus != store.UpstreamAttemptFailed {
+		t.Fatalf("attempt status=%s, want failed so the ghost poll stops", attemptStatus)
+	}
+}
+
+func TestTextUpstreamStatusFailsInsteadOfHanging(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+		t.Fatal(err)
+	}
+	taskID, routeKey, _ := insertPollableOpenAITask(t, st, ctx, time.Now().UTC())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text","error":"上游返回文本"}]}`, taskID)
+	}))
+	defer server.Close()
+	now := time.Now().UTC()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
+		t.Fatalf("text result remained active: %#v", task)
+	}
+}
+
+func TestTextReviewKeepsPollingWithoutAlternateRoute(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+		t.Fatal(err)
+	}
+	taskID, routeKey, _ := insertPollableOpenAITask(t, st, ctx, time.Now().UTC().Add(-45*time.Second))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text_review"}]}`, taskID)
+	}))
+	defer server.Close()
+	now := time.Now().UTC()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "running" {
+		t.Fatalf("text_review should keep polling, got status=%s", task.Status)
+	}
+}
+
+func TestPendingPastFailoverWithoutAlternateClosesTask(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	taskID, routeKey, _ := insertPollableOpenAITaskWindow(t, st, ctx, now.Add(-6*time.Minute), now.Add(-time.Minute), now.Add(20*time.Minute))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"processing"}]}`, taskID)
+	}))
+	defer server.Close()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_unreachable" {
+		t.Fatalf("stale pending task remained active: %#v", task)
+	}
+}
+
+func TestTextReviewPastFailoverWithoutAlternateClosesTask(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	taskID, routeKey, _ := insertPollableOpenAITaskWindow(t, st, ctx, now.Add(-6*time.Minute), now.Add(-time.Minute), now.Add(20*time.Minute))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text_review"}]}`, taskID)
+	}))
+	defer server.Close()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
+		t.Fatalf("stale text_review remained active: %#v", task)
+	}
+}
+
+func insertPollableOpenAITask(t *testing.T, st *store.Store, ctx context.Context, submittedAt time.Time) (uuid.UUID, string, string) {
+	now := time.Now().UTC()
+	return insertPollableOpenAITaskWindow(t, st, ctx, submittedAt, now.Add(5*time.Minute), now.Add(30*time.Minute))
+}
+
+func insertPollableOpenAITaskWindow(t *testing.T, st *store.Store, ctx context.Context, submittedAt, failoverAt, expiresAt time.Time) (uuid.UUID, string, string) {
+	t.Helper()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("poll-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeKey := "provider-a/route-a"
+	owner := "poller:" + routeKey
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+		 VALUES ($1, 't2i', 'test', jsonb_build_object('_providerConfigId','provider-a','_providerRouteId','route-a','_providerRouteKey',$2::text),
+		 'running', 0, $3, now(), now() + interval '15 minutes', now()) RETURNING id`,
+		user.ID, routeKey, owner).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: taskID, ProviderID: "provider-a", RouteID: "route-a", RouteKey: routeKey,
+		Adapter: modelconfig.AdapterOpenAI, UpstreamTaskIDs: []string{taskID.String()},
+		SubmittedAt: submittedAt, FailoverAt: failoverAt, ExpiresAt: expiresAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return taskID, routeKey, owner
 }

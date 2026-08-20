@@ -2,7 +2,7 @@ import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
-import { LocalAgentPanel } from "./local-agent-panel";
+import { HostedAgentPanel } from "./hosted-agent-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CANVAS_AGENT_PANEL_MOTION_MS, useAgentStore } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -57,7 +57,7 @@ export function AgentPanel() {
                 style={{ width, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, backdropFilter: "blur(22px)" }}
             >
                 <button type="button" className="absolute inset-y-0 left-0 z-40 w-4 -translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label={t("agent.panel.resize")} />
-                <LocalAgentPanel embedded />
+                <HostedAgentPanel />
             </motion.aside>
         </motion.div>
     );

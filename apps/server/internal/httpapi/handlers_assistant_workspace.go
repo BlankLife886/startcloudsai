@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -62,6 +64,8 @@ type assistantRunIn struct {
 	Workspace                string           `json:"workspace"`
 	FastMode                 bool             `json:"fastMode"`
 	ProposalSourceMessageID  string           `json:"proposalSourceMessageId"`
+	ParentOutputURL          string           `json:"parentOutputUrl"`
+	CanvasSnapshot           json.RawMessage  `json:"canvasSnapshot"`
 }
 
 func (s *Server) assistantConversations(c *gin.Context) {
@@ -505,7 +509,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			chatSelection = selectedModel
 		}
 	}
-	if body.Mode == "agent" {
+	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
+	if body.Mode == "agent" && !canvasAgent {
 		imageSelection, _ = modelconfig.SelectPublicForWorkspace(
 			modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "",
 		)
@@ -599,12 +604,28 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"requestedMode": body.Mode,
 		"workspace":     workspace,
 	}
+	if parent := strings.TrimSpace(body.ParentOutputURL); parent != "" {
+		params["parentOutputUrl"] = parent
+	}
 	params["_source"] = workspace
 	if workspace == modelconfig.WorkspaceCanvas {
 		params["_source"] = store.CanvasTaskSource
 		params["_kind"] = "canvas-chat"
+		if canvasAgent {
+			params["_kind"] = "canvas-agent"
+		}
 	}
-	if body.Mode == "agent" {
+	if snapshot, snapshotErr := sanitizeAssistantCanvasSnapshot(body.CanvasSnapshot); snapshotErr != nil {
+		fail(c, snapshotErr)
+		return
+	} else if snapshot != nil {
+		if !canvasAgent {
+			fail(c, apperr.E("validation_error", "canvasSnapshot 仅支持无限画布 Agent", 422))
+			return
+		}
+		params["canvasSnapshot"] = snapshot
+	}
+	if body.Mode == "agent" && !canvasAgent {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
 		catalog := make([]map[string]any, 0, len(selections))
 		for _, selection := range selections {
@@ -663,7 +684,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	reservedCents := chatCostCents
 	if body.Mode == "image" {
 		reservedCents = imageCostCents
-	} else if body.Mode == "agent" && imageCostCents > reservedCents {
+	} else if body.Mode == "agent" && !canvasAgent && imageCostCents > reservedCents {
 		reservedCents = imageCostCents
 	}
 	params["_chatCostCents"] = chatCostCents
@@ -751,7 +772,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 		assistantMetadata := make(map[string]any, len(params)+5)
 		for key, value := range params {
-			if key == "referenceImages" {
+			if key == "referenceImages" || key == "canvasSnapshot" {
 				continue
 			}
 			assistantMetadata[key] = value
@@ -856,8 +877,13 @@ func (s *Server) assistantRuns(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	workspace, err := assistantConversationWorkspace(c.Query("workspace"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	runs, err := store.ListActiveUserAssistantRunsByWorkspace(
-		c.Request.Context(), s.St.Pool, user.ID, "assistant",
+		c.Request.Context(), s.St.Pool, user.ID, workspace,
 	)
 	if err != nil {
 		fail(c, err)
@@ -1035,13 +1061,40 @@ func assistantRunDict(item *store.AssistantRun) gin.H {
 	if item == nil {
 		return gin.H{}
 	}
-	return gin.H{"id": item.ID.String(), "conversationId": item.ConversationID.String(),
+	payload := gin.H{"id": item.ID.String(), "conversationId": item.ConversationID.String(),
 		"userMessageId": item.UserMessageID.String(), "assistantMessageId": item.AssistantMessageID.String(),
 		"mode": item.Mode, "resolvedMode": item.ResolvedMode, "status": item.Status, "stage": item.Stage,
 		"reservedCents": item.ReservedCents, "costCents": item.CostCents,
 		"billingGeneration": item.BillingGeneration,
 		"errorCode":         item.ErrorCode, "errorMessage": item.ErrorMessage, "createdAt": isoValue(item.CreatedAt),
 		"startedAt": iso(item.StartedAt), "finishedAt": iso(item.FinishedAt)}
+	if item.Params != nil {
+		if parent, _ := item.Params["parentOutputUrl"].(string); strings.TrimSpace(parent) != "" {
+			payload["parentOutputUrl"] = strings.TrimSpace(parent)
+		}
+		if serviceKey, _ := item.Params["serviceKey"].(string); strings.TrimSpace(serviceKey) != "" {
+			payload["serviceKey"] = strings.TrimSpace(serviceKey)
+		}
+		if workspace, _ := item.Params["workspace"].(string); strings.TrimSpace(workspace) != "" {
+			payload["workspace"] = strings.TrimSpace(workspace)
+		}
+	}
+	return payload
+}
+
+func sanitizeAssistantCanvasSnapshot(raw json.RawMessage) (any, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	if len(raw) > 20_000 {
+		return nil, apperr.E("validation_error", "画布快照过大", 422)
+	}
+	var snapshot any
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, apperr.E("validation_error", "画布快照无效", 422)
+	}
+	return snapshot, nil
 }
 
 func assistantTitle(value string) string {

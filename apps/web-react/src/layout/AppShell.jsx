@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { Outlet, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { NavBar } from "./NavBar.jsx";
 import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
 import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
+import { PageAccessBoundary } from "../page-control/PageAccessBoundary.jsx";
+import { PageControlProvider } from "../page-control/PageControlContext.jsx";
 import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
@@ -26,17 +28,10 @@ const incentiveCanvasRoutes = new Set([
   "/incentive-plans/milestone",
 ]);
 
-const maskedStudioRoutes = new Set([
-  "/ai-illustration-coloring",
-  "/model-sheet",
-  "/game-art",
-]);
-
 export function AppShell() {
   const location = useLocation();
   const mainRef = useRef(null);
   const documentScroll = documentScrollRoutes.has(location.pathname);
-  const studioMasked = maskedStudioRoutes.has(location.pathname);
   const canvasHome = location.pathname === "/canvas";
   const canvasEditor = location.pathname.startsWith("/canvas/");
 
@@ -120,26 +115,15 @@ export function AppShell() {
   }
 
   return (
-    <AuthPromptProvider>
-      <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
-        <NavBar />
-        <main
-          ref={mainRef}
-          className={mainClasses.join(" ")}
-          inert={studioMasked ? true : undefined}
-          aria-hidden={studioMasked || undefined}
-        >
-          <Outlet />
-        </main>
-        {studioMasked && (
-          <div className="studio-route-mask" data-studio-route-mask role="status">
-            <span className="studio-route-mask__message">
-              <i className="bi bi-tools" aria-hidden="true" />
-              <strong>正在开发中</strong>
-            </span>
-          </div>
-        )}
-      </div>
-    </AuthPromptProvider>
+    <PageControlProvider>
+      <AuthPromptProvider>
+        <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
+          <NavBar />
+          <main ref={mainRef} className={mainClasses.join(" ")}>
+            <PageAccessBoundary />
+          </main>
+        </div>
+      </AuthPromptProvider>
+    </PageControlProvider>
   );
 }

@@ -8,11 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const notificationCols = `id, user_id, kind, title, body, read_at, created_at`
+const notificationCols = `id, user_id, kind, title, body, read_at, created_at, source_type, source_id`
 
 func scanNotification(row pgx.Row) (*Notification, error) {
 	var n Notification
-	err := row.Scan(&n.ID, &n.UserID, &n.Kind, &n.Title, &n.Body, &n.ReadAt, &n.CreatedAt)
+	err := row.Scan(&n.ID, &n.UserID, &n.Kind, &n.Title, &n.Body, &n.ReadAt, &n.CreatedAt, &n.SourceType, &n.SourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -27,32 +27,60 @@ func InsertNotification(ctx context.Context, q Q, userID *uuid.UUID, kind, title
 	return err
 }
 
-// CountUnreadNotifications 个人未读 + 全站未读（notification_reads 缺记录）。
-func CountUnreadNotifications(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
-	var personal, global int64
-	err := q.QueryRow(ctx,
-		`SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL`, userID).Scan(&personal)
+const AnnouncementNotificationSource = "announcement"
+
+func UpsertAnnouncementNotification(ctx context.Context, q Q, announcementID uuid.UUID, title string, body *string) error {
+	_, err := q.Exec(ctx, `
+		INSERT INTO notifications (user_id, kind, title, body, source_type, source_id)
+		VALUES (NULL, 'announcement', $1, $2, $3, $4)
+		ON CONFLICT (source_type, source_id) WHERE source_type IS NOT NULL AND source_id IS NOT NULL
+		DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body`,
+		title, body, AnnouncementNotificationSource, announcementID)
+	return err
+}
+
+func DeleteNotificationsBySource(ctx context.Context, q Q, sourceType string, sourceID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`DELETE FROM notifications WHERE source_type = $1 AND source_id = $2`,
+		sourceType, sourceID)
+	return err
+}
+
+// CountUnreadNotificationBreakdown 个人未读与全站未读分开统计。
+func CountUnreadNotificationBreakdown(ctx context.Context, q Q, userID uuid.UUID) (personal, broadcast int64, err error) {
+	err = q.QueryRow(ctx,
+		`SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL AND kind <> 'announcement'`, userID).Scan(&personal)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	err = q.QueryRow(ctx,
 		`SELECT count(*) FROM notifications n
 		 LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = $1
-		 WHERE n.user_id IS NULL AND r.notification_id IS NULL
+		 WHERE n.user_id IS NULL AND n.kind <> 'announcement' AND r.notification_id IS NULL
 		   AND NOT EXISTS (
 		     SELECT 1 FROM notification_dismissals d
 		     WHERE d.user_id = $1 AND d.notification_id = n.id
-		   )`, userID).Scan(&global)
+		   )`, userID).Scan(&broadcast)
+	if err != nil {
+		return 0, 0, err
+	}
+	return personal, broadcast, nil
+}
+
+// CountUnreadNotifications 个人未读 + 全站未读（notification_reads 缺记录）。
+func CountUnreadNotifications(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	personal, broadcast, err := CountUnreadNotificationBreakdown(ctx, q, userID)
 	if err != nil {
 		return 0, err
 	}
-	return personal + global, nil
+	return personal + broadcast, nil
 }
 
 // ListVisibleNotifications 个人 + 全站合并分页（limit+1 行）。
 func ListVisibleNotifications(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *Cursor) ([]*Notification, error) {
 	sql := `SELECT ` + notificationCols + ` FROM notifications
 		WHERE (user_id = $1 OR user_id IS NULL)
+		  AND kind <> 'announcement'
 		  AND NOT EXISTS (
 		    SELECT 1 FROM notification_dismissals d
 		    WHERE d.user_id = $1 AND d.notification_id = notifications.id
@@ -80,6 +108,7 @@ func ListVisibleNotificationsByIDs(ctx context.Context, q Q, userID uuid.UUID, i
 	rows, err := q.Query(ctx,
 		`SELECT `+notificationCols+` FROM notifications
 		 WHERE id = ANY($2) AND (user_id = $1 OR user_id IS NULL)
+		   AND kind <> 'announcement'
 		   AND NOT EXISTS (
 		     SELECT 1 FROM notification_dismissals d
 		     WHERE d.user_id = $1 AND d.notification_id = notifications.id
@@ -105,6 +134,7 @@ func ListAllVisibleNotifications(ctx context.Context, q Q, userID uuid.UUID) ([]
 	rows, err := q.Query(ctx,
 		`SELECT `+notificationCols+` FROM notifications
 		 WHERE (user_id = $1 OR user_id IS NULL)
+		   AND kind <> 'announcement'
 		   AND NOT EXISTS (
 		     SELECT 1 FROM notification_dismissals d
 		     WHERE d.user_id = $1 AND d.notification_id = notifications.id
@@ -170,7 +200,7 @@ func ClearUserNotifications(ctx context.Context, q Q, userID uuid.UUID) error {
 	}
 	_, err := q.Exec(ctx, `
 		INSERT INTO notification_dismissals (user_id, notification_id)
-		SELECT $1, id FROM notifications WHERE user_id IS NULL
+		SELECT $1, id FROM notifications WHERE user_id IS NULL AND kind <> 'announcement'
 		ON CONFLICT (user_id, notification_id) DO NOTHING`, userID)
 	return err
 }

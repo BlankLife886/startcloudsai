@@ -564,6 +564,140 @@
         transform: translateY(-0.5px);
     }
 
+    .canvas-workflow-run {
+        display: inline-flex;
+        flex-shrink: 0;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 14px 0 12px;
+        border: 0;
+        border-radius: 999px;
+        color: #fff;
+        background: linear-gradient(180deg, #7c6cff 0%, #5f4cf0 100%);
+        box-shadow: 0 8px 18px rgba(109, 92, 255, 0.28);
+        white-space: nowrap;
+        cursor: pointer;
+        transition: filter 140ms ease, box-shadow 140ms ease;
+    }
+
+    .canvas-workflow-run:hover {
+        filter: brightness(1.06);
+        box-shadow: 0 10px 22px rgba(109, 92, 255, 0.34);
+    }
+
+    .canvas-workflow-run:active {
+        filter: brightness(0.96);
+    }
+
+    .canvas-workflow-run .canvas-workflow-pill__label {
+        color: #fff;
+        font-weight: 700;
+    }
+
+    .dark .canvas-workflow-run,
+    html.dark .canvas-workflow-run {
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+    }
+
+    .canvas-workflow-pill {
+        display: inline-flex;
+        align-items: center;
+        max-width: min(280px, calc(100vw - 420px));
+        gap: 8px;
+        height: 40px;
+        padding: 0 10px 0 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(109, 92, 255, 0.14);
+        background: rgba(255, 255, 255, 0.86);
+        box-shadow: 0 8px 20px rgba(49, 32, 107, 0.08);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        color: inherit;
+    }
+
+    .canvas-workflow-pill.is-running {
+        border-color: rgba(109, 92, 255, 0.22);
+        background: rgba(109, 92, 255, 0.1);
+    }
+
+    button.canvas-workflow-pill {
+        cursor: pointer;
+        transition: background 140ms ease, border-color 140ms ease;
+    }
+
+    .canvas-workflow-pill__label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+    }
+
+    .canvas-workflow-pill__meta {
+        flex-shrink: 0;
+        font-size: 11px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.04em;
+        opacity: 0.56;
+    }
+
+    .canvas-workflow-ring {
+        position: relative;
+        display: grid;
+        flex-shrink: 0;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+    }
+
+    .canvas-workflow-ring svg {
+        position: absolute;
+        inset: 0;
+        transform: rotate(-90deg);
+    }
+
+    .canvas-workflow-pill.is-error {
+        padding-left: 10px;
+        padding-right: 12px;
+        border-color: rgba(225, 29, 72, 0.16);
+        background: rgba(255, 246, 247, 0.92);
+        color: #9f1239;
+    }
+
+    .canvas-workflow-pill.is-error .canvas-workflow-pill__meta {
+        opacity: 0.72;
+        color: #be123c;
+    }
+
+    .dark .canvas-workflow-pill,
+    html.dark .canvas-workflow-pill {
+        border-color: rgba(198, 188, 255, 0.14);
+        background: rgba(28, 24, 42, 0.86);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+    }
+
+    .dark .canvas-workflow-pill.is-running,
+    html.dark .canvas-workflow-pill.is-running {
+        border-color: rgba(167, 139, 250, 0.28);
+        background: rgba(109, 92, 255, 0.18);
+    }
+
+    .dark .canvas-workflow-pill.is-error,
+    html.dark .canvas-workflow-pill.is-error {
+        border-color: rgba(251, 113, 133, 0.22);
+        background: rgba(50, 16, 28, 0.78);
+        color: #fecdd3;
+    }
+
+    .dark .canvas-workflow-pill.is-error .canvas-workflow-pill__meta,
+    html.dark .canvas-workflow-pill.is-error .canvas-workflow-pill__meta {
+        color: #fda4af;
+    }
+
     .canvas-empty {
         display: flex;
         flex-direction: column;
@@ -1792,7 +1926,7 @@
 @media (prefers-reduced-motion: reduce) {
     [data-canvas-entry-item],
     .canvas-project-grid > *,
-    .canvas-hero-stage__node,
+    .canvas-hero-stage,
     .canvas-home-orb {
         opacity: 1 !important;
         visibility: visible !important;
@@ -1807,7 +1941,7 @@
 
 html.settings-no-animations [data-canvas-entry-item],
 html.settings-no-animations .canvas-project-grid > *,
-html.settings-no-animations .canvas-hero-stage__node,
+html.settings-no-animations .canvas-hero-stage,
 html.settings-no-animations .canvas-home-orb {
     opacity: 1 !important;
     visibility: visible !important;
@@ -2232,87 +2366,12 @@ html.settings-no-animations .canvas-nav-map {
 
 .canvas-hero-stage {
     position: relative;
-    height: 360px;
-    overflow: hidden;
-    border-radius: 28px;
-    border: 1px solid rgba(124, 58, 237, 0.12);
-    background:
-        radial-gradient(circle at 30% 28%, rgba(167, 139, 250, 0.16), transparent 42%),
-        radial-gradient(circle at 78% 70%, rgba(56, 189, 248, 0.1), transparent 38%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(248, 248, 255, 0.42));
-    box-shadow:
-        0 24px 60px rgba(76, 29, 149, 0.1),
-        inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-.canvas-hero-stage__grid {
-    position: absolute;
-    inset: 0;
-    background-image:
-        linear-gradient(rgba(106, 79, 224, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(106, 79, 224, 0.08) 1px, transparent 1px);
-    background-size: 28px 28px;
-    mask-image: radial-gradient(circle at 50% 46%, #000 36%, transparent 78%);
-}
-
-.canvas-hero-stage__edges {
-    position: absolute;
-    inset: 0;
+.canvas-hero-stage img {
+    display: block;
     width: 100%;
-    height: 100%;
-}
-
-.canvas-hero-stage__node {
-    position: absolute;
-    overflow: hidden;
-    border-radius: 16px;
-    box-shadow: 0 12px 28px rgba(49, 32, 107, 0.12);
-    will-change: transform;
-}
-
-.canvas-hero-stage__node.is-image {
-    width: 132px;
-    height: 88px;
-    background:
-        linear-gradient(135deg, #ddd6fe, #c4b5fd 48%, #93c5fd);
-}
-
-.canvas-hero-stage__node.is-text {
-    width: 118px;
-    height: 72px;
-    background: #eef2ff;
-    border: 1px solid #c7d2fe;
-}
-
-.canvas-hero-stage__node.is-video {
-    width: 108px;
-    height: 68px;
-    background: #1c1917;
-}
-
-.canvas-hero-stage__node.is-plus {
-    display: grid;
-    place-items: center;
-    width: 56px;
-    height: 56px;
-    border: 1px dashed rgba(124, 58, 237, 0.45);
-    background: rgba(255, 255, 255, 0.88);
-    color: #7c3aed;
-    box-shadow: 0 10px 24px rgba(124, 58, 237, 0.12);
-}
-
-.canvas-hero-stage__chip {
-    position: absolute;
-    left: 8px;
-    top: 8px;
-    height: 18px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.86);
-    padding: 0 7px;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 18px;
-    color: #5b21b6;
+    height: auto;
 }
 
 .canvas-recent-bar {
@@ -2731,26 +2790,6 @@ html.settings-no-animations .canvas-nav-map {
 .canvas-home-layer__actions .canvas-home-btn.is-danger-solid {
     border-color: transparent;
     color: #fff;
-}
-
-.dark .canvas-hero-stage {
-    border-color: rgba(198, 188, 255, 0.12);
-    background:
-        radial-gradient(circle at 30% 28%, rgba(167, 139, 250, 0.16), transparent 42%),
-        radial-gradient(circle at 78% 70%, rgba(56, 189, 248, 0.1), transparent 38%),
-        linear-gradient(180deg, rgba(24, 24, 32, 0.72), rgba(16, 17, 26, 0.5));
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
-}
-
-.dark .canvas-hero-stage__grid {
-    background-image:
-        linear-gradient(rgba(198, 188, 255, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(198, 188, 255, 0.08) 1px, transparent 1px);
-}
-
-.dark .canvas-hero-stage__node.is-plus {
-    background: rgba(16, 17, 26, 0.82);
-    color: #c4b5fd;
 }
 
 @keyframes canvas-hero-shimmer {

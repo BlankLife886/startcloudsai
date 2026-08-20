@@ -30,6 +30,9 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return 20 << 20
 	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
 		return 5 << 20
+	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
+		// Template documents may be up to 1 MiB; leave room for metadata and JSON encoding.
+		return 2 << 20
 	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
@@ -159,12 +162,15 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
 	api.GET("/assistant/runs/:id/events", s.assistantRunStream)
+	api.POST("/assistant/runs/:id/tool-results", s.postAssistantRunToolResult)
 	api.PATCH("/assistant/runs/:id", s.patchAssistantRun)
 
 	// me
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/wallet", s.myWallet)
+	api.GET("/me/wallet/summary", s.myWalletSummary)
+	api.GET("/me/wallet/export", s.myWalletExport)
 	api.GET("/me/subscription", s.mySubscription)
 	api.GET("/me/wallet/entries", s.myLedger)
 	api.POST("/me/wallet/redemptions", s.redeemCode)
@@ -233,6 +239,8 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/canvas-projects/:id/workflow-run", s.activeCanvasWorkflowRun)
 	api.POST("/canvas-projects/:id/workflow-runs", s.acquireCanvasWorkflowRun)
 	api.PATCH("/canvas-projects/:id/workflow-runs/:runId", s.patchCanvasWorkflowRun)
+	api.GET("/canvas-workflow-templates", s.publicCanvasWorkflowTemplates)
+	api.GET("/canvas-workflow-templates/:id", s.publicCanvasWorkflowTemplate)
 
 	// uploads & files
 	api.POST("/uploads", s.upload)
@@ -254,6 +262,7 @@ func (s *Server) Router() *gin.Engine {
 	// meta
 	api.GET("/pricing", s.pricing)
 	api.GET("/runtime-config", s.runtimeConfig)
+	api.GET("/changelog/latest", s.metaChangelogLatest)
 	api.GET("/changelog", s.metaChangelog)
 	api.GET("/announcements", s.metaAnnouncements)
 	api.GET("/health", s.health)
@@ -267,6 +276,10 @@ func (s *Server) Router() *gin.Engine {
 	// admin protected
 	admin := api.Group("/admin")
 	admin.Use(s.adminAudit)
+	// 管理员会话 Cookie 的 Path 是 /api/v1/admin，浏览器不会把它带给
+	// /api/v1/files/*，后台查看用户文件必须走这里的独立端点（跳过属主校验）。
+	admin.GET("/files/*key", s.adminOnly(s.adminGetFile))
+	admin.GET("/badge-counts", s.adminOnly(s.adminBadgeCounts))
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
 	admin.GET("/system/metrics", s.adminOnly(s.adminSystemMetrics))
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
@@ -284,6 +297,11 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/tasks", s.adminOnly(s.adminListTasks))
 	admin.DELETE("/tasks", s.adminOnly(s.adminPurgeTasks))
 	admin.PATCH("/tasks/:id", s.adminOnly(s.adminPatchTask))
+	admin.GET("/tasks/:id/timeline", s.adminOnly(s.adminTaskTimeline))
+	admin.GET("/canvas-workflow-templates", s.adminOnly(s.adminCanvasWorkflowTemplates))
+	admin.POST("/canvas-workflow-templates", s.adminOnly(s.adminCreateCanvasWorkflowTemplate))
+	admin.PATCH("/canvas-workflow-templates/:id", s.adminOnly(s.adminPatchCanvasWorkflowTemplate))
+	admin.DELETE("/canvas-workflow-templates/:id", s.adminOnly(s.adminDeleteCanvasWorkflowTemplate))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
 	admin.POST("/redemption-code-batches", s.adminOnly(s.adminGenerateRedemptionCodes))
 	admin.GET("/redemption-codes", s.adminOnly(s.adminListRedemptionCodes))

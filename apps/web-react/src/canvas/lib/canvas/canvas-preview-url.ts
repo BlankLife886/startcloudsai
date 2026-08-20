@@ -1,30 +1,61 @@
-const FILE_PREFIX = "/api/v1/files/";
+function apiBaseUrl() {
+    try {
+        return String((import.meta as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || "").replace(/\/$/, "");
+    } catch {
+        return "";
+    }
+}
+
+function fileUrl(key: string) {
+    return `${apiBaseUrl()}/api/v1/files/${key}`;
+}
+
+const FILE_MARKER = "/api/v1/files/";
 
 export function storageKeyFromUrl(value = "") {
     if (!value) return "";
     if (value.startsWith("uploads/") || value.startsWith("tasks/")) return value;
-    const index = value.indexOf(FILE_PREFIX);
-    return index >= 0 ? decodeURIComponent(value.slice(index + FILE_PREFIX.length).split(/[?#]/, 1)[0] || "") : "";
+    const index = value.indexOf(FILE_MARKER);
+    return index >= 0 ? decodeURIComponent(value.slice(index + FILE_MARKER.length).split(/[?#]/, 1)[0] || "") : "";
 }
 
 export function cloudThumbnailKey(storageKeyOrUrl = "") {
     const key = storageKeyFromUrl(storageKeyOrUrl);
     if (!key) return "";
-    if (/\/thumb\/[^/]+\.jpe?g$/i.test(key)) return key;
-    const upload = key.match(/^(uploads\/[^/]+)\/original\/([^/.]+)\.[^/]+$/);
-    if (upload) return `${upload[1]}/thumb/${upload[2]}.jpg`;
-    const task = key.match(/^(tasks\/[^/]+\/[^/]+)\/original\/([^/.]+)\.[^/]+$/);
-    if (task) return `${task[1]}/thumb/${task[2]}.jpg`;
+    // 已是小图 key：新式不带扩展名，旧数据为 .jpg，都原样返回。
+    if (/\/thumb\/[^/]+$/i.test(key)) return key;
+    // 新式小图 key 不带扩展名（格式可在后台切换，内容类型由对象元数据决定）。
+    const upload = key.match(/^(uploads\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
+    if (upload) return `${upload[1]}/thumb/${upload[2]}`;
+    const task = key.match(/^(tasks\/[^/]+\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
+    if (task) return `${task[1]}/thumb/${task[2]}`;
     return "";
 }
 
 export function cloudThumbnailUrl(storageKeyOrUrl = "") {
     const key = cloudThumbnailKey(storageKeyOrUrl);
-    return key ? `${FILE_PREFIX}${key}` : "";
+    return key ? fileUrl(key) : "";
+}
+
+/** 展示图（服务端压缩大图）key：由原图 key 推导，与后端约定一致。 */
+export function cloudDisplayKey(storageKeyOrUrl = "") {
+    const key = storageKeyFromUrl(storageKeyOrUrl);
+    if (!key) return "";
+    if (/\/display\/[^/]+$/i.test(key)) return key;
+    const upload = key.match(/^(uploads\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
+    if (upload) return `${upload[1]}/display/${upload[2]}`;
+    const task = key.match(/^(tasks\/[^/]+\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
+    if (task) return `${task[1]}/display/${task[2]}`;
+    return "";
+}
+
+export function cloudDisplayUrl(storageKeyOrUrl = "") {
+    const key = cloudDisplayKey(storageKeyOrUrl);
+    return key ? fileUrl(key) : "";
 }
 
 export function isCloudThumbnailUrl(value = "") {
-    return /\/thumb\/[^/]+\.jpe?g(?:[?#]|$)/i.test(storageKeyFromUrl(value) || value);
+    return /\/thumb\/[^/]+(?:[?#]|$)/i.test(storageKeyFromUrl(value) || value);
 }
 
 export function isLocalImageKey(value = "") {
@@ -33,7 +64,7 @@ export function isLocalImageKey(value = "") {
 
 export function cloudFileUrl(storageKeyOrUrl = "") {
     const key = storageKeyFromUrl(storageKeyOrUrl);
-    return key && !isLocalImageKey(key) ? `${FILE_PREFIX}${key}` : "";
+    return key && !isLocalImageKey(key) ? fileUrl(key) : "";
 }
 
 export function isHeavyImageSource(value = "") {

@@ -66,7 +66,8 @@ export async function splitDataUrl(dataUrl: string, params: ImageSplitParams): P
 
 function buildSplitCuts(lines: number[] | undefined, size: number, count: number) {
     if (!lines?.length) return Array.from({ length: count + 1 }, (_, index) => Math.floor((index * size) / count));
-    return [0, ...lines.map((line) => Math.round(line * size)).filter((line) => line > 0 && line < size).sort((a, b) => a - b), size];
+    const cuts = [0, ...lines.map((line) => Math.round(line * size)).filter((line) => line > 0 && line < size).sort((a, b) => a - b), size];
+    return cuts.filter((cut, index) => index === 0 || cut !== cuts[index - 1]);
 }
 
 export async function transformAngleDataUrl(dataUrl: string, params: ImageAngleTransform) {
@@ -123,12 +124,16 @@ export function resolveUpscaleSize(width: number, height: number, targetLongEdge
 }
 
 function drawCrop(image: HTMLImageElement, sx: number, sy: number, sw: number, sh: number) {
+    const left = Math.max(0, Math.min(image.width, Math.floor(sx)));
+    const top = Math.max(0, Math.min(image.height, Math.floor(sy)));
+    const width = Math.max(1, Math.min(image.width - left, Math.ceil(sw)));
+    const height = Math.max(1, Math.min(image.height - top, Math.ceil(sh)));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, sw);
-    canvas.height = Math.max(1, sh);
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext("2d");
-    if (!context) return image.src;
-    context.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    if (!context) throw new Error("Unable to crop image");
+    context.drawImage(image, left, top, width, height, 0, 0, width, height);
     return canvas.toDataURL("image/png");
 }
 
@@ -158,7 +163,7 @@ function drawResizeCanvas(source: CanvasImageSource, sourceWidth: number, source
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d");
-    if (!context) return canvas;
+    if (!context) throw new Error("Unable to resize image");
     context.imageSmoothingEnabled = algorithm !== "nearest";
     context.imageSmoothingQuality = algorithm === "bilinear" ? "medium" : "high";
     context.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
@@ -166,9 +171,11 @@ function drawResizeCanvas(source: CanvasImageSource, sourceWidth: number, source
 }
 
 function loadImage(dataUrl: string) {
-    return new Promise<HTMLImageElement>((resolve) => {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
         image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("Failed to load image"));
+        if (/^(https?:)?\/\//.test(dataUrl) || dataUrl.startsWith("/")) image.crossOrigin = "anonymous";
         image.src = dataUrl;
     });
 }

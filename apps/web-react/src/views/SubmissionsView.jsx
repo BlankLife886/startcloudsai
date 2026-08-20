@@ -38,11 +38,27 @@ function formatTime(value) {
 }
 
 function coverOf(submission) {
-  return submission?.coverUrl || submission?.mediaUrls?.[0] || "";
+  // 列表小图优先服务端缩略图，旧投稿没有时回退原图
+  return (
+    submission?.coverThumbUrl ||
+    submission?.coverUrl ||
+    submission?.mediaThumbUrls?.[0] ||
+    submission?.mediaUrls?.[0] ||
+    ""
+  );
 }
 
 function originalOf(submission) {
   return submission?.mediaUrls?.[0] || submission?.coverUrl || "";
+}
+
+// 大图预览优先展示图（服务端压缩大图），旧投稿 404 时前端回退原图
+function displayOf(submission) {
+  return (
+    submission?.mediaDisplayUrls?.[0] ||
+    submission?.coverDisplayUrl ||
+    originalOf(submission)
+  );
 }
 
 function aspectFromPrompt(text) {
@@ -490,7 +506,17 @@ export function SubmissionsView() {
                           width={Math.max(1, Math.round(entry.width))}
                           height={Math.max(1, entry.mediaHeight)}
                           onLoad={(event) => revealCover(submission.id, event)}
-                          onError={(event) => revealCover(submission.id, event)}
+                          onError={(event) => {
+                            // 旧投稿的缩略图变体可能 404：回退原图重试一次
+                            const image = event.currentTarget;
+                            const fallback = originalOf(submission);
+                            if (fallback && image.src !== fallback && !image.dataset.fallbackApplied) {
+                              image.dataset.fallbackApplied = "1";
+                              image.src = fallback;
+                              return;
+                            }
+                            revealCover(submission.id, event);
+                          }}
                         />
                       ) : (
                         <div className="ch-card__placeholder">
@@ -605,13 +631,23 @@ export function SubmissionsView() {
         {preview ? (
           <>
             <div className="ch-preview__media">
-              {originalOf(preview) ? (
+              {displayOf(preview) ? (
                 <img
-                  src={originalOf(preview)}
+                  key={String(preview.id)}
+                  src={displayOf(preview)}
                   alt={preview.title || "AI 作品"}
                   loading="eager"
                   decoding="async"
                   fetchPriority="high"
+                  onError={(event) => {
+                    // 旧投稿的展示图变体可能 404：回退原图重试一次
+                    const image = event.currentTarget;
+                    const fallback = originalOf(preview);
+                    if (fallback && image.src !== fallback && !image.dataset.fallbackApplied) {
+                      image.dataset.fallbackApplied = "1";
+                      image.src = fallback;
+                    }
+                  }}
                 />
               ) : (
                 <div className="ch-preview__empty">暂无预览图</div>

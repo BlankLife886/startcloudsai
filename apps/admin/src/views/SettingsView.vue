@@ -13,6 +13,8 @@ interface AdminSettings {
   globalMaxActiveTasks?: number;
   globalMaxActiveImages?: number;
   taskFailureRetryCount?: number;
+  taskRetryFirstDelaySecs?: number;
+  taskRetryBackoffSecs?: number;
   crossProviderSameModelBalancingEnabled?: boolean;
   workerConcurrencyCeiling?: number;
   effectiveGlobalConcurrency?: number;
@@ -52,6 +54,8 @@ const form = reactive({
   globalMaxActiveTasks: 12000,
   globalMaxActiveImages: 12000,
   taskFailureRetryCount: 2,
+  taskRetryFirstDelaySecs: 3,
+  taskRetryBackoffSecs: 15,
   crossProviderSameModelBalancingEnabled: false,
   registrationEnabled: true,
   signupBonusPoints: 0,
@@ -84,6 +88,8 @@ const settingsSignature = () =>
     globalMaxActiveTasks: form.globalMaxActiveTasks,
     globalMaxActiveImages: form.globalMaxActiveImages,
     taskFailureRetryCount: form.taskFailureRetryCount,
+    taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
+    taskRetryBackoffSecs: form.taskRetryBackoffSecs,
     crossProviderSameModelBalancingEnabled:
       form.crossProviderSameModelBalancingEnabled,
     registrationEnabled: form.registrationEnabled,
@@ -151,6 +157,8 @@ function hydrate(settings: AdminSettings) {
   form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 12000;
   form.globalMaxActiveImages = settings.globalMaxActiveImages ?? 12000;
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2;
+  form.taskRetryFirstDelaySecs = settings.taskRetryFirstDelaySecs ?? 3;
+  form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15;
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false;
   workerConcurrencyCeiling.value = Math.max(
@@ -223,6 +231,8 @@ async function save() {
           globalMaxActiveTasks: form.globalMaxActiveTasks,
           globalMaxActiveImages: form.globalMaxActiveImages,
           taskFailureRetryCount: form.taskFailureRetryCount,
+          taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
+          taskRetryBackoffSecs: form.taskRetryBackoffSecs,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
           registrationEnabled: form.registrationEnabled,
@@ -705,6 +715,40 @@ onMounted(load);
               </div>
               <small
                 >连接、超时或临时上游错误的额外尝试次数；0 表示不重试</small
+              >
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>首次重试等待（秒）</strong>
+                <el-input-number
+                  v-model="form.taskRetryFirstDelaySecs"
+                  class="settings-stepper"
+                  :min="1"
+                  :max="600"
+                  :step="1"
+                  :precision="0"
+                />
+              </div>
+              <small
+                >上游临时报错（如账号池忙）后第一次重试前的等待时间；越短用户等待越少</small
+              >
+            </label>
+
+            <label class="setting-tile">
+              <div class="setting-tile__top">
+                <strong>后续重试间隔（秒）</strong>
+                <el-input-number
+                  v-model="form.taskRetryBackoffSecs"
+                  class="settings-stepper"
+                  :min="1"
+                  :max="600"
+                  :step="5"
+                  :precision="0"
+                />
+              </div>
+              <small
+                >第二次起每次重试的间隔步长（第 N 次重试等待 (N-1)×该值 秒），避免持续打爆上游</small
               >
             </label>
 

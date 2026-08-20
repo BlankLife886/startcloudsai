@@ -478,6 +478,20 @@ test.describe('Vue authenticated migration visual contract @visual @account', ()
       if (pathname.endsWith('/entries')) {
         return fulfillJson(route, { items: walletEntries, nextCursor: 'wallet-next-page' })
       }
+      if (pathname.endsWith('/summary')) {
+        return fulfillJson(route, {
+          consumedCents: 12,
+          consumedCount: 1,
+          refundCents: 0,
+          refundCount: 0,
+          incomeCents: 25,
+          incomeCount: 1,
+          entryCount: 2,
+          items: [
+            { id: 'daily_checkin', label: '签到积分', hint: '每日签到到账', cents: 25, count: 1 },
+          ],
+        })
+      }
       return fulfillJson(route, walletState)
     })
     await page.route('**/api/v1/me/trial-access-application', (route) =>

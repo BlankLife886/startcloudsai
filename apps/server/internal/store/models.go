@@ -39,6 +39,7 @@ type User struct {
 	Username              string
 	PasswordHash          string
 	AvatarURL             *string
+	StudioFigureURL       *string
 	Bio                   string
 	Location              string
 	WebsiteURL            string
@@ -545,13 +546,15 @@ type GalleryAuthor struct {
 }
 
 type Notification struct {
-	ID        uuid.UUID
-	UserID    *uuid.UUID
-	Kind      string
-	Title     string
-	Body      *string
-	ReadAt    *time.Time
-	CreatedAt time.Time
+	ID         uuid.UUID
+	UserID     *uuid.UUID
+	Kind       string
+	Title      string
+	Body       *string
+	ReadAt     *time.Time
+	CreatedAt  time.Time
+	SourceType *string
+	SourceID   *uuid.UUID
 }
 
 type UserFeedback struct {
@@ -653,6 +656,7 @@ type ChangelogEntry struct {
 	Highlight bool
 	Sort      int
 	CreatedAt time.Time
+	SourceKey *string
 }
 
 type AdminAuditLog struct {

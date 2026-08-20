@@ -20,7 +20,7 @@ import canvasI18n, { changeAppLocale } from "@/i18n";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasDeleteProjectsDialog } from "@/components/canvas/canvas-delete-projects-dialog";
 import { CanvasRenameProjectDialog } from "@/components/canvas/canvas-rename-project-dialog";
-import { disconnectCanvasCloudSync, prepareCanvasCloudSync } from "@/stores/canvas/use-canvas-store";
+import { disconnectCanvasCloudSync, flushCanvasPersistence, prepareCanvasCloudSync } from "@/stores/canvas/use-canvas-store";
 import { ensureCanvasOverlayRoot, removeCanvasOverlayRoot, syncCanvasOverlayTheme } from "@/lib/canvas-portal";
 
 gsap.registerPlugin(useGSAP);
@@ -136,6 +136,14 @@ export function CanvasNativeLayout({ children }: { children?: ReactNode }) {
         }
         disconnectCanvasCloudSync();
     }, [auth.isAuthenticated, auth.user?.id]);
+
+    useEffect(() => {
+        const persist = () => {
+            void flushCanvasPersistence();
+        };
+        window.addEventListener("pagehide", persist);
+        return () => window.removeEventListener("pagehide", persist);
+    }, []);
 
     return (
         <section className="canvas-app-view canvas-native-view">

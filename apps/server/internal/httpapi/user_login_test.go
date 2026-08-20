@@ -22,6 +22,8 @@ func newUserLoginTestServer(st *store.Store) *Server {
 	cfg.AppSecret = "test-app-secret-at-least-thirty-two-bytes"
 	cfg.SMTPAddr = ""
 	cfg.SMTPFrom = ""
+	// 回显验证码需要显式开关（不再随 development 自动开启），测试依赖回显取码。
+	cfg.DevLoginCodeEcho = true
 	return &Server{Cfg: cfg, St: st, LoginLimiter: auth.NewLoginLimiter(), AdminLoginLimiter: auth.NewLoginLimiter(), RedeemLimiter: auth.NewRedeemLimiter()}
 }
 

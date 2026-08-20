@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Cpu, Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Video, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Cpu, Image as ImageIcon, MessageSquare, Music2, Play, Settings2, Square, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -12,6 +11,8 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { useCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
+import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
+import { isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
 import { defaultConfig, formatModelDiscount, formatModelPrice, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
@@ -25,6 +26,7 @@ type CanvasConfigNodePanelProps = {
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
+    onStopGeneration: (nodeId: string) => void;
     onCancelQueued: (nodeId: string) => void;
     onComposerToggle: () => void;
 };
@@ -38,7 +40,7 @@ const MODES: Array<{ value: CanvasGenerationMode; icon: typeof ImageIcon; colorK
 
 const FIELD_CLASS = "flex h-10 w-full min-w-0 items-center gap-2.5 rounded-[14px] px-3 text-left text-[13px] transition-colors";
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -57,8 +59,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const cost = estimateCanvasGenerationCost({ config, kind: mode === "text" ? "text" : "image", backgroundRemovalPricePoints: backgroundRemovalTool?.pricePoints });
     const generateLabel = cost.total > 0 ? t("canvas.configNode.generateWithCost", { count: cost.total.toLocaleString() }) : t("canvas.configNode.generate");
     const executionStatus = node.metadata?.executionStatus;
-    const queued = executionStatus === "queued";
-    const generating = isRunning || executionStatus === "running";
+    const queued = isUnsubmittedCanvasGeneration(node);
+    const generating = (isRunning || executionStatus === "running") && !queued;
     const elapsedMs = useGenerationElapsed(node.metadata?.generationStartedAt, node.metadata?.generationDurationMs, generating);
     const completedAt = node.metadata?.generationCompletedAt;
 
@@ -160,7 +162,17 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </button>
             </div>
 
-            {executionStatus === "succeeded" && completedAt ? (
+            {queued ? (
+                <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
+                    <Clock3 className="size-3.5" />
+                    <span>{t("canvas.configNode.queued")}</span>
+                </div>
+            ) : generating ? (
+                <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
+                    <Clock3 className="size-3.5" />
+                    <span className="tabular-nums">{t("canvas.configNode.generating", { duration: formatGenerationDuration(elapsedMs) })}</span>
+                </div>
+            ) : executionStatus === "succeeded" && completedAt ? (
                 <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
                     <CheckCircle2 className="size-3.5 text-emerald-600" />
                     <span>{t("canvas.configNode.generatedAt", { time: formatGenerationTime(completedAt) })}</span>
@@ -174,15 +186,22 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     <span className="opacity-45">·</span>
                     <span className="tabular-nums">{t("canvas.configNode.duration", { duration: formatGenerationDuration(elapsedMs) })}</span>
                 </div>
+            ) : executionStatus === "canceled" && completedAt ? (
+                <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
+                    <Clock3 className="size-3.5" />
+                    <span>{t("canvas.configNode.canceledAt", { time: formatGenerationTime(completedAt) })}</span>
+                    <span className="opacity-45">·</span>
+                    <span className="tabular-nums">{t("canvas.configNode.duration", { duration: formatGenerationDuration(elapsedMs) })}</span>
+                </div>
             ) : null}
 
             <button
                 type="button"
                 className="mt-2.5 inline-flex h-10 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[14px] text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-70"
                 style={{ background: queued ? "#d97706" : generating ? color : color, color: "#fff" }}
-                disabled={generating || (!queued && !canGenerate)}
+                disabled={!queued && !generating && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => (queued ? onCancelQueued(node.id) : onGenerate(node.id))}
+                onClick={() => (queued ? onCancelQueued(node.id) : generating ? onStopGeneration(node.id) : onGenerate(node.id))}
             >
                 {queued ? (
                     <>
@@ -191,8 +210,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     </>
                 ) : generating ? (
                     <>
-                        <LoaderCircle className="size-4 animate-spin" />
-                        {t("canvas.configNode.generating", { duration: formatGenerationDuration(elapsedMs) })}
+                        <Square className="size-3.5 fill-current" />
+                        {t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) })}
                     </>
                 ) : (
                     <>
@@ -205,27 +224,9 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     );
 }
 
-function useGenerationElapsed(startedAt: string | undefined, completedDurationMs: number | undefined, running: boolean) {
-    const calculate = () => (running && startedAt ? Math.max(0, Date.now() - new Date(startedAt).getTime()) : Math.max(0, completedDurationMs || 0));
-    const [elapsed, setElapsed] = useState(calculate);
-    useEffect(() => {
-        setElapsed(calculate());
-        if (!running || !startedAt) return;
-        const timer = window.setInterval(() => setElapsed(calculate()), 1_000);
-        return () => window.clearInterval(timer);
-    }, [completedDurationMs, running, startedAt]);
-    return elapsed;
-}
-
 function formatGenerationTime(value: string) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "--:--:--" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function formatGenerationDuration(value: number) {
-    const seconds = Math.max(0, Math.round(value / 1_000));
-    if (seconds < 60) return `${seconds}s`;
-    return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 function ConfigModelField({

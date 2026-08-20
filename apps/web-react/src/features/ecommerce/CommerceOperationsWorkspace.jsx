@@ -100,6 +100,11 @@ function taskOutput(task) {
   return String(task?.previews?.[0] || task?.outputs?.[0] || "");
 }
 
+// 放大预览传原图地址：外层全屏预览会映射到展示图并带原图回退
+function taskPreviewTarget(task) {
+  return String(task?.outputs?.[0] || task?.previews?.[0] || "");
+}
+
 function Metric({ icon: Icon, label, value, detail, tone = "neutral" }) {
   return (
     <article className={`commerce-ops-metric is-${tone}`}>
@@ -492,7 +497,7 @@ export function CommerceOperationsWorkspace({
                     </span>
                     <span className={`commerce-ops__status is-${status}`}><StatusIcon size={14} />{label}</span>
                   </button>
-                  <button type="button" className="commerce-ops__preview" title={t.previewTitle} onClick={() => onPreview?.(output)}>
+                  <button type="button" className="commerce-ops__preview" title={t.previewTitle} onClick={() => onPreview?.(taskPreviewTarget(task))}>
                     <Eye size={17} />
                   </button>
                 </article>
@@ -518,7 +523,7 @@ export function CommerceOperationsWorkspace({
                 </div>
                 <span>{completedChecks}/{QA_CHECKS.length}</span>
               </header>
-              <button type="button" className="commerce-ops__selected-image" onClick={() => onPreview?.(taskOutput(selectedTask))}>
+              <button type="button" className="commerce-ops__selected-image" onClick={() => onPreview?.(taskPreviewTarget(selectedTask))}>
                 <AuthenticatedImage src={taskOutput(selectedTask)} alt={t.currentAlt} maxDimension={720} />
                 <span><Eye size={16} />{t.viewOriginal}</span>
               </button>

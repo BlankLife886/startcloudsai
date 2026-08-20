@@ -292,21 +292,46 @@ func (c *Client) ChatAgentWithImages(
 	forceTool bool,
 	onUpdate func(text, reasoning string) error,
 ) (AgentChatResult, error) {
-	payload := map[string]any{
-		"model":    c.chatModel,
-		"messages": chatPayloadMessages(messages, imageURLs),
-		"stream":   true,
-		"tools": []any{map[string]any{
+	forced := ""
+	if forceTool {
+		forced = tool.Name
+	}
+	return c.ChatAgentWithTools(ctx, messages, imageURLs, []FunctionTool{tool}, forced, onUpdate)
+}
+
+// ChatAgentWithTools exposes several function tools in one streamed request so
+// callers can drive a multi-step tool loop. forcedTool, when set to a tool
+// name, requires the model to answer with that call instead of free text.
+func (c *Client) ChatAgentWithTools(
+	ctx context.Context,
+	messages []Message,
+	imageURLs []string,
+	tools []FunctionTool,
+	forcedTool string,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, error) {
+	if len(tools) == 0 {
+		return AgentChatResult{}, errors.New("no tools provided")
+	}
+	declarations := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		declarations = append(declarations, map[string]any{
 			"type": "function",
 			"function": map[string]any{
 				"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters,
 			},
-		}},
+		})
+	}
+	payload := map[string]any{
+		"model":       c.chatModel,
+		"messages":    chatPayloadMessages(messages, imageURLs),
+		"stream":      true,
+		"tools":       declarations,
 		"tool_choice": "auto",
 	}
-	if forceTool {
+	if strings.TrimSpace(forcedTool) != "" {
 		payload["tool_choice"] = map[string]any{
-			"type": "function", "function": map[string]any{"name": tool.Name},
+			"type": "function", "function": map[string]any{"name": strings.TrimSpace(forcedTool)},
 		}
 	}
 	var lastErr error

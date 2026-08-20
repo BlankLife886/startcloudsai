@@ -6,8 +6,8 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
-import { mergeCanvasProjectSnapshots } from "@/lib/canvas/canvas-project-sync";
-import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjects, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
+import { mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
+import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 
 export type CanvasProject = {
@@ -16,6 +16,12 @@ export type CanvasProject = {
     createdAt: string;
     updatedAt: string;
     revision?: number;
+    /** Local changes that have not been confirmed by the cloud yet ("未同步"). Cleared when a cloud save succeeds. */
+    pendingSync?: boolean;
+    /** Cloud-only list entry whose document has not been downloaded yet; fetched when the project is opened. */
+    documentPending?: boolean;
+    /** The cloud revision moved past the local copy; the document is refetched and merged when the project is opened. */
+    documentStale?: boolean;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
     chatSessions: CanvasAssistantSession[];
@@ -58,12 +64,57 @@ function isUuid(value: string) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function replaceCloudProject(saved: CanvasProject, expectedUpdatedAt?: string) {
+// ---------------------------------------------------------------------------
+// Sync notifications: the store runs outside React, so pages register a
+// notifier (usually antd message) to surface save failures to the user
+// instead of swallowing them silently.
+
+export type CanvasSyncNotification = {
+    kind: "save_failed" | "save_recovered";
+    projectId: string;
+    projectTitle: string;
+    errorMessage: string;
+};
+
+let canvasSyncNotifier: ((notification: CanvasSyncNotification) => void) | null = null;
+const failedSaveProjectIds = new Set<string>();
+
+export function setCanvasSyncNotifier(notifier: (notification: CanvasSyncNotification) => void) {
+    canvasSyncNotifier = notifier;
+    return () => {
+        if (canvasSyncNotifier === notifier) canvasSyncNotifier = null;
+    };
+}
+
+function notifyCloudSaveFailed(id: string, error: unknown) {
+    // One warning per project until a save succeeds again, so retry loops do not spam toasts.
+    if (failedSaveProjectIds.has(id)) return;
+    failedSaveProjectIds.add(id);
+    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    canvasSyncNotifier?.({
+        kind: "save_failed",
+        projectId: id,
+        projectTitle: project?.title || "",
+        errorMessage: error instanceof Error ? error.message : "",
+    });
+}
+
+function notifyCloudSaveRecovered(id: string) {
+    if (!failedSaveProjectIds.delete(id)) return;
+    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    canvasSyncNotifier?.({ kind: "save_recovered", projectId: id, projectTitle: project?.title || "", errorMessage: "" });
+}
+
+function replaceCloudProject(saved: CanvasProject, expectedUpdatedAt?: string, mergeIntoLocal = false) {
     useCanvasStore.setState((state) => ({
         projects: state.projects.map((project) => {
             if (project.id !== saved.id) return project;
-            if (expectedUpdatedAt && project.updatedAt !== expectedUpdatedAt) return { ...project, revision: saved.revision };
-            return saved;
+            if (!expectedUpdatedAt || project.updatedAt === expectedUpdatedAt) return saved;
+            // Local edits landed while the save was in flight: keep them
+            // (still pendingSync), adopt the saved revision, and — after a
+            // conflict merge — the remotely merged nodes as well.
+            const base = mergeIntoLocal ? mergeCanvasProjectDocuments(project, saved) : project;
+            return { ...base, revision: saved.revision, pendingSync: true };
         }),
     }));
 }
@@ -72,24 +123,39 @@ async function persistProjectToCloud(id: string, userId: string) {
     const state = useCanvasStore.getState();
     if (cloudSyncUserId !== userId || state.ownerUserId !== userId) return;
     const project = state.projects.find((item) => item.id === id);
-    if (!project) return;
+    if (!project || project.documentPending) return;
     const expectedUpdatedAt = project.updatedAt;
     let saved: CanvasProject | null;
+    let mergedRemote = false;
     try {
         saved = project.revision ? await updateCloudCanvasProject(project) : await createCloudCanvasProject(project);
     } catch (error) {
         if (!(error instanceof StarcloudsApiError) || error.code !== "revision_conflict") throw error;
         const remote = await getCloudCanvasProject(id);
         if (!remote) throw error;
-        saved = await updateCloudCanvasProject({ ...project, revision: remote.revision });
+        // Another writer advanced the document (second tab, reconnect race).
+        // Merge node-by-node instead of overwriting, so outputs generated
+        // elsewhere survive, then save on top of the remote revision.
+        saved = await updateCloudCanvasProject(mergeCanvasProjectDocuments(project, remote));
+        mergedRemote = true;
     }
     if (cloudSyncUserId !== userId || useCanvasStore.getState().ownerUserId !== userId) return;
-    if (saved) replaceCloudProject(saved, expectedUpdatedAt);
+    if (saved) {
+        replaceCloudProject(saved, expectedUpdatedAt, mergedRemote);
+        notifyCloudSaveRecovered(id);
+    }
     const latest = useCanvasStore.getState().projects.find((item) => item.id === id);
     if (latest && latest.updatedAt !== expectedUpdatedAt) scheduleCloudSave(id, 1500);
 }
 
-function scheduleCloudSave(id: string, delay = 700) {
+let cloudSaveBaseDelayMs = 700;
+
+/** Raise the default save debounce while a workflow runs (progress lives in the run lease; the full document does not need to be saved on every checkpoint tick). Pass null to restore the default. */
+export function setCanvasCloudSaveBaseDelay(delay: number | null) {
+    cloudSaveBaseDelayMs = delay ?? 700;
+}
+
+function scheduleCloudSave(id: string, delay = cloudSaveBaseDelayMs) {
     const userId = useCanvasStore.getState().ownerUserId;
     if (!userId || cloudSyncUserId !== userId) return;
     const currentTimer = cloudSaveTimers.get(id);
@@ -100,7 +166,10 @@ function scheduleCloudSave(id: string, delay = 700) {
         const next = previous
             .catch(() => undefined)
             .then(() => persistProjectToCloud(id, userId))
-            .catch((error) => console.error("Canvas cloud save failed", error))
+            .catch((error) => {
+                console.error("Canvas cloud save failed", error);
+                notifyCloudSaveFailed(id, error);
+            })
             .finally(() => {
                 if (cloudSaveChains.get(id) === next) cloudSaveChains.delete(id);
             });
@@ -109,12 +178,31 @@ function scheduleCloudSave(id: string, delay = 700) {
     cloudSaveTimers.set(id, timer);
 }
 
+function createStubProject(summary: CanvasCloudProjectSummary): CanvasProject {
+    return {
+        id: summary.id,
+        title: summary.title,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        revision: summary.revision,
+        nodes: [],
+        connections: [],
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        viewport: initialViewport,
+        workflowRun: null,
+        documentPending: true,
+    };
+}
+
 async function hydrateCloudProjects(userId: string, localProjects: CanvasProject[]) {
     try {
-        const cloudProjects = await listCloudCanvasProjects();
+        const summaries = await listCloudCanvasProjectSummaries();
         if (cloudSyncUserId !== userId) return;
-        const cloudIds = new Set(cloudProjects.map((project) => project.id));
-        const merged = mergeCanvasProjectSnapshots(cloudProjects, localProjects);
+        const cloudIds = new Set(summaries.map((summary) => summary.id));
+        const merged = mergeCanvasProjectSnapshots(summaries, localProjects, createStubProject);
         const localOnly = localProjects
             .filter((project) => !project.revision && !cloudIds.has(project.id))
             .map((project) => ({ ...project, id: isUuid(project.id) ? project.id : crypto.randomUUID() }));
@@ -130,14 +218,67 @@ async function hydrateCloudProjects(userId: string, localProjects: CanvasProject
     }
 }
 
+const documentLoads = new Map<string, Promise<CanvasProject | null>>();
+
+/**
+ * Make sure a project's full document is available locally before it is used.
+ * Cloud-only list entries download their document on first open; stale local
+ * copies refetch the remote document and node-merge any unsynced local edits
+ * into it. Returns the up-to-date project, or null when it no longer exists.
+ */
+export function ensureCanvasProjectDocument(id: string): Promise<CanvasProject | null> {
+    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    if (!project) return Promise.resolve(null);
+    if (!project.documentPending && !project.documentStale) return Promise.resolve(project);
+    const running = documentLoads.get(id);
+    if (running) return running;
+    const load = (async (): Promise<CanvasProject | null> => {
+        let remote: CanvasProject | null | undefined;
+        try {
+            remote = await getCloudCanvasProject(id);
+        } catch (error) {
+            console.error("Canvas cloud document load failed", error);
+            remote = undefined;
+        }
+        const current = useCanvasStore.getState().projects.find((item) => item.id === id);
+        if (!current) return null;
+        if (remote === undefined) {
+            // Transient load failure: a stub has nothing usable to show, but a
+            // stale local copy can still be edited and merged later.
+            return current.documentPending ? null : current;
+        }
+        if (remote === null) {
+            // Deleted remotely; drop stubs, keep locally edited copies visible.
+            if (current.documentPending) {
+                useCanvasStore.setState((state) => ({ projects: state.projects.filter((item) => item.id !== id) }));
+                return null;
+            }
+            return current;
+        }
+        const next: CanvasProject = current.pendingSync
+            ? { ...mergeCanvasProjectDocuments(current, remote), documentPending: false, documentStale: false, pendingSync: true }
+            : remote;
+        useCanvasStore.setState((state) => ({ projects: state.projects.map((item) => (item.id === id ? next : item)) }));
+        if (current.pendingSync) scheduleCloudSave(id);
+        return next;
+    })().finally(() => documentLoads.delete(id));
+    documentLoads.set(id, load);
+    return load;
+}
+
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
         const value = await localForageStorage.getItem(name);
         if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
-        queuedPersistState = parsed.state as PersistedCanvasState;
-        queuedPersistValue = parsed;
-        return parsed;
+        try {
+            const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
+            queuedPersistState = parsed.state as PersistedCanvasState;
+            queuedPersistValue = parsed;
+            return parsed;
+        } catch (error) {
+            console.error("Canvas store failed to parse persisted state", error);
+            throw error;
+        }
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
@@ -147,7 +288,8 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
+            if (!queuedPersistValue) return;
+            void localForageStorage.setItem(name, JSON.stringify(queuedPersistValue));
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
@@ -176,6 +318,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     title,
                     createdAt: now,
                     updatedAt: now,
+                    pendingSync: true,
                     nodes: [],
                     connections: [],
                     chatSessions: [],
@@ -196,6 +339,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     title: source.title || "导入画布",
                     createdAt: source.createdAt || now,
                     updatedAt: now,
+                    pendingSync: true,
                     nodes: source.nodes || [],
                     connections: source.connections || [],
                     chatSessions: source.chatSessions || [],
@@ -214,7 +358,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             renameProject: (id, title) => {
                 set((state) => ({
-                    projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: new Date().toISOString() } : project)),
+                    projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: new Date().toISOString(), pendingSync: true } : project)),
                 }));
                 scheduleCloudSave(id);
             },
@@ -255,7 +399,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     next.viewport.k === project.viewport.k;
                 if (unchanged) return;
                 set((state) => ({
-                    projects: state.projects.map((item) => (item.id === id ? { ...next, updatedAt: new Date().toISOString() } : item)),
+                    projects: state.projects.map((item) => (item.id === id ? { ...next, updatedAt: new Date().toISOString(), pendingSync: true } : item)),
                 }));
                 scheduleCloudSave(id);
             },

@@ -4,7 +4,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { type CanvasConnection, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
-import { CANVAS_VIEWPORT_LIVE_EVENT, type CanvasViewportApi } from "./infinite-canvas";
+import { CANVAS_VIEWPORT_LIVE_EVENT, type CanvasViewportApi, wheelZoomFactor } from "./infinite-canvas";
 
 const MAP_H = 118;
 const PAD = 12;
@@ -232,6 +232,26 @@ export function Minimap({
         };
     }, [active, paint]);
 
+    useEffect(() => {
+        const el = wrapRef.current;
+        if (!el) return;
+        const handleWheel = (event: WheelEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const current = liveViewport();
+            const nextK = Math.min(5, Math.max(0.05, current.k * wheelZoomFactor(event.deltaY, event.deltaMode)));
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const world = toWorld(event.clientX - rect.left, event.clientY - rect.top);
+            const size = sizeRef.current;
+            applyLive({ x: size.width / 2 - world.x * nextK, y: size.height / 2 - world.y * nextK, k: nextK }, "zoom");
+            window.clearTimeout(wheelTimer.current);
+            wheelTimer.current = window.setTimeout(() => applyLive(liveViewport(), "zoom", true), 160);
+        };
+        el.addEventListener("wheel", handleWheel, { passive: false });
+        return () => el.removeEventListener("wheel", handleWheel);
+    }, []);
+
     const mapPoint = (clientX: number, clientY: number) => {
         const rect = canvasRef.current?.getBoundingClientRect();
         if (!rect) return null;
@@ -310,18 +330,6 @@ export function Minimap({
             onPointerCancel={() => {
                 dragging.current = false;
                 applyLive(liveViewport(), "pan", true);
-            }}
-            onWheel={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const current = liveViewport();
-                const nextK = Math.min(5, Math.max(0.05, current.k * Math.exp(-event.deltaY * 0.0016)));
-                const world = mapPoint(event.clientX, event.clientY);
-                if (!world) return;
-                const size = sizeRef.current;
-                applyLive({ x: size.width / 2 - world.x * nextK, y: size.height / 2 - world.y * nextK, k: nextK }, "zoom");
-                window.clearTimeout(wheelTimer.current);
-                wheelTimer.current = window.setTimeout(() => applyLive(liveViewport(), "zoom", true), 160);
             }}
         >
             <canvas ref={canvasRef} className="block h-full w-full cursor-grab active:cursor-grabbing" height={MAP_H} />

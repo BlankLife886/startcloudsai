@@ -115,6 +115,14 @@ export function resolveRegionImageRequestSize(value = 'auto', resolution = '1K')
 
 export const MAX_REGION_STYLE_REFERENCES = 2
 
+const REGION_TRANSPARENT_NOTE_RE =
+  /移除背景|去掉背景|去背|抠图|透明背景|透明底|透明画布|transparent(?:\s+png)?|remove(?:\s+the)?\s+background|cut\s*out/i
+
+export function wantsRegionTransparentOutput(note = '', action = '') {
+  if (String(action || '').trim() === 'custom') return true
+  return REGION_TRANSPARENT_NOTE_RE.test(String(note || ''))
+}
+
 function clampUnit(value) {
   const next = Number(value)
   if (!Number.isFinite(next)) return 0
@@ -139,6 +147,8 @@ export function createRegionBox(rect = {}, index = 0) {
         : [],
     viewport: rect.viewport || rect.elementViewport || null,
     resultUrl: String(rect.resultUrl || ''),
+    runId: String(rect.runId || ''),
+    conversationId: String(rect.conversationId || ''),
   }
 }
 

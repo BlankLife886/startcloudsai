@@ -1,9 +1,9 @@
 /**
  * 个人中心相关 API（/api/v1/me/*）。
  */
-import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
+import { apiDelete, apiGet, apiPatch, apiPost, buildApiPath, ApiError } from './apiClient'
 
-/** 修改资料：{ username?, avatarUrl?, bio?, location?, websiteUrl?, requireCostConfirm? } */
+/** 修改资料：{ username?, avatarUrl?, studioFigureUrl?, bio?, location?, websiteUrl?, requireCostConfirm? } */
 export async function updateProfile(payload = {}) {
   return apiPatch('/me/profile', payload, { fallbackMessage: '资料保存失败' })
 }
@@ -34,17 +34,61 @@ export async function redeemWalletCode(code) {
   )
 }
 
-/** 钱包账本（cursor 分页）。 */
-export async function listWalletLedger({ limit = 20, cursor = '', signal } = {}) {
+/** 钱包账本（page 分页，兼容 cursor）。 */
+export async function listWalletLedger({ limit = 20, cursor = '', page, signal } = {}) {
   const data = await apiGet('/me/wallet/entries', {
-    query: { limit, cursor },
+    query: { limit, cursor, page },
     signal,
     fallbackMessage: '账本读取失败',
   })
   return {
     items: Array.isArray(data?.items) ? data.items : [],
     nextCursor: data?.nextCursor || null,
+    total: data?.total == null || data?.total === '' ? null : Number(data.total),
+    page: Number(data?.page || page || 1),
+    pageSize: Number(data?.pageSize || limit),
   }
+}
+
+/** 全量账单汇总：合计消耗、入账渠道与失败退回。 */
+export async function getWalletSummary({ signal } = {}) {
+  const data = await apiGet('/me/wallet/summary', { signal, fallbackMessage: '账单汇总读取失败' })
+  return {
+    consumedCents: Number(data?.consumedCents || 0),
+    consumedCount: Number(data?.consumedCount || 0),
+    refundCents: Number(data?.refundCents || 0),
+    refundCount: Number(data?.refundCount || 0),
+    incomeCents: Number(data?.incomeCents || 0),
+    incomeCount: Number(data?.incomeCount || 0),
+    entryCount: Number(data?.entryCount || 0),
+    items: Array.isArray(data?.items) ? data.items : [],
+  }
+}
+
+/** 下载完整积分账单 CSV（含汇总与明细）。 */
+export async function downloadWalletBill({ signal } = {}) {
+  let response
+  try {
+    response = await fetch(buildApiPath('/me/wallet/export'), {
+      method: 'GET',
+      credentials: 'include',
+      signal,
+    })
+  } catch (caught) {
+    if (caught?.name === 'AbortError') throw caught
+    throw new ApiError('网络连接失败，请检查网络后重试', { code: 'network_error', status: 0 })
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new ApiError(String(payload?.error || `账单导出失败（${response.status}）`), {
+      code: String(payload?.code || 'request_failed'),
+      status: response.status,
+    })
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('content-disposition') || ''
+  const matched = /filename="([^"]+)"/.exec(disposition)
+  return { blob, filename: matched?.[1] || 'starclouds-wallet.csv' }
 }
 
 /** 通知列表（含全站公告合并，cursor 分页）。 */

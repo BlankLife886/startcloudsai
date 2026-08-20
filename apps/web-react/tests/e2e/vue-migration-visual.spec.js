@@ -25,6 +25,9 @@ test.describe('Vue migration visual contract @visual', () => {
   for (const route of publicRouteBaselines) {
     test(`${route.name} page`, async ({ page }) => {
       await page.goto(route.path, { waitUntil: 'domcontentloaded' })
+      if (route.name === 'updates') {
+        await expect(page.locator('.updates-page[data-updates-loaded="true"]')).toBeVisible()
+      }
       await stabilizeVisualPage(page, route.root)
 
       await expect(page).toHaveScreenshot(`${route.name}.png`, {

@@ -41,12 +41,20 @@ export function readFileAsDataUrl(file: File) {
 }
 
 export function readImageMeta(dataUrl: string) {
-    return new Promise<{ width: number; height: number; mimeType: string }>((resolve) => {
+    return new Promise<{ width: number; height: number; mimeType: string }>((resolve, reject) => {
         const image = new Image();
-        const done = () => resolve({ width: image.naturalWidth || 1024, height: image.naturalHeight || 1024, mimeType: dataUrl.match(/^data:([^;]+)/)?.[1] || "image/png" });
-        image.onload = done;
-        image.onerror = done;
-        setTimeout(done, 3000);
+        const mimeType = dataUrl.match(/^data:([^;]+)/)?.[1] || "image/png";
+        const finish = (ok: boolean) => {
+            window.clearTimeout(timer);
+            if (ok && image.naturalWidth && image.naturalHeight) {
+                resolve({ width: image.naturalWidth, height: image.naturalHeight, mimeType });
+                return;
+            }
+            reject(new Error(i18n.t("common.imageReadFailed")));
+        };
+        const timer = window.setTimeout(() => finish(false), 8000);
+        image.onload = () => finish(true);
+        image.onerror = () => finish(false);
         image.src = dataUrl;
     });
 }
@@ -95,13 +103,21 @@ export async function readImageSizeFromBlob(blob: Blob) {
     const bytes = new Uint8Array(await blob.slice(0, 131072).arrayBuffer());
     const size = readImageSizeFromBytes(bytes);
     if (size?.width && size.height) return { ...size, mimeType: blob.type || "image/png" };
-    return { width: 1024, height: 1024, mimeType: blob.type || "image/png" };
+    if (typeof createImageBitmap === "function") {
+        const bitmap = await createImageBitmap(blob);
+        const width = bitmap.width;
+        const height = bitmap.height;
+        bitmap.close();
+        if (width && height) return { width, height, mimeType: blob.type || "image/png" };
+    }
+    throw new Error(i18n.t("common.imageReadFailed"));
 }
 
 export function dataUrlToFile(image: ReferenceImage) {
     const [header, content] = image.dataUrl.split(",", 2);
+    if (!header?.includes(";base64") || !content) throw new Error(i18n.t("common.imageReadFailed"));
     const mimeType = header.match(/data:(.*?);base64/)?.[1] || image.type || "image/png";
-    const binary = atob(content || "");
+    const binary = atob(content);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
         bytes[index] = binary.charCodeAt(index);

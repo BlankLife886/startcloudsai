@@ -136,8 +136,9 @@ func TestAssistantOutputCleanupCommitsMetadataRemovalWithJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locked) != 1 || locked[0] != key {
-		t.Fatalf("assistant cleanup candidates = %#v, want [%q]", locked, key)
+	// 原图 + 约定推导的小图/展示图变体一并入队清理。
+	if len(locked) != 3 || !containsCleanupKey(locked, key) {
+		t.Fatalf("assistant cleanup candidates = %#v, want %q plus 2 variants", locked, key)
 	}
 }
 

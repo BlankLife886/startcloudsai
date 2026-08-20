@@ -1,6 +1,6 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
-import { StarcloudsApiError, uploadCloudFile } from "@/services/starclouds-api";
+import { StarcloudsApiError, fetchCloudFileBlob, starcloudsFileUrl, uploadCloudFile } from "@/services/starclouds-api";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
@@ -9,10 +9,10 @@ const objectUrls = new Map<string, string>();
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
-    if (blob.type.startsWith("video/")) {
+    if (blob.type.startsWith("video/") || blob.type.startsWith("audio/")) {
         try {
             const uploaded = await uploadCloudFile(blob, mediaFilename(blob));
-            const meta = await readVideoMeta(uploaded.url);
+            const meta = blob.type.startsWith("audio/") ? await readAudioMeta(uploaded.url) : await readVideoMeta(uploaded.url);
             return { url: uploaded.url, storageKey: uploaded.key, bytes: uploaded.sizeBytes, mimeType: uploaded.contentType, ...meta };
         } catch (error) {
             if (!(error instanceof StarcloudsApiError) || error.code !== "network_error") throw error;
@@ -29,7 +29,7 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file"): Pr
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
-    if (isCloudStorageKey(storageKey)) return fallback || `/api/v1/files/${storageKey}`;
+    if (isCloudStorageKey(storageKey)) return fallback || starcloudsFileUrl(storageKey);
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
     const blob = await store.getItem<Blob>(storageKey);
@@ -40,12 +40,12 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
-    if (isCloudStorageKey(storageKey)) return (await fetch(`/api/v1/files/${storageKey}`, { credentials: "include" })).blob();
+    if (isCloudStorageKey(storageKey)) return fetchCloudFileBlob(storageKey);
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
-    if (isCloudStorageKey(storageKey)) return `/api/v1/files/${storageKey}`;
+    if (isCloudStorageKey(storageKey)) return starcloudsFileUrl(storageKey);
     const previous = objectUrls.get(storageKey);
     if (previous) URL.revokeObjectURL(previous);
     await store.setItem(storageKey, blob);
@@ -66,12 +66,20 @@ export async function deleteStoredMedia(keys: Iterable<string>) {
 }
 
 export async function cleanupUnusedMedia(usedData: unknown) {
+    if (hasIncompleteCanvasDocuments(usedData)) return;
     const usedKeys = collectMediaStorageKeys(usedData);
     const unused: string[] = [];
     await store.iterate((_value, key) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
     await deleteStoredMedia(unused);
+}
+
+function hasIncompleteCanvasDocuments(value: unknown): boolean {
+    if (!value || typeof value !== "object") return false;
+    if ("documentPending" in value && value.documentPending) return true;
+    if ("documentStale" in value && value.documentStale) return true;
+    return Object.values(value).some((item) => (Array.isArray(item) ? item.some(hasIncompleteCanvasDocuments) : hasIncompleteCanvasDocuments(item)));
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {
@@ -106,6 +114,10 @@ function isCloudStorageKey(key: string) {
 }
 
 function mediaFilename(blob: Blob) {
+    if (blob.type.startsWith("audio/")) {
+        const extension = blob.type.includes("wav") ? "wav" : blob.type.includes("ogg") ? "ogg" : "mp3";
+        return `canvas-${crypto.randomUUID()}.${extension}`;
+    }
     const extension = blob.type === "video/webm" ? "webm" : "mp4";
     return `canvas-${crypto.randomUUID()}.${extension}`;
 }

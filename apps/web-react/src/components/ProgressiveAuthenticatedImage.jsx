@@ -11,6 +11,8 @@ export function ProgressiveAuthenticatedImage({
   fetchPriority = "auto",
   rootMargin = "240px 0px",
   retryCount = 1,
+  // 主图（展示图）404 时的回退地址（一般传原图），透传给大图层。
+  fallbackSrc = "",
   loadOriginal = false,
   hideStatus = false,
   className = "",
@@ -104,6 +106,7 @@ export function ProgressiveAuthenticatedImage({
           fetchPriority={fetchPriority}
           rootMargin={rootMargin}
           retryCount={retryCount}
+          fallbackSrc={fallbackSrc}
           onLoad={(event) => {
             setOriginalLoaded(true);
             setOriginalFailed(false);

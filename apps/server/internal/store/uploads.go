@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	UploadReferenceTaskInput    = "task_input"
-	UploadReferenceUserAsset    = "user_asset"
-	UploadReferenceUserAvatar   = "user_avatar"
-	UploadReferenceAssistantMsg = "assistant_message"
-	UploadReferenceAssistantRun = "assistant_run"
+	UploadReferenceTaskInput        = "task_input"
+	UploadReferenceUserAsset        = "user_asset"
+	UploadReferenceUserAvatar       = "user_avatar"
+	UploadReferenceUserStudioFigure = "user_studio_figure"
+	UploadReferenceAssistantMsg     = "assistant_message"
+	UploadReferenceAssistantRun     = "assistant_run"
 )
 
 type UserUploadObject struct {
@@ -101,6 +102,18 @@ func LockExistingUserUploadOwners(ctx context.Context, q Q, userIDs []uuid.UUID)
 	return owners, rows.Err()
 }
 
+func HasLiveUserUploadObject(ctx context.Context, q Q, userID uuid.UUID, key string) (bool, error) {
+	key = strings.TrimSpace(key)
+	if !isUserUploadObjectKey(userID, key) {
+		return false, nil
+	}
+	var exists bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM user_upload_objects
+		WHERE object_key = $1 AND user_id = $2 AND deleted_at IS NULL)`, key, userID).Scan(&exists)
+	return exists, err
+}
+
 func lockLiveUserUploadObjects(ctx context.Context, q Q, keys []string) error {
 	rows, err := q.Query(ctx, `SELECT object_key FROM user_upload_objects
 		WHERE object_key = ANY($1::text[]) AND deleted_at IS NULL FOR UPDATE`, keys)
@@ -162,10 +175,21 @@ func DeleteUserUploadReferences(ctx context.Context, q Q, referenceType string, 
 	return err
 }
 
+// IsUserAvatarKey key 是否被某个用户的头像引用。头像会展示给其他登录用户
+// （画廊作者、拼团成员等），文件服务据此放开非属主读取。
+func IsUserAvatarKey(ctx context.Context, q Q, key string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM user_upload_references
+		WHERE object_key = $1 AND reference_type = $2)`,
+		strings.TrimSpace(key), UploadReferenceUserAvatar).Scan(&exists)
+	return exists, err
+}
+
 func validUploadReferenceType(value string) bool {
 	switch value {
 	case UploadReferenceTaskInput, UploadReferenceUserAsset, UploadReferenceUserAvatar,
-		UploadReferenceAssistantMsg, UploadReferenceAssistantRun:
+		UploadReferenceUserStudioFigure, UploadReferenceAssistantMsg, UploadReferenceAssistantRun:
 		return true
 	default:
 		return false

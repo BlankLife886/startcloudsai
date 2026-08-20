@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowUp, ChevronDown, Cpu, Expand, LoaderCircle, PenLine, Shrink, Settings2 } from "lucide-react";
+import { ArrowUp, ChevronDown, Cpu, Expand, PenLine, Shrink, Settings2, Square } from "lucide-react";
 import { Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -7,6 +7,7 @@ import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { reasoningEffortLabel } from "@/components/text-settings-panel";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
 import { defaultConfig, formatModelPrice, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -28,11 +29,12 @@ type CanvasNodePromptPanelProps = {
     onPromptChange: (nodeId: string, prompt: string) => void;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
+    onStopGeneration?: (nodeId: string) => void;
     mentionReferences?: CanvasResourceReference[];
     modeOverride?: CanvasNodeGenerationMode; // Plugin nodes set their generation type through useBuiltinPanel.mode.
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, mentionReferences = [], modeOverride }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStopGeneration, mentionReferences = [], modeOverride }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -59,8 +61,12 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     };
 
     const submit = () => {
+        if (isRunning) {
+            onStopGeneration?.(node.id);
+            return;
+        }
         const text = prompt.trim();
-        if (!text || isRunning || mediaLocked) return;
+        if (!text || mediaLocked) return;
         onGenerate(node.id, mode, text);
     };
 
@@ -103,7 +109,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     </button>
                 </Tooltip>
                 <CanvasPromptLibrary onSelect={updatePrompt} />
-                <PromptSendButton isRunning={isRunning} mode={mode} disabled={isRunning || mediaLocked || !prompt.trim()} locked={mediaLocked} onClick={submit} />
+                <PromptSendButton isRunning={isRunning} mode={mode} startedAt={node.metadata?.generationStartedAt} durationMs={node.metadata?.generationDurationMs} disabled={(!isRunning && !prompt.trim()) || (mediaLocked && !isRunning)} locked={mediaLocked} onClick={submit} />
             </div>
             <Modal className="canvas-prompt-editor-modal" title={null} open={expanded} centered width={720} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom data-canvas-shortcuts-ignore onWheelCapture={(event) => event.stopPropagation()}>
@@ -153,7 +159,9 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         <PromptSendButton
                             isRunning={isRunning}
                             mode={mode}
-                            disabled={isRunning || mediaLocked || !prompt.trim()}
+                            startedAt={node.metadata?.generationStartedAt}
+                            durationMs={node.metadata?.generationDurationMs}
+                            disabled={(!isRunning && !prompt.trim()) || (mediaLocked && !isRunning)}
                             locked={mediaLocked}
                             onClick={() => {
                                 submit();
@@ -224,28 +232,34 @@ function PromptComposerTools({
 function PromptSendButton({
     isRunning,
     mode,
+    startedAt,
+    durationMs,
     disabled,
     locked,
     onClick,
 }: {
     isRunning: boolean;
     mode: CanvasNodeGenerationMode;
+    startedAt?: string;
+    durationMs?: number;
     disabled: boolean;
     locked: boolean;
     onClick: () => void;
 }) {
     const { t } = useTranslation();
+    const elapsedMs = useGenerationElapsed(startedAt, durationMs, isRunning);
+    const runningLabel = t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) });
     return (
         <button
             type="button"
             className="grid size-9 shrink-0 place-items-center rounded-full disabled:opacity-35"
             style={{ background: nodeTypeColor(mode), color: "#fff" }}
             disabled={disabled}
-            title={locked ? t("canvas.unavailable") : undefined}
+            title={locked && !isRunning ? t("canvas.unavailable") : isRunning ? runningLabel : t("canvas.promptPanel.generate")}
             onClick={onClick}
-            aria-label={t(isRunning ? "canvas.node.generating" : "canvas.promptPanel.generate")}
+            aria-label={isRunning ? runningLabel : t("canvas.promptPanel.generate")}
         >
-            {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+            {isRunning ? <Square className="size-3.5 fill-current" /> : <ArrowUp className="size-4" />}
         </button>
     );
 }

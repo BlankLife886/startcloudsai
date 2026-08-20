@@ -38,18 +38,17 @@ func (s *Server) redeemCode(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "code: 格式不正确", 422))
 		return
 	}
-	// 防爆破：单用户 1h 内 10 次失败锁 1h
+	// 防爆破：单用户 1h 内 10 次失败锁 1h。Reserve 原子地「先 INCR 再判断
+	// 超限」，避免先 Check 后 Fail 之间的窗口被并发请求穿透（TOCTOU）；
+	// 兑换成功后 Success 重置计数，正常用户不受影响。
 	limiterKey := user.ID.String()
-	if remain, allowed := s.RedeemLimiter.Check(limiterKey, ""); !allowed {
+	if remain, allowed := s.RedeemLimiter.Reserve(limiterKey, ""); !allowed {
 		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
 		return
 	}
 	ctx := c.Request.Context()
 	redeemed, _, err := redemption.Redeem(ctx, s.St, user.ID, code)
 	if err != nil {
-		if _, isApp := apperr.As(err); isApp {
-			s.RedeemLimiter.Fail(limiterKey, "")
-		}
 		fail(c, err)
 		return
 	}

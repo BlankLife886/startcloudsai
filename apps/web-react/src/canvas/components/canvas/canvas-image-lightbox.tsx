@@ -3,24 +3,30 @@ import { Modal } from "antd";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { cloudFileUrl, isCloudThumbnailUrl, isLocalImageKey } from "@/lib/canvas/canvas-preview-url";
+import { cloudDisplayUrl, cloudFileUrl, isCloudThumbnailUrl, isLocalImageKey } from "@/lib/canvas/canvas-preview-url";
 import { resolveMediaUrl } from "@/services/file-storage";
 import type { CanvasNodeData } from "@/types/canvas";
 
 export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeData | null; open: boolean; onClose: () => void }) {
     const { t } = useTranslation();
     const [src, setSrc] = useState("");
+    const [fallback, setFallback] = useState("");
 
     useEffect(() => {
         if (!open || !node) {
             setSrc("");
+            setFallback("");
             return;
         }
         const content = node.metadata?.content || "";
         const storageKey = node.metadata?.storageKey || "";
         const original = cloudFileUrl(storageKey) || (!isCloudThumbnailUrl(content) ? content : "") || content;
+        // 放大预览优先加载展示图（服务端压缩过的大图）；
+        // 旧图没有展示图时 onError 回退到原图。
+        const display = cloudDisplayUrl(storageKey) || cloudDisplayUrl(content);
         let cancelled = false;
         if (isLocalImageKey(storageKey) || isLocalImageKey(content)) {
+            setFallback("");
             void resolveMediaUrl(storageKey || content, original).then((url) => {
                 if (!cancelled) setSrc(url || original);
             });
@@ -28,7 +34,8 @@ export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeD
                 cancelled = true;
             };
         }
-        setSrc(original);
+        setSrc(display || original);
+        setFallback(display && display !== original ? original : "");
         return () => {
             cancelled = true;
         };
@@ -50,7 +57,17 @@ export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeD
             <div data-canvas-no-zoom data-canvas-shortcuts-ignore className="canvas-image-lightbox-stage" onWheel={(event) => event.stopPropagation()}>
                 {src ? (
                     <>
-                        <img src={src} alt={node?.title || t("assets.kinds.image")} className="canvas-image-lightbox-image" />
+                        <img
+                            src={src}
+                            alt={node?.title || t("assets.kinds.image")}
+                            className="canvas-image-lightbox-image"
+                            onError={() => {
+                                if (fallback && src !== fallback) {
+                                    setSrc(fallback);
+                                    setFallback("");
+                                }
+                            }}
+                        />
                         <button type="button" className="canvas-image-lightbox-close" onClick={onClose} aria-label={t("canvas.project.close")}>
                             <X className="size-4" />
                         </button>

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import gsap from "gsap";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import {
@@ -19,10 +12,10 @@ import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import {
   taskCoverUrl,
+  taskDisplayUrl,
   taskOriginalUrl,
   taskThumbnailUrl,
 } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
-import { taskAspectCss } from "../features/history/taskAspectCss.js";
 import { isSmartCanvasTask } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
@@ -32,15 +25,17 @@ import {
 import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
+import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
-import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import "./HistoryView.css";
 
-const HISTORY_LAYOUT_KEY = "creation-history-layout-v2";
+const HISTORY_LAYOUT_KEY = "creation-history-layout-v3";
 const HISTORY_PREVIEW_LOCK = "react-creation-history-preview";
+const HISTORY_CARD_MEDIA_ASPECT = 4 / 5;
+const HISTORY_CARD_BODY_HEIGHT = 40;
 const DELETABLE_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const STATUS_LABELS = {
   succeeded: "已完成",
@@ -82,7 +77,7 @@ function matchesTypeFilter(task, typeFilter) {
 }
 
 function readStoredLayout() {
-  const stored = localStorage.getItem(HISTORY_LAYOUT_KEY) || "grid:4";
+  const stored = localStorage.getItem(HISTORY_LAYOUT_KEY) || "table:4";
   const columns = Number(stored.split(":")[1]);
   return {
     mode: stored.startsWith("table") ? "table" : "grid",
@@ -219,38 +214,22 @@ export function HistoryView() {
   }, [search, statusFilter, tasks]);
   const masonryItems = useMemo(
     () =>
-      visibleTasks.map((task, index) => {
-        const knownAspect = taskAspectCss(task, "");
-        return {
-          key: String(task.id),
-          item: task,
-          index,
-          aspect: knownAspect || "3 / 4",
-        };
-      }),
+      visibleTasks.map((task, index) => ({
+        key: String(task.id),
+        item: task,
+        index,
+      })),
     [visibleTasks],
   );
-  const getMasonryAspect = useCallback((entry) => entry.aspect, []);
   const masonry = useVirtualMasonryFeed({
     items: masonryItems,
-    fallbackAspect: 3 / 4,
-    bodyHeight: 102,
-    minColumnWidth: 132,
+    fallbackAspect: HISTORY_CARD_MEDIA_ASPECT,
+    bodyHeight: HISTORY_CARD_BODY_HEIGHT,
+    minColumnWidth: 220,
     maxColumns: gridColumns,
-    overscan: 640,
-    getAspect: getMasonryAspect,
-  });
-  useContentReveal({
-    rootRef: pageRef,
-    selector:
-      layoutMode === "grid"
-        ? ".ch-history-masonry__item"
-        : ".ch-history-table tbody tr",
-    ready: !loading,
-    resetKey: `${layoutMode}:${gridColumns}:${typeFilter}:${statusFilter}:${search}`,
-    contentKey: loading ? "loading" : "ready",
-    identityAttribute: "data-history-id",
-    stateAttribute: "data-history-content-motion-state",
+    overscan: 280,
+    uniformRows: true,
+    enabled: layoutMode === "grid",
   });
   const selectedDownloadTasks = visibleTasks.filter(
     (task) => selectedIds.has(String(task.id)) && taskOriginalUrl(task),
@@ -440,8 +419,10 @@ export function HistoryView() {
 
   const coverSrc = (task) =>
     failedThumbIds.has(String(task.id))
-      ? taskOriginalUrl(task) || taskThumbnailUrl(task)
-      : taskThumbnailUrl(task) || taskOriginalUrl(task);
+      ? taskDisplayUrl(task) || taskOriginalUrl(task)
+      : taskThumbnailUrl(task) || taskDisplayUrl(task) || taskOriginalUrl(task);
+  const tableCoverSrc = (task) =>
+    taskThumbnailUrl(task) || taskDisplayUrl(task) || taskOriginalUrl(task);
   const ensureMetadata = async (task) => {
     const id = String(task?.id || "");
     const url = taskOriginalUrl(task);
@@ -478,19 +459,20 @@ export function HistoryView() {
   };
   const revealHistoryImage = (task, event) => {
     const key = String(task.id);
-    const image = event.currentTarget;
+    const image = event?.currentTarget;
+    const root = image?.closest?.(".authenticated-image") || image;
     loadedImageIdsRef.current.add(key);
-    image?.classList.add("is-loaded");
-    gsap.killTweensOf(image);
-    gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
+    root?.classList.add("is-loaded");
   };
   const recoverHistoryImage = (task, event) => {
     const key = String(task.id);
+    const display = taskDisplayUrl(task);
+    const original = taskOriginalUrl(task);
     if (
       !failedThumbIds.has(key) &&
-      taskThumbnailUrl(task) &&
-      taskOriginalUrl(task) &&
-      taskThumbnailUrl(task) !== taskOriginalUrl(task)
+      display &&
+      original &&
+      display !== original
     ) {
       loadedImageIdsRef.current.delete(key);
       setFailedThumbIds((current) => new Set(current).add(key));
@@ -739,7 +721,11 @@ export function HistoryView() {
         : `读取原图 ${batchProgress.completed}/${batchProgress.total}`;
 
   return (
-    <main ref={pageRef} className="ch-page ch-page--history">
+    <main
+      ref={pageRef}
+      className="ch-page ch-page--history"
+      data-history-content-motion-state="entered"
+    >
       <div className="ch-shell">
         <div className="ch-sticky-bar">
           <div className="ch-toolbar">
@@ -869,10 +855,10 @@ export function HistoryView() {
               <button
                 type="button"
                 className={layoutMode === "table" ? "is-active" : ""}
-                aria-label="表格布局"
+                aria-label="列表布局"
                 onClick={() => setLayout("table")}
               >
-                <i className="bi bi-table" />
+                <i className="bi bi-list-ul" />
               </button>
             </div>
           </div>
@@ -930,7 +916,7 @@ export function HistoryView() {
                     style={{
                       width: item.width,
                       height: item.height,
-                      transform: `translate3d(${item.left}px, ${item.top}px, 0)`,
+                      transform: `translate(${item.left}px, ${item.top}px)`,
                     }}
                   >
                     {selectMode && taskOriginalUrl(task) && (
@@ -957,23 +943,20 @@ export function HistoryView() {
                       }
                     >
                       {src ? (
-                        <img
+                        <AuthenticatedImage
                           className={`ch-prompt-card__image${loadedImageIdsRef.current.has(String(task.id)) ? " is-loaded" : ""}`}
                           src={src}
+                          fallbackSrc={
+                            taskDisplayUrl(task) || taskOriginalUrl(task)
+                          }
                           alt={task.cleanPrompt}
+                          maxDimension={Math.min(
+                            640,
+                            Math.max(320, Math.ceil(item.width * 2)),
+                          )}
                           loading={
-                            item.index < Math.max(6, masonry.columnCount * 2)
-                              ? "eager"
-                              : "lazy"
+                            item.index < masonry.columnCount ? "eager" : "lazy"
                           }
-                          fetchPriority={
-                            item.index < Math.max(4, masonry.columnCount)
-                              ? "high"
-                              : "low"
-                          }
-                          decoding="async"
-                          width={Math.max(1, Math.round(item.width))}
-                          height={Math.max(1, item.mediaHeight)}
                           onLoad={(event) => revealHistoryImage(task, event)}
                           onError={(event) => recoverHistoryImage(task, event)}
                         />
@@ -993,10 +976,26 @@ export function HistoryView() {
                           </span>
                         </div>
                       )}
+                      <span className="ch-history-card__details">
+                        <span className="ch-history-card__prompt">
+                          {cardPromptPreview(task.cleanPrompt)}
+                        </span>
+                        <span
+                          className="ch-history-card__meta"
+                          title={cardMediaLabel}
+                        >
+                          <i
+                            className={`bi ${hasCachedMetadata ? "bi-aspect-ratio" : "bi-clock"}`}
+                          />
+                          {cardMediaLabel}
+                        </span>
+                      </span>
                     </button>
                     <div className="ch-card__overlay">
                       <span className="ch-card__overlay-start">
-                        <span className="ch-card__tag">{taskTypeLabel(task)}</span>
+                        <span className="ch-card__tag">
+                          {taskTypeLabel(task)}
+                        </span>
                       </span>
                       <span className="ch-card__overlay-end">
                         <span
@@ -1013,29 +1012,21 @@ export function HistoryView() {
                       </span>
                     </div>
                     <div className="ch-card__body">
-                      <p className="ch-card__prompt">
-                        {cardPromptPreview(task.cleanPrompt)}
-                      </p>
-                      <span
-                        className="ch-card__file-meta"
-                        title={cardMediaLabel}
-                      >
-                        <i
-                          className={`bi ${hasCachedMetadata ? "bi-bounding-box" : "bi-clock"}`}
-                        />
-                        {cardMediaLabel}
-                      </span>
                       <div className="ch-card__actions is-icon-row">
                         <button
                           type="button"
                           title="下载原图"
+                          aria-label="下载原图"
                           disabled={
                             !taskOriginalUrl(task) ||
                             actionBusyIds.has(String(task.id))
                           }
                           onClick={() => downloadTask(task)}
                         >
-                          <i className="bi bi-download" />
+                          <span
+                            className="ch-history-icon is-download"
+                            aria-hidden="true"
+                          />
                         </button>
                         <button
                           type="button"
@@ -1055,8 +1046,9 @@ export function HistoryView() {
                           }
                           onClick={() => openShareAction(task)}
                         >
-                          <i
-                            className={`bi ${share ? "bi-send-check" : "bi-send"}`}
+                          <span
+                            className="ch-history-icon is-publish"
+                            aria-hidden="true"
                           />
                         </button>
                         <button
@@ -1066,12 +1058,14 @@ export function HistoryView() {
                           disabled={!taskPrompt(task)}
                           onClick={() => copyPrompt(task)}
                         >
-                          <i className="bi bi-copy" />
+                          <i className="bi bi-copy" aria-hidden="true" />
                         </button>
                         {!selectMode && (
                           <button
                             type="button"
+                            className="is-danger"
                             title="删除"
+                            aria-label="删除"
                             disabled={
                               !DELETABLE_STATUSES.has(
                                 String(task.status).toLowerCase(),
@@ -1079,7 +1073,10 @@ export function HistoryView() {
                             }
                             onClick={() => removeTask(task)}
                           >
-                            <i className="bi bi-trash3" />
+                            <span
+                              className="ch-history-icon is-delete"
+                              aria-hidden="true"
+                            />
                           </button>
                         )}
                       </div>
@@ -1093,7 +1090,9 @@ export function HistoryView() {
               <table className="ch-history-table">
                 <thead>
                   <tr>
-                    {selectMode && <th className="is-check" aria-label="选择" />}
+                    {selectMode && (
+                      <th className="is-check" aria-label="选择" />
+                    )}
                     <th className="is-work">作品</th>
                     <th className="is-prompt">提示词</th>
                     <th className="is-size">尺寸</th>
@@ -1132,12 +1131,12 @@ export function HistoryView() {
                           <button
                             className="ch-table-preview"
                             type="button"
-                            disabled={!coverSrc(task)}
+                            disabled={!tableCoverSrc(task)}
                             onClick={() => openPreview(task)}
                           >
-                            {coverSrc(task) && (
+                            {tableCoverSrc(task) && (
                               <img
-                                src={coverSrc(task)}
+                                src={tableCoverSrc(task)}
                                 alt={task.cleanPrompt}
                                 loading="lazy"
                                 decoding="async"
@@ -1183,7 +1182,10 @@ export function HistoryView() {
                             {STATUS_LABELS[task.status] || task.status}
                           </span>
                           {share && (
-                            <span className="ch-pill is-share" data-status={share}>
+                            <span
+                              className="ch-pill is-share"
+                              data-status={share}
+                            >
                               {shareStatusLabel(share)}
                             </span>
                           )}
@@ -1265,134 +1267,147 @@ export function HistoryView() {
         ariaLabel="历史记录图片预览"
         onClose={closePreview}
         onExited={() => setBodyScrollLock(HISTORY_PREVIEW_LOCK, false)}
-        layerExtras={preview ? () => (
-          <>
-            <button
-              type="button"
-              className="ch-preview__nav is-prev"
-              disabled={previewIndex <= 0}
-              onClick={() => setPreview(visibleTasks[previewIndex - 1])}
-            >
-              <i className="bi bi-chevron-left" />
-            </button>
-            <button
-              type="button"
-              className="ch-preview__nav is-next"
-              disabled={
-                previewIndex < 0 || previewIndex >= visibleTasks.length - 1
-              }
-              onClick={() => setPreview(visibleTasks[previewIndex + 1])}
-            >
-              <i className="bi bi-chevron-right" />
-            </button>
-          </>
-        ) : null}
+        layerExtras={
+          preview
+            ? () => (
+                <>
+                  <button
+                    type="button"
+                    className="ch-preview__nav is-prev"
+                    disabled={previewIndex <= 0}
+                    onClick={() => setPreview(visibleTasks[previewIndex - 1])}
+                  >
+                    <i className="bi bi-chevron-left" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ch-preview__nav is-next"
+                    disabled={
+                      previewIndex < 0 ||
+                      previewIndex >= visibleTasks.length - 1
+                    }
+                    onClick={() => setPreview(visibleTasks[previewIndex + 1])}
+                  >
+                    <i className="bi bi-chevron-right" />
+                  </button>
+                </>
+              )
+            : null
+        }
       >
         {preview ? (
           <>
-              <div className="ch-preview__media">
-                {taskCoverUrl(preview) ? (
-                  <img
-                    src={taskOriginalUrl(preview) || taskCoverUrl(preview)}
-                    alt={taskPrompt(preview) || "AI 作品"}
-                    loading="eager"
-                    decoding="async"
-                    fetchPriority="high"
-                  />
-                ) : (
-                  <div className="ch-preview__empty">暂无预览图</div>
-                )}
-              </div>
-              <aside className="ch-preview__body">
-                <div className="ch-preview__top">
-                  <div className="ch-card__meta">
-                    <span className="ch-pill">{taskTypeLabel(preview)}</span>
+            <div className="ch-preview__media">
+              {taskCoverUrl(preview) ? (
+                <img
+                  key={String(preview.id)}
+                  src={taskDisplayUrl(preview) || taskCoverUrl(preview)}
+                  alt={taskPrompt(preview) || "AI 作品"}
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onError={(event) => {
+                    // 旧任务的展示图可能 404：回退到原图重试一次。
+                    const fallback = taskOriginalUrl(preview);
+                    const image = event.currentTarget;
+                    if (fallback && !image.dataset.fallbackApplied) {
+                      image.dataset.fallbackApplied = "1";
+                      image.src = fallback;
+                    }
+                  }}
+                />
+              ) : (
+                <div className="ch-preview__empty">暂无预览图</div>
+              )}
+            </div>
+            <aside className="ch-preview__body">
+              <div className="ch-preview__top">
+                <div className="ch-card__meta">
+                  <span className="ch-pill">{taskTypeLabel(preview)}</span>
+                  <span
+                    className="ch-pill is-status"
+                    data-status={preview.status}
+                  >
+                    {STATUS_LABELS[preview.status] || preview.status}
+                  </span>
+                  {taskShareStatus(preview) ? (
                     <span
-                      className="ch-pill is-status"
-                      data-status={preview.status}
+                      className="ch-pill is-share"
+                      data-status={taskShareStatus(preview)}
                     >
-                      {STATUS_LABELS[preview.status] || preview.status}
+                      {shareStatusLabel(taskShareStatus(preview))}
                     </span>
-                    {taskShareStatus(preview) ? (
-                      <span
-                        className="ch-pill is-share"
-                        data-status={taskShareStatus(preview)}
-                      >
-                        {shareStatusLabel(taskShareStatus(preview))}
-                      </span>
-                    ) : null}
-                    <span className="ch-pill">
-                      {formatTime(preview.createdAt)}
-                    </span>
-                    <span className="ch-pill">
-                      {formatPoints(preview.costCents)}
-                    </span>
+                  ) : null}
+                  <span className="ch-pill">
+                    {formatTime(preview.createdAt)}
+                  </span>
+                  <span className="ch-pill">
+                    {formatPoints(preview.costCents)}
+                  </span>
+                </div>
+              </div>
+              <div className="ch-preview__mid">
+                <p className="ch-preview__prompt">
+                  {taskPrompt(preview) || "未填写提示词"}
+                </p>
+                <dl className="ch-preview__specs">
+                  <div>
+                    <dt>尺寸</dt>
+                    <dd>
+                      {metadata[String(preview.id)]?.width
+                        ? `${metadata[String(preview.id)].width}×${metadata[String(preview.id)].height}`
+                        : "读取中…"}
+                    </dd>
                   </div>
-                </div>
-                <div className="ch-preview__mid">
-                  <p className="ch-preview__prompt">
-                    {taskPrompt(preview) || "未填写提示词"}
-                  </p>
-                  <dl className="ch-preview__specs">
-                    <div>
-                      <dt>尺寸</dt>
-                      <dd>
-                        {metadata[String(preview.id)]?.width
-                          ? `${metadata[String(preview.id)].width}×${metadata[String(preview.id)].height}`
-                          : "读取中…"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>原图大小</dt>
-                      <dd>
-                        {formatBytes(metadata[String(preview.id)]?.bytes)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>透明背景</dt>
-                      <dd>
-                        {metadata[String(preview.id)] &&
-                        !metadata[String(preview.id)].error
-                          ? metadata[String(preview.id)].transparent
-                            ? "是"
-                            : "否"
-                          : "—"}
-                      </dd>
-                    </div>
-                  </dl>
-                </div>
-                <div className="ch-preview__bottom">
-                  <div className="ch-card__actions">
-                    {taskPrompt(preview) && (
-                      <button
-                        type="button"
-                        className="is-primary"
-                        onClick={() => copyPrompt(preview)}
-                      >
-                        复制提示词
-                      </button>
-                    )}
-                    <button type="button" onClick={() => downloadTask(preview)}>
-                      下载原图
-                    </button>
+                  <div>
+                    <dt>原图大小</dt>
+                    <dd>{formatBytes(metadata[String(preview.id)]?.bytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>透明背景</dt>
+                    <dd>
+                      {metadata[String(preview.id)] &&
+                      !metadata[String(preview.id)].error
+                        ? metadata[String(preview.id)].transparent
+                          ? "是"
+                          : "否"
+                        : "—"}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+              <div className="ch-preview__bottom">
+                <div className="ch-card__actions">
+                  {taskPrompt(preview) && (
                     <button
                       type="button"
-                      disabled={
-                        !taskShareStatus(preview) &&
-                        preview.status !== "succeeded"
-                      }
-                      onClick={() => openShareAction(preview)}
+                      className="is-primary"
+                      onClick={() => copyPrompt(preview)}
                     >
-                      {taskShareStatus(preview)
-                        ? `投稿 · ${shareStatusLabel(taskShareStatus(preview))}`
-                        : "发布"}
+                      复制提示词
                     </button>
-                    <button type="button" onClick={closePreview}>
-                      关闭
-                    </button>
-                  </div>
+                  )}
+                  <button type="button" onClick={() => downloadTask(preview)}>
+                    下载原图
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      !taskShareStatus(preview) &&
+                      preview.status !== "succeeded"
+                    }
+                    onClick={() => openShareAction(preview)}
+                  >
+                    {taskShareStatus(preview)
+                      ? `投稿 · ${shareStatusLabel(taskShareStatus(preview))}`
+                      : "发布"}
+                  </button>
+                  <button type="button" onClick={closePreview}>
+                    关闭
+                  </button>
                 </div>
-              </aside>
+              </div>
+            </aside>
           </>
         ) : null}
       </DialogMotion>

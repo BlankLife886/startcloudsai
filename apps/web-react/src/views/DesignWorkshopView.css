@@ -427,3 +427,141 @@
 .dws-empty-editor i {
   font-size: 0.85rem;
 }
+
+.dvd-drawer button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+}
+
+.dvd-major-actions {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 2px;
+  padding-right: 6px;
+}
+
+.dvd-major-actions > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dws-muted);
+  cursor: pointer;
+}
+
+.dvd-major-actions > button i {
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.dvd-major-actions > button:hover:not(:disabled) {
+  background: rgba(35, 37, 52, 0.07);
+  color: var(--dws-ink);
+}
+
+.dvd-scrim:not(.is-light) .dvd-major-actions > button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dvd-major-actions > button:disabled {
+  opacity: 0.34;
+  cursor: default;
+}
+
+.dvd-major-actions > button.is-danger:hover:not(:disabled) {
+  background: rgba(240, 68, 56, 0.12);
+  color: #e24b4b;
+}
+
+.dvd-major-extra {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
+.dvd-major-extra .dvd-carriers {
+  margin: 0;
+}
+
+.dvd-drawer .dvd-carrier,
+.dvd-drawer .dvd-child {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  margin: 0;
+  font: inherit;
+  border: 1px solid var(--dws-line);
+}
+
+.dvd-child {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid var(--dws-line);
+  border-radius: 10px;
+  background: var(--dws-field);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dvd-child.is-on {
+  border-color: color-mix(in srgb, var(--dws-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 12%, transparent);
+}
+
+.dvd-child-thumb {
+  display: grid;
+  width: 44px;
+  height: 36px;
+  place-items: center;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #eceef5;
+}
+
+.dvd-scrim:not(.is-light) .dvd-child-thumb {
+  background: #0d0d14;
+}
+
+.dvd-child-thumb .authenticated-image,
+.dvd-child-thumb .authenticated-image-media,
+.dvd-carrier .authenticated-image,
+.dvd-carrier .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dvd-child-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dvd-child-copy strong {
+  font-size: 0.78rem;
+  font-weight: 750;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dvd-child-copy small {
+  color: var(--dws-muted);
+  font-size: 0.64rem;
+}
+
+.dvd-child > .bi-chevron-right {
+  color: var(--dws-muted);
+  font-size: 0.75rem;
+}

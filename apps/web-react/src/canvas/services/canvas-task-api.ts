@@ -1,9 +1,13 @@
 import { nanoid } from "nanoid";
 
-import { imageToDataUrl } from "@/services/image-storage";
-import { StarcloudsApiError, starcloudsJson, starcloudsRequest, uploadCloudFile } from "@/services/starclouds-api";
+import i18n from "@/i18n";
+import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
 import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
 import { canvasImageRequestSize, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
+import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { compactCanvasSnapshot, normalizeCanvasAgentOps, parseCanvasAgentOpsPayload } from "@/lib/canvas/canvas-hosted-agent";
+import { uploadImage } from "@/services/image-storage";
+import { StarcloudsApiError, starcloudsApiUrl, starcloudsFileUrl, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-config-store";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
@@ -19,7 +23,7 @@ type CanvasTask = {
 
 type CanvasAssistantResponse = {
     run: { id: string; status: CanvasTask["status"]; errorMessage?: string };
-    assistantMessage?: { content?: string };
+    assistantMessage?: { content?: string; canvasOps?: unknown; canvasOpsSummary?: string };
 };
 
 export type CanvasAssistantTaskOptions = {
@@ -36,16 +40,105 @@ class CanvasTerminalTaskError extends Error {}
 function wait(delay: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) return reject(abortError());
-        const timer = window.setTimeout(resolve, delay);
-        signal?.addEventListener(
-            "abort",
-            () => {
-                window.clearTimeout(timer);
-                reject(abortError());
-            },
-            { once: true },
-        );
+        const timer = window.setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, delay);
+        const onAbort = () => {
+            window.clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            reject(abortError());
+        };
+        signal?.addEventListener("abort", onAbort);
+        if (signal?.aborted) onAbort();
     });
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency keys
+//
+// Canvas task submissions must be deterministic so that automatic retries and
+// reconnect replays of the same logical generation never create (and bill) a
+// second task. The backend deduplicates on (userId, idempotencyKey).
+//
+// - Workflow node execution:  canvas:${runId}:${nodeId}:${imageIndex}
+// - Manual node generation:   canvas:${projectId}:${nodeId}:${nonce}:${imageIndex}
+//   The nonce is created once per explicit user click and reused for the
+//   whole generation; a new explicit click creates a new nonce.
+// - Derived background removal reuses the parent key with a ":bg:N" suffix.
+
+export function canvasWorkflowTaskKey(runId: string, nodeId: string, imageIndexOrId: number | string) {
+    return `canvas:${runId}:${nodeId}:${imageIndexOrId}`;
+}
+
+export function canvasManualTaskKey(projectId: string, nodeId: string, nonce: string, imageIndexOrId?: number | string) {
+    const base = `canvas:${projectId}:${nodeId}:${nonce}`;
+    return imageIndexOrId === undefined ? base : `${base}:${imageIndexOrId}`;
+}
+
+export function createCanvasTaskNonce() {
+    return nanoid(10);
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency gate
+//
+// At most CANVAS_TASK_CONCURRENCY canvas tasks may be in flight (submitted and
+// not yet terminal) at any moment, so a large workflow wave queues instead of
+// stampeding the backend with dozens of simultaneous submissions and streams.
+
+const CANVAS_TASK_CONCURRENCY = 6;
+
+type CanvasTaskGateWaiter = {
+    resolve: () => void;
+    signal?: AbortSignal;
+    onAbort?: () => void;
+};
+
+let activeCanvasTaskCount = 0;
+const canvasTaskGateWaiters: CanvasTaskGateWaiter[] = [];
+
+function releaseCanvasTaskSlot() {
+    activeCanvasTaskCount = Math.max(0, activeCanvasTaskCount - 1);
+    const waiter = canvasTaskGateWaiters.shift();
+    if (!waiter) return;
+    activeCanvasTaskCount += 1;
+    if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+    waiter.resolve();
+}
+
+function acquireCanvasTaskSlot(signal?: AbortSignal) {
+    if (signal?.aborted) return Promise.reject(abortError());
+    if (activeCanvasTaskCount < CANVAS_TASK_CONCURRENCY) {
+        activeCanvasTaskCount += 1;
+        return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+        const waiter: CanvasTaskGateWaiter = { resolve, signal };
+        canvasTaskGateWaiters.push(waiter);
+        if (!signal) return;
+        waiter.onAbort = () => {
+            const index = canvasTaskGateWaiters.indexOf(waiter);
+            if (index >= 0) canvasTaskGateWaiters.splice(index, 1);
+            reject(abortError());
+        };
+        signal.addEventListener("abort", waiter.onAbort, { once: true });
+        if (signal.aborted) waiter.onAbort();
+    });
+}
+
+async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+    await acquireCanvasTaskSlot(signal);
+    try {
+        return await run();
+    } finally {
+        releaseCanvasTaskSlot();
+    }
+}
+
+/** Cancel a queued task server-side. The backend exposes this as PATCH /tasks/:id { status: "canceled" } and rejects tasks that already started. */
+export function cancelCanvasTask(id: string) {
+    return starcloudsJson<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, "PATCH", { status: "canceled" });
 }
 
 function cloudKey(reference: ReferenceImage) {
@@ -54,17 +147,21 @@ function cloudKey(reference: ReferenceImage) {
 }
 
 async function ensureReferenceKey(reference: ReferenceImage) {
-    const existing = cloudKey(reference);
-    if (existing) return existing;
-    const dataUrl = await imageToDataUrl(reference);
-    const blob = await (await fetch(dataUrl)).blob();
-    return (await uploadCloudFile(blob, reference.name || `canvas-reference-${nanoid()}.png`)).key;
+    const existing = cloudKey(reference) || storageKeyFromUrl(reference.dataUrl || "");
+    if (existing && (existing.startsWith("uploads/") || existing.startsWith("tasks/"))) return existing;
+    const uploaded = await uploadImage(reference.storageKey || reference.dataUrl);
+    if (!uploaded.storageKey.startsWith("uploads/") && !uploaded.storageKey.startsWith("tasks/")) throw new Error(i18n.t("common.imageReadFailed"));
+    return uploaded.storageKey;
 }
 
 export type CanvasTaskOptions = {
     signal?: AbortSignal;
     onCreated?: (taskId: string) => void | Promise<void>;
     onResolved?: (images: Array<{ id: string; dataUrl: string; storageKey?: string }>) => void | Promise<void>;
+    /** Deterministic idempotency key; falls back to a random key when omitted. */
+    idempotencyKey?: string;
+    /** Runs after a concurrency slot is acquired and before the task is submitted; throw an AbortError to skip submission (e.g. the workflow run was stopped while queued). */
+    onBeforeCreate?: () => void;
 };
 
 function taskStatus(value: string | undefined) {
@@ -101,29 +198,33 @@ function pollSignal(signal: AbortSignal | undefined, ms: number) {
 function normalizeTaskOptions(options?: AbortSignal | CanvasTaskOptions): CanvasTaskOptions {
     if (!options) return {};
     if (typeof AbortSignal !== "undefined" && options instanceof AbortSignal) return { signal: options };
-    return options;
+    return options as CanvasTaskOptions;
 }
 
 export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, publicModelKey: string, options?: AbortSignal | CanvasTaskOptions): Promise<ReferenceImage> {
-    const { signal, onCreated } = normalizeTaskOptions(options);
+    const { signal, onCreated, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
     const inputKey = await ensureReferenceKey(reference);
     const modelKey = publicModelKey.trim();
     if (!modelKey) throw new Error("背景移除工具暂不可用");
-    const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {
-        type: "background_remove",
-        prompt: "移除图片背景",
-        params: {
-            publicModelKey: modelKey,
-            _kind: "canvas-background-remove",
-            _source: "react_canvas",
-        },
-        inputKeys: [inputKey],
-        count: 1,
-        idempotencyKey: crypto.randomUUID(),
+    const task = await withCanvasTaskSlot(signal, async () => {
+        if (signal?.aborted) throw abortError();
+        onBeforeCreate?.();
+        const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {
+            type: "background_remove",
+            prompt: "移除图片背景",
+            params: {
+                publicModelKey: modelKey,
+                _kind: "canvas-background-remove",
+                _source: "react_canvas",
+            },
+            inputKeys: [inputKey],
+            count: 1,
+            idempotencyKey: idempotencyKey || crypto.randomUUID(),
+        });
+        scheduleWalletRefresh();
+        await onCreated?.(created.id);
+        return waitForTask(created.id, signal);
     });
-    scheduleWalletRefresh();
-    await onCreated?.(created.id);
-    const task = await waitForTask(created.id, signal);
     const [image] = imagesFromCanvasTask(task);
     return {
         id: nanoid(),
@@ -154,31 +255,133 @@ function imageTaskParams(config: AiConfig) {
     };
 }
 
+const TASK_POLL_BASE_MS = 2_000;
+const TASK_POLL_MAX_MS = 15_000;
+
+type CanvasTaskStream = {
+    readonly active: boolean;
+    takeSnapshot: () => CanvasTask | null;
+    nextEvent: () => Promise<void>;
+    close: () => void;
+};
+
+/**
+ * Subscribe to GET /tasks/:id/events. The server pushes `data: {task, stage,
+ * done}` snapshots and closes the stream when the task is terminal or its push
+ * infrastructure is unavailable; the caller then falls back to polling.
+ */
+function openCanvasTaskStream(id: string): CanvasTaskStream | null {
+    if (typeof EventSource === "undefined") return null;
+    let source: EventSource;
+    try {
+        source = new EventSource(starcloudsApiUrl(`/tasks/${encodeURIComponent(id)}/events`), { withCredentials: true });
+    } catch {
+        return null;
+    }
+    let active = true;
+    let snapshot: CanvasTask | null = null;
+    let wake: (() => void) | null = null;
+    const notify = () => {
+        const current = wake;
+        wake = null;
+        current?.();
+    };
+    source.onmessage = (event) => {
+        try {
+            const payload = JSON.parse(String(event.data)) as { task?: CanvasTask };
+            if (payload && typeof payload === "object" && payload.task) snapshot = payload.task;
+        } catch {
+            // Ignore malformed frames; polling remains the source of truth.
+        }
+        notify();
+    };
+    source.onerror = () => {
+        // Errored or disconnected streams fall back to polling permanently.
+        active = false;
+        source.close();
+        notify();
+    };
+    return {
+        get active() {
+            return active;
+        },
+        takeSnapshot: () => {
+            const current = snapshot;
+            snapshot = null;
+            return current;
+        },
+        nextEvent: () =>
+            new Promise<void>((resolve) => {
+                if (!active || snapshot) return resolve();
+                wake = resolve;
+            }),
+        close: () => {
+            active = false;
+            wake = null;
+            source.close();
+        },
+    };
+}
+
+/**
+ * Wait for a task to reach a terminal state. Prefers server-sent events from
+ * /tasks/:id/events; when the stream is unavailable or drops, falls back to
+ * polling GET /tasks/:id with exponential backoff (2s start, x1.5, 15s cap).
+ * Request failures (network errors / 5xx) retry on the same backoff schedule.
+ */
 async function waitForTask(id: string, signal?: AbortSignal) {
     const deadline = Date.now() + 20 * 60 * 1000;
-    for (;;) {
-        if (signal?.aborted) throw abortError();
-        const poll = pollSignal(signal, 20_000);
-        try {
-            const task = await starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, { signal: poll.signal });
-            const status = taskStatus(task.status);
-            if (taskSucceeded(status) && taskHasOutput(task)) {
-                scheduleWalletRefresh();
-                return { ...task, status: "succeeded" as const };
-            }
-            if (taskFailed(status)) {
-                scheduleWalletRefresh();
-                throw new CanvasTerminalTaskError(task.errorMessage || (status.startsWith("cancel") ? "任务已取消" : "图片生成失败"));
-            }
-        } catch (error) {
+    let pollDelay = TASK_POLL_BASE_MS;
+    let emptySuccessCount = 0;
+    const stream = openCanvasTaskStream(id);
+    try {
+        for (;;) {
             if (signal?.aborted) throw abortError();
-            if (error instanceof CanvasTerminalTaskError) throw error;
-            if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
-        } finally {
-            poll.cleanup();
+            let task = stream?.takeSnapshot() || null;
+            let requestFailed = false;
+            if (!task) {
+                const poll = pollSignal(signal, 20_000);
+                try {
+                    task = await starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, { signal: poll.signal });
+                } catch (error) {
+                    if (signal?.aborted) throw abortError();
+                    if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
+                    requestFailed = true;
+                } finally {
+                    poll.cleanup();
+                }
+            }
+            if (task) {
+                const status = taskStatus(task.status);
+                if (taskSucceeded(status) && taskHasOutput(task)) {
+                    scheduleWalletRefresh();
+                    return { ...task, status: "succeeded" as const };
+                }
+                if (taskSucceeded(status)) {
+                    emptySuccessCount += 1;
+                    if (emptySuccessCount >= 3) {
+                        scheduleWalletRefresh();
+                        throw new Error("任务已完成，但没有返回图片");
+                    }
+                } else {
+                    emptySuccessCount = 0;
+                }
+                if (taskFailed(status)) {
+                    scheduleWalletRefresh();
+                    if (status.startsWith("cancel")) throw abortError();
+                    throw new CanvasTerminalTaskError(task.errorMessage || "图片生成失败");
+                }
+            }
+            if (Date.now() >= deadline) throw new Error("图片仍在后台生成，请稍后重试");
+            if (stream?.active && !requestFailed) {
+                await Promise.race([stream.nextEvent(), wait(TASK_POLL_MAX_MS, signal)]);
+            } else {
+                await wait(pollDelay, signal);
+                pollDelay = Math.min(Math.round(pollDelay * 1.5), TASK_POLL_MAX_MS);
+            }
         }
-        if (Date.now() >= deadline) throw new Error("图片仍在后台生成，请稍后重试");
-        await wait(1500, signal);
+    } finally {
+        stream?.close();
     }
 }
 
@@ -193,44 +396,49 @@ export function imagesFromCanvasTask(task: CanvasTask) {
     if (!count) throw new Error("任务已完成，但没有返回图片");
     return Array.from({ length: count }, (_, index) => {
         const storageKey = keys[index] || "";
-        const dataUrl = urls[index] || (storageKey ? `/api/v1/files/${storageKey}` : "");
+        const dataUrl = urls[index] || (storageKey ? starcloudsFileUrl(storageKey) : "");
         return { id: nanoid(), dataUrl, storageKey };
     }).filter((image) => image.dataUrl || image.storageKey);
 }
 
 export async function requestCanvasImages(config: AiConfig, prompt: string, references: ReferenceImage[] = [], mask?: ReferenceImage, options?: AbortSignal | CanvasTaskOptions) {
-    const { signal, onCreated, onResolved } = normalizeTaskOptions(options);
+    const { signal, onCreated, onResolved, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
     const inputKeys = await Promise.all(references.slice(0, 4).map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
+    if (signal?.aborted) throw abortError();
     const count = Math.max(1, Math.min(4, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {
-        type: "t2i",
-        prompt: prompt.trim(),
-        params: {
-            ...imageTaskParams(config),
-            ...(maskKey ? { maskKey, maskBaseKey: inputKeys[0] } : {}),
-        },
-        inputKeys,
-        count,
-        idempotencyKey: crypto.randomUUID(),
+    const task = await withCanvasTaskSlot(signal, async () => {
+        if (signal?.aborted) throw abortError();
+        onBeforeCreate?.();
+        const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {
+            type: "t2i",
+            prompt: prompt.trim(),
+            params: {
+                ...imageTaskParams(config),
+                ...(maskKey ? { maskKey, maskBaseKey: inputKeys[0] } : {}),
+            },
+            inputKeys,
+            count,
+            idempotencyKey: idempotencyKey || crypto.randomUUID(),
+        });
+        scheduleWalletRefresh();
+        await onCreated?.(created.id);
+        return waitForTask(created.id, signal);
     });
-    scheduleWalletRefresh();
-    await onCreated?.(created.id);
-    const task = await waitForTask(created.id, signal);
     const images = imagesFromCanvasTask(task);
     const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
     if (settings.background !== "transparent") return images;
     await onResolved?.(images);
-    return Promise.all(images.map((image) => applyCanvasTransparentRemoval(image, signal)));
+    return Promise.all(images.map((image, index) => applyCanvasTransparentRemoval(image, signal, idempotencyKey ? `${idempotencyKey}:bg:${index}` : undefined)));
 }
 
-export async function applyCanvasTransparentRemoval(image: { id: string; dataUrl: string; storageKey?: string }, signal?: AbortSignal) {
+export async function applyCanvasTransparentRemoval(image: { id: string; dataUrl: string; storageKey?: string }, signal?: AbortSignal, idempotencyKey?: string) {
     const removalTool = getCanvasBackgroundRemovalTool();
     if (!removalTool?.id) return image;
     const removed = await requestCanvasBackgroundRemoval(
         { id: image.id, name: "canvas-transparent.png", type: "image/png", dataUrl: image.dataUrl, storageKey: image.storageKey },
         removalTool.id,
-        { signal },
+        { signal, idempotencyKey },
     );
     return { id: image.id, dataUrl: removed.dataUrl, storageKey: removed.storageKey };
 }
@@ -268,21 +476,39 @@ function collectMessageReferenceImages(messages: Array<{ role: string; content: 
 
 export async function waitForCanvasAssistantRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal) {
     const deadline = Date.now() + 20 * 60 * 1000;
+    let pollDelay = 700;
     for (;;) {
         if (signal?.aborted) throw abortError();
-        const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, { signal });
-        if (current.run.status === "succeeded") {
-            scheduleWalletRefresh();
-            const content = current.assistantMessage?.content?.trim() || "没有返回内容";
-            onDelta(content);
-            return content;
-        }
-        if (current.run.status === "failed" || current.run.status === "canceled") {
-            scheduleWalletRefresh();
-            throw new Error(current.run.errorMessage || "画布对话任务失败");
+        try {
+            const poll = pollSignal(signal, 20_000);
+            try {
+                const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, { signal: poll.signal });
+                if (current.run.status === "succeeded") {
+                    scheduleWalletRefresh();
+                    const content = current.assistantMessage?.content?.trim() || "没有返回内容";
+                    onDelta(content);
+                    return content;
+                }
+                if (current.run.status === "canceled") {
+                    scheduleWalletRefresh();
+                    throw abortError();
+                }
+                if (current.run.status === "failed") {
+                    scheduleWalletRefresh();
+                    throw new Error(current.run.errorMessage || "画布对话任务失败");
+                }
+                pollDelay = 700;
+            } finally {
+                poll.cleanup();
+            }
+        } catch (error) {
+            if (signal?.aborted) throw abortError();
+            if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
+            if (!(error instanceof StarcloudsApiError) && !(error instanceof TypeError)) throw error;
         }
         if (Date.now() >= deadline) throw new Error("画布对话任务仍在后台处理，请稍后重试");
-        await wait(700, signal);
+        await wait(pollDelay, signal);
+        pollDelay = Math.min(Math.round(pollDelay * 1.5), TASK_POLL_MAX_MS);
     }
 }
 
@@ -303,8 +529,209 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         count: 1,
         requestSize: "auto",
         quality: "high",
+        idempotencyKey: crypto.randomUUID(),
     });
     scheduleWalletRefresh();
     await options?.onCreated?.(created.run.id);
     return waitForCanvasAssistantRun(created.run.id, onDelta, options?.signal);
+}
+
+export type CanvasAgentTurnResult = {
+    text: string;
+    ops: CanvasAgentOp[];
+    summary?: string;
+    executedTools?: number;
+};
+
+export type CanvasAgentToolCall = { requestId: string; name: string; arguments: string };
+export type CanvasAgentToolHandler = (call: CanvasAgentToolCall) => Promise<unknown>;
+
+export type CanvasAgentTurnOptions = {
+    projectId: string;
+    conversationId?: string;
+    snapshot: CanvasAgentSnapshot;
+    signal?: AbortSignal;
+    onCreated?: (runId: string) => void | Promise<void>;
+    onDelta?: (text: string) => void;
+    onToolCall?: CanvasAgentToolHandler;
+    referenceImages?: Array<{ id?: string; name?: string; dataUrl: string }>;
+};
+
+function hostedAgentConversationKey(projectId: string) {
+    return `canvas-hosted-agent:${projectId}`;
+}
+
+export function readHostedAgentConversationId(projectId: string) {
+    try {
+        return sessionStorage.getItem(hostedAgentConversationKey(projectId)) || "";
+    } catch {
+        return "";
+    }
+}
+
+export function writeHostedAgentConversationId(projectId: string, conversationId: string) {
+    try {
+        sessionStorage.setItem(hostedAgentConversationKey(projectId), conversationId);
+    } catch {
+        /* ignore quota */
+    }
+}
+
+export function clearHostedAgentConversationId(projectId: string) {
+    try {
+        sessionStorage.removeItem(hostedAgentConversationKey(projectId));
+    } catch {
+        /* ignore */
+    }
+}
+
+function asCanvasAgentOps(raw: unknown): CanvasAgentOp[] {
+    return normalizeCanvasAgentOps(raw);
+}
+
+async function ensureCanvasAgentConversation(projectId: string, prompt: string, conversationId = "") {
+    const existing = conversationId || readHostedAgentConversationId(projectId);
+    if (existing) return existing;
+    const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
+        title: prompt.slice(0, 42) || "画布 Agent",
+        workspace: "infinite_canvas",
+    });
+    writeHostedAgentConversationId(projectId, conversation.id);
+    return conversation.id;
+}
+
+export async function cancelCanvasAssistantRun(runId: string) {
+    await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}`, "PATCH", { status: "canceled" });
+}
+
+type CanvasAgentStreamPayload = { content?: string; done?: boolean; status?: string; tool?: CanvasAgentToolCall };
+
+function openCanvasAssistantRunStream(runId: string, onEvent: (payload: CanvasAgentStreamPayload) => void) {
+    try {
+        const source = new EventSource(starcloudsApiUrl(`/assistant/runs/${encodeURIComponent(runId)}/events`), { withCredentials: true });
+        source.onmessage = (event) => {
+            try {
+                const payload = JSON.parse(event.data) as CanvasAgentStreamPayload;
+                onEvent(payload);
+                if (payload?.done) source.close();
+            } catch {
+                /* ignore malformed stream frames */
+            }
+        };
+        return source;
+    } catch {
+        return null;
+    }
+}
+
+export async function postCanvasAgentToolResult(runId: string, requestId: string, payload: { result?: unknown; error?: string }) {
+    await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}/tool-results`, "POST", { requestId, ...payload });
+}
+
+export async function waitForCanvasAgentRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal, onToolCall?: CanvasAgentToolHandler): Promise<CanvasAgentTurnResult> {
+    const deadline = Date.now() + 20 * 60 * 1000;
+    let pollDelay = 700;
+    // The worker blocks on each tool result, so a duplicated SSE frame must not
+    // trigger a second execution of the same mutation.
+    const servedToolCalls = new Set<string>();
+    let executedTools = 0;
+    const serveToolCall = async (call: CanvasAgentToolCall) => {
+        if (!onToolCall || !call?.requestId || servedToolCalls.has(call.requestId)) return;
+        servedToolCalls.add(call.requestId);
+        try {
+            const result = await onToolCall(call);
+            executedTools += 1;
+            await postCanvasAgentToolResult(runId, call.requestId, { result });
+        } catch (error) {
+            await postCanvasAgentToolResult(runId, call.requestId, { error: error instanceof Error ? error.message : "工具执行失败" }).catch(() => undefined);
+        }
+    };
+    const stream = openCanvasAssistantRunStream(runId, (payload) => {
+        if (payload.content) onDelta(payload.content);
+        if (payload.tool) void serveToolCall(payload.tool);
+    });
+    const closeStream = () => {
+        stream?.close();
+    };
+    signal?.addEventListener("abort", closeStream, { once: true });
+    try {
+    for (;;) {
+        if (signal?.aborted) throw abortError();
+        try {
+            const poll = pollSignal(signal, 20_000);
+            try {
+                const current = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, { signal: poll.signal });
+                const content = current.assistantMessage?.content?.trim() || "";
+                if (content) onDelta(content);
+                if (current.run.status === "succeeded") {
+                    scheduleWalletRefresh();
+                    // Ops the tool loop already executed come back empty; only
+                    // fall back to parsing the reply when nothing ran, or the
+                    // same changes would be applied a second time.
+                    const parsed = executedTools ? { ops: [] as CanvasAgentOp[], summary: "" } : parseCanvasAgentOpsPayload(content);
+                    const reported = asCanvasAgentOps(current.assistantMessage?.canvasOps);
+                    const ops = reported.length ? reported : parsed.ops;
+                    const summary = current.assistantMessage?.canvasOpsSummary?.trim() || parsed.summary || undefined;
+                    return {
+                        text: ops.length ? summary || "已准备画布操作。" : content || "没有返回内容",
+                        ops,
+                        summary,
+                        executedTools,
+                    };
+                }
+                if (current.run.status === "canceled") {
+                    scheduleWalletRefresh();
+                    throw abortError();
+                }
+                if (current.run.status === "failed") {
+                    scheduleWalletRefresh();
+                    throw new Error(current.run.errorMessage || "画布 Agent 任务失败");
+                }
+                pollDelay = 700;
+            } finally {
+                poll.cleanup();
+            }
+        } catch (error) {
+            if (signal?.aborted) throw abortError();
+            if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
+            if (!(error instanceof StarcloudsApiError) && !(error instanceof TypeError)) throw error;
+        }
+        if (Date.now() >= deadline) throw new Error("画布 Agent 仍在后台处理，请稍后重试");
+        await wait(pollDelay, signal);
+        pollDelay = Math.min(Math.round(pollDelay * 1.5), TASK_POLL_MAX_MS);
+    }
+    } finally {
+        signal?.removeEventListener("abort", closeStream);
+        closeStream();
+    }
+}
+
+export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgentTurnOptions) {
+    const snapshot = compactCanvasSnapshot(options.snapshot);
+    const start = async (conversationId: string) =>
+        starcloudsJson<CanvasAssistantResponse>("/assistant/runs", "POST", {
+            conversationId,
+            prompt,
+            mode: "agent",
+            workspace: "infinite_canvas",
+            canvasSnapshot: snapshot,
+            ...(options.referenceImages?.length ? { referenceImages: options.referenceImages.slice(0, 4) } : {}),
+            count: 1,
+            requestSize: "auto",
+            quality: "high",
+            idempotencyKey: crypto.randomUUID(),
+        });
+    let conversationId = await ensureCanvasAgentConversation(options.projectId, prompt, options.conversationId);
+    let created: CanvasAssistantResponse;
+    try {
+        created = await start(conversationId);
+    } catch (error) {
+        if (!(error instanceof StarcloudsApiError) || error.status !== 404) throw error;
+        clearHostedAgentConversationId(options.projectId);
+        conversationId = await ensureCanvasAgentConversation(options.projectId, prompt);
+        created = await start(conversationId);
+    }
+    scheduleWalletRefresh();
+    await options.onCreated?.(created.run.id);
+    return waitForCanvasAgentRun(created.run.id, options.onDelta || (() => undefined), options.signal, options.onToolCall);
 }

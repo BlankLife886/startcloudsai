@@ -48,11 +48,18 @@ func TestCanvasWorkflowRunLeaseAndProgress(t *testing.T) {
 
 	patchPath := acquirePath + "/" + runID
 	progress := env.do(t, http.MethodPatch, patchPath, map[string]any{
-		"ownerId": ownerA, "status": "running", "completedNodeIds": []string{"node-a"}, "currentNodeId": "node-b",
+		"ownerId": ownerA, "status": "running", "completedNodeIds": []string{"node-a"}, "canceledNodeIds": []string{"node-b"}, "currentNodeId": "node-a",
 	}, token)
 	progressBody, _ := decode(t, progress)
-	if progress.Code != http.StatusOK || progressBody["currentNodeId"] != "node-b" || len(progressBody["completedNodeIds"].([]any)) != 1 {
+	if progress.Code != http.StatusOK || progressBody["currentNodeId"] != "node-a" || len(progressBody["completedNodeIds"].([]any)) != 1 || len(progressBody["canceledNodeIds"].([]any)) != 1 {
 		t.Fatalf("progress: status %d body %s", progress.Code, progress.Body.String())
+	}
+	heartbeat := env.do(t, http.MethodPatch, patchPath, map[string]any{
+		"ownerId": ownerA, "status": "running", "completedNodeIds": []string{"node-a"}, "currentNodeId": "node-a",
+	}, token)
+	heartbeatBody, _ := decode(t, heartbeat)
+	if heartbeat.Code != http.StatusOK || len(heartbeatBody["canceledNodeIds"].([]any)) != 1 {
+		t.Fatalf("heartbeat must preserve canceled nodes: status %d body %s", heartbeat.Code, heartbeat.Body.String())
 	}
 
 	lost := env.do(t, http.MethodPatch, patchPath, map[string]any{

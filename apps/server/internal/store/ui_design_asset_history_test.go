@@ -40,9 +40,10 @@ func insertUIDesignAssetRun(t *testing.T, st *store.Store, user *store.User, inp
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
 		Mode: "image", Prompt: "透明背景，1:1",
 		Params: map[string]any{
-			"serviceKey": "ui_design_asset",
-			"quality":    "high",
-			"count":      float64(1),
+			"serviceKey":      "ui_design_asset",
+			"quality":         "high",
+			"count":           float64(1),
+			"parentOutputUrl": "/api/v1/files/tasks/parent.png",
 			"referenceImages": []any{
 				map[string]any{"fileKey": inputKey},
 			},
@@ -83,6 +84,9 @@ func TestUIDesignAssetHistoryPersistsRunningThenSucceeded(t *testing.T) {
 	}
 	if kind, _ := running.Params["_kind"].(string); kind != store.UIDesignRegionEditKind {
 		t.Fatalf("kind = %#v", running.Params)
+	}
+	if parent, _ := running.Params["parentOutputUrl"].(string); parent != "/api/v1/files/tasks/parent.png" {
+		t.Fatalf("parentOutputUrl = %#v", running.Params["parentOutputUrl"])
 	}
 
 	listedRunning, err := store.ListTasks(ctx, st.Pool, &user.ID, "ui_design", "running", nil, 10, nil, "", "")

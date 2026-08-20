@@ -11,6 +11,7 @@ import "@react/legacy-static/assets/css/image-reveal.css";
 import { router } from "./router.jsx";
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import { LocaleProvider } from "./i18n/index.js";
+import { ClientReleaseBanner } from "./components/ClientReleaseBanner.jsx";
 import { installDevPerformanceEntryGuard } from "./utils/devPerformanceEntryGuard.js";
 import { installGlobalClickGuard } from "./utils/globalClickGuard.js";
 import "./styles.css";
@@ -26,6 +27,7 @@ createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <LocaleProvider>
       <AuthProvider>
+        <ClientReleaseBanner />
         <RouterProvider router={router} />
       </AuthProvider>
     </LocaleProvider>

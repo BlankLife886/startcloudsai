@@ -12,14 +12,23 @@ import (
 
 // Defaults 与 Python 版 settings_service.DEFAULTS 一致。
 var Defaults = map[string]json.RawMessage{
-	"task_prices":                                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "ecommerce_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 0}`),
-	"user_max_running_tasks":                      json.RawMessage(`100`),
-	"user_max_running_images":                     json.RawMessage(`400`),
-	"user_max_concurrent_tasks":                   json.RawMessage(`20`),
-	"global_max_concurrent_tasks":                 json.RawMessage(`2000`),
-	"global_max_active_tasks":                     json.RawMessage(`12000`),
-	"global_max_active_images":                    json.RawMessage(`12000`),
-	"task_failure_retry_count":                    json.RawMessage(`2`),
+	"task_prices":                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "ecommerce_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 0}`),
+	"user_max_running_tasks":      json.RawMessage(`100`),
+	"user_max_running_images":     json.RawMessage(`400`),
+	"user_max_concurrent_tasks":   json.RawMessage(`20`),
+	"global_max_concurrent_tasks": json.RawMessage(`2000`),
+	"global_max_active_tasks":     json.RawMessage(`12000`),
+	"global_max_active_images":    json.RawMessage(`12000`),
+	"task_failure_retry_count":    json.RawMessage(`2`),
+	"task_retry_first_delay_secs": json.RawMessage(`3`),
+	"task_retry_backoff_secs":     json.RawMessage(`15`),
+	// 图片三级图（小图/展示图/原图）中变体的编码配置
+	"image_variant_format":                        json.RawMessage(`"webp"`),
+	"image_display_lossless":                      json.RawMessage(`false`),
+	"image_display_quality":                       json.RawMessage(`85`),
+	"image_display_max_edge":                      json.RawMessage(`2048`),
+	"image_thumb_max_edge":                        json.RawMessage(`512`),
+	"image_fetch_concurrency":                     json.RawMessage(`2`),
 	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
 	"signup_bonus_cents":                          json.RawMessage(`100`),
 	"registration_enabled":                        json.RawMessage(`true`),
@@ -39,6 +48,7 @@ var Defaults = map[string]json.RawMessage{
 	"growth_usage_rewards_enabled":                json.RawMessage(`true`),
 	"growth_usage_milestones":                     json.RawMessage(`[{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]`),
 	"suggestion_reward_max_cents":                 json.RawMessage(`10000`),
+	"page_controls":                               mustMarshalPageControls(PageControlDefaults()),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),
@@ -259,6 +269,48 @@ func TaskModel(ctx context.Context, q store.Q, taskType string) (string, error) 
 		return m, nil
 	}
 	return "gpt-image-2", nil
+}
+
+// ImageVariantConfig 三级图变体（小图/展示图）的生效编码配置。
+type ImageVariantConfig struct {
+	Format         string // "webp" | "png"
+	Lossless       bool   // 仅 webp 有意义
+	Quality        int    // 仅有损 webp 有意义
+	DisplayMaxEdge int
+	ThumbMaxEdge   int
+}
+
+// ResolveImageVariants 读取后台配置并做边界兜底。
+func ResolveImageVariants(ctx context.Context, q store.Q) (ImageVariantConfig, error) {
+	cfg := ImageVariantConfig{Format: "webp", Quality: 85, DisplayMaxEdge: 2048, ThumbMaxEdge: 512}
+	format, err := GetString(ctx, q, "image_variant_format")
+	if err != nil {
+		return cfg, err
+	}
+	if format == "png" {
+		cfg.Format = "png"
+	}
+	lossless, err := GetBool(ctx, q, "image_display_lossless")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Lossless = lossless
+	if quality, err := GetInt(ctx, q, "image_display_quality"); err != nil {
+		return cfg, err
+	} else if quality >= 1 && quality <= 100 {
+		cfg.Quality = int(quality)
+	}
+	if edge, err := GetInt(ctx, q, "image_display_max_edge"); err != nil {
+		return cfg, err
+	} else if edge >= 512 && edge <= 8192 {
+		cfg.DisplayMaxEdge = int(edge)
+	}
+	if edge, err := GetInt(ctx, q, "image_thumb_max_edge"); err != nil {
+		return cfg, err
+	} else if edge >= 128 && edge <= 1024 {
+		cfg.ThumbMaxEdge = int(edge)
+	}
+	return cfg, nil
 }
 
 // C2AConfig chatgpt2api 生效配置。

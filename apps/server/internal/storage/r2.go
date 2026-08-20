@@ -36,6 +36,16 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound")
 }
 
+// IsInvalidRange 客户端 Range 头超出对象大小时 S3/R2 返回 416。
+func IsInvalidRange(err error) bool {
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == 416 {
+		return true
+	}
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidRange"
+}
+
 type Storage struct {
 	client        *s3.Client
 	presigner     *s3.PresignClient
@@ -113,29 +123,53 @@ func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
 // process. The size check is enforced from the object metadata when available;
 // the reader is still capped for providers that omit Content-Length.
 func (s *Storage) OpenObject(ctx context.Context, key string, maxBytes int64) (io.ReadCloser, int64, string, error) {
-	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	})
+	stream, err := s.OpenObjectRange(ctx, key, "", maxBytes)
 	if err != nil {
 		return nil, 0, "", err
 	}
+	return stream.Body, stream.ContentLength, stream.ContentType, nil
+}
+
+// ObjectStream 描述一次（可能是部分内容的）对象读取。
+type ObjectStream struct {
+	Body          io.ReadCloser
+	ContentLength int64 // -1 表示未知
+	ContentType   string
+	// ContentRange 非空表示上游返回了部分内容（应答 206），格式如 bytes 0-1023/4096。
+	ContentRange string
+}
+
+// OpenObjectRange 与 OpenObject 相同，但把客户端的 Range 头（如 bytes=0-1023）
+// 透传给对象存储，用于视频/大文件的分段拉取。rangeSpec 为空时等价于整对象读取。
+func (s *Storage) OpenObjectRange(ctx context.Context, key, rangeSpec string, maxBytes int64) (*ObjectStream, error) {
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}
+	if rangeSpec != "" {
+		input.Range = aws.String(rangeSpec)
+	}
+	out, err := s.client.GetObject(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	if out.ContentLength != nil && *out.ContentLength > maxBytes {
 		_ = out.Body.Close()
-		return nil, 0, "", fmt.Errorf("object exceeds %d byte limit", maxBytes)
+		return nil, fmt.Errorf("object exceeds %d byte limit", maxBytes)
 	}
-	length := int64(-1)
+	stream := &ObjectStream{
+		Body: &limitedReadCloser{
+			reader: io.LimitReader(out.Body, maxBytes+1),
+			close:  out.Body.Close,
+		},
+		ContentLength: -1,
+		ContentType:   aws.ToString(out.ContentType),
+		ContentRange:  aws.ToString(out.ContentRange),
+	}
 	if out.ContentLength != nil {
-		length = *out.ContentLength
+		stream.ContentLength = *out.ContentLength
 	}
-	contentType := ""
-	if out.ContentType != nil {
-		contentType = *out.ContentType
-	}
-	return &limitedReadCloser{
-		reader: io.LimitReader(out.Body, maxBytes+1),
-		close:  out.Body.Close,
-	}, length, contentType, nil
+	return stream, nil
 }
 
 func (s *Storage) GetBytesLimit(ctx context.Context, key string, maxBytes int64) ([]byte, error) {

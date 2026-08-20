@@ -23,6 +23,7 @@ type canvasWorkflowPatchIn struct {
 	OwnerID          string   `json:"ownerId"`
 	Status           string   `json:"status"`
 	CompletedNodeIDs []string `json:"completedNodeIds"`
+	CanceledNodeIDs  []string `json:"canceledNodeIds"`
 	CurrentNodeID    string   `json:"currentNodeId"`
 	ErrorMessage     string   `json:"errorMessage"`
 }
@@ -56,7 +57,7 @@ func canvasWorkflowRunJSON(item *store.CanvasWorkflowRun) gin.H {
 	}
 	return gin.H{
 		"id": item.ID.String(), "projectId": item.ProjectID.String(), "ownerId": item.OwnerID.String(), "status": item.Status,
-		"nodeIds": item.NodeIDs, "completedNodeIds": item.CompletedNodeIDs, "currentNodeId": item.CurrentNodeID,
+		"nodeIds": item.NodeIDs, "completedNodeIds": item.CompletedNodeIDs, "canceledNodeIds": item.CanceledNodeIDs, "currentNodeId": item.CurrentNodeID,
 		"errorMessage": item.ErrorMessage, "leaseExpiresAt": isoPointer(item.LeaseExpiresAt),
 		"startedAt": isoValue(item.StartedAt), "updatedAt": isoValue(item.UpdatedAt), "finishedAt": isoPointer(item.FinishedAt),
 	}
@@ -159,6 +160,12 @@ func (s *Server) patchCanvasWorkflowRun(c *gin.Context) {
 		return
 	}
 	completedJSON, _ := json.Marshal(completed)
+	canceled, err := validCanvasWorkflowNodeIDs(in.CanceledNodeIDs, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	canceledJSON, _ := json.Marshal(canceled)
 	now := time.Now()
 	var item *store.CanvasWorkflowRun
 	if in.Status == "running" || in.Status == "" {
@@ -167,16 +174,16 @@ func (s *Server) patchCanvasWorkflowRun(c *gin.Context) {
 			fail(c, apperr.E("validation_error", "ownerId: 必须是有效的 UUID", 422))
 			return
 		}
-		item, err = store.UpdateCanvasWorkflowRunProgress(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, ownerID, completedJSON, strings.TrimSpace(in.CurrentNodeID), now, canvasWorkflowLease)
+		item, err = store.UpdateCanvasWorkflowRunProgress(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, ownerID, completedJSON, canceledJSON, strings.TrimSpace(in.CurrentNodeID), now, canvasWorkflowLease)
 	} else if in.Status == "succeeded" || in.Status == "failed" {
 		ownerID, parseErr := uuid.Parse(strings.TrimSpace(in.OwnerID))
 		if parseErr != nil {
 			fail(c, apperr.E("validation_error", "ownerId: 必须是有效的 UUID", 422))
 			return
 		}
-		item, err = store.FinishCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, ownerID, in.Status, completedJSON, strings.TrimSpace(in.CurrentNodeID), strings.TrimSpace(in.ErrorMessage), now)
+		item, err = store.FinishCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, ownerID, in.Status, completedJSON, canceledJSON, strings.TrimSpace(in.CurrentNodeID), strings.TrimSpace(in.ErrorMessage), now)
 	} else if in.Status == "canceled" {
-		item, err = store.CancelCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, completedJSON, strings.TrimSpace(in.CurrentNodeID), now)
+		item, err = store.CancelCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, runID, completedJSON, canceledJSON, strings.TrimSpace(in.CurrentNodeID), now)
 	} else {
 		fail(c, apperr.E("validation_error", "status: 状态无效", 422))
 		return

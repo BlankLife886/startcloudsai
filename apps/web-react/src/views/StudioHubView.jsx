@@ -30,7 +30,9 @@ import {
   studioLaunchFields,
 } from "@react/legacy-modules/features/creator-hub/studioLaunchProfiles.js";
 import {
+  COMMERCE_ENTRY_GROUPS,
   STUDIO_TOOLS,
+  ecomToolCover,
   stashPendingPrompt,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
@@ -38,6 +40,7 @@ import {
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
+  taskDisplayUrl,
   taskOriginalUrl,
   taskThumbnailUrl,
 } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
@@ -49,6 +52,10 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { useLocale } from "../i18n/index.js";
+import {
+  ECOMMERCE_PAGE_KEYS,
+  isPageEntryVisible,
+} from "../config/pageControls.js";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
@@ -60,7 +67,7 @@ const LEAD_LINES = [
 const COMPOSER_TOOLS = new Set(["assistant", "t2i"]);
 const COMPOSER_DRAFT_KEY = "studio-hub-composer-draft-v1";
 const MAX_COMPOSER_REFS = 4;
-const TOOL_WALL_ORDER = ["assistant", "model", "t2i", "coloring", "ui", "game"];
+const TOOL_WALL_ORDER = ["assistant", "t2i", "model", "coloring", "ui", "game"];
 const ECOMMERCE_MODE_IDS = [
   "shoot",
   "listing",
@@ -564,7 +571,12 @@ export function StudioHubView() {
       STUDIO_TOOLS.filter(
         (tool) =>
           featureEnabled(runtimeConfig, tool.feature) &&
-          routeVisible(runtimeConfig, tool.to),
+          routeVisible(runtimeConfig, tool.to) &&
+          (tool.id === "ecommerce"
+            ? ECOMMERCE_PAGE_KEYS.some((key) =>
+                isPageEntryVisible(runtimeConfig.pageControls, key),
+              )
+            : isPageEntryVisible(runtimeConfig.pageControls, tool.to)),
       ),
     [runtimeConfig],
   );
@@ -705,15 +717,29 @@ export function StudioHubView() {
   const ecommerceTool = visibleTools.find((tool) => tool.id === "ecommerce");
   const ecommerceModes = ECOMMERCE_MODE_IDS.map((id) =>
     ECOMMERCE_MODES.find((mode) => mode.id === id),
-  ).filter(Boolean);
+  ).filter(
+    (mode) =>
+      mode &&
+      isPageEntryVisible(runtimeConfig.pageControls, `ecommerce.${mode.id}`),
+  );
+  const ecommerceGroups = COMMERCE_ENTRY_GROUPS.map((group) => {
+    const ids = group.ids.filter((id) =>
+      isPageEntryVisible(runtimeConfig.pageControls, `ecommerce.${id}`),
+    );
+    return ids.length
+      ? { ...group, ids, to: `/ecommerce-design?tool=${ids[0]}` }
+      : null;
+  }).filter(Boolean);
   const recentItems = recentTasks.map((task, index) => ({
     key: String(task.id),
     task,
     index,
     aspect: taskAspect(task),
     src: failedThumbs.has(String(task.id))
-      ? taskOriginalUrl(task) || taskThumbnailUrl(task)
+      ? // 缩略图加载失败时优先展示图（压缩大图），没有再退原图
+        taskDisplayUrl(task) || taskOriginalUrl(task) || taskThumbnailUrl(task)
       : taskThumbnailUrl(task) || taskOriginalUrl(task),
+    fallbackSrc: failedThumbs.has(String(task.id)) ? taskOriginalUrl(task) : "",
   }));
   const columns = balanceColumns(recentItems, columnCount);
 
@@ -1668,6 +1694,7 @@ export function StudioHubView() {
                       <strong>
                         <i className={`bi ${tool.icon}`} /> {tool.label}
                       </strong>
+                      {tool.tagline && <span>{tool.tagline}</span>}
                     </div>
                   </Link>
                 ))}
@@ -1685,31 +1712,32 @@ export function StudioHubView() {
                   <h2>AI 电商</h2>
                   <p>商品、人物与营销视觉独立工作流</p>
                 </div>
-                <Link to={ecommerceTool.to}>进入电商工作台 →</Link>
+                <Link to={ecommerceGroups[0]?.to || ecommerceTool.to}>
+                  进入电商工作台 →
+                </Link>
               </div>
               <div className="studio-commerce-module">
-                <Link
-                  to={`${ecommerceTool.to}?tool=detail`}
-                  className="studio-commerce-module__hero"
-                  data-studio-tool
-                >
-                  <img
-                    src={ecommerceTool.cover}
-                    alt={ecommerceTool.label}
-                    loading="lazy"
-                    decoding="async"
-                  />
-                  <span className="studio-commerce-module__badge">
-                    {ecommerceTool.badge}
-                  </span>
-                  <span className="studio-commerce-module__hero-copy">
-                    <small>COMMERCE STUDIO</small>
-                    <strong>{ecommerceTool.tagline}</strong>
-                    <span>
-                      进入完整电商工作台 <i className="bi bi-arrow-up-right" />
-                    </span>
-                  </span>
-                </Link>
+                <div className="studio-commerce-groups" aria-label="电商业务分组">
+                  {ecommerceGroups.map((group) => (
+                    <Link
+                      key={group.id}
+                      to={group.to}
+                      className={`studio-commerce-group is-${group.id}`}
+                      data-studio-tool
+                    >
+                      <img
+                        src={group.cover}
+                        alt={group.label}
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span className="studio-commerce-group__copy">
+                        <strong>{group.label}</strong>
+                        <small>{group.description}</small>
+                      </span>
+                    </Link>
+                  ))}
+                </div>
                 <div
                   className="studio-commerce-module__modes"
                   aria-label="电商工具快捷入口"
@@ -1721,14 +1749,15 @@ export function StudioHubView() {
                       className="studio-commerce-mode"
                       data-studio-tool
                     >
-                      <span className="studio-commerce-mode__icon">
-                        <i className={`bi ${mode.icon}`} />
-                      </span>
+                      <img
+                        src={ecomToolCover(mode.id)}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                      />
                       <span className="studio-commerce-mode__copy">
                         <strong>{mode.shortLabel || mode.label}</strong>
-                        <small>{mode.tagline}</small>
                       </span>
-                      <i className="bi bi-chevron-right studio-commerce-mode__arrow" />
                     </Link>
                   ))}
                 </div>
@@ -1782,6 +1811,7 @@ export function StudioHubView() {
                           {item.src ? (
                             <AuthenticatedImage
                               src={item.src}
+                              fallbackSrc={item.fallbackSrc}
                               alt={taskPrompt(item.task) || "AI 作品"}
                               loading={
                                 item.index < Math.max(4, columnCount * 2)

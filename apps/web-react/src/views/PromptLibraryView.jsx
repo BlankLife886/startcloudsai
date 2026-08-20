@@ -80,17 +80,32 @@ export function PromptLibraryView() {
       stopPreviewInertiaGuard();
       const shouldBlock = (event) => {
         if (!allowPreviewScroll) return true;
-        const scroller =
-          event.target?.closest?.(".ch-preview__media") ||
-          event.target?.closest?.(".ch-preview__mid");
-        if (!scroller) return true;
+        const panel = previewPanelRef.current;
+        let element =
+          typeof Element !== "undefined" && event.target instanceof Element
+            ? event.target
+            : null;
+        if (!element || !panel?.contains(element)) return true;
         if (event.type === "touchmove") return false;
-        const { scrollTop, scrollHeight, clientHeight } = scroller;
         const delta = Number(event.deltaY) || 0;
-        if (scrollHeight <= clientHeight + 1) return true;
-        const atTop = scrollTop <= 0;
-        const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-        return (atTop && delta < 0) || (atBottom && delta > 0);
+        while (element && panel?.contains(element)) {
+          if (
+            element.matches(
+              ".ch-preview__media, .ch-preview__mid, .ch-preview",
+            ) &&
+            element.scrollHeight > element.clientHeight + 1
+          ) {
+            const { scrollTop, scrollHeight, clientHeight } = element;
+            const atTop = scrollTop <= 0;
+            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+            if (!((atTop && delta < 0) || (atBottom && delta > 0))) {
+              return false;
+            }
+          }
+          if (element === panel) break;
+          element = element.parentElement;
+        }
+        return true;
       };
       const blockOverscroll = (event) => {
         if (shouldBlock(event)) event.preventDefault();
@@ -346,6 +361,18 @@ export function PromptLibraryView() {
     if (!previewMotionPresent) return undefined;
     setBodyScrollLock(PREVIEW_SCROLL_LOCK, true, { freezeViewport: false });
     startPreviewInertiaGuard(0, { allowPreviewScroll: true });
+    return () => {
+      stopPreviewInertiaGuard();
+      setBodyScrollLock(PREVIEW_SCROLL_LOCK, false);
+    };
+  }, [
+    previewMotionPresent,
+    startPreviewInertiaGuard,
+    stopPreviewInertiaGuard,
+  ]);
+
+  useEffect(() => {
+    if (!preview) return undefined;
     const onKeyDown = (event) => {
       if (event.key === "ArrowLeft" && hasPreviewPrev) {
         event.preventDefault();
@@ -356,19 +383,13 @@ export function PromptLibraryView() {
       }
     };
     document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      setBodyScrollLock(PREVIEW_SCROLL_LOCK, false);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    closePreview,
     hasPreviewNext,
     hasPreviewPrev,
     preview,
-    previewMotionPresent,
     previewIndex,
     showPreviewAt,
-    startPreviewInertiaGuard,
   ]);
 
   async function copyPrompt(item) {

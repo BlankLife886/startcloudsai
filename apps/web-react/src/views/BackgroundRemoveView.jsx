@@ -12,7 +12,7 @@ import {
   savingsPercent,
   terminateCompressWorker,
 } from "@react/legacy-modules/features/image-compress/compressEngine.js";
-import { taskCoverUrl, taskOriginalUrl } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
+import { taskCoverUrl, taskDisplayUrl, taskOriginalUrl } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { listTasks } from "@react/legacy-modules/services/tasksApi.js";
@@ -142,6 +142,8 @@ export function BackgroundRemoveView() {
   const [sourceFile, setSourceFile] = useState(null);
   const [sourcePreview, setSourcePreview] = useState("");
   const [resultUrl, setResultUrl] = useState("");
+  // 展示图（服务端压缩大图）：仅用于结果预览；下载/压缩仍走 resultUrl 原图。
+  const [resultDisplayUrl, setResultDisplayUrl] = useState("");
   const [processing, setProcessing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [cost, setCost] = useState(null);
@@ -190,9 +192,10 @@ export function BackgroundRemoveView() {
     resultCacheRef.current = { url: "", file: null };
   }, []);
 
-  const showResult = useCallback((url, { historyId = "", fromHistory = false } = {}) => {
+  const showResult = useCallback((url, { historyId = "", fromHistory = false, displayUrl = "" } = {}) => {
     if (!url || !mountedRef.current) return false;
     setResultUrl(url);
+    setResultDisplayUrl(displayUrl || "");
     setActiveHistoryId(historyId);
     setLatestFromHistory(fromHistory);
     setErrorMessage("");
@@ -217,6 +220,7 @@ export function BackgroundRemoveView() {
     setSourceFile(file);
     setSourcePreview(preview);
     setResultUrl("");
+    setResultDisplayUrl("");
     setResultReveal(false);
     setErrorMessage("");
     setActiveHistoryId("");
@@ -231,6 +235,7 @@ export function BackgroundRemoveView() {
     releasePreview();
     setSourceFile(null);
     setResultUrl("");
+    setResultDisplayUrl("");
     setResultReveal(false);
     setErrorMessage("");
     setActiveHistoryId("");
@@ -265,6 +270,7 @@ export function BackgroundRemoveView() {
         showResult(taskOriginalUrl(next[0]) || taskCoverUrl(next[0]), {
           historyId: next[0].id,
           fromHistory: true,
+          displayUrl: taskDisplayUrl(next[0]),
         });
       }
       return next;
@@ -387,6 +393,7 @@ export function BackgroundRemoveView() {
     taskControllerRef.current = controller;
     setProcessing(true);
     setResultUrl("");
+    setResultDisplayUrl("");
     setResultReveal(false);
     setErrorMessage("");
     setActiveHistoryId("");
@@ -409,7 +416,12 @@ export function BackgroundRemoveView() {
         taskOriginalUrl(completed) ||
         "";
       if (!output) throw new Error("任务已完成，但没有返回图片");
-      showResult(output, { historyId: completed?.id || "" });
+      showResult(output, {
+        historyId: completed?.id || "",
+        displayUrl:
+          response?.job?.displayMediaUrls?.[0] ||
+          (completed ? taskDisplayUrl(completed) : ""),
+      });
       if (completed) {
         setHistoryItems((current) => [completed, ...current.filter((item) => item.id !== completed.id)].slice(0, HISTORY_LIMIT));
       } else {
@@ -485,7 +497,7 @@ export function BackgroundRemoveView() {
     if (processing) return;
     const url = taskOriginalUrl(task) || taskCoverUrl(task);
     if (!url) return;
-    showResult(url, { historyId: task.id, fromHistory: true });
+    showResult(url, { historyId: task.id, fromHistory: true, displayUrl: taskDisplayUrl(task) });
     setHistoryOpen(false);
   };
 
@@ -522,7 +534,7 @@ export function BackgroundRemoveView() {
         <div className="br-bridge" aria-hidden="true"><div className="br-bridge__rail">{Array.from({ length: 5 }, (_, index) => <span key={index} className="br-bridge__dot" />)}</div><div className="br-bridge__orb"><i className={`bi ${processing ? "bi-hourglass-split" : resultUrl ? "bi-check-lg" : "bi-scissors"}`} /></div></div>
         <div className={`br-pane is-result${resultUrl ? " has-result" : ""}`}>
           <div className="br-pane__head"><strong>透明结果</strong>{resultUrl ? <span>{latestFromHistory ? "最近一张结果" : "PNG · 透明通道"}</span> : processing ? <span>处理中</span> : null}<button type="button" className="br-ghost" onClick={openHistory}><i className="bi bi-clock-history" />查看历史</button></div>
-          {resultUrl ? <div className={`br-frame is-checker${resultReveal ? " is-reveal" : ""}`}><AuthenticatedImage className="br-result-image" src={resultUrl} alt="背景移除结果" loading="eager" maxDimension={1600} /><div className="br-frame__badge"><i className="bi bi-check2-circle" />{latestFromHistory ? "历史结果" : "已抠图"}</div></div> : <div className={`br-empty${processing ? " is-busy" : ""}`}><div className="br-loader"><span className="br-loader__ring" /><span className="br-loader__ring is-delay" /><span className="br-loader__core"><i className={`bi ${processing ? "bi-magic" : "bi-person-bounding-box"}`} /></span></div><strong>{processing ? meta.label : "结果将在这里显示"}</strong><p>{processing ? meta.detail : "移除背景后可预览、本页压缩并下载"}</p>{processing && <div className="br-progress"><span /></div>}</div>}
+          {resultUrl ? <div className={`br-frame is-checker${resultReveal ? " is-reveal" : ""}`}><AuthenticatedImage className="br-result-image" src={resultDisplayUrl || resultUrl} fallbackSrc={resultUrl} alt="背景移除结果" loading="eager" maxDimension={1600} /><div className="br-frame__badge"><i className="bi bi-check2-circle" />{latestFromHistory ? "历史结果" : "已抠图"}</div></div> : <div className={`br-empty${processing ? " is-busy" : ""}`}><div className="br-loader"><span className="br-loader__ring" /><span className="br-loader__ring is-delay" /><span className="br-loader__core"><i className={`bi ${processing ? "bi-magic" : "bi-person-bounding-box"}`} /></span></div><strong>{processing ? meta.label : "结果将在这里显示"}</strong><p>{processing ? meta.detail : "移除背景后可预览、本页压缩并下载"}</p>{processing && <div className="br-progress"><span /></div>}</div>}
         </div>
       </section>
 

@@ -225,6 +225,8 @@ func (s *Server) replacePromptImportItemCover(ctx context.Context, batchID, item
 	if ext == "" {
 		return nil, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400)
 	}
+	// 封面是纯展示素材：按后台图片配置压缩后落库。
+	raw, ext, contentType = s.compressCoverImage(ctx, raw, ext, contentType)
 	if _, _, err := media.Dimensions(raw); err != nil {
 		return nil, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400)
 	}

@@ -767,7 +767,12 @@ export function TryonLiveStage({
               }
             >
               <AuthenticatedImage
-                src={resultUrl}
+                src={
+                  // 主舞台大图优先展示图（服务端压缩大图），404 回退原图
+                  history.find((row) => row.url === resultUrl)?.display ||
+                  resultUrl
+                }
+                fallbackSrc={resultUrl}
                 alt={copy.resultAlt || "生成结果"}
                 loading="eager"
                 maxDimension={1600}

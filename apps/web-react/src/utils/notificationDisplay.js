@@ -81,6 +81,11 @@ export function displayNotificationTitle(title, body) {
   return rawTitle;
 }
 
+export function isAnnouncementNotification(item) {
+  const kind = String(item?.kind || "").toLowerCase();
+  return kind.includes("announce") || String(item?.title || "").includes("公告");
+}
+
 export function displayNotification(item) {
   const title = displayNotificationTitle(item?.title, item?.body);
   const body = stripLeadingProductName(title, displayNotificationBody(item?.body));

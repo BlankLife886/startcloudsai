@@ -319,7 +319,7 @@
 
 .compensation-points li {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, 1fr);
   align-items: start;
   gap: 14px;
   padding: 14px 0;
@@ -332,13 +332,16 @@
 
 .compensation-point__icon {
   display: grid;
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   place-items: center;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 14px;
-  font-size: 1.15rem;
+  background: transparent;
+}
+
+.compensation-point__icon img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
 }
 
 .compensation-point__head {

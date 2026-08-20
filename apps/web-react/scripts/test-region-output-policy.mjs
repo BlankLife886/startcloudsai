@@ -8,7 +8,19 @@ import {
   resolveRegionDesignReference,
   resolveRegionImageRequestSize,
   resolveRegionSelectionRequestSize,
+  wantsRegionTransparentOutput,
 } from '../src/legacy-modules/features/design-workshop/regionOutputPolicy.js'
+
+assert.equal(wantsRegionTransparentOutput('', 'custom'), true)
+assert.equal(wantsRegionTransparentOutput('', 'improve-icon'), false)
+assert.equal(
+  wantsRegionTransparentOutput('仅移除中文文字，图标保持一致性，并且移除背景', 'improve-icon'),
+  true,
+)
+assert.equal(wantsRegionTransparentOutput('去掉背景并抠图', 'remove'), true)
+assert.equal(wantsRegionTransparentOutput('remove the background', 'improve-icon'), true)
+assert.equal(wantsRegionTransparentOutput('保持图标一致性', 'improve-icon'), false)
+assert.equal(wantsRegionTransparentOutput('更换背景更有层次', 'replace-background'), false)
 
 assert.deepEqual(normalizeRegionRecognitionTypes([]), [])
 assert.deepEqual(normalizeRegionRecognitionTypes(['icon', 'icon', 'unknown', 'text']), [
@@ -78,6 +90,35 @@ assert.equal(
     ],
   }).length,
   2,
+)
+assert.deepEqual(
+  normalizeRegionBoxesFromSession({
+    selections: [
+      {
+        id: 'a',
+        x: 0.1,
+        y: 0.1,
+        width: 0.2,
+        height: 0.2,
+        resultUrl: '/region.png',
+        runId: 'run-1',
+        conversationId: 'conv-1',
+      },
+    ],
+  }).map((item) => ({
+    id: item.id,
+    resultUrl: item.resultUrl,
+    runId: item.runId,
+    conversationId: item.conversationId,
+  })),
+  [
+    {
+      id: 'a',
+      resultUrl: '/region.png',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    },
+  ],
 )
 assert.deepEqual(
   resolveRegionDesignReference({

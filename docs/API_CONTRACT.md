@@ -180,6 +180,8 @@ task 主要字段：
 | GET    | `/api/v1/canvas-projects/{id}/workflow-run` | 读取当前活动工作流运行；无活动运行时返回 `{run:null}` |
 | POST   | `/api/v1/canvas-projects/{id}/workflow-runs` | 以 `{ownerId,nodeIds}` 创建或取得运行租约，返回 `{run,acquired}` |
 | PATCH  | `/api/v1/canvas-projects/{id}/workflow-runs/{runId}` | 心跳并更新进度，或将运行标记为 `succeeded`、`failed`、`canceled` |
+| GET    | `/api/v1/canvas-workflow-templates` | 已发布模板元数据列表；不返回完整 `document` |
+| GET    | `/api/v1/canvas-workflow-templates/{id}` | 读取一个已发布模板及完整 v3 `document` |
 
 `PATCH` 使用乐观锁。客户端必须提交最后读取到的 `revision`；版本落后时返回 HTTP 409 `revision_conflict`，不得静默覆盖云端版本。document 必须包含 `nodes:[]` 和 `version`；版本 1、2 使用 `edges:[]`，版本 3 使用 `connections:[]`。可选的 `viewport` 必须是对象。省略 document 时服务端创建空的版本 2 文档。
 
@@ -218,6 +220,7 @@ task 主要字段：
 | ---- | ------------------------- | ------------------------------------------------------- |
 | GET  | `/api/v1/pricing`       | `{taskPointPrices,taskPointPriceRanges,taskPrices,taskPriceRanges}` |
 | GET  | `/api/v1/changelog`     | 公开更新说明                                            |
+| GET  | `/api/v1/changelog/latest` | 最近一次后台发版；用户端用来提示刷新                 |
 | GET  | `/api/v1/announcements` | 当前生效公告                                            |
 | GET  | `/api/v1/health`             | API、PostgreSQL 与 Redis 健康状态；成功 `{status:"ok"}` |
 
@@ -243,6 +246,17 @@ task 主要字段：
 `stats` 包含 `{totalUsers,newUsersToday,taskDaily,walletBalanceCents,runningTasks,typeDistribution}` 等字段。管理任务列表提供扁平 `userEmail`。
 
 `system/metrics` 只允许管理员读取。HTTP 指标为近 60 秒滚动窗口，不包含健康检查和指标请求自身；队列或 Worker 心跳不可用时返回 `available:false` 与稳定错误码，不泄露 Redis 错误详情。pprof 不属于 REST API，永远不通过公开网关提供。
+
+### 画布模板管理
+
+| 方法   | 路径                                                   | 说明 |
+| ------ | ------------------------------------------------------ | ---- |
+| GET    | `/api/v1/admin/canvas-workflow-templates`              | 全部模板元数据，包含已下架记录，不返回完整 `document` |
+| POST   | `/api/v1/admin/canvas-workflow-templates`              | 上传模板正文与展示元数据 |
+| PATCH  | `/api/v1/admin/canvas-workflow-templates/{id}`         | 修改元数据、排序、发布状态，可选替换模板正文 |
+| DELETE | `/api/v1/admin/canvas-workflow-templates/{id}`         | 删除模板，成功返回 204 |
+
+创建请求包含 `{slug,title,category,categoryLabel,industry?,summary?,platforms?,deliverables?,accent?,sort?,enabled?,document}`。`document` 必须是画布 v3 JSON，正文最大 1 MiB，含 1 至 1000 个节点和最多 5000 条连线；所有连线端点必须存在。管理页面也接受完整画布导出的 `projects.json`，并提取第一个项目后提交。
 
 ## 管理端：兑换码
 

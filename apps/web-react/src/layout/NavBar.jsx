@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Link, useLocation, useNavigate } from "react-router";
@@ -17,10 +17,12 @@ import {
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
 import { getTrialAccessCampaign } from "@react/legacy-modules/services/trialAccessApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
-import tryonPreview from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
-import listingPreview from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
-import detailPreview from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
-import { displayNotification } from "../utils/notificationDisplay.js";
+import {
+  COMMERCE_ENTRY_GROUPS,
+  ecomToolCover,
+} from "@react/legacy-modules/features/creator-hub/studioTools.js";
+import { displayNotification, isAnnouncementNotification } from "../utils/notificationDisplay.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 
@@ -32,44 +34,42 @@ const imageLinks = [
     to: "/assistant",
     label: "AI 助手",
     icon: "bi-chat-square-text-fill",
-    cover: "/sucai/home-intro-02.png",
-    bento: "hero",
-  },
-  {
-    id: "model",
-    to: "/model-sheet",
-    label: "模型设计",
-    icon: "bi-person-bounding-box",
-    cover: "/sucai/ultra-model-sheet-board-1785420340076.png",
+    cover: "/sucai/studio-cover-assistant.webp",
   },
   {
     id: "t2i",
     to: "/text-to-image",
     label: "文生图",
     icon: "bi-stars",
-    cover:
-      "/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.png",
+    cover: "/sucai/studio-cover-t2i.webp",
+  },
+  {
+    id: "model",
+    to: "/model-sheet",
+    label: "模型设计",
+    icon: "bi-person-bounding-box",
+    cover: "/sucai/studio-cover-model.webp",
   },
   {
     id: "coloring",
     to: "/ai-illustration-coloring",
     label: "插画染色",
     icon: "bi-brush-fill",
-    cover: "/sucai/home-intro-03.png",
+    cover: "/sucai/studio-cover-coloring.webp",
   },
   {
     id: "ui",
     to: "/design-workshop",
     label: "UI 设计稿",
     icon: "bi-bezier2",
-    cover: "/sucai/ui-design-1785420316960.png",
+    cover: "/sucai/studio-cover-ui.webp",
   },
   {
     id: "game",
     to: "/game-art",
     label: "游戏设计",
     icon: "bi-controller",
-    cover: "/sucai/game-character-1785420168113.png",
+    cover: "/sucai/studio-cover-game.webp",
   },
 ];
 
@@ -88,36 +88,7 @@ const commerceModes = {
   enhance: ["真实增强", "清晰增强", "bi-badge-hd-fill"],
 };
 
-const commerceGroups = [
-  {
-    id: "model",
-    label: "服饰模特",
-    description: "服装、商品与饰品的真人展示",
-    cover: tryonPreview,
-    ids: ["tryon", "handheld", "accessory"],
-  },
-  {
-    id: "create",
-    label: "商品设计",
-    description: "商拍、套图与详情页视觉",
-    cover: listingPreview,
-    ids: ["shoot", "listing", "detail"],
-  },
-  {
-    id: "image",
-    label: "图片处理",
-    description: "营销图、背景、阴影与画质处理",
-    cover: detailPreview,
-    ids: [
-      "campaign",
-      "background",
-      "backdrop",
-      "shadow",
-      "outpaint",
-      "enhance",
-    ],
-  },
-].map((group) => ({
+const commerceGroups = COMMERCE_ENTRY_GROUPS.map((group) => ({
   ...group,
   items: group.ids.map((id) => ({
     id,
@@ -126,6 +97,7 @@ const commerceGroups = [
     shortLabel: commerceModes[id][1],
     icon: commerceModes[id][2],
     tagline: commerceModes[id][1],
+    cover: ecomToolCover(id),
   })),
 }));
 
@@ -134,7 +106,7 @@ const tools = [
   ["/tools/image-compress", "图片压缩", "bi-file-zip"],
   ["/tools/puzzle", "拼图", "bi-puzzle-fill"],
   ["/app-space", "关于我们", "bi-columns-gap"],
-  ["/updates", "更新说明", "bi-megaphone-fill"],
+  ["/updates", "更新说明", "bi-journal-text"],
   ["/feedback", "问题反馈", "bi-chat-square-text"],
 ].map(([to, label, icon]) => ({ to, label, icon }));
 
@@ -232,6 +204,7 @@ export function NavBar() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
+  const { isEntryVisible } = usePageControls();
   const isHome = location.pathname === "/";
   const isCanvas =
     location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
@@ -251,6 +224,19 @@ export function NavBar() {
   const [redeemDialogOpen, setRedeemDialogOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const checkinVisible = isEntryVisible("activity.checkin");
+  const trialVisible = isEntryVisible("activity.trial");
+  const visibleNavItems = useMemo(
+    () =>
+      navItems.flatMap((item) => {
+        if (item.type === "link") {
+          return isEntryVisible(item.to) ? [item] : [];
+        }
+        const links = item.links.filter((link) => isEntryVisible(link.to));
+        return links.length ? [{ ...item, links }] : [];
+      }),
+    [isEntryVisible],
+  );
 
   const isActive = (to) => {
     const targetPath = routePath(to);
@@ -389,11 +375,24 @@ export function NavBar() {
           { y: -10, scale: 0.99, duration: 0.34, itemY: 6, itemStart: 0.09 },
         );
       } else if (!mobileLayout && activeDropdown) {
-        reveal(
-          root.querySelector(`[data-dropdown-menu="${activeDropdown}"]`),
-          '[role="menuitem"], .commerce-menu-group__visual',
-          { y: -7, scale: 0.988, duration: 0.28, itemY: 6, itemStart: 0.055 },
+        const panel = root.querySelector(
+          `[data-dropdown-menu="${activeDropdown}"]`,
         );
+        const heavyMenu =
+          panel instanceof HTMLElement &&
+          (panel.classList.contains("nav-mega-menu") ||
+            panel.classList.contains("commerce-mega-menu"));
+        if (heavyMenu) {
+          panel.dataset.navMotionState = "entered";
+        } else {
+          reveal(panel, '[role="menuitem"]', {
+            y: -6,
+            scale: 0.995,
+            duration: 0.2,
+            itemY: 4,
+            itemStart: 0.04,
+          });
+        }
       }
 
       if (accountOpen) {
@@ -469,6 +468,10 @@ export function NavBar() {
   }, [auth.isAuthenticated]);
 
   useEffect(() => {
+    if (!trialVisible) {
+      setTrialCampaign(null);
+      return undefined;
+    }
     let disposed = false;
     const refresh = () =>
       getTrialAccessCampaign()
@@ -491,9 +494,10 @@ export function NavBar() {
       disposed = true;
       window.removeEventListener("focus", refresh);
     };
-  }, []);
+  }, [trialVisible]);
 
   useEffect(() => {
+    if (!trialVisible) return;
     const params = new URLSearchParams(location.search);
     if (params.get("trial") !== "apply") return;
     params.delete("trial");
@@ -511,7 +515,7 @@ export function NavBar() {
       .catch((error) =>
         notificationService.error(error?.message || "体验活动读取失败"),
       );
-  }, [location.hash, location.pathname, location.search, navigate]);
+  }, [location.hash, location.pathname, location.search, navigate, trialVisible]);
 
   useEffect(() => {
     if (!auth.isAuthenticated) {
@@ -522,26 +526,44 @@ export function NavBar() {
     }
     const controller = new AbortController();
     setNotificationLoading(true);
+    let lastUnread = -1;
+    const refreshPreview = () =>
+      listNotifications({ limit: 8, signal: controller.signal })
+        .then((result) => {
+          lastUnread = Math.max(0, Number(result.unread) || 0);
+          setNotificationUnread(lastUnread);
+          setNotificationItems(
+            result.items
+              .filter((item) => !isAnnouncementNotification(item))
+              .slice(0, 8),
+          );
+        })
+        .catch(() => null);
     const onUpdated = (event) => {
       if (!Number.isFinite(Number(event?.detail?.unreadCount))) return;
-      setNotificationUnread(Math.max(0, Number(event.detail.unreadCount)));
+      const nextUnread = Math.max(0, Number(event.detail.unreadCount));
+      setNotificationUnread(nextUnread);
       if (event?.detail?.source === "clear-all") {
+        lastUnread = 0;
         setNotificationItems([]);
         return;
       }
-      if (Array.isArray(event?.detail?.previewItems))
+      if (Array.isArray(event?.detail?.previewItems)) {
+        lastUnread = nextUnread;
         setNotificationItems(event.detail.previewItems.slice(0, 8));
+        return;
+      }
+      // SSE 只推未读数：数量变化时再拉一次预览列表保持一致。
+      const fromStream =
+        event?.detail?.source === "sse" ||
+        event?.detail?.source === "sse-fallback";
+      if (fromStream && nextUnread !== lastUnread) void refreshPreview();
+      lastUnread = nextUnread;
     };
     window.addEventListener("starclouds:notifications-updated", onUpdated);
-    listNotifications({ limit: 8, signal: controller.signal })
-      .then((result) => {
-        setNotificationUnread(Math.max(0, Number(result.unread) || 0));
-        setNotificationItems(result.items.slice(0, 8));
-      })
-      .catch(() => null)
-      .finally(
-        () => !controller.signal.aborted && setNotificationLoading(false),
-      );
+    refreshPreview().finally(
+      () => !controller.signal.aborted && setNotificationLoading(false),
+    );
     return () => {
       controller.abort();
       window.clearTimeout(notificationCloseTimerRef.current);
@@ -673,7 +695,7 @@ export function NavBar() {
           </button>
 
           <nav id="primary-navigation" className="main-nav" aria-label="主导航">
-            {navItems.map((item) =>
+            {visibleNavItems.map((item) =>
               item.type === "link" ? (
                 <Link
                   key={item.to}
@@ -733,43 +755,28 @@ export function NavBar() {
                       role="menu"
                       data-dropdown-menu={item.name}
                     >
-                      {commerceGroups.map((group) => (
-                        <section
-                          key={group.id}
-                          className={`commerce-menu-group is-${group.id}`}
-                          aria-label={group.label}
-                        >
-                          <div
-                            className="commerce-menu-group__visual"
-                            aria-hidden="true"
-                          >
-                            <img src={group.cover} alt="" loading="lazy" />
-                            <div className="commerce-menu-group__caption">
-                              <strong>{group.label}</strong>
-                              <small>{group.description}</small>
-                            </div>
-                          </div>
-                          <div className="commerce-menu-grid">
-                            {group.items.map((link) => (
-                              <Link
-                                key={link.to}
-                                to={link.to}
-                                className={`commerce-menu-card${isActive(link.to) ? " active" : ""}`}
-                                role="menuitem"
-                                onClick={closeMenu}
-                              >
-                                <span className="commerce-menu-card__icon">
-                                  <i className={`bi ${link.icon}`} />
-                                </span>
-                                <span className="commerce-menu-card__copy">
-                                  <strong>{link.label}</strong>
-                                  <small>{link.tagline}</small>
-                                </span>
-                              </Link>
-                            ))}
-                          </div>
-                        </section>
-                      ))}
+                      <div className="commerce-menu-grid" role="none">
+                        {item.links.map((link) => (
+                            <Link
+                              key={link.to}
+                              to={link.to}
+                              className={`commerce-menu-card${isActive(link.to) ? " active" : ""}`}
+                              role="menuitem"
+                              onClick={closeMenu}
+                            >
+                              <span className="commerce-menu-card__media">
+                                <img
+                                  src={link.cover}
+                                  alt=""
+                                  decoding="async"
+                                />
+                              </span>
+                              <span className="commerce-menu-card__copy">
+                                <strong>{link.shortLabel}</strong>
+                              </span>
+                            </Link>
+                          ))}
+                      </div>
                     </div>
                   ) : item.mega ? (
                     <div
@@ -788,7 +795,7 @@ export function NavBar() {
                             onClick={closeMenu}
                           >
                             <span className="nav-bento-card__media">
-                              <img src={link.cover} alt="" loading="lazy" />
+                              <img src={link.cover} alt="" decoding="async" />
                             </span>
                             <span className="nav-bento-card__copy">
                               <strong>
@@ -831,17 +838,19 @@ export function NavBar() {
 
           <div className="header-tools">
             <div className="tool-actions">
-              <Link
-                to="/check-in"
-                className="nav-checkin-btn"
-                title="每日签到领积分"
-                onClick={openCheckin}
-              >
-                <span className="nav-checkin-btn__icon" aria-hidden="true">
-                  <i className="bi bi-calendar-check" />
-                </span>
-                <span className="nav-checkin-btn__label">签到</span>
-              </Link>
+              {checkinVisible && (
+                <Link
+                  to="/check-in"
+                  className="nav-checkin-btn"
+                  title="每日签到领积分"
+                  onClick={openCheckin}
+                >
+                  <span className="nav-checkin-btn__icon" aria-hidden="true">
+                    <i className="bi bi-calendar-check" />
+                  </span>
+                  <span className="nav-checkin-btn__label">签到</span>
+                </Link>
+              )}
               <button
                 type="button"
                 className="nav-redeem-btn"
@@ -853,7 +862,7 @@ export function NavBar() {
                 </span>
                 <span className="nav-redeem-btn__label">兑换</span>
               </button>
-              {trialCampaign && (
+              {trialVisible && trialCampaign && (
                 <button
                   type="button"
                   className="nav-trial-btn"
@@ -918,9 +927,13 @@ export function NavBar() {
                             <i className="bi bi-arrow-repeat spin" />
                             <span>正在读取通知…</span>
                           </div>
-                        ) : notificationItems.length ? (
+                        ) : notificationItems.filter(
+                            (item) => !isAnnouncementNotification(item),
+                          ).length ? (
                           <ol className="nav-notify__list">
-                            {notificationItems.map((item) => {
+                            {notificationItems
+                              .filter((item) => !isAnnouncementNotification(item))
+                              .map((item) => {
                               const { title, body } = displayNotification(item);
                               return (
                                 <li
@@ -961,6 +974,9 @@ export function NavBar() {
                         <footer className="nav-notify__foot">
                           <Link to="/notifications" onClick={closeMenu}>
                             查看全部通知 <i className="bi bi-arrow-right" />
+                          </Link>
+                          <Link to="/notifications?tab=announce" onClick={closeMenu}>
+                            公告
                           </Link>
                         </footer>
                       </aside>
@@ -1038,7 +1054,7 @@ export function NavBar() {
                           {[
                             ["/profile", "bi-person-circle", "个人中心"],
                             ["/submissions", "bi-send-check", "我的投稿"],
-                            ["/wallet", "bi-wallet2", "钱包"],
+                            ["/wallet", "bi-wallet2", "我的钱包"],
                             ["/account", "bi-person-gear", "账号设置"],
                           ].map(([to, icon, label]) => (
                             <Link

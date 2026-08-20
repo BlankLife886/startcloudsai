@@ -12,6 +12,13 @@ const VIEWPORT_COMMIT_MS = 450;
 const LOW_ZOOM = 0.14;
 const GRID_BASE = 48;
 
+export function wheelZoomFactor(deltaY: number, deltaMode: number, sensitivity = 0.0016) {
+    let delta = deltaY;
+    if (deltaMode === 1) delta *= 40;
+    else if (deltaMode === 2) delta *= 800;
+    return Math.exp(-delta * sensitivity);
+}
+
 export type CanvasViewportApi = {
     apply: (viewport: ViewportTransform, options?: { commit?: boolean; scheduleCommit?: boolean; mode?: "pan" | "zoom" }) => void;
     get: () => ViewportTransform;
@@ -92,6 +99,7 @@ export function InfiniteCanvas({
         hasMoved: false,
         startedOnBackground: false,
         button: -1,
+        pointerId: -1,
     });
     const suppressContextMenu = useRef(false);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
@@ -235,6 +243,7 @@ export function InfiniteCanvas({
                 hasMoved: false,
                 startedOnBackground: isBackgroundClick,
                 button: event.button,
+                pointerId: event.pointerId,
             };
             if (event.button !== 2) {
                 setInteracting(true);
@@ -254,6 +263,7 @@ export function InfiniteCanvas({
     useEffect(() => {
         const handlePointerMove = (event: PointerEvent) => {
             if (!panState.current.isPanning) return;
+            if (panState.current.pointerId >= 0 && event.pointerId !== panState.current.pointerId) return;
 
             const dx = event.clientX - panState.current.startX;
             const dy = event.clientY - panState.current.startY;
@@ -283,12 +293,16 @@ export function InfiniteCanvas({
             });
         };
 
-        const handlePointerUp = () => {
+        const handlePointerUp = (event: PointerEvent) => {
             if (!panState.current.isPanning) return;
+            if (panState.current.pointerId >= 0 && event.pointerId !== panState.current.pointerId) return;
             const moved = panState.current.hasMoved;
             if (!moved && panState.current.startedOnBackground && panState.current.button !== 2) callbacksRef.current.onCanvasDeselect?.();
             if (panState.current.button === 2 && moved) suppressContextMenu.current = true;
             panState.current.isPanning = false;
+            panState.current.hasMoved = false;
+            panState.current.button = -1;
+            panState.current.pointerId = -1;
             document.body.style.cursor = "";
             if (moved) commit(liveRef.current);
             else {
@@ -326,7 +340,7 @@ export function InfiniteCanvas({
             event.preventDefault();
 
             const current = liveRef.current;
-            const factor = Math.exp(-event.deltaY * 0.0016);
+            const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
             const nextScale = clampScale(current.k * factor);
             const rect = container.getBoundingClientRect();
             const mouseX = event.clientX - rect.left;

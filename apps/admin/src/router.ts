@@ -77,6 +77,11 @@ const router = createRouter({
           meta: { title: "模型配置" },
         },
         {
+          path: "canvas-templates",
+          component: () => import("@/views/CanvasTemplatesView.vue"),
+          meta: { title: "画布模板" },
+        },
+        {
           path: "prompt-library",
           component: () => import("@/views/PromptLibraryView.vue"),
           meta: { title: "提示词库" },
@@ -100,6 +105,11 @@ const router = createRouter({
           path: "content",
           component: () => import("@/views/ContentView.vue"),
           meta: { title: "内容管理" },
+        },
+        {
+          path: "page-controls",
+          component: () => import("@/views/PageControlsView.vue"),
+          meta: { title: "页面控制" },
         },
         {
           path: "audit",

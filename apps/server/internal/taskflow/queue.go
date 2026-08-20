@@ -17,6 +17,23 @@ const (
 	TypeRunAssistant  = "assistant:run"
 )
 
+// Weighted queues keep short, latency-sensitive work from being stuck behind
+// long-running image generation. Assistant runs (interactive) get the highest
+// weight, image tasks + cron use the default queue, and the high-frequency
+// image poll loop runs on its own queue so it is never starved.
+const (
+	QueueDefault   = "default"
+	QueueAssistant = "assistant"
+	QueuePoll      = "poll"
+)
+
+// QueueWeights is consumed by the worker's asynq.Config.Queues.
+var QueueWeights = map[string]int{
+	QueueAssistant: 6,
+	QueueDefault:   3,
+	QueuePoll:      2,
+}
+
 // 后台允许把 C2A 超时动态调到 600 秒。队列超时必须覆盖这个上限，
 // 否则后台调大上游超时后，Asynq 仍会按启动时的较小默认值提前取消任务。
 const maxC2ATimeoutSecs = 600
@@ -110,25 +127,32 @@ func (q *Queue) Metrics() QueueMetrics {
 		out.Error = "queue_unavailable"
 		return out
 	}
-	info, err := q.inspector.GetQueueInfo("default")
-	if errors.Is(err, asynq.ErrQueueNotFound) {
+	// Aggregate across all weighted queues so the dashboard reflects total
+	// backlog rather than just the default queue.
+	for _, queueName := range []string{QueueDefault, QueueAssistant, QueuePoll} {
+		info, err := q.inspector.GetQueueInfo(queueName)
+		if errors.Is(err, asynq.ErrQueueNotFound) {
+			out.Available = true
+			continue
+		}
+		if err != nil {
+			out.Error = "queue_unavailable"
+			return out
+		}
 		out.Available = true
-	} else if err != nil {
-		out.Error = "queue_unavailable"
-		return out
-	} else {
-		out.Available = true
-		out.Paused = info.Paused
-		out.LatencyMs = info.Latency.Milliseconds()
-		out.MemoryBytes = info.MemoryUsage
-		out.Size = info.Size
-		out.Pending = info.Pending
-		out.Active = info.Active
-		out.Scheduled = info.Scheduled
-		out.Retry = info.Retry
-		out.Archived = info.Archived
-		out.ProcessedToday = info.Processed
-		out.FailedToday = info.Failed
+		out.Paused = out.Paused || info.Paused
+		if info.Latency.Milliseconds() > out.LatencyMs {
+			out.LatencyMs = info.Latency.Milliseconds()
+		}
+		out.MemoryBytes += info.MemoryUsage
+		out.Size += info.Size
+		out.Pending += info.Pending
+		out.Active += info.Active
+		out.Scheduled += info.Scheduled
+		out.Retry += info.Retry
+		out.Archived += info.Archived
+		out.ProcessedToday += info.Processed
+		out.FailedToday += info.Failed
 	}
 
 	servers, err := q.inspector.Servers()
@@ -188,7 +212,7 @@ func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID, routeID, route
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypePollImageTask, payload),
-		asynq.MaxRetry(5), asynq.Timeout(10*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
+		asynq.Queue(QueuePoll), asynq.MaxRetry(5), asynq.Timeout(10*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}
@@ -260,7 +284,7 @@ func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID stri
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunAssistant, payload),
-		asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil
 	}
@@ -271,14 +295,14 @@ func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID stri
 // Either operation may report that the task is not in that state, which is harmless.
 func (q *Queue) CancelAssistantRun(runID string) {
 	_ = q.inspector.CancelProcessing(runID)
-	_ = q.inspector.DeleteTask("default", runID)
+	_ = q.inspector.DeleteTask(QueueAssistant, runID)
 	// 恢复任务使用唯一的 Asynq TaskID（runID:recover:*）。按载荷补充查找，
 	// 否则 Worker 重启后的图片请求只能改数据库状态，无法立刻取消上下文。
 	for _, list := range []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
 		q.inspector.ListActiveTasks,
 		q.inspector.ListPendingTasks,
 	} {
-		tasks, err := list("default", asynq.PageSize(100))
+		tasks, err := list(QueueAssistant, asynq.PageSize(100))
 		if err != nil {
 			continue
 		}

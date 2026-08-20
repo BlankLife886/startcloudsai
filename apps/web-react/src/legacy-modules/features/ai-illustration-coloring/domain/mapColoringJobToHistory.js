@@ -199,6 +199,13 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
     existingItem?.resultUrl,
     outputs[0],
   )
+  // 展示图（服务端压缩大图）：旧任务没有，预览时回退 resultUrl 原图。
+  const resultDisplayUrl =
+    pickResultUrl(
+      providerResultUrl,
+      ...(Array.isArray(job?.displayMediaUrls) ? job.displayMediaUrls : []),
+      job?.displayMediaUrl,
+    ) || String(existingItem?.resultDisplayUrl || '')
   const remoteStatus = String(job?.status || '')
     .trim()
     .toLowerCase()
@@ -314,6 +321,7 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
       existingItem?.publicModelKey || input.publicModelKey || job?.gatewayModelId || '',
     ),
     resultUrl,
+    resultDisplayUrl,
     outputs: resultUrl ? Array.from(new Set([resultUrl, ...outputs].filter(Boolean))) : outputs,
     usageRecorded: existingItem?.usageRecorded === true,
     error: String(

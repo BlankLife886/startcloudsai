@@ -6,13 +6,22 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
+
+// briefs 在 API 进程内同步调用 LLM。慢上游会长时间占住 API 连接，这里用
+// 进程内信号量限制并发，超限直接 429，避免拖垮其他接口；单次调用另设独立
+// 超时，不跟随上游 provider 配置的（可能长达数百秒的）超时。
+const ecommerceBriefTimeout = 60 * time.Second
+
+var ecommerceBriefSemaphore = semaphore.NewWeighted(6)
 
 type ecommerceProductBriefIn struct {
 	InputKeys             []string `json:"inputKeys"`
@@ -89,7 +98,14 @@ func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
 		fallbackBriefContext(body.Platform, "通用电商"), fallbackBriefContext(body.Market, "通用市场"),
 		fallbackBriefContext(body.Language, "简体中文"), previous)
 
-	reply, err := client.ChatTextWithImages(c.Request.Context(), []sub2api.Message{{Role: "user", Content: prompt}}, imageURLs, nil)
+	if !ecommerceBriefSemaphore.TryAcquire(1) {
+		fail(c, apperr.E("busy", "当前分析请求过多，请稍后再试", 429))
+		return
+	}
+	defer ecommerceBriefSemaphore.Release(1)
+	llmCtx, cancel := context.WithTimeout(c.Request.Context(), ecommerceBriefTimeout)
+	defer cancel()
+	reply, err := client.ChatTextWithImages(llmCtx, []sub2api.Message{{Role: "user", Content: prompt}}, imageURLs, nil)
 	if err != nil {
 		fail(c, assistantUpstreamError(err))
 		return

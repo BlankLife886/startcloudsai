@@ -14,15 +14,32 @@ type ApiEnvelope<T> = { success: true; data: T } | { success: false; code?: stri
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
-function apiUrl(path: string) {
+export function starcloudsApiUrl(path: string) {
     return `${API_BASE_URL}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+const apiUrl = starcloudsApiUrl;
+
+function isAbortError(error: unknown) {
+    return (error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && error.name === "AbortError");
+}
+
+export function starcloudsFileUrl(storageKey: string) {
+    return starcloudsApiUrl(`/files/${storageKey}`);
+}
+
+export async function fetchCloudFileBlob(storageKey: string, init: RequestInit = {}) {
+    const response = await fetch(starcloudsFileUrl(storageKey), { ...init, credentials: "include" });
+    if (!response.ok) throw new StarcloudsApiError(`http_${response.status}`, "无法读取文件", response.status);
+    return response.blob();
 }
 
 export async function starcloudsRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     try {
         response = await fetch(apiUrl(path), { ...init, credentials: "include" });
-    } catch {
+    } catch (error) {
+        if (init.signal?.aborted || isAbortError(error)) throw isAbortError(error) ? error : new DOMException("Aborted", "AbortError");
         throw new StarcloudsApiError("network_error", "无法连接到服务器", 0);
     }
 

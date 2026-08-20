@@ -7,11 +7,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const changelogCols = `id, version, date, tag, title, summary, items, highlight, sort, created_at`
+const changelogCols = `id, version, date, tag, title, summary, items, highlight, sort, created_at, source_key`
 
 func scanChangelog(row pgx.Row) (*ChangelogEntry, error) {
 	var c ChangelogEntry
-	err := row.Scan(&c.ID, &c.Version, &c.Date, &c.Tag, &c.Title, &c.Summary, &c.Items, &c.Highlight, &c.Sort, &c.CreatedAt)
+	err := row.Scan(&c.ID, &c.Version, &c.Date, &c.Tag, &c.Title, &c.Summary, &c.Items, &c.Highlight, &c.Sort, &c.CreatedAt, &c.SourceKey)
 	if err != nil {
 		return nil, err
 	}
@@ -62,4 +62,18 @@ func ListChangelog(ctx context.Context, q Q) ([]*ChangelogEntry, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// LatestChangelog 最近发布的一条，供用户端判断是否需要刷新。
+func LatestChangelog(ctx context.Context, q Q) (*ChangelogEntry, error) {
+	c, err := scanChangelog(q.QueryRow(ctx,
+		`SELECT `+changelogCols+` FROM changelog_entries
+		 ORDER BY created_at DESC, date DESC, sort DESC LIMIT 1`))
+	return nilOnNoRows(c, err)
+}
+
+func ClearOtherChangelogHighlights(ctx context.Context, q Q, keepID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`UPDATE changelog_entries SET highlight = false WHERE id <> $1 AND highlight = true`, keepID)
+	return err
 }

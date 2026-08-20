@@ -4,6 +4,7 @@ import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
+import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
@@ -13,7 +14,9 @@ import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textare
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position } from "@/types/canvas";
 import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useTranslation } from "react-i18next";
+import { CANVAS_VIEWPORT_LIVE_EVENT } from "./infinite-canvas";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#6d5cff";
@@ -162,7 +165,22 @@ export const CanvasNode = React.memo(function CanvasNode({
         startHeight: 0,
         keepRatio: false,
         ratio: 1,
+        pointerId: -1,
     });
+    const scaleRef = useRef(scale);
+    scaleRef.current = scale;
+    const resizeMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
+    const resizeUpRef = useRef<(event: PointerEvent) => void>(() => undefined);
+
+    useEffect(() => {
+        const stop = onCanvasEvent(CANVAS_VIEWPORT_LIVE_EVENT, (payload) => {
+            const next = payload as { k?: number } | undefined;
+            if (typeof next?.k === "number") scaleRef.current = next.k;
+        });
+        return () => {
+            stop();
+        };
+    }, []);
 
     useEffect(() => {
         setTitleDraft(data.title || "");
@@ -229,11 +247,13 @@ export const CanvasNode = React.memo(function CanvasNode({
     }, [isEditingContent]);
 
     const handleResizeMove = useCallback(
-        (event: MouseEvent) => {
+        (event: PointerEvent) => {
             if (!resizeRef.current.isResizing) return;
+            if (resizeRef.current.pointerId >= 0 && event.pointerId !== resizeRef.current.pointerId) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / scale;
-            const dy = (event.clientY - resizeRef.current.startY) / scale;
+            const liveScale = scaleRef.current || 1;
+            const dx = (event.clientX - resizeRef.current.startX) / liveScale;
+            const dy = (event.clientY - resizeRef.current.startY) / liveScale;
             const minWidth = 220;
             const minHeight = 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
@@ -266,17 +286,24 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, onResize, scale],
+        [data.id, onResize],
     );
 
-    const handleResizeUp = useCallback(() => {
-        resizeRef.current.isResizing = false;
-        window.removeEventListener("mousemove", handleResizeMove);
-        window.removeEventListener("mouseup", handleResizeUp);
-        onResizeEnd(data.id);
-    }, [data.id, handleResizeMove, onResizeEnd]);
+    const handleResizeUp = useCallback(
+        (event?: PointerEvent) => {
+            if (event && resizeRef.current.pointerId >= 0 && event.pointerId !== resizeRef.current.pointerId) return;
+            if (!resizeRef.current.isResizing) return;
+            resizeRef.current.isResizing = false;
+            resizeRef.current.pointerId = -1;
+            onResizeEnd(data.id);
+        },
+        [data.id, onResizeEnd],
+    );
 
-    const handleResizeMouseDown = (event: React.MouseEvent, corner: ResizeCorner) => {
+    resizeMoveRef.current = handleResizeMove;
+    resizeUpRef.current = handleResizeUp;
+
+    const handleResizePointerDown = (event: React.PointerEvent, corner: ResizeCorner) => {
         event.stopPropagation();
         event.preventDefault();
         onResizeStart(data.id);
@@ -291,17 +318,23 @@ export const CanvasNode = React.memo(function CanvasNode({
             startHeight: data.height,
             keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video || Boolean(definition?.keepAspectRatio?.(data)),
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
+            pointerId: event.pointerId,
         };
-        window.addEventListener("mousemove", handleResizeMove);
-        window.addEventListener("mouseup", handleResizeUp);
+        event.currentTarget.setPointerCapture(event.pointerId);
     };
 
     useEffect(() => {
+        const move = (event: PointerEvent) => resizeMoveRef.current(event);
+        const up = (event: PointerEvent) => resizeUpRef.current(event);
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+        window.addEventListener("pointercancel", up);
         return () => {
-            window.removeEventListener("mousemove", handleResizeMove);
-            window.removeEventListener("mouseup", handleResizeUp);
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", up);
         };
-    }, [handleResizeMove, handleResizeUp]);
+    }, []);
 
     return (
         <div
@@ -447,10 +480,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                     <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12" style={{ background: `linear-gradient(to top, ${theme.canvas.background}66, transparent)` }} />
                 ) : null}
 
-                <ResizeHandle corner="top-left" onMouseDown={handleResizeMouseDown} />
-                <ResizeHandle corner="top-right" onMouseDown={handleResizeMouseDown} />
-                <ResizeHandle corner="bottom-left" onMouseDown={handleResizeMouseDown} />
-                <ResizeHandle corner="bottom-right" onMouseDown={handleResizeMouseDown} />
+                <ResizeHandle corner="top-left" onPointerDown={handleResizePointerDown} />
+                <ResizeHandle corner="top-right" onPointerDown={handleResizePointerDown} />
+                <ResizeHandle corner="bottom-left" onPointerDown={handleResizePointerDown} />
+                <ResizeHandle corner="bottom-right" onPointerDown={handleResizePointerDown} />
             </div>
 
             {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
@@ -470,7 +503,7 @@ function hasVisibleImage(node: NodeContentRendererProps["node"]) {
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
-    if (props.node.metadata?.status === "loading" && !hasVisibleImage(props.node)) return <LoadingContent theme={props.theme} />;
+    if (props.node.metadata?.status === "loading" && !hasVisibleImage(props.node)) return <LoadingContent node={props.node} theme={props.theme} />;
     if (props.node.metadata?.status === "error" && !hasVisibleImage(props.node)) return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
 
     const Renderer = nodeContentRenderers[props.node.type as CanvasNodeType];
@@ -512,12 +545,15 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
     );
 }
 
-function LoadingContent({ theme }: Pick<NodeContentRendererProps, "theme">) {
+function LoadingContent({ node, theme }: Pick<NodeContentRendererProps, "node" | "theme">) {
     const { t } = useTranslation();
+    const fallbackStartedAt = useRef(new Date().toISOString()).current;
+    const elapsedMs = useGenerationElapsed(node.metadata?.generationStartedAt || fallbackStartedAt, node.metadata?.generationDurationMs, true);
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
             <span className="text-[10px] tracking-[0.2em]">{t("canvas.node.generating")}</span>
+            <span className="text-[11px] font-semibold tabular-nums tracking-normal">{formatGenerationDuration(elapsedMs)}</span>
         </div>
     );
 }
@@ -596,9 +632,10 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     onMouseDown={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                     onWheel={(event) => event.stopPropagation()}
+                    data-canvas-no-zoom
                 />
             ) : (
-                <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent pl-4 pr-14 pt-0 pb-4 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
+                <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent pl-4 pr-14 pt-0 pb-4 font-mono" style={textStyle} data-canvas-no-zoom onWheel={(event) => event.stopPropagation()}>
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
@@ -723,7 +760,7 @@ function ImageContent({
                         className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                     />
                 ) : (
-                    <ImageSlotStatus image={primaryImage} />
+                    <ImageSlotStatus image={primaryImage} startedAt={node.metadata?.generationStartedAt} />
                 )}
             </div>
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
@@ -788,7 +825,7 @@ function ExpandedImageCard({ node, image, index, onSetPrimary, onDuplicate, onDo
             onPointerDown={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
         >
-            {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
+            {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} />}
             {image.content ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
                     <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
@@ -826,14 +863,17 @@ function BatchImageFailureActions({ placement, onRetry, onDelete }: { placement:
     );
 }
 
-function ImageSlotStatus({ image }: { image?: CanvasNodeImage }) {
+function ImageSlotStatus({ image, startedAt }: { image?: CanvasNodeImage; startedAt?: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const failed = image?.status === "error";
+    const fallbackStartedAt = useRef(new Date().toISOString()).current;
+    const elapsedMs = useGenerationElapsed(startedAt || fallbackStartedAt, undefined, !failed);
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: theme.node.fill, color: failed ? theme.node.text : theme.node.activeStroke }}>
             {failed ? <span className="text-xs leading-5">{image.errorDetails || t("canvas.node.failed")}</span> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
             {!failed ? <span className="text-[10px] tracking-[0.2em]">{t("canvas.node.generating")}</span> : null}
+            {!failed ? <span className="text-[11px] font-semibold tabular-nums tracking-normal">{formatGenerationDuration(elapsedMs)}</span> : null}
         </div>
     );
 }
@@ -915,7 +955,7 @@ function BatchFrame({
         </div>
     );
 }
-function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDown: (event: React.MouseEvent, corner: ResizeCorner) => void }) {
+function ResizeHandle({ corner, onPointerDown }: { corner: ResizeCorner; onPointerDown: (event: React.PointerEvent, corner: ResizeCorner) => void }) {
     const positionClass = {
         "top-left": "-left-[14px] -top-[14px] cursor-nwse-resize",
         "top-right": "-right-[14px] -top-[14px] cursor-nesw-resize",
@@ -923,7 +963,7 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
         "bottom-right": "-bottom-[14px] -right-[14px] cursor-nwse-resize",
     }[corner];
 
-    return <div className={`absolute z-50 size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
+    return <div className={`absolute z-50 size-7 ${positionClass}`} onPointerDown={(event) => onPointerDown(event, corner)} />;
 }
 
 function ConnectionHandleDot({ side, visible, onMouseDown }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void }) {

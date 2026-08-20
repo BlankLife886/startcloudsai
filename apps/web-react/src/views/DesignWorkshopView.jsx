@@ -25,6 +25,10 @@ import {
   fetchAuthenticatedMediaBlob,
 } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
+  cancelAssistantRun,
+  listActiveAssistantRuns,
+} from "@react/legacy-modules/services/assistantApi.js";
+import {
   getScopedLocalItem,
   setScopedLocalItem,
 } from "@react/legacy-modules/services/scopedLocalStorage.js";
@@ -49,6 +53,7 @@ import {
   canIterate,
   collectDescendants,
   pickCarrier,
+  resolveParentOutputUrl,
 } from "@react/legacy-modules/features/design-workshop/versionTree.js";
 import {
   DESIGN_QUALITY_REVIEW_MODES,
@@ -64,7 +69,17 @@ import {
   regionNodeMatchesRecognitionTypes,
   resolveRegionDesignReference,
   resolveRegionSelectionRequestSize,
+  wantsRegionTransparentOutput,
 } from "@react/legacy-modules/features/design-workshop/regionOutputPolicy.js";
+import {
+  assistantRunsToRegionJobs,
+  clearRegionProcessSession,
+  inferredParentFromRegionJobs,
+  readRegionProcessSession,
+  recoverRegionBoxesFromJobs,
+  shouldContinueRegionProcess,
+  writeRegionProcessSession,
+} from "@react/legacy-modules/features/design-workshop/regionProcessSession.js";
 import {
   analyzeDesignCropElements,
   buildRegionEditInstruction,
@@ -80,7 +95,6 @@ import "@react/legacy-styles/generated/features/design-workshop/components/Desig
 import "./DesignWorkshopView.css";
 
 const SETTINGS_KEY = "ui-design-workshop-v2";
-const REGION_PROCESS_KEY = "ui-design-region-process-v1";
 const UPLOADS_KEY = "ui-design-workshop-uploads-v1";
 const MAX_REFERENCES = 6;
 const IMAGE_NAME_PATTERN = /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif)$/i;
@@ -139,28 +153,92 @@ function outputSizeForRatio(ratio = "16:9", longSide = 2048) {
   return `${Math.max(256, width)}x${Math.max(256, height)}`;
 }
 
-function isWorkshopDraftJob(job = {}) {
-  const kind = String(job.kind || job.input?._kind || job.params?._kind || "")
+function jobKind(job = {}) {
+  return String(job.kind || job.input?._kind || job.params?._kind || "")
     .trim()
     .toLowerCase();
-  return kind !== "ui-design-region-edit";
 }
 
-function taskEntries(jobs = []) {
-  return jobs.filter(isWorkshopDraftJob).flatMap((job) => {
-    const urls = job.originalMediaUrls?.length
-      ? job.originalMediaUrls
-      : job.resultMediaUrls || [];
-    return urls.filter(Boolean).map((url, index) => ({
-      url,
-      jobId: job.id,
-      createdAt: job.createdAt || "",
-      groupId: String(job.input?.batchId || job.input?.groupId || job.id),
-      groupIndex: Number(job.input?.batchIndex || index),
-      parent: String(job.input?.parentOutputUrl || ""),
-      deviceId: String(job.input?.deviceId || job.input?.viewId || "web"),
-    }));
-  });
+function isRegionEditJob(job = {}) {
+  return jobKind(job) === "ui-design-region-edit";
+}
+
+function jobOutputUrls(job = {}) {
+  const urls = job.originalMediaUrls?.length
+    ? job.originalMediaUrls
+    : job.resultMediaUrls || [];
+  return urls.filter(Boolean);
+}
+
+function jobToEntries(job = {}) {
+  const urls = jobOutputUrls(job);
+  const displays = Array.isArray(job.displayMediaUrls)
+    ? job.displayMediaUrls
+    : [];
+  return urls.map((url, index) => ({
+    url,
+    displayUrl: displays[index] || "",
+    jobId: job.id,
+    createdAt: job.createdAt || "",
+    groupId: String(
+      job.input?.batchId ||
+        job.input?.groupId ||
+        (isRegionEditJob(job)
+          ? `region-${job.input?.assistantRunId || job.id}`
+          : job.id),
+    ),
+    groupIndex: Number(job.input?.batchIndex || index),
+    parent: String(job.input?.parentOutputUrl || ""),
+    deviceId: String(job.input?.deviceId || job.input?.viewId || "web"),
+  }));
+}
+
+function taskEntries(jobs = [], extraParentUrls = []) {
+  const draftEntries = jobs.filter((job) => !isRegionEditJob(job)).flatMap(jobToEntries);
+  const parentUrls = [
+    ...draftEntries.map((item) => item.url),
+    ...extraParentUrls.filter(Boolean),
+  ];
+  const regionEntries = jobs
+    .filter(isRegionEditJob)
+    .flatMap(jobToEntries)
+    .map((entry) => {
+      const parent = resolveParentOutputUrl(entry.parent, parentUrls);
+      return { ...entry, parent: parent || entry.parent || "" };
+    });
+  return [...regionEntries, ...draftEntries];
+}
+
+function isDeadAssistantRun(error) {
+  const status = Number(error?.status || 0);
+  if (status === 404 || status === 410) return true;
+  const code = String(error?.code || "").toLowerCase();
+  if (["not_found", "assistant_run_not_found"].includes(code)) return true;
+  const message = String(error?.message || "");
+  return /不存在|已取消|已停止|canceled|cancelled/i.test(message);
+}
+
+async function waitForArtboardImage(artboard, timeoutMs = 10000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const image = artboard?.querySelector("img");
+    if (image?.naturalWidth) return image;
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+  }
+  throw new Error("设计稿还在加载，请稍后再试");
+}
+
+function regionResultEntry({ url, parent, runId, deviceId = "web" }) {
+  return {
+    url,
+    displayUrl: "",
+    jobId: "",
+    createdAt: new Date().toISOString(),
+    groupId: runId ? `region-${runId}` : `region-${url}`,
+    groupIndex: 0,
+    parent: String(parent || ""),
+    deviceId,
+  };
 }
 
 function WorkshopSelect({
@@ -900,13 +978,21 @@ function VersionDrawer({
                   type="button"
                   className="dvd-major-main"
                   aria-expanded={expanded.includes(major.id)}
-                  onClick={() =>
-                    setExpanded((current) =>
-                      current.includes(major.id)
-                        ? current.filter((id) => id !== major.id)
-                        : [...current, major.id],
-                    )
-                  }
+                  onClick={() => {
+                    const extras =
+                      Object.keys(major.carriers || {}).length > 1 ||
+                      (major.children || []).length > 0;
+                    if (extras) {
+                      setExpanded((current) =>
+                        current.includes(major.id)
+                          ? current.filter((id) => id !== major.id)
+                          : [...current, major.id],
+                      );
+                      return;
+                    }
+                    const url = pickCarrier(major) || major.cover;
+                    if (url) onSelect(url);
+                  }}
                 >
                   <span className="dvd-major-thumb">
                     <AuthenticatedImage
@@ -949,6 +1035,7 @@ function VersionDrawer({
                   </button>
                   <button
                     type="button"
+                    className="is-danger"
                     aria-label={`删除 ${major.label}`}
                     onClick={() => onDelete(major)}
                   >
@@ -957,21 +1044,71 @@ function VersionDrawer({
                 </div>
               </div>
               {expanded.includes(major.id) &&
-                Object.entries(major.carriers).map(([deviceId, url]) => (
-                  <button
-                    key={url}
-                    type="button"
-                    className={`dvd-node${activeOutput === url ? " is-active" : ""}`}
-                    onClick={() => onSelect(url)}
-                  >
-                    <i className={`bi ${getDesignDevice(deviceId).icon}`} />
-                    <span>
-                      <strong>{getDesignDevice(deviceId).label}</strong>
-                      <small>{getDesignDevice(deviceId).ratio}</small>
-                    </span>
-                    <i className="bi bi-chevron-right" />
-                  </button>
-                ))}
+                (Object.keys(major.carriers || {}).length > 1 ||
+                  (major.children || []).length > 0) && (
+                <div className="dvd-major-extra">
+                  {Object.keys(major.carriers || {}).length > 1 && (
+                    <div className="dvd-carriers">
+                      {Object.entries(major.carriers).map(([deviceId, url]) => (
+                        <button
+                          key={url}
+                          type="button"
+                          className={`dvd-carrier${activeOutput === url ? " is-on" : ""}`}
+                          onClick={() => onSelect(url)}
+                        >
+                          <AuthenticatedImage
+                            src={url}
+                            alt=""
+                            maxDimension={88}
+                          />
+                          <span>
+                            <i className={`bi ${getDesignDevice(deviceId).icon}`} />
+                            {getDesignDevice(deviceId).label}{" "}
+                            {getDesignDevice(deviceId).ratio}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {collectDescendants(major, { includeSelf: false }).map(
+                    (child) => {
+                      const url =
+                        child.cover || Object.values(child.carriers || {})[0];
+                      if (!url) return null;
+                      const active =
+                        activeOutput === url ||
+                        Object.values(child.carriers || {}).includes(
+                          activeOutput,
+                        );
+                      return (
+                        <button
+                          key={child.id}
+                          type="button"
+                          className={`dvd-child${active ? " is-on" : ""}`}
+                          onClick={() => onSelect(url)}
+                        >
+                          <span className="dvd-child-thumb">
+                            <AuthenticatedImage
+                              src={url}
+                              alt=""
+                              maxDimension={88}
+                            />
+                          </span>
+                          <span className="dvd-child-copy">
+                            <strong>{child.label}</strong>
+                            <small>
+                              {String(child.id || "").startsWith("region-")
+                                ? "框选优化"
+                                : "迭代"}
+                            </small>
+                          </span>
+                          <i className="bi bi-chevron-right" />
+                        </button>
+                      );
+                    },
+                  )}
+                </div>
+              )}
             </article>
           ))}
         </div>
@@ -999,6 +1136,10 @@ export function DesignWorkshopView() {
   const activeJobIdsRef = useRef(new Set());
   const previewUrlsRef = useRef(new Set());
   const regionStartRef = useRef(null);
+  const regionPersistRef = useRef({});
+  const regionResumeIdsRef = useRef(new Set());
+  const continueRegionProcessRef = useRef(async () => {});
+  const regionContinueLockRef = useRef(false);
   const manualStartRef = useRef(null);
   const [models, setModels] = useState([]);
   const [modelId, setModelId] = useState("");
@@ -1090,6 +1231,10 @@ export function DesignWorkshopView() {
     const outputs = entries.map((item) => item.url);
     return {
       outputs,
+      // 原图 URL → 展示图 URL；大图预览时用，404 回退原图
+      displays: Object.fromEntries(
+        entries.map((item) => [item.url, item.displayUrl || ""]),
+      ),
       groups: Object.fromEntries(
         entries.map((item) => [item.url, item.groupId]),
       ),
@@ -1149,6 +1294,10 @@ export function DesignWorkshopView() {
     regionMarked.includes(node.id),
   );
   const hasRegionSelection = regions.length > 0 || Boolean(regionDraft);
+  const regionWantsTransparent = wantsRegionTransparentOutput(
+    regionPrompt,
+    regionAction,
+  );
   const [frameWidth = 16, frameHeight = 9] = device.ratio
     .split(":")
     .map(Number);
@@ -1224,35 +1373,164 @@ export function DesignWorkshopView() {
     ],
   );
 
+  const persistRegionProcess = useCallback((patch = {}) => {
+    const snapshot = {
+      ...regionPersistRef.current,
+      ...patch,
+    };
+    if (
+      !snapshot.outputUrl ||
+      !(snapshot.selections?.length || snapshot.selection)
+    ) {
+      return false;
+    }
+    regionPersistRef.current = snapshot;
+    return writeRegionProcessSession(snapshot);
+  }, []);
+
+  const applyRegionSession = useCallback((session, boxes) => {
+    if (!session?.outputUrl || !boxes?.length) return;
+    regionPersistRef.current = {
+      ...regionPersistRef.current,
+      ...session,
+      outputUrl: session.outputUrl,
+      selections: boxes,
+    };
+    writeRegionProcessSession(regionPersistRef.current);
+    setActiveOutput(session.outputUrl);
+    setRegions(boxes);
+    setActiveRegionId(boxes[0]?.id || "");
+    setRegionMode(true);
+    if (Array.isArray(session.recognitionTypes)) {
+      setRegionRecognition(session.recognitionTypes);
+    }
+    if (session.editAction) setRegionAction(session.editAction);
+    if (session.prompt != null) setRegionPrompt(session.prompt);
+    setRegionStatus(session.stage || "勾选识别类型后开始分析");
+    setRegionError(session.error || "");
+    setRegionPreviewUrl(session.resultUrl || boxes[0]?.resultUrl || "");
+    if (shouldContinueRegionProcess(session, boxes)) {
+      setRegionBusy(true);
+      setRegionStatus(
+        boxes.some((box) => box.runId && !box.resultUrl)
+          ? "正在恢复框选优化任务…"
+          : "正在继续框选优化…",
+      );
+    }
+  }, []);
+
   const loadHistory = useCallback(async () => {
     historyControllerRef.current?.abort();
     const controller = new AbortController();
     historyControllerRef.current = controller;
     setHistoryLoading(true);
     try {
-      const response = await listServerAiJobs(24, {
-        type: "ui_design",
-        signal: controller.signal,
-        excludeFailed: true,
-      });
+      const [response, activeRuns] = await Promise.all([
+        listServerAiJobs(80, {
+          type: "ui_design",
+          signal: controller.signal,
+          excludeFailed: true,
+        }),
+        listActiveAssistantRuns({
+          workspace: "ui_design",
+          signal: controller.signal,
+        }).catch(() => []),
+      ]);
       if (!mountedRef.current || controller.signal.aborted) return;
-      const next = taskEntries(response.jobs);
       const savedUploads = readSavedUploads();
-      const urls = new Set(next.map((item) => item.url));
-      const merged = [
-        ...savedUploads.filter((item) => !urls.has(item.url)),
-        ...next,
+      const regionJobs = [
+        ...response.jobs.filter(isRegionEditJob),
+        ...assistantRunsToRegionJobs(activeRuns),
       ];
-      setEntries(merged);
-      setActiveOutput((current) => current || merged[0]?.url || "");
+      const next = taskEntries(response.jobs, [
+        ...savedUploads.map((item) => item.url),
+        ...regionJobs
+          .map((job) => String(job.input?.parentOutputUrl || ""))
+          .filter(Boolean),
+      ]);
+      const urls = new Set(next.map((item) => item.url));
+      const parentPool = [
+        ...next.map((item) => item.url),
+        ...savedUploads.map((item) => item.url),
+      ];
+      setEntries((current) => {
+        const locals = current
+          .filter(
+            (item) =>
+              String(item.groupId || "").startsWith("region-") &&
+              !urls.has(item.url),
+          )
+          .map((item) => {
+            const parent = resolveParentOutputUrl(item.parent, parentPool);
+            return { ...item, parent: parent || item.parent || "" };
+          });
+        return [
+          ...savedUploads.filter((item) => !urls.has(item.url)),
+          ...locals,
+          ...next,
+        ];
+      });
+      const parent =
+        regionPersistRef.current.outputUrl ||
+        inferredParentFromRegionJobs(regionJobs);
+      let recovered = [];
+      setRegions((boxes) => {
+        recovered = recoverRegionBoxesFromJobs(boxes, regionJobs, parent);
+        return recovered.length ? recovered : boxes;
+      });
+      if (recovered.length) {
+        if (parent) {
+          setActiveOutput((current) => current || parent);
+        }
+        const snapshot = {
+          ...regionPersistRef.current,
+          outputUrl: parent || regionPersistRef.current.outputUrl,
+          selections: recovered,
+        };
+        persistRegionProcess({
+          ...snapshot,
+          loading: shouldContinueRegionProcess(snapshot, recovered),
+          stage: shouldContinueRegionProcess(snapshot, recovered)
+            ? "正在继续框选优化…"
+            : regionPersistRef.current.stage,
+        });
+        if (shouldContinueRegionProcess(snapshot, recovered)) {
+          setRegionMode(true);
+          setRegionBusy(true);
+          setActiveRegionId((current) => current || recovered[0].id);
+          setRegionStatus("正在继续框选优化…");
+        }
+      }
+      const draftEntries = next.filter(
+        (item) => !String(item.groupId || "").startsWith("region-"),
+      );
+      setActiveOutput(
+        (current) =>
+          current ||
+          parent ||
+          draftEntries[0]?.url ||
+          next[0]?.url ||
+          savedUploads[0]?.url ||
+          "",
+      );
     } catch (error) {
       if (error?.name !== "AbortError" && mountedRef.current)
         setLocalError(error?.message || "历史记录加载失败");
     } finally {
       if (mountedRef.current && historyControllerRef.current === controller)
         setHistoryLoading(false);
+      if (mountedRef.current && !controller.signal.aborted) {
+        const snapshot = regionPersistRef.current;
+        const boxes = snapshot.selections || [];
+        if (shouldContinueRegionProcess(snapshot, boxes)) {
+          void continueRegionProcessRef.current(
+            boxes,
+            snapshot.outputUrl,
+          );
+        }
+      }
     }
-  }, []);
+  }, [persistRegionProcess]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1285,28 +1563,9 @@ export function DesignWorkshopView() {
       if (["light", "dark"].includes(saved.colorScheme))
         setColorScheme(saved.colorScheme);
     }
-    try {
-      const session = JSON.parse(
-        getScopedLocalItem(REGION_PROCESS_KEY) || "null",
-      );
-      if (session?.outputUrl && (session?.selection || session?.selections)) {
-        const boxes = normalizeRegionBoxesFromSession(session);
-        setActiveOutput(session.outputUrl);
-        setRegions(boxes);
-        setActiveRegionId(boxes[0]?.id || "");
-        setRegionRecognition(
-          Array.isArray(session.recognitionTypes)
-            ? session.recognitionTypes
-            : [],
-        );
-        setRegionAction(session.editAction || "remove");
-        setRegionPrompt(session.prompt || "");
-        setRegionStatus(session.stage || "勾选识别类型后开始分析");
-        setRegionError(session.error || "");
-        setRegionPreviewUrl(session.resultUrl || boxes[0]?.resultUrl || "");
-      }
-    } catch {
-      // Ignore a damaged resumable region session.
+    const session = readRegionProcessSession();
+    if (session) {
+      applyRegionSession(session, normalizeRegionBoxesFromSession(session));
     }
     Promise.all([fetchRuntimeConfig(), loadHistory()])
       .then(([config]) => {
@@ -1340,7 +1599,7 @@ export function DesignWorkshopView() {
       historyControllerRef.current?.abort();
       for (const url of previewUrlsRef.current) URL.revokeObjectURL(url);
     };
-  }, [loadHistory]);
+  }, [applyRegionSession, loadHistory]);
 
   useEffect(() => {
     setScopedLocalItem(
@@ -1376,44 +1635,54 @@ export function DesignWorkshopView() {
 
   useEffect(() => {
     if (!activeOutput || !regions.length) return;
-    setScopedLocalItem(
-      REGION_PROCESS_KEY,
-      JSON.stringify({
-        outputUrl: activeOutput,
-        selection: region,
-        selections: regions,
-        coordinateSpace: "image-content-v1",
-        prompt: regionPrompt,
-        recognitionTypes: regionRecognition,
-        editAction: regionAction,
-        resultUrl: regionResult,
-        resultUrls: regionResultUrls,
-        stage: regionStatus,
-        error: regionError,
-        loading: regionBusy,
-        elements: regionElements,
-        elementViewport: regionViewport,
-        elementGeometryVersion: 2,
-        markedIds: regionMarked,
-        updatedAt: new Date().toISOString(),
-      }),
-    );
+    persistRegionProcess({
+      outputUrl: activeOutput,
+      selection: region,
+      selections: regions,
+      prompt: regionPrompt,
+      recognitionTypes: regionRecognition,
+      editAction: regionAction,
+      resultUrl: regionResult,
+      resultUrls: regionResultUrls,
+      stage: regionStatus,
+      error: regionError,
+      loading: regionBusy,
+      conversationId:
+        regions.find((item) => item.conversationId)?.conversationId || "",
+      runId:
+        regions.find((item) => item.runId && !item.resultUrl)?.runId ||
+        regions.find((item) => item.runId)?.runId ||
+        "",
+    });
   }, [
     activeOutput,
+    persistRegionProcess,
     region,
     regionAction,
     regionBusy,
-    regionElements,
     regionError,
-    regionMarked,
     regionPrompt,
     regionRecognition,
     regionResult,
     regionResultUrls,
     regionStatus,
-    regionViewport,
     regions,
   ]);
+
+  useEffect(() => {
+    const flush = () => {
+      writeRegionProcessSession(regionPersistRef.current);
+    };
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, []);
 
   useEffect(() => {
     const onEscape = (event) => {
@@ -1423,10 +1692,7 @@ export function DesignWorkshopView() {
       else if (pageTypePicker) setPageTypePicker(null);
       else if (configPicker) setConfigPicker(null);
       else if (regionMode || hasRegionSelection) {
-        setRegionMode(false);
-        setRegions([]);
-        setActiveRegionId("");
-        setRegionDraft(null);
+        clearRegionSession();
       }
     };
     window.addEventListener("keydown", onEscape);
@@ -1614,6 +1880,7 @@ export function DesignWorkshopView() {
         if (!url) throw new Error("任务已完成，但没有返回可用图片");
         const entry = {
           url,
+          displayUrl: completed.job?.displayMediaUrls?.[0] || "",
           jobId,
           groupId,
           groupIndex: index,
@@ -1763,6 +2030,19 @@ export function DesignWorkshopView() {
   }, [activeRegionId]);
 
   const clearRegionSession = useCallback(() => {
+    const runIds = new Set(
+      (regionPersistRef.current.selections || [])
+        .map((item) => item.runId)
+        .filter(Boolean),
+    );
+    if (regionPersistRef.current.runId) {
+      runIds.add(regionPersistRef.current.runId);
+    }
+    for (const runId of runIds) {
+      cancelAssistantRun(runId).catch(() => null);
+    }
+    clearRegionProcessSession();
+    regionPersistRef.current = {};
     setRegionMode(false);
     setRegions([]);
     setActiveRegionId("");
@@ -1964,6 +2244,281 @@ export function DesignWorkshopView() {
     };
   }, [region]);
 
+  const continueRegionProcess = useCallback(
+    async (boxes, parentUrl) => {
+      const parent = String(
+        parentUrl || regionPersistRef.current.outputUrl || "",
+      ).trim();
+      const list = (boxes || []).filter((box) => box && !box.resultUrl);
+      if (!list.length) {
+        persistRegionProcess({ loading: false });
+        if (mountedRef.current) setRegionBusy(false);
+        return;
+      }
+      if (regionContinueLockRef.current) return;
+      regionContinueLockRef.current = true;
+      if (!parent) {
+        persistRegionProcess({
+          loading: false,
+          error: "找不到原设计稿，无法继续框选任务",
+        });
+        if (mountedRef.current) {
+          setRegionBusy(false);
+          setRegionError("找不到原设计稿，无法继续框选任务");
+        }
+        regionContinueLockRef.current = false;
+        return;
+      }
+      const prompt = String(
+        regionPersistRef.current.prompt || regionPrompt || "",
+      ).trim();
+      const action = regionPersistRef.current.editAction || regionAction;
+      const transparent = wantsRegionTransparentOutput(prompt, action);
+      const preserveLayout =
+        ["remove", "improve-icon"].includes(action) && !transparent;
+      let sharedConversationId =
+        list.find((item) => item.conversationId)?.conversationId ||
+        regionPersistRef.current.conversationId ||
+        "";
+      let firstStyleReferenceUrl = "";
+      persistRegionProcess({
+        outputUrl: parent,
+        selections: boxes,
+        loading: true,
+        error: "",
+        stage: "正在继续框选优化…",
+      });
+      if (mountedRef.current) {
+        setRegionBusy(true);
+        setRegionMode(true);
+        setRegionError("");
+        setRegionStatus("正在继续框选优化…");
+      }
+      try {
+        await waitForArtboardImage(artboardRef.current);
+        for (const box of (regionPersistRef.current.selections || boxes).filter(
+          (item) => item.resultUrl,
+        )) {
+          if (firstStyleReferenceUrl) break;
+          firstStyleReferenceUrl =
+            (await flattenPngAlphaOntoSolid(box.resultUrl).catch(() => "")) ||
+            box.resultUrl;
+        }
+        for (let index = 0; index < list.length; index += 1) {
+          const box = list[index];
+          const editingStatus =
+            list.length > 1
+              ? `正在继续图片编辑（${index + 1}/${list.length}）…`
+              : "正在继续图片编辑…";
+          persistRegionProcess({
+            outputUrl: parent,
+            loading: true,
+            stage: editingStatus,
+          });
+          if (mountedRef.current) setRegionStatus(editingStatus);
+          const elements = (box.elements || []).filter((item) =>
+            (box.marked || []).includes(item.id),
+          );
+          const instruction =
+            buildRegionEditInstruction({
+              elements,
+              userNote: prompt,
+              viewport: null,
+              action,
+              hasStyleReference: Boolean(firstStyleReferenceUrl),
+              transparent,
+            }) ||
+            buildRegionEditInstruction({
+              userNote: prompt || "处理当前框选区域",
+              action: action === "remove" && !elements.length ? "custom" : action,
+              hasStyleReference: Boolean(firstStyleReferenceUrl),
+              transparent,
+            });
+          const applyResult = (result) => {
+            const resultUrl = result.dataUrl;
+            const nextSelections = (
+              regionPersistRef.current.selections || boxes
+            ).map((item) =>
+              item.id === box.id || item.runId === box.runId
+                ? {
+                    ...item,
+                    resultUrl,
+                    runId: result.runId || item.runId,
+                    conversationId:
+                      result.conversationId || item.conversationId,
+                  }
+                : item,
+            );
+            persistRegionProcess({
+              outputUrl: parent,
+              selections: nextSelections,
+              resultUrl,
+              conversationId: result.conversationId || sharedConversationId,
+              runId: result.runId,
+              loading: index < list.length - 1,
+              error: "",
+              stage: editingStatus,
+            });
+            if (mountedRef.current) {
+              setRegions(nextSelections);
+              setRegionPreviewUrl(resultUrl);
+              setEntries((current) => {
+                if (current.some((item) => item.url === resultUrl)) {
+                  return current;
+                }
+                return [
+                  regionResultEntry({
+                    url: resultUrl,
+                    parent,
+                    runId: result.runId,
+                    deviceId: viewDeviceId,
+                  }),
+                  ...current,
+                ];
+              });
+            }
+            return resultUrl;
+          };
+          const rememberRun = (runId) => {
+            if (runId) regionResumeIdsRef.current.add(runId);
+            const current = regionPersistRef.current.selections || boxes;
+            const next = current.map((item) =>
+              item.id === box.id
+                ? {
+                    ...item,
+                    runId,
+                    conversationId:
+                      sharedConversationId || item.conversationId,
+                  }
+                : item,
+            );
+            persistRegionProcess({
+              outputUrl: parent,
+              selections: next,
+              conversationId: sharedConversationId,
+              runId,
+              loading: true,
+              stage: editingStatus,
+            });
+            if (mountedRef.current) setRegions(next);
+          };
+          let result = null;
+          const runId = String(box.runId || "").trim();
+          if (runId && !regionResumeIdsRef.current.has(`dead:${runId}`)) {
+            try {
+              result = await generateDesignRegionImage({
+                referenceImage: parent,
+                regionReferenceDataUrl: parent,
+                region: {
+                  name: "框选优化区域",
+                  type: "frame",
+                  description: "",
+                  width: 1,
+                  height: 1,
+                },
+                conversationId: box.conversationId || sharedConversationId,
+                runId,
+                retainConversation: true,
+                parentOutputUrl: parent,
+                onConversation: (id) => {
+                  sharedConversationId = id || sharedConversationId;
+                },
+                onRun: rememberRun,
+                onStage: () => {
+                  if (mountedRef.current) setRegionStatus(editingStatus);
+                },
+              });
+            } catch (error) {
+              if (!isDeadAssistantRun(error)) throw error;
+              regionResumeIdsRef.current.add(`dead:${runId}`);
+            }
+          }
+          if (!result) {
+            const captured = await captureRegion(box);
+            const blob = await (await fetch(captured.dataUrl)).blob();
+            const regionReferenceDataUrl = await uploadAiTempBlob(blob);
+            const requestSize = resolveRegionSelectionRequestSize(
+              captured.width,
+              captured.height,
+            );
+            const designReference = resolveRegionDesignReference({
+              index,
+              firstResultUrl: firstStyleReferenceUrl,
+              draftUrl: parent,
+              preserveLayout,
+              hasStyleReferences: Boolean(firstStyleReferenceUrl),
+            });
+            result = await generateDesignRegionImage({
+              referenceImage: parent,
+              regionReferenceDataUrl,
+              designReferenceImage: designReference?.url || "",
+              designReferenceName: designReference?.name || "",
+              region: {
+                name:
+                  list.length > 1
+                    ? `框选优化区域 ${index + 1}`
+                    : "框选优化区域",
+                type: "frame",
+                description: (instruction || "处理当前框选区域").slice(0, 240),
+                width: captured.width,
+                height: captured.height,
+              },
+              transparent,
+              generationMode: "strict",
+              userInstruction:
+                instruction || prompt || "处理当前框选区域",
+              requestSize,
+              quality: "high",
+              preserveLayout,
+              retainConversation: true,
+              conversationId: sharedConversationId,
+              parentOutputUrl: parent,
+              onConversation: (id) => {
+                sharedConversationId = id || sharedConversationId;
+              },
+              onRun: rememberRun,
+              onStage: () => {
+                if (mountedRef.current) setRegionStatus(editingStatus);
+              },
+            });
+          }
+          if (!sharedConversationId && result.conversationId) {
+            sharedConversationId = result.conversationId;
+          }
+          const resultUrl = applyResult(result);
+          if (!firstStyleReferenceUrl) {
+            firstStyleReferenceUrl =
+              (await flattenPngAlphaOntoSolid(resultUrl).catch(() => "")) ||
+              resultUrl;
+          }
+        }
+        persistRegionProcess({ loading: false, error: "" });
+        if (mountedRef.current) {
+          setRegionStatus("编辑完成，可查看大图确认效果");
+        }
+      } catch (error) {
+        persistRegionProcess({
+          loading: false,
+          error: error?.message || "继续框选任务失败",
+        });
+        if (error?.name !== "AbortError" && mountedRef.current) {
+          setRegionError(error?.message || "继续框选任务失败");
+        }
+      } finally {
+        regionContinueLockRef.current = false;
+        if (mountedRef.current) setRegionBusy(false);
+      }
+    },
+    [
+      captureRegion,
+      persistRegionProcess,
+      regionAction,
+      regionPrompt,
+      viewDeviceId,
+    ],
+  );
+  continueRegionProcessRef.current = continueRegionProcess;
+
   const analyzeRegion = useCallback(async () => {
     if (!regionRecognition.length || regionBusy) return;
     setRegionBusy(true);
@@ -2025,13 +2580,23 @@ export function DesignWorkshopView() {
       setRegionError("请先点选要编辑的元素，或填写具体编辑要求");
       return;
     }
-    setRegionBusy(true);
-    setRegionError("");
-    setRegionStatus(
+    const preparingStatus =
       regions.length > 1
         ? `正在准备图片编辑（1/${regions.length}）`
-        : "正在准备图片编辑",
-    );
+        : "正在准备图片编辑";
+    setRegionBusy(true);
+    setRegionError("");
+    setRegionStatus(preparingStatus);
+    persistRegionProcess({
+      outputUrl: activeOutput,
+      selections: regions,
+      prompt: regionPrompt,
+      recognitionTypes: regionRecognition,
+      editAction: regionAction,
+      loading: true,
+      error: "",
+      stage: preparingStatus,
+    });
     try {
       const uploadedRefs = [];
       for (const item of regionReferences) {
@@ -2040,11 +2605,22 @@ export function DesignWorkshopView() {
           name: item.name || "用户参考图",
         });
       }
-      const preserveLayout = ["remove", "improve-icon"].includes(regionAction);
-      const transparent = regionAction === "custom";
+      const transparent = regionWantsTransparent;
+      const preserveLayout =
+        ["remove", "improve-icon"].includes(regionAction) && !transparent;
       let firstStyleReferenceUrl = "";
+      let sharedConversationId =
+        regions.find((item) => item.conversationId)?.conversationId || "";
       for (let index = 0; index < regions.length; index += 1) {
         const box = regions[index];
+        if (box.resultUrl) {
+          if (!firstStyleReferenceUrl) {
+            firstStyleReferenceUrl =
+              (await flattenPngAlphaOntoSolid(box.resultUrl).catch(() => "")) ||
+              box.resultUrl;
+          }
+          continue;
+        }
         const elements = (box.elements || []).filter((item) =>
           (box.marked || []).includes(item.id),
         );
@@ -2055,6 +2631,7 @@ export function DesignWorkshopView() {
             viewport: null,
             action: regionAction,
             hasStyleReference: uploadedRefs.length > 0,
+            transparent: regionWantsTransparent,
           }) ||
           buildRegionEditInstruction({
             userNote: regionPrompt.trim() || "处理当前框选区域",
@@ -2063,13 +2640,19 @@ export function DesignWorkshopView() {
                 ? "custom"
                 : regionAction,
             hasStyleReference: uploadedRefs.length > 0,
+            transparent: regionWantsTransparent,
           });
         if (!instruction) continue;
-        setRegionStatus(
+        const editingStatus =
           regions.length > 1
             ? `正在图片编辑（${index + 1}/${regions.length}）…`
-            : "正在图片编辑…",
-        );
+            : "正在图片编辑…";
+        persistRegionProcess({
+          outputUrl: activeOutput,
+          loading: true,
+          stage: editingStatus,
+        });
+        if (mountedRef.current) setRegionStatus(editingStatus);
         const captured = await captureRegion(box);
         const blob = await (await fetch(captured.dataUrl)).blob();
         const regionReferenceDataUrl = await uploadAiTempBlob(blob);
@@ -2107,45 +2690,123 @@ export function DesignWorkshopView() {
           quality: "high",
           preserveLayout,
           retainConversation: true,
-          onStage: () =>
-            setRegionStatus(
-              regions.length > 1
-                ? `正在图片编辑（${index + 1}/${regions.length}）…`
-                : "正在图片编辑…",
-            ),
+          conversationId: sharedConversationId,
+          parentOutputUrl: activeOutput,
+          onConversation: (id) => {
+            sharedConversationId = id || sharedConversationId;
+          },
+          onRun: (runId) => {
+            const current =
+              regionPersistRef.current.selections || regions;
+            const next = current.map((item) =>
+              item.id === box.id
+                ? {
+                    ...item,
+                    runId,
+                    conversationId:
+                      sharedConversationId || item.conversationId,
+                  }
+                : item,
+            );
+            persistRegionProcess({
+              outputUrl: activeOutput,
+              selections: next,
+              conversationId: sharedConversationId,
+              runId,
+              loading: true,
+              stage: editingStatus,
+            });
+            if (mountedRef.current) setRegions(next);
+          },
+          onStage: () => {
+            persistRegionProcess({
+              outputUrl: activeOutput,
+              loading: true,
+              stage: editingStatus,
+            });
+            if (mountedRef.current) setRegionStatus(editingStatus);
+          },
         });
-        if (!firstStyleReferenceUrl) {
-          firstStyleReferenceUrl = transparent
-            ? await flattenPngAlphaOntoSolid(result.dataUrl).catch(() => "")
-            : result.dataUrl;
+        if (!sharedConversationId && result.conversationId) {
+          sharedConversationId = result.conversationId;
         }
-        setRegions((current) =>
-          current.map((item) =>
-            item.id === box.id ? { ...item, resultUrl: result.dataUrl } : item,
-          ),
+        if (!firstStyleReferenceUrl) {
+          firstStyleReferenceUrl =
+            (await flattenPngAlphaOntoSolid(result.dataUrl).catch(() => "")) ||
+            result.dataUrl;
+        }
+        const nextSelections = (
+          regionPersistRef.current.selections || regions
+        ).map((item) =>
+          item.id === box.id
+            ? {
+                ...item,
+                resultUrl: result.dataUrl,
+                runId: result.runId || item.runId,
+                conversationId:
+                  result.conversationId || item.conversationId,
+              }
+            : item,
         );
+        persistRegionProcess({
+          outputUrl: activeOutput,
+          selections: nextSelections,
+          resultUrl: result.dataUrl,
+          conversationId: sharedConversationId,
+          runId: result.runId,
+          loading: index < regions.length - 1,
+        });
+        if (!mountedRef.current) continue;
+        setRegions(nextSelections);
         setRegionPreviewUrl(result.dataUrl);
+        setEntries((current) => {
+          if (current.some((item) => item.url === result.dataUrl)) return current;
+          return [
+            regionResultEntry({
+              url: result.dataUrl,
+              parent: activeOutput,
+              runId: result.runId,
+              deviceId: viewDeviceId,
+            }),
+            ...current,
+          ];
+        });
       }
-      setRegionStatus(
+      const doneStatus =
         regions.length > 1
           ? uploadedRefs.length
             ? `已出 ${regions.length} 张，已按参考图统一风格、各框保持各自内容`
             : `已出 ${regions.length} 张，后续已按第一张出图对齐风格`
-          : "编辑完成，可查看大图确认效果",
-      );
+          : "编辑完成，可查看大图确认效果";
+      persistRegionProcess({
+        outputUrl: activeOutput,
+        loading: false,
+        error: "",
+        stage: doneStatus,
+      });
+      if (mountedRef.current) setRegionStatus(doneStatus);
     } catch (error) {
-      setRegionError(error?.message || "框选优化失败");
+      persistRegionProcess({
+        outputUrl: activeOutput,
+        loading: false,
+        error: error?.message || "框选优化失败",
+      });
+      if (mountedRef.current) setRegionError(error?.message || "框选优化失败");
     } finally {
-      setRegionBusy(false);
+      if (mountedRef.current) setRegionBusy(false);
     }
   }, [
     activeOutput,
     captureRegion,
+    persistRegionProcess,
     regionAction,
     regionBusy,
     regionPrompt,
+    regionRecognition,
     regionReferences,
+    regionWantsTransparent,
     regions,
+    viewDeviceId,
   ]);
 
   const runFullAnalysis = useCallback(async () => {
@@ -2998,7 +3659,8 @@ export function DesignWorkshopView() {
                   <div className="dws-artboard-page">
                     <AuthenticatedImage
                       data-studio-output
-                      src={activeOutput}
+                      src={outputMaps.displays[activeOutput] || activeOutput}
+                      fallbackSrc={activeOutput}
                       alt="UI 设计稿预览"
                       loading="eager"
                       maxDimension={2200}
@@ -3301,6 +3963,7 @@ export function DesignWorkshopView() {
       {fullscreenOpen && (
         <EcommerceFullscreenPreview
           sourceUrl={activeOutput}
+          displaySourceUrl={outputMaps.displays[activeOutput] || ""}
           title="UI 设计稿"
           gallery={outputMaps.outputs}
           onSelect={setActiveOutput}
@@ -3331,13 +3994,37 @@ export function DesignWorkshopView() {
           forest={tree.forest}
           activeOutput={activeOutput}
           onSelect={(url) => {
+            const entry = entries.find((item) => item.url === url);
+            if (entry && String(entry.groupId || "").startsWith("region-")) {
+              setActiveOutput(entry.parent || activeOutput);
+              setRegionPreviewUrl(url);
+              setRegionMode(true);
+              setRegions((current) => {
+                if (current.some((box) => box.resultUrl === url)) return current;
+                const box = createRegionBox({
+                  resultUrl: url,
+                  x: 0.12,
+                  y: 0.12,
+                  width: 0.76,
+                  height: 0.76,
+                });
+                return box ? [...current, box] : current;
+              });
+              setVersionDrawerOpen(false);
+              return;
+            }
             setActiveOutput(url);
             setVersionDrawerOpen(false);
           }}
           onIterate={(node) => {
             const url = pickCarrier(node, viewDeviceId) || node.cover;
-            setActiveOutput(url);
-            setIterationSource(url);
+            const entry = entries.find((item) => item.url === url);
+            const source =
+              entry && String(entry.groupId || "").startsWith("region-")
+                ? entry.parent || url
+                : url;
+            setActiveOutput(source);
+            setIterationSource(source);
             setVersionDrawerOpen(false);
             setTabletPane("controls");
           }}
@@ -3354,7 +4041,8 @@ export function DesignWorkshopView() {
               ...new Set(
                 entries
                   .filter((item) => urls.has(item.url))
-                  .map((item) => item.jobId),
+                  .map((item) => item.jobId)
+                  .filter(Boolean),
               ),
             ];
             await Promise.all(
@@ -3670,17 +4358,19 @@ export function DesignWorkshopView() {
             <label className="dws-region-composer__option">
               <input
                 type="checkbox"
-                checked={regionAction === "custom"}
+                checked={regionWantsTransparent}
                 disabled
               />
               <span>
-                {regionAction === "replace-background"
-                  ? "更换背景模式输出完整背景"
-                  : regionAction === "improve-icon"
-                    ? "美化图标保留完整画面"
-                    : regionAction === "remove"
-                      ? "移除元素后保留完整画面"
-                      : "透明背景"}
+                {regionWantsTransparent
+                  ? "输出真透明 PNG，不要白底或棋盘格"
+                  : regionAction === "replace-background"
+                    ? "更换背景模式输出完整背景"
+                    : regionAction === "improve-icon"
+                      ? "美化图标保留完整画面"
+                      : regionAction === "remove"
+                        ? "移除元素后保留完整画面"
+                        : "透明背景"}
               </span>
             </label>
             <p className="dws-region-composer__cost">
@@ -3784,6 +4474,8 @@ export function DesignWorkshopView() {
                 type="button"
                 disabled={regionBusy}
                 onClick={() => {
+                  clearRegionProcessSession();
+                  regionPersistRef.current = {};
                   setRegions([]);
                   setActiveRegionId("");
                   setRegionDraft(null);

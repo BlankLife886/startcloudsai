@@ -101,17 +101,21 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if _, _, _, _, created, err := store.GetEmailLoginCodeForUpdate(ctx, s.St.Pool, email); err == nil && time.Since(created) < time.Minute {
-		fail(c, apperr.E("rate_limited", "验证码发送过于频繁，请稍后再试", 429))
-		return
-	}
 	code := randomDigits(6)
 	var ip *string
 	if v := c.ClientIP(); v != "" {
 		ip = &v
 	}
-	if err := store.UpsertEmailLoginCode(ctx, s.St.Pool, email, "authenticate", s.loginCodeHash(email, code), time.Now().UTC().Add(emailCodeTTL), ip); err != nil {
+	// 重发间隔检查与写入新码在同一条语句内完成，并发同邮箱请求只有一个能
+	// 写入，不会出现两条邮件里的验证码互相覆盖导致先发的失效。
+	written, err := store.UpsertEmailLoginCodeIfStale(ctx, s.St.Pool, email, "authenticate",
+		s.loginCodeHash(email, code), time.Now().UTC().Add(emailCodeTTL), ip, time.Minute)
+	if err != nil {
 		fail(c, err)
+		return
+	}
+	if !written {
+		fail(c, apperr.E("rate_limited", "验证码发送过于频繁，请稍后再试", 429))
 		return
 	}
 	if err := s.sendLoginCode(email, code); err != nil {
@@ -120,7 +124,9 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 		return
 	}
 	result := gin.H{"expiresIn": int(emailCodeTTL.Seconds()), "resendAfter": 60}
-	if s.Cfg.AppEnv == "development" && s.Cfg.SMTPAddr == "" {
+	// 验证码回显必须由 DEV_LOGIN_CODE_ECHO 显式开启（生产环境在 config 层强制
+	// 关闭），APP_ENV=development 本身不再触发回显。
+	if s.Cfg.DevLoginCodeEcho && s.Cfg.SMTPAddr == "" {
 		result["developmentCode"] = code
 	}
 	respondCreated(c, result)

@@ -3,6 +3,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,12 +12,22 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
+var ledgerTypeCountSuffix = regexp.MustCompile(`[（(][a-z][a-z0-9_]*(?:×|x|\*)\d+[）)]`)
+
+func optionalString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 func userDict(u *store.User) gin.H {
 	return gin.H{
 		"id":                 u.ID.String(),
 		"email":              u.Email,
 		"username":           u.Username,
-		"avatarUrl":          u.AvatarURL,
+		"avatarUrl":          optionalString(u.AvatarURL),
+		"studioFigureUrl":    optionalString(u.StudioFigureURL),
 		"bio":                u.Bio,
 		"location":           u.Location,
 		"websiteUrl":         u.WebsiteURL,
@@ -62,6 +73,54 @@ func nonNilStrings(s []string) []string {
 	return s
 }
 
+// displayURLsForTask 由原图 key 按约定推导展示图（压缩图）地址。
+// 旧任务没有展示图对象时前端加载 404 会回退到原图。
+func displayURLsForTask(t *store.Task, prefix string) []string {
+	urls := make([]string, 0, len(t.OutputKeys))
+	for _, key := range t.OutputKeys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key == "" {
+			continue
+		}
+		display := store.DisplayKeyForOriginal(key)
+		if display == "" {
+			display = key
+		}
+		urls = append(urls, prefix+display)
+	}
+	return urls
+}
+
+// variantURLsForKeys 由原图 key 列表按约定推导变体地址；推导不出（如非任务产物 key）
+// 时回退原图地址，保证数组与原图一一对应。
+func variantURLsForKeys(keys []string, derive func(string) string) []string {
+	urls := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key == "" {
+			continue
+		}
+		variant := derive(key)
+		if variant == "" {
+			variant = key
+		}
+		urls = append(urls, "/api/v1/files/"+variant)
+	}
+	return urls
+}
+
+// variantURLForKey 单个 key 版本；key 为空时返回 nil。
+func variantURLForKey(key *string, derive func(string) string) *string {
+	if key == nil || strings.TrimSpace(*key) == "" {
+		return nil
+	}
+	urls := variantURLsForKeys([]string{*key}, derive)
+	if len(urls) == 0 {
+		return nil
+	}
+	return &urls[0]
+}
+
 func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	params := t.Params
 	if params == nil {
@@ -84,6 +143,7 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 		"outputUrls":         nonNilStrings(outputURLs),
 		"thumbnailUrls":      nonNilStrings(outputURLs),
 		"originalUrls":       nonNilStrings(originalURLs),
+		"displayUrls":        displayURLsForTask(t, "/api/v1/files/"),
 		"thumbnailKeys":      nonNilStrings(t.ThumbnailKeys),
 		"costPoints":         t.CostCents,
 		"costCents":          t.CostCents,
@@ -148,15 +208,25 @@ func rewriteAssistantLedgerReason(reason *string, params map[string]any) *string
 }
 
 func rewriteTaskLedgerReason(reason *string, task *store.Task) *string {
-	if reason == nil || task == nil || !store.IsCanvasOrigin(task.Params) {
+	if reason == nil {
+		return nil
+	}
+	text := strings.TrimSpace(ledgerTypeCountSuffix.ReplaceAllString(*reason, ""))
+	if task != nil && store.IsCanvasOrigin(task.Params) {
+		text = strings.NewReplacer(
+			"任务冻结", "无限画布冻结",
+			"任务结算", "无限画布结算",
+			"任务失败解冻", "无限画布失败退回",
+			"任务解冻", "无限画布解冻",
+		).Replace(text)
+	}
+	if text == "" {
 		return reason
 	}
-	rewritten := strings.NewReplacer(
-		"任务冻结", "无限画布冻结",
-		"任务结算", "无限画布结算",
-		"任务解冻", "无限画布解冻",
-	).Replace(*reason)
-	return &rewritten
+	if text == *reason {
+		return reason
+	}
+	return &text
 }
 
 func adminTaskServiceProvider(t *store.Task) string {
@@ -236,6 +306,9 @@ func ledgerDictWithTask(e *store.LedgerEntry, task *store.Task) gin.H {
 		"costPoints":                task.CostCents,
 		"settledCostPoints":         settledCost,
 		"automaticBackgroundRemove": automatic,
+		"createdAt":                 isoValue(task.CreatedAt),
+		"startedAt":                 iso(task.StartedAt),
+		"finishedAt":                iso(task.FinishedAt),
 	}
 	return d
 }
@@ -288,6 +361,9 @@ func ledgerDictWithAssistantRun(e *store.LedgerEntry, run *store.AssistantRun) g
 		"costPoints":                cost,
 		"settledCostPoints":         settledCost,
 		"automaticBackgroundRemove": false,
+		"createdAt":                 isoValue(run.CreatedAt),
+		"startedAt":                 iso(run.StartedAt),
+		"finishedAt":                iso(run.FinishedAt),
 	}
 	return d
 }
@@ -392,20 +468,26 @@ func submissionDict(s *store.GallerySubmission, mediaURLs []string) gin.H {
 		categoryID = &v
 	}
 	return gin.H{
-		"id":           s.ID.String(),
-		"taskId":       s.TaskID.String(),
-		"title":        s.Title,
-		"status":       s.Status,
-		"coverKey":     s.CoverKey,
-		"mediaKeys":    nonNilStrings(s.MediaKeys),
-		"mediaUrls":    nonNilStrings(mediaURLs),
-		"rejectReason": s.RejectReason,
-		"reviewedAt":   iso(s.ReviewedAt),
-		"featured":     s.Featured,
-		"categoryId":   categoryID,
-		"sort":         s.Sort,
-		"tags":         nonNilStrings(s.Tags),
-		"createdAt":    isoValue(s.CreatedAt),
+		"id":        s.ID.String(),
+		"taskId":    s.TaskID.String(),
+		"title":     s.Title,
+		"status":    s.Status,
+		"coverKey":  s.CoverKey,
+		"mediaKeys": nonNilStrings(s.MediaKeys),
+		"mediaUrls": nonNilStrings(mediaURLs),
+		// 小图/展示图变体（约定推导）：列表用小图、点开大图用展示图，
+		// 旧数据取不到时前端回退 mediaUrls 里的原图。
+		"mediaThumbUrls":   variantURLsForKeys(s.MediaKeys, store.ThumbKeyForOriginal),
+		"mediaDisplayUrls": variantURLsForKeys(s.MediaKeys, store.DisplayKeyForOriginal),
+		"coverThumbUrl":    variantURLForKey(s.CoverKey, store.ThumbKeyForOriginal),
+		"coverDisplayUrl":  variantURLForKey(s.CoverKey, store.DisplayKeyForOriginal),
+		"rejectReason":     s.RejectReason,
+		"reviewedAt":       iso(s.ReviewedAt),
+		"featured":         s.Featured,
+		"categoryId":       categoryID,
+		"sort":             s.Sort,
+		"tags":             nonNilStrings(s.Tags),
+		"createdAt":        isoValue(s.CreatedAt),
 	}
 }
 
@@ -484,14 +566,16 @@ func announcementDict(a *store.Announcement) gin.H {
 
 func changelogDict(c *store.ChangelogEntry) gin.H {
 	return gin.H{
-		"id":        c.ID.String(),
-		"version":   c.Version,
-		"date":      c.Date.Format("2006-01-02"),
-		"tag":       c.Tag,
-		"title":     c.Title,
-		"summary":   c.Summary,
-		"items":     nonNilStrings(c.Items),
-		"highlight": c.Highlight,
-		"sort":      c.Sort,
+		"id":          c.ID.String(),
+		"version":     c.Version,
+		"date":        c.Date.Format("2006-01-02"),
+		"tag":         c.Tag,
+		"title":       c.Title,
+		"summary":     c.Summary,
+		"items":       nonNilStrings(c.Items),
+		"highlight":   c.Highlight,
+		"sort":        c.Sort,
+		"createdAt":   isoValue(c.CreatedAt),
+		"publishedAt": isoValue(c.CreatedAt),
 	}
 }

@@ -14,6 +14,7 @@ import TaskRuntimeSettingsDialog from '@/components/settings/TaskRuntimeSettings
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
+  adminFileUrl,
   formatPoints,
   formatShortTime,
   formatTime,
@@ -32,6 +33,8 @@ interface AdminTask {
   inputKeys?: string[]
   outputKeys?: string[]
   outputUrls?: string[]
+  displayUrls?: string[]
+  originalUrls?: string[]
   costCents: number
   errorCode: string | null
   errorMessage: string | null
@@ -222,15 +225,19 @@ function taskPromptBrief(task: AdminTask) {
   return text.length > 4 ? `${text.slice(0, 4)}…` : text
 }
 
-/** 输入图直接走文件网关（302 到 R2 presigned URL） */
-function fileUrl(key: string): string {
-  return `/api/v1/files/${key}`
-}
-
 function taskMediaUrls(task: AdminTask) {
   const outputs = (task.outputUrls ?? []).filter(Boolean)
   if (outputs.length) return outputs
-  return (task.inputKeys ?? []).filter(Boolean).map(fileUrl)
+  return (task.inputKeys ?? []).filter(Boolean).map(adminFileUrl)
+}
+
+/** 点开大图用展示图（服务端压缩大图），没有再退回原图/小图 */
+function taskPreviewUrls(task: AdminTask) {
+  const display = (task.displayUrls ?? []).filter(Boolean)
+  if (display.length) return display
+  const originals = (task.originalUrls ?? []).filter(Boolean)
+  if (originals.length) return originals
+  return taskMediaUrls(task)
 }
 
 function taskDuration(task: AdminTask) {
@@ -496,11 +503,17 @@ const detailParamsJson = computed(() => {
   return JSON.stringify(params, null, 2)
 })
 
-const detailInputUrls = computed(() => (detail.value?.inputKeys ?? []).map(fileUrl))
+const detailInputUrls = computed(() => (detail.value?.inputKeys ?? []).map(adminFileUrl))
 const detailOutputUrls = computed(() => detail.value?.outputUrls ?? [])
 const detailMediaMode = ref<'output' | 'input'>('output')
 const detailMediaUrls = computed(() =>
   detailMediaMode.value === 'output' ? detailOutputUrls.value : detailInputUrls.value,
+)
+// 详情里点开大图：产物用展示图（压缩大图），输入图沿用原地址
+const detailPreviewUrls = computed(() =>
+  detailMediaMode.value === 'output' && detail.value
+    ? taskPreviewUrls(detail.value)
+    : detailMediaUrls.value,
 )
 
 function setDetailMediaMode(mode: 'output' | 'input') {
@@ -512,6 +525,90 @@ function openDetail(task: AdminTask) {
   detailMediaMode.value = task.outputUrls?.length ? 'output' : 'input'
   paramsDialogVisible.value = false
   detailVisible.value = true
+  void loadTimeline(task.id)
+}
+
+// ---------- 执行耗时时间线 ----------
+
+interface TimelineEvent {
+  id: number
+  stage: string
+  status: string
+  message: string
+  durationMs: number | null
+  meta: Record<string, unknown>
+  createdAt: string
+}
+
+const timelineLoading = ref(false)
+const timelineError = ref('')
+const timelineEvents = ref<TimelineEvent[]>([])
+
+/** 阶段 → 白话名称与解释（给非技术同学看的） */
+const TIMELINE_STAGE_META: Record<string, { label: string; hint: string }> = {
+  queued: { label: '排队等待', hint: '任务创建后在队列里等待空闲处理线程接单，排队久说明当时任务多或并发额度满了' },
+  input_prepare: { label: '准备参考图', hint: '把参考图从云存储取出并编码，准备发给 AI 服务' },
+  submitted: { label: '提交生成请求', hint: '把生成请求发送给上游 AI 服务商，之后进入等待生成阶段' },
+  upstream_generate: { label: 'AI 生成', hint: '上游 AI 服务实际画图的时间，快慢取决于上游服务的负载，平台无法加速' },
+  result_download: { label: '取回图片', hint: '把生成好的图片从上游服务器下载回本平台，受跨国网络带宽影响，图越大越慢' },
+  image_persist: { label: '保存图片', hint: '生成小图和展示图（后台「图片处理」可配格式与质量），与原图一起存入云存储' },
+  retry: { label: '自动重试', hint: '上游临时报错（如账号池忙）时，系统按「系统设置→调度与重试」里的退避时间自动重试' },
+  upstream_error: { label: '上游报错', hint: '上游服务商返回了错误信息，若还有重试机会会自动重试' },
+  succeeded: { label: '任务完成', hint: '从创建到完成的总耗时（含排队），图片已保存、费用已结算' },
+  failed: { label: '任务失败', hint: '任务终止，冻结的积分已退回用户' },
+}
+
+function timelineStageLabel(stage: string) {
+  return TIMELINE_STAGE_META[stage]?.label ?? stage
+}
+
+function timelineStageHint(stage: string) {
+  return TIMELINE_STAGE_META[stage]?.hint ?? ''
+}
+
+function formatDurationMs(ms: number | null | undefined): string {
+  if (ms == null || ms < 0) return ''
+  if (ms < 1000) return `${ms} 毫秒`
+  const secs = ms / 1000
+  if (secs < 60) return `${secs.toFixed(1)} 秒`
+  const mins = Math.floor(secs / 60)
+  const rest = Math.round(secs % 60)
+  return `${mins} 分 ${rest} 秒`
+}
+
+// succeeded/failed 记录的是“从创建到结束”的总耗时，不和单阶段比较条形长度。
+const TIMELINE_TOTAL_STAGES = new Set(['succeeded', 'failed'])
+
+const timelineMaxMs = computed(() => {
+  let max = 0
+  for (const event of timelineEvents.value) {
+    if (TIMELINE_TOTAL_STAGES.has(event.stage)) continue
+    if (event.durationMs != null && event.durationMs > max) max = event.durationMs
+  }
+  return max
+})
+
+function timelineBarWidth(event: TimelineEvent): string {
+  if (TIMELINE_TOTAL_STAGES.has(event.stage)) return ''
+  if (event.durationMs == null || event.durationMs <= 0 || timelineMaxMs.value <= 0) return ''
+  const pct = Math.max(2, Math.round((event.durationMs / timelineMaxMs.value) * 100))
+  return `${pct}%`
+}
+
+async function loadTimeline(taskId: string) {
+  timelineLoading.value = true
+  timelineError.value = ''
+  timelineEvents.value = []
+  try {
+    const data = await request<{ items: TimelineEvent[] }>(
+      `/api/v1/admin/tasks/${taskId}/timeline`,
+    )
+    timelineEvents.value = data.items ?? []
+  } catch (error) {
+    timelineError.value = error instanceof Error ? error.message : '耗时记录加载失败'
+  } finally {
+    timelineLoading.value = false
+  }
 }
 
 function openParamsDialog() {
@@ -771,7 +868,7 @@ async function forceFail(task: AdminTask) {
                 <el-image
                   v-if="taskMediaUrls(row as AdminTask).length"
                   :src="taskMediaUrls(row as AdminTask)[0]"
-                  :preview-src-list="taskMediaUrls(row as AdminTask)"
+                  :preview-src-list="taskPreviewUrls(row as AdminTask)"
                   fit="cover"
                   class="task-thumb"
                   preview-teleported
@@ -1090,7 +1187,7 @@ async function forceFail(task: AdminTask) {
               v-for="(url, index) in detailMediaUrls"
               :key="`${detailMediaMode}-${url}-${index}`"
               :src="url"
-              :preview-src-list="detailMediaUrls"
+              :preview-src-list="detailPreviewUrls"
               :initial-index="index"
               fit="cover"
               class="media-grid__item"
@@ -1145,6 +1242,42 @@ async function forceFail(task: AdminTask) {
               <dd>用户删除 · {{ formatTime(detail.deletedAt) }}</dd>
             </div>
           </dl>
+        </section>
+
+        <section class="detail-section">
+          <header class="detail-section__title">
+            执行耗时
+            <small class="detail-section__hint">任务每一步花了多久（灰色小字是白话解释）</small>
+          </header>
+          <div v-if="timelineLoading" class="timeline-empty">加载中…</div>
+          <div v-else-if="timelineError" class="timeline-empty">{{ timelineError }}</div>
+          <div v-else-if="!timelineEvents.length" class="timeline-empty">
+            暂无耗时记录（仅在时间线功能上线后执行的任务会记录）
+          </div>
+          <ol v-else class="timeline">
+            <li
+              v-for="event in timelineEvents"
+              :key="event.id"
+              class="timeline-item"
+              :class="`is-${event.status}`"
+            >
+              <div class="timeline-item__head">
+                <span class="timeline-dot" />
+                <strong>{{ timelineStageLabel(event.stage) }}</strong>
+                <span v-if="event.durationMs != null" class="timeline-duration tnum">
+                  {{ formatDurationMs(event.durationMs) }}
+                </span>
+                <time class="timeline-time">{{ formatShortTime(event.createdAt) }}</time>
+              </div>
+              <div v-if="timelineBarWidth(event)" class="timeline-bar">
+                <i :style="{ width: timelineBarWidth(event) }" />
+              </div>
+              <p class="timeline-message">{{ event.message }}</p>
+              <p v-if="timelineStageHint(event.stage)" class="timeline-hint">
+                {{ timelineStageHint(event.stage) }}
+              </p>
+            </li>
+          </ol>
         </section>
 
         <section class="detail-section">
@@ -2325,5 +2458,140 @@ html.dark .status-tab.is-active em {
   --el-button-hover-text-color: #fff;
   --el-button-active-text-color: #fff;
   color: #fff !important;
+}
+
+/* ---------- 执行耗时时间线 ---------- */
+
+.timeline-empty {
+  padding: 14px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-item {
+  position: relative;
+  padding: 10px 12px 12px 26px;
+  border-left: 2px solid var(--border);
+  margin-left: 7px;
+}
+
+.timeline-item:last-child {
+  border-left-color: transparent;
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -7px;
+  top: 14px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 3px solid var(--ink-3);
+}
+
+.timeline-item.is-success .timeline-dot {
+  border-color: #22a06b;
+}
+
+.timeline-item.is-warning .timeline-dot {
+  border-color: #e8a23a;
+}
+
+.timeline-item.is-error .timeline-dot {
+  border-color: #e5574f;
+}
+
+.timeline-item__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.timeline-item__head strong {
+  font-size: 13.5px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.timeline-item.is-error .timeline-item__head strong {
+  color: #e5574f;
+}
+
+.timeline-item.is-warning .timeline-item__head strong {
+  color: #b97a1a;
+}
+
+.timeline-item.is-success .timeline-item__head strong {
+  color: #1d8a5c;
+}
+
+.timeline-duration {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-2);
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.timeline-time {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.timeline-bar {
+  margin-top: 7px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.timeline-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6d8dff, #4a6cf7);
+}
+
+.timeline-item.is-warning .timeline-bar i {
+  background: linear-gradient(90deg, #f5c26b, #e8a23a);
+}
+
+.timeline-item.is-error .timeline-bar i {
+  background: linear-gradient(90deg, #f08a84, #e5574f);
+}
+
+.timeline-item.is-success .timeline-bar i {
+  background: linear-gradient(90deg, #4fc48f, #22a06b);
+}
+
+.timeline-message {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.timeline-hint {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
 }
 </style>

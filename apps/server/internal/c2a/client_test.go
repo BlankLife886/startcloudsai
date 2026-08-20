@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -300,7 +302,7 @@ func TestPollImageTaskRetriesReturnedImageBeforeItIsAvailable(t *testing.T) {
 
 	client := NewWithPolicy(server.URL, "test-key", 30, true)
 	images, pending, firstErr := client.PollImageTask(context.Background(), "task-media-lag", 1)
-	if pending || len(images) != 0 || !IsRetryableError(firstErr) {
+	if !pending || nonEmptyImageCount(images) != 0 || !IsRetryableError(firstErr) {
 		t.Fatalf("first poll images=%#v pending=%v err=%v, want retryable media lag", images, pending, firstErr)
 	}
 	images, pending, err = client.PollImageTask(context.Background(), "task-media-lag", 1)
@@ -461,6 +463,12 @@ func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
 	}{
 		{status: "pending", pending: true},
 		{status: "processing", pending: true},
+		{status: "text_review", pending: true},
+		{status: "moderating", pending: true},
+		{status: "mystery_new_state", pending: true},
+		{status: "text", explicitFailure: true},
+		{status: "text_result", explicitFailure: true},
+		{status: "文本", explicitFailure: true},
 		{status: "succeeded"},
 		{status: "completed"},
 		{status: "failed", explicitFailure: true},
@@ -472,7 +480,7 @@ func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
 			if !tc.pending && !tc.explicitFailure {
 				task.Data = []map[string]any{{"b64_json": "image-data"}}
 			}
-			images, done, err := client.completedTaskImages(context.Background(), task, 1)
+			images, _, done, err := client.completedTaskImages(context.Background(), task, 1)
 			if tc.pending {
 				if done || err != nil {
 					t.Fatalf("done=%v err=%v, want pending", done, err)
@@ -495,7 +503,16 @@ func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
 	}
 }
 
-func TestPollImageTasksEachStreamsResultsInResponseOrder(t *testing.T) {
+func TestCompletedTaskImagesTreatsUpstreamTextMessageAsFailure(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task := imageTask{ID: "task-text-msg", Status: "processing", Error: "上游返回文本"}
+	_, _, done, err := client.completedTaskImages(context.Background(), task, 1)
+	if !done || err == nil || !imageTaskIsTextFailure(task) {
+		t.Fatalf("done=%v err=%v, want explicit text failure", done, err)
+	}
+}
+
+func TestPollImageTasksEachEmitsCompletedResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"items":[{"id":"task-a","status":"success","data":[{"b64_json":"a"}]},{"id":"task-b","status":"success","data":[{"b64_json":"b"}]}]}`))
@@ -503,15 +520,19 @@ func TestPollImageTasksEachStreamsResultsInResponseOrder(t *testing.T) {
 	defer server.Close()
 
 	client := NewWithPolicy(server.URL, "test-key", 30, true)
-	var order []string
+	got := map[string]string{}
+	var mu sync.Mutex
 	client.PollImageTasksEach(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1}, func(taskID string, result ImageTaskPollResult) {
 		if result.Err != nil || result.Pending || len(result.Images) != 1 {
-			t.Fatalf("task %s result = %#v", taskID, result)
+			t.Errorf("task %s result = %#v", taskID, result)
+			return
 		}
-		order = append(order, taskID+":"+result.Images[0])
+		mu.Lock()
+		got[taskID] = result.Images[0]
+		mu.Unlock()
 	})
-	if got := strings.Join(order, ","); got != "task-a:a,task-b:b" {
-		t.Fatalf("stream order = %q", got)
+	if got["task-a"] != "a" || got["task-b"] != "b" {
+		t.Fatalf("results = %#v", got)
 	}
 }
 
@@ -524,16 +545,176 @@ func TestPollImageTasksEachGuardedClaimsOnlyTerminalResults(t *testing.T) {
 	client := NewWithPolicy(server.URL, "test-key", 30, true)
 	var claimed []string
 	results := map[string]ImageTaskPollResult{}
+	var mu sync.Mutex
 	client.PollImageTasksEachGuarded(context.Background(), []string{"pending", "done"}, map[string]int{"pending": 1, "done": 1}, func(taskID string) bool {
 		claimed = append(claimed, taskID)
 		return true
 	}, func(taskID string, result ImageTaskPollResult) {
+		mu.Lock()
 		results[taskID] = result
+		mu.Unlock()
 	})
 	if strings.Join(claimed, ",") != "done" {
 		t.Fatalf("completion claims = %#v, want only done", claimed)
 	}
 	if !results["pending"].Pending || results["done"].Pending || len(results["done"].Images) != 1 {
 		t.Fatalf("results = %#v", results)
+	}
+}
+
+func png1x1() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54,
+		0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01,
+		0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+func TestCompletedTaskImagesKeepsRetryableDownloadPending(t *testing.T) {
+	var statusOpen atomic.Bool
+	statusOpen.Store(true)
+	var overlappingDownload atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/image-tasks"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"items":[{"id":"task-ok","status":"success","data":[{"url":"%s/img-ok.png"},{"url":"%s/img-missing.png"}]}]}`, "http://"+r.Host, "http://"+r.Host)
+			statusOpen.Store(false)
+		case r.URL.Path == "/img-ok.png":
+			if statusOpen.Load() {
+				overlappingDownload.Store(true)
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png1x1())
+		case r.URL.Path == "/img-missing.png":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), []string{"task-ok"}, map[string]int{"task-ok": 2})
+	result := results["task-ok"]
+	if overlappingDownload.Load() {
+		t.Fatal("image download started before the status response finished")
+	}
+	if !result.Pending || result.Err == nil || nonEmptyImageCount(result.Images) != 1 {
+		t.Fatalf("result = %#v, want pending with one recovered image", result)
+	}
+	if result.CompletedAt.IsZero() {
+		t.Fatal("succeeded poll should record CompletedAt before download")
+	}
+}
+
+func TestTaskImagesB64DownloadsInParallel(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png1x1())
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	data := []map[string]any{
+		{"url": server.URL + "/a.png"},
+		{"url": server.URL + "/b.png"},
+	}
+	done := make(chan struct{})
+	var images []string
+	var err error
+	go func() {
+		defer close(done)
+		images, _, err = client.taskImagesB64(context.Background(), data)
+	}()
+	waitStarted := time.After(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-waitStarted:
+			t.Fatal("downloads did not overlap")
+		}
+	}
+	close(release)
+	<-done
+	if err != nil || nonEmptyImageCount(images) != 2 {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+}
+
+func TestPollImageTaskStatusesGuardedDoesNotDownloadURLs(t *testing.T) {
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/image-tasks"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"items":[{"id":"task-url","status":"success","data":[{"url":"%s/img.png"}]}]}`, "http://"+r.Host)
+		case r.URL.Path == "/img.png":
+			downloads.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png1x1())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTaskStatusesGuarded(context.Background(), []string{"task-url"}, map[string]int{"task-url": 1}, func(string) bool {
+		return true
+	}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if downloads.Load() != 0 {
+		t.Fatalf("status poll downloaded %d images", downloads.Load())
+	}
+	if result.Pending || result.Err != nil || len(result.ImagePayload) != 1 || nonEmptyImageCount(result.Images) != 0 {
+		t.Fatalf("status result = %#v", result)
+	}
+}
+
+func TestPollImageTasksMatchClientTaskIDWhenUpstreamIDDiffers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"c2a-internal","client_task_id":"local-task","status":"success","data":[{"b64_json":"matched"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	var gotID string
+	client.PollImageTasksEach(context.Background(), []string{"local-task"}, map[string]int{"local-task": 1}, func(taskID string, got ImageTaskPollResult) {
+		gotID = taskID
+		result = got
+	})
+	if gotID != "local-task" || result.Pending || result.Missing || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "matched" {
+		t.Fatalf("id=%q result=%#v, want local-task image", gotID, result)
+	}
+}
+
+func TestPollImageTasksReadNestedResultData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"nested","status":"success","result":{"data":[{"b64_json":"nested-img"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"nested"}, map[string]int{"nested": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "nested-img" {
+		t.Fatalf("nested result = %#v, want nested-img", result)
 	}
 }

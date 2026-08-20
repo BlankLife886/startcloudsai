@@ -1,6 +1,7 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { StarcloudsApiError, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import type { CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
 import { normalizeCanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
 
 type CanvasDocumentV3 = Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun"> & {
@@ -76,9 +77,11 @@ function projectDocument(project: CanvasProject): CanvasDocumentV3 {
     };
 }
 
-function fromResponse(item: CanvasProjectResponse): CanvasProject | null {
+function fromResponse(item: CanvasProjectResponse): CanvasProject {
     const document = item.document as Partial<CanvasDocumentV3> & LegacyCanvasDocument;
-    if (![1, 2, 3].includes(document.version || 0) || !Array.isArray(document.nodes)) return null;
+    if (![1, 2, 3].includes(document.version || 0) || !Array.isArray(document.nodes)) {
+        throw new StarcloudsApiError("invalid_document", "画布文档格式不受支持", 422);
+    }
     const nodes = document.nodes as CanvasNodeData[];
     const connections = normalizeConnections(document.version === 3 ? document.connections : document.edges);
     return {
@@ -98,30 +101,25 @@ function fromResponse(item: CanvasProjectResponse): CanvasProject | null {
     };
 }
 
-async function loadCloudCanvasProjectSummary(item: CanvasProjectSummary) {
-    try {
-        return fromResponse(await starcloudsRequest<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(item.id)}`));
-    } catch (error) {
-        // A project can disappear between the summary and detail requests.
-        // Keep the rest of the project list usable, but surface real outages.
-        if (error instanceof StarcloudsApiError && error.status === 404) return null;
-        throw error;
-    }
-}
-
-export async function listCloudCanvasProjects() {
+/** List projects from the summary endpoint only; full documents are fetched lazily when a project is opened. */
+export async function listCloudCanvasProjectSummaries(): Promise<CanvasCloudProjectSummary[]> {
     const response = await starcloudsRequest<{ items: CanvasProjectSummary[] }>("/canvas-projects");
-    const details: Array<CanvasProject | null> = [];
-    const batchSize = 8;
-    for (let offset = 0; offset < response.items.length; offset += batchSize) {
-        const batch = response.items.slice(offset, offset + batchSize);
-        details.push(...(await Promise.all(batch.map(loadCloudCanvasProjectSummary))));
-    }
-    return details.filter((item): item is CanvasProject => item !== null);
+    return (response.items || []).map((item) => ({
+        id: item.id,
+        title: item.title,
+        revision: item.revision,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+    }));
 }
 
 export async function getCloudCanvasProject(id: string) {
-    return fromResponse(await starcloudsRequest<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(id)}`));
+    try {
+        return fromResponse(await starcloudsRequest<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(id)}`));
+    } catch (error) {
+        if (error instanceof StarcloudsApiError && error.status === 404) return null;
+        throw error;
+    }
 }
 
 export async function createCloudCanvasProject(project: CanvasProject) {

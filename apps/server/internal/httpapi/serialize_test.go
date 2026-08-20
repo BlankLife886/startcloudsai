@@ -115,6 +115,9 @@ func TestUserDictIncludesProfileDetails(t *testing.T) {
 	if dict["requireCostConfirm"] != true {
 		t.Fatalf("requireCostConfirm = %v, want true", dict["requireCostConfirm"])
 	}
+	if _, ok := dict["studioFigureUrl"]; !ok {
+		t.Fatalf("studioFigureUrl missing: %#v", dict)
+	}
 }
 
 func TestWalletDictUsesSingleAvailableBalanceDefinition(t *testing.T) {
@@ -222,7 +225,22 @@ func TestLedgerDictWithTaskRewritesCanvasFreezeReason(t *testing.T) {
 	}
 	dict := ledgerDictWithTask(entry, task)
 	got, _ := dict["reason"].(*string)
-	if got == nil || *got != "无限画布冻结（t2i×1）" {
+	if got == nil || *got != "无限画布冻结" {
 		t.Fatalf("canvas task ledger reason = %#v", dict["reason"])
+	}
+}
+
+func TestLedgerDictWithTaskStripsInternalTypeCode(t *testing.T) {
+	reason := "任务冻结（t2i×1）"
+	entry := &store.LedgerEntry{
+		ID: uuid.New(), Kind: "freeze", SourceType: "task", Reason: &reason, CreatedAt: time.Now(),
+	}
+	task := &store.Task{
+		ID: uuid.New(), Type: "t2i", Status: "running",
+	}
+	dict := ledgerDictWithTask(entry, task)
+	got, _ := dict["reason"].(*string)
+	if got == nil || *got != "任务冻结" {
+		t.Fatalf("task ledger reason = %#v", dict["reason"])
 	}
 }

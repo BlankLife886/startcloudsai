@@ -373,8 +373,10 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 	}
 	coverURL, _ := item["coverUrl"].(string)
 	mediaURLs, _ := item["mediaUrls"].([]any)
-	if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
-		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
+	// 管理端资源必须走 /api/v1/admin/files/：sc_admin_session cookie 的
+	// Path=/api/v1/admin，用户态 /api/v1/files/ 在后台浏览器中恒为 401。
+	if !strings.HasPrefix(coverURL, "/api/v1/admin/files/tasks/"+user.ID.String()+"/") {
+		t.Fatalf("coverUrl = %q, want an admin-scoped file URL", coverURL)
 	}
 	if len(mediaURLs) != 1 || mediaURLs[0] != coverURL {
 		t.Fatalf("mediaUrls = %#v, want [%q]", mediaURLs, coverURL)

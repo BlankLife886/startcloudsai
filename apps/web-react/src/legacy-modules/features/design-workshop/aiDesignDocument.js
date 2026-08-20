@@ -11,7 +11,10 @@ import { withTransparentPngInstruction } from '../ai-shared/transparentPng.js'
 import { stabilizeAnalysisNodes } from './analysisNodeGeometry.js'
 import { normalizeCropElementItems } from './regionGeometry.js'
 import { parseCropElementResponse } from './cropElementResponse.js'
-import { resolveRegionImageRequestSize } from './regionOutputPolicy.js'
+import {
+  resolveRegionImageRequestSize,
+  wantsRegionTransparentOutput,
+} from './regionOutputPolicy.js'
 
 export const ACTIVE_DESIGN_ANALYSIS_KEY = 'ui-design-active-analysis-v1'
 export const ACTIVE_DESIGN_ANALYSIS_VERSION = 3
@@ -514,7 +517,10 @@ export async function generateAiDesignDocument({
     let finalContent = ''
 
     if (resumedConversationId) {
-      const activeRuns = await listActiveAssistantRuns({ signal }).catch(() => [])
+      const activeRuns = await listActiveAssistantRuns({
+        workspace: 'ui_design',
+        signal,
+      }).catch(() => [])
       const activeRun = activeRuns.find((item) => item?.conversationId === conversation.id)
       if (activeRun?.id && activeRun.id !== runId) {
         if (runId && phase === 'draft' && !draftContent) {
@@ -982,8 +988,10 @@ export function buildRegionEditInstruction({
   viewport = null,
   action = 'remove',
   hasStyleReference = false,
+  transparent = false,
 } = {}) {
   const note = String(userNote || '').trim()
+  const cutout = Boolean(transparent) || wantsRegionTransparentOutput(note, action)
   const list = (Array.isArray(elements) ? elements : [])
     .map((item, index) => {
       const name = String(item?.name || item?.type || `元素${index + 1}`).trim()
@@ -1032,9 +1040,13 @@ export function buildRegionEditInstruction({
       )
     }
     parts.push(
-      hasStyleReference
-        ? '禁止复制风格参考图的主体或符号；禁止输出与其它框选相同的结果。必须输出与当前框选截图相同的完整画面和背景，禁止只输出参考图本身。'
-        : '必须输出与第一张参考图相同的完整画面和背景；禁止只输出图标、禁止抠图、禁止透明画布、禁止裁切或改变画布比例。',
+      cutout
+        ? hasStyleReference
+          ? '禁止复制风格参考图的主体或符号；禁止输出与其它框选相同的结果。只输出当前框选自己的图标主体，必须是真透明 PNG，禁止白底、棋盘格或任何背景像素。'
+          : '只输出当前框选的图标主体，必须是真透明 PNG；禁止白底、棋盘格、假透明图案，禁止把完整画面背景留在画布上。'
+        : hasStyleReference
+          ? '禁止复制风格参考图的主体或符号；禁止输出与其它框选相同的结果。必须输出与当前框选截图相同的完整画面和背景，禁止只输出参考图本身。'
+          : '必须输出与第一张参考图相同的完整画面和背景；禁止只输出图标、禁止抠图、禁止透明画布、禁止裁切或改变画布比例。',
     )
   } else if (action === 'replace-background') {
     if (list.length) {
@@ -1077,6 +1089,7 @@ function regionImagePrompt({
 }) {
   const isReplacement = generationMode === 'replace'
   const instruction = String(userInstruction || '').trim()
+  const cutout = Boolean(transparent) || wantsRegionTransparentOutput(instruction)
   const aspectW = Math.max(1, Math.round(region.width))
   const aspectH = Math.max(1, Math.round(region.height))
   const outputRatio = String(region.outputRatio || `${aspectW}:${aspectH}`)
@@ -1095,23 +1108,29 @@ ${instruction}
       : '只改用户点名要改/移除的部分；其余像素尽量与第一张框选截图一致。'
   }
 - ${
-    preserveLayout
-      ? '布局已锁定：未点选区域的绝对坐标、尺寸、间距、留白和层级必须逐像素保持；删除后不得触发布局回流。'
-      : '保持第一张框选截图的页面结构和视觉层级。'
+    cutout
+      ? '用户已要求去背：只保留主体轮廓和透明留白，不要保留原画面背景。'
+      : preserveLayout
+        ? '布局已锁定：未点选区域的绝对坐标、尺寸、间距、留白和层级必须逐像素保持；删除后不得触发布局回流。'
+        : '保持第一张框选截图的页面结构和视觉层级。'
   }
-- 移除文字/控件后，必须用周围背景渐变与纹理自然补齐，禁止灰色/白色矩形占位。
-- 禁止擅自去背，除非用户明确要求抠图/透明背景。
+- ${
+    cutout
+      ? '禁止把白底、浅灰底、棋盘格或任何背景画进像素；透明必须是真实 alpha 通道。'
+      : '移除文字/控件后，必须用周围背景渐变与纹理自然补齐，禁止灰色/白色矩形占位。'
+  }
+- ${cutout ? '所有框选都必须输出真透明 PNG，禁止只对第一张去背。' : '禁止擅自去背，除非用户明确要求抠图/透明背景。'}
 `
     : ''
   const designReferenceLine = hasStyleReference
     ? `其后 ${styleReferenceCount} 张是用户风格参考图：只学画法，不抄主体；每个框选必须输出与该框选截图对应的不同内容，禁止多框出成同一张图。`
     : designReferenceIsFirstOutput
-      ? transparent
+      ? cutout
         ? '第二张是第一张出图的风格参考（已铺中性底便于看清主体，底色不是风格）：只学材质、光影、体积和配色方法；必须保留当前框选自己的主体；输出必须是真透明 PNG，禁止把中性底、棋盘格或任何背景画进像素，禁止把第一张出图的图标复制过来，禁止多框出成同一张图。'
         : '第二张是第一张出图，仅作风格参考：只学材质、光影、体积和配色方法；必须保留当前框选自己的主体，禁止把第一张出图的图标复制过来，禁止多框出成同一张图。'
       : hasDesignReference
         ? '第二张若存在则为完整设计稿，仅作风格上下文。'
-        : preserveLayout
+        : preserveLayout && !cutout
           ? '本任务已启用布局锁定，不使用整页参考，禁止重新推断或重排布局。'
           : '第二张若存在则为完整设计稿，仅作风格上下文。'
   const prompt = `这是 UI 局部图片编辑任务。第一张参考图是用户当前框选截图（编辑底图，必须保留其主体）；${designReferenceLine}
@@ -1133,14 +1152,57 @@ ${localEditBlock}
           : '执行严格还原：保持主体身份、造型、构图、比例、颜色、材质与光影。'
   }
 3. ${
-    transparent
-      ? '用户已要求抠图：只保留目标主体和必要透明留白。'
+    cutout
+      ? '用户已要求抠图：只保留目标主体和必要透明留白，禁止白底、棋盘格或假透明。'
       : instruction
         ? '保留第一张框选截图的完整画布、背景与渐变连续性；不要自动去背，不得只输出被编辑元素，不要改成大面积纯色填充。'
         : '保留与素材协调的完整背景。'
   }
 4. 输出清晰锐利；输出比例必须与框选区域实际比例 ${outputRatio} 完全一致。`
-  return transparent ? withTransparentPngInstruction(prompt, true) : prompt
+  return cutout ? withTransparentPngInstruction(prompt, true) : prompt
+}
+
+async function settleDesignRegionImageRun({
+  runId,
+  conversationId = '',
+  signal,
+  onStage,
+  onImage,
+}) {
+  const stream = openAssistantRunStream(runId, {
+    onEvent(event) {
+      if (event?.stage) onStage?.(event.stage)
+      if (event?.image?.dataUrl) onImage?.(event.image)
+    },
+  })
+  try {
+    const completed = await waitForAssistantRun(runId, {
+      signal,
+      intervalMs: 900,
+      onUpdate(data) {
+        if (data?.run?.stage) onStage?.(data.run.stage)
+        const images = Array.isArray(data?.assistantMessage?.images)
+          ? data.assistantMessage.images
+          : []
+        if (images.length) onImage?.(images[0])
+      },
+    })
+    if (completed?.run?.status !== 'succeeded') {
+      throw new Error(completed?.run?.errorMessage || 'PNG 素材重建失败')
+    }
+    const images = Array.isArray(completed?.assistantMessage?.images)
+      ? completed.assistantMessage.images
+      : []
+    if (!images[0]?.dataUrl) throw new Error('生图模型没有返回 PNG 素材')
+    onStage?.('complete')
+    return {
+      ...images[0],
+      conversationId,
+      runId,
+    }
+  } finally {
+    stream?.close()
+  }
 }
 
 export async function generateDesignRegionImage({
@@ -1158,20 +1220,39 @@ export async function generateDesignRegionImage({
   designReferenceImage = '',
   designReferenceName = '',
   styleReferences = [],
+  conversationId: resumeConversationId = '',
+  runId: resumeRunId = '',
+  parentOutputUrl = '',
   signal,
   onStage,
   onRun,
   onImage,
   onConversation,
 }) {
-  let conversation = null
-  let runId = ''
-  let stream = null
+  const resumedConversationId = String(resumeConversationId || '').trim()
+  const resumedRunId = String(resumeRunId || '').trim()
+  let conversation = resumedConversationId ? { id: resumedConversationId } : null
+  let runId = resumedRunId
+  let createdThisCall = false
   try {
     onStage?.('preparing')
-    conversation = await createAssistantConversation(`图片编辑 · ${region.name}`, {
-      workspace: 'ui_design',
-    })
+    if (runId) {
+      onConversation?.(conversation?.id || '')
+      onRun?.(runId)
+      onStage?.('generating-image')
+      return await settleDesignRegionImageRun({
+        runId,
+        conversationId: conversation?.id || '',
+        signal,
+        onStage,
+        onImage,
+      })
+    }
+    if (!conversation) {
+      conversation = await createAssistantConversation(`图片编辑 · ${region.name}`, {
+        workspace: 'ui_design',
+      })
+    }
     onConversation?.(conversation.id)
     // Crop first so upstream EditImages treats the selection as the primary canvas.
     const regionReference = referenceDescriptor(regionReferenceDataUrl, '框选截图（编辑底图）')
@@ -1217,45 +1298,27 @@ export async function generateDesignRegionImage({
         ...(resolution ? { resolution } : {}),
         quality,
         serviceKey: 'ui_design_asset',
+        ...(String(parentOutputUrl || '').trim()
+          ? { parentOutputUrl: String(parentOutputUrl).trim() }
+          : {}),
       },
       { signal },
     )
     runId = created.run?.id || ''
+    createdThisCall = Boolean(runId)
     onRun?.(runId)
     onStage?.('generating-image')
-    stream = openAssistantRunStream(runId, {
-      onEvent(event) {
-        if (event?.stage) onStage?.(event.stage)
-        if (event?.image?.dataUrl) onImage?.(event.image)
-      },
-    })
-    const completed = await waitForAssistantRun(runId, {
-      signal,
-      intervalMs: 900,
-      onUpdate(data) {
-        if (data?.run?.stage) onStage?.(data.run.stage)
-        const images = Array.isArray(data?.assistantMessage?.images)
-          ? data.assistantMessage.images
-          : []
-        if (images.length) onImage?.(images[0])
-      },
-    })
-    if (completed?.run?.status !== 'succeeded') {
-      throw new Error(completed?.run?.errorMessage || 'PNG 素材重建失败')
-    }
-    const images = Array.isArray(completed?.assistantMessage?.images)
-      ? completed.assistantMessage.images
-      : []
-    if (!images[0]?.dataUrl) throw new Error('生图模型没有返回 PNG 素材')
-    onStage?.('complete')
-    return {
-      ...images[0],
-      conversationId: conversation.id,
+    return await settleDesignRegionImageRun({
       runId,
-    }
+      conversationId: conversation.id,
+      signal,
+      onStage,
+      onImage,
+    })
   } finally {
-    stream?.close()
-    if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
+    if (signal?.aborted && runId && createdThisCall) {
+      await cancelAssistantRun(runId).catch(() => null)
+    }
     if (conversation?.id && !retainConversation) {
       await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
     }

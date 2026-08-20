@@ -147,6 +147,17 @@ func listAssistantOutputKeysWithCondition(ctx context.Context, q Q, condition st
 		seen[key] = struct{}{}
 		keys = append(keys, key)
 	}
+	// 该列表只用于对象清理：把约定路径下的小图/展示图变体一并带上，
+	// 避免删除消息后变体成为孤儿对象。
+	for _, key := range keys[:len(keys):len(keys)] {
+		for _, variant := range AssistantVariantKeys(key) {
+			if _, exists := seen[variant]; exists {
+				continue
+			}
+			seen[variant] = struct{}{}
+			keys = append(keys, variant)
+		}
+	}
 	return keys, rows.Err()
 }
 

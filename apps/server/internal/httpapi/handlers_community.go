@@ -470,6 +470,8 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		fail(c, apperr.E("unsupported_file", "审核图片格式不支持", 400))
 		return
 	}
+	// 封面是纯展示素材：按后台图片配置压缩后落库，页面加载更快。
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
 	coverWidth, coverHeight, err := media.Dimensions(data)
 	if err != nil {
 		fail(c, apperr.E("unsupported_file", "审核图片尺寸过大或内容无法读取", 400))
@@ -807,6 +809,8 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
 		return
 	}
+	// 封面是纯展示素材：按后台图片配置压缩后落库。
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
 	coverWidth, coverHeight, err := media.Dimensions(data)
 	if err != nil {
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))

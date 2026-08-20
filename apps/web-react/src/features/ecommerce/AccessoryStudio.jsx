@@ -173,6 +173,9 @@ export function AccessoryStudio({
   const displayRow =
     activeRows.find((row) => row.url === resultUrl) || activeRows[0] || null;
   const displayUrl = resultUrl || displayRow?.url || "";
+  // 主舞台大图优先展示图（服务端压缩大图），404 回退原图
+  const stageDisplayUrl =
+    (history || []).find((row) => row.url === displayUrl)?.display || "";
 
   function handleDrop(event) {
     event.preventDefault();
@@ -259,7 +262,11 @@ export function AccessoryStudio({
                       });
                     }}
                   >
-                    <AuthenticatedImage src={displayUrl} alt="饰品生成结果" />
+                    <AuthenticatedImage
+                      src={stageDisplayUrl || displayUrl}
+                      fallbackSrc={displayUrl}
+                      alt="饰品生成结果"
+                    />
                   </button>
                 ) : (
                   <div className="accessory-frame__empty">

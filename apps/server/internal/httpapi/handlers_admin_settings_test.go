@@ -210,6 +210,46 @@ func TestAdminPutSettingsRejectsRetiredTrialCampaignFields(t *testing.T) {
 	}
 }
 
+func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	invalidBodies := []string{
+		`{"pageControls":{"unknown":{"status":"normal","reason":""}}}`,
+		`{"pageControls":{"studio":{"status":"paused","reason":"暂停"}}}`,
+	}
+	for _, body := range invalidBodies {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	const validBody = `{"pageControls":{"studio":{"status":"maintenance","reason":"  系统升级中  "},"pricing":{"status":"normal","reason":""}}}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid page controls status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	controls, err := settings.ResolvePageControls(context.Background(), st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := controls["studio"]; got.Status != settings.PageStatusMaintenance || got.Reason != "系统升级中" {
+		t.Fatalf("studio control = %#v", got)
+	}
+	if got := controls["activity.checkin"]; got.Status != settings.PageStatusRemoved {
+		t.Fatalf("default check-in control = %#v", got)
+	}
+}
+
 func TestAdminModelListCleansSortsAndCaps(t *testing.T) {
 	models, total := adminModelList([]string{" z-model ", "a-model", "", "a-model", "m-model"}, 2)
 	if total != 3 {

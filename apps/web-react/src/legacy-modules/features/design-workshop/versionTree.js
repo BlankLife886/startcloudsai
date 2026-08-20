@@ -1,6 +1,31 @@
-import { LEGACY_DEVICE_FALLBACK } from './designDevices'
+import { LEGACY_DEVICE_FALLBACK } from './designDevices.js'
 
 export const MAX_VERSION_DEPTH = 3
+
+export function mediaIdentity(url = '') {
+  const text = String(url || '').trim()
+  if (!text) return ''
+  try {
+    const path =
+      text.startsWith('http://') || text.startsWith('https://')
+        ? new URL(text).pathname
+        : text.split('?')[0]
+    const marker = '/api/v1/files/'
+    const at = path.indexOf(marker)
+    const key = at >= 0 ? path.slice(at + marker.length) : path.replace(/^\//, '')
+    return decodeURIComponent(key).replace(/\/+$/, '')
+  } catch {
+    return text.split('?')[0]
+  }
+}
+
+export function resolveParentOutputUrl(parentUrl = '', outputUrls = []) {
+  const parentKey = mediaIdentity(parentUrl)
+  if (!parentKey) return ''
+  const exact = outputUrls.find((url) => url === parentUrl)
+  if (exact) return exact
+  return outputUrls.find((url) => mediaIdentity(url) === parentKey) || ''
+}
 
 /**
  * Build a version forest from creative job outputs.
@@ -214,7 +239,11 @@ function buildRawGroups({
     )
     group.carriers = assignCarriers(group.outputs, outputDevices)
     const parentOutput = group.outputs.map((output) => outputParents[output]).find(Boolean)
-    const parentId = groupIdByOutput.get(parentOutput) || ''
+    const resolvedParent =
+      parentOutput && groupIdByOutput.has(parentOutput)
+        ? parentOutput
+        : resolveParentOutputUrl(parentOutput, [...groupIdByOutput.keys()])
+    const parentId = groupIdByOutput.get(resolvedParent) || ''
     group.parentId = parentId && parentId !== group.id ? parentId : ''
   }
 

@@ -81,6 +81,8 @@ function playFrame(element, from, to, duration) {
 export function TryonFlipLightbox({
   origin,
   src,
+  // 展示图 404 时的回退地址（一般传原图）
+  fallbackSrc = "",
   alt = "预览图片",
   title = "查看大图",
   onClose,
@@ -108,14 +110,14 @@ export function TryonFlipLightbox({
       return undefined;
     }
     setHeroSrc("");
-    resolveAuthenticatedMediaUrl(source, { maxDimension: 0 })
+    resolveAuthenticatedMediaUrl(source, { maxDimension: 0, fallbackUrl: fallbackSrc })
       .then((value) => {
         if (cancelled) return;
         resolved = value;
         setHeroSrc(value);
       })
       .catch(() => {
-        if (!cancelled) setHeroSrc(source);
+        if (!cancelled) setHeroSrc(fallbackSrc || source);
       });
     return () => {
       cancelled = true;
@@ -123,7 +125,7 @@ export function TryonFlipLightbox({
         releaseAuthenticatedMediaUrl(source, resolved, { maxDimension: 0 });
       }
     };
-  }, [src]);
+  }, [fallbackSrc, src]);
 
   useLayoutEffect(() => {
     const overlay = overlayRef.current;

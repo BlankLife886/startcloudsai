@@ -113,6 +113,14 @@ test('region selection uses image-content coordinates and keeps controls usable'
   expect(editInstructions.icon).toContain('完整画面和背景')
   expect(editInstructions.icon).toContain('禁止只输出图标')
   expect(editInstructions.background).toContain('禁止纯白背景')
+  const cutoutIcon = buildRegionEditInstruction({
+    elements: target,
+    action: 'improve-icon',
+    userNote: '仅移除中文文字，图标保持一致性，并且移除背景',
+  })
+  expect(cutoutIcon).toContain('真透明 PNG')
+  expect(cutoutIcon).toContain('禁止白底、棋盘格')
+  expect(cutoutIcon).not.toContain('禁止抠图、禁止透明画布')
   const styledIcon = buildRegionEditInstruction({
     action: 'improve-icon',
     hasStyleReference: true,
@@ -334,6 +342,10 @@ async function mockDesignWorkshopApis(page) {
     }
     if (path === '/api/v1/tasks' && request.method() === 'GET') {
       await fulfill(route, { items: [], nextCursor: null })
+      return
+    }
+    if (path === '/api/v1/assistant/runs' && request.method() === 'GET') {
+      await fulfill(route, { runs: [] })
       return
     }
     await fulfill(route, {})

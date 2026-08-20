@@ -10,6 +10,7 @@ import {
   CollectionTag,
   Document,
   Expand,
+  Files,
   Fold,
   List,
   Lock,
@@ -17,6 +18,7 @@ import {
   Monitor,
   Moon,
   Odometer,
+  Operation,
   Picture,
   ShoppingBag,
   Sunny,
@@ -72,11 +74,13 @@ const NAV_GROUPS = [
       { path: "/users", label: "用户管理", icon: User },
       { path: "/tasks", label: "任务与调度", icon: Monitor },
       { path: "/model-config", label: "模型配置", icon: MagicStick },
+      { path: "/canvas-templates", label: "画布模板", icon: Files },
     ],
   },
   {
     title: "内容运营",
     items: [
+      { path: "/page-controls", label: "页面控制", icon: Operation },
       { path: "/content", label: "内容管理", icon: Document },
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
       { path: "/ecommerce", label: "电商素材", icon: ShoppingBag },
@@ -114,75 +118,36 @@ const pageTitle = computed(() => String(route.meta.title || "管理后台"));
 /* ---------- 待办数（侧边栏徽标 + 通知铃），失败静默 ---------- */
 
 const pendingSubmissions = ref(0);
-/** 待审数超出单页时展示 N+ */
-const pendingHasMore = ref(false);
 const runningTasks = ref(0);
 const pendingTrialApplications = ref(0);
 const pendingFeedback = ref(0);
 
+/** 聚合端点一次返回全部徽标计数，替代原先的多次独立请求。 */
 async function loadTodoCounts() {
   try {
     const data = await request<{
-      items: unknown[];
-      nextCursor: string | null;
-      total?: number;
-    }>("/api/v1/admin/gallery/submissions", {
-      query: { status: "pending", limit: 50 },
-      silent: true,
-    });
-    if (typeof data.total === "number") {
-      pendingSubmissions.value = data.total;
-      pendingHasMore.value = false;
-    } else {
-      pendingSubmissions.value = data.items?.length ?? 0;
-      pendingHasMore.value = Boolean(data.nextCursor);
-    }
+      pendingSubmissions?: number;
+      runningTasks?: number;
+      pendingTrialApplications?: number;
+      pendingFeedback?: number;
+    }>("/api/v1/admin/badge-counts", { silent: true });
+    if (typeof data.pendingSubmissions === "number")
+      pendingSubmissions.value = data.pendingSubmissions;
+    if (typeof data.runningTasks === "number")
+      runningTasks.value = data.runningTasks;
+    if (typeof data.pendingTrialApplications === "number")
+      pendingTrialApplications.value = data.pendingTrialApplications;
+    if (typeof data.pendingFeedback === "number")
+      pendingFeedback.value = data.pendingFeedback;
   } catch {
-    // 静默：徽标缺失不影响使用
-  }
-  try {
-    const stats = await request<{ runningTasks?: number }>(
-      "/api/v1/admin/statistics",
-      {
-        silent: true,
-      },
-    );
-    runningTasks.value = stats.runningTasks ?? 0;
-  } catch {
-    // 静默
-  }
-  try {
-    const data = await request<{
-      items: unknown[];
-      nextCursor: string | null;
-      total?: number;
-    }>("/api/v1/admin/trial-access-applications", {
-      query: { status: "pending", limit: 1 },
-      silent: true,
-    });
-    pendingTrialApplications.value = data.total ?? data.items?.length ?? 0;
-  } catch {
-    // 静默：体验申请徽标缺失不影响使用
-  }
-  try {
-    const data = await request<{
-      items: unknown[];
-      nextCursor: string | null;
-      total?: number;
-    }>("/api/v1/admin/feedback", {
-      query: { status: "open", limit: 1 },
-      silent: true,
-    });
-    pendingFeedback.value = data.total ?? data.items?.length ?? 0;
-  } catch {
-    // 静默：反馈徽标缺失不影响使用
+    // 静默：读取失败保持旧值，徽标缺失不影响使用
   }
 }
 
 const pendingBadgeText = computed(() => {
   if (pendingSubmissions.value <= 0) return "";
-  return pendingHasMore.value
-    ? `${pendingSubmissions.value}+`
+  return pendingSubmissions.value > 99
+    ? "99+"
     : String(pendingSubmissions.value);
 });
 
@@ -1076,6 +1041,101 @@ async function submitPassword() {
 .content--workspace .content-inner {
   height: 100%;
   min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .layout {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .aside,
+  .aside.is-collapsed {
+    width: 64px !important;
+    --aside-collapsed: 64px;
+  }
+
+  .aside-inner,
+  .aside.is-collapsed .aside-inner {
+    width: 64px;
+    min-width: 64px;
+  }
+
+  .logo {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .logo-copy,
+  .nav-group__title,
+  .nav-item__label,
+  .sidebar-toggle span {
+    display: none;
+  }
+
+  .nav,
+  .aside.is-collapsed .nav {
+    padding: 12px 0 8px;
+    gap: 8px;
+    justify-items: center;
+  }
+
+  .nav-group,
+  .nav-group__items {
+    width: 100%;
+    justify-items: center;
+  }
+
+  .nav-item,
+  .aside.is-collapsed .nav-item {
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+  }
+
+  .aside-footer,
+  .aside.is-collapsed .aside-footer {
+    justify-content: center;
+    padding: 10px 0 14px;
+  }
+
+  .sidebar-toggle,
+  .aside.is-collapsed .sidebar-toggle {
+    width: 44px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .topbar {
+    height: 58px;
+    justify-content: flex-end;
+    padding: 0;
+  }
+
+  .page-title,
+  .profile-chip .user-meta {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 6px;
+  }
+
+  .icon-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .theme-switch__btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .profile-chip {
+    width: 40px;
+    height: 40px;
+    padding: 2px;
+  }
 }
 
 /* ---- 通知面板 ---- */

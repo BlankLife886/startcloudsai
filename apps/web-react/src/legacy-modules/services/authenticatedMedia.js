@@ -6,11 +6,61 @@ const inFlightMediaFetches = new Map()
 const MAX_MEDIA_CACHE_ENTRIES = 72
 const MAX_MEDIA_CACHE_BYTES = 48 * 1024 * 1024
 const MAX_THUMBNAIL_DIMENSION = 1200
-const THUMBNAIL_RESIZE_CONCURRENCY = 1
+const THUMBNAIL_RESIZE_CONCURRENCY = 3
+// HTTP/1.1 下浏览器同域最多 6 个并发连接。图片取数若不设上限，会把连接
+// 全部占满，页面切换所需的 API 请求被排在几十张图后面，表现为“图片没
+// 加载完就无法进下一页”。留出至少 2 个连接给 API/文档请求。
+const MEDIA_FETCH_CONCURRENCY = 4
 let mediaCacheBytes = 0
 let trimScheduled = false
 let activeThumbnailResizes = 0
 const thumbnailResizeWaiters = []
+let activeMediaFetches = 0
+const mediaFetchQueue = []
+
+function pumpMediaFetchQueue() {
+  while (activeMediaFetches < MEDIA_FETCH_CONCURRENCY && mediaFetchQueue.length) {
+    // LIFO：最新排队的图片最可能仍在视口内，优先出队。
+    mediaFetchQueue.pop().start()
+  }
+}
+
+/**
+ * 把取图任务放进并发闸。返回 { promise, cancel }；cancel 仅对“仍在排队、
+ * 尚未发起请求”的任务生效（返回 true），已在传输中的任务会跑完并进缓存。
+ */
+function scheduleMediaFetch(run) {
+  let started = false
+  let cancelled = false
+  let settle
+  const promise = new Promise((resolve, reject) => {
+    settle = { resolve, reject }
+  })
+  const job = {
+    start() {
+      started = true
+      activeMediaFetches += 1
+      Promise.resolve()
+        .then(run)
+        .then(settle.resolve, settle.reject)
+        .finally(() => {
+          activeMediaFetches = Math.max(0, activeMediaFetches - 1)
+          pumpMediaFetchQueue()
+        })
+    },
+  }
+  const cancel = () => {
+    if (started || cancelled) return false
+    cancelled = true
+    const index = mediaFetchQueue.indexOf(job)
+    if (index >= 0) mediaFetchQueue.splice(index, 1)
+    settle.reject(new DOMException('media fetch cancelled', 'AbortError'))
+    return true
+  }
+  mediaFetchQueue.push(job)
+  pumpMediaFetchQueue()
+  return { promise, cancel }
+}
 
 function normalizedMaxDimension(options = {}) {
   const value = Math.round(Number(options?.maxDimension || 0))
@@ -219,19 +269,33 @@ export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
     cache: options.cache || 'default',
     signal: options.signal,
   })
-  if (!response.ok) throw new Error(`任务图片读取失败(${response.status})`)
+  if (!response.ok) {
+    // 旧数据可能没有小图/展示图变体：404 时回退到调用方给的原图地址。
+    const fallbackUrl = String(options.fallbackUrl || '').trim()
+    if (response.status === 404 && fallbackUrl && fallbackUrl !== url) {
+      return fetchAuthenticatedMediaBlob(fallbackUrl, { ...options, fallbackUrl: '' })
+    }
+    throw new Error(`任务图片读取失败(${response.status})`)
+  }
 
   const blob = await response.blob()
-  if (!blob.size || !String(blob.type || '').startsWith('image/')) {
+  if (!blob.size) throw new Error('任务图片内容无效')
+  const type = String(blob.type || '').toLowerCase()
+  if (
+    type &&
+    !type.startsWith('image/') &&
+    type !== 'application/octet-stream' &&
+    type !== 'binary/octet-stream'
+  ) {
     throw new Error('任务图片内容无效')
   }
   return blob
 }
 
-function fetchAuthenticatedMediaBlobShared(url) {
+function fetchAuthenticatedMediaBlobShared(url, fallbackUrl = '') {
   const cached = inFlightMediaFetches.get(url)
   if (cached) return cached
-  const promise = fetchAuthenticatedMediaBlob(url).finally(() => {
+  const promise = fetchAuthenticatedMediaBlob(url, { fallbackUrl }).finally(() => {
     window.setTimeout(() => {
       if (inFlightMediaFetches.get(url) === promise) inFlightMediaFetches.delete(url)
     }, 1200)
@@ -259,7 +323,10 @@ export async function resolveAuthenticatedMediaUrl(value = '', options = {}) {
     touchMediaCache(cacheKey, cached)
     return cached.objectUrl
   }
-  if (cached?.promise) return cached.promise
+  if (cached?.promise) {
+    cached.waiters = (cached.waiters || 1) + 1
+    return cached.promise
+  }
   // The stage preview is mounted before its filmstrip/history variants. Reuse
   // that decoded thumbnail instead of downloading and decoding the same 8K
   // file again for every smaller viewport.
@@ -267,8 +334,9 @@ export async function resolveAuthenticatedMediaUrl(value = '', options = {}) {
   if (reusable?.objectUrl) return reusable.objectUrl
   if (reusable?.promise) return reusable.promise
 
-  const promise = fetchAuthenticatedMediaBlobShared(thumbnailFetchUrl(url, maxDimension))
-    .then(async (blob) => {
+  const fallbackUrl = String(options?.fallbackUrl || '').trim()
+  const scheduled = scheduleMediaFetch(() =>
+    fetchAuthenticatedMediaBlobShared(thumbnailFetchUrl(url, maxDimension), fallbackUrl).then(async (blob) => {
       // 服务端已缩好时这里等于直通；仅在服务端缩放不可用时才本地兜底压缩。
       const thumbnail = await createThumbnailBlob(blob, maxDimension)
       const displayBlob = thumbnail.blob
@@ -287,14 +355,31 @@ export async function resolveAuthenticatedMediaUrl(value = '', options = {}) {
       })
       trimMediaCache(cacheKey)
       return objectUrl
-    })
-    .catch((error) => {
-      mediaCache.delete(cacheKey)
-      throw error
-    })
+    }),
+  )
+  const promise = scheduled.promise.catch((error) => {
+    if (mediaCache.get(cacheKey)?.promise === promise) mediaCache.delete(cacheKey)
+    throw error
+  })
 
-  mediaCache.set(cacheKey, { promise, maxDimension })
+  mediaCache.set(cacheKey, { promise, maxDimension, waiters: 1, cancel: scheduled.cancel })
   return promise
+}
+
+/**
+ * 视口外/已卸载的图片调用此函数注销等待。当同一资源再无等待者且请求仍在
+ * 排队时，直接从并发闸队列移除，把连接让给仍可见的图片与 API 请求。
+ */
+export function cancelAuthenticatedMediaResolve(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return
+  const cacheKey = mediaCacheKey(url, options)
+  const entry = mediaCache.get(cacheKey)
+  if (!entry?.promise) return
+  entry.waiters = Math.max(0, (entry.waiters || 1) - 1)
+  if (entry.waiters === 0 && typeof entry.cancel === 'function' && entry.cancel()) {
+    mediaCache.delete(cacheKey)
+  }
 }
 
 export function getAuthenticatedMediaMetadata(value = '', options = {}) {
@@ -322,10 +407,13 @@ export function getCachedAuthenticatedMediaBlob(value = '', options = {}) {
   return entry?.blob instanceof Blob && entry.blob.size ? entry.blob : null
 }
 
-export async function downloadAuthenticatedMedia(value = '', filename = 'ai-image.png') {
+export async function downloadAuthenticatedMedia(value = '', filename = 'ai-image.png', options = {}) {
   const source = String(value || '').trim()
   if (!source) throw new Error('没有可下载的图片')
-  const blob = await fetchAuthenticatedMediaBlob(source, { cache: 'no-store' })
+  const blob = await fetchAuthenticatedMediaBlob(source, {
+    cache: 'no-store',
+    fallbackUrl: options.fallbackUrl,
+  })
   const objectUrl = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = objectUrl

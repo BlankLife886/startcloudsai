@@ -43,6 +43,17 @@ function previewUrls(job = {}, originals = []) {
   );
 }
 
+// 展示图（服务端压缩大图）与原图按下标对应；旧任务没有，取用时回退原图。
+function displayUrls(job = {}, originals = []) {
+  const values = [
+    ...(Array.isArray(job.displayMediaUrls) ? job.displayMediaUrls : []),
+    job.displayMediaUrl,
+  ].filter(Boolean);
+  return Object.fromEntries(
+    originals.map((url, index) => [url, values[index] || ""]),
+  );
+}
+
 function outputSize(aspectRatio = "16:9", longSide = 1536) {
   const [rawWidth = 16, rawHeight = 9] = String(aspectRatio).split(":").map(Number);
   const ratioWidth = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 1;
@@ -100,8 +111,10 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     if (!urls.length) return [];
     const meta = taskMeta(job);
     const previews = previewUrls(job, urls);
+    const displays = displayUrls(job, urls);
     const incoming = urls.map((url, offset) => ({
       url,
+      displayUrl: displays[url] || "",
       previewUrl: previews[url] || url,
       jobId: String(job.id || ""),
       groupId: meta.groupId,
@@ -181,8 +194,10 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         const urls = resultUrls(job);
         const meta = taskMeta(job);
         const previews = previewUrls(job, urls);
+        const displays = displayUrls(job, urls);
         urls.forEach((url, offset) => completedEntries.push({
           url,
+          displayUrl: displays[url] || "",
           previewUrl: previews[url] || url,
           jobId: String(job.id || ""),
           groupId: meta.groupId,

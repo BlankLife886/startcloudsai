@@ -16,7 +16,7 @@ import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { useCanvasHost } from "@/components/layout/canvas-host-context";
 import { CanvasWorkflowTemplateDialog } from "@/components/canvas/canvas-workflow-template-dialog";
-import { createCanvasProjectFromTemplate, type CanvasWorkflowTemplate } from "@/templates/canvas-workflow-templates";
+import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
 
 gsap.registerPlugin(useGSAP);
 
@@ -40,30 +40,7 @@ function Highlighter({ action, color, children }: { action: "highlight" | "under
 function CanvasHeroStage() {
     return (
         <div className="canvas-hero-stage" data-canvas-hero-stage aria-hidden="true">
-            <div className="canvas-hero-stage__grid" />
-            <svg className="canvas-hero-stage__edges" viewBox="0 0 640 360">
-                <path d="M168 118 C 250 118, 300 168, 368 176" fill="none" stroke="rgba(124,58,237,0.42)" strokeWidth="2.2" strokeLinecap="round" />
-                <path d="M368 176 C 430 184, 470 220, 508 236" fill="none" stroke="rgba(56,189,248,0.38)" strokeWidth="2.2" strokeLinecap="round" />
-                <path d="M168 118 C 210 170, 240 220, 286 248" fill="none" stroke="rgba(251,146,60,0.34)" strokeWidth="2" strokeLinecap="round" />
-                <circle cx="168" cy="118" r="3.4" fill="#7c3aed" />
-                <circle cx="368" cy="176" r="3.4" fill="#7c3aed" />
-                <circle cx="508" cy="236" r="3.4" fill="#38bdf8" />
-                <circle cx="286" cy="248" r="3.4" fill="#fb923c" />
-            </svg>
-            <div className="canvas-hero-stage__node is-image" data-hero-float style={{ left: "11%", top: "18%" }}>
-                <span className="canvas-hero-stage__chip">Image</span>
-            </div>
-            <div className="canvas-hero-stage__node is-text" data-hero-float style={{ left: "48%", top: "36%" }}>
-                <span className="canvas-hero-stage__chip">Text</span>
-                <span className="absolute left-3 top-8 h-1.5 w-16 rounded-full bg-violet-300/80" />
-                <span className="absolute left-3 top-12 h-1.5 w-12 rounded-full bg-violet-200/80" />
-            </div>
-            <div className="canvas-hero-stage__node is-video" data-hero-float style={{ left: "70%", top: "56%" }}>
-                <span className="absolute left-1/2 top-1/2 size-7 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/95" />
-            </div>
-            <div className="canvas-hero-stage__node is-plus" data-hero-float style={{ left: "38%", top: "64%" }}>
-                <Plus className="size-5" />
-            </div>
+            <img src="/sucai/canvas-hero.webp" alt="" width="1530" height="1028" />
         </div>
     );
 }
@@ -127,13 +104,6 @@ export default function CanvasPage() {
             const stage = root.querySelector("[data-canvas-hero-stage]");
             if (stage) {
                 gsap.fromTo(stage, { autoAlpha: 0, x: 24, scale: 0.98 }, { autoAlpha: 1, x: 0, scale: 1, duration: 0.7, delay: 0.12, ease: "power3.out" });
-                gsap.to("[data-hero-float]", {
-                    y: (index) => (index % 2 ? 8 : -10),
-                    x: (index) => (index % 3 ? 5 : -6),
-                    duration: 2.6,
-                    stagger: { each: 0.16, repeat: -1, yoyo: true },
-                    ease: "sine.inOut",
-                });
             }
             const orbs = gsap.utils.toArray<HTMLElement>("[data-canvas-orb]", root);
             const moveOrb = orbs.map((orb, index) => ({
@@ -195,15 +165,20 @@ export default function CanvasPage() {
         }
         enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
     };
-    const useWorkflowTemplate = (template: CanvasWorkflowTemplate) => {
+    const useWorkflowTemplate = async (template: CanvasWorkflowTemplateSummary) => {
         if (!isAuthenticated) {
             requestAuth();
             return;
         }
-        const id = importProject(createCanvasProjectFromTemplate(template));
-        setTemplateLibraryOpen(false);
-        message.success(`已创建「${template.title}」`);
-        enterProject(id);
+        try {
+            const detail = await getCanvasWorkflowTemplate(template.id);
+            const id = importProject(createCanvasProjectFromUploadedTemplate(detail));
+            setTemplateLibraryOpen(false);
+            message.success(`已创建「${template.title}」`);
+            enterProject(id);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "模板创建失败");
+        }
     };
     const importCanvas = async (file?: File) => {
         if (!file) return;

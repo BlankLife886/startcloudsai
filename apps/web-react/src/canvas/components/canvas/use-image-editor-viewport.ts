@@ -131,7 +131,7 @@ export function useImageEditorViewport(image: ImageSize | null, open: boolean) {
             event.preventDefault();
             event.stopPropagation();
             if (event.ctrlKey || event.metaKey) {
-                setZoomAround(zoom * Math.pow(zoomStep, -event.deltaY / 120), event.clientX, event.clientY);
+                setZoomAround(zoom * Math.pow(zoomStep, -event.deltaY / (event.deltaMode === 1 ? 3 : 120)), event.clientX, event.clientY);
                 return;
             }
             if (zoom > minZoom + 0.001) {

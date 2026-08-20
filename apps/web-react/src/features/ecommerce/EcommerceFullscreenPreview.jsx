@@ -72,6 +72,8 @@ const FILTER_GROUPS = [
 
 export function EcommerceFullscreenPreview({
   sourceUrl,
+  // 展示图（服务端压缩大图）：优先加载；404 时自动回退 sourceUrl 原图。
+  displaySourceUrl = "",
   title,
   gallery = [],
   onSelect,
@@ -148,7 +150,11 @@ export function EcommerceFullscreenPreview({
     setLoading(true);
     setError("");
     setResolved("");
-    fetchAuthenticatedMediaBlob(sourceUrl, { signal: controller.signal })
+    fetchAuthenticatedMediaBlob(displaySourceUrl || sourceUrl, {
+      signal: controller.signal,
+      // 旧任务没有展示图变体：404 时回退原图。
+      fallbackUrl: displaySourceUrl ? sourceUrl : "",
+    })
       .then((blob) => {
         if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
@@ -163,7 +169,7 @@ export function EcommerceFullscreenPreview({
       document.body.style.overflow = previousOverflow;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [sourceUrl, loadVersion]);
+  }, [displaySourceUrl, sourceUrl, loadVersion]);
 
   useEffect(() => {
     if (previousSourceRef.current === sourceUrl) return;

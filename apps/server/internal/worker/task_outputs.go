@@ -80,6 +80,9 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", c.task.ID, index, len(c.outputSlots))
 		return nil
 	}
+	if encoded == "" {
+		return nil
+	}
 	c.mu.Lock()
 	if c.outputSlots[index] != "" && c.thumbnailSlots[index] != "" {
 		c.mu.Unlock()
@@ -88,6 +91,24 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	c.mu.Unlock()
 
 	startedAt := time.Now()
+	incomingBytes := base64.StdEncoding.DecodedLen(len(encoded))
+	if incomingBytes <= 0 || incomingBytes > 20<<20 {
+		return fmt.Errorf("output image exceeds 20 MiB limit")
+	}
+	// Acquire the memory budget BEFORE the mask-composite / source-canvas
+	// restore steps, which each decode and re-encode the image. Previously the
+	// semaphore was taken only right before the final decode, leaving those
+	// transform buffers (plus the incoming base64 string) unbounded across all
+	// worker slots. A conservative multiple of the payload size covers the
+	// decode, the RGBA destination, and the transient transform copies.
+	memoryWeight := min(max(int64(incomingBytes)*6, 1<<20), c.w.imageMemoryBytes)
+	if err := c.w.imageMemory.Acquire(c.ctx, memoryWeight); err != nil {
+		return err
+	}
+	defer c.w.imageMemory.Release(memoryWeight)
+	memWaitMs := time.Since(startedAt).Milliseconds()
+	transformStartedAt := time.Now()
+
 	processed, err := c.w.applyMaskEditComposite(c.ctx, c.task, []string{encoded})
 	if err != nil {
 		return &taskOutputProcessingError{stage: "mask composite", err: err}
@@ -106,18 +127,6 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if decodedBytes <= 0 || decodedBytes > 20<<20 {
 		return fmt.Errorf("output image exceeds 20 MiB limit")
 	}
-	width, height, err := media.Base64Dimensions(encoded)
-	if err != nil {
-		return err
-	}
-	// Decode + source image + RGBA destination dominate memory. Weight by pixels
-	// and compressed buffers, then clamp so a valid large image can make progress.
-	memoryWeight := int64(width)*int64(height)*8 + int64(decodedBytes)*2
-	memoryWeight = min(max(memoryWeight, 1<<20), c.w.imageMemoryBytes)
-	if err := c.w.imageMemory.Acquire(c.ctx, memoryWeight); err != nil {
-		return err
-	}
-	defer c.w.imageMemory.Release(memoryWeight)
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return err
@@ -145,34 +154,62 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		}
 		objectIndex += "-" + token
 	}
+	variantCfg := c.w.imageVariantConfig(c.ctx)
 	key := fmt.Sprintf("tasks/%s/%s/original/%s.%s", c.task.UserID, c.task.ID, objectIndex, ext)
-	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%s.jpg", c.task.UserID, c.task.ID, objectIndex)
+	// 小图/展示图 key 不带扩展名：编码格式可在后台切换（webp/png），
+	// 内容类型由对象存储元数据提供，key 保持与格式无关。
+	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%s", c.task.UserID, c.task.ID, objectIndex)
+	displayKey := store.DisplayKeyForOriginal(key)
+	transformMs := time.Since(transformStartedAt).Milliseconds()
+	uploadStartedAt := time.Now()
 	type uploadResult struct {
-		key string
-		err error
+		key      string
+		err      error
+		optional bool
 	}
-	results := make(chan uploadResult, 2)
+	results := make(chan uploadResult, 3)
 	go func() {
 		results <- uploadResult{key: key, err: c.w.Storage.UploadBytes(c.ctx, key, data, contentType)}
 	}()
 	go func() {
-		thumb, thumbErr := media.ThumbnailJPEG(data, 512)
+		// 小图：列表/网格用，固定有损（png 格式天生无损）。
+		thumb, thumbErr := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
+		})
 		if thumbErr != nil {
 			results <- uploadResult{key: thumbKey, err: thumbErr}
 			return
 		}
-		results <- uploadResult{key: thumbKey, err: c.w.Storage.UploadBytes(c.ctx, thumbKey, thumb, "image/jpeg")}
+		results <- uploadResult{key: thumbKey, err: c.w.Storage.UploadBytes(c.ctx, thumbKey, thumb.Data, thumb.ContentType)}
 	}()
-	uploaded := make([]string, 0, 2)
+	go func() {
+		// 展示图：点开大图用，编码方式由后台配置。失败不阻断任务
+		//（前端会回退加载原图），仅记录日志。
+		display, displayErr := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
+			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
+		})
+		if displayErr != nil {
+			results <- uploadResult{key: displayKey, err: displayErr, optional: true}
+			return
+		}
+		results <- uploadResult{key: displayKey, err: c.w.Storage.UploadBytes(c.ctx, displayKey, display.Data, display.ContentType), optional: true}
+	}()
+	uploaded := make([]string, 0, 3)
 	var uploadErr error
-	for range 2 {
+	for range 3 {
 		result := <-results
 		if result.err != nil {
+			if result.optional {
+				log.Printf("task %s display variant skipped key=%s: %v", c.task.ID, result.key, result.err)
+				continue
+			}
 			uploadErr = result.err
 			continue
 		}
 		uploaded = append(uploaded, result.key)
 	}
+	uploadMs := time.Since(uploadStartedAt).Milliseconds()
 	if uploadErr != nil {
 		if len(uploaded) > 0 {
 			c.deleteUploadedKeys(uploaded)
@@ -210,7 +247,15 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	c.w.publishTaskEvent(c.ctx, c.task, taskstream.Event{
 		Stage: "image-ready", Status: "running", ImageIndex: index, ImageCount: count,
 	})
-	logTaskStage(c.task.ID.String(), "image_persist", startedAt, "index=%d image_count=%d", index, count)
+	logTaskStage(c.task.ID.String(), "image_persist", startedAt,
+		"index=%d image_count=%d bytes=%d mem_wait_ms=%d transform_ms=%d upload_ms=%d",
+		index, count, len(data), memWaitMs, transformMs, uploadMs)
+	c.w.recordTimeline(c.ctx, c.task.ID, "image_persist", "info",
+		fmt.Sprintf("第 %d 张图片已生成缩略图并存入云存储", index+1),
+		time.Since(startedAt).Milliseconds(), map[string]any{
+			"index": index + 1, "bytes": len(data),
+			"memWaitMs": memWaitMs, "transformMs": transformMs, "uploadMs": uploadMs,
+		})
 	return nil
 }
 

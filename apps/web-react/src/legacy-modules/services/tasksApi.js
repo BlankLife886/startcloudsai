@@ -6,6 +6,7 @@
  * 状态机：queued → running → succeeded | failed | canceled
  */
 import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
+import { listNotifications } from './meApi.js'
 import { scheduleWalletRefresh } from './walletSync.js'
 
 export const TASK_TYPES = [
@@ -59,6 +60,10 @@ export function taskOriginLabel(item = {}) {
 
 export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
 export const TASK_UPDATE_EVENT = 'starclouds:task-update'
+export const NOTIFICATIONS_UPDATED_EVENT = 'starclouds:notifications-updated'
+
+/** SSE 断开期间未读通知数的兜底轮询间隔。 */
+const NOTIFICATIONS_FALLBACK_POLL_MS = 120_000
 
 const TASK_BATCH_LIMIT = 100
 const TASK_SUBMISSION_CONCURRENCY = 6
@@ -204,10 +209,54 @@ export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
   return () => source.close()
 }
 
-/** Account-wide task events keep completion notifications live across pages. */
+function publishUnreadCount(unreadCount, sourceTag) {
+  const count = Number(unreadCount)
+  if (typeof window === 'undefined' || !Number.isFinite(count)) return
+  window.dispatchEvent(
+    new CustomEvent(NOTIFICATIONS_UPDATED_EVENT, {
+      detail: { unreadCount: Math.max(0, count), source: sourceTag },
+    }),
+  )
+}
+
+/**
+ * Account-wide task events keep completion notifications live across pages.
+ * The same EventSource also carries `notifications` events ({unreadCount})
+ * for the navbar badge; while the stream is down we fall back to a
+ * low-frequency unread-count poll and stop it as soon as SSE recovers.
+ */
 export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
   if (typeof EventSource === 'undefined') return () => {}
   const source = new EventSource(buildApiPath('/me/tasks/events'))
+  let fallbackTimer = 0
+  let fallbackInFlight = false
+
+  const stopFallbackPolling = () => {
+    if (!fallbackTimer) return
+    globalThis.clearInterval(fallbackTimer)
+    fallbackTimer = 0
+  }
+  const pollUnreadCount = async () => {
+    if (fallbackInFlight) return
+    fallbackInFlight = true
+    try {
+      const { unread } = await listNotifications({ limit: 1 })
+      publishUnreadCount(unread, 'sse-fallback')
+    } catch {
+      // 静默：保持上一次徽标值，等待下一轮或 SSE 恢复。
+    } finally {
+      fallbackInFlight = false
+    }
+  }
+  const startFallbackPolling = () => {
+    if (fallbackTimer) return
+    fallbackTimer = globalThis.setInterval(() => {
+      void pollUnreadCount()
+    }, NOTIFICATIONS_FALLBACK_POLL_MS)
+    void pollUnreadCount()
+  }
+
+  source.onopen = () => stopFallbackPolling()
   source.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
@@ -218,10 +267,23 @@ export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
       // Keep the stream alive; a later persisted snapshot can still recover it.
     }
   }
+  source.addEventListener('notifications', (event) => {
+    stopFallbackPolling()
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      publishUnreadCount(payload?.unreadCount, 'sse')
+    } catch {
+      // Malformed heartbeat payloads are ignored; the next event corrects it.
+    }
+  })
   source.onerror = (event) => {
+    startFallbackPolling()
     if (typeof onError === 'function') onError(event)
   }
-  return () => source.close()
+  return () => {
+    stopFallbackPolling()
+    source.close()
+  }
 }
 
 function taskSnapshotSignature(task) {
@@ -231,6 +293,7 @@ function taskSnapshotSignature(task) {
     task?.outputKeys,
     task?.thumbnailKeys,
     task?.outputUrls,
+    task?.displayUrls,
     task?.originalUrls,
     task?.finishedAt,
   ])
@@ -439,7 +502,10 @@ export async function waitForTask(
       entry.waiters.delete(waiter)
       globalThis.clearTimeout(timeoutTimer)
       signal?.removeEventListener('abort', abort)
-      if (!entry.waiters.size) taskWaitEntries.delete(taskID)
+      if (!entry.waiters.size) {
+        entry.unsubscribe?.()
+        taskWaitEntries.delete(taskID)
+      }
     }
     const finish = (callback, value) => {
       if (settled) return
@@ -457,6 +523,7 @@ export async function waitForTask(
       emptySuccessPolls: 0,
     }
     entry.waiters.add(waiter)
+    if (!entry.unsubscribe) entry.unsubscribe = subscribeTask(taskID)
     const timeoutTimer = globalThis.setTimeout(() => {
       finish(reject, new Error('任务等待超时，请稍后在历史记录中查看结果'))
     }, timeoutAfter)

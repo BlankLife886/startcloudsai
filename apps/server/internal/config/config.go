@@ -14,6 +14,10 @@ type Config struct {
 	AppSecret      string
 	AllowedOrigins string
 	TrustedProxies string
+	// DevLoginCodeEcho 显式开启后，本地无 SMTP 时登录接口才会在响应中回显
+	// 验证码（developmentCode）。缺省关闭：即使 APP_ENV=development 也不回显，
+	// 避免 APP_ENV 缺省值把验证码泄露变成 fail-open 行为。生产环境强制关闭。
+	DevLoginCodeEcho bool
 	// Historical handlers keep these zero-valued; no environment loads payment settings.
 	PaymentMockEnabled   bool
 	PaymentWebhookSecret string
@@ -53,11 +57,12 @@ type Config struct {
 	R2Bucket            string
 	R2PresignExpireSecs int
 
-	WorkerConcurrency    int
-	UserMaxRunningTasks  int
-	WorkerImageMemoryMiB int64
-	APIPprofAddr         string
-	WorkerPprofAddr      string
+	WorkerConcurrency     int
+	WorkerPollConcurrency int
+	UserMaxRunningTasks   int
+	WorkerImageMemoryMiB  int64
+	APIPprofAddr          string
+	WorkerPprofAddr       string
 
 	SessionCookieName string
 	SessionTTLDays    int
@@ -84,6 +89,15 @@ func getenvInt32(key string, def int32) int32 {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 32); err == nil {
 			return int32(parsed)
+		}
+	}
+	return def
+}
+
+func getenvBool(key string, def bool) bool {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
 		}
 	}
 	return def
@@ -123,8 +137,9 @@ func Load() *Config {
 		log.Fatalf("APP_ENV 必须为 development、test 或 production，当前为 %q", appEnv)
 	}
 	cfg := &Config{
-		AppEnv:         appEnv,
-		AppSecret:      getenv("APP_SECRET", "dev-secret-change-me"),
+		AppEnv:           appEnv,
+		DevLoginCodeEcho: getenvBool("DEV_LOGIN_CODE_ECHO", false),
+		AppSecret:        getenv("APP_SECRET", "dev-secret-change-me"),
 		AllowedOrigins: getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:3102,http://localhost:3105,http://localhost:3200,http://127.0.0.1:8080,http://127.0.0.1:3102,http://127.0.0.1:3105,http://127.0.0.1:3200"),
 		// compose 内网网段：只信任内网反代设置的 X-Forwarded-For
 		TrustedProxies: getenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
@@ -165,11 +180,12 @@ func Load() *Config {
 		R2Bucket:            getenv("R2_BUCKET", "starcloudsai"),
 		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
 
-		WorkerConcurrency:    getenvInt("WORKER_CONCURRENCY", 32),
-		UserMaxRunningTasks:  getenvInt("USER_MAX_RUNNING_TASKS", 100),
-		WorkerImageMemoryMiB: int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
-		APIPprofAddr:         strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
-		WorkerPprofAddr:      strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
+		WorkerConcurrency:     getenvInt("WORKER_CONCURRENCY", 32),
+		WorkerPollConcurrency: getenvInt("WORKER_POLL_CONCURRENCY", 0),
+		UserMaxRunningTasks:   getenvInt("USER_MAX_RUNNING_TASKS", 100),
+		WorkerImageMemoryMiB:  int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
+		APIPprofAddr:          strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
+		WorkerPprofAddr:       strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
 
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,
@@ -188,6 +204,15 @@ func Load() *Config {
 				log.Fatalf("生产环境 ALLOWED_ORIGINS 只允许 HTTPS Origin，当前包含 %q", origin)
 			}
 		}
+		if cfg.DevLoginCodeEcho {
+			log.Printf("警告：生产环境忽略 DEV_LOGIN_CODE_ECHO=true，验证码不会回显")
+			cfg.DevLoginCodeEcho = false
+		}
+	} else {
+		log.Printf("========================================================")
+		log.Printf("警告：APP_ENV=%s（非生产环境）：Cookie 不带 Secure、SSRF 防护"+
+			"放开内网地址。生产部署必须显式设置 APP_ENV=production", cfg.AppEnv)
+		log.Printf("========================================================")
 	}
 	return cfg
 }

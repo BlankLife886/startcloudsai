@@ -36,6 +36,14 @@ export function shortId(id: string | null | undefined): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
 
+/**
+ * 管理后台查看用户文件统一走管理员鉴权路由（避免用户会话 401），
+ * 与用户端 /api/v1/files/*key 返回相同内容。
+ */
+export function adminFileUrl(key: string): string {
+  return `/api/v1/admin/files/${key}`;
+}
+
 /** 任务类型 */
 export const TASK_TYPES = [
   "t2i",

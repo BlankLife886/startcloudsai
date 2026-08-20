@@ -1621,6 +1621,10 @@ export function HandheldStudio({
     plannedShots.find((item) => !item.url && !item.failed) ||
     plannedShots[0];
   const canvasShots = displayShot ? [displayShot] : [];
+  // 原图 URL → 展示图 URL（服务端压缩大图）；主舞台大图用，404 回退原图
+  const displayByUrl = new Map(
+    (history || []).map((row) => [row.url, row.display || ""]),
+  );
   const hasAnyResult = plannedShots.some((item) => item.url);
   const packThumbs = plannedShots.length > 1 ? plannedShots : [];
 
@@ -1924,7 +1928,8 @@ export function HandheldStudio({
                     }
                   >
                     <AuthenticatedImage
-                      src={shot.url}
+                      src={displayByUrl.get(shot.url) || shot.url}
+                      fallbackSrc={shot.url}
                       alt={shot.label || "手持商品生成结果"}
                       loading="eager"
                       maxDimension={1600}

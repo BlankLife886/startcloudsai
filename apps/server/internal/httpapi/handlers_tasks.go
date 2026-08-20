@@ -524,6 +524,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 				}
 				taskKeys := append([]string(nil), task.OutputKeys...)
 				taskKeys = append(taskKeys, task.ThumbnailKeys...)
+				taskKeys = store.WithDisplayKeys(taskKeys)
 				referencingTasks, err := store.CountTasksReferencingInputKeys(ctx, tx, user.ID, task.ID, taskKeys)
 				if err != nil {
 					return err

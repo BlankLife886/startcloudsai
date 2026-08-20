@@ -7,6 +7,35 @@ import {
 
 export { isSmartCanvasTask, studioRouteForTask, studioRouteForTaskType }
 
+export const ecomToolCover = (id) => `/sucai/ecom-thumb-${id}.webp`
+
+export const COMMERCE_ENTRY_GROUPS = [
+  {
+    id: 'model',
+    label: '服饰模特',
+    description: '服装、商品与饰品的真人展示',
+    cover: '/sucai/studio-cover-ecom-model.webp',
+    to: '/ecommerce-design?tool=tryon',
+    ids: ['tryon', 'handheld', 'accessory'],
+  },
+  {
+    id: 'create',
+    label: '商品设计',
+    description: '商拍、套图与详情页视觉',
+    cover: '/sucai/studio-cover-ecom-create.webp',
+    to: '/ecommerce-design?tool=shoot',
+    ids: ['shoot', 'listing', 'detail'],
+  },
+  {
+    id: 'image',
+    label: '图片处理',
+    description: '营销图、背景、阴影与画质处理',
+    cover: '/sucai/studio-cover-ecom-image.webp',
+    to: '/ecommerce-design?tool=campaign',
+    ids: ['campaign', 'background', 'backdrop', 'shadow', 'outpaint', 'enhance'],
+  },
+]
+
 const ECOMMERCE_STUDIO_HIGHLIGHTS = ['shoot', 'listing', 'tryon']
   .map((modeId) => ECOMMERCE_MODES.find((mode) => mode.id === modeId)?.shortLabel)
   .filter(Boolean)
@@ -19,7 +48,7 @@ export const STUDIO_TOOLS = [
     label: 'AI 助手',
     tagline: '连续对话 · 边聊边出图',
     icon: 'bi-chat-square-text-fill',
-    cover: '/sucai/home-intro-02.png',
+    cover: '/sucai/studio-cover-assistant.webp',
     tone: 'violet',
     badge: '对话',
     taskType: 'assistant',
@@ -30,7 +59,7 @@ export const STUDIO_TOOLS = [
     label: '文生图',
     tagline: '文字生成高清图像',
     icon: 'bi-stars',
-    cover: '/sucai/ai-wallpaper-server-227acd04-c4f2-490f-87ec-999804749927-1.png',
+    cover: '/sucai/studio-cover-t2i.webp',
     tone: 'indigo',
     badge: '热门',
     feature: 'ai.wallpaperGeneration',
@@ -42,7 +71,7 @@ export const STUDIO_TOOLS = [
     label: '插画染色',
     tagline: '线稿智能上色',
     icon: 'bi-brush-fill',
-    cover: '/sucai/home-intro-03.png',
+    cover: '/sucai/studio-cover-coloring.webp',
     tone: 'rose',
     badge: '上色',
     feature: 'ai.illustrationColoring',
@@ -54,7 +83,7 @@ export const STUDIO_TOOLS = [
     label: 'UI 设计稿',
     tagline: '界面与组件稿',
     icon: 'bi-bezier2',
-    cover: '/sucai/ui-design-1785420316960.png',
+    cover: '/sucai/studio-cover-ui.webp',
     tone: 'cyan',
     badge: '设计',
     feature: 'ai.uiDesign',
@@ -66,7 +95,7 @@ export const STUDIO_TOOLS = [
     label: 'AI 电商',
     tagline: '商拍 · 套图 · 详情页 · 人像穿戴',
     icon: 'bi-bag-check-fill',
-    cover: '/ecommerce/ecommerce-menu-preview-v1.webp',
+    cover: '/sucai/studio-cover-ecom-create.webp',
     tone: 'lime',
     badge: `${ECOMMERCE_MODES.length} 项工具`,
     highlights: ECOMMERCE_STUDIO_HIGHLIGHTS,
@@ -79,7 +108,7 @@ export const STUDIO_TOOLS = [
     label: '模型设计',
     tagline: '多视角建模参考',
     icon: 'bi-person-bounding-box',
-    cover: '/sucai/ultra-model-sheet-board-1785420340076.png',
+    cover: '/sucai/studio-cover-model.webp',
     tone: 'emerald',
     badge: '模型',
     feature: 'ai.ultraModelSheet',
@@ -91,7 +120,7 @@ export const STUDIO_TOOLS = [
     label: '游戏设计',
     tagline: '角色 · 道具 · UI · 图标',
     icon: 'bi-controller',
-    cover: '/sucai/game-character-1785420168113.png',
+    cover: '/sucai/studio-cover-game.webp',
     tone: 'amber',
     badge: '游戏',
     feature: 'ai.gameDesign',

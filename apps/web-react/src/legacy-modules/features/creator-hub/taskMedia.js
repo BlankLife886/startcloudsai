@@ -10,6 +10,15 @@ export function taskOriginalUrl(task) {
   )
 }
 
+/**
+ * 展示图（服务端压缩过的大图）：点开大图/放大预览用。
+ * 旧任务可能没有展示图对象，调用方应把 taskOriginalUrl 作为回退
+ * （AuthenticatedImage 的 fallbackSrc）。
+ */
+export function taskDisplayUrl(task) {
+  return firstUrl(task?.displayUrls) || taskOriginalUrl(task)
+}
+
 export function taskThumbnailUrl(task) {
   // 后端用空 thumbnailKeys 表示暂时没有缩略图
   if (Array.isArray(task?.thumbnailKeys) && task.thumbnailKeys.length === 0) {

@@ -58,7 +58,15 @@ export interface AdminSettings {
   globalMaxActiveTasks?: number
   globalMaxActiveImages?: number
   taskFailureRetryCount?: number
+  taskRetryFirstDelaySecs?: number
+  taskRetryBackoffSecs?: number
   crossProviderSameModelBalancingEnabled?: boolean
   workerConcurrencyCeiling?: number
   effectiveGlobalConcurrency?: number
+  imageVariantFormat?: 'webp' | 'png'
+  imageDisplayLossless?: boolean
+  imageDisplayQuality?: number
+  imageDisplayMaxEdge?: number
+	imageThumbMaxEdge?: number
+  imageFetchConcurrency?: number
 }

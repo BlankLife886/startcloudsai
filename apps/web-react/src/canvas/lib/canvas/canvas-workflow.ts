@@ -14,6 +14,7 @@ export type CanvasWorkflowCheckpoint = {
     runId?: string;
     nodeIds: string[];
     completedNodeIds: string[];
+    canceledNodeIds?: string[];
     currentNodeId?: string;
     errorNodeId?: string;
     errorMessage?: string;
@@ -51,6 +52,9 @@ export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflo
     const validIds = new Set(nodeIds);
     if (!nodeIds.length || validIds.size !== nodeIds.length) return null;
     const completedNodeIds = record.completedNodeIds.filter((id): id is string => typeof id === "string" && validIds.has(id));
+    const canceledNodeIds = Array.isArray(record.canceledNodeIds)
+        ? record.canceledNodeIds.filter((id): id is string => typeof id === "string" && validIds.has(id) && !completedNodeIds.includes(id))
+        : [];
     const currentNodeId = typeof record.currentNodeId === "string" && validIds.has(record.currentNodeId) ? record.currentNodeId : undefined;
     const errorNodeId = typeof record.errorNodeId === "string" && validIds.has(record.errorNodeId) ? record.errorNodeId : undefined;
     const now = new Date().toISOString();
@@ -59,6 +63,7 @@ export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflo
         ...(typeof record.runId === "string" && record.runId ? { runId: record.runId } : {}),
         nodeIds,
         completedNodeIds: [...new Set(completedNodeIds)],
+        ...(canceledNodeIds.length ? { canceledNodeIds: [...new Set(canceledNodeIds)] } : {}),
         ...(currentNodeId ? { currentNodeId } : {}),
         ...(errorNodeId ? { errorNodeId } : {}),
         ...(typeof record.errorMessage === "string" && record.errorMessage ? { errorMessage: record.errorMessage } : {}),
@@ -78,6 +83,57 @@ export function failCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoin
     };
 }
 
+export type CanvasWorkflowRunProgress = {
+    id: string;
+    nodeIds: string[];
+    completedNodeIds: string[];
+    canceledNodeIds?: string[];
+    currentNodeId?: string | null;
+    startedAt?: string;
+    updatedAt?: string;
+};
+
+/** True when the user is retrying a node that already failed, not resuming in-flight work. */
+export function isCanvasWorkflowFailureRetry(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[]) {
+    if (checkpoint.status === "failed" || Boolean(checkpoint.errorNodeId)) return true;
+    const current = checkpoint.currentNodeId ? nodes.find((node) => node.id === checkpoint.currentNodeId) : undefined;
+    return current?.metadata?.status === "error";
+}
+
+/** Drop the failed current node so reconcile will queue it again instead of treating the old error as terminal. */
+export function beginCanvasWorkflowRetry(checkpoint: CanvasWorkflowCheckpoint, now = new Date().toISOString()): CanvasWorkflowCheckpoint {
+    return {
+        ...checkpoint,
+        status: "running",
+        currentNodeId: undefined,
+        errorNodeId: undefined,
+        errorMessage: undefined,
+        updatedAt: now,
+    };
+}
+
+export function mergeCanvasWorkflowRunProgress(checkpoint: CanvasWorkflowCheckpoint, run: CanvasWorkflowRunProgress, options: { resetCurrentNode?: boolean } = {}): CanvasWorkflowCheckpoint {
+    const nodeIds = run.nodeIds.length ? run.nodeIds : checkpoint.nodeIds;
+    const validIds = new Set(nodeIds);
+    const completedNodeIds = [...new Set([...checkpoint.completedNodeIds, ...run.completedNodeIds])].filter((id) => validIds.has(id));
+    const canceledNodeIds = [...new Set([...(checkpoint.canceledNodeIds || []), ...(run.canceledNodeIds || [])])].filter((id) => validIds.has(id) && !completedNodeIds.includes(id));
+    const mergedCurrent = run.currentNodeId && validIds.has(run.currentNodeId) ? run.currentNodeId : checkpoint.currentNodeId;
+    const currentNodeId = options.resetCurrentNode ? (checkpoint.currentNodeId && validIds.has(checkpoint.currentNodeId) ? checkpoint.currentNodeId : undefined) : mergedCurrent;
+    return {
+        ...checkpoint,
+        status: "running",
+        runId: run.id,
+        nodeIds,
+        completedNodeIds,
+        ...(canceledNodeIds.length ? { canceledNodeIds } : { canceledNodeIds: undefined }),
+        ...(currentNodeId ? { currentNodeId } : { currentNodeId: undefined }),
+        errorNodeId: undefined,
+        errorMessage: undefined,
+        startedAt: run.startedAt || checkpoint.startedAt,
+        updatedAt: run.updatedAt || checkpoint.updatedAt,
+    };
+}
+
 export function advanceCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodeId: string, now = new Date().toISOString()): CanvasWorkflowCheckpoint {
     if (!checkpoint.nodeIds.includes(nodeId)) return checkpoint;
     return {
@@ -88,7 +144,7 @@ export function advanceCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckp
     };
 }
 
-export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], interruptedError: string, connections: CanvasConnection[] = []) {
+export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], interruptedError: string, connections: CanvasConnection[] = [], retryableErrors: string[] = []) {
     const currentNodeId = checkpoint.currentNodeId;
     if (!currentNodeId || checkpoint.completedNodeIds.includes(currentNodeId)) return { ok: true as const, checkpoint };
     const current = nodes.find((node) => node.id === currentNodeId);
@@ -104,7 +160,9 @@ export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowChec
         if (!outputValidation.ok) return { ok: false as const, reason: "failed" as const, nodeId: currentNodeId, checkpoint };
         return { ok: true as const, checkpoint: advanceCanvasWorkflowCheckpoint(checkpoint, currentNodeId) };
     }
-    if (current.metadata?.status === "error" && current.metadata.errorDetails && current.metadata.errorDetails !== interruptedError) {
+    const errorDetails = current.metadata?.errorDetails;
+    const retryable = errorDetails === interruptedError || retryableErrors.includes(errorDetails || "");
+    if (current.metadata?.status === "error" && errorDetails && !retryable) {
         return { ok: false as const, reason: "failed" as const, nodeId: currentNodeId, checkpoint };
     }
     return { ok: true as const, checkpoint };
@@ -244,10 +302,10 @@ function workflowResourceReady(node: CanvasNodeData) {
 
 function workflowOutputSuccessCount(node: CanvasNodeData) {
     if (node.type === "text") return node.metadata?.status === "success" && (node.metadata?.content || "").trim() ? 1 : 0;
-    if (node.metadata?.images?.length) {
-        return node.metadata.images.filter((image) => image.status === "success" && Boolean(image.content || image.storageKey)).length;
-    }
-    return node.metadata?.status === "success" && Boolean(node.metadata?.content || node.metadata?.storageKey) ? 1 : 0;
+    const successfulImages = (node.metadata?.images || []).filter((image) => image.status === "success" && Boolean(image.content || image.storageKey)).length;
+    if (successfulImages) return successfulImages;
+    if (node.metadata?.status === "error") return 0;
+    return node.metadata?.content || node.metadata?.storageKey ? 1 : 0;
 }
 
 /** Compile generation-config nodes into a stable, dependency-ordered execution plan. */

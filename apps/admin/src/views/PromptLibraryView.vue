@@ -339,6 +339,8 @@ function imageLoadingMode(index: number) {
 const selectedIds = reactive(new Set<string>())
 const selectionMode = ref(false)
 const batchSaving = ref(false)
+const batchDeleting = ref(false)
+const batchBusy = computed(() => batchSaving.value || batchDeleting.value)
 const batchForm = reactive({
   category: '',
   taskType: '',
@@ -441,6 +443,57 @@ async function applyBatchEdit() {
     if (filterAffected) await refresh()
   } finally {
     batchSaving.value = false
+  }
+}
+
+async function applyBatchDelete() {
+  const targets = selectedItems.value
+  if (!targets.length) {
+    ElMessage.warning('请先选择提示词')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认永久删除已选的 ${targets.length} 条提示词？删除后无法恢复。`,
+      '批量删除提示词',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+
+  batchDeleting.value = true
+  const queue = [...targets]
+  const failedIds = new Set<string>()
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift()
+      if (!item) return
+      try {
+        await request(`/api/v1/admin/prompts/${item.id}`, { method: 'DELETE', silent: true })
+        selectedIds.delete(item.id)
+      } catch {
+        failedIds.add(item.id)
+      }
+    }
+  }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker))
+    const successCount = targets.length - failedIds.size
+    if (successCount) ElMessage.success(`已删除 ${successCount} 条提示词`)
+    if (failedIds.size) {
+      for (const id of failedIds) selectedIds.add(id)
+      ElMessage.error(`${failedIds.size} 条删除失败，已保留选择`)
+    }
+    if (successCount) await refresh()
+  } finally {
+    batchDeleting.value = false
   }
 }
 
@@ -1543,7 +1596,7 @@ onBeforeUnmount(() => {
         <el-button
           :type="selectionMode ? 'primary' : ''"
           :icon="EditPen"
-          :disabled="batchSaving"
+          :disabled="batchBusy"
           @click="toggleSelectionMode"
         >
           {{ selectionMode ? '退出多选' : '多选' }}
@@ -1584,7 +1637,7 @@ onBeforeUnmount(() => {
               <el-checkbox
                 :model-value="allVisibleSelected"
                 :indeterminate="someVisibleSelected"
-                :disabled="!visibleItems.length || batchSaving"
+                :disabled="!visibleItems.length || batchBusy"
                 @change="toggleVisibleSelection(Boolean($event))"
               >
                 全选当前结果
@@ -1598,6 +1651,7 @@ onBeforeUnmount(() => {
                 size="small"
                 placeholder="修改分类"
                 aria-label="批量修改分类"
+                :disabled="batchBusy"
               >
                 <el-option
                   v-for="category in categoryOptions.slice(1)"
@@ -1612,6 +1666,7 @@ onBeforeUnmount(() => {
                 size="small"
                 placeholder="修改投放"
                 aria-label="批量修改投放功能"
+                :disabled="batchBusy"
               >
                 <el-option v-for="type in PROMPT_TASK_TYPES" :key="type" :label="taskTypeLabel(type)" :value="type" />
               </el-select>
@@ -1621,6 +1676,7 @@ onBeforeUnmount(() => {
                 size="small"
                 placeholder="修改状态"
                 aria-label="批量修改状态"
+                :disabled="batchBusy"
               >
                 <el-option label="启用" value="enabled" />
                 <el-option label="停用" value="disabled" />
@@ -1629,12 +1685,22 @@ onBeforeUnmount(() => {
                 type="primary"
                 size="small"
                 :loading="batchSaving"
-                :disabled="!hasBatchChanges"
+                :disabled="!hasBatchChanges || batchBusy"
                 @click="applyBatchEdit"
               >
                 应用修改
               </el-button>
-              <el-button text size="small" :disabled="batchSaving" @click="clearSelection">清除选择</el-button>
+              <el-button
+                type="danger"
+                size="small"
+                :icon="Delete"
+                :loading="batchDeleting"
+                :disabled="batchBusy"
+                @click="applyBatchDelete"
+              >
+                删除
+              </el-button>
+              <el-button text size="small" :disabled="batchBusy" @click="clearSelection">清除选择</el-button>
             </div>
           </div>
 

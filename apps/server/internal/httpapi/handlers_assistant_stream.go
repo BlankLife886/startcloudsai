@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
+
+const assistantToolResultMaxBytes = 64 << 10
 
 var (
 	assistantStreamOnce   sync.Once
@@ -48,6 +51,71 @@ func assistantRunIsTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+// postAssistantRunToolResult 收下浏览器执行画布工具后的观察结果，交给正在
+// 等待的 Worker。这是把单次问答变成多轮工具循环的回边。
+func (s *Server) postAssistantRunToolResult(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "run id 无效", 422))
+		return
+	}
+	var body struct {
+		RequestID string          `json:"requestId"`
+		Result    json.RawMessage `json:"result"`
+		Error     string          `json:"error"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		fail(c, apperr.E("validation_error", "请求体无效", 422))
+		return
+	}
+	requestID := strings.TrimSpace(body.RequestID)
+	if requestID == "" || len(requestID) > 64 {
+		fail(c, apperr.E("validation_error", "requestId 无效", 422))
+		return
+	}
+	run, err := store.GetAssistantRun(c.Request.Context(), s.St.Pool, runID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if run == nil || run.UserID != user.ID {
+		fail(c, apperr.E("not_found", "任务不存在", 404))
+		return
+	}
+	if assistantRunIsTerminal(run.Status) {
+		fail(c, apperr.E("conflict", "任务已结束", 409))
+		return
+	}
+	if len(body.Result) > assistantToolResultMaxBytes {
+		body.Result = nil
+		body.Error = "工具结果过大，已丢弃"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"requestId": requestID,
+		"result":    body.Result,
+		"error":     strings.TrimSpace(body.Error),
+	})
+	if err != nil {
+		fail(c, apperr.E("validation_error", "请求体无效", 422))
+		return
+	}
+	client := s.assistantStreamRedis()
+	if client == nil {
+		fail(c, apperr.E("unavailable", "流式后端不可用", 503))
+		return
+	}
+	if err := assistantstream.PublishToolResult(c.Request.Context(), client, runID.String(), requestID, payload); err != nil {
+		fail(c, apperr.E("unavailable", "工具结果投递失败", 503))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // assistantRunStream 把 Worker 经 Redis 发布的增量回答以 SSE 推给客户端。

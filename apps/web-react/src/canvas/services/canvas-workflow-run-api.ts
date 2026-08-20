@@ -7,6 +7,7 @@ export type CanvasWorkflowRunRecord = {
     status: "running" | "succeeded" | "failed" | "canceled";
     nodeIds: string[];
     completedNodeIds: string[];
+    canceledNodeIds: string[];
     currentNodeId?: string | null;
     errorMessage?: string;
     leaseExpiresAt?: string | null;
@@ -30,6 +31,7 @@ export function updateCanvasWorkflowRun(
         ownerId: string;
         status: CanvasWorkflowRunRecord["status"];
         completedNodeIds: string[];
+        canceledNodeIds?: string[];
         currentNodeId?: string;
         errorMessage?: string;
     },

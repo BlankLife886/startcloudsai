@@ -95,21 +95,25 @@ let loaded = false;
 export async function ensurePluginsLoaded() {
     if (loaded) return;
     loaded = true;
-    await usePluginStore.persist.rehydrate();
-    await loadLocalPlugins(); // Discover disabled local plugins first, then activate all enabled records.
-    const records = usePluginStore.getState().plugins.filter((record) => record.enabled);
-    await Promise.all(
-        records.map(async (record) => {
-            try {
-                // Local plugins use the latest output; other plugins use their cached source.
-                const source = record.local ? await fetchPluginSource(withCacheBust(record.url)) : record.source;
-                activatePlugin(await evaluatePluginSource(source));
-            } catch (error) {
-                console.error(`[plugin] Failed to load: ${record.id}`, error);
-            }
-        }),
-    );
-    await loadDevPlugins();
+    try {
+        await usePluginStore.persist.rehydrate();
+        await loadLocalPlugins();
+        const records = usePluginStore.getState().plugins.filter((record) => record.enabled);
+        await Promise.all(
+            records.map(async (record) => {
+                try {
+                    const source = record.local ? await fetchPluginSource(withCacheBust(record.url)) : record.source;
+                    activatePlugin(await evaluatePluginSource(source));
+                } catch (error) {
+                    console.error(`[plugin] Failed to load: ${record.id}`, error);
+                }
+            }),
+        );
+        await loadDevPlugins();
+    } catch (error) {
+        loaded = false;
+        throw error;
+    }
 }
 
 // Discover local plugins from web/public/plugins, add them disabled, and expose them in the manager without a URL.

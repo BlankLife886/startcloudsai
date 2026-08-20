@@ -80,3 +80,13 @@ func TestSanitizeUpstreamMessageBoundsExternalText(t *testing.T) {
 		t.Fatalf("sanitized message length = %d, want %d", len([]rune(got)), maxUpstreamMessageRunes)
 	}
 }
+
+func TestSanitizeUpstreamMessageHidesInvalidatedToken(t *testing.T) {
+	got := sanitizeUpstreamMessage(`chat_requirements_prepare failed: status=401, body={"error":{"code":"token_invalidated"}}`)
+	if strings.Contains(got, "chat_requirements_prepare") || strings.Contains(got, "token_invalidated") {
+		t.Fatalf("raw upstream leaked: %q", got)
+	}
+	if !strings.Contains(got, "认证失效") {
+		t.Fatalf("got %q", got)
+	}
+}

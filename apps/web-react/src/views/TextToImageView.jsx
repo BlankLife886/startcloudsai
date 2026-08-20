@@ -61,6 +61,7 @@ import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenti
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
+import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
 import "./TextToImageView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -104,6 +105,20 @@ function buildBalancedPromptColumns(items, columnCount) {
     heights[target] += promptAspectScore(item.aspect);
   });
   return columns;
+}
+
+function denseMasonryColumnCount(width) {
+  if (width <= 520) return 2;
+  if (width <= 760) return 3;
+  if (width <= 1020) return 4;
+  return 5;
+}
+
+function imageNaturalAspect(event) {
+  const width = Number(event.currentTarget?.naturalWidth || event.target?.naturalWidth || 0);
+  const height = Number(event.currentTarget?.naturalHeight || event.target?.naturalHeight || 0);
+  if (width <= 0 || height <= 0) return "";
+  return `${width} / ${height}`;
 }
 
 function storedRuntimeConfig() {
@@ -240,19 +255,15 @@ function taskThumbnailOutputs(task) {
   );
 }
 
-function taskGroupKey(task) {
-  return task?.batchId ? `batch:${task.batchId}` : `task:${task?.id || "unknown"}`;
+// 展示图与原图按下标对应；旧任务没有展示图，取用时回退原图。
+function taskDisplayOutputs(task) {
+  return Array.isArray(task?.displayOutputs)
+    ? task.displayOutputs.map(String)
+    : [];
 }
 
-function isToday(value) {
-  const date = new Date(value || 0);
-  const today = new Date();
-  return (
-    Number.isFinite(date.getTime()) &&
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  );
+function taskGroupKey(task) {
+  return task?.batchId ? `batch:${task.batchId}` : `task:${task?.id || "unknown"}`;
 }
 
 function taskMeta(task, now) {
@@ -315,12 +326,13 @@ function elapsedLabel(task, now) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function buildGalleryItems(tasks, unavailableImageKeys = {}) {
+function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {}) {
   const items = [];
-  for (const task of tasks.slice(0, 120)) {
-    if (!isToday(task.createdAt)) continue;
+  const source = Number.isFinite(limit) && limit > 0 ? tasks.slice(0, limit) : tasks;
+  for (const task of source) {
     const outputs = taskOutputs(task);
     const thumbnails = taskThumbnailOutputs(task);
+    const displays = taskDisplayOutputs(task);
     if (outputs.length) {
       outputs.forEach((url, index) => {
         if (unavailableImageKeys[`${task.id}::${index}::${url}`]) return;
@@ -329,6 +341,7 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}) {
           kind: "image",
           task,
           url,
+          displayUrl: displays[index] || "",
           thumbnailUrl: thumbnails[index] || "",
           index,
           batchIndex:
@@ -556,6 +569,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const promptViewportRef = useRef(null);
   const promptMoreRef = useRef(null);
   const promptSentinelRef = useRef(null);
+  const historyViewportRef = useRef(null);
+  const historyActionRef = useRef({});
   const stageCanvasRef = useRef(null);
   const filmstripRef = useRef(null);
   const lightboxFrameRef = useRef(null);
@@ -652,9 +667,14 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     (model) => resolveModelPointPricing(model).configured,
   );
   const maxReferences = Math.max(0, Number(currentModel?.maxReferenceImages ?? 4));
-  const jobs = useTextToImageJobs({ authenticated });
-  const isRunning = jobs.tasks.some((task) => ACTIVE_STATUSES.has(task.status));
+  const jobs = useTextToImageJobs({ authenticated, historyActive: mainTab === "history" });
+  const isRunning =
+    jobs.tasks.some((task) => ACTIVE_STATUSES.has(task.status)) ||
+    (mainTab === "history" && jobs.historyTasks.some((task) => ACTIVE_STATUSES.has(task.status)));
   const now = useClock(isRunning);
+  const dispatchHistoryAction = useCallback((type, item) => {
+    historyActionRef.current[type]?.(item);
+  }, []);
 
   const updateModelMenuPosition = useCallback(() => {
     const trigger = modelTriggerRef.current;
@@ -955,7 +975,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (mainTab !== "prompts") return undefined;
     const viewport = promptViewportRef.current;
     if (!viewport) return undefined;
-    const updateWidth = () => setPromptViewportWidth(viewport.clientWidth || window.innerWidth);
+    const updateWidth = () => {
+      const width = viewport.clientWidth || window.innerWidth;
+      setPromptViewportWidth((current) => (
+        denseMasonryColumnCount(current) === denseMasonryColumnCount(width) ? current : width
+      ));
+    };
     updateWidth();
     if (typeof ResizeObserver === "undefined") {
       window.addEventListener("resize", updateWidth, { passive: true });
@@ -1234,11 +1259,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     return filmstripGroups.slice(start, start + 30);
   }, [featuredGroup, filmstripGroups]);
   const completed = galleryItems.filter((item) => item.kind === "image");
+  const historySourceItems = useMemo(
+    () => buildGalleryItems(jobs.historyTasks, unavailableImageKeys, { limit: 0 }),
+    [jobs.historyTasks, unavailableImageKeys],
+  );
   const historyItems = useMemo(() => {
-    const rows = [...galleryItems];
+    const rows = [...historySourceItems];
     const represented = new Set(rows.map((item) => item.task.id));
-    jobs.tasks.forEach((task) => {
-      if (!isToday(task.createdAt) || represented.has(task.id)) return;
+    jobs.historyTasks.forEach((task) => {
+      if (represented.has(task.id)) return;
       rows.push({
         key: `history-${task.id}`,
         kind: "placeholder",
@@ -1248,12 +1277,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       });
     });
     return rows;
-  }, [galleryItems, jobs.tasks]);
-  const historyColumns = useMemo(() => {
-    const columns = [[], [], []];
-    historyItems.forEach((item, index) => columns[index % columns.length].push(item));
-    return columns;
-  }, [historyItems]);
+  }, [historySourceItems, jobs.historyTasks]);
   const localPromptItems = useMemo(() =>
     WALLPAPER_PROMPT_PRESETS.map((preset, index) => ({
       id: `local-t2i-${index}`,
@@ -1287,7 +1311,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       ...managedPromptCategories,
     ].find((item) => item.value === key)?.label || "其他";
   }, [managedPromptCategories]);
-  const promptColumnCount = promptViewportWidth <= 640 ? 1 : promptViewportWidth <= 960 ? 2 : 3;
+  const promptColumnCount = denseMasonryColumnCount(promptViewportWidth);
   const promptFeedItems = useMemo(() => visiblePromptItems.map((item) => {
     const key = `prompt-${item.id}`;
     const declaredAspect = Number(item.coverWidth) > 0 && Number(item.coverHeight) > 0
@@ -1306,14 +1330,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     resetKey: `${mainTab}:${promptCategory}:${promptSort}`,
     contentKey: visiblePromptItems.map((item) => item.id).join("|"),
     stateAttribute: "data-t2i-prompts-motion-state",
-  });
-  useContentReveal({
-    rootRef,
-    selector: ".t2i-history-card",
-    ready: mainTab === "history" && !jobs.historyLoading,
-    resetKey: mainTab,
-    contentKey: historyItems.map((item) => item.key).join("|"),
-    stateAttribute: "data-t2i-history-motion-state",
   });
   useContentReveal({
     rootRef,
@@ -1343,10 +1359,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   };
 
   const measurePromptLibraryImage = (entry, event) => {
-    const width = Number(event.currentTarget?.naturalWidth || event.target?.naturalWidth || 0);
-    const height = Number(event.currentTarget?.naturalHeight || event.target?.naturalHeight || 0);
-    if (!entry?.key || width <= 0 || height <= 0) return;
-    const aspect = `${width} / ${height}`;
+    const aspect = imageNaturalAspect(event);
+    if (!entry?.key || !aspect) return;
     setPromptMeasuredAspects((current) => current[entry.key] === aspect
       ? current
       : { ...current, [entry.key]: aspect });
@@ -1438,10 +1452,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       notificationService.error("操作失败，请稍后重试");
     }
   };
-  const failedOrPausedTasks = jobs.tasks.filter((task) =>
+  const failedOrPausedTasks = jobs.historyTasks.filter((task) =>
     ["failed", "paused"].includes(task.status),
   );
-  const lightboxItems = galleryItems.filter((item) => item.kind === "image");
+  const lightboxItems = (mainTab === "history" ? historyItems : galleryItems).filter((item) => item.kind === "image");
   const lightboxItem = lightbox
     ? lightboxItems.find((item) => item.key === lightbox.key) || null
     : null;
@@ -1750,6 +1764,19 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     await submitGeneration();
   };
 
+  historyActionRef.current = {
+    open: (item) => {
+      setActiveTaskId(item.task.id);
+      openLightbox(item);
+    },
+    reference: useAsReference,
+    edit: (item) => editTask(item.task),
+    regenerate: (item) => setRegenerateTarget(item.task),
+    cancel: (item) => void jobs.cancelTask(item.task),
+    delete: (item) => requestDelete([item.task]),
+    error: markImageUnavailable,
+  };
+
   return (
     <div ref={rootRef} className={`t2i-page${isDark ? "" : " is-light"}`} onClick={() => { setSkillOpen(false); setModelOpen(false); setOpenLayer(""); }}>
       <aside className="t2i-sidebar" aria-label="生成设置" onClick={(event) => event.stopPropagation()}>
@@ -1829,7 +1856,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 }
               }}
             />
-            <div className="t2i-prompt-foot">
+            <div className={`t2i-prompt-foot${references.length ? " has-refs" : ""}`}>
               <div className="t2i-prompt-refs" aria-label="参考图片" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addReferenceFiles(event.dataTransfer.files); }}>
                 {references.map((item) => (
                   <figure key={item.id} className="t2i-prompt-ref">
@@ -1842,11 +1869,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 )}
                 <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => { addReferenceFiles(event.target.files); event.target.value = ""; }} />
               </div>
-              <div className="t2i-prompt-tools"><button type="button" className="t2i-icon-btn" title="清空提示词" onClick={() => setPrompt("")}><i className="bi bi-trash" /></button></div>
-              <div className="t2i-skill-tools">
-                <button ref={skillTriggerRef} type="button" className={`t2i-skill-trigger${skillOpen ? " is-open" : ""}${selectedSkillIds.length ? " has-items" : ""}`} aria-expanded={skillOpen} onClick={(event) => { event.stopPropagation(); const next = !skillOpen; if (next) updateSkillPanelPosition(); setSkillOpen(next); }}>
-                  <i className="bi bi-lightning-charge" /><span>Skills</span><em>{selectedSkillIds.length}</em><i className="bi bi-chevron-down" />
-                </button>
+              <div className="t2i-prompt-foot-actions">
+                <div className="t2i-skill-tools">
+                  <button ref={skillTriggerRef} type="button" className={`t2i-skill-trigger${skillOpen ? " is-open" : ""}${selectedSkillIds.length ? " has-items" : ""}`} aria-expanded={skillOpen} onClick={(event) => { event.stopPropagation(); const next = !skillOpen; if (next) updateSkillPanelPosition(); setSkillOpen(next); }}>
+                    <i className="bi bi-lightning-charge" /><span>Skills</span><em>{selectedSkillIds.length}</em><i className="bi bi-chevron-down" />
+                  </button>
+                </div>
+                <div className="t2i-prompt-tools"><button type="button" className="t2i-icon-btn" title="清空提示词" onClick={() => setPrompt("")}><i className="bi bi-trash" /></button></div>
               </div>
             </div>
           </div>
@@ -1937,9 +1966,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 : isRunning
                   ? `任务处理中 · ${jobs.tasks.filter((task) => ACTIVE_STATUSES.has(task.status)).length} 个任务`
                   : mainTab === "images"
-                    ? completed.length ? `今日 ${completed.length} 张` : "今日暂无作品"
+                    ? completed.length ? `${completed.length} 张` : "暂无作品"
                     : mainTab === "history"
-                      ? historyItems.length ? `今日 ${historyItems.length} 条` : "今日暂无记录"
+                      ? historyItems.length ? `${historyItems.length} 条` : "暂无历史记录"
                       : mainTab === "prompts"
                         ? `${Math.max(promptTotal, visiblePromptItems.length)} 条提示词`
                         : "暂无资产"}
@@ -1949,8 +1978,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         {mainTab === "images" && (
           <section className="t2i-panel t2i-panel--stage">
             <div className="t2i-stage-workspace" data-motion>
-              {loading || jobs.historyLoading ? <StageSkeleton aspect={ratio} /> : !featuredItem ? (
-                <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-image" /></div><strong>今日还没有作品</strong><span>点左侧「立即生成」，当天作品会显示在这里和底部栏。</span></div>
+              {loading || jobs.stageLoading ? <StageSkeleton aspect={ratio} /> : !featuredItem ? (
+                <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-image" /></div><strong>还没有作品</strong><span>点左侧「立即生成」，作品会显示在这里和底部栏。</span></div>
               ) : (
                 <div className="t2i-stage">
                   <div ref={stageCanvasRef} className="t2i-stage-canvas">
@@ -1969,7 +1998,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                 <>
                                   <button type="button" className="t2i-stage-cell-media" onClick={() => openLightbox(item)}>
                                     <ProgressiveAuthenticatedImage
-                                      src={item.url}
+                                      src={item.displayUrl || item.url}
+                                      fallbackSrc={item.url}
                                       previewSrc={item.thumbnailUrl}
                                       alt=""
                                       loading="eager"
@@ -2004,7 +2034,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         <>
                           <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openLightbox(featuredItem)}>
                             <ProgressiveAuthenticatedImage
-                              src={activeOutput}
+                              src={featuredItem.displayUrl || activeOutput}
+                              fallbackSrc={activeOutput}
                               previewSrc={featuredItem.thumbnailUrl}
                               alt={activeTask.prompt}
                               loading="eager"
@@ -2095,40 +2126,22 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           </section>
         )}
         {mainTab === "history" && (
-          <section className="t2i-panel t2i-panel--history">
-            {jobs.historyLoading ? <HistorySkeleton /> : historyItems.length === 0 ? (
-              <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-clock-history" /></div><strong>今日还没有历史记录</strong><span>历史记录仅展示当天作品，提交生成后会显示在这里。</span></div>
+          <section ref={historyViewportRef} className="t2i-panel t2i-panel--history">
+            {!authenticated ? (
+              <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-clock-history" /></div><strong>登录后查看历史记录</strong><span>未登录不会保存生成历史，登录后可同步并浏览云端作品。</span></div>
+            ) : jobs.historyLoading && historyItems.length === 0 ? <HistorySkeleton /> : historyItems.length === 0 ? (
+              <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-clock-history" /></div><strong>还没有历史记录</strong><span>提交生成后，作品会显示在这里。</span></div>
             ) : (
-              <div className="t2i-masonry-wrap">
-                <div className="t2i-masonry" style={{ "--t2i-masonry-cols": 3 }}>
-                  {historyColumns.map((column, columnIndex) => (
-                    <div key={columnIndex} className="t2i-masonry-col">
-                      {column.map((item) => (
-                        <article key={item.key} className={`t2i-masonry-card t2i-history-card${item.task.id === activeTaskId ? " is-active" : ""}`} data-status={item.task.status}>
-                          {item.kind === "image" ? (
-                            <button type="button" className="t2i-masonry-cover" style={ratioStyle(item.task.aspectRatio)} onClick={() => { setActiveTaskId(item.task.id); openLightbox(item); }}>
-                              <AuthenticatedImage src={item.url} alt="" loading="lazy" />
-                              {item.total > 1 && <span className="t2i-history-batch-index">{Number(item.batchIndex || 0) + 1}/{item.total}</span>}
-                              <span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.task.prompt}</span><span className="t2i-history-image-specs"><span><i className="bi bi-aspect-ratio" />{item.task.actualOutputSize || item.task.outputSize || item.task.aspectRatio}</span><span><i className="bi bi-clock" />{elapsedLabel(item.task, now) || statusLabel(item.task)}</span></span></span>
-                            </button>
-                          ) : (
-                            <div className="t2i-masonry-cover t2i-masonry-placeholder" style={ratioStyle(item.task.aspectRatio)} data-status={item.task.status}><i className={`bi ${ACTIVE_STATUSES.has(item.task.status) ? "bi-arrow-repeat spin" : item.task.status === "failed" ? "bi-exclamation-triangle" : "bi-image"}`} /><span>{statusLabel(item.task)}</span></div>
-                          )}
-                          {item.kind !== "image" && <div className="t2i-masonry-body"><small className="t2i-history-error">{item.task.error}</small></div>}
-                          <footer className="t2i-entry-actions t2i-history-actions">
-                            {item.kind === "image" && <button type="button" aria-label="设为参考图" title="设为参考图" onClick={() => useAsReference(item)}><span className="t2i-icon-reference" /></button>}
-                            <button type="button" aria-label="编辑任务" title="编辑" onClick={() => editTask(item.task)}><span className="t2i-icon-edit-image" /></button>
-                            <button type="button" aria-label="重新生成" title="重新生成" onClick={() => setRegenerateTarget(item.task)}><span className="t2i-icon-regenerate" /></button>
-                            {ACTIVE_STATUSES.has(item.task.status) && <button type="button" aria-label="取消任务" title="取消" onClick={() => void jobs.cancelTask(item.task)}><i className="bi bi-stop-circle" /></button>}
-                            <button type="button" className="is-danger" aria-label="删除任务" title="删除" onClick={() => requestDelete([item.task])}><span className="t2i-icon-delete" /></button>
-                          </footer>
-                        </article>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                {jobs.historyHasMore ? <button type="button" className="t2i-feed-more" onClick={jobs.loadMoreHistory}>加载更多</button> : <p className="t2i-feed-end">今日记录已全部加载</p>}
-              </div>
+              <T2iHistoryFeed
+                items={historyItems}
+                activeTaskId={activeTaskId}
+                now={now}
+                onAction={dispatchHistoryAction}
+                hasMore={jobs.historyHasMore}
+                loadingMore={jobs.historyLoadingMore}
+                onLoadMore={jobs.loadMoreHistory}
+                scrollRootRef={historyViewportRef}
+              />
             )}
           </section>
         )}
@@ -2145,12 +2158,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 </div>
                 {promptCategory !== "today" && <label className="t2i-library-sort"><i className="bi bi-sort-down" /><select value={promptSort} aria-label="提示词排序" onChange={(event) => setPromptSort(event.target.value)}><option value="recommended">智能推荐</option><option value="favorites">收藏最多</option><option value="likes">点赞最多</option><option value="usage">使用最多</option></select></label>}
               </div>
-              {promptLibraryLoading && !visiblePromptItems.length ? <div className="t2i-history-skeleton" aria-label="提示词库加载中">{[0, 1, 2].map((column) => <div key={column} className="t2i-history-skeleton-col">{[0, 1, 2].map((row) => <article key={row} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>)}</div>)}</div> : !visiblePromptItems.length ? <div className="t2i-empty t2i-collection-empty"><div className="t2i-empty-icon"><i className="bi bi-filter" /></div><strong>{promptEmptyTitle}</strong><span>{promptEmptyDescription}</span></div> : <div className="t2i-masonry" style={{ "--t2i-masonry-cols": promptColumnCount }}>
+              {promptLibraryLoading && !visiblePromptItems.length ? <div className="t2i-history-skeleton t2i-history-skeleton--feed" aria-label="提示词库加载中">{[1, 2, 3, 4, 5].map((column) => <div key={column} className="t2i-history-skeleton-col">{[1, 2, 3].map((row) => <article key={row} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>)}</div>)}</div> : !visiblePromptItems.length ? <div className="t2i-empty t2i-collection-empty"><div className="t2i-empty-icon"><i className="bi bi-filter" /></div><strong>{promptEmptyTitle}</strong><span>{promptEmptyDescription}</span></div> : <div className="t2i-masonry" style={{ "--t2i-masonry-cols": promptColumnCount }}>
                 {promptColumns.map((column, columnIndex) => <div key={columnIndex} className="t2i-masonry-col">{column.map((entry) => {
                   const { item } = entry;
                   return (
                   <article key={entry.key} className="t2i-masonry-card t2i-collection-card">
-                    <button type="button" className={`t2i-masonry-cover${item.coverUrl || item.imageUrl ? "" : " t2i-masonry-placeholder"}`} style={{ aspectRatio: entry.aspect }} onClick={() => usePromptLibraryEntry(item)}>{item.coverUrl || item.imageUrl ? <AuthenticatedImage src={item.coverUrl || item.imageUrl} alt={item.title || item.label || "提示词封面"} loading="lazy" maxDimension={720} onLoad={(event) => measurePromptLibraryImage(entry, event)} /> : <span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span>}<span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.prompt}</span><span className="t2i-history-image-specs"><span><i className="bi bi-grid" />{promptCategoryLabel(item.categoryKey || item.category)}</span>{item.tags?.length > 0 && <span><i className="bi bi-tags" />{item.tags.slice(0, 2).join(" · ")}</span>}</span></span></button>
+                    <button type="button" className={`t2i-masonry-cover${item.coverUrl || item.imageUrl ? "" : " t2i-masonry-placeholder"}`} style={{ aspectRatio: entry.aspect }} onClick={() => usePromptLibraryEntry(item)}>{item.coverUrl || item.imageUrl ? <AuthenticatedImage src={item.coverUrl || item.imageUrl} alt={item.title || item.label || "提示词封面"} loading="lazy" maxDimension={720} onLoad={(event) => measurePromptLibraryImage(entry, event)} /> : <span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span>}<span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.prompt}</span></span></button>
                     <div className="t2i-masonry-body"><header className="t2i-history-meta"><strong>{item.title || item.label}</strong><small>{promptCategoryLabel(item.categoryKey || item.category)} · 使用 {item.useCount || 0} 次</small></header></div>
                     <footer className="t2i-entry-actions t2i-prompt-card-actions">
                       <button
@@ -2181,8 +2194,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         onClick={() => usePromptLibraryEntry(item)}
                       >
                         <i className="bi bi-stars" aria-hidden="true" />
-                        <span>使用提示词</span>
-                        <i className="bi bi-arrow-up-right" aria-hidden="true" />
+                        <span>使用</span>
                       </button>
                     </footer>
                   </article>
@@ -2237,7 +2249,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               onPointerCancel={endLightboxPan}
             >
               <div className="t2i-lightbox-image-layer" style={{ transform: `translate3d(${lightboxPan.x}px, ${lightboxPan.y}px, 0) scale(${lightboxZoom})` }}>
-                <AuthenticatedImage src={lightboxItem.url} alt={lightboxItem.task.prompt || "图片预览"} loading="eager" onLoad={(event) => { setLightboxImageLoading(false); setLightboxNaturalSize({ width: event.target.naturalWidth, height: event.target.naturalHeight }); }} onError={() => setLightboxImageLoading(false)} />
+                <AuthenticatedImage src={lightboxItem.displayUrl || lightboxItem.url} fallbackSrc={lightboxItem.url} alt={lightboxItem.task.prompt || "图片预览"} loading="eager" onLoad={(event) => { setLightboxImageLoading(false); setLightboxNaturalSize({ width: event.target.naturalWidth, height: event.target.naturalHeight }); }} onError={() => setLightboxImageLoading(false)} />
               </div>
               {lightboxCompareEnabled && lightboxCanCompare && (
                 <>
@@ -2371,8 +2383,10 @@ function ActionConfirmDialog({ open, heading, description, confirmLabel, busy = 
 
 function HistorySkeleton() {
   return (
-    <div className="t2i-history-skeleton" aria-label="历史记录加载中">
-      {[1, 2, 3].map((column) => <div key={column} className="t2i-history-skeleton-col">{[1, 2, 3].map((row) => <article key={row} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>)}</div>)}
+    <div className="t2i-history-skeleton t2i-history-skeleton--uniform" aria-label="历史记录加载中">
+      {Array.from({ length: 10 }, (_, index) => (
+        <article key={index} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>
+      ))}
     </div>
   );
 }

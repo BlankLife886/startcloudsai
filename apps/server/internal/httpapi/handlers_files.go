@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	storagepkg "github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -26,6 +29,15 @@ var (
 	errTaskImageFormat  = errors.New("task image unsupported")
 	errTaskImageContent = errors.New("task image unreadable")
 )
+
+// mp4FtypBrands 允许的 MP4 major brand 白名单。ftyp box 可以携带任意 brand
+//（如 heic、qt、3gp 等非 MP4 视频容器），只认 "ftyp" 四个字节会把它们全部
+// 当成 video/mp4 放行，因此这里显式收紧到常见的 MP4 视频 brand。
+var mp4FtypBrands = map[string]bool{
+	"isom": true, "iso2": true, "iso4": true, "iso5": true, "iso6": true,
+	"mp41": true, "mp42": true, "avc1": true, "av01": true, "dash": true,
+	"M4V ": true,
+}
 
 // sniffUploadMedia identifies supported upload formats from their signatures.
 func sniffUploadMedia(data []byte) (ext string, contentType string, image bool) {
@@ -38,7 +50,7 @@ func sniffUploadMedia(data []byte) (ext string, contentType string, image bool) 
 	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
 		return "webp", "image/webp", true
 	}
-	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" && mp4FtypBrands[string(data[8:12])] {
 		return "mp4", "video/mp4", false
 	}
 	if len(data) >= 4 && data[0] == 0x1a && data[1] == 0x45 && data[2] == 0xdf && data[3] == 0xa3 {
@@ -61,7 +73,7 @@ func isOwnedUserUploadImageKey(userID uuid.UUID, key string) bool {
 		return false
 	}
 	prefix := "uploads/" + userID.String() + "/"
-	for _, directory := range []string{"original/", "thumb/"} {
+	for _, directory := range []string{"original/", "thumb/", "display/"} {
 		if !strings.HasPrefix(key, prefix+directory) {
 			continue
 		}
@@ -81,7 +93,7 @@ func isOwnedTaskOutputImageKey(userID uuid.UUID, key string) bool {
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
-	if len(parts) != 3 || (parts[1] != "original" && parts[1] != "thumb") || parts[2] == "" {
+	if len(parts) != 3 || (parts[1] != "original" && parts[1] != "thumb" && parts[1] != "display") || parts[2] == "" {
 		return false
 	}
 	_, err := uuid.Parse(parts[0])
@@ -118,11 +130,28 @@ func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UU
 	if !isOwnedUserUploadImageKey(userID, key) {
 		return 0, "", fmt.Errorf("object key is not an owned upload image")
 	}
-	data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
-	if err != nil {
-		return 0, "", err
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
+		if err == nil {
+			return inspectUserUploadImageData(data)
+		}
+		lastErr = err
+		if ctx.Err() != nil || !storagepkg.IsNotFound(err) || attempt == 3 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, "", ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return inspectUserUploadImageData(data)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("object read failed")
+	}
+	return 0, "", lastErr
 }
 
 // inspectOwnedTaskImage verifies both user uploads and task output images.
@@ -255,28 +284,53 @@ func (s *Server) upload(c *gin.Context) {
 		})
 		return
 	}
-	thumbnail, err := media.ThumbnailJPEG(data, 512)
+	variantCfg, err := settings.ResolveImageVariants(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		variantCfg = settings.ImageVariantConfig{Format: "webp", Quality: 85, DisplayMaxEdge: 2048, ThumbMaxEdge: 512}
+	}
+	thumbnail, err := media.EncodeVariant(data, media.VariantOptions{
+		Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
+	})
 	if err != nil {
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
 		return
 	}
-	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s.jpg", user.ID, fileID)
+	// 小图 key 不带扩展名：格式可在后台切换，内容类型由对象元数据提供。
+	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s", user.ID, fileID)
+	displayKey := store.DisplayKeyForOriginal(key)
 	type uploadResult struct {
-		key string
-		err error
+		key      string
+		err      error
+		optional bool
 	}
-	results := make(chan uploadResult, 2)
+	results := make(chan uploadResult, 3)
 	go func() {
 		results <- uploadResult{key: key, err: s.Storage.UploadBytes(c.Request.Context(), key, data, contentType)}
 	}()
 	go func() {
-		results <- uploadResult{key: thumbnailKey, err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail, "image/jpeg")}
+		results <- uploadResult{key: thumbnailKey, err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail.Data, thumbnail.ContentType)}
 	}()
-	uploaded := make([]string, 0, 2)
+	go func() {
+		// 展示图失败不阻断上传，前端会回退加载原图。
+		display, displayErr := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
+			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
+		})
+		if displayErr != nil {
+			results <- uploadResult{key: displayKey, err: displayErr, optional: true}
+			return
+		}
+		results <- uploadResult{key: displayKey, err: s.Storage.UploadBytes(c.Request.Context(), displayKey, display.Data, display.ContentType), optional: true}
+	}()
+	uploaded := make([]string, 0, 3)
 	var uploadErr error
-	for range 2 {
+	for range 3 {
 		result := <-results
 		if result.err != nil {
+			if result.optional {
+				log.Printf("upload display variant skipped key=%s: %v", result.key, result.err)
+				continue
+			}
 			uploadErr = result.err
 			continue
 		}
@@ -287,14 +341,15 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, uploadErr)
 		return
 	}
-	if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, []string{key, thumbnailKey}); err != nil {
-		s.cleanupUploadedObjectKeys([]string{key, thumbnailKey})
+	if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, uploaded); err != nil {
+		s.cleanupUploadedObjectKeys(uploaded)
 		fail(c, err)
 		return
 	}
 	respondCreated(c, gin.H{
 		"key": key, "url": "/api/v1/files/" + key,
 		"thumbnailKey": thumbnailKey, "thumbnailUrl": "/api/v1/files/" + thumbnailKey,
+		"displayKey": displayKey, "displayUrl": "/api/v1/files/" + displayKey,
 		"contentType": contentType, "sizeBytes": len(data),
 	})
 }
@@ -337,6 +392,16 @@ func (s *Server) getFile(c *gin.Context) {
 			return
 		}
 		allowed = public
+		// 头像是公开展示物（画廊作者、拼团成员等都会引用其他用户的头像），
+		// 对已登录用户放开；仍要求登录，防止未认证外链盗爬。
+		if !allowed && user != nil && strings.HasPrefix(key, "uploads/") {
+			avatar, aerr := store.IsUserAvatarKey(ctx, s.St.Pool, key)
+			if aerr != nil {
+				fail(c, aerr)
+				return
+			}
+			allowed = avatar
+		}
 	}
 	if !allowed {
 		if user == nil {
@@ -346,28 +411,114 @@ func (s *Server) getFile(c *gin.Context) {
 		fail(c, apperr.E("not_found", "文件不存在", 404))
 		return
 	}
-	// 受保护文件统一由应用服务转发。此前这里 302 到 R2 的预签名地址，
-	// 会把“用户是否能直连对象存储”变成图片能否展示的额外前提；在代理、
-	// 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
-	// 空白的情况。服务端本身已经能访问 R2（上传也走同一连接），因此在完成
-	// 权限校验后由服务端读取并返回，交付链路会更稳定。
-	body, contentLength, contentType, err := s.Storage.OpenObject(ctx, key, 32<<20)
+	s.serveStoredObject(c, key)
+}
+
+// adminGetFile 管理后台文件访问：sc_admin_session 的 Cookie Path 是
+// /api/v1/admin，浏览器不会把它带到 /api/v1/files/*，因此后台需要独立端点。
+// 管理员可查看所有用户文件，跳过属主校验。
+func (s *Server) adminGetFile(c *gin.Context, _ *store.User) {
+	key := strings.Trim(c.Param("key"), "/")
+	if key == "" || strings.Contains(key, "..") {
+		fail(c, apperr.E("not_found", "文件不存在", 404))
+		return
+	}
+	s.serveStoredObject(c, key)
+}
+
+// compressCoverImage 按后台图片配置把纯展示封面（提示词封面等）压成展示尺寸。
+// 封面不需要保留原图，压缩后直接落库；压缩失败原样返回，不阻断上传。
+func (s *Server) compressCoverImage(ctx context.Context, data []byte, ext, contentType string) ([]byte, string, string) {
+	cfg, err := settings.ResolveImageVariants(ctx, s.St.Pool)
+	if err != nil {
+		return data, ext, contentType
+	}
+	variant, err := media.EncodeVariant(data, media.VariantOptions{
+		Format: cfg.Format, Lossless: cfg.Lossless, Quality: cfg.Quality, MaxEdge: 1280,
+	})
+	if err != nil {
+		return data, ext, contentType
+	}
+	return variant.Data, variant.Ext, variant.ContentType
+}
+
+// isImmutableObjectKey 上传与任务产物 key 都带 UUID 且从不覆盖写，内容不可变，
+// key 本身即内容指纹。后台可覆盖上传的素材（prompt-covers、ecommerce-* 等）不算。
+func isImmutableObjectKey(key string) bool {
+	return strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/")
+}
+
+func objectKeyETag(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// serveStoredObject 在权限校验完成后转发对象内容。
+// 受保护文件统一由应用服务转发。此前这里 302 到 R2 的预签名地址，
+// 会把“用户是否能直连对象存储”变成图片能否展示的额外前提；在代理、
+// 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
+// 空白的情况。服务端本身已经能访问 R2（上传也走同一连接），因此在完成
+// 权限校验后由服务端读取并返回，交付链路会更稳定。
+func (s *Server) serveStoredObject(c *gin.Context, key string) {
+	immutable := isImmutableObjectKey(key)
+	cacheControl := "private, max-age=3600"
+	etag := ""
+	if immutable {
+		cacheControl = "private, max-age=86400, immutable"
+		etag = objectKeyETag(key)
+	}
+	writeCacheHeaders := func() {
+		c.Header("Cache-Control", cacheControl)
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Accept-Ranges", "bytes")
+		if etag != "" {
+			c.Header("ETag", etag)
+		}
+	}
+	// 内容不可变时 If-None-Match 命中直接 304，无需读 R2。
+	if etag != "" {
+		if match := c.GetHeader("If-None-Match"); match != "" && strings.Contains(match, etag) {
+			writeCacheHeaders()
+			c.Status(http.StatusNotModified)
+			return
+		}
+	}
+	rangeSpec := strings.TrimSpace(c.GetHeader("Range"))
+	openStartedAt := time.Now()
+	stream, err := s.Storage.OpenObjectRange(c.Request.Context(), key, rangeSpec, 32<<20)
+	openMs := time.Since(openStartedAt).Milliseconds()
 	if err != nil {
 		if storagepkg.IsNotFound(err) {
 			fail(c, apperr.E("not_found", "文件不存在", 404))
 			return
 		}
+		if rangeSpec != "" && storagepkg.IsInvalidRange(err) {
+			c.Header("Accept-Ranges", "bytes")
+			c.Status(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 		fail(c, err)
 		return
 	}
-	defer body.Close()
+	defer stream.Body.Close()
+	contentType := stream.ContentType
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(key))
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	c.Header("Cache-Control", "private, max-age=3600")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.DataFromReader(http.StatusOK, contentLength, contentType, body, nil)
+	writeCacheHeaders()
+	// R2 首字节耗时暴露给浏览器 DevTools（Timing 面板），便于区分
+	// “对象存储慢”还是“传输/排队慢”。
+	c.Header("Server-Timing", fmt.Sprintf("r2;dur=%d", openMs))
+	status := http.StatusOK
+	if stream.ContentRange != "" {
+		status = http.StatusPartialContent
+		c.Header("Content-Range", stream.ContentRange)
+	}
+	c.DataFromReader(status, stream.ContentLength, contentType, stream.Body, nil)
+	if total := time.Since(openStartedAt); total > time.Second {
+		log.Printf("slow file serve key=%s r2_open_ms=%d total_ms=%d bytes=%d", key, openMs, total.Milliseconds(), stream.ContentLength)
+	}
 }

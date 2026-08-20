@@ -114,8 +114,12 @@ export async function getAssistantRun(id, { signal } = {}) {
   })
 }
 
-export async function listActiveAssistantRuns({ signal } = {}) {
-  const data = await apiGet('/assistant/runs', { signal, fallbackMessage: '任务状态读取失败' })
+export async function listActiveAssistantRuns({ workspace = '', signal } = {}) {
+  const data = await apiGet('/assistant/runs', {
+    query: workspace ? { workspace } : null,
+    signal,
+    fallbackMessage: '任务状态读取失败',
+  })
   return Array.isArray(data?.runs) ? data.runs : []
 }
 

@@ -59,17 +59,25 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
                 return { ...node, metadata: { ...node.metadata, content: displayMediaSrc(node.metadata?.storageKey, content) } };
             }
             if (node.type !== CanvasNodeType.Image) return node;
+            const uploadedByDataUrl = new Map<string, Awaited<ReturnType<typeof uploadImage>>>();
+            const hydrateDataUrl = async (dataUrl: string) => {
+                const cached = uploadedByDataUrl.get(dataUrl);
+                if (cached) return cached;
+                const uploaded = await uploadImage(dataUrl);
+                uploadedByDataUrl.set(dataUrl, uploaded);
+                return uploaded;
+            };
             const hydratedImages = await Promise.all(
                 images.map(async (image) => {
                     if (image.content?.startsWith("data:image/")) {
-                        const uploaded = await uploadImage(image.content);
+                        const uploaded = await hydrateDataUrl(image.content);
                         return { ...image, content: uploaded.url, storageKey: uploaded.storageKey, thumbnailUrl: uploaded.thumbnailUrl, thumbnailKey: uploaded.thumbnailKey };
                     }
                     const nextContent = canonicalImageSrc({ src: image.content, storageKey: image.storageKey });
                     return { ...image, content: nextContent, thumbnailUrl: image.thumbnailUrl || cloudThumbnailUrl(image.storageKey || nextContent) || undefined };
                 }),
             );
-            if (content?.startsWith("data:image/")) return { ...node, metadata: { ...node.metadata, ...imageMetadata(await uploadImage(content)), images: hydratedImages } };
+            if (content?.startsWith("data:image/")) return { ...node, metadata: { ...node.metadata, ...imageMetadata(await hydrateDataUrl(content)), images: hydratedImages } };
             const nextContent = canonicalImageSrc({ src: content, storageKey: node.metadata?.storageKey });
             if (!nextContent && !hydratedImages.length) return node;
             return { ...node, metadata: { ...node.metadata, content: nextContent, thumbnailUrl: node.metadata?.thumbnailUrl || cloudThumbnailUrl(node.metadata?.storageKey || nextContent) || undefined, images: hydratedImages } };
@@ -262,6 +270,59 @@ export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: 
     };
 }
 
+export function hasSubmittedCanvasTask(node: CanvasNodeData, nodes: CanvasNodeData[] = []) {
+    if (node.metadata?.taskId) return true;
+    if (node.metadata?.images?.some((image) => image.taskId)) return true;
+    const outputIds = new Set(node.metadata?.workflowOutputNodeIds || []);
+    return nodes.some((item) => (item.metadata?.workflowProducerNodeId === node.id || outputIds.has(item.id)) && (item.metadata?.taskId || item.metadata?.images?.some((image) => image.taskId)));
+}
+
+export function isUnsubmittedCanvasGeneration(node: CanvasNodeData) {
+    if (node.metadata?.executionStatus === "queued") return true;
+    return isInFlightCanvasGeneration(node) && !hasSubmittedCanvasTask(node);
+}
+
+export function isInFlightCanvasGeneration(node: CanvasNodeData) {
+    const execution = node.metadata?.executionStatus;
+    if (execution === "running" || execution === "queued") return true;
+    if (node.metadata?.status === "loading") return true;
+    return Boolean(node.metadata?.images?.some((image) => image.status === "loading"));
+}
+
+export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails: string, completedAt = new Date().toISOString()): CanvasNodeData {
+    if (!isInFlightCanvasGeneration(node)) return node;
+    const images = node.metadata?.images?.map((image) => (image.status === "loading" ? { ...image, status: "error" as const, errorDetails, taskId: undefined } : image));
+    const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
+    const wasLoading = node.metadata?.status === "loading";
+    const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
+    const isConfig = node.type === CanvasNodeType.Config;
+    const status = wasLoading ? (hasSuccess ? ("success" as const) : isConfig ? ("idle" as const) : ("error" as const)) : node.metadata?.status;
+    const startedAt = node.metadata?.generationStartedAt ? new Date(node.metadata.generationStartedAt) : new Date(completedAt);
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            images,
+            status,
+            errorDetails: status === "error" && !hasSuccess ? errorDetails : hasSuccess || status === "idle" ? undefined : node.metadata?.errorDetails,
+            taskId: undefined,
+            taskKind: undefined,
+            ...(wasRunning
+                ? {
+                      executionStatus: "canceled" as const,
+                      generationCompletedAt: completedAt,
+                      generationDurationMs: Math.max(0, new Date(completedAt).getTime() - startedAt.getTime()),
+                  }
+                : {}),
+        },
+    };
+}
+
+export function applyCanceledGenerationToNodes(nodes: CanvasNodeData[], errorDetails: string, nodeIds?: Set<string>) {
+    const completedAt = new Date().toISOString();
+    return nodes.map((node) => (nodeIds && !nodeIds.has(node.id) ? node : applyCanceledGenerationToNode(node, errorDetails, completedAt)));
+}
+
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     const interrupted = i18n.t("canvas.generation.interrupted");
     return nodes.map((node) => {
@@ -269,24 +330,47 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
         if (hasResumableTask(node)) {
             return images ? { ...node, metadata: { ...node.metadata, images } } : node;
         }
-        if (node.metadata?.status !== "loading") {
+        const wasLoading = node.metadata?.status === "loading";
+        const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
+        if (!wasLoading && !wasRunning) {
             return images ? { ...node, metadata: { ...node.metadata, images } } : node;
         }
-        const hasSuccess = Boolean(node.metadata.content) || Boolean(images?.some((image) => image.status === "success"));
+        const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
+        const isConfig = node.type === CanvasNodeType.Config;
         return {
             ...node,
             metadata: {
                 ...node.metadata,
-                status: hasSuccess ? ("success" as const) : ("error" as const),
-                errorDetails: hasSuccess ? undefined : interrupted,
                 images,
+                ...(wasLoading
+                    ? {
+                          status: hasSuccess ? ("success" as const) : isConfig ? ("idle" as const) : ("error" as const),
+                          errorDetails: hasSuccess || isConfig ? undefined : interrupted,
+                      }
+                    : {}),
+                ...(wasRunning
+                    ? {
+                          executionStatus: "canceled" as const,
+                          generationCompletedAt: node.metadata?.generationCompletedAt || new Date().toISOString(),
+                          generationDurationMs: node.metadata?.generationDurationMs ?? 0,
+                      }
+                    : {}),
+                taskId: undefined,
+                taskKind: undefined,
             },
         };
     });
 }
 
 export function isGenerationCanceled(error: unknown) {
-    return error instanceof Error && (error.message === i18n.t("common.requestCanceled") || error.name === "AbortError");
+    if ((error instanceof DOMException || error instanceof Error) && error.name === "AbortError") return true;
+    if (!(error instanceof Error)) return false;
+    return (
+        error.message === i18n.t("common.requestCanceled") ||
+        error.message === i18n.t("canvas.generation.canceled") ||
+        error.message === "任务已取消" ||
+        error.message === "Request canceled"
+    );
 }
 
 export function findRetrySourceNode(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {

@@ -36,6 +36,10 @@ function taskFromJob(job = {}, patch = {}) {
   const originalOutputs = Array.isArray(job.originalMediaUrls)
     ? job.originalMediaUrls.filter(Boolean)
     : urls;
+  // 展示图：大图预览用，与原图按下标对应；旧任务为空数组，取用时回退原图。
+  const displayOutputs = Array.isArray(job.displayMediaUrls)
+    ? job.displayMediaUrls.filter(Boolean)
+    : [];
   const hasDedicatedThumbnails = Array.isArray(job.thumbnailKeys) && job.thumbnailKeys.length > 0;
   const thumbnailOutputs = hasDedicatedThumbnails && Array.isArray(job.resultMediaUrls)
     ? job.resultMediaUrls.filter(Boolean)
@@ -75,6 +79,7 @@ function taskFromJob(job = {}, patch = {}) {
     batchSize,
     outputs: urls,
     originalOutputs,
+    displayOutputs,
     thumbnailOutputs,
     hasDedicatedThumbnails,
     createdAt: job.createdAt || new Date().toISOString(),
@@ -94,24 +99,59 @@ function newestFirst(tasks) {
   );
 }
 
-export function useTextToImageJobs({ authenticated }) {
+function upsertInto(current, next) {
+  const existing = current.find((item) => item.id === next.id);
+  const merged = existing ? { ...existing, ...next } : next;
+  return newestFirst([
+    merged,
+    ...current.filter((item) => item.id !== next.id),
+  ]);
+}
+
+function mergeTaskPages(current, incoming, { append = false } = {}) {
+  const rows = append ? [...current, ...incoming] : incoming;
+  const byId = new Map(rows.map((item) => [item.id, item]));
+  if (!append) {
+    current.forEach((item) => {
+      if (
+        !byId.has(item.id) &&
+        (ACTIVE_STATUSES.has(item.status) || !item.serverJobId)
+      ) {
+        byId.set(item.id, item);
+      }
+    });
+  }
+  return newestFirst(Array.from(byId.values()));
+}
+
+export function useTextToImageJobs({ authenticated, historyActive = false }) {
   const [tasks, setTasks] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(Boolean(authenticated));
+  const [stageLoading, setStageLoading] = useState(Boolean(authenticated));
+  const [historyTasks, setHistoryTasks] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyCursor, setHistoryCursor] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const controllersRef = useRef(new Map());
   const mountedRef = useRef(true);
+  const appendingRef = useRef(false);
+  const historyReadyRef = useRef(false);
 
   const upsertTask = useCallback((next) => {
     if (!next?.id || !mountedRef.current) return;
+    const insertStage = ACTIVE_STATUSES.has(next.status) || !next.serverJobId;
+    const insertHistory =
+      historyReadyRef.current ||
+      ACTIVE_STATUSES.has(next.status) ||
+      !next.serverJobId;
     setTasks((current) => {
-      const existing = current.find((item) => item.id === next.id);
-      const merged = existing ? { ...existing, ...next } : next;
-      return newestFirst([
-        merged,
-        ...current.filter((item) => item.id !== next.id),
-      ]);
+      if (!current.some((item) => item.id === next.id) && !insertStage) return current;
+      return upsertInto(current, next);
+    });
+    setHistoryTasks((current) => {
+      if (!current.some((item) => item.id === next.id) && !insertHistory) return current;
+      return upsertInto(current, next);
     });
   }, []);
 
@@ -152,49 +192,94 @@ export function useTextToImageJobs({ authenticated }) {
     [upsertTask],
   );
 
+  const loadStage = useCallback(async () => {
+    if (!authenticated) {
+      setTasks([]);
+      setStageLoading(false);
+      return;
+    }
+    setStageLoading(true);
+    try {
+      const response = await listServerAiJobs(30, { type: "t2i" });
+      if (!mountedRef.current) return;
+      const incoming = (response.jobs || []).map((job) => taskFromJob(job));
+      setTasks((current) => mergeTaskPages(current, incoming, { append: false }));
+      incoming.filter((item) => ACTIVE_STATUSES.has(item.status)).forEach(watchJob);
+    } finally {
+      if (mountedRef.current) setStageLoading(false);
+    }
+  }, [authenticated, watchJob]);
+
   const loadHistory = useCallback(
     async ({ append = false } = {}) => {
       if (!authenticated) {
-        setTasks([]);
+        setHistoryTasks([]);
         setHistoryLoading(false);
+        setHistoryLoadingMore(false);
+        historyReadyRef.current = false;
         return;
       }
-      setHistoryLoading(true);
+      if (append) {
+        if (appendingRef.current || !historyHasMore) return;
+        appendingRef.current = true;
+        setHistoryLoadingMore(true);
+      } else {
+        setHistoryLoading(true);
+      }
       try {
-        const response = await listServerAiJobs(append ? 20 : 12, {
+        const response = await listServerAiJobs(24, {
           type: "t2i",
           cursor: append ? historyCursor : "",
         });
         if (!mountedRef.current) return;
         const incoming = (response.jobs || []).map((job) => taskFromJob(job));
-        setTasks((current) => {
-          const rows = append ? [...current, ...incoming] : incoming;
-          return newestFirst(
-            Array.from(new Map(rows.map((item) => [item.id, item])).values()),
-          );
-        });
+        setHistoryTasks((current) => mergeTaskPages(current, incoming, { append }));
+        historyReadyRef.current = true;
         const nextCursor = String(response.pagination?.nextCursor || "");
         setHistoryCursor(nextCursor);
         setHistoryHasMore(Boolean(nextCursor));
         incoming.filter((item) => ACTIVE_STATUSES.has(item.status)).forEach(watchJob);
       } finally {
-        if (mountedRef.current) setHistoryLoading(false);
+        appendingRef.current = false;
+        if (mountedRef.current) {
+          setHistoryLoading(false);
+          setHistoryLoadingMore(false);
+        }
       }
     },
-    [authenticated, historyCursor, watchJob],
+    [authenticated, historyCursor, historyHasMore, watchJob],
   );
+
+  const loadMoreHistory = useCallback(() => {
+    void loadHistory({ append: true });
+  }, [loadHistory]);
+
+  const refreshHistory = useCallback(() => {
+    void loadHistory({ append: false });
+  }, [loadHistory]);
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadHistory();
+    historyReadyRef.current = false;
+    setHistoryTasks([]);
+    setHistoryCursor("");
+    setHistoryHasMore(false);
+    void loadStage();
     return () => {
       mountedRef.current = false;
       controllersRef.current.forEach((controller) => controller.abort());
       controllersRef.current.clear();
     };
-    // Initial hydration only. Further pages are explicitly requested.
+    // Initial stage hydration only. History feed loads when that tab is opened.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated || !historyActive || historyReadyRef.current) return undefined;
+    void loadHistory({ append: false });
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated, historyActive]);
 
   const uploadReferences = useCallback(async (references, signal) => {
     return Promise.all(
@@ -252,6 +337,7 @@ export function useTextToImageJobs({ authenticated }) {
             });
             if (mountedRef.current) {
               setTasks((current) => current.filter((item) => item.id !== optimisticId));
+              setHistoryTasks((current) => current.filter((item) => item.id !== optimisticId));
               upsertTask(next);
               watchJob(next);
             }
@@ -295,16 +381,20 @@ export function useTextToImageJobs({ authenticated }) {
     controllersRef.current.delete(id);
     if (mountedRef.current) {
       setTasks((current) => current.filter((item) => item.id !== task.id));
+      setHistoryTasks((current) => current.filter((item) => item.id !== task.id));
     }
   }, []);
 
   return {
     tasks,
+    historyTasks,
     submitting,
+    stageLoading,
     historyLoading,
+    historyLoadingMore,
     historyHasMore,
-    loadMoreHistory: () => loadHistory({ append: true }),
-    refreshHistory: () => loadHistory({ append: false }),
+    loadMoreHistory,
+    refreshHistory,
     createBatch,
     cancelTask,
     removeTask,

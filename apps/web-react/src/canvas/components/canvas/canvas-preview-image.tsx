@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type DragEventHandler, type Ref } from "react";
 
-import { buildLightweightPreview, getCanvasPreviewEdge, subscribeCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
-import { canvasCompressSource } from "@/lib/canvas/canvas-preview-url";
+import { buildLightweightPreview, getCanvasPreviewEdge, retainPreviewUrl, subscribeCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
+import { canvasCompressSource, cloudFileUrl } from "@/lib/canvas/canvas-preview-url";
 import { resolveMediaUrl } from "@/services/file-storage";
 
 const VIEWPORT_MARGIN = 160;
-const failedThumbs = new Set<string>();
 
 export function useViewportMedia(enabled: boolean) {
     const elementRef = useRef<Element | null>(null);
@@ -39,38 +38,64 @@ export function useViewportMedia(enabled: boolean) {
     return { elementRef, shouldLoad };
 }
 
+function isUsableImageSrc(value = "") {
+    return /^(blob:|data:image\/|https?:|\/)/.test(value);
+}
+
 export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: string; thumbnailUrl?: string; maxEdge?: number; enabled?: boolean; allowOriginalFallback?: boolean }) {
     const enabled = options?.enabled !== false;
+    const allowOriginalFallback = options?.allowOriginalFallback !== false;
     const [maxEdge, setMaxEdge] = useState(() => getCanvasPreviewEdge(options?.maxEdge));
     const compressSrc = canvasCompressSource({ src, storageKey: options?.storageKey, thumbnailUrl: options?.thumbnailUrl });
-    const thumbBlocked = Boolean(compressSrc) && failedThumbs.has(compressSrc);
+    const originalSrc = src && !src.startsWith("data:") ? src : cloudFileUrl(options?.storageKey || "") || src || "";
+    const placeholderSrc = isUsableImageSrc(compressSrc) ? compressSrc : "";
     const [previewSrc, setPreviewSrc] = useState<string>();
-
-    useEffect(() => subscribeCanvasPreviewScale(() => setMaxEdge(getCanvasPreviewEdge(options?.maxEdge))), [options?.maxEdge]);
+    const [useOriginal, setUseOriginal] = useState(false);
 
     useEffect(() => {
-        if (!enabled || !compressSrc || thumbBlocked) {
+        const stop = subscribeCanvasPreviewScale(() => setMaxEdge(getCanvasPreviewEdge(options?.maxEdge)));
+        return () => {
+            stop();
+        };
+    }, [options?.maxEdge]);
+
+    useEffect(() => {
+        if (!enabled || !compressSrc) {
             setPreviewSrc(undefined);
+            setUseOriginal(false);
             return;
         }
         let cancelled = false;
         setPreviewSrc(undefined);
+        setUseOriginal(false);
         void buildLightweightPreview(compressSrc, maxEdge).then((url) => {
-            if (!cancelled && url) setPreviewSrc(url);
+            if (cancelled) return;
+            if (url) setPreviewSrc(url);
+            else if (allowOriginalFallback) setUseOriginal(true);
         });
         return () => {
             cancelled = true;
         };
-    }, [compressSrc, enabled, maxEdge, thumbBlocked]);
+    }, [allowOriginalFallback, compressSrc, enabled, maxEdge]);
+
+    useEffect(() => {
+        if (!previewSrc) return;
+        const release = retainPreviewUrl(previewSrc);
+        return () => {
+            release();
+        };
+    }, [previewSrc]);
+
+    const displaySrc = useOriginal && allowOriginalFallback && isUsableImageSrc(originalSrc) ? originalSrc : previewSrc || placeholderSrc;
 
     return {
-        remote: "",
-        src: enabled ? previewSrc || "" : "",
-        previewKind: previewSrc ? "canvas" : "",
+        remote: allowOriginalFallback ? originalSrc : "",
+        src: enabled ? displaySrc || "" : "",
+        previewKind: previewSrc && !useOriginal ? "canvas" : "",
         onError: () => {
-            if (!compressSrc || thumbBlocked) return;
-            failedThumbs.add(compressSrc);
+            if (allowOriginalFallback && originalSrc && originalSrc !== displaySrc) setUseOriginal(true);
         },
+        fallbackSrc: useOriginal && isUsableImageSrc(originalSrc) ? originalSrc : undefined,
     };
 }
 
@@ -92,7 +117,7 @@ function bindViewportRef<T extends Element>(ref: { current: Element | null }): R
     };
 }
 
-export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", className, maxEdge, allowOriginalFallback = false, draggable = false, onDragStart }: CanvasPreviewImageProps) {
+export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", className, maxEdge, allowOriginalFallback = true, draggable = false, onDragStart }: CanvasPreviewImageProps) {
     const hasSource = Boolean(src || thumbnailUrl || storageKey);
     const { elementRef, shouldLoad } = useViewportMedia(hasSource);
     const preview = useCanvasPreviewSrc(src, { storageKey, thumbnailUrl, maxEdge, enabled: shouldLoad, allowOriginalFallback });
@@ -100,7 +125,7 @@ export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", cl
     return (
         <span ref={bindViewportRef<HTMLSpanElement>(elementRef)} className="block h-full w-full">
             <img
-                src={preview.src || undefined}
+                src={preview.fallbackSrc || preview.src || undefined}
                 data-preview-src={preview.previewKind || undefined}
                 alt={alt}
                 className={className}

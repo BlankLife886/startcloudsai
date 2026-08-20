@@ -136,6 +136,11 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
   await expect(dialog.getByText("17", { exact: true })).toBeVisible();
   await expect(dialog.getByText("3", { exact: true })).toBeVisible();
 
+  const previewMedia = dialog.locator(".ch-preview__media");
+  await previewMedia.hover();
+  await page.mouse.wheel(0, 500);
+  await expect.poll(() => previewMedia.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
   await dialog.getByRole("button", { name: "已收藏" }).click();
   await expect(dialog.getByRole("button", { name: "收藏" })).toBeVisible();
   expect(engagements).toContainEqual({ action: "favorite", active: false });
@@ -147,6 +152,10 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
   await expect(dialog).toBeVisible();
   await expect(page.getByRole("dialog", { name: "提示词详情" })).toHaveCount(0);
   await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator(".ch-prompt-masonry").hover({ position: { x: 4, y: 4 } });
+  await page.mouse.wheel(0, 700);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 
   await page.getByPlaceholder("搜索标题、提示词或标签").fill("排版");
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(1);
@@ -174,6 +183,24 @@ test("preserves scope filters, mobile columns, and prompt handoff", async ({ pag
     cards.map((card) => Math.round(card.getBoundingClientRect().left)),
   );
   expect(new Set(mobileLefts).size).toBe(1);
+
+  await page.locator(".ch-prompt-card__media").first().click();
+  const mobileDialog = page.getByRole("dialog", { name: "提示词详情" });
+  await expect(mobileDialog).toBeVisible();
+  await expect
+    .poll(() =>
+      mobileDialog.evaluate(
+        (element) => element.scrollHeight - element.clientHeight,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await mobileDialog.locator(".ch-preview__top").hover();
+  await page.mouse.wheel(0, 500);
+  await expect
+    .poll(() => mobileDialog.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(mobileDialog).toHaveCount(0);
 
   await page.getByRole("button", { name: "今日最新" }).click();
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(2);

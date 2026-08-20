@@ -437,23 +437,15 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 
 		// Model validation and route resolution above are independent per user and
 		// intentionally happen before the short global admission section. Only the
-		// count-and-insert boundary is serialized across API replicas.
-		if err := store.LockGlobalTaskCreation(ctx, tx); err != nil {
-			return err
-		}
+		// count-and-insert boundary is serialized across API replicas. Settings
+		// reads run before the lock so the serialized section is just the two
+		// index-only counts plus insert/freeze.
 		globalLimit, err := settings.GetInt(ctx, tx, "global_max_active_tasks")
 		if err != nil {
 			return err
 		}
 		if globalLimit <= 0 {
 			globalLimit = 12000
-		}
-		globalActive, err := store.CountTasksInStatuses(ctx, tx, []string{"queued", "running"})
-		if err != nil {
-			return err
-		}
-		if globalActive >= globalLimit {
-			return apperr.E("system_task_capacity", "当前生成任务较多，请稍后再试；你的提示词不会丢失", 429)
 		}
 		globalImageLimit, err := settings.GetInt(ctx, tx, "global_max_active_images")
 		if err != nil {
@@ -462,7 +454,17 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if globalImageLimit <= 0 {
 			globalImageLimit = 12000
 		}
-		globalImages, err := store.CountTaskUnitsInStatuses(ctx, tx, []string{"queued", "running"})
+		if err := store.LockGlobalTaskCreation(ctx, tx); err != nil {
+			return err
+		}
+		globalActive, err := store.CountActiveTasksGlobal(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if globalActive >= globalLimit {
+			return apperr.E("system_task_capacity", "当前生成任务较多，请稍后再试；你的提示词不会丢失", 429)
+		}
+		globalImages, err := store.CountActiveTaskUnitsGlobal(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -494,9 +496,15 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			if err := store.LockTrialCampaignLifecycleShared(ctx, tx); err != nil {
 				return err
 			}
-			reason := fmt.Sprintf("任务冻结（%s×%d）", in.Type, in.Count)
+			reason := "任务冻结"
+			if in.Count > 1 {
+				reason = fmt.Sprintf("任务冻结（%d 张）", in.Count)
+			}
 			if store.IsCanvasOrigin(params) {
-				reason = fmt.Sprintf("无限画布冻结（×%d）", in.Count)
+				reason = "无限画布冻结"
+				if in.Count > 1 {
+					reason = fmt.Sprintf("无限画布冻结（%d 张）", in.Count)
+				}
 			}
 			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents, taskFeature.Key, strPtr(reason))
 			if err != nil {
@@ -838,6 +846,7 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 		}
 		cleanupKeys := append([]string(nil), t.OutputKeys...)
 		cleanupKeys = append(cleanupKeys, t.ThumbnailKeys...)
+		cleanupKeys = store.WithDisplayKeys(cleanupKeys)
 		if err := store.EnqueueObjectCleanup(ctx, tx, cleanupKeys); err != nil {
 			return err
 		}

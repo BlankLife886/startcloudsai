@@ -1,4 +1,5 @@
 import { apiGet } from './apiClient'
+import { getDefaultPageControls, normalizePageControls } from '@react/config/pageControls.js'
 
 const STUDIO_FEATURE_KEYS = [
   'ai.wallpaperGeneration',
@@ -23,6 +24,7 @@ export function getDefaultRuntimeConfig() {
     routes: {},
     features: buildDefaultFeatures(),
     pageLayout: {},
+    pageControls: getDefaultPageControls(),
     aiModelCatalog: {
       providers: [],
       models: [],
@@ -42,6 +44,7 @@ export function normalizeRuntimeConfig(config = {}) {
     ...defaults,
     ...value,
     features: { ...defaults.features, ...(value.features || {}) },
+    pageControls: normalizePageControls(value.pageControls),
     aiModelCatalog: { ...defaults.aiModelCatalog, ...(value.aiModelCatalog || {}) },
   }
 }

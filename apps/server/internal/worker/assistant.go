@@ -214,6 +214,9 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 			history = nil
 		}
 		history = assistantMessagesAfterContextBoundary(history)
+		if isCanvasWorkspaceRun(run) {
+			return w.executeCanvasAgent(ctx, client, run, references, history)
+		}
 		return w.executeAssistantAgent(ctx, client, run, references, history)
 	}
 	run.ResolvedMode = mode
@@ -1485,11 +1488,34 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 		"id": uuid.NewString(), "index": index, "dataUrl": "/api/v1/files/" + key, "fileKey": key,
 		"revisedPrompt": revisedPrompt,
 	}
+	// 小图/展示图变体：尽力而为，失败只影响加载速度（前端回退原图）。
+	thumbURL, displayURL := "", ""
+	variantKeys := store.AssistantVariantKeys(key)
+	if len(variantKeys) == 2 {
+		variantCfg := w.imageVariantConfig(ctx)
+		if thumb, err := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
+		}); err == nil {
+			if err := w.Storage.UploadBytes(ctx, variantKeys[0], thumb.Data, thumb.ContentType); err == nil {
+				thumbURL = "/api/v1/files/" + variantKeys[0]
+				stored["thumbUrl"] = thumbURL
+			}
+		}
+		if display, err := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
+			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
+		}); err == nil {
+			if err := w.Storage.UploadBytes(ctx, variantKeys[1], display.Data, display.ContentType); err == nil {
+				displayURL = "/api/v1/files/" + variantKeys[1]
+				stored["displayUrl"] = displayURL
+			}
+		}
+	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
 		Kind: "image", Stage: "generating-image", ImageTotal: count,
 		Image: &assistantstream.ImageEvent{
 			ID: stored["id"].(string), Index: index, DataURL: stored["dataUrl"].(string),
-			FileKey: key, RevisedPrompt: revisedPrompt,
+			FileKey: key, ThumbURL: thumbURL, DisplayURL: displayURL, RevisedPrompt: revisedPrompt,
 		},
 	})
 	return stored, nil
@@ -1515,6 +1541,10 @@ func assistantImageOutputKeys(images []map[string]any) []string {
 func (w *Worker) enqueueAssistantOutputCleanup(keys []string) {
 	if w == nil || w.St == nil || len(keys) == 0 {
 		return
+	}
+	// 把约定路径下的小图/展示图变体一并清理。
+	for _, key := range keys[:len(keys):len(keys)] {
+		keys = append(keys, store.AssistantVariantKeys(key)...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1904,7 +1934,7 @@ func (w *Worker) loadAssistantReferences(ctx context.Context, params map[string]
 func assistantMessageMetadata(run *store.AssistantRun, images []map[string]any, stage, errorMessage string) map[string]any {
 	metadata := make(map[string]any, len(run.Params)+6)
 	for key, value := range run.Params {
-		if key == "referenceImages" {
+		if key == "referenceImages" || key == "canvasSnapshot" {
 			continue
 		}
 		metadata[key] = value

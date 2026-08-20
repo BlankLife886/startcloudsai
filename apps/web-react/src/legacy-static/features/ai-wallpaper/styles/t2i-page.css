@@ -260,7 +260,7 @@
   color: rgba(255, 255, 255, 0.28);
 }
 
-/* 输入框底部：参考图与清空同排，Skills 独占下一行 */
+/* 输入框底部：有参考图时独占上一行，清空 / Skills 在下一行 */
 .t2i-prompt-foot {
   display: flex;
   min-width: 0;
@@ -269,20 +269,50 @@
   padding: 0 12px 10px;
 }
 
-/* 参考图：直接嵌在提示词输入框内部（textarea 下方，支持拖入） */
+.t2i-prompt-foot.has-refs {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .t2i-prompt-refs {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.t2i-prompt-foot.has-refs .t2i-prompt-refs {
+  flex: 0 0 auto;
+  width: 100%;
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.t2i-prompt-refs::-webkit-scrollbar {
+  display: none;
+}
+
+.t2i-prompt-foot-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.t2i-prompt-foot.has-refs .t2i-prompt-foot-actions {
+  width: 100%;
+  justify-content: space-between;
 }
 
 .t2i-prompt-ref {
   position: relative;
-  width: 52px;
-  height: 52px;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--t2i-line);
@@ -320,8 +350,9 @@
 
 /* 添加参考图：虚线圆角方块，中央一个 + */
 .t2i-prompt-ref-add {
-  width: 52px;
-  height: 52px;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -797,7 +828,8 @@
 
 .t2i-prompt-foot .t2i-skill-trigger {
   width: auto;
-  min-height: 34px;
+  min-width: 0;
+  min-height: 32px;
 }
 
 .t2i-prompt-foot .t2i-skill-trigger > i:last-child {
@@ -1965,6 +1997,66 @@
   min-height: 320px;
 }
 
+.t2i-history-skeleton--feed {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.t2i-history-skeleton--uniform {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 10px;
+}
+
+.t2i-history-skeleton--uniform .t2i-history-skeleton-card {
+  aspect-ratio: 1 / 1;
+  min-height: 0;
+  border-radius: 12px;
+}
+
+.t2i-history-skeleton--feed .t2i-history-skeleton-card {
+  min-height: 168px;
+}
+
+.t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(2) .t2i-history-skeleton-card:nth-child(odd),
+.t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(4) .t2i-history-skeleton-card:nth-child(even),
+.t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(5) .t2i-history-skeleton-card:nth-child(odd) {
+  min-height: 220px;
+}
+
+@container t2i-main (max-width: 1020px) {
+  .t2i-history-skeleton--feed,
+  .t2i-history-skeleton--uniform {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(n+5) {
+    display: none;
+  }
+}
+
+@container t2i-main (max-width: 760px) {
+  .t2i-history-skeleton--feed,
+  .t2i-history-skeleton--uniform {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(n+4) {
+    display: none;
+  }
+}
+
+@container t2i-main (max-width: 520px) {
+  .t2i-history-skeleton--feed,
+  .t2i-history-skeleton--uniform {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(n+3) {
+    display: none;
+  }
+}
+
 @keyframes t2i-data-skeleton {
   to {
     background-position: -220% 0;
@@ -2322,6 +2414,18 @@
     rgba(255, 255, 255, 0.025) 60%
   );
   background-size: 220% 100%;
+}
+
+.t2i-page.is-light .t2i-masonry-cover .authenticated-image.is-placeholder,
+.t2i-page.is-light .t2i-masonry-cover .authenticated-image.is-loading,
+.t2i-page.is-light .t2i-masonry-cover .authenticated-image.is-failed {
+  background-color: rgba(35, 37, 52, 0.06);
+  background-image: linear-gradient(
+    105deg,
+    rgba(35, 37, 52, 0.04) 24%,
+    rgba(126, 108, 255, 0.08) 42%,
+    rgba(35, 37, 52, 0.04) 60%
+  );
 }
 
 .t2i-stage-pending {
@@ -3065,9 +3169,270 @@
   }
 }
 
-/* 历史 Tab：瀑布流 + 懒加载 */
+/* 历史 Tab：轻量等尺寸卡片，避免 blur / 投影 / 悬停缩放 */
 .t2i-panel--history {
   padding-bottom: 24px;
+  overflow-anchor: none;
+}
+
+.t2i-history-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.t2i-history-grid--virtual {
+  grid-template-columns: repeat(var(--t2i-history-cols, 5), minmax(0, 1fr));
+}
+
+.t2i-panel--history .t2i-history-card {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+  contain: layout paint;
+  transition: none;
+}
+
+.t2i-panel--history .t2i-history-card.is-active .t2i-masonry-cover {
+  box-shadow: inset 0 0 0 2px rgba(var(--t2i-accent-rgb), 0.8);
+}
+
+.t2i-panel--history .t2i-masonry-cover {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  width: 100%;
+  min-height: 0;
+  border-radius: 10px;
+  transition: none;
+}
+
+.t2i-panel--history .t2i-history-card:hover,
+.t2i-panel--history .t2i-history-card:hover .t2i-masonry-cover {
+  transform: none;
+}
+
+.t2i-panel--history .t2i-masonry-cover:hover .t2i-history-image-overlay {
+  padding-bottom: 8px;
+}
+
+.t2i-panel--history .t2i-history-image-overlay {
+  gap: 3px;
+  padding: 28px 8px 8px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.58));
+  transition: none;
+}
+
+.t2i-panel--history .t2i-history-image-prompt {
+  text-shadow: none;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.t2i-panel--history .t2i-history-image-specs {
+  gap: 8px;
+}
+
+.t2i-panel--history .t2i-history-image-specs > span {
+  min-height: 0;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.62rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.t2i-panel--history .t2i-history-batch-index {
+  inset: 6px 6px auto auto;
+  padding: 3px 6px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 0.62rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.t2i-panel--history .t2i-history-actions {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 1px;
+  background: transparent;
+}
+
+.t2i-panel--history .t2i-history-actions button {
+  width: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  flex: 0 0 26px;
+  padding: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  transition: none;
+}
+
+.t2i-panel--history .t2i-masonry-placeholder .t2i-history-error {
+  max-width: 100%;
+  padding: 0 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.t2i-panel--history .authenticated-image.is-loading,
+.t2i-panel--history .authenticated-image.is-loaded,
+.t2i-panel--history .authenticated-image.is-placeholder {
+  animation: none;
+}
+
+@container t2i-main (max-width: 1020px) {
+  .t2i-history-grid:not(.t2i-history-grid--virtual) {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container t2i-main (max-width: 760px) {
+  .t2i-history-grid:not(.t2i-history-grid--virtual) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container t2i-main (max-width: 520px) {
+  .t2i-history-grid:not(.t2i-history-grid--virtual) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.t2i-library-view .t2i-masonry {
+  gap: 10px;
+}
+
+.t2i-library-view .t2i-masonry-col {
+  gap: 10px;
+}
+
+.t2i-library-view .t2i-collection-card {
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.t2i-library-view .t2i-collection-card:hover,
+.t2i-library-view .t2i-collection-card:hover .t2i-masonry-cover {
+  transform: none;
+  box-shadow: none;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-masonry-cover {
+  border-radius: 12px;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-image-overlay {
+  gap: 4px;
+  padding: 32px 10px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.56));
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-image-prompt {
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-shadow: none;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-image-specs {
+  gap: 8px;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-image-specs > span {
+  min-height: 0;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.62rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-masonry-body {
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-meta strong {
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-history-meta small {
+  font-size: 0.66rem;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
+  padding: 0 2px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions > button {
+  min-height: 28px;
+  height: 28px;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__metric {
+  min-width: 36px;
+  gap: 3px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__metric i {
+  font-size: 0.84rem;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__use {
+  margin-left: auto;
+  gap: 4px;
+  padding: 0 6px;
+  background: transparent;
+  color: var(--t2i-accent-2);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__use:hover {
+  background: rgba(var(--t2i-accent-rgb), 0.1);
+}
+
+.t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__use .bi-arrow-up-right {
+  display: none;
 }
 
 .t2i-masonry-wrap {
@@ -3096,8 +3461,6 @@
 }
 
 .t2i-masonry-card {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 420px;
   width: 100%;
   max-width: 100%;
   display: grid;
@@ -3112,16 +3475,6 @@
 
 .t2i-masonry-card.is-active {
   border-color: rgba(var(--t2i-accent-rgb), 0.45);
-}
-
-.t2i-history-card {
-  gap: 8px;
-  padding: 8px;
-  border-radius: 14px;
-}
-
-.t2i-history-card .t2i-masonry-cover {
-  border-radius: 10px;
 }
 
 .t2i-history-actions {
@@ -3654,7 +4007,8 @@
 }
 
 /* 分类切换会重建卡片；缓存图片无需重复播放 blur 揭示动画。 */
-.t2i-library-view .t2i-masonry-cover .authenticated-image.is-loaded {
+.t2i-library-view .t2i-masonry-cover .authenticated-image.is-loaded,
+.t2i-panel--history .t2i-masonry-cover .authenticated-image.is-loaded {
   animation: none;
 }
 
@@ -4601,6 +4955,22 @@ html.settings-no-animations .t2i-lightbox-image-layer {
   .t2i-history-skeleton-col:nth-child(3) {
     display: none;
   }
+
+  .t2i-history-skeleton--feed {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(3) {
+    display: grid;
+  }
+
+  .t2i-history-skeleton--feed .t2i-history-skeleton-col:nth-child(n+4) {
+    display: none;
+  }
+
+  .t2i-history-skeleton--uniform {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 860px) {
@@ -5280,6 +5650,24 @@ html.settings-no-animations .t2i-masonry-card {
   color: var(--t2i-accent);
 }
 
+.t2i-page.is-light .t2i-library-view .t2i-collection-card,
+.t2i-page.is-light .t2i-library-view .t2i-collection-card:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.t2i-page.is-light .t2i-library-view .t2i-collection-card .t2i-prompt-card-actions {
+  background: transparent;
+}
+
+.t2i-page.is-light .t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__use {
+  background: transparent;
+}
+
+.t2i-page.is-light .t2i-library-view .t2i-collection-card .t2i-prompt-card-actions__use:hover {
+  background: rgba(var(--t2i-accent-rgb), 0.1);
+}
+
 .t2i-page.is-light .t2i-prompt-card-actions {
   background: rgba(31, 33, 46, 0.045);
 }
@@ -5319,6 +5707,13 @@ html.settings-no-animations .t2i-masonry-card {
 .t2i-page.is-light .t2i-masonry-card {
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 8px 24px rgba(43, 39, 77, 0.07);
+}
+
+.t2i-page.is-light .t2i-panel--history .t2i-history-card,
+.t2i-page.is-light .t2i-panel--history .t2i-history-card:hover {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
 
 .t2i-page.is-light .t2i-masonry-card:hover {

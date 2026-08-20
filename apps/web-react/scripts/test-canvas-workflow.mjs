@@ -6,12 +6,15 @@ import { normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.
 import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../src/canvas/lib/canvas/canvas-node-copy.ts";
 import {
     advanceCanvasWorkflowCheckpoint,
+    beginCanvasWorkflowRetry,
     compileCanvasWorkflow,
     createCanvasWorkflowCheckpoint,
     failCanvasWorkflowCheckpoint,
     findCanvasWorkflowCancellationClosure,
     findRunnableCanvasWorkflowNodeIds,
     findWorkflowOutputNodes,
+    isCanvasWorkflowFailureRetry,
+    mergeCanvasWorkflowRunProgress,
     normalizeCanvasWorkflowCheckpoint,
     reconcileCanvasWorkflowCheckpoint,
     reconcileCanvasWorkflowFailureOutput,
@@ -20,7 +23,7 @@ import {
     validateCanvasWorkflowNodeReadiness,
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
-import { mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
+import { mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
@@ -243,6 +246,47 @@ test("schedules independent workflows together and cancels only queued dependent
     assert.deepEqual([...findCanvasWorkflowCancellationClosure("a", ["a", "b", "x", "y"], dependencies)], ["a", "b"]);
 });
 
+test("canceling the queue while a node is running leaves later nodes unrunnable after it completes", () => {
+    const dependencies = new Map([
+        ["a", new Set()],
+        ["b", new Set(["a"])],
+        ["c", new Set(["b"])],
+    ]);
+    const pending = new Set(["a", "b", "c"]);
+    const first = findRunnableCanvasWorkflowNodeIds({ pendingNodeIds: pending, completedNodeIds: new Set(), dependencies });
+    assert.deepEqual(first, ["a"]);
+    first.forEach((id) => pending.delete(id));
+    const canceled = new Set(["b", "c"]);
+    canceled.forEach((id) => pending.delete(id));
+    const next = findRunnableCanvasWorkflowNodeIds({
+        pendingNodeIds: pending,
+        completedNodeIds: new Set(["a"]),
+        blockedNodeIds: canceled,
+        dependencies,
+    }).filter((id) => !canceled.has(id));
+    assert.deepEqual(next, []);
+    assert.equal(pending.size, 0);
+
+    const persisted = normalizeCanvasWorkflowCheckpoint({
+        ...createCanvasWorkflowCheckpoint(["a", "b", "c"]),
+        currentNodeId: "a",
+        canceledNodeIds: ["b", "c"],
+    });
+    assert.deepEqual(persisted?.canceledNodeIds, ["b", "c"]);
+    const restoredCanceled = new Set(persisted?.canceledNodeIds || []);
+    const restoredPending = persisted.nodeIds.filter((id) => !persisted.completedNodeIds.includes(id) && !restoredCanceled.has(id));
+    assert.deepEqual(restoredPending, ["a"]);
+    assert.deepEqual(
+        findRunnableCanvasWorkflowNodeIds({
+            pendingNodeIds: restoredPending.filter((id) => id !== "a"),
+            completedNodeIds: new Set(["a"]),
+            blockedNodeIds: restoredCanceled,
+            dependencies,
+        }),
+        [],
+    );
+});
+
 test("does not reuse stale text content from a newly failed retry", () => {
     const nodes = [node("config", "config", { workflowOutputNodeIds: ["result"] }), node("result", "text", { status: "error", content: "old answer", errorDetails: "new request failed" })];
     assert.deepEqual(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "text", expectedCount: 1, nodes, connections: [] }), {
@@ -292,15 +336,99 @@ test("reconciles a refreshed current node without replaying completed work", () 
     assert.equal(interrupted.checkpoint.currentNodeId, "a");
     const failed = reconcileCanvasWorkflowCheckpoint(checkpoint, [node("a", "config", { status: "error", errorDetails: "provider failed" })], "interrupted");
     assert.deepEqual({ ok: failed.ok, reason: failed.reason, nodeId: failed.nodeId }, { ok: false, reason: "failed", nodeId: "a" });
+    const canceled = reconcileCanvasWorkflowCheckpoint(checkpoint, [node("a", "config", { status: "error", errorDetails: "生成已取消，请重新生成。" })], "interrupted", [], ["生成已取消，请重新生成。"]);
+    assert.equal(canceled.ok, true);
+    const retryingFailure = reconcileCanvasWorkflowCheckpoint({ ...failCanvasWorkflowCheckpoint(checkpoint, "a", "provider failed"), currentNodeId: undefined, errorNodeId: undefined, errorMessage: undefined, status: "running" }, [node("a", "config", { status: "error", errorDetails: "provider failed" })], "interrupted");
+    assert.equal(retryingFailure.ok, true);
+});
+
+test("treats an error current node as a failure retry even if the checkpoint still says running", () => {
+    const checkpoint = { ...createCanvasWorkflowCheckpoint(["a", "b"]), currentNodeId: "a", runId: "run-1" };
+    const nodes = [node("a", "config", { status: "error", errorDetails: "provider failed" }), node("b", "config")];
+    assert.equal(isCanvasWorkflowFailureRetry(checkpoint, nodes), true);
+    const started = beginCanvasWorkflowRetry(checkpoint, "2026-08-19T00:00:00.000Z");
+    assert.equal(started.status, "running");
+    assert.equal(started.currentNodeId, undefined);
+    assert.equal(started.errorNodeId, undefined);
+    assert.equal(started.runId, "run-1");
+    const merged = mergeCanvasWorkflowRunProgress(started, { id: "run-1", nodeIds: ["a", "b"], completedNodeIds: [], currentNodeId: "a" }, { resetCurrentNode: true });
+    assert.equal(merged.currentNodeId, undefined);
+    const clobbered = mergeCanvasWorkflowRunProgress(started, { id: "run-1", nodeIds: ["a", "b"], completedNodeIds: [], currentNodeId: "a" });
+    assert.equal(clobbered.currentNodeId, "a");
+    const reconciled = reconcileCanvasWorkflowCheckpoint(merged, nodes, "interrupted");
+    assert.equal(reconciled.ok, true);
+});
+
+test("counts leftover image content as a valid workflow output after a canceled retry", () => {
+    const nodes = [
+        node("config", "config", { generationMode: "image", count: 1, workflowOutputNodeIds: ["result"] }),
+        node("result", "image", { status: "success", content: "kept.png", images: [{ id: "img-1", status: "error", errorDetails: "canceled", content: "", storageKey: "" }] }),
+    ];
+    assert.equal(validateCanvasWorkflowNodeOutputs({ nodeId: "config", mode: "image", expectedCount: 1, nodes, connections: [] }).ok, true);
 });
 
 test("keeps an unsynced local workflow checkpoint during cloud hydration", () => {
-    const cloud = { id: "project", revision: 7, updatedAt: "2026-08-17T00:00:00.000Z", marker: "cloud" };
-    const local = { id: "project", revision: 7, updatedAt: "2026-08-17T00:00:01.000Z", marker: "checkpoint" };
-    const merged = mergeCanvasProjectSnapshots([cloud], [local]);
+    const createStub = (summary) => ({ ...summary, marker: "stub" });
+    const cloud = { id: "project", title: "project", revision: 7, createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-17T00:00:00.000Z" };
+    const local = { id: "project", title: "project", revision: 7, updatedAt: "2026-08-17T00:00:01.000Z", marker: "checkpoint" };
+    const merged = mergeCanvasProjectSnapshots([cloud], [local], createStub);
     assert.equal(merged.projects[0].marker, "checkpoint");
     assert.deepEqual(merged.localNewerIds, ["project"]);
 
-    const remoteAdvanced = { ...cloud, revision: 8, updatedAt: "2026-08-17T00:00:02.000Z", marker: "new-cloud" };
-    assert.equal(mergeCanvasProjectSnapshots([remoteAdvanced], [local]).projects[0].marker, "new-cloud");
+    // The list endpoint only carries summaries: when the remote revision moved
+    // on, the local document is kept but marked stale for a merge-on-open
+    // instead of being blindly replaced.
+    const remoteAdvanced = { ...cloud, revision: 8, updatedAt: "2026-08-17T00:00:02.000Z" };
+    const stale = mergeCanvasProjectSnapshots([remoteAdvanced], [local], createStub).projects[0];
+    assert.equal(stale.marker, "checkpoint");
+    assert.equal(stale.documentStale, true);
+    assert.equal(stale.updatedAt, "2026-08-17T00:00:02.000Z");
+
+    // Cloud-only entries become lazy-loading stubs.
+    const cloudOnly = { id: "other", title: "other", revision: 1, createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-17T00:00:00.000Z" };
+    assert.equal(mergeCanvasProjectSnapshots([cloudOnly], [local], createStub).projects[0].marker, "stub");
+});
+
+test("node-merges conflicting canvas documents instead of overwriting", () => {
+    const doc = (nodes, connections, chatSessions = []) => ({ title: "p", revision: 1, updatedAt: "2026-08-17T00:00:00.000Z", nodes, connections, chatSessions });
+    const local = doc(
+        [
+            node("kept-local", "image", { status: "success", content: "local.png", generationCompletedAt: "2026-08-17T00:00:05.000Z" }),
+            node("pending-local", "image", { status: "loading" }),
+            node("local-only", "text", { status: "success", content: "hi" }),
+        ],
+        [edge("kept-local", "pending-local")],
+    );
+    const remote = {
+        ...doc(
+            [
+                node("kept-local", "image", { status: "success", content: "remote.png", generationCompletedAt: "2026-08-17T00:00:09.000Z" }),
+                node("pending-local", "image", { status: "success", content: "remote-output.png", generationCompletedAt: "2026-08-17T00:00:08.000Z" }),
+                node("remote-only", "image", { status: "success", content: "other-tab.png" }),
+            ],
+            [edge("kept-local", "pending-local"), edge("pending-local", "remote-only"), edge("remote-only", "ghost")],
+        ),
+        revision: 5,
+        updatedAt: "2026-08-17T00:00:10.000Z",
+    };
+    // Local position is authoritative even when the remote output wins.
+    remote.nodes[0].position = { x: 999, y: 999 };
+
+    const merged = mergeCanvasProjectDocuments(local, remote);
+    const byId = new Map(merged.nodes.map((item) => [item.id, item]));
+    // Both sides have an output: the newer one (remote) wins, position stays local.
+    assert.equal(byId.get("kept-local").metadata.content, "remote.png");
+    assert.deepEqual(byId.get("kept-local").position, { x: 0, y: 0 });
+    // Only the remote side finished: adopt its output.
+    assert.equal(byId.get("pending-local").metadata.content, "remote-output.png");
+    // Local-only and remote-only nodes both survive.
+    assert.ok(byId.has("local-only"));
+    assert.equal(byId.get("remote-only").metadata.content, "other-tab.png");
+    // Connections are the de-duplicated union, dropping edges to missing nodes.
+    assert.deepEqual(
+        merged.connections.map((connection) => `${connection.fromNodeId}->${connection.toNodeId}`),
+        ["kept-local->pending-local", "pending-local->remote-only"],
+    );
+    // The merged document saves on top of the remote revision.
+    assert.equal(merged.revision, 5);
 });

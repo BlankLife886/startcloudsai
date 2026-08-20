@@ -11,6 +11,10 @@ type RequestOptions = {
     signal?: AbortSignal;
     onCreated?: (taskId: string) => void | Promise<void>;
     onResolved?: (images: Array<{ id: string; dataUrl: string; storageKey?: string }>) => void | Promise<void>;
+    /** Deterministic key so retries/reconnects of the same logical generation never create a second billable task. */
+    idempotencyKey?: string;
+    /** Invoked right before the create request; throw to abort submission (e.g. run canceled while queued). */
+    onBeforeCreate?: () => void;
 };
 
 export function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -13,16 +14,68 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/userupload"
 )
 
 type profilePatch struct {
 	Username           Opt[string] `json:"username"`
 	AvatarURL          Opt[string] `json:"avatarUrl"`
+	StudioFigureURL    Opt[string] `json:"studioFigureUrl"`
 	Bio                Opt[string] `json:"bio"`
 	Location           Opt[string] `json:"location"`
 	WebsiteURL         Opt[string] `json:"websiteUrl"`
 	RequireCostConfirm Opt[bool]   `json:"requireCostConfirm"`
 	Password           Opt[any]    `json:"password"`
+}
+
+func (s *Server) ownedProfileImageURL(ctx context.Context, userID uuid.UUID, raw, field string) (string, string, error) {
+	value := normalizeProfileFileURL(raw)
+	if value == "" {
+		return "", "", nil
+	}
+	if len(value) > 2048 || !strings.HasPrefix(value, "/api/v1/files/") {
+		return "", "", apperr.E("validation_error", field+": 仅允许使用自己上传的站内图片", 422)
+	}
+	key := strings.TrimPrefix(value, "/api/v1/files/")
+	if isOwnedUserUploadImageKey(userID, key) {
+		if _, _, err := s.inspectOwnedUserUploadImage(ctx, userID, key, maxUserAssetImageBytes); err != nil {
+			live, liveErr := store.HasLiveUserUploadObject(ctx, s.St.Pool, userID, key)
+			if liveErr != nil || !live {
+				return "", "", apperr.E("validation_error", field+": 文件不存在或不是有效图片", 422)
+			}
+		}
+		if field == "studioFigureUrl" && !strings.Contains(key, "/original/") {
+			figureURL, err := userupload.PersistStudioFigure(ctx, s.St, s.Storage, userID, key)
+			if err != nil {
+				log.Printf("persist studio figure from upload key %s: %v", key, err)
+				return "/api/v1/files/" + key, key, nil
+			}
+			savedKey := strings.TrimPrefix(figureURL, "/api/v1/files/")
+			return figureURL, savedKey, nil
+		}
+		return "/api/v1/files/" + key, key, nil
+	}
+	if field == "studioFigureUrl" && isOwnedTaskImageKey(userID, key) {
+		figureURL, err := userupload.PersistStudioFigure(ctx, s.St, s.Storage, userID, key)
+		if err != nil {
+			log.Printf("persist studio figure from task key %s: %v", key, err)
+			return "", "", apperr.E("validation_error", field+": 文件不存在或不是有效图片", 422)
+		}
+		savedKey := strings.TrimPrefix(figureURL, "/api/v1/files/")
+		return figureURL, savedKey, nil
+	}
+	return "", "", apperr.E("validation_error", field+": 仅允许使用自己上传的站内图片", 422)
+}
+
+func normalizeProfileFileURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if i := strings.Index(value, "/api/v1/files/"); i >= 0 {
+		value = value[i:]
+	}
+	if q := strings.IndexAny(value, "?#"); q >= 0 {
+		value = value[:q]
+	}
+	return value
 }
 
 func normalizeProfileWebsite(raw string) (string, bool) {
@@ -45,6 +98,10 @@ func (s *Server) patchProfile(c *gin.Context) {
 	if err != nil {
 		fail(c, err)
 		return
+	}
+	previousStudioFigure := ""
+	if user.StudioFigureURL != nil {
+		previousStudioFigure = strings.TrimSpace(*user.StudioFigureURL)
 	}
 	var body profilePatch
 	if err := bindJSON(c, &body); err != nil {
@@ -76,22 +133,25 @@ func (s *Server) patchProfile(c *gin.Context) {
 			return
 		}
 	}
-	if body.AvatarURL.Valid && body.AvatarURL.Value != "" {
-		avatar := strings.TrimSpace(body.AvatarURL.Value)
-		allowedPrefix := "/api/v1/files/uploads/" + user.ID.String() + "/"
-		if len(avatar) > 2048 || !strings.HasPrefix(avatar, allowedPrefix) {
-			fail(c, apperr.E("validation_error", "avatarUrl: 仅允许使用自己上传的站内图片", 422))
-			return
-		}
-		key := strings.TrimPrefix(avatar, "/api/v1/files/")
-		if _, _, err := s.inspectOwnedUserUploadImage(c.Request.Context(), user.ID, key, maxUserAssetImageBytes); err != nil {
-			fail(c, apperr.E("validation_error", "avatarUrl: 文件不存在或不是有效图片", 422))
-			return
-		}
-	}
 	avatarUploadKey := ""
 	if body.AvatarURL.Valid && body.AvatarURL.Value != "" {
-		avatarUploadKey = strings.TrimPrefix(strings.TrimSpace(body.AvatarURL.Value), "/api/v1/files/")
+		avatar, key, err := s.ownedProfileImageURL(c.Request.Context(), user.ID, body.AvatarURL.Value, "avatarUrl")
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		body.AvatarURL.Value = avatar
+		avatarUploadKey = key
+	}
+	studioFigureUploadKey := ""
+	if body.StudioFigureURL.Valid && body.StudioFigureURL.Value != "" {
+		figure, key, err := s.ownedProfileImageURL(c.Request.Context(), user.ID, body.StudioFigureURL.Value, "studioFigureUrl")
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		body.StudioFigureURL.Value = figure
+		studioFigureUploadKey = key
 	}
 
 	var username *string
@@ -132,20 +192,45 @@ func (s *Server) patchProfile(c *gin.Context) {
 		requireCostConfirm = &body.RequireCostConfirm.Value
 		user.RequireCostConfirm = body.RequireCostConfirm.Value
 	}
+	var studioFigureURL **string
+	if body.StudioFigureURL.Valid {
+		var v *string
+		if body.StudioFigureURL.Value != "" {
+			figure := strings.TrimSpace(body.StudioFigureURL.Value)
+			v = &figure
+		}
+		studioFigureURL = &v
+		user.StudioFigureURL = v
+	}
 	ctx := c.Request.Context()
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if err := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil); err != nil {
+		if err := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil, studioFigureURL); err != nil {
 			return err
 		}
-		if !body.AvatarURL.Valid {
-			return nil
+		if body.AvatarURL.Valid {
+			if err := store.ReplaceUserUploadReferences(ctx, tx, user.ID, store.UploadReferenceUserAvatar, user.ID,
+				[]string{avatarUploadKey}); err != nil {
+				return err
+			}
 		}
-		return store.ReplaceUserUploadReferences(ctx, tx, user.ID, store.UploadReferenceUserAvatar, user.ID,
-			[]string{avatarUploadKey})
+		return nil
 	})
 	if err != nil {
 		fail(c, err)
 		return
+	}
+	if body.StudioFigureURL.Valid {
+		if refErr := store.ReplaceUserUploadReferences(ctx, s.St.Pool, user.ID, store.UploadReferenceUserStudioFigure, user.ID,
+			[]string{studioFigureUploadKey}); refErr != nil {
+			log.Printf("studio figure reference: %v", refErr)
+		}
+		previousKey := userupload.ObjectKeyFromFileURL(previousStudioFigure)
+		if previousKey != "" && previousKey != studioFigureUploadKey {
+			userupload.DeleteUnreferencedFigure(ctx, s.St, s.Storage, user.ID, previousKey)
+		}
+	}
+	if stored, loadErr := store.GetUserByID(ctx, s.St.Pool, user.ID); loadErr == nil && stored != nil {
+		user = stored
 	}
 	ok(c, gin.H{"user": userDict(user)})
 }
@@ -177,17 +262,22 @@ func (s *Server) overview(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	recent, err := store.ListRecentTasks(ctx, s.St.Pool, user.ID, 5)
+	recent, err := store.ListRecentTasks(ctx, s.St.Pool, user.ID, 24)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	unread, err := store.CountUnreadNotifications(ctx, s.St.Pool, user.ID)
+	unreadPersonal, unreadBroadcast, err := store.CountUnreadNotificationBreakdown(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	assetCount, err := store.CountUserAssets(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	assetUngrouped, err := store.CountUserAssetsUngrouped(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -216,6 +306,7 @@ func (s *Server) overview(c *gin.Context) {
 		},
 		"taskStatsByType": byType,
 		"assetCount":      assetCount,
+		"assetUngrouped":  assetUngrouped,
 		"submissionStats": gin.H{
 			"total":    submissionsByStatus["pending"] + submissionsByStatus["approved"] + submissionsByStatus["rejected"] + submissionsByStatus["removed"],
 			"pending":  submissionsByStatus["pending"],
@@ -223,7 +314,9 @@ func (s *Server) overview(c *gin.Context) {
 			"rejected": submissionsByStatus["rejected"],
 			"removed":  submissionsByStatus["removed"],
 		},
-		"unreadNotifications": unread,
+		"unreadNotifications": unreadPersonal + unreadBroadcast,
+		"unreadPersonal":      unreadPersonal,
+		"unreadBroadcast":     unreadBroadcast,
 		"recentTasks":         recentTasks,
 	})
 }
@@ -257,19 +350,57 @@ func (s *Server) myLedger(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListLedger(c.Request.Context(), s.St.Pool, user.ID, limit, cursor)
+	page, err := pageNumber(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	tasksByID, runsByID, err := loadLedgerRelated(c.Request.Context(), s.St.Pool, rows)
+	ctx := c.Request.Context()
+	total, err := store.CountUserLedger(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+	var rows []*store.LedgerEntry
+	if page > 0 {
+		offset := (page - 1) * limit
+		rows, err = store.ListLedgerPage(ctx, s.St.Pool, user.ID, limit, offset)
+	} else {
+		rows, err = store.ListLedger(ctx, s.St.Pool, user.ID, limit, cursor)
+	}
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	tasksByID, runsByID, err := loadLedgerRelated(ctx, s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	serialize := func(entry *store.LedgerEntry) gin.H {
 		return decorateLedgerEntry(entry, tasksByID, runsByID)
-	}))
+	}
+	var payload gin.H
+	if page > 0 {
+		items := make([]gin.H, 0, len(rows))
+		for _, entry := range rows {
+			items = append(items, serialize(entry))
+		}
+		var next any
+		if int64(page*limit) < total && len(rows) > 0 {
+			t, id := rows[len(rows)-1].CursorKey()
+			next = encodeCursor(t, id)
+		}
+		payload = gin.H{"items": items, "nextCursor": next, "page": page}
+	} else {
+		payload = buildPage(rows, limit, serialize)
+		if cursor == nil {
+			payload["page"] = 1
+		}
+	}
+	payload["total"] = total
+	payload["pageSize"] = limit
+	ok(c, payload)
 }
 
 func loadLedgerRelated(ctx context.Context, q store.Q, rows []*store.LedgerEntry) (map[uuid.UUID]*store.Task, map[uuid.UUID]*store.AssistantRun, error) {

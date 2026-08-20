@@ -46,13 +46,48 @@ func main() {
 		err = runWorker(cfg)
 	case "create-admin":
 		err = runCreateAdmin(cfg, os.Args[2:])
+	case "seed":
+		err = runSeed(cfg)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed> [flags]\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func seedBuiltinContent(ctx context.Context, st *store.Store) error {
+	seededTemplates, err := store.SeedDefaultCanvasWorkflowTemplates(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededTemplates > 0 {
+		log.Printf("seeded %d default canvas workflow templates", seededTemplates)
+	}
+	seededChangelog, err := store.SeedDefaultChangelogEntries(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededChangelog > 0 {
+		log.Printf("seeded %d changelog entries", seededChangelog)
+	} else {
+		log.Printf("changelog seed skipped or already applied")
+	}
+	return nil
+}
+
+func runSeed(cfg *config.Config) error {
+	if err := store.Migrate(cfg.DatabaseURL); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	ctx := context.Background()
+	st, err := newStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return seedBuiltinContent(ctx, st)
 }
 
 func runServe(cfg *config.Config) error {
@@ -68,6 +103,9 @@ func runServe(cfg *config.Config) error {
 		return err
 	}
 	defer st.Close()
+	if err := seedBuiltinContent(ctx, st); err != nil {
+		return err
+	}
 	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
 		return fmt.Errorf("encrypt stored settings: %w", err)
 	}

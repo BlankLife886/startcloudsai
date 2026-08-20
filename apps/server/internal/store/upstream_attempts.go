@@ -259,6 +259,17 @@ func ReleaseTaskUpstreamAttemptPoll(ctx context.Context, q Q, id uuid.UUID, owne
 	return err
 }
 
+func RenewTaskUpstreamAttemptPoll(ctx context.Context, q Q, id uuid.UUID, owner string, now time.Time, lease time.Duration) error {
+	if strings.TrimSpace(owner) == "" || lease <= 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `UPDATE task_upstream_attempts
+		SET poll_lease_until = $3, last_polled_at = $4
+		WHERE id = $1 AND poll_owner = $2 AND status IN ('submitting','pending')`,
+		id, owner, now.Add(lease), now)
+	return err
+}
+
 func MarkTaskUpstreamAttemptFailoverScheduled(ctx context.Context, q Q, id uuid.UUID, now time.Time) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE task_upstream_attempts
 		SET failover_scheduled_at = $2

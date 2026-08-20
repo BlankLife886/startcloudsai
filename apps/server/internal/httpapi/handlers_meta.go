@@ -36,7 +36,13 @@ func (s *Server) pricing(c *gin.Context) {
 }
 
 func (s *Server) runtimeConfig(c *gin.Context) {
-	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	ctx := c.Request.Context()
+	pageControls, err := settings.ResolvePageControls(ctx, s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	cfg, err := modelconfig.Load(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
@@ -172,7 +178,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		}},
 	}
 	ok(c, gin.H{
-		"routes": gin.H{}, "features": features, "pageLayout": gin.H{},
+		"routes": gin.H{}, "features": features, "pageLayout": gin.H{}, "pageControls": pageControls,
 		"aiModelCatalog": gin.H{
 			"providers": providers, "models": catalogModels, "publicModels": allImageModels,
 			"featurePublicModels": []any{}, "updatedAt": time.Now().UTC().Format(time.RFC3339),
@@ -192,6 +198,19 @@ func (s *Server) metaChangelog(c *gin.Context) {
 		items = append(items, changelogDict(entry))
 	}
 	ok(c, gin.H{"items": items})
+}
+
+func (s *Server) metaChangelogLatest(c *gin.Context) {
+	entry, err := store.LatestChangelog(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if entry == nil {
+		ok(c, nil)
+		return
+	}
+	ok(c, changelogDict(entry))
 }
 
 func (s *Server) metaAnnouncements(c *gin.Context) {

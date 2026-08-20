@@ -436,7 +436,7 @@ html.color-scheme-dark .commerce-studio {
   }
   .commerce-layout {
     display: grid;
-    grid-template-columns: 92px clamp(300px, 22vw, 340px) minmax(0, 1fr);
+    grid-template-columns: 124px clamp(300px, 22vw, 340px) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
     gap: 0;
     padding: 0;
@@ -447,13 +447,23 @@ html.color-scheme-dark .commerce-studio {
   .commerce-studio.is-tryon .commerce-layout,
   .commerce-studio.is-handheld .commerce-layout,
   .commerce-studio.is-accessory .commerce-layout {
-    grid-template-columns: 92px minmax(0, 1fr);
+    grid-template-columns: 124px minmax(0, 1fr);
   }
   .commerce-rail {
     grid-column: auto;
     grid-row: auto;
     z-index: 1;
     margin: 0 6px 8px 8px;
+  }
+  .commerce-rail a,
+  .commerce-rail button {
+    min-height: 70px;
+  }
+  .commerce-rail__label {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .commerce-settings {
     grid-column: auto;
@@ -488,11 +498,39 @@ html.color-scheme-dark .commerce-studio .commerce-header__badge {
     radial-gradient(circle at 30% 24%, rgb(255 255 255 / 22%), transparent 46%),
     linear-gradient(145deg, #8b7bff, #7c5cff 58%, #14b8a6);
 }
+.commerce-rail a,
+.commerce-rail button {
+  transform: none;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.commerce-rail__icon,
+.commerce-rail__label {
+  transform: none;
+  will-change: auto;
+  transition: color 120ms ease, opacity 120ms ease, background-color 120ms ease;
+}
+.commerce-rail a:hover,
+.commerce-rail button:not(:disabled):hover {
+  transform: none;
+  background: color-mix(in srgb, var(--commerce-ink) 5%, transparent);
+}
+.commerce-rail a:hover .commerce-rail__icon,
+.commerce-rail button:not(:disabled):hover .commerce-rail__icon,
+.commerce-rail a:hover .commerce-rail__label,
+.commerce-rail button:not(:disabled):hover .commerce-rail__label {
+  transform: none;
+}
+.commerce-rail a:hover .commerce-rail__icon,
+.commerce-rail button:not(:disabled):hover .commerce-rail__icon {
+  opacity: 0.72;
+}
+.commerce-rail a.active,
+.commerce-rail button.active {
+  transform: none;
+}
 .commerce-rail a.active .commerce-rail__icon,
 .commerce-rail button.active .commerce-rail__icon {
-  color: #fff;
-  background: linear-gradient(145deg, #6d5cff, #14b8a6);
-  box-shadow: 0 6px 14px rgb(109 92 255 / 26%);
+  transform: none;
 }
 html.color-scheme-dark .commerce-studio .commerce-rail a.active .commerce-rail__icon,
 html.color-scheme-dark .commerce-studio .commerce-rail button.active .commerce-rail__icon {
