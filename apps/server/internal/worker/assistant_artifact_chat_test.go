@@ -120,8 +120,8 @@ func TestAssistantPPTXRequestCreatesAndPersistsDownload(t *testing.T) {
 	}
 	worker := &Worker{St: st, Storage: objectStorage}
 	streamed := ""
-	text, used, artifacts, err := worker.requestAssistantArtifactText(ctx, client, run,
-		[]sub2api.Message{{Role: "user", Content: run.Prompt}}, func(value string) error {
+	text, used, artifacts, _, err := worker.requestAssistantArtifactText(ctx, client, run,
+		[]sub2api.Message{{Role: "user", Content: run.Prompt}}, func(value, _ string) error {
 			streamed = value
 			return nil
 		})

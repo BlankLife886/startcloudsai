@@ -2,8 +2,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
-import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
-import { canvasImageRequestSize, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
+import { canvasImageRequestSize, canvasImageMaxCount, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { createCanvasAgentToolDelivery, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
@@ -76,7 +75,6 @@ function wait(delay: number, signal?: AbortSignal) {
 // - Manual node generation:   canvas:${projectId}:${nodeId}:${nonce}:${imageIndex}
 //   The nonce is created once per explicit user click and reused for the
 //   whole generation; a new explicit click creates a new nonce.
-// - Derived background removal reuses the parent key with a ":bg:N" suffix.
 
 export function canvasWorkflowTaskKey(runId: string, nodeId: string, imageIndexOrId: number | string) {
     return `canvas:${runId}:${nodeId}:${imageIndexOrId}`;
@@ -252,14 +250,13 @@ function imageTaskParams(config: AiConfig) {
     const aspectRatio = settings.size || "auto";
     const resolutionScale = settings.resolution || "1K";
     const outputSize = canvasImageRequestSize(aspectRatio, resolutionScale);
-    const removalTool = settings.background === "transparent" ? getCanvasBackgroundRemovalTool() : null;
     return {
         aspectRatio,
         requestedAspectRatio: aspectRatio,
         resolutionScale,
         ...(outputSize ? { size: outputSize, outputSize } : {}),
         ...(quality ? { quality } : {}),
-        ...(settings.background === "transparent" && !removalTool?.id ? { transparentBackground: true } : {}),
+        ...(settings.background === "transparent" ? { transparentBackground: true } : {}),
         ...(config.model ? { publicModelKey: modelOptionName(config.model) } : {}),
         _kind: "canvas-image-generation",
         _source: "react_canvas",
@@ -413,11 +410,11 @@ export function imagesFromCanvasTask(task: CanvasTask) {
 }
 
 export async function requestCanvasImages(config: AiConfig, prompt: string, references: ReferenceImage[] = [], mask?: ReferenceImage, options?: AbortSignal | CanvasTaskOptions) {
-    const { signal, onCreated, onResolved, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
+    const { signal, onCreated, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
     const inputKeys = await Promise.all(references.slice(0, 4).map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();
-    const count = Math.max(1, Math.min(4, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const count = Math.max(1, Math.min(canvasImageMaxCount(modelOptionMeta(config, config.model)), Math.floor(Math.abs(Number(config.count)) || 1)));
     const task = await withCanvasTaskSlot(signal, async () => {
         if (signal?.aborted) throw abortError();
         onBeforeCreate?.();
@@ -437,21 +434,7 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
         return waitForTask(created.id, signal);
     });
     const images = imagesFromCanvasTask(task);
-    const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
-    if (settings.background !== "transparent") return images;
-    await onResolved?.(images);
-    return Promise.all(images.map((image, index) => applyCanvasTransparentRemoval(image, signal, idempotencyKey ? `${idempotencyKey}:bg:${index}` : undefined)));
-}
-
-export async function applyCanvasTransparentRemoval(image: { id: string; dataUrl: string; storageKey?: string }, signal?: AbortSignal, idempotencyKey?: string) {
-    const removalTool = getCanvasBackgroundRemovalTool();
-    if (!removalTool?.id) return image;
-    const removed = await requestCanvasBackgroundRemoval(
-        { id: image.id, name: "canvas-transparent.png", type: "image/png", dataUrl: image.dataUrl, storageKey: image.storageKey },
-        removalTool.id,
-        { signal, idempotencyKey },
-    );
-    return { id: image.id, dataUrl: removed.dataUrl, storageKey: removed.storageKey };
+    return images;
 }
 
 function flattenMessages(messages: Array<{ role: string; content: unknown }>) {
@@ -523,7 +506,7 @@ export async function waitForCanvasAssistantRun(runId: string, onDelta: (text: s
     }
 }
 
-export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, options?: CanvasAssistantTaskOptions, model = "") {
+export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, options?: CanvasAssistantTaskOptions, model = "", reasoningEffort = "") {
     const prompt = flattenMessages(messages).slice(-12_000);
     const referenceImages = collectMessageReferenceImages(messages);
     const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
@@ -540,6 +523,7 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         count: 1,
         requestSize: "auto",
         quality: "high",
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         idempotencyKey: crypto.randomUUID(),
     });
     scheduleWalletRefresh();

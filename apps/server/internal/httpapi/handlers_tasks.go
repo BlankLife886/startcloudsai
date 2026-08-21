@@ -15,6 +15,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
@@ -216,8 +217,8 @@ func (s *Server) createTask(c *gin.Context) {
 	if body.Count != nil {
 		count = *body.Count
 	}
-	if count < 1 || count > 4 {
-		fail(c, apperr.E("validation_error", "count: 须在 1-4 之间", 422))
+	if count < 1 || count > modelconfig.MaxImagesLimit {
+		fail(c, apperr.E("validation_error", fmt.Sprintf("count: 须在 1-%d 之间", modelconfig.MaxImagesLimit), 422))
 		return
 	}
 	if body.IdempotencyKey != nil && len([]rune(*body.IdempotencyKey)) > 128 {

@@ -20,6 +20,8 @@ func TestFallbackAssistantIntent(t *testing.T) {
 	}{
 		{"全新生图请求", "帮我画一张赛博朋克风格的海报", false, false, "image"},
 		{"纯聊天", "今天天气怎么样", false, false, "chat"},
+		{"寒暄你好", "你好", false, false, "chat"},
+		{"生图后的寒暄你好仍走对话", "你好", false, true, "chat"},
 		{"带参考图的识别问题", "识别一下图片里的文字", true, false, "chat"},
 		{"生图后的描述请求仍走对话", "帮我描述一下这张图", false, true, "chat"},
 		{"生图后的翻译请求仍走对话", "帮我翻译图上的英文", false, true, "chat"},
@@ -62,6 +64,9 @@ func TestFastAssistantIntent(t *testing.T) {
 		{"图片理解", "识别一下图片里的文字", true, false, "chat", true},
 		{"延续上一张", "再来一张", false, true, "image", true},
 		{"模糊对话交给模型", "谈谈你的想法", false, false, "", false},
+		{"寒暄你好确定走对话", "你好", false, false, "chat", true},
+		{"寒暄你好呀确定走对话", "你好呀", false, false, "chat", true},
+		{"带生图要求的你好不误判", "你好，帮我画一张海报", false, false, "image", true},
 		{"明确拒绝生成", "不要生成图片，只分析一下思路", false, false, "chat", true},
 		{"拒绝编辑参考图", "不要修改图片，帮我描述一下", true, false, "chat", true},
 		{"否定后仍有新的生成要求", "不要生成旧方案，生成一张新的海报", false, false, "image", true},
@@ -74,6 +79,27 @@ func TestFastAssistantIntent(t *testing.T) {
 				t.Fatalf("fastAssistantIntent() = (%q, %v), want (%q, %v)", got, certain, tc.want, tc.certain)
 			}
 		})
+	}
+}
+
+func TestAssistantSmallTalk(t *testing.T) {
+	cases := []struct {
+		prompt string
+		want   bool
+	}{
+		{"你好", true},
+		{"你好呀", true},
+		{"Hello!", true},
+		{"谢谢", true},
+		{"你能做什么", true},
+		{"你好，帮我画一张海报", false},
+		{"一只橘猫坐在窗台上", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := assistantSmallTalk(tc.prompt); got != tc.want {
+			t.Fatalf("assistantSmallTalk(%q) = %v, want %v", tc.prompt, got, tc.want)
+		}
 	}
 }
 

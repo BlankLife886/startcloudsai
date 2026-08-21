@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
@@ -316,6 +317,9 @@ func (w *Worker) clearAssistantMessageOutputMetadataTx(ctx context.Context, q st
 
 func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRun) error {
 	mode := run.Mode
+	if mode == "image" && assistantSmallTalk(run.Prompt) {
+		mode = "chat"
+	}
 	references, err := w.loadAssistantReferences(ctx, run.Params)
 	if err != nil {
 		return err
@@ -424,7 +428,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		} else {
 			client, err = w.assistantClient(ctx)
 			if err == nil {
-				if requestedModel := assistantParamString(run.Params, "model", ""); requestedModel != "" {
+				if requestedModel := assistantParamString(run.Params, "model", ""); requestedModel != "" && requestedModel != client.ImageModel() {
 					client = client.WithChatModel(requestedModel)
 				}
 			}
@@ -517,6 +521,9 @@ const (
 	assistantProposalTimeout     = 15 * time.Second
 )
 
+// assistantSmallTalkPattern matches greetings that must never launch image generation.
+var assistantSmallTalkPattern = regexp.MustCompile(`(?i)^(你好|您好|嗨+|哈喽|在吗|在么|hello|hi+|hey|thanks?|thank you|谢谢(你|您)?(了)?|早上好|早安|晚上好|你是谁|你能做什么|在不在)[呀啊呢吧嘛]*[\s!！。.?？]*$`)
+
 // assistantIntentTokenPattern 匹配回复中首个 IMAGE 或 CHAT 单词（先出现者优先）。
 var assistantIntentTokenPattern = regexp.MustCompile(`\b(IMAGE|CHAT)\b`)
 
@@ -526,6 +533,14 @@ var assistantContinuationPattern = regexp.MustCompile(`再来|再生成|再画|�
 // assistantNegatedImageActionPattern removes explicit "do not generate/edit"
 // clauses before positive intent matching, so a negated verb cannot force a tool call.
 var assistantNegatedImageActionPattern = regexp.MustCompile(`(?i)(不要|别|无需|不需要|不用|禁止|勿)\s*(再\s*)?(生成|画|绘制|制作|创建|设计|修改|编辑|重绘|去背景|抠图|擦除|移除|替换|添加|扩图|上色)|\b(do not|don't|dont|no need to)\s+(generate|draw|create|edit|redraw|remove|replace)\b`)
+
+func assistantSmallTalk(prompt string) bool {
+	text := strings.TrimSpace(prompt)
+	if text == "" || len([]rune(text)) > 16 {
+		return false
+	}
+	return assistantSmallTalkPattern.MatchString(text)
+}
 
 func (w *Worker) classifyAssistantRun(ctx context.Context, client *sub2api.Client, transcript, prompt string, hasReference, lastAssistantWasImage bool) string {
 	if intent, certain := fastAssistantIntent(prompt, hasReference, lastAssistantWasImage); certain {
@@ -587,6 +602,9 @@ func fallbackAssistantIntent(prompt string, hasReference bool, lastAssistantWasI
 }
 
 func fastAssistantIntent(prompt string, hasReference bool, lastAssistantWasImage bool) (string, bool) {
+	if assistantSmallTalk(prompt) {
+		return "chat", true
+	}
 	text := strings.ToLower(prompt)
 	positiveText := assistantNegatedImageActionPattern.ReplaceAllString(text, "")
 	hasNegatedImageAction := positiveText != text
@@ -789,7 +807,7 @@ func assistantProposalFunctionTool() sub2api.FunctionTool {
 }
 
 func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
-	instructions := `你是图片创作 Agent，全程使用简体中文。
+	instructions := `你是图片创作 Agent，全程使用简体中文，思考过程也使用简体中文。
 直接在一次响应中完成判断：
 - 纯聊天、分析、解释或需求不明确时，立即自然回答；需要澄清时直接提问，不调用工具。
 - 用户明确要生成新图或编辑已有图片时，可以先给一句简短说明，然后调用 propose_image_action；工具调用成功后不要再输出 JSON 或重复提示词。
@@ -839,11 +857,15 @@ func (w *Worker) executeAssistantAgent(
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
+	started := time.Now()
+	var firstVisible time.Time
 	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
 	fastIntent, fastIntentCertain := fastAssistantIntent(run.Prompt, len(references) > 0, lastWasImage)
 	forceProposalTool := fastIntentCertain && fastIntent == "image"
 	suppressProposalTool := fastIntentCertain && fastIntent == "chat"
 	result, err := client.ChatAgentWithImages(ctx, payload, nil, assistantProposalFunctionTool(), forceProposalTool, func(fullText, reasoning string) error {
+		markAssistantFirstToken(&firstVisible, fullText)
+		markAssistantFirstToken(&firstVisible, reasoning)
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
 			lastTerminationCheck = time.Now()
 			if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
@@ -859,18 +881,21 @@ func (w *Worker) executeAssistantAgent(
 			}
 			answering = true
 		}
-		// 明确的图片请求可能由不支持 tool_calls 的兼容网关返回 JSON
-		// 降级协议；此时只展示状态，避免把内部协议流到用户界面。
-		if !forceProposalTool && fullText != "" && time.Since(lastPublish) >= 50*time.Millisecond {
+		visibleText := fullText
+		if forceProposalTool {
+			visibleText = ""
+		}
+		if (visibleText != "" || reasoning != "") && time.Since(lastPublish) >= 50*time.Millisecond {
 			lastPublish = time.Now()
 			assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-				assistantstream.Event{Content: fullText, Kind: "agent", Stage: "answering"})
+				assistantstream.Event{Content: visibleText, Reasoning: reasoning, Kind: "agent", Stage: "answering"})
 		}
 		if forceProposalTool || fullText == "" || time.Since(lastCheckpoint) < time.Second {
 			return nil
 		}
 		lastCheckpoint = time.Now()
 		metadata := assistantMessageMetadata(run, nil, "answering", "")
+		attachAssistantReasoning(metadata, reasoning)
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	})
 	if err != nil {
@@ -913,20 +938,21 @@ func (w *Worker) executeAssistantAgent(
 			currentReferences, historicalReferences, assistantProposalMaxReferences(proposal.Model, modelCatalog),
 		)
 		proposal.ReferencedImageIDs = assistantReferenceIDs(proposal.ReferenceImages)
-		metadata := assistantMessageMetadata(run, nil, "complete", "")
-		metadata["proposal"] = proposal
-		if strings.TrimSpace(result.Text) != "" && !parsedTextFallback {
-			metadata["agentAnalysis"] = result.Text
-		}
-		if strings.TrimSpace(result.Reasoning) != "" {
-			metadata["reasoning"] = result.Reasoning
-		}
 		content := strings.TrimSpace(result.Text)
 		if parsedTextFallback {
 			content = "图片创作方案已准备，可以调整后开始生成。"
 		}
 		if content == "" {
 			content = "图片创作方案已准备，可以调整后开始生成。"
+		}
+		metadata := assistantMessageMetadata(run, nil, "complete", "")
+		attachAssistantUsage(metadata, finalizeAssistantUsage(result.Usage, started, firstVisible, run, content))
+		metadata["proposal"] = proposal
+		if strings.TrimSpace(result.Text) != "" && !parsedTextFallback {
+			metadata["agentAnalysis"] = result.Text
+		}
+		if strings.TrimSpace(result.Reasoning) != "" {
+			metadata["reasoning"] = result.Reasoning
 		}
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 			return err
@@ -939,7 +965,8 @@ func (w *Worker) executeAssistantAgent(
 			return context.Canceled
 		}
 		assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
-			Content: content, Kind: "proposal", Stage: "complete", Done: true, Status: "succeeded",
+			Content: content, Reasoning: result.Reasoning, Kind: "proposal", Stage: "complete", Done: true, Status: "succeeded",
+			Usage: finalizeAssistantUsage(result.Usage, started, firstVisible, run, content).Map(),
 		})
 		return nil
 	}
@@ -949,6 +976,7 @@ func (w *Worker) executeAssistantAgent(
 		text = "没有收到模型回复，请重试。"
 	}
 	metadata := assistantMessageMetadata(run, nil, "complete", "")
+	attachAssistantUsage(metadata, finalizeAssistantUsage(result.Usage, started, firstVisible, run, text))
 	if strings.TrimSpace(result.Reasoning) != "" {
 		metadata["reasoning"] = result.Reasoning
 	}
@@ -963,7 +991,8 @@ func (w *Worker) executeAssistantAgent(
 		return context.Canceled
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
-		Content: text, Kind: "chat", Stage: "complete", Done: true, Status: "succeeded",
+		Content: text, Reasoning: result.Reasoning, Kind: "chat", Stage: "complete", Done: true, Status: "succeeded",
+		Usage: finalizeAssistantUsage(result.Usage, started, firstVisible, run, text).Map(),
 	})
 	return nil
 }
@@ -992,7 +1021,9 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 	}
 	planningCtx, cancel := context.WithTimeout(ctx, assistantProposalTimeout)
 	defer cancel()
-	raw, err := client.ChatTextWithImages(planningCtx, payload, nil, nil)
+	started := time.Now()
+	completion, err := client.CompleteChatTextWithImages(planningCtx, payload, nil, nil)
+	raw := completion.Text
 	proposal := defaultAssistantProposal(run)
 	if err == nil {
 		if parsed, parseErr := parseAssistantProposal(raw); parseErr == nil {
@@ -1013,6 +1044,8 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 	metadata := assistantMessageMetadata(run, nil, "complete", "")
 	metadata["proposal"] = proposal
 	content := "我整理了一份图片创作方案，你可以调整后再开始生成。"
+	usage := finalizeAssistantUsage(completion.Usage, started, time.Time{}, run, content)
+	attachAssistantUsage(metadata, usage)
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 		return err
 	}
@@ -1024,7 +1057,7 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 		return context.Canceled
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-		assistantstream.Event{Kind: "proposal", Done: true, Status: "succeeded"})
+		assistantstream.Event{Kind: "proposal", Done: true, Status: "succeeded", Usage: usage.Map()})
 	return nil
 }
 
@@ -1148,7 +1181,7 @@ func normalizeAssistantProposalWithModels(proposal assistantImageProposal, run *
 	if proposal.Resolution == "" {
 		proposal.Resolution = fallback.Resolution
 	}
-	if proposal.Count < 1 || proposal.Count > 4 {
+	if proposal.Count < 1 || proposal.Count > assistantProposalMaxImages(proposal.Model, models) {
 		proposal.Count = fallback.Count
 	}
 	allowedQualities := assistantMapStrings(selectedModel, "qualities")
@@ -1219,6 +1252,16 @@ func assistantProposalMaxReferences(modelID string, models []map[string]any) int
 	limit := 4
 	if model := assistantProposalModel(modelID, models); model != nil {
 		if value := assistantMapInt(model, "maxReferenceImages"); value > 0 {
+			limit = value
+		}
+	}
+	return limit
+}
+
+func assistantProposalMaxImages(modelID string, models []map[string]any) int {
+	limit := 4
+	if model := assistantProposalModel(modelID, models); model != nil {
+		if value := assistantMapInt(model, "maxImages"); value > 0 {
 			limit = value
 		}
 	}
@@ -1440,7 +1483,7 @@ func assistantAllowedValue(values []string, value string) (string, bool) {
 }
 
 type assistantChatTextClient interface {
-	ChatTextWithImages(context.Context, []sub2api.Message, []string, func(string) error) (string, error)
+	CompleteChatTextWithImages(context.Context, []sub2api.Message, []string, func(string, string) error) (sub2api.ChatCompletion, error)
 }
 
 func parseLeadingAssistantSearchInvocation(text string) (argument, suffix string, complete bool) {
@@ -1502,36 +1545,39 @@ func requestAssistantChatText(
 	client assistantChatTextClient,
 	payload []sub2api.Message,
 	prompt string,
-	onText func(string) error,
+	onText func(string, string) error,
 	onLeak func(attempt int, hasUsableSuffix bool),
-) (string, error) {
+) (string, sub2api.ChatUsage, error) {
 	requestPayload := payload
 	for attempt := 0; attempt < assistantChatAttempts; attempt++ {
-		text, err := client.ChatTextWithImages(ctx, requestPayload, nil, func(fullText string) error {
+		result, err := client.CompleteChatTextWithImages(ctx, requestPayload, nil, func(fullText, reasoning string) error {
 			visible, hold := visibleAssistantChatOutput(fullText, prompt)
 			if hold || onText == nil {
 				return nil
 			}
-			return onText(visible)
+			return onText(visible, reasoning)
 		})
 		if err != nil {
-			return text, err
+			return result.Text, result.Usage, err
 		}
-		cleaned, leaked := cleanAssistantChatOutput(text, prompt)
+		cleaned, leaked := cleanAssistantChatOutput(result.Text, prompt)
 		if leaked && onLeak != nil {
 			onLeak(attempt+1, strings.TrimSpace(cleaned) != "")
 		}
 		if !leaked || strings.TrimSpace(cleaned) != "" {
-			return cleaned, nil
+			if onText != nil && strings.TrimSpace(result.Reasoning) != "" {
+				_ = onText(cleaned, result.Reasoning)
+			}
+			return cleaned, result.Usage, nil
 		}
 		if attempt == assistantChatAttempts-1 {
-			return "", errAssistantLeakedToolOutput
+			return "", result.Usage, errAssistantLeakedToolOutput
 		}
 		requestPayload = make([]sub2api.Message, 0, len(payload)+1)
 		requestPayload = append(requestPayload, sub2api.Message{Role: "system", Content: assistantChatRetryInstruction})
 		requestPayload = append(requestPayload, payload...)
 	}
-	return "", errAssistantLeakedToolOutput
+	return "", sub2api.ChatUsage{}, errAssistantLeakedToolOutput
 }
 
 func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string) error {
@@ -1563,12 +1609,20 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
-	onText := func(fullText string) error {
+	started := time.Now()
+	var firstVisible time.Time
+	var latestReasoning string
+	onText := func(fullText, reasoning string) error {
+		if strings.TrimSpace(reasoning) != "" {
+			latestReasoning = reasoning
+		}
+		markAssistantFirstToken(&firstVisible, fullText)
+		markAssistantFirstToken(&firstVisible, latestReasoning)
 		// 真流式文本经 Redis 即时推送；PostgreSQL 只保留低频断线恢复检查点。
-		if time.Since(lastPublish) >= 50*time.Millisecond {
+		if (fullText != "" || latestReasoning != "") && time.Since(lastPublish) >= 50*time.Millisecond {
 			lastPublish = time.Now()
 			assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-				assistantstream.Event{Content: fullText, Kind: "chat", Stage: "answering"})
+				assistantstream.Event{Content: fullText, Reasoning: latestReasoning, Kind: "chat", Stage: "answering"})
 		}
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
 			lastTerminationCheck = time.Now()
@@ -1589,18 +1643,20 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 			return nil
 		}
 		lastCheckpoint = time.Now()
-		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "chat", "running",
-			assistantMessageMetadata(run, nil, "answering", ""))
+		metadata := assistantMessageMetadata(run, nil, "answering", "")
+		attachAssistantReasoning(metadata, latestReasoning)
+		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "chat", "running", metadata)
 	}
 	var text string
 	var usedTools []string
 	var artifacts []map[string]any
+	var usage sub2api.ChatUsage
 	if len(assistantRunFileIDs(run)) > 0 {
-		text, usedTools, artifacts, err = w.requestAssistantDocumentText(ctx, client, run, payload, onText)
+		text, usedTools, artifacts, usage, err = w.requestAssistantDocumentText(ctx, client, run, payload, onText)
 	} else if assistantArtifactRequested(run.Prompt) {
-		text, usedTools, artifacts, err = w.requestAssistantArtifactText(ctx, client, run, payload, onText)
+		text, usedTools, artifacts, usage, err = w.requestAssistantArtifactText(ctx, client, run, payload, onText)
 	} else {
-		text, err = requestAssistantChatText(ctx, client, payload, run.Prompt, onText, func(attempt int, hasUsableSuffix bool) {
+		text, usage, err = requestAssistantChatText(ctx, client, payload, run.Prompt, onText, func(attempt int, hasUsableSuffix bool) {
 			log.Printf("assistant run %s filtered leaked search prefix model=%s attempt=%d usable_suffix=%t",
 				run.ID, client.ChatModel(), attempt, hasUsableSuffix)
 		})
@@ -1618,6 +1674,9 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		return context.Canceled
 	}
 	metadata := assistantMessageMetadata(run, nil, "complete", "")
+	usage = finalizeAssistantUsage(usage, started, firstVisible, run, text)
+	attachAssistantUsage(metadata, usage)
+	attachAssistantReasoning(metadata, latestReasoning)
 	if len(usedTools) > 0 {
 		metadata["toolsUsed"] = usedTools
 		if len(assistantRunFileIDs(run)) > 0 {
@@ -1638,7 +1697,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		return context.Canceled
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-		assistantstream.Event{Content: text, Kind: "chat", Done: true, Status: "succeeded"})
+		assistantstream.Event{Content: text, Reasoning: latestReasoning, Kind: "chat", Done: true, Status: "succeeded", Usage: usage.Map()})
 	return nil
 }
 
@@ -1732,8 +1791,10 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 	if actual < expected {
 		content = fmt.Sprintf("已生成 %d/%d 张图片，其余图片经自动重试后仍未完成", actual, expected)
 	}
+	metadata := assistantMessageMetadata(run, stored, "complete", "")
+	attachAssistantUsage(metadata, assistantUsageFromStartedAt(run))
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "image", "complete",
-		assistantMessageMetadata(run, stored, "complete", "")); err != nil {
+		metadata); err != nil {
 		w.enqueueAssistantOutputCleanup(assistantImageOutputKeys(stored))
 		return err
 	}
@@ -1758,7 +1819,7 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 		}
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-		assistantstream.Event{Kind: "image", Done: true, Status: "succeeded", ImageTotal: expected})
+		assistantstream.Event{Kind: "image", Done: true, Status: "succeeded", ImageTotal: expected, Usage: assistantUsageFromStartedAt(run).Map()})
 	return nil
 }
 

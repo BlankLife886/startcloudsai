@@ -17,6 +17,8 @@ export const IMAGE_QUALITIES = ['low', 'medium', 'high']
 export const IMAGE_OUTPUT_FORMATS = ['png', 'jpeg', 'webp']
 export const IMAGE_MODERATION_LEVELS = ['auto', 'low']
 export const IMAGE_RESOLUTIONS = ['1K', '2K', '4K']
+export const IMAGE_COUNT_DEFAULT_MAX = 4
+export const IMAGE_COUNT_HARD_MAX = 16
 
 function normalizeEnumList(value, allowed, fallback) {
   if (!Array.isArray(value)) return [...fallback]
@@ -118,7 +120,31 @@ export function normalizeImageModelCapabilities(model = {}) {
     maxReferenceImages: Number.isFinite(parsedReferenceLimit)
       ? Math.min(16, Math.max(0, Math.round(parsedReferenceLimit)))
       : 4,
+    maxImages: imageModelMaxCount(safeModel),
   }
+}
+
+export function imageModelMaxCount(model = {}) {
+  const raw = Number(model?.maxImages)
+  if (Number.isFinite(raw) && raw >= 1) {
+    return Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Math.floor(raw)))
+  }
+  return IMAGE_COUNT_DEFAULT_MAX
+}
+
+export function imageCountOptions(model = {}) {
+  return Array.from({ length: imageModelMaxCount(model) }, (_, index) => index + 1)
+}
+
+export function clampImageCount(value, model, fallback = 2) {
+  const counts = imageCountOptions(model)
+  const count = Math.round(Number(value))
+  if (counts.includes(count)) return count
+  if (Number.isFinite(count) && counts.length) {
+    return Math.min(counts[counts.length - 1], Math.max(counts[0], count))
+  }
+  if (counts.includes(fallback)) return fallback
+  return counts[0] || 1
 }
 
 export function getModelAspectRatiosForResolution(model, resolution) {

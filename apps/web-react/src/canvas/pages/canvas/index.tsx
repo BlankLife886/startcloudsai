@@ -32,7 +32,7 @@ function Highlighter({ action, color, children }: { action: "highlight" | "under
             ) : (
                 <span className="absolute inset-x-0 bottom-0 h-1 rounded-full opacity-80" style={{ backgroundColor: color }} />
             )}
-            <span className="relative font-medium text-stone-800 dark:text-stone-200">{children}</span>
+            <span className="relative font-medium text-stone-800 dark:text-zinc-100">{children}</span>
         </span>
     );
 }

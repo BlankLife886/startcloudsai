@@ -174,6 +174,133 @@ func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
 	}
 }
 
+func TestChatTextWithImagesReadsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		if streamOptions["include_usage"] != true {
+			t.Fatalf("stream_options = %#v", body["stream_options"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"你好"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "你好" {
+		t.Fatalf("text = %q", result.Text)
+	}
+	if result.Usage.PromptTokens != 8 || result.Usage.CompletionTokens != 2 || result.Usage.TotalTokens != 10 {
+		t.Fatalf("usage = %#v", result.Usage)
+	}
+	if result.Usage.DurationMs <= 0 || result.Usage.FirstTokenMs <= 0 {
+		t.Fatalf("timing = %#v", result.Usage)
+	}
+}
+
+func TestChatTextWithImagesReadsReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"先拆问题"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"再作答"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"结论"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	var reasoningSnapshots []string
+	result, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil,
+		func(_, reasoning string) error {
+			reasoningSnapshots = append(reasoningSnapshots, reasoning)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "结论" || result.Reasoning != "先拆问题再作答" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(reasoningSnapshots) < 2 || reasoningSnapshots[0] != "先拆问题" || reasoningSnapshots[len(reasoningSnapshots)-1] != "先拆问题再作答" {
+		t.Fatalf("snapshots = %#v", reasoningSnapshots)
+	}
+}
+
+func TestChatTextWithImagesJoinsReasoningSummaries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning":"**Planning high-level missile analysis**"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning":"**Outlining multifaceted missile analysis**"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"结论"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "**Planning high-level missile analysis**\n\n**Outlining multifaceted missile analysis**"
+	if result.Reasoning != want {
+		t.Fatalf("reasoning = %q", result.Reasoning)
+	}
+}
+
+func TestChatTextWithImagesKeepsLongerReasoningWhenFinalMessageIsShorter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"先确认目标，再核对约束，最后给出可执行结论。"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"message":{"content":"结论","reasoning":"**Planning**"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reasoning != "先确认目标，再核对约束，最后给出可执行结论。" {
+		t.Fatalf("reasoning = %q", result.Reasoning)
+	}
+}
+
+func TestChatStreamRequestsDetailedReasoningSummaryForGPT5(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %#v", body["reasoning_effort"])
+		}
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if reasoning["effort"] != "high" || reasoning["summary"] != "detailed" {
+			t.Fatalf("reasoning = %#v", body["reasoning"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-5.4", "image-test", 30)
+	resp, err := client.WithReasoningEffort("high").ChatStream(context.Background(), []Message{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
 func TestChatTextWithImagesFinalMessageReplacesStreamedText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -397,7 +524,7 @@ func TestChatAgentWithToolsSendsReasoningEffortAndReadsUsage(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"真实分析"}}]}`+"\n\n")
-		fmt.Fprint(w, `data: {"choices":[],"usage":{"completion_tokens":42,"completion_tokens_details":{"reasoning_tokens":17}}}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":42,"total_tokens":53,"completion_tokens_details":{"reasoning_tokens":17}}}`+"\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -416,6 +543,9 @@ func TestChatAgentWithToolsSendsReasoningEffortAndReadsUsage(t *testing.T) {
 	}
 	if result.Reasoning != "真实分析" || result.ReasoningTokens != 17 {
 		t.Fatalf("result = %#v", result)
+	}
+	if result.Usage.PromptTokens != 11 || result.Usage.CompletionTokens != 42 || result.Usage.TotalTokens != 53 {
+		t.Fatalf("usage = %#v", result.Usage)
 	}
 }
 

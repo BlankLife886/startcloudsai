@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { fulfillJson } from './helpers/authMocks.js'
 import { installVisualBaseline } from './helpers/visualBaseline.js'
+import { expectPricingPageIsolated } from './helpers/pricingIsolation.js'
 
 test.describe('React migration navigation contract', () => {
   test.skip(
@@ -67,5 +68,11 @@ test.describe('React migration navigation contract', () => {
     await expect(page.locator('.pp-nav button', { hasText: '常见问题' })).toHaveClass(/is-active/)
     await page.evaluate(() => window.scrollTo(0, 0))
     await expect(page.locator('.pp-nav button', { hasText: '套餐方案' })).toHaveClass(/is-active/)
+  })
+
+  test('pricing layout stays isolated after a cold visit', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/pricing', { waitUntil: 'domcontentloaded' })
+    await expectPricingPageIsolated(page)
   })
 })

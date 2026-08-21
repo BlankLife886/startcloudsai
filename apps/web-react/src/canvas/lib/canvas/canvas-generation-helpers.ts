@@ -1,4 +1,5 @@
-import { applyCanvasImageModelSettings, CANVAS_IMAGE_MAX_COUNT } from "@/lib/canvas/canvas-image-model";
+import { applyCanvasImageModelSettings, CANVAS_IMAGE_HARD_MAX_COUNT } from "@/lib/canvas/canvas-image-model";
+import { shouldPromoteGeneratedImage } from "@/lib/canvas/canvas-image-primary";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
 import i18n from "@/i18n";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
@@ -107,8 +108,9 @@ export async function hydrateAssistantImages(sessions: CanvasAssistantSession[])
     );
 }
 
-export function getGenerationCount(count: string) {
-    return Math.max(1, Math.min(CANVAS_IMAGE_MAX_COUNT, Math.floor(Math.abs(Number(count)) || 1)));
+export function getGenerationCount(count: string, maxCount = CANVAS_IMAGE_HARD_MAX_COUNT) {
+    const cap = Math.max(1, Math.min(CANVAS_IMAGE_HARD_MAX_COUNT, Math.floor(Number(maxCount)) || CANVAS_IMAGE_HARD_MAX_COUNT));
+    return Math.max(1, Math.min(cap, Math.floor(Math.abs(Number(count)) || 1)));
 }
 
 export function getInputSummary(inputs: NodeGenerationInput[]) {
@@ -198,7 +200,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
         const images = node.metadata.images.map((image) => (image.id === imageId ? item : image));
         const stillLoading = images.some((image) => image.status === "loading");
         const hasSuccess = images.some((image) => image.status === "success");
-        if (node.metadata.primaryImageId && node.metadata.primaryImageId !== imageId) {
+        if (!shouldPromoteGeneratedImage(node.metadata.primaryImageId, imageId, images.map((image) => image.id))) {
             return {
                 ...node,
                 metadata: {

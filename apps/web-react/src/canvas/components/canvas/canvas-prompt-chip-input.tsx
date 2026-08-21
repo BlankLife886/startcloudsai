@@ -1,15 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 import { Image } from "antd";
-import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
-import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { CanvasResourceMentionMenu, contentEditableCaretRect, sameMentionRect } from "./canvas-resource-mention-menu";
 
 type Props = {
     value: string;
@@ -95,7 +93,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
             closeMention();
             return;
         }
-        setMention({ query: match[1] || "", rect: caretRect() });
+        setMention({ query: match[1] || "", rect: contentEditableCaretRect(editorRef.current) });
         setActiveIndex(0);
     };
 
@@ -205,85 +203,45 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 onBlur={() => window.setTimeout(closeMention, 120)}
             />
             {mention && candidates.length ? (
-                <MentionMenu rect={mention.rect} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} />
+                <PromptChipMentionMenu editor={editorRef.current} fallback={mention.rect} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} />
             ) : null}
             {imagePreview ? <Image src={imagePreview} alt={i18n.t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>
     );
 }
 
-function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect: DOMRect | null; references: CanvasResourceReference[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
-    const selectedRef = useRef(false);
-    const activeItemRef = useRef<HTMLButtonElement | null>(null);
+function PromptChipMentionMenu({
+    editor,
+    fallback,
+    references,
+    activeIndex,
+    theme,
+    onSelect,
+}: {
+    editor: HTMLDivElement | null;
+    fallback: DOMRect | null;
+    references: CanvasResourceReference[];
+    activeIndex: number;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onSelect: (reference: CanvasResourceReference) => void;
+}) {
+    const [anchor, setAnchor] = useState<DOMRect | null>(() => contentEditableCaretRect(editor) || fallback);
 
-    useEffect(() => {
-        activeItemRef.current?.scrollIntoView({ block: "nearest" });
-    }, [activeIndex, references]);
+    useLayoutEffect(() => {
+        const update = () => {
+            const next = contentEditableCaretRect(editor) || fallback;
+            setAnchor((current) => (sameMentionRect(current, next) ? current : next));
+        };
+        update();
+        editor?.addEventListener("scroll", update, { passive: true });
+        window.addEventListener("resize", update);
+        return () => {
+            editor?.removeEventListener("scroll", update);
+            window.removeEventListener("resize", update);
+        };
+    }, [editor, fallback, references]);
 
-    const selectReference = (reference: CanvasResourceReference) => {
-        if (selectedRef.current) return;
-        selectedRef.current = true;
-        onSelect(reference);
-    };
-
-    const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => event.stopPropagation();
-
-    const menuWidth = 256;
-    const maxMenuHeight = 224;
-    const gap = 6;
-    const anchor = rect || new DOMRect(16, 16, 0, 0);
-    const left = clamp(anchor.left, 8, window.innerWidth - menuWidth - 8);
-    const showAbove = anchor.bottom + gap + maxMenuHeight > window.innerHeight && anchor.top - gap - maxMenuHeight >= 0;
-    const top = showAbove ? anchor.top - gap - maxMenuHeight : anchor.bottom + gap;
-
-    return createPortal(
-        <div
-            data-canvas-resource-mention-menu="true"
-            className="fixed z-[1100] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
-            onPointerDown={stopCanvasInteraction}
-            onMouseDown={stopCanvasInteraction}
-            onClick={(event) => event.stopPropagation()}
-        >
-            {references.map((reference, index) => (
-                <button
-                    key={reference.id}
-                    ref={index === activeIndex ? activeItemRef : undefined}
-                    type="button"
-                    className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition"
-                    style={{ background: index === activeIndex ? theme.toolbar.activeBg : "transparent", color: index === activeIndex ? theme.toolbar.activeText : theme.node.text }}
-                    onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        selectReference(reference);
-                    }}
-                    onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        selectReference(reference);
-                    }}
-                >
-                    <ReferencePreview reference={reference} />
-                    <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{reference.label}</span>
-                        <span className="block truncate opacity-65">{reference.text || reference.title}</span>
-                    </span>
-                </button>
-            ))}
-        </div>,
-        getCanvasPortalRoot(),
-    );
-}
-
-function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
-    if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
-    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
-    const Icon = reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
-    return (
-        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
-            <Icon className="size-4" />
-        </span>
-    );
+    return <CanvasResourceMentionMenu anchor={anchor} references={references} activeIndex={activeIndex} theme={theme} onSelect={onSelect} />;
 }
 
 function createReferenceChip(reference: CanvasResourceReference, theme: (typeof canvasThemes)[keyof typeof canvasThemes], onImagePreview: (url: string) => void) {
@@ -387,18 +345,6 @@ function textBeforeCaret() {
     return range.toString();
 }
 
-function caretRect(): DOMRect | null {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return null;
-    const range = selection.getRangeAt(0).cloneRange();
-    range.collapse(true);
-    const rect = range.getBoundingClientRect();
-    if (rect.width || rect.height || rect.left || rect.top) return rect;
-    // Empty lines and editors produce a zero-sized range, so fall back to the editor bounds.
-    const editor = closestEditor(range.startContainer);
-    return editor ? editor.getBoundingClientRect() : null;
-}
-
 function closestEditor(node: Node) {
     const element = node instanceof Element ? node : node.parentElement;
     return element?.closest("[contenteditable='true']") || null;
@@ -432,9 +378,4 @@ function parseTokens(value: string, labels: string[]): Token[] {
 
 function escapeRegExp(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function clamp(value: number, min: number, max: number) {
-    if (max < min) return min;
-    return Math.min(Math.max(value, min), max);
 }

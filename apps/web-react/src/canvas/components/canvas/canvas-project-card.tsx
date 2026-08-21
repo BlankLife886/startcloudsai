@@ -146,7 +146,7 @@ function PreviewNodeContent({ node, x, y, width, height, palette, enabled }: { n
     if (node.type === CanvasNodeType.Video && media) {
         return (
             <g>
-                <rect x={x} y={y} width={width} height={height} fill="#1c1917" />
+                <rect x={x} y={y} width={width} height={height} fill="#161821" />
                 <circle cx={x + width / 2} cy={y + height / 2} r={Math.min(width, height) * 0.16} fill="rgba(255,255,255,0.92)" />
                 <path d={`M ${x + width / 2 - 2} ${y + height / 2 - 4} l 7 4 -7 4 z`} fill="#ea580c" />
             </g>
@@ -155,7 +155,7 @@ function PreviewNodeContent({ node, x, y, width, height, palette, enabled }: { n
     if (node.type === CanvasNodeType.Text) {
         const line = Math.max(3, Math.min(5, Math.round(width / 28)));
         return (
-            <g fill="#c4b5fd" opacity="0.9">
+            <g fill="#8b93a8" opacity="0.9">
                 {Array.from({ length: 3 }, (_, index) => (
                     <rect key={index} x={x} y={y + index * (line + 4)} width={index === 2 ? width * 0.62 : width} height={line} rx={line / 2} />
                 ))}

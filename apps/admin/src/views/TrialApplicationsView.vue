@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
-import { Check, Refresh, Search, Star, Warning } from "@element-plus/icons-vue";
+import { Refresh, Search, Star } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import TrialCampaignSettingsDialog from "@/components/settings/TrialCampaignSettingsDialog.vue";
 import { request, type Page } from "@/request";
@@ -86,11 +86,18 @@ function campaignFeatures(campaign: TrialCampaign): TrialFeature[] {
       : [];
 }
 
+function rewardStatusText(status?: string | null) {
+  if (status === "redeemed") return "已领取";
+  if (status === "expired") return "已过期";
+  if (status) return "待领取";
+  return "";
+}
+
 const STATUS_OPTIONS = [
-  { value: "", label: "全部" },
   { value: "pending", label: "待审核" },
   { value: "approved", label: "已通过" },
   { value: "rejected", label: "未通过" },
+  { value: "", label: "全部" },
 ] as const;
 
 const statusLabels: Record<string, string> = {
@@ -99,11 +106,12 @@ const statusLabels: Record<string, string> = {
   rejected: "未通过",
 };
 
-const statusTypes: Record<string, "warning" | "success" | "danger"> = {
-  pending: "warning",
-  approved: "success",
-  rejected: "danger",
-};
+const rejectReasonPresets = [
+  "申请理由不充分",
+  "职业与体验功能不符",
+  "资料不完整",
+  "本期名额已满",
+] as const;
 
 const route = useRoute();
 const filters = reactive({ campaignId: "", status: "pending", search: "" });
@@ -115,6 +123,18 @@ const campaignProgress = computed(() => {
     100,
     Math.round((campaign.value.displayApplied / campaign.value.capacity) * 100),
   );
+});
+
+const campaignState = computed(() => {
+  const item = campaign.value;
+  if (!item) return { label: "", tone: "" };
+  if (item.expired) return { label: "已过期", tone: "danger" };
+  if (item.status === "active") {
+    return item.full
+      ? { label: "名额已满", tone: "warning" }
+      : { label: "申请开放中", tone: "success" };
+  }
+  return { label: "活动已关闭", tone: "muted" };
 });
 
 const {
@@ -149,6 +169,15 @@ const {
   },
   () => filters,
 );
+
+const hasFilters = computed(
+  () => filters.status !== "pending" || Boolean(filters.search.trim()),
+);
+
+const emptyTitle = computed(() => {
+  if (hasFilters.value) return "没有匹配的申请";
+  return filters.status === "pending" ? "没有待审核申请" : "当前状态没有申请";
+});
 
 function setStatus(status: string) {
   if (filters.status === status) return;
@@ -202,6 +231,24 @@ function openReject(row: TrialApplication) {
   selected.value = row;
   rejectReason.value = "";
   rejectOpen.value = true;
+}
+
+function applyRejectPreset(reason: string) {
+  const parts = rejectReason.value
+    .split(/[；;]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const index = parts.indexOf(reason);
+  if (index >= 0) parts.splice(index, 1);
+  else parts.push(reason);
+  rejectReason.value = parts.join("；");
+}
+
+function rejectPresetSelected(reason: string) {
+  return rejectReason.value
+    .split(/[；;]/)
+    .map((part) => part.trim())
+    .includes(reason);
 }
 
 async function approve() {
@@ -295,106 +342,157 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page trial-page">
-    <PageCard>
-      <section v-if="campaign" class="campaign-overview">
-        <div class="campaign-overview__identity">
-          <span :class="{ 'is-open': campaign.status === 'active' && !campaign.full }">
-            {{
-              campaign.expired
-                ? "活动已过期"
-                : campaign.status === 'active'
-                ? campaign.full
-                  ? "名额已满"
-                  : "申请开放中"
-                : "活动已关闭"
-            }}
-          </span>
-          <strong>{{ campaign.title }}</strong>
-          <small>
-            {{ campaignFeatures(campaign).map((feature) => feature.label).join("、") }} ·
-            {{ campaign.accessMode === "restricted" ? "权限内测" : "功能专属积分" }}
-          </small>
-        </div>
-        <dl class="campaign-overview__stats">
-          <div>
-            <dt>真实申请</dt>
-            <dd>{{ campaign.actualApplied.toLocaleString("zh-CN") }}</dd>
-          </div>
-          <div>
-            <dt>用户端展示</dt>
-            <dd>{{ campaign.displayApplied.toLocaleString("zh-CN") }}</dd>
-          </div>
-          <div>
-            <dt>总名额</dt>
-            <dd>{{ campaign.capacity.toLocaleString("zh-CN") }}</dd>
-          </div>
-          <div>
-            <dt>剩余</dt>
-            <dd>{{ campaign.remaining.toLocaleString("zh-CN") }}</dd>
-          </div>
-        </dl>
-        <div class="campaign-overview__progress" aria-hidden="true">
-          <span :style="{ width: `${campaignProgress}%` }"></span>
-        </div>
-        <p>
-          截止 {{ formatTime(campaign.expiresAt) }} · 展示调整 {{ campaign.displayOffset >= 0 ? "+" : ""
-          }}{{ campaign.displayOffset }} · 名额占用 {{ campaignProgress }}%
-        </p>
-      </section>
-
-      <div class="trial-toolbar">
-        <div class="trial-tabs" role="tablist" aria-label="申请状态">
-          <button
-            v-for="option in STATUS_OPTIONS"
-            :key="option.value || 'all'"
-            type="button"
-            role="tab"
-            class="trial-tab"
-            :class="{ 'is-active': filters.status === option.value }"
-            :aria-selected="filters.status === option.value"
-            @click="setStatus(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-
-        <div class="trial-toolbar__actions">
-          <TrialCampaignSettingsDialog @saved="onCampaignsSaved" />
-          <el-select
-            v-model="filters.campaignId"
-            class="trial-campaign-select"
-            placeholder="选择活动"
-            @change="reset"
-          >
-            <el-option
-              v-for="item in campaignOptions"
-              :key="item.id"
-              :label="`${item.title} · ${item.status === 'active' ? '启用中' : item.status === 'draft' ? '草稿' : '已关闭'}`"
-              :value="item.id"
-            />
-          </el-select>
-          <el-input
-            v-model="filters.search"
-            class="trial-search"
-            :prefix-icon="Search"
-            placeholder="搜索邮箱、用户名或职业"
-            clearable
-            @keyup.enter="reset"
-            @clear="reset"
-          />
-          <el-button @click="reset">查询</el-button>
-          <el-button text @click="clearFilters">重置</el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="refresh"
-            >刷新</el-button
-          >
-        </div>
+  <div class="trial-page">
+    <header class="trial-toolbar">
+      <div class="trial-tabs" role="tablist" aria-label="申请状态">
+        <button
+          v-for="option in STATUS_OPTIONS"
+          :key="option.value || 'all'"
+          type="button"
+          role="tab"
+          class="trial-tab"
+          :class="{ 'is-active': filters.status === option.value }"
+          :aria-selected="filters.status === option.value"
+          @click="setStatus(option.value)"
+        >
+          {{ option.label }}
+        </button>
       </div>
 
-      <ListError :error="error" :loading="loading" @retry="retry" />
+      <div class="trial-toolbar__right">
+        <el-select
+          v-model="filters.campaignId"
+          class="trial-campaign-select"
+          placeholder="选择活动"
+          @change="reset"
+        >
+          <el-option
+            v-for="item in campaignOptions"
+            :key="item.id"
+            :label="`${item.title} · ${item.status === 'active' ? '启用中' : item.status === 'draft' ? '草稿' : '已关闭'}`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-input
+          v-model="filters.search"
+          class="trial-search"
+          :prefix-icon="Search"
+          placeholder="搜索邮箱、用户名或职业"
+          clearable
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <TrialCampaignSettingsDialog @saved="onCampaignsSaved" />
+        <el-button v-if="hasFilters" @click="clearFilters">清除</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
+      </div>
+    </header>
 
-      <AdminListShell
-        viewport-height="clamp(380px, calc(100vh - 230px), 730px)"
+    <section v-if="campaign" class="trial-campaign">
+      <div class="trial-campaign__copy">
+        <span class="trial-campaign__state" :class="`is-${campaignState.tone}`">
+          {{ campaignState.label }}
+        </span>
+        <strong>{{ campaign.title }}</strong>
+        <span>
+          {{ campaignFeatures(campaign).map((feature) => feature.label).join("、") }}
+          · {{ campaign.accessMode === "restricted" ? "权限内测" : "功能专属积分" }}
+          · 截止 {{ formatTime(campaign.expiresAt) }}
+        </span>
+      </div>
+      <div class="trial-campaign__stats">
+        <div>
+          <strong class="tnum">{{ campaign.actualApplied.toLocaleString("zh-CN") }}</strong>
+          <span>申请</span>
+        </div>
+        <div>
+          <strong class="tnum">{{ campaign.displayApplied.toLocaleString("zh-CN") }}</strong>
+          <span>展示</span>
+        </div>
+        <div>
+          <strong class="tnum">{{ campaign.capacity.toLocaleString("zh-CN") }}</strong>
+          <span>名额</span>
+        </div>
+        <div>
+          <strong class="tnum">{{ campaign.remaining.toLocaleString("zh-CN") }}</strong>
+          <span>剩余</span>
+        </div>
+      </div>
+      <div class="trial-campaign__meter" aria-hidden="true">
+        <span :style="{ width: `${campaignProgress}%` }"></span>
+      </div>
+    </section>
+
+    <ListError :error="error" :loading="loading" @retry="retry" />
+
+    <div v-loading="loading && items.length > 0" class="trial-board">
+      <div v-if="loading && !items.length" class="trial-empty">正在加载申请…</div>
+
+      <div v-else-if="!items.length" class="trial-empty">
+        <el-icon><Star /></el-icon>
+        <strong>{{ emptyTitle }}</strong>
+        <span>{{ hasFilters ? "调整筛选后再试" : "新申请会显示在这里" }}</span>
+        <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+      </div>
+
+      <div v-else class="trial-list">
+        <article
+          v-for="row in items"
+          :key="row.id"
+          class="trial-card"
+          :class="`is-${row.status}`"
+        >
+          <header>
+            <div class="trial-card__title">
+              <em class="tnum">#{{ row.applicationNo }}</em>
+              <strong :title="row.userEmail">{{ row.username || "未命名用户" }}</strong>
+            </div>
+            <span class="trial-status" :class="`is-${row.status}`">
+              {{ statusLabels[row.status] || row.status }}
+            </span>
+          </header>
+          <p>{{ row.reason }}</p>
+          <div class="trial-card__meta">
+            <span>{{ row.occupation || "未填写职业" }}</span>
+            <template v-for="feature in applicationFeatures(row)" :key="feature.key">
+              <i>·</i>
+              <span>{{ feature.label || feature.key }}</span>
+            </template>
+            <i>·</i>
+            <span class="tnum">{{ formatTime(row.createdAt) }}</span>
+            <template v-if="row.rewardCents">
+              <i>·</i>
+              <span>+{{ formatPoints(row.rewardCents) }} {{ rewardStatusText(row.rewardStatus) }}</span>
+            </template>
+            <template v-else-if="row.reviewNote">
+              <i>·</i>
+              <span :title="row.reviewNote">{{ row.reviewNote }}</span>
+            </template>
+          </div>
+          <footer>
+            <div v-if="row.status === 'pending'" class="trial-card__actions">
+              <button type="button" class="trial-action is-approve" @click="openApprove(row)">
+                通过
+              </button>
+              <button type="button" class="trial-action is-reject" @click="openReject(row)">
+                不通过
+              </button>
+            </div>
+            <button
+              v-else-if="row.status === 'approved' && row.rewardStatus === 'expired'"
+              type="button"
+              class="trial-action is-reissue"
+              @click="openReissue(row)"
+            >
+              补发积分
+            </button>
+          </footer>
+        </article>
+      </div>
+    </div>
+
+    <footer v-if="items.length" class="trial-footer">
+      <CursorPager
         :has-prev="hasPrev"
         :has-next="hasNext"
         :loading="loading"
@@ -403,493 +501,623 @@ onMounted(async () => {
         :total="total"
         @prev="prev"
         @next="next"
-      >
-        <el-table
-          v-loading="loading"
-          class="trial-table"
-          :data="items"
-          height="100%"
-          size="small"
-          table-layout="fixed"
-        >
-          <template #empty>
-            <el-empty description="暂无体验资格申请" :image-size="64" />
-          </template>
-
-          <el-table-column label="序号" width="76" align="center">
-            <template #default="{ row }">
-              <span class="tnum">#{{ row.applicationNo }}</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="申请用户" min-width="210">
-            <template #default="{ row }">
-              <div class="trial-user">
-                <span>{{ row.username || "未命名用户" }}</span>
-                <small>{{ row.userEmail }}</small>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="体验功能" min-width="150">
-            <template #default="{ row }">
-              <div class="trial-feature-cell">
-                <div class="trial-feature-cell__tags">
-                  <el-tag
-                    v-for="feature in applicationFeatures(row)"
-                    :key="feature.key"
-                    size="small"
-                    effect="plain"
-                  >{{ feature.label || feature.key }}</el-tag>
-                </div>
-                <small>{{ applicationFeatures(row).flatMap((feature) => feature.taskTypes).join(", ") }}</small>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="职业" min-width="150">
-            <template #default="{ row }">
-              <span class="trial-occupation">{{ row.occupation }}</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="申请理由" min-width="300">
-            <template #default="{ row }">
-              <el-tooltip
-                :content="row.reason"
-                placement="top"
-                :show-after="300"
-              >
-                <p class="trial-reason">{{ row.reason }}</p>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="状态" width="100" align="center">
-            <template #default="{ row }">
-              <el-tag
-                :type="statusTypes[row.status]"
-                effect="light"
-                size="small"
-              >
-                {{ statusLabels[row.status] || row.status }}
-              </el-tag>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="积分发放 / 审核说明" min-width="230">
-            <template #default="{ row }">
-              <div v-if="row.rewardCents" class="trial-reward-cell">
-                <strong>+{{ formatPoints(row.rewardCents) }}</strong>
-                <small>
-                  {{
-                    row.rewardStatus === "redeemed"
-                      ? "用户已领取"
-                      : row.rewardStatus === "expired"
-                        ? "领取已过期"
-                        : "待用户领取"
-                  }}
-                </small>
-              </div>
-              <div v-else-if="row.reviewNote" class="trial-review-note">
-                {{ row.reviewNote }}
-              </div>
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="提交时间" width="176">
-            <template #default="{ row }">
-              <span class="tnum">{{ formatTime(row.createdAt) }}</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="操作" width="176" fixed="right" align="right">
-            <template #default="{ row }">
-              <div v-if="row.status === 'pending'" class="trial-actions">
-                <el-button
-                  size="small"
-                  type="success"
-                  :icon="Check"
-                  @click="openApprove(row as TrialApplication)"
-                >
-                  通过
-                </el-button>
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  :icon="Warning"
-                  @click="openReject(row as TrialApplication)"
-                >
-                  不通过
-                </el-button>
-              </div>
-              <el-button
-                v-else-if="row.status === 'approved' && row.rewardStatus === 'expired'"
-                size="small"
-                type="warning"
-                plain
-                :icon="Refresh"
-                @click="openReissue(row as TrialApplication)"
-              >补发积分</el-button>
-              <span v-else class="muted">已处理</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </AdminListShell>
-    </PageCard>
+      />
+    </footer>
 
     <AdminDialog
       v-model="approveOpen"
-      :title="reviewMode === 'reissue' ? '补发体验积分' : '通过体验资格申请'"
-      :subtitle="selected ? `${selected.username} · ${selected.userEmail}` : ''"
+      panel-class="trial-review-dialog"
+      :title="reviewMode === 'reissue' ? '补发体验积分' : '通过申请'"
       :icon="Star"
-      width="500px"
-      :confirm-text="reviewMode === 'reissue' ? '确认补发积分' : '通过并推送积分礼包'"
-      confirm-type="success"
+      width="520px"
+      :confirm-text="reviewMode === 'reissue' ? '确认补发' : '通过并推送'"
       :confirm-loading="reviewing"
       @confirm="approve"
     >
-      <el-form label-width="104px" @submit.prevent="approve">
-        <el-form-item label="授权功能">
-          <div class="trial-approved-features">
-            <el-tag
-              v-for="feature in selected?.features || (selected?.feature ? [selected.feature] : [])"
-              :key="feature.key"
-              effect="plain"
-            >{{ feature.label }} · {{ feature.route }}</el-tag>
+      <div v-if="selected" class="trial-review">
+        <div class="trial-review__person">
+          <strong>{{ selected.username || "未命名用户" }}</strong>
+          <span>{{ selected.userEmail }} · {{ selected.occupation || "未填写职业" }}</span>
+        </div>
+        <div class="trial-review__features">
+          <span
+            v-for="feature in applicationFeatures(selected)"
+            :key="feature.key"
+          >{{ feature.label }}</span>
+        </div>
+        <label class="trial-review__field">
+          <span>体验积分</span>
+          <div class="trial-review__points">
+            <el-input-number
+              v-model="approveForm.valuePoints"
+              :min="1"
+              :max="10000000"
+              :step="100"
+              :controls="false"
+            />
+            <em>积分</em>
           </div>
-        </el-form-item>
-        <el-form-item label="体验积分" required>
-          <el-input-number
-            v-model="approveForm.valuePoints"
-            :min="1"
-            :max="10000000"
-            :step="100"
-            controls-position="right"
-          />
-          <span class="form-suffix">积分</span>
-        </el-form-item>
-        <el-form-item label="领取有效期">
+        </label>
+        <label class="trial-review__field">
+          <span>领取有效期</span>
           <el-date-picker
             v-model="approveForm.expiresAt"
             type="datetime"
             placeholder="留空则永久有效"
             style="width: 100%"
           />
-        </el-form-item>
-        <el-form-item label="审核说明">
-          <el-input
-            v-model="approveForm.note"
-            type="textarea"
-            :rows="3"
-            maxlength="500"
-            show-word-limit
-            placeholder="可选，用户可以看到"
-          />
-        </el-form-item>
-      </el-form>
+        </label>
+        <el-input
+          v-model="approveForm.note"
+          type="textarea"
+          :rows="3"
+          maxlength="500"
+          show-word-limit
+          resize="none"
+          placeholder="审核说明，用户可见（可选）"
+        />
+      </div>
     </AdminDialog>
 
     <AdminDialog
       v-model="rejectOpen"
-      title="不通过体验资格申请"
-      :subtitle="selected ? `${selected.username} · ${selected.userEmail}` : ''"
-      :icon="Warning"
-      width="500px"
+      panel-class="trial-review-dialog"
+      title="不通过申请"
+      width="520px"
       confirm-text="确认不通过"
       confirm-type="danger"
+      :confirm-disabled="!rejectReason.trim()"
       :confirm-loading="reviewing"
       @confirm="reject"
     >
-      <el-form label-width="92px" @submit.prevent="reject">
-        <el-form-item label="原因" required>
-          <el-input
-            v-model="rejectReason"
-            type="textarea"
-            :rows="5"
-            maxlength="500"
-            show-word-limit
-            placeholder="请填写用户可以看到的审核说明"
-          />
-        </el-form-item>
-      </el-form>
+      <div v-if="selected" class="trial-review">
+        <div class="trial-review__person">
+          <strong>{{ selected.username || "未命名用户" }}</strong>
+          <span>{{ selected.userEmail }} · {{ selected.occupation || "未填写职业" }}</span>
+        </div>
+        <div class="trial-review__presets">
+          <button
+            v-for="reason in rejectReasonPresets"
+            :key="reason"
+            type="button"
+            class="trial-review__chip"
+            :class="{ 'is-active': rejectPresetSelected(reason) }"
+            @click="applyRejectPreset(reason)"
+          >
+            {{ reason }}
+          </button>
+        </div>
+        <el-input
+          v-model="rejectReason"
+          type="textarea"
+          :rows="4"
+          maxlength="500"
+          show-word-limit
+          resize="none"
+          placeholder="未通过原因会通知用户"
+        />
+      </div>
     </AdminDialog>
 
     <AdminDialog
       v-model="resultOpen"
-      title="体验资格已通过"
-      subtitle="积分礼包与站内通知已同步推送"
-      :icon="Check"
-      width="480px"
+      title="已通过"
+      :icon="Star"
+      width="420px"
       hide-footer
     >
-      <div v-if="approvedResult" class="approval-result">
-        <span>{{ approvedResult.userEmail }}</span>
+      <div v-if="approvedResult" class="trial-result">
         <strong>+{{ formatPoints(approvedResult.rewardCents) }}</strong>
-        <p>
-          「{{ approvedResult.feature.label }}」体验权限已经生效，专属积分等待用户领取。
-        </p>
+        <span>{{ approvedResult.username || approvedResult.userEmail }}</span>
       </div>
     </AdminDialog>
   </div>
 </template>
 
-<style scoped>
-.campaign-overview {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(420px, 1.5fr);
-  gap: 14px 28px;
-  margin-bottom: 16px;
-  padding: 16px 18px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-
-.campaign-overview__identity {
-  display: grid;
-  align-content: center;
-  gap: 4px;
-}
-
-.campaign-overview__identity > span {
-  width: max-content;
-  color: var(--danger);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.campaign-overview__identity > span.is-open {
-  color: var(--success);
-}
-
-.campaign-overview__identity strong {
-  color: var(--ink);
-  font-size: 16px;
-}
-
-.campaign-overview__identity small,
-.campaign-overview > p,
-.campaign-overview__stats dt {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.campaign-overview__stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-}
-
-.campaign-overview__stats > div {
-  display: grid;
-  gap: 3px;
-  padding: 9px 10px;
-  border-left: 1px solid var(--border);
-}
-
-.campaign-overview__stats dd {
-  margin: 0;
-  color: var(--ink);
-  font-size: 17px;
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
-}
-
-.campaign-overview__progress {
-  grid-column: 1 / -1;
-  height: 5px;
-  overflow: hidden;
-  border-radius: 3px;
-  background: var(--border);
-}
-
-.campaign-overview__progress span {
-  display: block;
+<style scoped lang="scss">
+.trial-page {
+  box-sizing: border-box;
+  display: flex;
   height: 100%;
-  background: var(--accent);
-  transition: width 220ms ease;
-}
-
-.campaign-overview > p {
-  grid-column: 1 / -1;
-  margin: -6px 0 0;
-  text-align: right;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  padding: 0;
+  background: var(--bg);
 }
 
 .trial-toolbar {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
 }
 
 .trial-tabs {
   display: inline-flex;
-  gap: 4px;
-  padding: 4px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
-  border-radius: 12px;
 }
 
 .trial-tab {
-  min-height: 32px;
-  padding: 0 13px;
-  color: var(--ink-2);
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 9px;
-  font: inherit;
-  font-size: 12px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
 }
 
-.trial-tab.is-active {
-  color: var(--accent-on);
-  background: var(--accent);
-  box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 24%, transparent);
-}
-
-.trial-toolbar__actions {
+.trial-toolbar__right {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex: 0 1 auto;
   flex-wrap: wrap;
-}
-
-.trial-search {
-  width: 250px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .trial-campaign-select {
-  width: 270px;
+  width: 220px;
 }
 
-.trial-user,
-.trial-reward-cell {
+.trial-search {
+  width: 220px;
+}
+
+.trial-campaign {
   display: grid;
-  gap: 3px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 10px 18px;
   min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
-.trial-user span,
-.trial-reward-cell strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.trial-user small,
-.trial-reward-cell small {
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.trial-occupation {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.trial-feature-cell {
+.trial-campaign__copy {
   display: grid;
-  gap: 5px;
+  align-content: center;
+  gap: 4px;
+  min-width: 0;
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > span:last-child {
+    overflow: hidden;
+    color: var(--ink-3);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
-.trial-feature-cell__tags,
-.trial-approved-features {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.trial-feature-cell small {
-  color: var(--ink-3);
+.trial-campaign__state {
+  width: max-content;
   font-size: 11px;
+  font-weight: 700;
+
+  &.is-success {
+    color: var(--success);
+  }
+
+  &.is-warning {
+    color: var(--warning);
+  }
+
+  &.is-danger {
+    color: var(--danger);
+  }
+
+  &.is-muted {
+    color: var(--ink-3);
+  }
 }
 
-.trial-reason {
-  display: -webkit-box;
-  margin: 0;
+.trial-campaign__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+
+  div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 18px;
+    font-weight: 750;
+  }
+
+  span {
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+}
+
+.trial-campaign__meter {
+  grid-column: 1 / -1;
+  height: 4px;
   overflow: hidden;
-  color: var(--ink-2);
-  line-height: 1.55;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+
+  span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
 }
 
-.trial-review-note {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--ink-2);
-  line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.trial-actions {
+.trial-board {
   display: flex;
-  justify-content: flex-end;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.trial-list {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.trial-empty {
+  display: grid;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  text-align: center;
+
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    font-size: 12px;
+  }
+}
+
+.trial-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+
+  &:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  > p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  footer:empty {
+    display: none;
+  }
+
+  footer:not(:empty) {
+    display: flex;
+    justify-content: flex-end;
+  }
+}
+
+.trial-card__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.trial-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-pending {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-approved {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-rejected {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+}
+
+.trial-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  i {
+    flex: 0 0 auto;
+    font-style: normal;
+  }
+}
+
+.trial-card__actions {
+  display: flex;
   gap: 6px;
 }
 
-.muted {
-  color: var(--ink-3);
-}
-
-.form-suffix {
-  margin-left: 8px;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.trial-approved-features {
-  padding-top: 3px;
-}
-
-.approval-result {
-  display: grid;
-  place-items: center;
-  gap: 12px;
-  padding: 16px 8px 8px;
-  text-align: center;
-}
-
-.approval-result > span {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.approval-result > strong {
-  font-size: 20px;
-}
-
-.approval-result > p {
-  max-width: 340px;
-  margin: 0;
+.trial-action {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
   color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.6;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  &.is-approve {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-reject {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  &.is-reissue {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
 }
 
-@media (max-width: 820px) {
-  .trial-toolbar__actions,
-  .trial-search {
-    width: 100%;
+.trial-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 40px;
+}
+</style>
+
+<style lang="scss">
+.trial-review {
+  display: grid;
+  gap: 14px;
+}
+
+.trial-review__person {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    overflow: hidden;
+    color: var(--ink-3);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.trial-review__features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  span {
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+    background: var(--violet-soft);
+    color: var(--violet);
+    font-size: 11px;
+    font-weight: 700;
+  }
+}
+
+.trial-review__field {
+  display: grid;
+  gap: 6px;
+
+  > span {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+}
+
+.trial-review__points {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+
+  .el-input-number {
+    width: 120px;
+  }
+
+  .el-input-number .el-input__wrapper {
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+  }
+}
+
+.trial-review__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trial-review__chip {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface-3);
+  }
+
+  &.is-active {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+}
+
+.trial-result {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px 0 4px;
+  text-align: center;
+
+  strong {
+    color: var(--ink);
+    font-size: 28px;
+    font-weight: 750;
+  }
+
+  span {
+    color: var(--ink-3);
+    font-size: 13px;
   }
 }
 </style>

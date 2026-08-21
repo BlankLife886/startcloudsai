@@ -8,16 +8,16 @@ import { audioFormatLabel, audioSpeedLabel, audioVoiceLabel } from "@/lib/audio-
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
-import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
-import { useCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
+import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
-import { defaultConfig, formatModelDiscount, formatModelPrice, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasFieldMenu } from "./canvas-field-menu";
+import { CanvasPriceMark } from "./canvas-setting-controls";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 
 type CanvasConfigNodePanelProps = {
@@ -38,7 +38,7 @@ const MODES: Array<{ value: CanvasGenerationMode; icon: typeof ImageIcon; colorK
     { value: "audio", icon: Music2, colorKey: "audio", labelKey: "audio" },
 ];
 
-const FIELD_CLASS = "flex h-10 w-full min-w-0 items-center gap-2.5 rounded-[14px] px-3 text-left text-[13px] transition-colors";
+const FIELD_CLASS = "canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left text-[13px] transition-colors";
 
 export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
@@ -48,16 +48,18 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const requestedMode = node.metadata?.generationMode || "image";
     const mode = isCanvasGenerationModeEnabled(requestedMode) ? requestedMode : "image";
     const modeIndex = Math.max(0, MODES.findIndex((item) => item.value === mode));
-    const color = nodeTypeColor(mode);
+    const color = nodeTypeColor(mode, undefined, theme.scheme);
     const config = buildNodeConfig(globalConfig, node, mode);
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
-    const stats = inputStats(mode, inputSummary, t);
+    const stats = inputStats(mode, inputSummary, t, theme.scheme);
     const fieldStyle = { background: theme.toolbar.itemHover, color: theme.node.text };
-    const backgroundRemovalTool = useCanvasBackgroundRemovalTool();
-    const cost = estimateCanvasGenerationCost({ config, kind: mode === "text" ? "text" : "image", backgroundRemovalPricePoints: backgroundRemovalTool?.pricePoints });
-    const generateLabel = cost.total > 0 ? t("canvas.configNode.generateWithCost", { count: cost.total.toLocaleString() }) : t("canvas.configNode.generate");
+    const cost = estimateCanvasGenerationCost({ config, kind: mode === "text" ? "text" : "image" });
+    const hasPreviousOutput = Boolean(node.metadata?.workflowOutputNodeIds?.length);
+    const generateLabel = t(hasPreviousOutput ? "canvas.configNode.regenerate" : "canvas.configNode.generate");
+    const generatePrice = cost.total > 0 ? `${cost.total.toLocaleString()} 积分` : undefined;
+    const generateComparePrice = cost.compareTotal && cost.compareTotal > cost.total ? String(cost.compareTotal) : undefined;
     const executionStatus = node.metadata?.executionStatus;
     const queued = isUnsubmittedCanvasGeneration(node);
     const generating = (isRunning || executionStatus === "running") && !queued;
@@ -65,29 +67,28 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const completedAt = node.metadata?.generationCompletedAt;
 
     return (
-        <div className="flex h-full w-full cursor-move flex-col px-3.5 py-3" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
-            <div className="relative grid h-10 shrink-0 grid-cols-4 rounded-[14px] p-[3px]" style={{ background: theme.toolbar.itemHover }}>
+        <div className="canvas-config-node flex h-full w-full cursor-move flex-col px-3 py-2.5" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className="canvas-config-modes relative grid h-9 shrink-0 grid-cols-4 rounded-xl p-[3px]" style={{ background: theme.toolbar.itemHover }}>
                 <div
-                    className="pointer-events-none absolute inset-y-[3px] rounded-[11px] transition-[left] duration-200 ease-out"
+                    className="canvas-config-mode-thumb pointer-events-none absolute inset-y-[3px] rounded-[9px] transition-[left] duration-200 ease-out"
                     style={{
                         left: `calc(3px + ${modeIndex} * (100% - 6px) / 4)`,
                         width: "calc((100% - 6px) / 4)",
-                        background: theme.node.panel,
-                        boxShadow: "0 1px 4px rgba(42, 37, 64, 0.08)",
+                        ...canvasRaisedStyle(theme),
                     }}
                 />
                 {MODES.map((item) => {
                     const active = mode === item.value;
                     const enabled = isCanvasGenerationModeEnabled(item.value);
                     const Icon = item.icon;
-                    const itemColor = nodeTypeColor(item.colorKey);
+                    const itemColor = nodeTypeColor(item.colorKey, undefined, theme.scheme);
                     return (
                         <button
                             key={item.value}
                             type="button"
                             disabled={!enabled}
                             title={enabled ? undefined : t("canvas.unavailable")}
-                            className="relative z-[1] flex items-center justify-center gap-1 rounded-[11px] text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+                            className="relative z-[1] flex items-center justify-center gap-1 rounded-[9px] text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                             style={{ color: active ? itemColor : theme.node.muted }}
                             onClick={() => enabled && onConfigChange(node.id, { generationMode: item.value })}
                         >
@@ -98,7 +99,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 })}
             </div>
 
-            <div className="mt-2.5 flex min-w-0 shrink-0 flex-col gap-2.5">
+            <div className="mt-2 flex min-w-0 shrink-0 flex-col gap-2">
                 <ConfigModelField
                     config={config}
                     mode={mode}
@@ -124,19 +125,19 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                         onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })}
                     />
                 ) : (
-                    <SettingsField mode={mode} config={config} nodeId={node.id} color={color} fieldStyle={fieldStyle} onConfigChange={onConfigChange} />
+                    <SettingsField mode={mode} config={config} nodeId={node.id} fieldStyle={fieldStyle} onConfigChange={onConfigChange} />
                 )}
             </div>
 
-            <div className="mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2.5">
+            <div className="mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                     {stats.length ? (
                         stats.map((item) => (
                             <span
                                 key={item.label}
-                                className="inline-flex h-7 max-w-full items-center gap-1 rounded-full px-2.5 text-[12px]"
+                                className="inline-flex h-6 max-w-full items-center gap-1 rounded-full px-2 text-[11px]"
                                 style={{
-                                    background: item.value > 0 ? colorWash(item.color, 0.14) : theme.toolbar.itemHover,
+                                    background: item.value > 0 ? colorWash(item.color, theme.scheme === "dark" ? 0.1 : 0.12) : "transparent",
                                     color: item.value > 0 ? item.color : theme.node.muted,
                                 }}
                             >
@@ -174,7 +175,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </div>
             ) : executionStatus === "succeeded" && completedAt ? (
                 <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
-                    <CheckCircle2 className="size-3.5 text-emerald-600" />
+                    <CheckCircle2 className="size-3.5" style={{ color: theme.scheme === "dark" ? "#4ade80" : undefined }} />
                     <span>{t("canvas.configNode.generatedAt", { time: formatGenerationTime(completedAt) })}</span>
                     <span className="opacity-45">·</span>
                     <span className="tabular-nums">{t("canvas.configNode.duration", { duration: formatGenerationDuration(elapsedMs) })}</span>
@@ -197,8 +198,12 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
 
             <button
                 type="button"
-                className="mt-2.5 inline-flex h-10 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[14px] text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-70"
-                style={{ background: queued ? "#d97706" : generating ? color : color, color: "#fff" }}
+                className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-70"
+                style={{
+                    background: queued ? "#d97706" : theme.scheme === "dark" ? colorWash(color, 0.16) : color,
+                    color: queued ? "#fff" : theme.scheme === "dark" ? color : "#fff",
+                    boxShadow: theme.scheme === "dark" && !queued ? `inset 0 0 0 1px ${colorWash(color, 0.38)}` : undefined,
+                }}
                 disabled={!queued && !generating && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => (queued ? onCancelQueued(node.id) : generating ? onStopGeneration(node.id) : onGenerate(node.id))}
@@ -217,6 +222,12 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     <>
                         <Play className="size-4 fill-current" />
                         {generateLabel}
+                        {generatePrice ? (
+                            <>
+                                <span className="opacity-40">·</span>
+                                <CanvasPriceMark price={generatePrice} comparePrice={generateComparePrice} />
+                            </>
+                        ) : null}
                     </>
                 )}
             </button>
@@ -249,12 +260,11 @@ function ConfigModelField({
     const options = selectableModelsByCapability(config, mode);
     const current = config.model || "";
     const meta = current ? modelOptionMeta(config, current) : undefined;
-    const price = current ? [formatModelPrice(meta), formatModelDiscount(meta)].filter(Boolean).join(" · ") : "";
-    const accent = nodeTypeColor(mode);
+    const priceParts = formatModelPriceParts(meta, config.reasoningEffort);
 
     if (!options.length) {
         return (
-            <button type="button" className="flex h-10 w-full min-w-0 items-center gap-2.5 rounded-xl px-3 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
+            <button type="button" className="canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
                 <Cpu className="size-4 shrink-0 opacity-50" />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{placeholder}</span>
                 <ChevronDown className="size-3.5 shrink-0 opacity-35" />
@@ -265,30 +275,32 @@ function ConfigModelField({
     return (
         <CanvasFieldMenu
             value={current}
-            options={options.map((model) => ({
-                value: model,
-                label: (
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                        <ModelMark model={model} />
-                        <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
-                        <span className="shrink-0 text-[11px]" style={{ color: theme.node.muted }}>
-                            {formatModelPrice(modelOptionMeta(config, model))}
+            options={options.map((model) => {
+                const parts = formatModelPriceParts(modelOptionMeta(config, model), config.reasoningEffort);
+                return {
+                    value: model,
+                    label: (
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                            <ModelMark model={model} />
+                            <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
+                            <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} />
                         </span>
-                    </span>
-                ),
-            }))}
+                    ),
+                };
+            })}
             theme={theme}
             surface={surface}
             emptyLabel={placeholder}
+            triggerClassName="!h-9 !rounded-[10px] canvas-config-field"
             onChange={onChange}
         >
             {(open) => (
                 <span className="flex w-full min-w-0 items-center gap-2.5">
                     <ModelMark model={current} />
                     <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{current ? modelOptionLabel(config, current) : placeholder}</span>
-                    {price ? (
-                        <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: colorWash(accent, 0.12), color: accent }}>
-                            {price}
+                    {priceParts.price ? (
+                        <span className="shrink-0">
+                            <CanvasPriceMark price={priceParts.price} comparePrice={priceParts.comparePrice} />
                         </span>
                     ) : null}
                     <ChevronDown className="size-3.5 shrink-0 opacity-35 transition-transform duration-200" style={{ transform: open ? "rotate(180deg)" : "none" }} />
@@ -318,22 +330,18 @@ function SettingsField({
     mode,
     config,
     nodeId,
-    color,
     fieldStyle,
     onConfigChange,
 }: {
     mode: CanvasGenerationMode;
     config: AiConfig;
     nodeId: string;
-    color: string;
     fieldStyle: { background: string; color: string };
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
 }) {
     const trigger = (
         <span className={FIELD_CLASS} style={fieldStyle}>
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-lg" style={{ background: colorWash(color, 0.16), color }}>
-                <Settings2 className="size-3.5" />
-            </span>
+            <Settings2 className="size-3.5 shrink-0 opacity-55" />
             <span className="min-w-0 flex-1 truncate">{settingsSummary(mode, config)}</span>
         </span>
     );
@@ -353,26 +361,26 @@ function SettingsField({
     );
 }
 
-function inputStats(mode: CanvasGenerationMode, inputSummary: CanvasConfigNodePanelProps["inputSummary"], t: (key: string) => string) {
+function inputStats(mode: CanvasGenerationMode, inputSummary: CanvasConfigNodePanelProps["inputSummary"], t: (key: string) => string, scheme: CanvasTheme["scheme"]) {
     if (mode === "text") {
-        return [{ label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text") }];
+        return [{ label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text", undefined, scheme) }];
     }
     if (mode === "video") {
         return [
-            { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text") },
-            { label: t("canvas.configNode.references"), value: inputSummary.imageCount, color: nodeTypeColor("image") },
-            { label: t("canvas.configNode.videoReferences"), value: inputSummary.videoCount, color: nodeTypeColor("video") },
+            { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text", undefined, scheme) },
+            { label: t("canvas.configNode.references"), value: inputSummary.imageCount, color: nodeTypeColor("image", undefined, scheme) },
+            { label: t("canvas.configNode.videoReferences"), value: inputSummary.videoCount, color: nodeTypeColor("video", undefined, scheme) },
         ];
     }
     if (mode === "audio") {
         return [
-            { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text") },
-            { label: t("canvas.configNode.audioReferences"), value: inputSummary.audioCount, color: nodeTypeColor("audio") },
+            { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text", undefined, scheme) },
+            { label: t("canvas.configNode.audioReferences"), value: inputSummary.audioCount, color: nodeTypeColor("audio", undefined, scheme) },
         ];
     }
     return [
-        { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text") },
-        { label: t("canvas.configNode.references"), value: inputSummary.imageCount, color: nodeTypeColor("image") },
+        { label: t("canvas.configNode.prompt"), value: inputSummary.textCount, color: nodeTypeColor("text", undefined, scheme) },
+        { label: t("canvas.configNode.references"), value: inputSummary.imageCount, color: nodeTypeColor("image", undefined, scheme) },
     ];
 }
 

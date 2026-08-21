@@ -85,58 +85,63 @@
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --border: oklch(1 0 0 / 10%);
-    --ring: oklch(0.556 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: oklch(0.145 0.012 275);
+    --foreground: oklch(0.96 0.008 275);
+    --border: oklch(1 0 0 / 6%);
+    --ring: oklch(0.62 0.12 285);
+    --card: oklch(0.205 0.016 275);
+    --card-foreground: oklch(0.96 0.008 275);
+    --popover: oklch(0.205 0.016 275);
+    --popover-foreground: oklch(0.96 0.008 275);
+    --primary: oklch(0.68 0.18 285);
+    --primary-foreground: oklch(0.99 0.01 275);
+    --secondary: oklch(0.26 0.016 275);
+    --secondary-foreground: oklch(0.96 0.008 275);
+    --muted: oklch(0.26 0.016 275);
+    --muted-foreground: oklch(0.72 0.02 275);
+    --accent: oklch(0.28 0.04 285);
+    --accent-foreground: oklch(0.96 0.008 275);
     --destructive: oklch(0.704 0.191 22.216);
-    --input: oklch(1 0 0 / 15%);
+    --input: oklch(1 0 0 / 12%);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar: oklch(0.18 0.014 275);
+    --sidebar-foreground: oklch(0.96 0.008 275);
+    --sidebar-primary: oklch(0.68 0.18 285);
+    --sidebar-primary-foreground: oklch(0.99 0.01 275);
+    --sidebar-accent: oklch(0.26 0.02 275);
+    --sidebar-accent-foreground: oklch(0.96 0.008 275);
+    --sidebar-border: oklch(1 0 0 / 9%);
+    --sidebar-ring: oklch(0.62 0.12 285);
 }
 
 @layer base {
-    * {
+    .canvas-native-mount *,
+    .canvas-overlay-root * {
         @apply border-border outline-ring/50;
     }
-    html,
-    body {
+    html.starclouds-hosted,
+    html.starclouds-hosted body,
+    body.canvas-native-active {
         height: 100%;
         overflow: hidden;
     }
-    body {
+    html.starclouds-hosted body,
+    body.canvas-native-active {
         @apply bg-background text-foreground;
     }
-    textarea {
+    .canvas-native-mount textarea,
+    .canvas-overlay-root textarea {
         resize: none;
     }
-    textarea::-webkit-resizer {
+    .canvas-native-mount textarea::-webkit-resizer,
+    .canvas-overlay-root textarea::-webkit-resizer {
         display: none;
     }
-    html {
+    html.starclouds-hosted {
         @apply font-sans;
     }
 }
@@ -171,15 +176,15 @@
     }
 
     .dark .canvas-liquid-glass {
-        background: linear-gradient(135deg, rgba(68, 64, 60, 0.62) 0%, rgba(28, 25, 23, 0.4) 46%, rgba(41, 37, 36, 0.58) 100%), rgba(12, 10, 9, 0.34);
-        border-color: rgba(255, 255, 255, 0.16);
+        background: linear-gradient(135deg, rgba(42, 46, 62, 0.58) 0%, rgba(16, 18, 26, 0.4) 46%, rgba(28, 32, 44, 0.54) 100%), rgba(8, 10, 14, 0.42);
+        border-color: rgba(255, 255, 255, 0.12);
         box-shadow:
-            0 20px 48px rgba(0, 0, 0, 0.34),
-            0 3px 12px rgba(0, 0, 0, 0.24),
-            inset 0 1px 0 rgba(255, 255, 255, 0.22),
-            inset 1px 0 0 rgba(255, 255, 255, 0.12),
-            inset -1px 0 0 rgba(255, 255, 255, 0.06),
-            inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+            0 20px 48px rgba(0, 0, 0, 0.46),
+            0 3px 12px rgba(0, 0, 0, 0.28),
+            inset 0 1px 0 rgba(255, 255, 255, 0.14),
+            inset 1px 0 0 rgba(255, 255, 255, 0.08),
+            inset -1px 0 0 rgba(255, 255, 255, 0.04),
+            inset 0 -1px 0 rgba(255, 255, 255, 0.06);
     }
 
     .ai-title-aurora {
@@ -192,7 +197,7 @@
     }
 
     .dark .ai-title-aurora {
-        background: linear-gradient(90deg, #fafaf9 0%, #fafaf9 36%, #a8a29e 54%, #fafaf9 72%, #fafaf9 100%);
+        background: linear-gradient(90deg, #e8ebf4 0%, #e8ebf4 36%, #8b93a8 54%, #e8ebf4 72%, #e8ebf4 100%);
         background-size: 220% 100%;
         -webkit-background-clip: text;
         background-clip: text;
@@ -248,22 +253,20 @@
     }
 
     .dark .prompt-filter-tag.ant-tag-checkable {
-        color: #e7e5e4;
+        color: #c5cad8;
     }
 
     .dark .prompt-filter-tag.ant-tag-checkable:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: #ffffff;
+        background: rgba(255, 255, 255, 0.08);
+        color: #e8ebf4;
     }
 
     .dark .prompt-filter-tag.ant-tag-checkable.is-active,
     .dark .prompt-filter-tag.ant-tag-checkable-checked {
-        background: rgba(250, 250, 249, 0.96);
-        border-color: rgba(255, 255, 255, 0.88);
-        box-shadow:
-            0 0 0 1px rgba(255, 255, 255, 0.18),
-            0 6px 18px rgba(0, 0, 0, 0.22);
-        color: #0c0a09 !important;
+        background: #8b7cff;
+        border-color: #8b7cff;
+        box-shadow: 0 8px 18px rgba(109, 92, 255, 0.28);
+        color: #ffffff !important;
         font-weight: 700;
     }
 
@@ -448,12 +451,12 @@
 
     .dark .canvas-control-select.ant-select .ant-select-selector,
     .dark .canvas-control-number.ant-input-number {
-        border-color: rgba(214, 211, 209, 0.2) !important;
+        border-color: rgba(255, 255, 255, 0.12) !important;
     }
 
     .dark .canvas-control-select.ant-select-focused .ant-select-selector,
     .dark .canvas-control-number.ant-input-number-focused {
-        border-color: #78716c !important;
+        border-color: #8b7cff !important;
     }
 
     .canvas-image-settings-popover,
@@ -482,8 +485,8 @@
     html.dark .ant-dropdown .ant-dropdown-menu,
     .dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu,
     html.dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
-        border-color: rgba(198, 188, 255, 0.1) !important;
-        background: rgba(24, 22, 34, 0.86) !important;
+        border-color: rgba(255, 255, 255, 0.1) !important;
+        background: rgba(16, 18, 26, 0.86) !important;
         box-shadow: 0 16px 40px rgba(0, 0, 0, 0.36) !important;
     }
 
@@ -508,9 +511,9 @@
 
     .dark .canvas-chrome-cluster,
     html.dark .canvas-chrome-cluster {
-        border-color: rgba(198, 188, 255, 0.1);
-        background: rgba(24, 22, 34, 0.72);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(16, 18, 26, 0.88);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
     }
 
     .canvas-chrome-btn {
@@ -537,8 +540,8 @@
 
     .dark .canvas-chrome-btn.is-active,
     html.dark .canvas-chrome-btn.is-active {
-        background: rgba(167, 139, 250, 0.18);
-        color: #ede9fe;
+        background: rgba(109, 92, 255, 0.18);
+        color: #e8ebf4;
     }
 
     .canvas-agent-pill {
@@ -563,6 +566,11 @@
     .dark .canvas-agent-panel,
     html.dark .canvas-agent-panel {
         color-scheme: dark;
+        border-color: rgba(255, 255, 255, 0.06);
+        background: rgba(12, 13, 17, 0.94) !important;
+        box-shadow:
+            0 24px 64px rgba(0, 0, 0, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
     .canvas-agent-panel .ant-btn-text {
@@ -719,14 +727,14 @@
 
     .dark .canvas-workflow-pill,
     html.dark .canvas-workflow-pill {
-        border-color: rgba(198, 188, 255, 0.14);
+        border-color: rgba(255, 255, 255, 0.14);
         background: rgba(28, 24, 42, 0.86);
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
     }
 
     .dark .canvas-workflow-pill.is-running,
     html.dark .canvas-workflow-pill.is-running {
-        border-color: rgba(167, 139, 250, 0.28);
+        border-color: rgba(109, 92, 255, 0.28);
         background: rgba(109, 92, 255, 0.18);
     }
 
@@ -791,7 +799,7 @@
 
     .dark .canvas-shortcuts-modal .ant-modal-content,
     html.dark .canvas-shortcuts-modal .ant-modal-content {
-        background: rgba(24, 22, 34, 0.9) !important;
+        background: rgba(16, 18, 26, 0.9) !important;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42) !important;
     }
 
@@ -872,12 +880,12 @@
 
     .dark .canvas-key-chip,
     html.dark .canvas-key-chip {
-        border-color: rgba(198, 188, 255, 0.14);
-        background: linear-gradient(180deg, rgba(52, 48, 68, 0.96), rgba(28, 26, 38, 0.88));
+        border-color: rgba(255, 255, 255, 0.14);
+        background: linear-gradient(180deg, rgba(38, 42, 56, 0.96), rgba(22, 24, 32, 0.88));
         box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.08),
             0 1px 2px rgba(0, 0, 0, 0.28);
-        color: #f4f1ff;
+        color: #e8ebf4;
     }
 
     .ant-modal-content {
@@ -888,7 +896,7 @@
     }
 
     html.dark .ant-modal-content {
-        border-color: rgba(198, 188, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.1);
         box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4) !important;
     }
 
@@ -946,7 +954,7 @@
 
     .dark .canvas-node-info-modal .ant-modal-content,
     html.dark .canvas-node-info-modal .ant-modal-content {
-        background: rgba(24, 22, 34, 0.9) !important;
+        background: rgba(16, 18, 26, 0.9) !important;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42) !important;
     }
 
@@ -982,7 +990,7 @@
 
     .dark .canvas-prompt-editor-modal .ant-modal-content,
     html.dark .canvas-prompt-editor-modal .ant-modal-content {
-        background: rgba(24, 22, 34, 0.92) !important;
+        background: rgba(16, 18, 26, 0.92) !important;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42) !important;
     }
 
@@ -1042,9 +1050,9 @@
     .canvas-editor-modal.is-dark .ant-modal-container,
     .canvas-editor-modal.is-dark .ant-modal-content,
     .canvas-editor-modal .ant-modal-container.is-dark {
-        background: #16141c !important;
+        background: #14161e !important;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5) !important;
-        color: #f4f1ff;
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal .ant-modal-header {
@@ -1068,7 +1076,7 @@
     }
 
     .canvas-editor-modal.is-dark .ant-modal-close {
-        color: #c4b5fd;
+        color: #8b7cff;
         background: rgba(255, 255, 255, 0.06);
     }
 
@@ -1194,8 +1202,8 @@
 
     .dark .canvas-editor-btn,
     html.dark .canvas-editor-btn {
-        background: rgba(167, 139, 250, 0.12);
-        color: #ede9fe;
+        background: rgba(109, 92, 255, 0.12);
+        color: #e8ebf4;
     }
 
     .dark .canvas-editor-btn.is-primary,
@@ -1206,12 +1214,12 @@
 
     .dark .canvas-editor-icon-btn:hover:not(:disabled),
     html.dark .canvas-editor-icon-btn:hover:not(:disabled) {
-        color: #ede9fe;
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-editor-btn {
-        background: rgba(167, 139, 250, 0.12);
-        color: #ede9fe;
+        background: rgba(109, 92, 255, 0.12);
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-editor-btn.is-primary {
@@ -1224,20 +1232,20 @@
     }
 
     .canvas-editor-modal.is-dark .canvas-editor-icon-btn:hover:not(:disabled) {
-        background: rgba(167, 139, 250, 0.14);
-        color: #ede9fe;
+        background: rgba(109, 92, 255, 0.14);
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-editor-field,
     .canvas-editor-modal.is-dark .canvas-editor-field.is-quiet {
-        border-color: rgba(198, 188, 255, 0.12);
-        background: #1c1a24;
-        color: #f4f1ff;
+        border-color: rgba(255, 255, 255, 0.12);
+        background: #1a1c26;
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-editor-surface {
-        border-color: rgba(198, 188, 255, 0.1);
-        background: rgba(12, 11, 18, 0.45);
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(10, 12, 16, 0.45);
     }
 
     .canvas-editor-surface {
@@ -1249,8 +1257,8 @@
 
     .dark .canvas-editor-surface,
     html.dark .canvas-editor-surface {
-        border-color: rgba(198, 188, 255, 0.1);
-        background: rgba(16, 14, 24, 0.28);
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(12, 14, 20, 0.28);
     }
 
     .canvas-editor-field {
@@ -1278,8 +1286,8 @@
 
     .dark .canvas-editor-field.is-quiet,
     html.dark .canvas-editor-field.is-quiet {
-        border-color: rgba(198, 188, 255, 0.12);
-        background: rgba(16, 14, 24, 0.45);
+        border-color: rgba(255, 255, 255, 0.12);
+        background: rgba(12, 14, 20, 0.45);
     }
 
     .canvas-editor-viewport {
@@ -1305,7 +1313,7 @@
             linear-gradient(-45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%),
             linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.03) 75%),
             linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.03) 75%),
-            #16141c;
+            #14161e;
         background-size: 18px 18px;
         background-position:
             0 0,
@@ -1368,12 +1376,12 @@
 
     .canvas-editor-modal.is-dark .canvas-mask-shortcut.is-active,
     .canvas-editor-modal.is-dark .canvas-mask-shortcut.is-active kbd {
-        color: #ede9fe;
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-mask-shortcut.is-active kbd {
-        border-color: rgba(198, 188, 255, 0.36);
-        background: rgba(167, 139, 250, 0.16);
+        border-color: rgba(255, 255, 255, 0.36);
+        background: rgba(109, 92, 255, 0.16);
     }
 
     .canvas-mask-tools {
@@ -1409,7 +1417,7 @@
         height: 32px;
         padding: 0 10px;
         border-radius: 10px;
-        color: #c4b5fd;
+        color: #8b7cff;
         font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
@@ -1426,7 +1434,7 @@
     }
 
     .canvas-mask-tools .canvas-editor-icon-btn {
-        color: #c4b5fd;
+        color: #8b7cff;
     }
 
     .canvas-mask-tools .canvas-editor-icon-btn:hover:not(:disabled) {
@@ -1564,14 +1572,14 @@
     .canvas-editor-modal.is-dark .canvas-crop-ratio,
     .dark .canvas-crop-ratio,
     html.dark .canvas-crop-ratio {
-        background: rgba(167, 139, 250, 0.12);
+        background: rgba(109, 92, 255, 0.12);
         color: #d6d0ea;
     }
 
     .canvas-editor-modal.is-dark .canvas-crop-ratio:hover,
     .dark .canvas-crop-ratio:hover,
     html.dark .canvas-crop-ratio:hover {
-        background: rgba(167, 139, 250, 0.2);
+        background: rgba(109, 92, 255, 0.2);
     }
 
     .canvas-editor-modal.is-dark .canvas-crop-ratio.is-active,
@@ -1624,7 +1632,7 @@
     .canvas-editor-modal.is-dark .canvas-split-stepper,
     .dark .canvas-split-stepper,
     html.dark .canvas-split-stepper {
-        background: rgba(167, 139, 250, 0.12);
+        background: rgba(109, 92, 255, 0.12);
     }
 
     .canvas-editor-modal.is-dark .canvas-split-stepper button,
@@ -1636,7 +1644,7 @@
     .canvas-editor-modal.is-dark .canvas-split-stepper button:hover:not(:disabled),
     .dark .canvas-split-stepper button:hover:not(:disabled),
     html.dark .canvas-split-stepper button:hover:not(:disabled) {
-        background: rgba(167, 139, 250, 0.18);
+        background: rgba(109, 92, 255, 0.18);
         color: #fff;
     }
 
@@ -1677,9 +1685,9 @@
     .canvas-editor-modal.is-dark .canvas-mask-prompt,
     .dark .canvas-mask-prompt,
     html.dark .canvas-mask-prompt {
-        border-color: rgba(198, 188, 255, 0.12);
-        background: #1c1a24;
-        color: #f4f1ff;
+        border-color: rgba(255, 255, 255, 0.12);
+        background: #1a1c26;
+        color: #e8ebf4;
     }
 
     .canvas-editor-modal.is-dark .canvas-mask-prompt::placeholder,
@@ -1752,22 +1760,22 @@
 
     .dark .canvas-editor-range,
     html.dark .canvas-editor-range {
-        background: rgba(167, 139, 250, 0.22);
+        background: rgba(109, 92, 255, 0.22);
     }
 
     .dark .canvas-prompt-editor-surface,
     html.dark .canvas-prompt-editor-surface {
-        border-color: rgba(198, 188, 255, 0.1);
-        background: rgba(16, 14, 24, 0.28);
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(12, 14, 20, 0.28);
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
     .dark .canvas-prompt-editor-surface:focus-within,
     html.dark .canvas-prompt-editor-surface:focus-within {
-        border-color: rgba(167, 139, 250, 0.36);
+        border-color: rgba(109, 92, 255, 0.36);
         box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.04),
-            0 0 0 3px rgba(167, 139, 250, 0.12);
+            0 0 0 3px rgba(109, 92, 255, 0.12);
     }
 
     .canvas-prompt-library-modal .ant-modal-content {
@@ -1782,7 +1790,7 @@
 
     .dark .canvas-prompt-library-modal .ant-modal-content,
     html.dark .canvas-prompt-library-modal .ant-modal-content {
-        background: rgba(24, 22, 34, 0.92) !important;
+        background: rgba(16, 18, 26, 0.92) !important;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42) !important;
     }
 
@@ -1847,7 +1855,7 @@
 
     .dark .canvas-prompt-filter-chip,
     html.dark .canvas-prompt-filter-chip {
-        background: rgba(167, 139, 250, 0.12);
+        background: rgba(109, 92, 255, 0.12);
         color: #a8a1c2;
     }
 
@@ -1855,13 +1863,13 @@
     html.dark .canvas-prompt-filter-chip:hover,
     .dark .canvas-prompt-filter-chip.is-active,
     html.dark .canvas-prompt-filter-chip.is-active {
-        background: rgba(167, 139, 250, 0.18);
-        color: #ede9fe;
+        background: rgba(109, 92, 255, 0.18);
+        color: #e8ebf4;
     }
 
     .dark .canvas-prompt-filter-chip.is-active,
     html.dark .canvas-prompt-filter-chip.is-active {
-        box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.36);
+        box-shadow: inset 0 0 0 1px rgba(109, 92, 255, 0.36);
     }
 
     .canvas-prompt-pick-card {
@@ -1934,7 +1942,7 @@
 
     .dark .canvas-prompt-pick-card:hover,
     html.dark .canvas-prompt-pick-card:hover {
-        border-color: rgba(167, 139, 250, 0.36);
+        border-color: rgba(109, 92, 255, 0.36);
         box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
     }
 
@@ -2106,21 +2114,21 @@ html.settings-no-animations .canvas-editor-chrome {
 }
 
 .canvas-nav-dock[data-theme="dark"] .canvas-nav-slider::-webkit-slider-runnable-track {
-    background: linear-gradient(to right, #c4b5fd var(--zoom, 0%), rgba(196, 181, 253, 0.2) var(--zoom, 0%));
+    background: linear-gradient(to right, #8b7cff var(--zoom, 0%), rgba(139, 124, 255, 0.2) var(--zoom, 0%));
 }
 
 .canvas-nav-dock[data-theme="dark"] .canvas-nav-slider::-webkit-slider-thumb,
 .canvas-nav-dock[data-theme="dark"] .canvas-nav-slider::-moz-range-thumb {
-    background: #c4b5fd;
-    box-shadow: 0 0 0 2px #1c1a26, 0 2px 8px rgba(0, 0, 0, 0.4);
+    background: #8b7cff;
+    box-shadow: 0 0 0 2px #161821, 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .canvas-nav-dock[data-theme="dark"] .canvas-nav-slider::-moz-range-progress {
-    background: #c4b5fd;
+    background: #8b7cff;
 }
 
 .canvas-nav-dock[data-theme="dark"] .canvas-nav-slider::-moz-range-track {
-    background: rgba(196, 181, 253, 0.2);
+    background: rgba(139, 124, 255, 0.2);
 }
 
 .canvas-nav-icon,
@@ -2369,8 +2377,8 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .dark .canvas-home-pattern {
-    --canvas-pattern-cover: #0d0e14;
-    --canvas-pattern-line: rgba(139, 123, 255, 0.08);
+    --canvas-pattern-cover: #0c0d11;
+    --canvas-pattern-line: rgba(255, 255, 255, 0.05);
 }
 
 .canvas-home-pattern__inner {
@@ -2531,7 +2539,7 @@ html.settings-no-animations .canvas-nav-map {
     background: #fff;
     box-shadow:
         0 1px 0 rgba(255, 255, 255, 0.95) inset,
-        0 0 0 3px rgba(167, 139, 250, 0.16),
+        0 0 0 3px rgba(109, 92, 255, 0.16),
         0 8px 18px rgba(109, 40, 217, 0.08);
 }
 
@@ -2542,16 +2550,16 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .dark .canvas-home-search input {
-    border-color: rgba(198, 188, 255, 0.12);
-    background: linear-gradient(180deg, rgba(36, 32, 54, 0.82), rgba(24, 24, 32, 0.7));
-    color: #e7e5ee;
+    border-color: rgba(255, 255, 255, 0.12);
+    background: linear-gradient(180deg, rgba(28, 32, 44, 0.82), rgba(24, 24, 32, 0.7));
+    color: #e4e7f0;
     box-shadow:
         0 1px 0 rgba(255, 255, 255, 0.04) inset,
         0 8px 18px rgba(0, 0, 0, 0.18);
 }
 
 .dark .canvas-home-search input:focus {
-    background: rgba(36, 32, 54, 0.95);
+    background: rgba(28, 32, 44, 0.95);
 }
 
 .canvas-home-btn {
@@ -2887,17 +2895,17 @@ html.settings-no-animations .canvas-nav-map {
 .canvas-project-tile:hover,
 .canvas-project-tile:focus-visible {
     transform: translateY(-2px);
-    border-color: rgba(167, 139, 250, 0.35);
+    border-color: rgba(109, 92, 255, 0.35);
     box-shadow:
         0 1px 0 rgba(255, 255, 255, 0.9) inset,
-        0 10px 22px rgba(76, 29, 149, 0.08);
+        0 10px 22px rgba(109, 92, 255, 0.08);
 }
 
 .canvas-project-tile.is-selected {
     border-color: rgba(124, 58, 237, 0.4);
     background: rgba(245, 243, 255, 0.92);
     box-shadow:
-        0 0 0 2px rgba(167, 139, 250, 0.22),
+        0 0 0 2px rgba(109, 92, 255, 0.22),
         0 10px 22px rgba(109, 40, 217, 0.08);
 }
 
@@ -2906,7 +2914,7 @@ html.settings-no-animations .canvas-nav-map {
     overflow: hidden;
     aspect-ratio: 16 / 7;
     background:
-        radial-gradient(circle at 50% 0%, rgba(167, 139, 250, 0.14), transparent 42%),
+        radial-gradient(circle at 50% 0%, rgba(109, 92, 255, 0.14), transparent 42%),
         linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(248, 248, 255, 0.4)),
         linear-gradient(rgba(106, 79, 224, 0.055) 1px, transparent 1px),
         linear-gradient(90deg, rgba(106, 79, 224, 0.055) 1px, transparent 1px);
@@ -2959,7 +2967,7 @@ html.settings-no-animations .canvas-nav-map {
     background: linear-gradient(180deg, #fff, #f5f3ff);
     color: #6d28d9;
     box-shadow:
-        0 0 0 4px rgba(167, 139, 250, 0.08),
+        0 0 0 4px rgba(109, 92, 255, 0.08),
         0 4px 10px rgba(109, 40, 217, 0.1);
 }
 
@@ -3019,25 +3027,25 @@ html.settings-no-animations .canvas-nav-map {
 
 .dark .canvas-home-search__icon,
 .dark .canvas-home-btn__icon {
-    background: rgba(167, 139, 250, 0.14);
-    color: #c4b5fd;
+    background: rgba(109, 92, 255, 0.14);
+    color: #8b7cff;
 }
 
 .dark .canvas-home-search__clear {
-    background: rgba(167, 139, 250, 0.1);
+    background: rgba(109, 92, 255, 0.1);
     color: #a8a1c2;
 }
 
 .dark .canvas-home-search__clear:hover,
 .dark .canvas-home-search__clear:focus-visible {
-    background: rgba(167, 139, 250, 0.18);
-    color: #ddd6fe;
+    background: rgba(109, 92, 255, 0.18);
+    color: #d5d9e8;
 }
 
 .dark .canvas-home-btn {
-    border-color: rgba(198, 188, 255, 0.12);
-    background: linear-gradient(180deg, rgba(36, 32, 54, 0.82), rgba(24, 24, 32, 0.7));
-    color: #e7e5ee;
+    border-color: rgba(255, 255, 255, 0.12);
+    background: linear-gradient(180deg, rgba(28, 32, 44, 0.82), rgba(24, 24, 32, 0.7));
+    color: #e4e7f0;
     box-shadow:
         0 1px 0 rgba(255, 255, 255, 0.04) inset,
         0 8px 18px rgba(0, 0, 0, 0.18);
@@ -3045,8 +3053,8 @@ html.settings-no-animations .canvas-nav-map {
 
 .dark .canvas-home-btn:hover:not(:disabled),
 .dark .canvas-home-btn:focus-visible {
-    background: rgba(36, 32, 54, 0.95);
-    color: #ddd6fe;
+    background: rgba(28, 32, 44, 0.95);
+    color: #d5d9e8;
 }
 
 .dark .canvas-home-btn.is-danger:hover:not(:disabled) {
@@ -3061,18 +3069,18 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .dark .canvas-project-tile.is-selected {
-    background: rgba(76, 29, 149, 0.22);
+    background: rgba(109, 92, 255, 0.22);
     box-shadow:
-        0 0 0 3px rgba(167, 139, 250, 0.28),
+        0 0 0 3px rgba(109, 92, 255, 0.28),
         0 18px 36px rgba(0, 0, 0, 0.28);
 }
 
 .dark .canvas-project-tile__preview {
     background:
-        radial-gradient(circle at 50% 0%, rgba(167, 139, 250, 0.16), transparent 42%),
+        radial-gradient(circle at 50% 0%, rgba(109, 92, 255, 0.16), transparent 42%),
         linear-gradient(180deg, rgba(16, 17, 26, 0.15), rgba(16, 17, 26, 0.5)),
-        linear-gradient(rgba(198, 188, 255, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(198, 188, 255, 0.08) 1px, transparent 1px);
+        linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
     background-size: auto, auto, 26px 26px, 26px 26px;
 }
 
@@ -3082,21 +3090,21 @@ html.settings-no-animations .canvas-nav-map {
 
 .dark .canvas-project-tile__preview.is-create {
     background:
-        radial-gradient(circle at 50% 44%, rgba(167, 139, 250, 0.22), transparent 36%),
+        radial-gradient(circle at 50% 44%, rgba(109, 92, 255, 0.22), transparent 36%),
         linear-gradient(180deg, rgba(16, 17, 26, 0.15), rgba(16, 17, 26, 0.5)),
-        linear-gradient(rgba(198, 188, 255, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(198, 188, 255, 0.08) 1px, transparent 1px);
+        linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
     background-size: auto, auto, 26px 26px, 26px 26px;
 }
 
 .dark .canvas-project-tile__plus {
-    background: linear-gradient(180deg, #2a2438, #1a1624);
-    color: #ddd6fe;
+    background: linear-gradient(180deg, #232736, #161821);
+    color: #d5d9e8;
 }
 
 .dark .canvas-project-tile__pill {
-    background: rgba(76, 29, 149, 0.28);
-    color: #ddd6fe;
+    background: rgba(109, 92, 255, 0.28);
+    color: #d5d9e8;
 }
 
 .dark .canvas-project-icon-btn {

@@ -74,8 +74,16 @@
 .trial-dialog__message h3, .trial-dialog__form h3 { margin: 20px 0 0; font-size: 1.9rem; line-height: 1.15; letter-spacing: 0; }
 .trial-dialog__message > p, .trial-dialog__form header > p { margin: 14px 0 0; color: rgb(32 32 42 / 58%); line-height: 1.7; }
 .is-dark .trial-dialog__message > p, .is-dark .trial-dialog__form header > p { color: rgb(255 255 255 / 56%); }
-.trial-dialog__actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
-.trial-dialog button.is-primary, .trial-dialog button.is-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 20px; border-radius: 10px; font: inherit; font-size: .86rem; font-weight: 780; cursor: pointer; }
+.trial-dialog__actions { display: flex; flex-direction: column; align-items: stretch; gap: 16px; margin-top: 28px; }
+.trial-dialog__actions > .trial-dialog__summary,
+.trial-dialog__actions > .trial-dialog__reward,
+.trial-dialog__actions > .trial-dialog__launchers { width: 100%; margin-top: 0; }
+.trial-dialog__button-row { display: flex; flex-wrap: wrap; gap: 10px; width: 100%; }
+.trial-dialog__button-row > button { flex: 1 1 148px; }
+.trial-dialog button.is-primary, .trial-dialog button.is-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 20px; border-radius: 10px; font: inherit; font-size: .86rem; font-weight: 780; writing-mode: horizontal-tb; white-space: nowrap; cursor: pointer; }
+.trial-dialog__actions > button.is-primary,
+.trial-dialog__actions > button.is-secondary { align-self: flex-start; min-width: 148px; }
+.trial-dialog__actions > button.is-wide { align-self: stretch; }
 .trial-dialog button.is-primary { color: #fff; background: linear-gradient(110deg, #6654f6, #8b5cf6 62%, #b45cf0); border: 1px solid transparent; box-shadow: 0 12px 26px rgb(109 92 255 / 20%); }
 .trial-dialog button.is-secondary { color: inherit; background: transparent; border: 1px solid rgb(32 32 42 / 14%); }
 .trial-dialog button.is-wide { width: 100%; }

@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
+import { cn } from "@/lib/utils";
 import { AnchorPopoverPanel, AnchorPopoverTrigger, useAnchorPopover, type AnchorPlacement } from "./canvas-anchor-popover";
 
 export type CanvasFieldOption<T extends string = string> = {
@@ -49,7 +50,10 @@ export function CanvasFieldMenu<T extends string>({ value, options, onChange, th
                                     <button
                                         key={option.value}
                                         type="button"
-                                        className="flex min-h-9 w-full items-center rounded-[10px] px-2.5 text-left text-[13px]"
+                                        className={cn(
+                                            "flex min-h-10 w-full items-center gap-2.5 rounded-[12px] px-3 py-2 text-left text-[13px] font-medium",
+                                            !selected && "hover:bg-black/[.04] dark:hover:bg-white/[.08]",
+                                        )}
                                         style={{
                                             background: selected ? theme.toolbar.activeBg : "transparent",
                                             color: selected ? theme.toolbar.activeText : theme.node.text,
@@ -60,7 +64,8 @@ export function CanvasFieldMenu<T extends string>({ value, options, onChange, th
                                             updateOpen(false);
                                         }}
                                     >
-                                        {option.label}
+                                        <span className="flex min-w-0 flex-1 items-center">{option.label}</span>
+                                        {selected ? <Check className="size-3.5 shrink-0" /> : <span className="size-3.5 shrink-0" />}
                                     </button>
                                 );
                             })

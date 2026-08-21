@@ -18,23 +18,23 @@ type scriptedAssistantChatClient struct {
 	payloads  [][]sub2api.Message
 }
 
-func (c *scriptedAssistantChatClient) ChatTextWithImages(
+func (c *scriptedAssistantChatClient) CompleteChatTextWithImages(
 	_ context.Context,
 	messages []sub2api.Message,
 	_ []string,
-	onText func(string) error,
-) (string, error) {
+	onText func(string, string) error,
+) (sub2api.ChatCompletion, error) {
 	cloned := append([]sub2api.Message(nil), messages...)
 	c.payloads = append(c.payloads, cloned)
 	response := c.responses[len(c.payloads)-1]
 	for end := 1; end <= len(response); end++ {
 		if onText != nil {
-			if err := onText(response[:end]); err != nil {
-				return response[:end], err
+			if err := onText(response[:end], ""); err != nil {
+				return sub2api.ChatCompletion{Text: response[:end]}, err
 			}
 		}
 	}
-	return response, nil
+	return sub2api.ChatCompletion{Text: response}, nil
 }
 
 func leakedSearchResponse(prompt, suffix string) string {
@@ -217,9 +217,9 @@ func TestRequestAssistantChatTextRemovesMatchingLeakedSearchPrefix(t *testing.T)
 		leakedSearchResponse(prompt, "## 电商产品制作简报\n\n- 产品：无线耳机"),
 	}}
 	var snapshots []string
-	text, err := requestAssistantChatText(context.Background(), client,
+	text, _, err := requestAssistantChatText(context.Background(), client,
 		[]sub2api.Message{{Role: "user", Content: prompt}}, prompt,
-		func(value string) error {
+		func(value, _ string) error {
 			snapshots = append(snapshots, value)
 			return nil
 		}, nil)
@@ -245,7 +245,7 @@ func TestRequestAssistantChatTextRetriesEmptyLeakedSearchOutput(t *testing.T) {
 		leakedSearchResponse(prompt, ""),
 		"这是可用的商品分析。",
 	}}
-	text, err := requestAssistantChatText(context.Background(), client,
+	text, _, err := requestAssistantChatText(context.Background(), client,
 		[]sub2api.Message{{Role: "user", Content: prompt}}, prompt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestRequestAssistantChatTextFailsAfterRepeatedEmptyLeak(t *testing.T) {
 	prompt := "user: 分析这张商品图"
 	leaked := leakedSearchResponse(prompt, "")
 	client := &scriptedAssistantChatClient{responses: []string{leaked, leaked}}
-	_, err := requestAssistantChatText(context.Background(), client,
+	_, _, err := requestAssistantChatText(context.Background(), client,
 		[]sub2api.Message{{Role: "user", Content: prompt}}, prompt, nil, nil)
 	if !errors.Is(err, errAssistantLeakedToolOutput) {
 		t.Fatalf("error = %v", err)

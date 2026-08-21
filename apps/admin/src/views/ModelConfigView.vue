@@ -54,6 +54,7 @@ interface ProviderRoute {
 }
 
 interface ReasoningEffortPricing {
+  enabled?: boolean;
   assistantPriceCents: number;
   assistantDiscountPriceCents: number | null;
   canvasAgentPriceCents: number;
@@ -87,6 +88,7 @@ interface ModelItem {
   outputFormats: string[];
   moderationLevels: string[];
   maxReferenceImages: number;
+  maxImages: number;
   contextWindowTokens: number;
   maxOutputTokens: number;
   supportedReasoningEfforts: string[];
@@ -189,6 +191,21 @@ function defaultReasoningEffort(efforts: string[]) {
   return efforts.includes("medium") ? "medium" : efforts[0] || "";
 }
 
+function reasoningEffortEnabled(
+  price: ReasoningEffortPricing | null | undefined,
+) {
+  return price?.enabled !== false;
+}
+
+function enabledReasoningEfforts(model: {
+  supportedReasoningEfforts?: string[];
+  reasoningPricing?: ReasoningPricing | null;
+}) {
+  return (model.supportedReasoningEfforts || []).filter((effort) =>
+    reasoningEffortEnabled(model.reasoningPricing?.efforts?.[effort]),
+  );
+}
+
 function legacyReasoningEffortPrice(
   effort: string,
   standard: number,
@@ -196,6 +213,7 @@ function legacyReasoningEffortPrice(
 ): ReasoningEffortPricing {
   const multiplier = ["high", "xhigh", "max"].includes(effort) ? 5 : 3;
   return {
+    enabled: true,
     assistantPriceCents: normalizePoints(standard),
     assistantDiscountPriceCents:
       discount === null ? null : normalizePoints(discount),
@@ -210,15 +228,27 @@ function normalizeReasoningPricing(
   efforts: string[],
   standard: number,
   discount: number | null,
+  supportedSubset?: string[] | null,
 ): ReasoningPricing | null {
   if (!efforts.length) return null;
+  const fromList =
+    Array.isArray(supportedSubset) &&
+    !(
+      supportedSubset.length === efforts.length &&
+      efforts.every((effort) => supportedSubset.includes(effort))
+    );
+  const enabledSet = new Set(supportedSubset || []);
   const prices = Object.fromEntries(
     efforts.map((effort) => {
       const configured = source?.efforts?.[effort];
+      const enabled = fromList
+        ? enabledSet.has(effort)
+        : reasoningEffortEnabled(configured);
       return [
         effort,
         configured
           ? {
+              enabled,
               assistantPriceCents: normalizePoints(configured.assistantPriceCents),
               assistantDiscountPriceCents:
                 configured.assistantDiscountPriceCents === null ||
@@ -232,14 +262,17 @@ function normalizeReasoningPricing(
                   ? null
                   : normalizePoints(configured.canvasAgentDiscountPriceCents),
             }
-          : legacyReasoningEffortPrice(effort, standard, discount),
+          : { ...legacyReasoningEffortPrice(effort, standard, discount), enabled },
       ];
     }),
   );
+  const enabled = efforts.filter((effort) =>
+    reasoningEffortEnabled(prices[effort]),
+  );
   return {
-    defaultEffort: efforts.includes(source?.defaultEffort || "")
+    defaultEffort: enabled.includes(source?.defaultEffort || "")
       ? source!.defaultEffort
-      : defaultReasoningEffort(efforts),
+      : defaultReasoningEffort(enabled),
     efforts: prices,
   };
 }
@@ -380,6 +413,7 @@ const activeView = ref<"models" | "workspaces" | "providers">("models");
 const activeWorkspaceKey = ref<WorkspaceKey>("assistant");
 const kindFilter = ref<"all" | ModelKind>("all");
 const modelSearch = ref("");
+const reasoningPriceScope = ref<ReasoningPriceScope>("assistant");
 const savedSignature = ref("");
 const autoSaveReady = ref(false);
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -486,13 +520,27 @@ function hydrate(value: ModelConfig) {
     moderationLevels: model.kind === "image" ? model.moderationLevels || [] : [],
     maxReferenceImages:
       model.kind === "image" ? Number(model.maxReferenceImages ?? 4) : 0,
+    maxImages: model.kind === "image" ? Number(model.maxImages ?? 4) : 0,
     contextWindowTokens:
       model.kind === "chat" ? Number(model.contextWindowTokens ?? 128000) : 0,
     maxOutputTokens:
       model.kind === "chat" ? Number(model.maxOutputTokens ?? 8192) : 0,
     supportedReasoningEfforts:
       model.kind === "chat"
-        ? reasoningEffortsForModel(model.upstreamModel)
+        ? enabledReasoningEfforts({
+            supportedReasoningEfforts: reasoningEffortsForModel(
+              model.upstreamModel,
+            ),
+            reasoningPricing: normalizeReasoningPricing(
+              model.reasoningPricing,
+              reasoningEffortsForModel(model.upstreamModel),
+              model.priceCents,
+              model.discountPriceCents,
+              Array.isArray(model.supportedReasoningEfforts)
+                ? model.supportedReasoningEfforts
+                : null,
+            ),
+          })
         : [],
     reasoningPricing:
       model.kind === "chat"
@@ -501,6 +549,9 @@ function hydrate(value: ModelConfig) {
             reasoningEffortsForModel(model.upstreamModel),
             model.priceCents,
             model.discountPriceCents,
+            Array.isArray(model.supportedReasoningEfforts)
+              ? model.supportedReasoningEfforts
+              : null,
           )
         : null,
     public: model.public !== false,
@@ -562,8 +613,9 @@ async function save() {
       method: "PUT",
       body: payload,
     });
-    if (signature() === submittedSignature) hydrate(saved);
-    else {
+    if (signature() === submittedSignature) {
+      hydrate(retainSubmittedReasoning(saved, payload));
+    } else {
       savedSignature.value = submittedSignature;
       saveQueued = true;
     }
@@ -582,6 +634,24 @@ function scheduleSave() {
     autoSaveTimer = null;
     void save().catch(() => undefined);
   }, 500);
+}
+
+function retainSubmittedReasoning(saved: ModelConfig, submitted: ModelConfig) {
+  const localById = new Map(submitted.models.map((model) => [model.id, model]));
+  return {
+    ...saved,
+    models: saved.models.map((model) => {
+      const local = localById.get(model.id);
+      if (!local || local.kind !== "chat" || !local.reasoningPricing) return model;
+      return {
+        ...model,
+        supportedReasoningEfforts: [...(local.supportedReasoningEfforts || [])],
+        reasoningPricing: JSON.parse(
+          JSON.stringify(local.reasoningPricing),
+        ) as ReasoningPricing,
+      };
+    }),
+  };
 }
 
 watch(
@@ -793,6 +863,102 @@ function discountOffLabel(model: ModelItem) {
   return off > 0 ? `-${off}%` : "";
 }
 
+function effectiveReasoningCents(
+  standard: number,
+  discount: number | null | undefined,
+) {
+  return discount === null || discount === undefined ? standard : discount;
+}
+
+function formatPointRange(values: number[]) {
+  if (!values.length) return "—";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return min === max
+    ? formatPoints(min)
+    : `${formatPoints(min)}–${formatPoints(max)}`;
+}
+
+function formatPricedCents(
+  standard: number,
+  discount: number | null | undefined,
+) {
+  const now = effectiveReasoningCents(standard, discount);
+  const hasDiscount =
+    discount !== null && discount !== undefined && discount < standard;
+  return {
+    cents: now,
+    now: formatPoints(now),
+    was: hasDiscount ? formatPoints(standard) : "",
+  };
+}
+
+function modelReasoningPriceRows(model: ModelItem) {
+  if (model.kind !== "chat" || !model.reasoningPricing) return [];
+  const defaultEffort = model.reasoningPricing.defaultEffort;
+  return enabledReasoningEfforts(model).flatMap((effort) => {
+    const price = model.reasoningPricing?.efforts[effort];
+    if (!price) return [];
+    const assistant = formatPricedCents(
+      price.assistantPriceCents,
+      price.assistantDiscountPriceCents,
+    );
+    const canvas = formatPricedCents(
+      price.canvasAgentPriceCents,
+      price.canvasAgentDiscountPriceCents,
+    );
+    return [
+      {
+        effort,
+        label: REASONING_EFFORT_LABELS[effort] || effort,
+        default: effort === defaultEffort,
+        assistantCents: assistant.cents,
+        assistant: assistant.now,
+        assistantWas: assistant.was,
+        canvasCents: canvas.cents,
+        canvas: canvas.now,
+        canvasWas: canvas.was,
+      },
+    ];
+  });
+}
+
+function modelCardPrice(model: ModelItem) {
+  const rows = modelReasoningPriceRows(model);
+  if (rows.length) {
+    const canvasScope = reasoningPriceScope.value === "canvas_agent";
+    const values = rows.map((row) =>
+      canvasScope ? row.canvasCents : row.assistantCents,
+    );
+    const other = rows.map((row) =>
+      canvasScope ? row.assistantCents : row.canvasCents,
+    );
+    const defaultRow = rows.find((row) => row.default);
+    return {
+      amount: formatPointRange(values),
+      label: canvasScope ? "画布积分" : "助手积分",
+      meta: `${canvasScope ? "助手" : "画布"} ${formatPointRange(other)}`,
+      was: "",
+      off: "",
+      rows,
+      countLabel: `${rows.length} 档`,
+      defaultLabel: defaultRow?.label || "",
+    };
+  }
+  return {
+    amount: formatPoints(
+      hasDiscountPrice(model) ? Number(model.discountPriceCents) : model.priceCents,
+    ),
+    label: model.kind === "chat" ? "基础积分" : "积分",
+    meta: "",
+    was: hasDiscountPrice(model) ? `原价 ${formatPoints(model.priceCents)}` : "",
+    off: discountOffLabel(model),
+    rows: [],
+    countLabel: "",
+    defaultLabel: "",
+  };
+}
+
 function kindName(value: unknown) {
   return kindMeta[String(value) as ModelKind]?.name || "未知类型";
 }
@@ -852,7 +1018,8 @@ function aspectByResolutionParts(model: ModelItem) {
 
 function modelCardHighlights(model: ModelItem) {
   if (model.kind === "chat" && model.reasoningPricing) {
-    const efforts = model.supportedReasoningEfforts || [];
+    const efforts = enabledReasoningEfforts(model);
+    if (!efforts.length) return [];
     const label = (effort: string) =>
       REASONING_EFFORT_LABELS[effort] || effort;
     const effective = (standard: number, discount: number | null) =>
@@ -910,6 +1077,10 @@ function modelCardHighlights(model: ModelItem) {
     {
       label: "参考图",
       value: `${model.maxReferenceImages} 张`,
+    },
+    {
+      label: "单次张数",
+      value: `${model.maxImages} 张`,
     },
     {
       label: "耗时",
@@ -1223,6 +1394,7 @@ const modelDraft = reactive<ModelDraft>({
   moderationLevels: [...IMAGE_MODERATION_LEVELS],
   moderationEnabled: true,
   maxReferenceImages: 4,
+  maxImages: 4,
   contextWindowTokens: 0,
   maxOutputTokens: 0,
   supportedReasoningEfforts: [],
@@ -1267,6 +1439,7 @@ function openModel(index = -1) {
           moderationLevels: [...(source.moderationLevels || [])],
           moderationEnabled: (source.moderationLevels || []).length > 0,
           maxReferenceImages: Number(source.maxReferenceImages ?? 4),
+          maxImages: Number(source.maxImages ?? 4),
           contextWindowTokens: Number(source.contextWindowTokens ?? (source.kind === "chat" ? 128000 : 0)),
           maxOutputTokens: Number(source.maxOutputTokens ?? (source.kind === "chat" ? 8192 : 0)),
           supportedReasoningEfforts:
@@ -1280,6 +1453,9 @@ function openModel(index = -1) {
                   reasoningEffortsForModel(source.upstreamModel),
                   source.priceCents,
                   source.discountPriceCents,
+                  Array.isArray(source.supportedReasoningEfforts)
+                    ? source.supportedReasoningEfforts
+                    : null,
                 )
               : null,
           public: source.public,
@@ -1318,6 +1494,7 @@ function openModel(index = -1) {
           moderationLevels: [...IMAGE_MODERATION_LEVELS],
           moderationEnabled: true,
           maxReferenceImages: 4,
+          maxImages: 4,
           contextWindowTokens: kindFilter.value === "chat" ? 128000 : 0,
           maxOutputTokens: kindFilter.value === "chat" ? 8192 : 0,
           supportedReasoningEfforts: [],
@@ -1381,6 +1558,7 @@ function onModelKindChange(value: unknown) {
     modelDraft.moderationLevels = [];
     modelDraft.moderationEnabled = false;
     modelDraft.maxReferenceImages = 0;
+    modelDraft.maxImages = 0;
   } else if (!modelDraft.resolutions.length) {
     modelDraft.resolutions = ["1K"];
     modelDraft.aspectRatios = [...IMAGE_ASPECT_RATIOS];
@@ -1396,6 +1574,7 @@ function onModelKindChange(value: unknown) {
     modelDraft.moderationLevels = [...IMAGE_MODERATION_LEVELS];
     modelDraft.moderationEnabled = true;
     modelDraft.maxReferenceImages = 4;
+    modelDraft.maxImages = 4;
   }
 	syncModelDraftReasoningPricing();
 }
@@ -1420,7 +1599,21 @@ function syncModelDraftReasoningPricing(fillFromBase = false) {
 }
 
 function fillReasoningPricingFromBase() {
+  const previous = modelDraft.reasoningPricing;
   syncModelDraftReasoningPricing(true);
+  if (previous && modelDraft.reasoningPricing) {
+    for (const effort of modelDraft.supportedReasoningEfforts) {
+      const next = modelDraft.reasoningPricing.efforts[effort];
+      const prior = previous.efforts?.[effort];
+      if (next) next.enabled = reasoningEffortEnabled(prior);
+    }
+    const enabled = enabledReasoningEfforts(modelDraft);
+    modelDraft.reasoningPricing.defaultEffort = enabled.includes(
+      previous.defaultEffort,
+    )
+      ? previous.defaultEffort
+      : defaultReasoningEffort(enabled);
+  }
   ElMessage.success("已按兼容规则填充各推理档积分");
 }
 
@@ -1450,6 +1643,26 @@ function toggleReasoningDiscount(
     price.canvasAgentDiscountPriceCents =
       enabled === true ? price.canvasAgentPriceCents : null;
   }
+}
+
+function syncDefaultReasoningEffort() {
+  const enabledEfforts = enabledReasoningEfforts(modelDraft);
+  if (!modelDraft.reasoningPricing) return;
+  if (!enabledEfforts.includes(modelDraft.reasoningPricing.defaultEffort)) {
+    modelDraft.reasoningPricing.defaultEffort =
+      defaultReasoningEffort(enabledEfforts);
+  }
+}
+
+function setReasoningEffortEnabled(effort: string, on: boolean) {
+  const price = modelDraft.reasoningPricing?.efforts?.[effort];
+  if (!price) return;
+  price.enabled = on;
+  syncDefaultReasoningEffort();
+}
+
+function draftReasoningEffortOn(effort: string) {
+  return reasoningEffortEnabled(modelDraft.reasoningPricing?.efforts?.[effort]);
 }
 
 watch(
@@ -1629,6 +1842,10 @@ function saveModelDraft() {
       modelDraft.kind === "image"
         ? Math.min(16, Math.max(0, Math.round(modelDraft.maxReferenceImages)))
         : 0,
+    maxImages:
+      modelDraft.kind === "image"
+        ? Math.min(16, Math.max(1, Math.round(modelDraft.maxImages)))
+        : 0,
     contextWindowTokens:
       modelDraft.kind === "chat"
         ? Math.min(2000000, Math.max(4096, Math.round(modelDraft.contextWindowTokens)))
@@ -1640,23 +1857,28 @@ function saveModelDraft() {
             Math.max(256, Math.round(modelDraft.maxOutputTokens)),
           )
         : 0,
-    supportedReasoningEfforts:
-      modelDraft.kind === "chat"
-        ? [...modelDraft.supportedReasoningEfforts]
-        : [],
-    reasoningPricing:
-      modelDraft.kind === "chat"
-        ? normalizeReasoningPricing(
-            modelDraft.reasoningPricing,
-            modelDraft.supportedReasoningEfforts,
-            modelDraft.pricePoints,
-            modelDraft.discountEnabled ? modelDraft.discountPoints : null,
-          )
-        : null,
+    supportedReasoningEfforts: [] as string[],
+    reasoningPricing: null as ReasoningPricing | null,
     public: modelDraft.public,
     default: modelDraft.default,
     enabled: modelDraft.enabled,
   };
+  if (modelDraft.kind === "chat") {
+    const pricing = normalizeReasoningPricing(
+      modelDraft.reasoningPricing,
+      modelDraft.supportedReasoningEfforts,
+      modelDraft.pricePoints,
+      modelDraft.discountEnabled ? modelDraft.discountPoints : null,
+    );
+    value.reasoningPricing = pricing;
+    value.supportedReasoningEfforts = enabledReasoningEfforts({
+      supportedReasoningEfforts: modelDraft.supportedReasoningEfforts,
+      reasoningPricing: pricing,
+    });
+  } else {
+    value.supportedReasoningEfforts = [];
+    value.reasoningPricing = null;
+  }
   if (value.default) {
     for (const item of config.models) {
       if (item.kind === value.kind && item.id !== value.id)
@@ -1675,6 +1897,8 @@ function saveModelDraft() {
   }
   sanitizeWorkspaceBindings();
   modelDialogVisible.value = false;
+  ElMessage.success("已更新模型");
+  void save();
 }
 
 async function removeModel(index: number) {
@@ -1846,29 +2070,138 @@ onBeforeUnmount(() => {
                     <span>{{ providerAdapterLabel(row.providerId) }}</span>
                   </div>
                 </div>
-                <div class="model-card__price">
-                  <div class="price-now">
-                    <strong class="tnum">{{
-                      formatPoints(
-                        hasDiscountPrice(row as ModelItem)
-                          ? row.discountPriceCents
-                          : row.priceCents,
-                      )
-                    }}</strong>
-                    <span>{{ row.kind === "chat" ? "基础积分" : "积分" }}</span>
-                  </div>
-                  <div
-                    v-if="hasDiscountPrice(row as ModelItem)"
-                    class="price-meta"
-                  >
-                    <span class="price-was tnum"
-                      >原价 {{ formatPoints(row.priceCents) }}</span
+                <el-popover
+                  v-for="price in [modelCardPrice(row as ModelItem)]"
+                  :key="`${row.id}-price`"
+                  :disabled="!price.rows.length"
+                  placement="bottom-end"
+                  :width="280"
+                  trigger="click"
+                  :show-arrow="false"
+                >
+                  <template #reference>
+                    <button
+                      type="button"
+                      class="model-card__price"
+                      :class="{ 'is-interactive': price.rows.length }"
+                      :tabindex="price.rows.length ? 0 : -1"
+                      :aria-label="
+                        price.rows.length
+                          ? `查看 ${price.countLabel}${price.label}`
+                          : undefined
+                      "
                     >
-                    <span class="price-off">{{
-                      discountOffLabel(row as ModelItem)
-                    }}</span>
+                      <div class="price-now">
+                        <strong class="tnum">{{ price.amount }}</strong>
+                        <span>{{ price.label }}</span>
+                      </div>
+                      <div
+                        v-if="price.meta || price.was || price.countLabel"
+                        class="price-meta"
+                      >
+                        <span v-if="price.countLabel" class="price-count">{{
+                          price.countLabel
+                        }}</span>
+                        <span v-if="price.meta" class="price-scope tnum">{{
+                          price.meta
+                        }}</span>
+                        <span v-if="price.was" class="price-was tnum">{{
+                          price.was
+                        }}</span>
+                        <span v-if="price.off" class="price-off">{{
+                          price.off
+                        }}</span>
+                      </div>
+                    </button>
+                  </template>
+                  <div class="model-price-pop">
+                    <header class="model-price-pop__head">
+                      <strong>{{ price.countLabel }}推理</strong>
+                      <span v-if="price.defaultLabel">默认 {{ price.defaultLabel }}</span>
+                    </header>
+                    <div
+                      class="price-scope-switch"
+                      role="tablist"
+                      aria-label="积分渠道"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        :class="{
+                          'is-active': reasoningPriceScope === 'assistant',
+                        }"
+                        @click="reasoningPriceScope = 'assistant'"
+                      >
+                        AI 助手
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        :class="{
+                          'is-active': reasoningPriceScope === 'canvas_agent',
+                        }"
+                        @click="reasoningPriceScope = 'canvas_agent'"
+                      >
+                        无限画布
+                      </button>
+                    </div>
+                    <table class="model-price-pop__table">
+                      <thead>
+                        <tr>
+                          <th>档位</th>
+                          <th
+                            :class="{
+                              'is-active': reasoningPriceScope === 'assistant',
+                            }"
+                          >
+                            助手
+                          </th>
+                          <th
+                            :class="{
+                              'is-active':
+                                reasoningPriceScope === 'canvas_agent',
+                            }"
+                          >
+                            画布
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="item in price.rows"
+                          :key="item.effort"
+                          :class="{ 'is-default': item.default }"
+                        >
+                          <td>
+                            {{ item.label }}
+                            <em v-if="item.default">默认</em>
+                          </td>
+                          <td
+                            class="tnum"
+                            :class="{
+                              'is-muted': reasoningPriceScope !== 'assistant',
+                            }"
+                          >
+                            <s v-if="item.assistantWas">{{
+                              item.assistantWas
+                            }}</s>
+                            {{ item.assistant }}
+                          </td>
+                          <td
+                            class="tnum"
+                            :class="{
+                              'is-muted':
+                                reasoningPriceScope !== 'canvas_agent',
+                            }"
+                          >
+                            <s v-if="item.canvasWas">{{ item.canvasWas }}</s>
+                            {{ item.canvas }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-                </div>
+                </el-popover>
               </header>
 
               <div
@@ -2551,23 +2884,41 @@ onBeforeUnmount(() => {
           <header class="model-section__head reasoning-pricing-head">
             <span>
               <strong>推理强度计费</strong>
-              <small>每个推理档位必须独立设置 AI 助手与无限画布 Agent 价格</small>
+              <small>可按档开启或关闭；全部关闭后用户端按基础积分计费，且不再出现推理强度选项</small>
             </span>
-            <el-button size="small" @click="fillReasoningPricingFromBase">
-              按基础价初始化
-            </el-button>
+            <div class="reasoning-base-price">
+              <label>
+                <span>兼容基础价</span>
+                <el-input-number
+                  v-model="modelDraft.pricePoints"
+                  :min="0"
+                  :precision="0"
+                  :step="1"
+                />
+              </label>
+              <el-button size="small" @click="fillReasoningPricingFromBase">
+                按基础价初始化
+              </el-button>
+            </div>
           </header>
           <div class="reasoning-default-row">
             <span>
               <strong>默认推理强度</strong>
-              <small>用户未手动切换时使用此档</small>
+              <small>{{
+                enabledReasoningEfforts(modelDraft).length
+                  ? "用户未手动切换时使用此档"
+                  : "已关闭全部推理档，用户端按基础积分计费"
+              }}</small>
             </span>
             <el-select
               v-model="modelDraft.reasoningPricing.defaultEffort"
+              :disabled="!enabledReasoningEfforts(modelDraft).length"
+              clearable
+              placeholder="未开启"
               style="width: 160px"
             >
               <el-option
-                v-for="effort in modelDraft.supportedReasoningEfforts"
+                v-for="effort in enabledReasoningEfforts(modelDraft)"
                 :key="effort"
                 :label="`${REASONING_EFFORT_LABELS[effort] || effort} (${effort})`"
                 :value="effort"
@@ -2576,6 +2927,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="reasoning-price-table">
             <div class="reasoning-price-table__head">
+              <span>启用</span>
               <span>档位</span>
               <span>AI 助手</span>
               <span>无限画布 Agent</span>
@@ -2584,7 +2936,17 @@ onBeforeUnmount(() => {
               v-for="effort in modelDraft.supportedReasoningEfforts"
               :key="effort"
               class="reasoning-price-row"
+              :class="{
+                'is-off': !draftReasoningEffortOn(effort),
+              }"
             >
+              <div class="reasoning-effort-enable">
+                <el-switch
+                  :model-value="draftReasoningEffortOn(effort)"
+                  size="small"
+                  @change="setReasoningEffortEnabled(effort, $event === true)"
+                />
+              </div>
               <div class="reasoning-effort-name">
                 <strong>{{ REASONING_EFFORT_LABELS[effort] || effort }}</strong>
                 <small>{{ effort }}</small>
@@ -2594,6 +2956,7 @@ onBeforeUnmount(() => {
                   <span>标准积分</span>
                   <el-input-number
                     v-model="modelDraft.reasoningPricing.efforts[effort].assistantPriceCents"
+                    :disabled="!draftReasoningEffortOn(effort)"
                     :min="0"
                     :precision="0"
                     :step="1"
@@ -2604,11 +2967,15 @@ onBeforeUnmount(() => {
                   <div class="reasoning-discount-control">
                     <el-switch
                       :model-value="reasoningDiscountEnabled(effort, 'assistant')"
+                      :disabled="!draftReasoningEffortOn(effort)"
                       @change="toggleReasoningDiscount(effort, 'assistant', $event)"
                     />
                     <el-input-number
                       v-model="modelDraft.reasoningPricing.efforts[effort].assistantDiscountPriceCents"
-                      :disabled="!reasoningDiscountEnabled(effort, 'assistant')"
+                      :disabled="
+                        !draftReasoningEffortOn(effort) ||
+                        !reasoningDiscountEnabled(effort, 'assistant')
+                      "
                       :min="0"
                       :precision="0"
                       :step="1"
@@ -2621,6 +2988,7 @@ onBeforeUnmount(() => {
                   <span>标准积分</span>
                   <el-input-number
                     v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentPriceCents"
+                    :disabled="!draftReasoningEffortOn(effort)"
                     :min="0"
                     :precision="0"
                     :step="1"
@@ -2631,11 +2999,15 @@ onBeforeUnmount(() => {
                   <div class="reasoning-discount-control">
                     <el-switch
                       :model-value="reasoningDiscountEnabled(effort, 'canvas_agent')"
+                      :disabled="!draftReasoningEffortOn(effort)"
                       @change="toggleReasoningDiscount(effort, 'canvas_agent', $event)"
                     />
                     <el-input-number
                       v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentDiscountPriceCents"
-                      :disabled="!reasoningDiscountEnabled(effort, 'canvas_agent')"
+                      :disabled="
+                        !draftReasoningEffortOn(effort) ||
+                        !reasoningDiscountEnabled(effort, 'canvas_agent')
+                      "
                       :min="0"
                       :precision="0"
                       :step="1"
@@ -2710,7 +3082,14 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="model-section">
+        <section
+          v-if="
+            modelDraft.kind !== 'chat' ||
+            !modelDraft.reasoningPricing ||
+            !modelDraft.supportedReasoningEfforts.length
+          "
+          class="model-section"
+        >
           <header class="model-section__head">
             <strong>计费与耗时</strong>
             <small>积分定价与预计等待时间</small>
@@ -3001,6 +3380,22 @@ onBeforeUnmount(() => {
                   <span>张</span>
                 </div>
               </div>
+              <div class="model-capability-tile">
+                <div class="model-capability-copy">
+                  <strong>单次生成</strong>
+                  <span>一次请求最多出几张图</span>
+                </div>
+                <div class="reference-limit">
+                  <el-input-number
+                    v-model="modelDraft.maxImages"
+                    :min="1"
+                    :max="16"
+                    :step="1"
+                    :precision="0"
+                  />
+                  <span>张</span>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -3047,6 +3442,26 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.reasoning-base-price {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.reasoning-base-price label {
+  display: grid;
+  gap: 4px;
+}
+
+.reasoning-base-price label span {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.reasoning-base-price :deep(.el-input-number) {
+  width: 120px;
+}
+
 .reasoning-pricing-head > span,
 .reasoning-default-row > span {
   display: grid;
@@ -3082,8 +3497,8 @@ onBeforeUnmount(() => {
 .reasoning-price-table__head,
 .reasoning-price-row {
   display: grid;
-  grid-template-columns: 84px repeat(2, minmax(250px, 1fr));
-  min-width: 620px;
+  grid-template-columns: 56px 84px repeat(2, minmax(250px, 1fr));
+  min-width: 680px;
 }
 
 .reasoning-price-table__head {
@@ -3096,6 +3511,15 @@ onBeforeUnmount(() => {
 .reasoning-price-row > div {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+.reasoning-price-row.is-off {
+  opacity: 0.58;
+}
+
+.reasoning-effort-enable {
+  display: grid;
+  place-items: center start;
 }
 
 .reasoning-effort-name {
@@ -3576,7 +4000,7 @@ html.dark .status-tab.is-active {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding-right: 148px;
+  padding-right: 168px;
 }
 
 .model-card__identity {
@@ -3671,6 +4095,18 @@ html.dark .status-tab.is-active {
   border-radius: 10px;
   background: var(--ink);
   color: #fff;
+  font: inherit;
+  text-align: right;
+}
+
+.model-card__price.is-interactive {
+  cursor: pointer;
+}
+
+.model-card__price.is-interactive:hover,
+.model-card__price.is-interactive:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .model-card__price .price-now {
@@ -3705,6 +4141,24 @@ html.dark .status-tab.is-active {
   text-decoration: line-through;
 }
 
+.model-card__price .price-scope {
+  color: rgb(255 255 255 / 0.72);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.model-card__price .price-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent-on);
+  background: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
 .model-card__price .price-off {
   display: inline-flex;
   align-items: center;
@@ -3732,6 +4186,116 @@ html.dark .model-card__price .price-now span {
 
 html.dark .model-card__price .price-was {
   color: rgb(18 20 26 / 0.45);
+}
+
+html.dark .model-card__price .price-scope {
+  color: rgb(18 20 26 / 0.55);
+}
+
+.model-price-pop {
+  display: grid;
+  gap: 10px;
+}
+
+.model-price-pop__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-price-pop__head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.model-price-pop__head span {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.price-scope-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.price-scope-switch button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.price-scope-switch button.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+
+.model-price-pop__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.model-price-pop__table th,
+.model-price-pop__table td {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  text-align: left;
+}
+
+.model-price-pop__table th {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.model-price-pop__table th:not(:first-child),
+.model-price-pop__table td:not(:first-child) {
+  text-align: right;
+}
+
+.model-price-pop__table tr:last-child td {
+  border-bottom: 0;
+}
+
+.model-price-pop__table td {
+  color: var(--ink);
+}
+
+.model-price-pop__table .is-default td {
+  font-weight: 650;
+}
+
+.model-price-pop__table th.is-active {
+  color: var(--ink);
+}
+
+.model-price-pop__table td.is-muted {
+  color: var(--ink-3);
+}
+
+.model-price-pop__table em {
+  margin-left: 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.model-price-pop__table s {
+  margin-right: 4px;
+  color: var(--ink-3);
 }
 
 .model-card__desc {

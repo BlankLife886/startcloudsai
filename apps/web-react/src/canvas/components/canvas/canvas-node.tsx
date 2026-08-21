@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
+import { canvasNodeShadow, CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -19,7 +19,6 @@ import { useTranslation } from "react-i18next";
 import { CANVAS_VIEWPORT_LIVE_EVENT } from "./infinite-canvas";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
-const selectionBlue = "#6d5cff";
 
 type CanvasNodeProps = {
     data: CanvasNodeData;
@@ -138,6 +137,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content);
+    const imageGenerationItems = data.type === CanvasNodeType.Image ? data.metadata?.images || [] : [];
+    const imageGenerationCompleted = imageGenerationItems.filter((image) => image.status !== "loading").length;
     const isGroup = data.type === CanvasNodeType.Group;
     const batchCount = data.type === CanvasNodeType.Image ? data.metadata?.images?.length || 0 : 0;
     const isBatchRoot = batchCount > 1;
@@ -344,8 +345,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 transform: `translate3d(${posX}px, ${posY}px, 0)`,
                 width: data.width,
                 height: data.height,
+                overflow: "visible",
                 transition: "box-shadow 200ms ease",
-                contain: "layout style",
                 willChange: isTransient ? "transform" : undefined,
             }}
             onMouseEnter={() => {
@@ -360,14 +361,14 @@ export const CanvasNode = React.memo(function CanvasNode({
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
             {(isSelected || hovered || isEditingTitle) && (
-                <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <div className="pointer-events-auto absolute left-0 top-[-30px] z-[65] max-w-full px-0.5" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     {isEditingTitle ? (
                         <input
                             ref={titleInputRef}
                             value={titleDraft}
                             maxLength={64}
-                            className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium outline-none"
-                            style={{ borderColor: theme.node.muted, color: theme.node.text }}
+                            className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium leading-6 outline-none"
+                            style={{ borderColor: theme.node.muted, color: theme.node.text, textShadow: `0 1px 6px ${theme.canvas.background}` }}
                             onChange={(event) => setTitleDraft(event.target.value)}
                             onBlur={finishTitleEditing}
                             onKeyDown={(event) => {
@@ -381,8 +382,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                     ) : (
                         <button
                             type="button"
-                            className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
-                            style={{ color: theme.node.text }}
+                            className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0 text-left text-xs font-medium leading-5 opacity-80 transition hover:border-current hover:opacity-100"
+                            style={{ color: theme.node.text, textShadow: `0 1px 6px ${theme.canvas.background}` }}
                             title={t("canvas.node.renameHint")}
                             onDoubleClick={(event) => {
                                 event.stopPropagation();
@@ -396,28 +397,23 @@ export const CanvasNode = React.memo(function CanvasNode({
             )}
 
             <div
-                className={isGroup ? "relative h-full w-full overflow-visible rounded-3xl border border-dashed" : "relative h-full w-full overflow-visible rounded-3xl border backdrop-blur-xl"}
+                data-canvas-node-shell={data.type}
+                className={isGroup ? "relative h-full w-full overflow-visible rounded-[12px] border border-dashed" : "relative h-full w-full overflow-visible rounded-[12px] border"}
                 style={{
                     background: isGroup ? `${theme.toolbar.panel}66` : transparentBg ? "transparent" : theme.node.fill,
                     borderColor: isGroup
                         ? isGroupDropTarget || isActive
-                            ? selectionBlue
+                            ? theme.node.activeStroke
                             : theme.node.stroke
                         : isActive
-                          ? selectionBlue
+                          ? theme.node.activeStroke
                           : isRelated
                             ? theme.node.muted
                             : transparentBg
                               ? "transparent"
                               : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
-                    boxShadow: isGroupDropTarget
-                        ? `0 0 0 2px ${selectionBlue}55, 0 18px 40px rgba(109,92,255,.16)`
-                        : isActive
-                          ? `0 0 0 1.5px ${selectionBlue}88, 0 18px 40px rgba(109,92,255,.14)`
-                          : isRelated
-                            ? `0 0 0 1px ${theme.node.muted}40, 0 16px 36px rgba(49,32,107,.08)`
-                            : `0 16px 36px rgba(49,32,107,.08)`,
+                    boxShadow: canvasNodeShadow(theme, isGroupDropTarget ? "drop" : isActive ? "active" : isRelated ? "related" : "idle"),
                 }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
@@ -444,7 +440,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
-                            background: isGroup || transparentBg ? "transparent" : hasImageContent || hasVideoContent ? "rgba(15,18,28,.04)" : theme.node.fill,
+                            background: isGroup || transparentBg ? "transparent" : theme.node.fill,
                             pointerEvents: contentInteractive ? undefined : "none",
                         } as React.CSSProperties
                     }
@@ -473,6 +469,19 @@ export const CanvasNode = React.memo(function CanvasNode({
                         groupChildCount={groupChildCount}
                     />
                 </div>
+
+                {data.metadata?.status === "loading" && hasImageContent ? (
+                    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[inherit]" style={{ background: `${theme.canvas.background}88` }}>
+                        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: theme.node.text }}>
+                            <RefreshCw className="size-4 animate-spin" />
+                            <span>
+                                {imageGenerationItems.length
+                                    ? t("canvas.node.regeneratingProgress", { completed: imageGenerationCompleted, total: imageGenerationItems.length })
+                                    : t("canvas.node.regenerating")}
+                            </span>
+                        </div>
+                    </div>
+                ) : null}
 
                 {showImageInfo && hasImageContent ? <ImageInfoBar node={data} /> : null}
 
@@ -584,7 +593,7 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
     const { t } = useTranslation();
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.placeholder }}>
-            <span className="canvas-empty__icon" style={CanvasIconWellStyle("#8b83a3")}>
+            <span className="grid size-8 place-items-center rounded-xl" style={CanvasIconWellStyle("#9aa3b8")}>
                 <Puzzle className="size-5" />
             </span>
             <span className="text-[13px] font-medium">{t("canvas.node.missingPlugin")}</span>
@@ -602,8 +611,8 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
         <div className="flex h-full w-full flex-col overflow-hidden pt-8">
             <button
                 type="button"
-                className="absolute right-3 top-3 z-20 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs font-medium opacity-85 backdrop-blur-md transition hover:scale-[1.02] hover:opacity-100"
-                style={{ background: `${theme.toolbar.panel}dd`, borderColor: theme.node.stroke, color: theme.node.text }}
+                className="absolute right-3 top-3 z-20 inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium opacity-85 transition hover:opacity-100"
+                style={{ background: theme.toolbar.itemHover, color: theme.node.text, boxShadow: `inset 0 0 0 1px ${theme.node.stroke}` }}
                 onClick={(event) => {
                     event.stopPropagation();
                     onGenerateImage?.(node);
@@ -663,11 +672,9 @@ function ImageNodeContent(props: NodeContentRendererProps) {
 function EmptyImageContent({ theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     return (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
-            <span className="canvas-empty__icon size-14 rounded-2xl" style={CanvasIconWellStyle(nodeTypeColor("image"), 0.12)}>
-                <ImageIcon className="size-6" />
-            </span>
-            <span className="text-[11px] font-medium tracking-[0.12em] opacity-60">{t("canvas.node.emptyImage")}</span>
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
+            <ImageIcon className="size-5 opacity-45" />
+            <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyImage")}</span>
         </div>
     );
 }
@@ -676,25 +683,21 @@ function VideoNodeContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     if (!node.metadata?.content)
         return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
-                <span className="canvas-empty__icon size-14 rounded-2xl" style={CanvasIconWellStyle(nodeTypeColor("video"), 0.12)}>
-                    <Video className="size-6" />
-                </span>
-                <span className="text-[11px] font-medium tracking-[0.12em] opacity-60">{t("canvas.node.emptyVideo")}</span>
+            <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
+                <Video className="size-5 opacity-45" />
+                <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyVideo")}</span>
             </div>
         );
-    return <CanvasPreviewVideo src={node.metadata.content} storageKey={node.metadata.storageKey} className="h-full w-full rounded-[18px] bg-black object-contain" />;
+    return <CanvasPreviewVideo src={node.metadata.content} storageKey={node.metadata.storageKey} className="h-full w-full rounded-[inherit] bg-black object-contain" />;
 }
 
 function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     if (!node.metadata?.content)
         return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
-                <span className="canvas-empty__icon size-14 rounded-2xl" style={CanvasIconWellStyle(nodeTypeColor("audio"), 0.12)}>
-                    <Music2 className="size-6" />
-                </span>
-                <span className="text-[11px] font-medium tracking-[0.12em] opacity-60">{t("canvas.node.emptyAudio")}</span>
+            <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
+                <Music2 className="size-5 opacity-45" />
+                <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyAudio")}</span>
             </div>
         );
     return (
@@ -748,7 +751,7 @@ function ImageContent({
                       .filter((image) => image.id !== primaryImageId)
                       .map((image, index) => <ExpandedImageCard key={image.id} node={node} image={image} index={index} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)} onRetry={() => onRetryBatchImage?.(image.id)} onDelete={() => onDeleteBatchImage?.(image.id)} />)
                 : null}
-            <div className="h-full w-full overflow-hidden rounded-[22px]">
+            <div className="h-full w-full overflow-hidden rounded-[inherit]">
                 {primaryContent ? (
                     <CanvasPreviewImage
                         src={primaryContent}
@@ -765,7 +768,7 @@ function ImageContent({
             </div>
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
             {primaryImage?.content ? (
-                <button type="button" className="absolute left-2.5 top-2.5 z-30 flex h-8 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
+                <button type="button" className="canvas-node-overlay-btn absolute left-2.5 top-2.5 z-30 flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
                     <Download className="size-3" />
                     {t("common.download")}
                 </button>
@@ -773,7 +776,7 @@ function ImageContent({
             {isBatchRoot ? (
                 <button
                     type="button"
-                    className="absolute right-2.5 top-2.5 z-30 flex h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-[0_6px_18px_rgba(28,25,23,.16)] backdrop-blur-md transition hover:scale-[1.02]"
+                    className="canvas-node-overlay-btn absolute right-2.5 top-2.5 z-30 flex h-7 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition hover:opacity-90"
                     style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }}
                     aria-label={batchExpanded ? t("canvas.node.batchExpanded") : t("canvas.node.batchCollapsed")}
                     onClick={(event) => {
@@ -806,7 +809,7 @@ function ExpandedImageCard({ node, image, index, onSetPrimary, onDuplicate, onDo
 
     return (
         <div
-            className="absolute z-20 overflow-hidden rounded-3xl border shadow-[0_18px_50px_rgba(28,25,23,.18)]"
+            className="absolute z-20 overflow-hidden rounded-[12px] border shadow-[0_18px_50px_rgba(28,25,23,.18)]"
             style={
                 {
                     left: x,
@@ -828,16 +831,16 @@ function ExpandedImageCard({ node, image, index, onSetPrimary, onDuplicate, onDo
             {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} />}
             {image.content ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
+                    <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
                         <Download className="size-3 shrink-0" />
                         <span className="truncate">{t("common.download")}</span>
                     </button>
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.createCopy")} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
+                    <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.createCopy")} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
                         <Copy className="size-3 shrink-0" />
                         <span className="truncate">{t("canvas.node.createCopy")}</span>
                     </button>
-                    <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.setPrimary")} onClick={(event) => (event.stopPropagation(), onSetPrimary())}>
-                        <Star className="size-3 shrink-0" style={{ color: selectionBlue }} />
+                    <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.setPrimary")} onClick={(event) => (event.stopPropagation(), onSetPrimary())}>
+                        <Star className="size-3 shrink-0" style={{ color: theme.node.activeStroke }} />
                         <span className="truncate">{t("canvas.node.setPrimary")}</span>
                     </button>
                 </div>
@@ -884,7 +887,7 @@ function ImageInfoBar({ node }: { node: CanvasNodeData }) {
     const size = formatBytes(node.metadata?.bytes || 0);
     return (
         <div className="pointer-events-none absolute bottom-3 right-3 z-40 max-w-[calc(100%-24px)]">
-            <span className="max-w-full truncate rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium leading-none text-white backdrop-blur-sm">
+            <span className="max-w-full truncate rounded-full px-2.5 py-1 text-[11px] font-medium leading-none tabular-nums backdrop-blur-sm" style={{ background: "rgba(12,13,17,.72)", color: "#fff", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.08)" }}>
                 {width} x {height}
                 {size ? ` · ${size}` : ""}
             </span>
@@ -907,6 +910,7 @@ function BatchFrame({
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const isBatchRoot = batchCount > 1;
+    const stacked = stackImages.filter((image) => image?.content || image?.thumbnailUrl || image?.storageKey).slice(0, 3);
     return (
         <div
             className="group/batch relative h-full w-full overflow-visible"
@@ -919,24 +923,22 @@ function BatchFrame({
                     : undefined
             }
         >
-            {isBatchRoot ? (
+            {isBatchRoot && stacked.length > 0 && !batchExpanded ? (
                 <div className="pointer-events-none absolute inset-0 overflow-visible">
-                    {Array.from({ length: Math.min(batchCount - 1, 3) }).map((_, index) => {
-                        const image = stackImages[index];
+                    {stacked.map((image, index) => {
                         return (
                             <div
-                                key={image?.id || index}
-                                className="absolute overflow-hidden rounded-[22px] border shadow-[0_10px_24px_rgba(68,64,60,.12)] transition-all duration-300 group-hover/batch:translate-x-1"
+                                key={image.id}
+                                className="absolute overflow-hidden rounded-[12px] border transition-all duration-300 group-hover/batch:translate-x-1"
                                 style={{
                                     inset: 0,
                                     background: theme.node.fill,
                                     borderColor: theme.node.stroke,
-                                    opacity: batchExpanded ? 0 : 1,
                                     transform: `translate(${10 + index * 6}px, ${4 + index * 3}px) rotate(${1.5 + index}deg)`,
                                     zIndex: -index - 1,
                                 }}
                             >
-                                {image?.content || image?.thumbnailUrl || image?.storageKey ? (
+                                {image.content || image.thumbnailUrl || image.storageKey ? (
                                     <CanvasPreviewImage
                                         src={image.content}
                                         storageKey={image.storageKey}

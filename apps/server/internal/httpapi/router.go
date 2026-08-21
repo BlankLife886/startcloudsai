@@ -317,6 +317,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/tasks/:id/timeline", s.adminOnly(s.adminTaskTimeline))
 	admin.GET("/canvas-workflow-templates", s.adminOnly(s.adminCanvasWorkflowTemplates))
 	admin.POST("/canvas-workflow-templates", s.adminOnly(s.adminCreateCanvasWorkflowTemplate))
+	admin.PATCH("/canvas-workflow-templates/order", s.adminOnly(s.adminReorderCanvasWorkflowTemplates))
 	admin.PATCH("/canvas-workflow-templates/:id", s.adminOnly(s.adminPatchCanvasWorkflowTemplate))
 	admin.PUT("/canvas-workflow-templates/:id/cover", s.adminOnly(s.adminUploadCanvasWorkflowTemplateCover))
 	admin.DELETE("/canvas-workflow-templates/:id", s.adminOnly(s.adminDeleteCanvasWorkflowTemplate))

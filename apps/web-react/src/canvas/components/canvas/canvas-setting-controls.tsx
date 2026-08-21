@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
+import { canvasRaisedStyle } from "@/lib/canvas-ui";
 
 export function SettingRow({ label, color, extra, children }: { label: string; color: string; extra?: ReactNode; children: ReactNode }) {
     return (
@@ -29,11 +30,7 @@ export function SegmentedItem({ selected, theme, compact = false, onClick, child
         <button
             type="button"
             className={`${compact ? "h-full min-w-8 px-1.5 text-[10px]" : "h-full px-1 text-[12px]"} flex-1 rounded-full border-0 font-medium outline-none transition`}
-            style={{
-                background: selected ? theme.toolbar.panel : "transparent",
-                color: selected ? theme.toolbar.activeText : theme.node.muted,
-                boxShadow: selected ? "0 1px 4px rgba(49,32,107,.08)" : "none",
-            }}
+            style={selected ? { ...canvasRaisedStyle(theme), color: theme.node.text } : { background: "transparent", color: theme.node.muted }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={onClick}
         >
@@ -71,11 +68,24 @@ export function floatingPanelStyle(theme: CanvasTheme, extra?: CSSProperties): C
     return {
         background: theme.toolbar.panel,
         border: `1px solid ${theme.toolbar.border}`,
-        borderRadius: 20,
+        borderRadius: 18,
         boxShadow: theme.toolbar.shadow,
         backdropFilter: "blur(22px)",
         WebkitBackdropFilter: "blur(22px)",
         color: theme.node.text,
         ...extra,
     };
+}
+
+export function CanvasPriceMark({ price, comparePrice }: { price?: string; comparePrice?: string }) {
+    if (!price) return null;
+    if (!comparePrice) {
+        return <span className="canvas-config-price shrink-0 text-[12px] font-semibold tabular-nums tracking-tight">{price}</span>;
+    }
+    return (
+        <span className="canvas-config-price flex shrink-0 items-baseline gap-1 whitespace-nowrap tabular-nums">
+            <span className="text-[11px] font-medium line-through opacity-45">{comparePrice}</span>
+            <span className="text-[12px] font-semibold tracking-tight">{price}</span>
+        </span>
+    );
 }

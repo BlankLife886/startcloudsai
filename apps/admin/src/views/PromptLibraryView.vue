@@ -688,7 +688,6 @@ const sortLoading = ref(false)
 const sortSaving = ref(false)
 const sortItems = ref<PromptItem[]>([])
 const sortSnapshot = ref<string[]>([])
-const sortQuery = ref('')
 const sortCategory = ref('all')
 const sortType = ref('all')
 const sortStatus = ref('all')
@@ -697,14 +696,10 @@ const sortCursors = ref<(string | null)[]>([null])
 const sortNextCursor = ref<string | null>(null)
 const sortMatchTotal = ref(0)
 const sortScopeTotal = ref(0)
-const sortSelectedId = ref('')
-const sortTargetPosition = ref(1)
 let sortFilterTimer: ReturnType<typeof setTimeout> | null = null
 const sortDirty = computed(
   () => sortItems.value.map((item) => item.id).join('|') !== sortSnapshot.value.join('|'),
 )
-const sortSelectedItem = computed(() => sortItems.value.find((item) => item.id === sortSelectedId.value) ?? null)
-const sortIsSearching = computed(() => Boolean(sortQuery.value.trim()))
 
 async function loadSortItems(resetPaging = false) {
   if (resetPaging) {
@@ -719,7 +714,7 @@ async function loadSortItems(resetPaging = false) {
           type: sortType.value === 'all' ? '' : sortType.value,
           category: sortCategory.value === 'all' ? '' : sortCategory.value,
           status: sortStatus.value === 'all' ? '' : sortStatus.value,
-          search: sortQuery.value.trim(),
+          search: '',
           limit: SORT_PAGE_SIZE,
           cursor: sortCursors.value[sortPage.value - 1],
         },
@@ -732,9 +727,6 @@ async function loadSortItems(resetPaging = false) {
     sortScopeTotal.value = page.scopeTotal ?? sortMatchTotal.value
     if (page.nextCursor) sortCursors.value[sortPage.value] = page.nextCursor
     sortSnapshot.value = sortItems.value.map((item) => item.id)
-    if (!sortItems.value.some((item) => item.id === sortSelectedId.value)) {
-      sortSelectedId.value = ''
-    }
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '排序列表加载失败')
   } finally {
@@ -743,41 +735,28 @@ async function loadSortItems(resetPaging = false) {
 }
 
 function openSortDrawer() {
-  sortQuery.value = query.value.trim()
   sortCategory.value = categoryFilter.value
   sortType.value = typeFilter.value
   sortStatus.value = statusFilter.value
-  sortSelectedId.value = ''
-  sortTargetPosition.value = 1
   sortDrawerOpen.value = true
   void loadSortItems(true)
 }
 
-function beforeCloseSortDrawer(done: () => void) {
+async function closeSortDrawer() {
   if (!sortDirty.value || sortSaving.value) {
-    done()
+    sortDrawerOpen.value = false
     return
   }
-  void ElMessageBox.confirm('当前排序还没有保存，确定放弃这些调整吗？', '放弃排序调整', {
-    type: 'warning',
-    confirmButtonText: '放弃调整',
-    cancelButtonText: '继续排序',
-  }).then(done).catch(() => undefined)
-}
-
-function moveSortItem(index: number, destination: number) {
-  if (index < 0 || index >= sortItems.value.length) return
-  const target = Math.max(0, Math.min(destination, sortItems.value.length - 1))
-  if (target === index) return
-  const [item] = sortItems.value.splice(index, 1)
-  if (item) sortItems.value.splice(target, 0, item)
-}
-
-function selectSortItem(item: PromptItem, index: number) {
-  sortSelectedId.value = item.id
-  sortTargetPosition.value = sortIsSearching.value
-    ? Math.max(1, Math.min(sortTargetPosition.value, sortScopeTotal.value))
-    : (sortPage.value - 1) * SORT_PAGE_SIZE + index + 1
+  try {
+    await ElMessageBox.confirm('当前排序还没有保存，确定放弃这些调整吗？', '放弃排序调整', {
+      type: 'warning',
+      confirmButtonText: '放弃调整',
+      cancelButtonText: '继续排序',
+    })
+    sortDrawerOpen.value = false
+  } catch {
+    /* keep open */
+  }
 }
 
 function reloadSortForFilters() {
@@ -786,10 +765,10 @@ function reloadSortForFilters() {
   sortFilterTimer = setTimeout(() => {
     sortFilterTimer = null
     void loadSortItems(true)
-  }, sortQuery.value.trim() ? 280 : 50)
+  }, 50)
 }
 
-watch([sortQuery, sortCategory, sortType, sortStatus], reloadSortForFilters)
+watch([sortCategory, sortType, sortStatus], reloadSortForFilters)
 
 async function changeSortPage(direction: -1 | 1) {
   if (sortDirty.value) {
@@ -814,35 +793,6 @@ async function saveSortOrder(refreshLibrary = true) {
     ElMessage.success(`已保存当前页 ${sortItems.value.length} 条提示词的顺序`)
     if (refreshLibrary) await refresh()
     return true
-  } finally {
-    sortSaving.value = false
-  }
-}
-
-async function moveSelectedPrompt(position = sortTargetPosition.value) {
-  const item = sortSelectedItem.value
-  if (!item || sortSaving.value) return
-  if (sortDirty.value && !(await saveSortOrder(false))) return
-  const target = Math.max(1, Math.min(Math.round(position || 1), sortScopeTotal.value || 1))
-  sortSaving.value = true
-  try {
-    const result = await request<{ position: number; count: number }>(
-      `/api/v1/admin/prompts/${item.id}/position`,
-      {
-        method: 'PATCH',
-        body: {
-          position: target,
-          taskType: sortType.value === 'all' ? '' : sortType.value,
-          category: sortCategory.value === 'all' ? '' : sortCategory.value,
-          status: sortStatus.value === 'all' ? '' : sortStatus.value,
-        },
-      },
-    )
-    sortTargetPosition.value = result.position
-    sortScopeTotal.value = result.count
-    ElMessage.success(`「${item.title}」已移到当前范围第 ${result.position} 位`)
-    await loadSortItems(true)
-    await refresh()
   } finally {
     sortSaving.value = false
   }
@@ -1983,27 +1933,35 @@ onBeforeUnmount(() => {
       </template>
     </AdminDialog>
 
-    <el-drawer
+    <AdminDialog
       v-model="sortDrawerOpen"
-      size="min(820px, 98vw)"
-      append-to-body
-      :before-close="beforeCloseSortDrawer"
-      class="library-drawer prompt-sort-drawer"
+      title="调整提示词顺序"
+      subtitle="拖动缩略图排序，保存后同步到词库展示"
+      :icon="Rank"
+      width="min(560px, 94vw)"
+      nested-scroll
+      panel-class="prompt-sort-dialog"
+      :close-on-click-modal="!sortDirty"
+      confirm-text="保存顺序"
+      :confirm-loading="sortSaving"
+      :confirm-disabled="!sortDirty || !sortItems.length"
+      @confirm="saveSortOrder()"
     >
-      <template #header>
-        <div class="library-drawer__head">
-          <span class="library-drawer__mark"><el-icon><Rank /></el-icon></span>
-          <div>
-            <strong>提示词排序</strong>
-            <small>当前范围 {{ sortScopeTotal }} 条 · 每页 {{ SORT_PAGE_SIZE }} 条</small>
+      <template #footer>
+        <div class="admin-dialog__footer">
+          <span class="admin-dialog__hint">
+            {{ sortDirty ? '当前页顺序有改动，尚未保存' : `当前范围 ${sortScopeTotal} 条 · 每页 ${SORT_PAGE_SIZE} 条` }}
+          </span>
+          <div class="admin-dialog__actions">
+            <el-button :disabled="sortSaving" @click="closeSortDrawer">取消</el-button>
+            <el-button type="primary" :loading="sortSaving" :disabled="!sortDirty || !sortItems.length" @click="saveSortOrder()">
+              保存顺序
+            </el-button>
           </div>
-          <el-button :loading="sortLoading" :icon="Refresh" @click="loadSortItems(false)">重新载入</el-button>
         </div>
       </template>
       <div class="prompt-sort-panel">
-
         <div class="prompt-sort-filters">
-          <el-input v-model="sortQuery" clearable :prefix-icon="Search" placeholder="搜索名称或提示词，快速定位目标" />
           <el-select v-model="sortCategory" aria-label="排序分类">
             <el-option v-for="category in categoryOptions" :key="category.value" :label="category.label" :value="category.value" />
           </el-select>
@@ -2019,37 +1977,10 @@ onBeforeUnmount(() => {
           </el-select>
         </div>
 
-        <div v-if="sortSelectedItem" class="prompt-sort-positioner">
-          <span class="prompt-sort-positioner__item">
-            <img v-if="sortSelectedItem.coverUrl" :src="sortSelectedItem.coverUrl" alt="" />
-            <el-icon v-else><Picture /></el-icon>
-            <span><small>正在移动</small><strong>{{ sortSelectedItem.title }}</strong></span>
-          </span>
-          <span class="prompt-sort-positioner__controls">
-            <el-button :disabled="sortSaving" @click="moveSelectedPrompt(1)">置顶</el-button>
-            <span>移到第</span>
-            <el-input-number
-              v-model="sortTargetPosition"
-              :min="1"
-              :max="Math.max(1, sortScopeTotal)"
-              controls-position="right"
-              :disabled="sortSaving"
-            />
-            <span>位</span>
-            <el-button type="primary" :loading="sortSaving" @click="moveSelectedPrompt()">立即移动</el-button>
-            <el-button :disabled="sortSaving" @click="moveSelectedPrompt(sortScopeTotal)">置底</el-button>
-          </span>
-        </div>
-
-        <div v-if="sortIsSearching" class="prompt-sort-search-note">
-          搜索到 {{ sortMatchTotal }} 条。搜索用于快速选中目标；目标名次仍按“分类、功能、状态”范围计算。
-        </div>
-
-        <div v-if="sortLoading" class="prompt-sort-loading" v-loading="true" />
+        <div v-if="sortLoading" class="prompt-sort-empty" v-loading="true" />
         <div v-else-if="!sortItems.length" class="prompt-sort-empty">
           <el-icon><Rank /></el-icon>
           <strong>当前筛选范围没有提示词</strong>
-          <span>关闭排序管理后调整筛选条件再试</span>
         </div>
         <draggable
           v-else
@@ -2057,48 +1988,26 @@ onBeforeUnmount(() => {
           item-key="id"
           handle=".prompt-sort-handle"
           :animation="180"
-          :disabled="sortIsSearching"
           ghost-class="is-sort-ghost"
           drag-class="is-sort-dragging"
           class="prompt-sort-list"
         >
           <template #item="{ element: item, index }">
-            <article
-              class="prompt-sort-row"
-              :class="{ 'is-selected': sortSelectedId === item.id, 'is-search-result': sortIsSearching }"
-              @click="selectSortItem(item, index)"
-            >
+            <article class="prompt-sort-row">
+              <span class="prompt-sort-index">{{ (sortPage - 1) * SORT_PAGE_SIZE + index + 1 }}</span>
               <button
                 type="button"
-                class="prompt-sort-handle"
-                :disabled="sortIsSearching"
-                :title="sortIsSearching ? '清除搜索后可拖动当前页' : '拖动当前页排序'"
-                aria-label="拖动排序"
-                @click.stop
+                class="prompt-sort-handle prompt-sort-cover"
+                :aria-label="`拖动第 ${(sortPage - 1) * SORT_PAGE_SIZE + index + 1} 项`"
               >
-                <el-icon><Rank /></el-icon>
-              </button>
-              <span class="prompt-sort-index">{{ sortIsSearching ? '·' : (sortPage - 1) * SORT_PAGE_SIZE + index + 1 }}</span>
-              <span class="prompt-sort-cover">
                 <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.title" loading="lazy" />
                 <el-icon v-else><Picture /></el-icon>
-              </span>
-              <span class="prompt-sort-copy">
-                <strong :title="item.title">{{ item.title }}</strong>
-                <small>{{ categoryMeta(item.category).label }} · {{ taskTypeLabel(item.taskType) }}</small>
-              </span>
-              <span class="prompt-sort-actions">
-                <button type="button" title="选中并置顶" @click.stop="selectSortItem(item, index); moveSelectedPrompt(1)">⇈</button>
-                <button type="button" title="当前页上移" :disabled="sortIsSearching || index === 0" @click.stop="moveSortItem(index, index - 1)">↑</button>
-                <button type="button" title="当前页下移" :disabled="sortIsSearching || index === sortItems.length - 1" @click.stop="moveSortItem(index, index + 1)">↓</button>
-                <button type="button" title="选中并置底" @click.stop="selectSortItem(item, index); moveSelectedPrompt(sortScopeTotal)">⇊</button>
-              </span>
+              </button>
             </article>
           </template>
         </draggable>
 
         <div v-if="!sortLoading && sortItems.length" class="prompt-sort-pagination">
-          <span v-if="sortIsSearching">当前排序范围共 {{ sortScopeTotal }} 条</span>
           <CursorPager
             :has-prev="sortPage > 1"
             :has-next="Boolean(sortNextCursor)"
@@ -2110,18 +2019,8 @@ onBeforeUnmount(() => {
             @next="changeSortPage(1)"
           />
         </div>
-
-        <footer class="prompt-sort-footer">
-          <span>{{ sortDirty ? '当前页顺序有改动，尚未保存' : '当前页顺序已保存' }}</span>
-          <div>
-            <el-button @click="sortDrawerOpen = false">关闭</el-button>
-            <el-button type="primary" :loading="sortSaving" :disabled="!sortDirty" @click="saveSortOrder()">
-              保存顺序
-            </el-button>
-          </div>
-        </footer>
       </div>
-    </el-drawer>
+    </AdminDialog>
 
     <AdminDialog
       v-model="editorOpen"
@@ -4762,11 +4661,6 @@ onBeforeUnmount(() => {
   background: var(--surface);
 }
 
-.library-drawer.prompt-sort-drawer .el-drawer__body {
-  padding: 0;
-  overflow: hidden;
-}
-
 .library-drawer__head {
   display: flex;
   width: 100%;
@@ -4926,115 +4820,20 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.prompt-sort-drawer {
-  max-width: 96vw;
-}
-
-.prompt-sort-drawer .el-drawer__body {
-  padding: 0;
-  overflow: hidden;
-}
-
 .prompt-sort-panel {
-  display: flex;
-  height: 100%;
-  min-height: 0;
-  flex-direction: column;
+  display: grid;
+  gap: 12px;
 }
 
 .prompt-sort-filters {
   display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: minmax(220px, 1fr) 132px 132px 118px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.prompt-sort-positioner {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 10px 18px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: var(--accent-soft);
-}
-
-.prompt-sort-positioner__item {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 38px minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-}
-
-.prompt-sort-positioner__item > img,
-.prompt-sort-positioner__item > .el-icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 8px;
-  object-fit: cover;
-  background: var(--surface);
-}
-
-.prompt-sort-positioner__item > .el-icon {
-  padding: 9px;
-  color: var(--ink-3);
-}
-
-.prompt-sort-positioner__item small,
-.prompt-sort-positioner__item strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.prompt-sort-positioner__item small {
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.prompt-sort-positioner__item strong {
-  max-width: 220px;
-  margin-top: 2px;
-  color: var(--ink-1);
-  font-size: 12px;
-}
-
-.prompt-sort-positioner__controls {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink-2);
-  font-size: 12px;
-}
-
-.prompt-sort-positioner__controls .el-input-number {
-  width: 108px;
-}
-
-.prompt-sort-search-note {
-  flex: 0 0 auto;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--border);
-  color: var(--ink-3);
-  font-size: 11px;
-  background: var(--surface-2);
-}
-
-.prompt-sort-loading,
-.prompt-sort-empty {
-  flex: 1;
-  min-height: 220px;
 }
 
 .prompt-sort-empty {
   display: grid;
+  min-height: 180px;
   place-content: center;
   justify-items: center;
   gap: 8px;
@@ -5046,63 +4845,29 @@ onBeforeUnmount(() => {
 }
 
 .prompt-sort-empty strong {
-  color: var(--ink-1);
+  color: var(--ink);
 }
 
 .prompt-sort-list {
-  flex: 1;
-  min-height: 0;
-  padding: 10px 14px 20px;
-  overflow-y: auto;
-  background: var(--surface-2);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  max-height: min(56vh, 480px);
+  overflow: auto;
+  padding: 4px 2px;
 }
 
 .prompt-sort-row {
   display: grid;
-  grid-template-columns: 32px 32px 56px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  min-height: 68px;
-  margin-bottom: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
-  cursor: pointer;
-}
-
-.prompt-sort-row:hover {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
-}
-
-.prompt-sort-row.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
-  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.prompt-sort-row.is-search-result .prompt-sort-handle {
-  cursor: not-allowed;
-  opacity: 0.4;
-}
-
-.prompt-sort-row.is-sort-ghost,
-.is-sort-ghost .prompt-sort-row {
-  opacity: 0.32;
+  gap: 6px;
+  justify-items: center;
+  min-width: 0;
 }
 
 .prompt-sort-handle {
-  display: grid;
-  width: 32px;
-  height: 36px;
-  place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--ink-3);
+  background: transparent;
   cursor: grab;
 }
 
@@ -5112,18 +4877,22 @@ onBeforeUnmount(() => {
 
 .prompt-sort-index {
   color: var(--ink-3);
-  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
   text-align: center;
 }
 
 .prompt-sort-cover {
   display: grid;
-  width: 56px;
-  height: 50px;
+  width: 64px;
+  height: 64px;
   place-items: center;
   overflow: hidden;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
   color: var(--ink-3);
 }
 
@@ -5131,89 +4900,25 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  pointer-events: none;
 }
 
-.prompt-sort-copy {
-  min-width: 0;
+.is-sort-ghost {
+  opacity: 0.35;
 }
 
-.prompt-sort-copy strong,
-.prompt-sort-copy small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.is-sort-ghost .prompt-sort-cover {
+  border-style: dashed;
 }
 
-.prompt-sort-copy strong {
-  color: var(--ink-1);
-  font-size: 13px;
-}
-
-.prompt-sort-copy small {
-  margin-top: 4px;
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.prompt-sort-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.prompt-sort-actions button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-2);
-  color: var(--ink-2);
-  cursor: pointer;
-}
-
-.prompt-sort-actions button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.prompt-sort-actions button:disabled {
-  opacity: 0.28;
-  cursor: not-allowed;
+.is-sort-dragging .prompt-sort-cover {
+  box-shadow: var(--shadow-md);
 }
 
 .prompt-sort-pagination {
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 18px;
-  border-top: 1px solid var(--border);
-  color: var(--ink-3);
-  font-size: 11px;
-  background: var(--surface-2);
-}
-
-.prompt-sort-pagination :deep(.cursor-pager) {
-  min-width: 0;
-  flex: 1;
-}
-
-.prompt-sort-footer {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.prompt-sort-footer > span {
-  color: var(--ink-3);
-  font-size: 11px;
+  justify-content: flex-end;
 }
 
 .editor-sort-hint {
@@ -5335,37 +5040,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
-  .prompt-sort-filters {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .prompt-sort-filters > :first-child {
-    grid-column: 1 / -1;
-  }
-
-  .prompt-sort-positioner {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .prompt-sort-positioner__controls {
-    flex-wrap: wrap;
-  }
-
-  .prompt-sort-row {
-    grid-template-columns: 30px 26px 48px minmax(0, 1fr);
-  }
-
-  .prompt-sort-actions {
-    grid-column: 3 / -1;
-    justify-content: flex-end;
-  }
-
-  .prompt-sort-pagination {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .prompt-content-editor .el-dialog__body {
     max-height: calc(100dvh - 142px);
     padding-right: 8px;

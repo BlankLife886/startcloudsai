@@ -1,4 +1,5 @@
 /* Generated from apps/web/src/views/PricingView.vue. */
+/* 与个人中心共用 pp-* 类名：价格页选择器必须挂在 .pp 下，避免懒加载 CSS 互相污染。 */
 
 .pp {
   --ink: #1a1c24;
@@ -305,7 +306,7 @@
   width: min(240px, 100%);
   margin-top: 10px;
 }
-.is-spinning {
+.pp .is-spinning {
   animation: pp-spin 800ms linear infinite;
 }
 @keyframes pp-spin {
@@ -331,7 +332,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .is-spinning {
+  .pp .is-spinning {
     animation-duration: 1600ms;
   }
 }
@@ -372,11 +373,11 @@
     radial-gradient(circle at 96% 8%, rgba(91, 77, 255, 0.08), transparent 24%),
     #0d0e14;
 }
-.pp-shell {
+.pp .pp-shell {
   width: min(1180px, calc(100% - 48px));
   margin-inline: auto;
 }
-.pp-btn {
+.pp .pp-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -395,16 +396,16 @@
     box-shadow 180ms ease,
     filter 180ms ease;
 }
-.pp-btn.is-primary {
+.pp .pp-btn.is-primary {
   color: #fff;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
   box-shadow: 0 12px 26px rgb(109 92 255 / 26%);
 }
-.pp-btn.is-primary:hover {
+.pp .pp-btn.is-primary:hover {
   transform: translateY(-1px);
   box-shadow: 0 16px 30px rgb(109 92 255 / 32%);
 }
-.pp-btn.is-ghost {
+.pp .pp-btn.is-ghost {
   color: var(--accent-text);
   background: color-mix(in srgb, var(--surface) 72%, transparent);
   border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
@@ -413,12 +414,12 @@
   background: rgb(255 255 255 / 6%);
   border-color: rgb(139 123 255 / 28%);
 }
-.pp-btn.is-light {
+.pp .pp-btn.is-light {
   color: #fff;
   background: rgb(255 255 255 / 16%);
   border-color: rgb(255 255 255 / 24%);
 }
-.pp-btn.is-compact {
+.pp .pp-btn.is-compact {
   min-height: 36px;
   width: fit-content;
   padding: 0 14px;
@@ -1234,7 +1235,7 @@
   color: var(--muted);
   font-size: 0.8rem;
 }
-.pp-empty {
+.pp .pp-empty {
   display: grid;
   place-items: center;
   gap: 8px;
@@ -1244,14 +1245,14 @@
   background: var(--surface);
   text-align: center;
 }
-.pp-empty i {
+.pp .pp-empty i {
   color: var(--accent);
   font-size: 1.6rem;
 }
-.pp-empty strong {
+.pp .pp-empty strong {
   font-size: 1rem;
 }
-.pp-empty p {
+.pp .pp-empty p {
   margin: 0;
   max-width: 36ch;
   color: var(--muted);
@@ -1280,7 +1281,7 @@ to {
 }
 }
 @media (max-width: 900px) {
-.pp-shell {
+.pp .pp-shell {
     width: calc(100% - 28px);
 }
 .pp-hero h1 {
@@ -1314,7 +1315,7 @@ to {
 }
 }
 @media (prefers-reduced-motion: reduce) {
-.pp-btn,
+.pp .pp-btn,
 .pp-plan,
 .pp-model-card,
 .pp-unit,
@@ -1322,7 +1323,7 @@ to {
 .pp-faq summary i {
     transition: none;
 }
-.pp-btn.is-primary:hover,
+.pp .pp-btn.is-primary:hover,
 .pp-plan:hover,
 .pp-plan.is-popular:hover,
 .pp-model-card:hover,

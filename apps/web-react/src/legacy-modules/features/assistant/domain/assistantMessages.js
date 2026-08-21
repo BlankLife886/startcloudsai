@@ -6,22 +6,41 @@ export function uid() {
 
 export const IMAGE_COUNTS = [1, 2, 3, 4]
 
+const ASSISTANT_SMALL_TALK =
+  /^(你好|您好|嗨+|哈喽|在吗|在么|hello|hi+|hey|thanks?|thank you|谢谢(你|您)?(了)?|早上好|早安|晚上好|你是谁|你能做什么|在不在)[呀啊呢吧嘛]*[\s!！。.?？]*$/i
+
+/** 寒暄/短问候不应触发生图。 */
+export function isAssistantSmallTalk(prompt) {
+  const text = String(prompt || '').trim()
+  if (!text || [...text].length > 16) return false
+  return ASSISTANT_SMALL_TALK.test(text)
+}
+
+/** 实际发给服务端的模式：有文档或寒暄时不能走图片生成。 */
+export function assistantSendMode(creationType, documentCount = 0, prompt = '') {
+  if (Number(documentCount) > 0) return 'chat'
+  if (isAssistantSmallTalk(prompt)) return creationType === 'agent' ? 'agent' : 'chat'
+  if (creationType === 'image' || creationType === 'agent') return creationType
+  return 'chat'
+}
+
 /** 从提示词中提取“N 张/幅…”的数量要求，无匹配返回 0。 */
-export function imageCountFromPrompt(prompt) {
+export function imageCountFromPrompt(prompt, maxCount = IMAGE_COUNTS[IMAGE_COUNTS.length - 1]) {
   const text = String(prompt || '').trim()
   if (!text) return 0
-  const chineseNumbers = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4 }
+  const limit = Math.min(16, Math.max(1, Math.floor(Number(maxCount) || IMAGE_COUNTS[IMAGE_COUNTS.length - 1])))
+  const chineseNumbers = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
   const patterns = [
-    /([1-4一二两三四])\s*(?:张|幅)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)?/i,
-    /([1-4一二两三四])\s*(?:个|份)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)/i,
-    /(?:图片|图像|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)\s*([1-4一二两三四])\s*(?:张|幅|个|份)?/i,
-    /\b([1-4])\s*(?:images?|pictures?|variations?)\b/i,
+    /([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:张|幅)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)?/i,
+    /([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:个|份)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)/i,
+    /(?:图片|图像|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)\s*([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:张|幅|个|份)?/i,
+    /\b([1-9]|1[0-6])\s*(?:images?|pictures?|variations?)\b/i,
   ]
   for (const pattern of patterns) {
     const matched = text.match(pattern)?.[1]
     if (!matched) continue
     const count = Number(matched) || chineseNumbers[matched] || 0
-    if (IMAGE_COUNTS.includes(count)) return count
+    if (count >= 1 && count <= limit) return count
   }
   return 0
 }
@@ -47,13 +66,14 @@ export function createAssistantPlaceholder({
     error: '',
     feedback: '',
     createdAt: new Date().toISOString(),
+    usageStartedAt: Date.now(),
     prompt,
     model: previous?.model || defaults.model,
     reasoningEffort: previous?.reasoningEffort || defaults.reasoningEffort || '',
     ratio: previous?.ratio || defaults.ratio,
     requestRatio: previous?.requestRatio || defaults.requestRatio || defaults.ratio,
     resolution: previous?.resolution || defaults.resolution,
-    count: responseMode === 'chat' ? 0 : defaults.count || previous?.count || 2,
+    count: responseMode === 'image' || responseMode === 'agent' ? defaults.count || previous?.count || 2 : 0,
     requestSize: previous?.requestSize || defaults.requestSize,
     width: previous?.width || defaults.width,
     height: previous?.height || defaults.height,
@@ -145,7 +165,7 @@ const MESSAGE_STATUS = {
   },
   stopped: {
     label: '已停止',
-    detail: '本次生成已由你手动停止。',
+    detail: '本次生成已由你手动停止，本轮积分不退还。',
     tone: 'muted',
     progress: 0,
   },

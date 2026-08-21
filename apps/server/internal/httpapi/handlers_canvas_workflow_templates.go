@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
@@ -385,6 +387,39 @@ func (s *Server) adminPatchCanvasWorkflowTemplate(c *gin.Context, _ *store.User)
 		return
 	}
 	ok(c, canvasTemplateJSON(item, true))
+}
+
+type reorderCanvasTemplatesIn struct {
+	IDs []string `json:"ids"`
+}
+
+func (s *Server) adminReorderCanvasWorkflowTemplates(c *gin.Context, _ *store.User) {
+	var body reorderCanvasTemplatesIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 500 {
+		fail(c, apperr.E("validation_error", "ids: 数量须在 1-500 之间", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.IDs))
+	for _, raw := range body.IDs {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			fail(c, apperr.E("validation_error", "ids: 包含无效 UUID", 422))
+			return
+		}
+		ids = append(ids, id)
+	}
+	ctx := c.Request.Context()
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		return store.ReorderCanvasWorkflowTemplates(ctx, tx, ids)
+	}); err != nil {
+		fail(c, apperr.E("template_reorder_failed", "模板排序保存失败，请刷新后重试", 409))
+		return
+	}
+	ok(c, gin.H{"updated": len(ids)})
 }
 
 func (s *Server) adminUploadCanvasWorkflowTemplateCover(c *gin.Context, _ *store.User) {

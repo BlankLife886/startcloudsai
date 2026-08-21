@@ -1,4 +1,5 @@
 /* Soft UI personal center — StarCloud gallery (brand purple) */
+/* Shared pp-* names with /pricing: keep layout/button rules under .pp-page. */
 .pp-page {
   --pc-bg: #f7f7ff;
   --pc-surface: #ffffff;
@@ -131,7 +132,7 @@
   background: rgba(106, 79, 224, 0.12);
 }
 
-.pp-shell {
+.pp-page .pp-shell {
   position: relative;
   z-index: 1;
   flex: 1;
@@ -153,7 +154,7 @@
     padding-right: clamp(16px, 1.4vw, 24px);
   }
 
-  .pp-shell {
+  .pp-page .pp-shell {
     gap: 14px;
   }
 
@@ -1696,7 +1697,7 @@
     overflow: visible;
   }
 
-  .pp-shell,
+  .pp-page .pp-shell,
   .pp-main,
   .pp-soft-board {
     height: auto;
@@ -2238,7 +2239,7 @@ button.pp-stats__foot {
   font-size: 0.76rem;
 }
 
-.pp-btn {
+.pp-page .pp-btn {
   display: inline-flex;
   min-height: 38px;
   align-items: center;
@@ -2259,18 +2260,18 @@ button.pp-stats__foot {
     transform 160ms ease;
 }
 
-.pp-btn:hover:not(:disabled) {
+.pp-page .pp-btn:hover:not(:disabled) {
   border-color: var(--pc-accent);
   transform: translateY(-1px);
 }
 
-.pp-btn.is-primary {
+.pp-page .pp-btn.is-primary {
   border-color: var(--pc-accent);
   color: #fff;
   background: linear-gradient(135deg, var(--pc-accent), var(--pc-accent-strong));
 }
 
-.pp-btn.is-danger {
+.pp-page .pp-btn.is-danger {
   border-color: var(--pc-danger);
   color: #fff;
   background: var(--pc-danger);
@@ -2294,7 +2295,7 @@ button.pp-stats__foot {
   background: transparent;
 }
 
-.pp-btn:disabled {
+.pp-page .pp-btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -3097,7 +3098,7 @@ button.pp-stats__foot {
   font-size: 0.72rem;
 }
 
-.pp-empty,
+.pp-page .pp-empty,
 .pp-state {
   display: grid;
   min-height: 138px;
@@ -3108,7 +3109,7 @@ button.pp-stats__foot {
   text-align: center;
 }
 
-.pp-empty.is-compact {
+.pp-page .pp-empty.is-compact {
   min-height: 168px;
 }
 
@@ -3269,24 +3270,24 @@ button.pp-stats__foot {
   font-size: 0.66rem;
 }
 
-.pp-empty > i {
+.pp-page .pp-empty > i {
   margin-bottom: 10px;
   color: var(--pc-faint);
   font-size: 1.45rem;
 }
 
-.pp-empty > strong {
+.pp-page .pp-empty > strong {
   color: var(--pc-text);
   font-size: 0.86rem;
 }
 
-.pp-empty > p {
+.pp-page .pp-empty > p {
   margin: 7px 0 15px;
   color: var(--pc-muted);
   font-size: 0.72rem;
 }
 
-.pp-empty > .pp-btn {
+.pp-page .pp-empty > .pp-btn {
   justify-self: center;
   text-decoration: none;
 }

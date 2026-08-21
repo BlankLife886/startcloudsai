@@ -141,7 +141,7 @@ test.describe('React assistant workspace contract', () => {
       model: 'chat-basic',
       ratio: 'auto',
       resolution: '1K',
-      count: 2,
+      count: 1,
       requestSize: 'auto',
       width: 1024,
       height: 1024,
@@ -254,6 +254,38 @@ test.describe('React assistant workspace contract', () => {
           fileKey: 'uploads/assistant/reference.png',
         },
       ],
+    })
+  })
+
+  test('greeting in image mode sends a chat turn instead of generating images', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'greeting-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.image-settings-button').click()
+    await page.locator('.image-count-options').getByRole('button', { name: '4', exact: true }).click()
+    await page.getByLabel('消息输入').fill('你好')
+    await page.locator('.send-button').click()
+
+    await expect(page.getByText('这句话不像画面描述，已按对话回复，不会生成图片')).toBeVisible()
+    await expect(page.locator('.message--assistant')).toContainText(/Done|已完成/)
+    expect(runBody).toMatchObject({
+      mode: 'chat',
+      model: 'chat-basic',
+      count: 1,
     })
   })
 
@@ -457,7 +489,10 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: /第二个对话/ }).click()
     await expect(page.locator('.message--user')).toContainText('第二条内容')
     await page.locator('[data-conversation-id="conversation-two"] .conversation-delete').click()
-    await page.getByRole('dialog', { name: '删除这个对话？' }).getByRole('button', { name: '删除', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '删除这个对话？' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toBeInViewport()
+    await dialog.getByRole('button', { name: '删除', exact: true }).click()
 
     await expect(page.locator('[data-conversation-id="conversation-two"]')).toHaveCount(0)
     expect(deleted).toEqual([expect.stringMatching(/\/assistant\/conversations\/conversation-two$/)])
@@ -499,6 +534,8 @@ test.describe('React assistant workspace contract', () => {
     await page.getByLabel('消息输入').fill('执行一个长任务')
     await page.getByRole('button', { name: '发送' }).click()
     await page.getByRole('button', { name: '停止生成' }).click()
+    await expect(page.getByRole('dialog', { name: '停止本次生成？' })).toContainText('主动停止后，本轮已预留的积分不会退还')
+    await page.getByRole('button', { name: '确认停止' }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('已停止生成')
     expect(patchBody).toEqual({ status: 'canceled' })
@@ -597,7 +634,7 @@ test.describe('React assistant workspace contract', () => {
       conversationId: 'studio-new-conversation',
       prompt: '从创作台启动的任务',
       model: 'chat-pro',
-      count: 3,
+      count: 1,
       referenceImages: [{ name: '商品参考图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/studio-reference.png' }],
     })
     expect(await page.evaluate(() => localStorage.getItem('starclouds:pending-prompt'))).toBeNull()
@@ -656,9 +693,92 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.locator('.sent-quote').last()).toContainText('这是一段可引用的回答')
   })
 
-  test('edits and withdraws the latest user turn through the server contract', async ({ page }) => {
+  test('shows token usage and generation timing on completed answers', async ({ page }) => {
+    const conversations = [{
+      id: 'usage-conversation',
+      title: '用量测试',
+      messages: [
+        message('usage-user', 'user', '写一段介绍'),
+        message('usage-assistant', 'assistant', '这是完成的回答。', {
+          usage: {
+            inputTokens: 3812,
+            outputTokens: 1204,
+            firstTokenMs: 620,
+            durationMs: 12400,
+          },
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message-status-metrics')).toContainText('消耗 1.2K')
+    await expect(page.locator('.message-status-metrics')).toContainText('输入 3.8K')
+    await expect(page.locator('.message-status-metrics')).toContainText('首字 0.6s')
+    await expect(page.locator('.message-meta')).toContainText('以上内容由 AI 生成')
+    await expect(page.locator('.message-meta-duration')).toHaveText('12.4s')
+  })
+
+  test('estimates token usage on completed answers without backend usage', async ({ page }) => {
+    const conversations = [{
+      id: 'usage-fallback-conversation',
+      title: '用量回退',
+      messages: [
+        message('fallback-user', 'user', '写一段介绍'),
+        message('fallback-assistant', 'assistant', '你好世界', {
+          context: { estimatedInputTokens: 800, inputBudgetTokens: 32000, usagePercent: 3, includedMessages: 2 },
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message-status-metrics')).toContainText('消耗 4')
+    await expect(page.locator('.message-status-metrics')).toContainText('输入 800')
+    await expect(page.locator('.message-meta-duration')).toHaveText('5s')
+  })
+
+  test('shows collapsible reasoning on completed answers', async ({ page }) => {
+    const conversations = [{
+      id: 'reasoning-conversation',
+      title: '思考过程',
+      messages: [
+        message('reasoning-user', 'user', '分析这件事'),
+        message('reasoning-assistant', 'assistant', '这是完成的回答。', {
+          reasoning: '先确认目标，再给出可执行的结论。',
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.assistant-reasoning')).toContainText('思考过程')
+    await page.locator('.assistant-reasoning summary').click()
+    await expect(page.locator('.assistant-reasoning-body')).toHaveText('先确认目标，再给出可执行的结论。')
+  })
+
+  test('renders fenced code as a dark editor card with copy', async ({ page }) => {
+    const conversations = [{
+      id: 'code-conversation',
+      title: '代码测试',
+      messages: [
+        message('code-user', 'user', '写一个任务管理器'),
+        message('code-assistant', 'assistant', '```python\ntasks = []\n\ndef show_tasks():\n    if not tasks:\n        print("当前没有任务")\n```'),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const block = page.locator('.assistant-code')
+    await expect(block.locator('.assistant-code-lang')).toHaveText('Python')
+    await expect(block.locator('.assistant-code-src')).toContainText('def show_tasks()')
+    await expect(block.locator('.hljs-keyword').first()).toBeVisible()
+    await page.getByRole('button', { name: '复制代码' }).click()
+    await expect(page.getByRole('button', { name: '已复制' })).toBeVisible()
+  })
+
+  test('edits the latest user turn and retries from the question', async ({ page }) => {
     const runBodies = []
-    const deletes = []
     const conversations = [{
       id: 'edit-conversation',
       title: '编辑测试',
@@ -677,10 +797,6 @@ test.describe('React assistant workspace contract', () => {
       runBodies.push(body)
       await fulfillJson(route, succeededRun(body, '编辑后回答'), 201)
     })
-    await page.route('**/api/v1/assistant/messages/**', async (route) => {
-      if (route.request().method() === 'DELETE') deletes.push(route.request().url())
-      await fulfillJson(route, {})
-    })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.message--user').hover()
@@ -696,9 +812,13 @@ test.describe('React assistant workspace contract', () => {
     })
 
     await page.locator('.message--user').hover()
-    await page.getByRole('button', { name: '撤回本轮' }).click()
-    await expect(page.locator('.message-turn')).toHaveCount(0)
-    expect(deletes).toEqual([expect.stringMatching(/\/assistant\/messages\/edit-user\?scope=turn$/)])
+    await page.getByRole('button', { name: '重试' }).click()
+    await expect.poll(() => runBodies.length).toBe(2)
+    expect(runBodies.at(-1)).toMatchObject({
+      prompt: '修改后的问题',
+      sourceUserMessageId: 'edit-user',
+    })
+    expect(runBodies.at(-1).clientAssistantMessageId).not.toBe(runBodies[0].clientAssistantMessageId)
   })
 
   test('regenerates the latest reply and exposes functional more actions', async ({ page }) => {
@@ -721,7 +841,7 @@ test.describe('React assistant workspace contract', () => {
       retryBody = route.request().postDataJSON()
       await fulfillJson(route, succeededRun(retryBody, '重新生成的回答'), 201)
     })
-    await page.route('**/api/v1/assistant/messages/actions-assistant', async (route) => {
+    await page.route('**/api/v1/assistant/messages/**', async (route) => {
       deletedUrl = route.request().url()
       await fulfillJson(route, {})
     })
@@ -729,14 +849,17 @@ test.describe('React assistant workspace contract', () => {
 
     await page.getByRole('button', { name: '重新生成' }).click()
     await expect(page.locator('.message--assistant')).toContainText('重新生成的回答')
-    expect(retryBody).toMatchObject({ sourceUserMessageId: 'actions-user', clientAssistantMessageId: 'actions-assistant' })
+    expect(retryBody).toMatchObject({ sourceUserMessageId: 'actions-user' })
+    expect(retryBody.clientAssistantMessageId).not.toBe('actions-assistant')
+    expect(retryBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(retryBody.idempotencyKey).toBe(retryBody.clientAssistantMessageId)
 
     await page.getByRole('button', { name: '更多操作' }).click()
     await expect(page.locator('.message-more-menu')).toBeVisible()
     await expect(page.locator('.message-more-menu')).toContainText('下载 Markdown')
     await page.locator('.message-more-menu').getByRole('button', { name: '删除' }).click()
     await expect(page.locator('.message--assistant')).toHaveCount(0)
-    expect(deletedUrl).toMatch(/\/assistant\/messages\/actions-assistant$/)
+    expect(deletedUrl).toMatch(new RegExp(`/assistant/messages/${retryBody.clientAssistantMessageId}$`))
   })
 
   test('renders and executes an editable agent image proposal', async ({ page }) => {
@@ -773,8 +896,11 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.agent-proposal')).toContainText('图片生成方案')
-    await page.locator('.agent-proposal-prompt textarea').fill('修改后的横版品牌主视觉')
-    await page.locator('.agent-proposal-params label').filter({ hasText: '生成数量' }).locator('select').selectOption('3')
+    await page.locator('.agent-proposal-prompt-preview').click()
+    await page.locator('.agent-proposal-prompt-dialog textarea').fill('修改后的横版品牌主视觉')
+    await page.locator('.agent-proposal-prompt-dialog').getByRole('button', { name: '完成' }).click()
+    await page.locator('.agent-proposal').getByLabel('生成数量').click()
+    await page.locator('.agent-proposal-menu').getByRole('option', { name: '3 张' }).click()
     await page.getByRole('button', { name: '开始生成' }).click()
     await expect(page.locator('.message--user').last()).toContainText('执行这个创作方案')
     expect(runBody).toMatchObject({
@@ -836,7 +962,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.message--assistant')).toHaveCount(12)
-    await expect(page.locator('.assistant-context-meter')).toContainText('42%')
+    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('42%')
     await page.locator('.assistant-messages').evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
     await page.getByRole('button', { name: '回到底部' }).click()
@@ -850,9 +976,170 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '资产库' }).click()
     await page.locator('.asset-image-grid button').first().click()
     await expect(page.locator('.reference-card')).toHaveCount(1)
+    await page.getByRole('button', { name: '关闭资产库' }).click()
     await page.getByRole('button', { name: '清除上文并保留可见历史' }).click()
     await expect(page.getByText('已从这里开始新的上下文')).toBeVisible()
-    await expect(page.locator('.assistant-context-meter')).toContainText('--')
+    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('--')
+  })
+
+  test('searches current conversation history from the thread topbar', async ({ page }) => {
+    const conversations = [{
+      id: 'search-conversation',
+      title: '用三句话介绍你能帮我做什么',
+      messages: [
+        message('search-user-1', 'user', '用三句话介绍你能帮我做什么'),
+        message('search-assistant-1', 'assistant', '我可以帮你写文案、生成图片，并整理创作思路。'),
+        message('search-user-2', 'user', '再给一个品牌口号'),
+        message('search-assistant-2', 'assistant', '星空云绘，把想象画成可见的作品。'),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.active-conversation-title')).toHaveCount(0)
+    const search = page.getByLabel('搜索对话历史')
+    await search.fill('品牌口号')
+    await expect(page.locator('.thread-search-count')).toContainText('1')
+    await expect(page.locator('.message.is-search-current')).toContainText('再给一个品牌口号')
+
+    await search.fill('你')
+    await expect(page.locator('.thread-search-count')).toContainText('2')
+    await expect(page.locator('.message.is-search-current')).toContainText('用三句话介绍你能帮我做什么')
+    await page.getByRole('button', { name: '下一条匹配' }).click()
+    await expect(page.locator('.message.is-search-current')).toContainText('我可以帮你写文案')
+    await page.getByRole('button', { name: '上一条匹配' }).click()
+    await expect(page.locator('.message.is-search-current')).toContainText('用三句话介绍你能帮我做什么')
+  })
+
+  test('all-assets tab includes personal library images', async ({ page }) => {
+    const conversations = [{
+      id: 'asset-conversation',
+      title: '资产对话',
+      messages: [
+        message('asset-user', 'user', '生成图片'),
+        message('asset-assistant', 'assistant', '', { images: [{ dataUrl: '/sucai/home-intro-03.png', name: '会话资产' }] }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/me/assets**', (route) =>
+      fulfillJson(route, {
+        items: [{
+          id: 'library-asset-1',
+          title: '素材库封面',
+          url: '/api/v1/files/library-original.png',
+          thumbnailUrl: '/sucai/home-intro-01.png',
+        }],
+        nextCursor: null,
+      }),
+    )
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '资产库' }).click()
+    await expect(page.getByRole('tab', { name: '全部资产' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.asset-image-grid button')).toHaveCount(2)
+    await expect(page.locator('.asset-image-grid button').first()).toHaveAttribute('title', '添加 素材库封面 到参考图')
+    await page.getByRole('tab', { name: '会话资产' }).click()
+    await expect(page.locator('.asset-image-grid button')).toHaveCount(1)
+    await expect(page.locator('.asset-image-grid button')).toHaveAttribute('title', '添加 会话资产 到参考图')
+  })
+
+  test('asset library lists conversation documents as file assets', async ({ page }) => {
+    const conversations = [{
+      id: 'file-asset-conversation',
+      title: '文档资产',
+      messages: [
+        message('file-asset-user', 'user', '分析这份简报', {
+          attachments: [{
+            id: 'brief-pdf',
+            name: '产品简报.pdf',
+            contentType: 'application/pdf',
+            sizeBytes: 4096,
+            status: 'ready',
+            pageCount: 3,
+          }],
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '资产库' }).click()
+    await page.getByRole('tab', { name: '文件' }).click()
+    await expect(page.locator('.asset-library-footer')).toContainText('1 个文件资产')
+    await page.locator('.asset-file-row').click()
+    await expect(page.locator('.reference-document-card')).toContainText('产品简报.pdf')
+    await expect(page.locator('.asset-file-row')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  test('asset library lists generated output files for download', async ({ page }) => {
+    const conversations = [{
+      id: 'output-asset-conversation',
+      title: '输出文件',
+      messages: [
+        message('output-asset-user', 'user', '导出一份说明'),
+        message('output-asset-assistant', 'assistant', '已生成说明文档。', {
+          artifacts: [{
+            id: 'brief-md',
+            name: '产品说明.md',
+            format: 'md',
+            contentType: 'text/markdown',
+            sizeBytes: 2048,
+            downloadUrl: '/api/v1/files/uploads/user/original/brief.md?download=1&name=产品说明.md',
+          }],
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('link', { name: '产品说明.md' })).toBeVisible()
+    await page.getByRole('button', { name: '资产库' }).click()
+    await page.getByRole('tab', { name: '文件' }).click()
+    await expect(page.locator('.asset-library-footer')).toContainText('1 个文件资产')
+    await expect(page.locator('.asset-file-row')).toContainText('产品说明.md')
+    await expect(page.locator('.asset-file-row')).toContainText('输出')
+    await expect(page.locator('.asset-file-row')).toHaveAttribute('title', '下载 产品说明.md')
+  })
+
+  test('asset library can add multiple nested file-key images', async ({ page }) => {
+    const conversations = [{
+      id: 'multi-asset-conversation',
+      title: '多图资产',
+      messages: [message('multi-asset-user', 'user', '添加参考图')],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/config', (route) =>
+      fulfillJson(route, {
+        ...assistantConfig,
+        imageModels: assistantConfig.imageModels.map((item) => ({ ...item, maxReferenceImages: 6 })),
+      }),
+    )
+    await page.route('**/api/v1/me/assets**', (route) =>
+      fulfillJson(route, {
+        items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id, index) => ({
+          id: `library-asset-${id}`,
+          title: `封面${index + 1}`,
+          url: `/api/v1/files/uploads/user/original/${id}.png`,
+          thumbnailUrl: `/sucai/home-intro-0${(index % 3) + 1}.png`,
+        })),
+        nextCursor: null,
+      }),
+    )
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '资产库' }).click()
+    await page.locator('.asset-image-grid button').nth(0).click()
+    await page.locator('.asset-image-grid button').nth(1).click()
+    await expect(page.locator('.reference-card')).toHaveCount(2)
+    await expect(page.locator('.asset-image-grid button').nth(0)).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.locator('.asset-image-grid button').nth(1)).toHaveAttribute('aria-pressed', 'true')
+    for (let index = 2; index < 6; index += 1) {
+      await page.locator('.asset-image-grid button').nth(index).click()
+    }
+    await expect(page.locator('.reference-card')).toHaveCount(6)
+    await expect(page.locator('.asset-limit-notice')).toHaveCount(0)
+    await page.locator('.asset-image-grid button').nth(6).click()
+    await expect(page.locator('.reference-card')).toHaveCount(6)
+    await expect(page.locator('.app-toast.is-warning')).toContainText('最多 6 张')
+    await page.locator('.asset-image-grid button').nth(0).click()
+    await expect(page.locator('.reference-card')).toHaveCount(5)
+    await expect(page.locator('.asset-image-grid button').nth(0)).toHaveAttribute('aria-pressed', 'false')
   })
 
   test('keeps runs isolated when two conversations generate concurrently', async ({ page }) => {
@@ -906,6 +1193,7 @@ test.describe('React assistant workspace contract', () => {
           if (String(url).includes('/assistant/runs/')) {
             window.setTimeout(() => this.onmessage?.({ data: JSON.stringify({
               content: 'SSE 增量回答',
+              reasoning: '先拆开问题，再组织成可直接阅读的回答。',
               kind: 'chat',
               stage: 'answering',
               context: {
@@ -945,10 +1233,14 @@ test.describe('React assistant workspace contract', () => {
       }
       if (method === 'GET' && url.pathname.endsWith('/sse-run')) {
         polls += 1
-        const terminal = polls > 1
+        const terminal = polls > 2
         await fulfillJson(route, {
           run: { id: 'sse-run', conversationId: 'sse-conversation', assistantMessageId: sseAssistantId, status: terminal ? 'succeeded' : 'running', stage: terminal ? 'complete' : 'answering', resolvedMode: 'chat' },
-          assistantMessage: message(sseAssistantId, 'assistant', terminal ? '服务端最终回答' : '', { status: terminal ? 'complete' : 'running', pending: !terminal }),
+          assistantMessage: message(sseAssistantId, 'assistant', terminal ? '服务端最终回答' : '', {
+            status: terminal ? 'complete' : 'running',
+            pending: !terminal,
+            reasoning: '先拆开问题，再组织成可直接阅读的回答。',
+          }),
         })
         return
       }
@@ -959,16 +1251,20 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '发送' }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('SSE 增量回答')
-    await expect(page.locator('.assistant-context-meter')).toContainText('42%')
+    await expect(page.locator('.assistant-reasoning')).toContainText('正在思考')
+    await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
+    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('42%')
     const topbarLayout = await page.locator('.assistant-topbar').evaluate((element) => {
       const boxes = [...element.children].map((child) => child.getBoundingClientRect())
       return boxes.map((box) => ({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }))
     })
-    expect(topbarLayout).toHaveLength(3)
+    expect(topbarLayout).toHaveLength(2)
     expect(topbarLayout[0].right).toBeLessThanOrEqual(topbarLayout[1].left + 1)
-    expect(topbarLayout[1].right).toBeLessThanOrEqual(topbarLayout[2].left + 1)
     expect(Math.max(...topbarLayout.map((box) => box.top)) - Math.min(...topbarLayout.map((box) => box.top))).toBeLessThan(20)
     await expect(page.locator('.message--assistant')).toContainText('服务端最终回答')
+    await expect(page.locator('.assistant-reasoning')).toContainText('思考过程')
+    await page.locator('.assistant-reasoning summary').click()
+    await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
     await page.locator('.message--assistant .message-status-toggle').click()
     await expect(page.locator('.message--assistant .message-context-stats')).toContainText('18 条近期消息')

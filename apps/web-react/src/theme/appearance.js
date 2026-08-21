@@ -22,6 +22,7 @@ export function applyAppearance(value) {
   if (typeof document !== "undefined") {
     const root = document.documentElement;
     root.classList.toggle("color-scheme-dark", appearance === "dark");
+    root.classList.toggle("dark", appearance === "dark");
     root.dataset.colorScheme = appearance;
     root.style.colorScheme = appearance;
   }

@@ -59,11 +59,66 @@ type ToolCall struct {
 	Arguments string
 }
 
+type ChatUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	ReasoningTokens  int64
+	FirstTokenMs     int64
+	DurationMs       int64
+}
+
+func (u ChatUsage) Add(other ChatUsage) ChatUsage {
+	out := ChatUsage{
+		PromptTokens:     u.PromptTokens + other.PromptTokens,
+		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
+		TotalTokens:      u.TotalTokens + other.TotalTokens,
+		ReasoningTokens:  u.ReasoningTokens + other.ReasoningTokens,
+		DurationMs:       u.DurationMs + other.DurationMs,
+	}
+	if u.FirstTokenMs > 0 {
+		out.FirstTokenMs = u.FirstTokenMs
+	} else {
+		out.FirstTokenMs = other.FirstTokenMs
+	}
+	return out
+}
+
+func (u ChatUsage) Map() map[string]any {
+	out := make(map[string]any, 6)
+	if u.PromptTokens > 0 {
+		out["inputTokens"] = u.PromptTokens
+	}
+	if u.CompletionTokens > 0 {
+		out["outputTokens"] = u.CompletionTokens
+	}
+	if u.TotalTokens > 0 {
+		out["totalTokens"] = u.TotalTokens
+	}
+	if u.ReasoningTokens > 0 {
+		out["reasoningTokens"] = u.ReasoningTokens
+	}
+	if u.FirstTokenMs > 0 {
+		out["firstTokenMs"] = u.FirstTokenMs
+	}
+	if u.DurationMs > 0 {
+		out["durationMs"] = u.DurationMs
+	}
+	return out
+}
+
+type ChatCompletion struct {
+	Text      string
+	Reasoning string
+	Usage     ChatUsage
+}
+
 type AgentChatResult struct {
 	Text            string
 	Reasoning       string
 	ReasoningTokens int64
 	ToolCall        *ToolCall
+	Usage           ChatUsage
 }
 
 type Image struct {
@@ -254,41 +309,52 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message) (*http.Resp
 // ChatTextWithImages consumes the streaming API server-side. The callback is
 // used by durable assistant jobs to checkpoint partial output in PostgreSQL.
 func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, error) {
+	var onUpdate func(string, string) error
+	if onText != nil {
+		onUpdate = func(text, _ string) error { return onText(text) }
+	}
+	result, err := c.CompleteChatTextWithImages(ctx, messages, imageURLs, onUpdate)
+	return result.Text, err
+}
+
+func (c *Client) CompleteChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onUpdate func(text, reasoning string) error) (ChatCompletion, error) {
 	var lastErr error
 	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
-		text, receivedOutput, err := c.chatTextWithImages(ctx, messages, imageURLs, onText)
+		result, receivedOutput, err := c.chatTextWithImages(ctx, messages, imageURLs, onUpdate)
 		if err == nil {
-			return text, nil
+			return result, nil
 		}
 		lastErr = err
 		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
-			return text, err
+			return result, err
 		}
 		timer := time.NewTimer(chatStreamRetryDelay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return text, ctx.Err()
+			return result, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return "", lastErr
+	return ChatCompletion{}, lastErr
 }
 
-func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, bool, error) {
+func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onUpdate func(text, reasoning string) error) (ChatCompletion, bool, error) {
 	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
 	defer cancelStream()
 	defer idleTimer.Stop()
+	started := time.Now()
 	resp, err := c.ChatStreamWithImages(streamCtx, messages, imageURLs)
 	if err != nil {
-		return "", false, err
+		return ChatCompletion{}, false, err
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2<<20)
-	fullText := ""
+	result := ChatCompletion{}
 	receivedOutput := false
+	var firstToken time.Time
 	completed := false
 	for scanner.Scan() {
 		idleTimer.Reset(c.effectiveStreamIdleTimeout())
@@ -306,47 +372,66 @@ func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, ima
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-			return fullText, receivedOutput, fmt.Errorf("decode chat stream event: %w", err)
+			return result, receivedOutput, fmt.Errorf("decode chat stream event: %w", err)
 		}
 		if message := streamError(payload); message != "" {
-			return fullText, receivedOutput, errors.New(message)
+			return result, receivedOutput, errors.New(message)
 		}
 		if reason := streamFinishReason(payload); reason != "" {
 			if err := validateChatFinishReason(reason); err != nil {
-				return fullText, receivedOutput, err
+				return result, receivedOutput, err
 			}
 			completed = true
+		}
+		if usage := streamUsage(payload); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+			result.Usage.PromptTokens = usage.PromptTokens
+			result.Usage.CompletionTokens = usage.CompletionTokens
+			result.Usage.TotalTokens = usage.TotalTokens
+			result.Usage.ReasoningTokens = usage.ReasoningTokens
 		}
 		changed := false
 		for _, fragment := range streamTextFragments(payload) {
 			receivedOutput = true
-			before := fullText
-			if fragment.replace {
-				fullText = fragment.value
-			} else {
-				fullText += fragment.value
+			if firstToken.IsZero() {
+				firstToken = time.Now()
 			}
-			changed = changed || fullText != before
+			before := result.Text
+			if fragment.replace {
+				result.Text = fragment.value
+			} else {
+				result.Text += fragment.value
+			}
+			changed = changed || result.Text != before
 		}
-		if changed && onText != nil {
-			if err := onText(fullText); err != nil {
-				return fullText, receivedOutput, err
+		for _, fragment := range streamReasoningFragments(payload) {
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+			before := result.Reasoning
+			result.Reasoning = applyReasoningFragment(result.Reasoning, fragment)
+			changed = changed || result.Reasoning != before
+		}
+		if changed && onUpdate != nil {
+			if err := onUpdate(result.Text, result.Reasoning); err != nil {
+				return result, receivedOutput, err
 			}
 		}
 	}
+	finishChatUsage(&result.Usage, started, firstToken)
 	if err := scanner.Err(); err != nil {
 		if idleTimedOut.Load() && ctx.Err() == nil {
-			return fullText, receivedOutput, errChatStreamIdle
+			return result, receivedOutput, errChatStreamIdle
 		}
-		return fullText, receivedOutput, err
+		return result, receivedOutput, err
 	}
 	if !completed {
-		return fullText, receivedOutput, errChatStreamIncomplete
+		return result, receivedOutput, errChatStreamIncomplete
 	}
-	if strings.TrimSpace(fullText) == "" {
-		return fullText, receivedOutput, errChatStreamEmpty
+	if strings.TrimSpace(result.Text) == "" {
+		return result, receivedOutput, errChatStreamEmpty
 	}
-	return fullText, receivedOutput, nil
+	return result, receivedOutput, nil
 }
 
 // ChatAgentWithImages performs one streamed chat-completions request that can
@@ -404,9 +489,7 @@ func (c *Client) ChatAgentWithTools(
 		"parallel_tool_calls": false,
 	}
 	c.applyChatOutputLimit(payload)
-	if c.reasoningEffort != "" {
-		payload["reasoning_effort"] = c.reasoningEffort
-	}
+	c.applyReasoningRequest(payload)
 	choice := strings.TrimSpace(toolChoice)
 	if choice == RequiredToolChoice {
 		payload["tool_choice"] = RequiredToolChoice
@@ -444,6 +527,7 @@ func (c *Client) chatAgentWithPayload(
 	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
 	defer cancelStream()
 	defer idleTimer.Stop()
+	started := time.Now()
 	resp, err := c.chatStreamWithPayload(streamCtx, payload)
 	if err != nil {
 		return AgentChatResult{}, false, err
@@ -452,6 +536,7 @@ func (c *Client) chatAgentWithPayload(
 
 	result := AgentChatResult{}
 	receivedOutput := false
+	var firstToken time.Time
 	toolNames := map[int]string{}
 	toolArguments := map[int]string{}
 	toolIDs := map[int]string{}
@@ -486,8 +571,12 @@ func (c *Client) chatAgentWithPayload(
 			}
 			completed = true
 		}
-		if reasoningTokens := streamReasoningTokens(event); reasoningTokens > result.ReasoningTokens {
-			result.ReasoningTokens = reasoningTokens
+		if usage := streamUsage(event); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+			result.Usage.PromptTokens = usage.PromptTokens
+			result.Usage.CompletionTokens = usage.CompletionTokens
+			result.Usage.TotalTokens = usage.TotalTokens
+			result.Usage.ReasoningTokens = usage.ReasoningTokens
+			result.ReasoningTokens = usage.ReasoningTokens
 		}
 		changed := false
 		for _, fragment := range streamTextFragments(event) {
@@ -499,19 +588,24 @@ func (c *Client) chatAgentWithPayload(
 			}
 			changed = changed || result.Text != before
 			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
 		}
 		for _, fragment := range streamReasoningFragments(event) {
 			before := result.Reasoning
-			if fragment.replace {
-				result.Reasoning = fragment.value
-			} else {
-				result.Reasoning += fragment.value
-			}
+			result.Reasoning = applyReasoningFragment(result.Reasoning, fragment)
 			changed = changed || result.Reasoning != before
 			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
 		}
 		for _, fragment := range streamToolCallFragments(event) {
 			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
 			if minToolIndex < 0 || fragment.index < minToolIndex {
 				minToolIndex = fragment.index
 			}
@@ -533,6 +627,7 @@ func (c *Client) chatAgentWithPayload(
 			}
 		}
 	}
+	finishChatUsage(&result.Usage, started, firstToken)
 	if err := scanner.Err(); err != nil {
 		if idleTimedOut.Load() && ctx.Err() == nil {
 			return result, receivedOutput, errChatStreamIdle
@@ -626,34 +721,181 @@ func streamTextFragments(payload map[string]any) []streamStringFragment {
 }
 
 func streamReasoningFragments(payload map[string]any) []streamStringFragment {
+	fragments := make([]streamStringFragment, 0, 4)
+	fragments = append(fragments, collectReasoningValue(payload["reasoning_content"], false)...)
+	if len(fragments) == 0 {
+		fragments = append(fragments, collectReasoningValue(payload["reasoning"], false)...)
+		fragments = append(fragments, collectReasoningValue(payload["reasoning_summary"], false)...)
+	}
 	choices, _ := payload["choices"].([]any)
 	if len(choices) == 0 {
-		return nil
+		return fragments
 	}
 	choice, _ := choices[0].(map[string]any)
-	fragments := make([]streamStringFragment, 0, 2)
 	for _, containerName := range []string{"delta", "message"} {
 		container, _ := choice[containerName].(map[string]any)
-		for _, field := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
-			if value, ok := container[field].(string); ok && value != "" {
-				fragments = append(fragments, streamStringFragment{
-					value: value, replace: containerName == "message",
-				})
-				break
-			}
+		if container == nil {
+			continue
 		}
+		replace := containerName == "message"
+		content := collectReasoningValue(container["reasoning_content"], replace)
+		content = append(content, collectReasoningValue(container["reasoning_text"], replace)...)
+		content = append(content, collectReasoningValue(container["thinking"], replace)...)
+		if len(content) > 0 {
+			fragments = append(fragments, content...)
+			continue
+		}
+		fragments = append(fragments, collectReasoningValue(container["reasoning"], replace)...)
+		fragments = append(fragments, collectReasoningValue(container["reasoning_summary"], replace)...)
 	}
 	return fragments
 }
 
-func streamReasoningTokens(payload map[string]any) int64 {
-	usage, _ := payload["usage"].(map[string]any)
-	details, _ := usage["completion_tokens_details"].(map[string]any)
-	value, _ := details["reasoning_tokens"].(float64)
-	if value <= 0 {
+func collectReasoningValue(raw any, replace bool) []streamStringFragment {
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		return []streamStringFragment{{value: value, replace: replace}}
+	case []any:
+		out := make([]streamStringFragment, 0, len(value))
+		for _, item := range value {
+			out = append(out, collectReasoningValue(item, replace)...)
+		}
+		return out
+	case map[string]any:
+		if typ, _ := value["type"].(string); strings.Contains(strings.ToLower(typ), "summary") {
+			if text := reasoningTextFromMap(value); text != "" {
+				return []streamStringFragment{{value: text, replace: replace}}
+			}
+		}
+		for _, key := range []string{"reasoning_content", "reasoning_text", "thinking", "text", "content", "summary", "summary_text"} {
+			if inner, ok := value[key]; ok {
+				if fragments := collectReasoningValue(inner, replace); len(fragments) > 0 {
+					return fragments
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func reasoningTextFromMap(value map[string]any) string {
+	for _, key := range []string{"text", "content", "summary", "reasoning_content"} {
+		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func applyReasoningFragment(current string, fragment streamStringFragment) string {
+	next := fragment.value
+	if strings.TrimSpace(next) == "" {
+		return current
+	}
+	if fragment.replace {
+		if current == "" || len(next) >= len(current) {
+			return next
+		}
+		return current
+	}
+	return joinReasoningChunks(current, next)
+}
+
+func joinReasoningChunks(current, next string) string {
+	if current == "" {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+	if strings.HasPrefix(next, current) {
+		return next
+	}
+	if len(next) > 16 && strings.Contains(current, next) {
+		return current
+	}
+	currentTrim := strings.TrimSpace(current)
+	nextTrim := strings.TrimSpace(next)
+	if strings.HasSuffix(currentTrim, "**") && strings.HasPrefix(nextTrim, "**") {
+		return strings.TrimRight(current, " \t") + "\n\n" + nextTrim
+	}
+	return current + next
+}
+
+func streamUsage(payload map[string]any) ChatUsage {
+	raw, _ := payload["usage"].(map[string]any)
+	if raw == nil {
+		return ChatUsage{}
+	}
+	usage := ChatUsage{
+		PromptTokens:     jsonInt64(raw, "prompt_tokens", "input_tokens", "promptTokens", "inputTokens"),
+		CompletionTokens: jsonInt64(raw, "completion_tokens", "output_tokens", "completionTokens", "outputTokens"),
+		TotalTokens:      jsonInt64(raw, "total_tokens", "totalTokens"),
+	}
+	details, _ := raw["completion_tokens_details"].(map[string]any)
+	usage.ReasoningTokens = jsonInt64(details, "reasoning_tokens", "reasoningTokens")
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return usage
+}
+
+func jsonInt64(raw map[string]any, keys ...string) int64 {
+	if raw == nil {
 		return 0
 	}
-	return int64(value)
+	for _, key := range keys {
+		switch value := raw[key].(type) {
+		case int:
+			if value > 0 {
+				return int64(value)
+			}
+		case int64:
+			if value > 0 {
+				return value
+			}
+		case float64:
+			if value > 0 {
+				return int64(value)
+			}
+		case json.Number:
+			parsed, err := value.Int64()
+			if err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func finishChatUsage(usage *ChatUsage, started, firstToken time.Time) {
+	if usage == nil {
+		return
+	}
+	if !started.IsZero() && usage.DurationMs <= 0 {
+		elapsed := time.Since(started).Milliseconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+		usage.DurationMs = elapsed
+	}
+	if !firstToken.IsZero() && !started.IsZero() && usage.FirstTokenMs <= 0 {
+		elapsed := firstToken.Sub(started).Milliseconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+		usage.FirstTokenMs = elapsed
+	}
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+}
+
+func streamReasoningTokens(payload map[string]any) int64 {
+	return streamUsage(payload).ReasoningTokens
 }
 
 func transientChatError(ctx context.Context, err error) bool {
@@ -817,11 +1059,10 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	}
 	payload := map[string]any{
 		"model": c.chatModel, "messages": chatPayloadMessages(messages, imageURLs), "stream": true,
+		"stream_options": map[string]any{"include_usage": true},
 	}
 	c.applyChatOutputLimit(payload)
-	if c.reasoningEffort != "" {
-		payload["reasoning_effort"] = c.reasoningEffort
-	}
+	c.applyReasoningRequest(payload)
 	return c.chatStreamWithPayload(ctx, payload)
 }
 
@@ -829,13 +1070,38 @@ func (c *Client) applyChatOutputLimit(payload map[string]any) {
 	if c == nil || c.maxOutputTokens <= 0 || payload == nil {
 		return
 	}
-	model := strings.ToLower(strings.TrimSpace(c.chatModel))
-	if strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
-		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+	if c.usesCompletionTokenLimit() {
 		payload["max_completion_tokens"] = c.maxOutputTokens
 		return
 	}
 	payload["max_tokens"] = c.maxOutputTokens
+}
+
+func (c *Client) usesCompletionTokenLimit() bool {
+	if c == nil {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(c.chatModel))
+	return strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
+}
+
+func (c *Client) applyReasoningRequest(payload map[string]any) {
+	if c == nil || payload == nil {
+		return
+	}
+	effort := strings.TrimSpace(c.reasoningEffort)
+	if effort != "" {
+		payload["reasoning_effort"] = effort
+	}
+	if !c.usesCompletionTokenLimit() {
+		return
+	}
+	reasoning := map[string]any{"summary": "detailed"}
+	if effort != "" {
+		reasoning["effort"] = effort
+	}
+	payload["reasoning"] = reasoning
 }
 
 func chatPayloadMessages(messages []Message, imageURLs []string) []any {

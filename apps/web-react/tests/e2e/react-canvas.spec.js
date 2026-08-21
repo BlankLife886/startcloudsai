@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { fulfillJson } from './helpers/authMocks.js'
+import { expectPricingPageIsolated } from './helpers/pricingIsolation.js'
 
 const user = { id: 'react-canvas-user', email: 'canvas@example.com', username: '画布用户' }
 const project = {
@@ -188,8 +189,7 @@ test.describe('React native canvas integration', () => {
     await expect(page.getByRole('heading', { name: '无限画布', exact: true })).toBeVisible()
     await page.locator('.site-header a[href="/pricing"]').click()
     await expect(page).toHaveURL(/\/pricing$/, { timeout: 2_000 })
-    await expect(page.locator('.pp')).toBeVisible()
-    await expect(page.locator('body')).not.toHaveClass(/canvas-native-active/)
+    await expectPricingPageIsolated(page)
     await expect(page.locator('.canvas-native-mount')).toHaveCount(0)
   })
 })

@@ -78,11 +78,31 @@ function resolveHostedReasoningEffort(model: ChannelModel | undefined, requested
     return supported[0] || "";
 }
 
+type Translate = ReturnType<typeof useTranslation>["t"];
+
 function isDeepHostedReasoningEffort(effort: AgentReasoningEffort | "") {
     return effort === "high" || effort === "xhigh" || effort === "max";
 }
 
-type Translate = ReturnType<typeof useTranslation>["t"];
+function canvasAgentTurnCost(model: ChannelModel | undefined, effort: AgentReasoningEffort | "", agentPricing: { standardMultiplier: number; deepMultiplier: number }) {
+    if (!model) return { effective: undefined as number | undefined, standard: undefined as number | undefined };
+    const configured = effort ? model.reasoningPrices?.[effort as ModelReasoningEffort] : undefined;
+    const multiplier = isDeepHostedReasoningEffort(effort) ? agentPricing.deepMultiplier : agentPricing.standardMultiplier;
+    const effective = configured?.canvasAgentPricePoints ?? (model.pricePoints === undefined ? undefined : model.pricePoints * multiplier);
+    const standard = configured?.canvasAgentStandardPricePoints
+        ?? (model.standardPricePoints === undefined ? undefined : model.standardPricePoints * multiplier)
+        ?? effective;
+    return { effective, standard };
+}
+
+function formatCanvasAgentTurnPrice(t: Translate, cost: { effective?: number; standard?: number }) {
+    if (cost.effective === undefined) return { price: undefined as string | undefined, comparePrice: undefined as string | undefined };
+    const hasDiscount = cost.standard !== undefined && cost.standard > cost.effective;
+    return {
+        price: t("agent.hosted.turnPrice", { price: cost.effective }),
+        comparePrice: hasDiscount ? String(cost.standard) : undefined,
+    };
+}
 
 function toolTitle(name: string, t: Translate) {
     if (name === "canvas_get_state") return t("agent.eventExtra.tools.readCanvas");
@@ -228,31 +248,32 @@ export function HostedAgentPanel() {
         return textModelValues.map((value) => {
             const model = modelOptionMeta(canvasConfig, value);
             const effort = resolveHostedReasoningEffort(model, activeReasoningEffort);
-            const multiplier = isDeepHostedReasoningEffort(effort) ? agentPricing.deepMultiplier : agentPricing.standardMultiplier;
-            const configuredPrice = effort ? model?.reasoningPrices?.[effort]?.canvasAgentPricePoints : undefined;
+            const formatted = formatCanvasAgentTurnPrice(t, canvasAgentTurnCost(model, effort, agentPricing));
             return {
                 value,
                 label: modelOptionLabel(canvasConfig, value),
-                price: configuredPrice === undefined && model?.pricePoints === undefined ? undefined : t("agent.hosted.turnPrice", { price: configuredPrice ?? model!.pricePoints! * multiplier }),
+                price: formatted.price,
+                comparePrice: formatted.comparePrice,
             };
         });
-    }, [activeReasoningEffort, agentPricing.deepMultiplier, agentPricing.standardMultiplier, canvasConfig, t, textModelValues]);
-    const fallbackTurnPrice = hostedTextModel?.pricePoints === undefined
-        ? undefined
-        : hostedTextModel.pricePoints * (isDeepHostedReasoningEffort(activeReasoningEffort) ? agentPricing.deepMultiplier : agentPricing.standardMultiplier);
-    const currentTurnPrice = activeReasoningEffort
-        ? hostedTextModel?.reasoningPrices?.[activeReasoningEffort]?.canvasAgentPricePoints ?? fallbackTurnPrice
-        : fallbackTurnPrice;
+    }, [activeReasoningEffort, agentPricing, canvasConfig, t, textModelValues]);
+    const currentTurnCost = canvasAgentTurnCost(hostedTextModel, activeReasoningEffort, agentPricing);
+    const currentTurnPrice = currentTurnCost.effective;
+    const currentTurnComparePrice = currentTurnCost.standard !== undefined && currentTurnPrice !== undefined && currentTurnCost.standard > currentTurnPrice
+        ? String(currentTurnCost.standard)
+        : undefined;
     const reasoningEffortPrices = useMemo(() => Object.fromEntries(
         hostedReasoningEfforts.map((effort) => {
-            const configuredPrice = hostedTextModel?.reasoningPrices?.[effort]?.canvasAgentPricePoints;
-            const fallbackPrice = hostedTextModel?.pricePoints === undefined
-                ? undefined
-                : hostedTextModel.pricePoints * (isDeepHostedReasoningEffort(effort) ? agentPricing.deepMultiplier : agentPricing.standardMultiplier);
-            const price = configuredPrice ?? fallbackPrice;
-            return [effort, price === undefined ? "" : t("agent.hosted.turnPrice", { price })];
+            const formatted = formatCanvasAgentTurnPrice(t, canvasAgentTurnCost(hostedTextModel, effort, agentPricing));
+            return [effort, formatted.price || ""];
         }),
-    ) as Partial<Record<AgentReasoningEffort, string>>, [agentPricing.deepMultiplier, agentPricing.standardMultiplier, hostedReasoningEfforts, hostedTextModel, t]);
+    ) as Partial<Record<AgentReasoningEffort, string>>, [agentPricing, hostedReasoningEfforts, hostedTextModel, t]);
+    const reasoningEffortComparePrices = useMemo(() => Object.fromEntries(
+        hostedReasoningEfforts.map((effort) => {
+            const formatted = formatCanvasAgentTurnPrice(t, canvasAgentTurnCost(hostedTextModel, effort, agentPricing));
+            return [effort, formatted.comparePrice || ""];
+        }),
+    ) as Partial<Record<AgentReasoningEffort, string>>, [agentPricing, hostedReasoningEfforts, hostedTextModel, t]);
     confirmToolsRef.current = confirmTools;
 
     const lastProjectIdRef = useRef(projectId);
@@ -794,7 +815,7 @@ export function HostedAgentPanel() {
                 <div className="flex shrink-0 items-center gap-1.5">
                     <div
                         className="flex items-center rounded-full p-0.5"
-                        style={{ background: theme.toolbar.itemHover, boxShadow: `inset 0 0 0 1px ${theme.sidebar.border}` }}
+                        style={{ background: theme.toolbar.itemHover }}
                         role="tablist"
                         aria-label={t("agent.panel.content")}
                     >
@@ -907,6 +928,7 @@ export function HostedAgentPanel() {
                 reasoningEffort={activeReasoningEffort}
                 reasoningEfforts={hostedReasoningEfforts}
                 reasoningEffortPrices={reasoningEffortPrices}
+                reasoningEffortComparePrices={reasoningEffortComparePrices}
                 chatModels={chatModels}
                 chatModel={hostedModel}
                 onChatModelChange={(model) => {
@@ -928,6 +950,7 @@ export function HostedAgentPanel() {
                 onAddFiles={(files) => void addAttachments(files)}
                 onRemoveAttachment={(id) => setAgentState({ attachments: useAgentStore.getState().attachments.filter((item) => item.id !== id) })}
                 sendCost={currentTurnPrice === undefined ? undefined : String(currentTurnPrice)}
+                sendCompareCost={currentTurnComparePrice}
                 onSubmit={() => void sendPrompt()}
                 onStop={stopTurn}
             />

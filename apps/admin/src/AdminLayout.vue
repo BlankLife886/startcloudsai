@@ -460,6 +460,7 @@ async function submitPassword() {
             '/canvas-templates',
             '/content',
             '/feedback',
+            '/trial-applications',
           ].includes(route.path),
         }"
       >

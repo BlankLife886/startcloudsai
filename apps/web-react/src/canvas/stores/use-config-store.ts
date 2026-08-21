@@ -3,10 +3,14 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type ModelCapability = "image" | "video" | "text" | "audio";
-export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = ModelReasoningEffort | "auto";
 export type ModelReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export const MODEL_REASONING_EFFORTS: readonly ModelReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export function canvasReasoningEfforts(model: ChannelModel | undefined): ModelReasoningEffort[] {
+    return (model?.supportedReasoningEfforts || []).filter((effort): effort is ModelReasoningEffort => MODEL_REASONING_EFFORTS.includes(effort));
+}
 
 export type ModelReasoningPrice = {
     assistantStandardPricePoints?: number;
@@ -28,6 +32,7 @@ export type ChannelModel = {
     qualities?: string[];
     transparentBackground?: boolean;
     maxReferenceImages?: number;
+    maxImages?: number;
     supportedReasoningEfforts?: ModelReasoningEffort[];
     defaultReasoningEffort?: ModelReasoningEffort;
     reasoningPrices?: Partial<Record<ModelReasoningEffort, ModelReasoningPrice>>;
@@ -140,8 +145,46 @@ export function modelOptionMeta(config: AiConfig, value: string) {
     return findChannelModel(config, value);
 }
 
-export function formatModelPrice(model: ChannelModel | undefined) {
-    return model?.pricePoints === undefined ? "价格未配置" : `${model.pricePoints} 积分${model.capability === "image" ? "/张" : ""}`;
+export function formatModelPrice(model: ChannelModel | undefined, effort?: string) {
+    return formatModelPriceParts(model, effort).price || "价格未配置";
+}
+
+export function resolveCanvasReasoningEffort(model: ChannelModel | undefined, requested?: string): ModelReasoningEffort | "" {
+    const supported = model?.supportedReasoningEfforts || [];
+    if (!supported.length) return "";
+    const value = String(requested || "").trim().toLowerCase();
+    if (value && value !== "auto" && supported.includes(value as ModelReasoningEffort)) return value as ModelReasoningEffort;
+    const fallback = model?.defaultReasoningEffort;
+    if (fallback && supported.includes(fallback)) return fallback;
+    return supported.includes("medium") ? "medium" : supported[0];
+}
+
+export function resolveCanvasTextPrice(model: ChannelModel | undefined, requestedEffort?: string) {
+    if (!model) return { effective: undefined as number | undefined, standard: undefined as number | undefined };
+    const effort = resolveCanvasReasoningEffort(model, requestedEffort);
+    const priced = effort ? model.reasoningPrices?.[effort] : undefined;
+    const effective = priced?.assistantPricePoints ?? model.pricePoints;
+    const standard = priced?.assistantStandardPricePoints ?? model.standardPricePoints ?? effective;
+    return { effective, standard };
+}
+
+export function formatModelPriceParts(model: ChannelModel | undefined, effort?: string) {
+    const unit = model?.capability === "image" ? "/张" : "";
+    if (model?.capability === "text") {
+        const cost = resolveCanvasTextPrice(model, effort);
+        if (cost.effective === undefined) return { price: undefined as string | undefined, comparePrice: undefined as string | undefined };
+        return formatPriceParts(cost.effective, cost.standard, unit);
+    }
+    if (model?.pricePoints === undefined) return { price: undefined as string | undefined, comparePrice: undefined as string | undefined };
+    return formatPriceParts(model.pricePoints, model.standardPricePoints, unit);
+}
+
+function formatPriceParts(price: number, standard: number | undefined, unit: string) {
+    const hasDiscount = standard !== undefined && standard > price;
+    return {
+        price: `${price} 积分${unit}`,
+        comparePrice: hasDiscount ? String(standard) : undefined as string | undefined,
+    };
 }
 
 export function formatModelDiscount(model: ChannelModel | undefined) {

@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Refresh } from '@element-plus/icons-vue'
 import { request } from '@/request'
 import { normalizePoints } from '@/utils'
 import type { AdminSettings } from '@/components/settings/types'
+import stampArt from '@/assets/checkin/stamp.png'
+import trophyArt from '@/assets/checkin/trophy.png'
+import cycleArt from '@/assets/checkin/cycle.png'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -27,6 +31,22 @@ const isDirty = computed(
 const weekTotal = computed(() =>
   form.checkinRewards.reduce((sum, reward) => sum + normalizePoints(reward), 0),
 )
+function dayShare(index: number) {
+  const total = weekTotal.value
+  const value = normalizePoints(form.checkinRewards[index])
+  if (!total || !value) return 0
+  return Math.round((value / total) * 100)
+}
+
+const DAY_TONES = ['info', 'violet', 'warning', 'success', 'info', 'violet', 'accent'] as const
+
+function dayArt(index: number) {
+  return index === 6 ? trophyArt : stampArt
+}
+
+function dayTone(index: number) {
+  return DAY_TONES[index]
+}
 
 function hydrate(settings: AdminSettings) {
   form.checkinEnabled = settings.checkinEnabled ?? true
@@ -80,338 +100,388 @@ onMounted(load)
 </script>
 
 <template>
-  <div v-loading="loading" class="page checkin-settings-page">
-    <PageCard>
-      <div class="checkin-toolbar">
-        <div class="sync-state" :class="{ 'is-dirty': isDirty }">
-          <i />{{ isDirty ? '有未保存变更' : '配置已同步' }}
-        </div>
-        <div class="checkin-toolbar__actions">
-          <el-button :loading="loading" @click="load">刷新</el-button>
-          <el-button
-            type="primary"
-            :loading="saving"
-            :disabled="!isDirty"
-            @click="save"
-          >
-            保存并生效
-          </el-button>
-        </div>
+  <div v-loading="loading" class="checkin-page">
+    <header class="checkin-toolbar">
+      <div class="checkin-setting-pill" :class="{ 'is-on': form.checkinEnabled }">
+        <span>开放签到</span>
+        <el-switch v-model="form.checkinEnabled" size="small" />
       </div>
+      <el-input
+        v-model="form.checkinCampaignTitle"
+        class="checkin-title"
+        maxlength="40"
+        placeholder="活动标题"
+      />
+      <div class="checkin-toolbar__right">
+        <span v-if="isDirty" class="checkin-dirty">未保存</span>
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!isDirty" @click="save">
+          保存
+        </el-button>
+      </div>
+    </header>
 
-      <div class="checkin-workspace">
-        <div class="checkin-status" :class="{ 'is-open': form.checkinEnabled }">
-          <div>
-            <span class="checkin-status__dot" />
-            <div>
-              <strong>{{ form.checkinEnabled ? '活动开放中' : '活动已暂停' }}</strong>
-              <p>
-                {{
-                  form.checkinEnabled
-                    ? '状态和标题会同步到用户签到页面'
-                    : '关闭后保留历史记录，停止领取新奖励'
-                }}
-              </p>
-            </div>
-          </div>
-          <el-switch v-model="form.checkinEnabled" />
-        </div>
-
-        <label class="checkin-title">
+    <div class="checkin-board">
+      <label
+        v-for="(_, index) in form.checkinRewards"
+        :key="index"
+        class="checkin-day"
+        :class="[`is-tone-${dayTone(index)}`, { 'is-milestone': index === 6 }]"
+      >
+        <img class="checkin-day__art" :src="dayArt(index)" alt="" />
+        <header>
+          <b class="tnum">{{ String(index + 1).padStart(2, '0') }}</b>
           <span>
-            <strong>活动标题</strong>
-            <small>2 至 40 个字符，展示在用户签到页</small>
+            第 {{ index + 1 }} 天
+            <em v-if="index === 6">里程碑</em>
           </span>
-          <el-input
-            v-model="form.checkinCampaignTitle"
-            maxlength="40"
-            show-word-limit
-            placeholder="连续签到领创作积分"
+        </header>
+        <div class="checkin-day__points">
+          <el-input-number
+            v-model="form.checkinRewards[index]"
+            :min="0"
+            :max="1000000"
+            :step="index === 6 ? 10 : 5"
+            :precision="0"
+            :controls="false"
           />
-        </label>
-
-        <section class="checkin-rewards">
-          <header>
-            <div>
-              <strong>7 天循环奖励</strong>
-              <small>连续第 7 天适合作为周期里程碑，之后重新从第 1 天计算</small>
-            </div>
-            <em>每周期 {{ weekTotal.toLocaleString('zh-CN') }} 积分</em>
-          </header>
-          <div class="checkin-reward-grid">
-            <label
-              v-for="(_, index) in form.checkinRewards"
-              :key="index"
-              :class="{ 'is-milestone': index === 6 }"
-            >
-              <span>{{ index === 6 ? '第 7 天 · 里程碑' : `第 ${index + 1} 天` }}</span>
-              <el-input-number
-                v-model="form.checkinRewards[index]"
-                :min="0"
-                :max="1000000"
-                :step="index === 6 ? 10 : 5"
-                :precision="0"
-              />
-            </label>
-          </div>
-        </section>
-      </div>
-    </PageCard>
+          <i>积分 · {{ dayShare(index) }}%</i>
+        </div>
+        <div class="checkin-day__bar" aria-hidden="true">
+          <i :style="{ width: `${dayShare(index)}%` }" />
+        </div>
+      </label>
+      <article class="checkin-day checkin-day--total">
+        <img class="checkin-day__art" :src="cycleArt" alt="" />
+        <header>
+          <b>周期</b>
+          <span>合计</span>
+        </header>
+        <div class="checkin-day__points checkin-day__points--static">
+          <strong class="tnum">{{ weekTotal.toLocaleString('zh-CN') }}</strong>
+          <i>每周期积分</i>
+        </div>
+      </article>
+    </div>
   </div>
 </template>
 
-<style scoped>
-.checkin-settings-page {
+<style scoped lang="scss">
+.checkin-page {
+  box-sizing: border-box;
   display: flex;
-  flex-direction: column;
-  width: 100%;
   height: 100%;
   min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
   padding: 0;
-}
-
-.checkin-settings-page :deep(.page-card) {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.checkin-settings-page :deep(.page-card__body) {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
+  background: var(--bg);
 }
 
 .checkin-toolbar {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 16px;
+  gap: 8px;
+  min-width: 0;
 }
 
-.checkin-toolbar__actions {
+.checkin-setting-pill {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-2);
-}
-
-.checkin-toolbar__actions :deep(.el-button) {
-  margin: 0;
-  height: 32px;
-}
-
-.sync-state {
-  display: inline-flex;
-  height: 32px;
   align-items: center;
   gap: 7px;
-  padding: 0 11px;
+  height: 32px;
+  padding: 0 10px 0 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
-  color: var(--ink-3);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+
+  &.is-on {
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+    background: var(--success-soft);
+    color: var(--success);
+  }
+}
+
+.checkin-title {
+  width: min(360px, 42vw);
+}
+
+.checkin-toolbar__right {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.checkin-dirty {
+  color: var(--warning);
   font-size: 12px;
   font-weight: 650;
 }
 
-.sync-state i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px var(--success-soft);
-}
-
-.sync-state.is-dirty {
-  color: var(--warning);
-}
-
-.sync-state.is-dirty i {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px var(--warning-soft);
-}
-
-.checkin-workspace {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 0;
-}
-
-.checkin-status {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface-2);
-}
-
-.checkin-status.is-open {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-  background: var(--accent-soft);
-}
-
-.checkin-status > div {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-}
-
-.checkin-status__dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--ink-3);
-}
-
-.checkin-status.is-open .checkin-status__dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.checkin-status strong {
-  display: block;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 750;
-}
-
-.checkin-status p {
-  margin: 4px 0 0;
-  color: var(--ink-2);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.checkin-title {
+.checkin-board {
   display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: 220px minmax(0, 1fr);
-  align-items: center;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-}
-
-.checkin-title span {
-  display: grid;
-  gap: 2px;
-}
-
-.checkin-title strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.checkin-title small {
-  color: var(--ink-3);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.checkin-rewards {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  min-width: 0;
+  min-height: 0;
   padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-}
-
-.checkin-rewards header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.checkin-rewards header strong,
-.checkin-rewards header small {
-  display: block;
-}
-
-.checkin-rewards header strong {
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 750;
-}
-
-.checkin-rewards header small {
-  margin-top: 4px;
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.checkin-rewards header em {
-  color: var(--accent-ink);
-  font-size: 13px;
-  font-style: normal;
-  font-weight: 750;
-}
-
-.checkin-reward-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-2);
+  border-radius: var(--radius-card);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent-soft) 70%, var(--surface)) 0%,
+      var(--surface) 42%
+    );
+  box-shadow: var(--shadow-sm);
 }
 
-.checkin-reward-grid > label {
-  display: grid;
-  gap: 10px;
+.checkin-day {
+  --tone: var(--info);
+  --tone-mid: var(--violet);
+  position: relative;
+  display: flex;
   min-width: 0;
-  padding: 14px 10px 16px;
-  border-right: 1px solid var(--border);
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  padding: 20px 20px 16px;
+  border: 1px solid color-mix(in srgb, var(--tone) 22%, var(--border));
+  border-radius: var(--radius-card);
+  background:
+    radial-gradient(90% 70% at 92% 8%, color-mix(in srgb, var(--tone-mid) 28%, transparent), transparent 58%),
+    linear-gradient(
+      148deg,
+      color-mix(in srgb, var(--tone) 46%, var(--surface)) 0%,
+      color-mix(in srgb, var(--tone) 22%, var(--surface)) 48%,
+      color-mix(in srgb, var(--tone-mid) 16%, var(--surface)) 100%
+    );
+  cursor: text;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+
+  header {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  b {
+    color: var(--tone);
+    font-size: clamp(28px, 3.6vh, 42px);
+    font-weight: 780;
+    letter-spacing: -0.06em;
+    line-height: 1;
+  }
+
+  header span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 6px;
+    color: var(--tone);
+    font-size: 13px;
+    font-weight: 650;
+    opacity: 0.82;
+  }
+
+  em {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: var(--accent-on);
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 750;
+    opacity: 1;
+  }
+
+  &:focus-within {
+    border-color: color-mix(in srgb, var(--tone) 55%, var(--border));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 18%, transparent);
+  }
+
+  &.is-tone-violet {
+    --tone: var(--violet);
+    --tone-mid: var(--info);
+  }
+
+  &.is-tone-warning {
+    --tone: var(--warning);
+    --tone-mid: var(--accent);
+  }
+
+  &.is-tone-success {
+    --tone: var(--success);
+    --tone-mid: var(--accent);
+  }
+
+  &.is-tone-accent,
+  &.is-milestone {
+    --tone: var(--accent-ink);
+    --tone-mid: var(--success);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    background:
+      radial-gradient(90% 70% at 92% 8%, color-mix(in srgb, var(--accent) 36%, transparent), transparent 58%),
+      linear-gradient(
+        148deg,
+        color-mix(in srgb, var(--accent) 52%, var(--surface)) 0%,
+        color-mix(in srgb, var(--accent) 28%, var(--surface)) 46%,
+        color-mix(in srgb, var(--success) 18%, var(--surface)) 100%
+      );
+
+    .checkin-day__bar i {
+      background: var(--accent);
+    }
+  }
 }
 
-.checkin-reward-grid > label:last-child {
-  border-right: 0;
+.checkin-day--total {
+  --tone: var(--accent-on);
+  cursor: default;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background:
+    radial-gradient(80% 70% at 100% 0%, color-mix(in srgb, var(--accent-hover) 70%, transparent), transparent 62%),
+    linear-gradient(
+      148deg,
+      color-mix(in srgb, var(--accent) 82%, var(--accent-hover)) 0%,
+      var(--accent) 42%,
+      color-mix(in srgb, var(--accent) 68%, var(--success)) 100%
+    );
+
+  b,
+  header span,
+  .checkin-day__points--static strong,
+  .checkin-day__points i {
+    color: var(--accent-on);
+    opacity: 1;
+  }
+
+  b {
+    letter-spacing: -0.04em;
+  }
 }
 
-.checkin-reward-grid > label.is-milestone {
-  background: var(--accent-soft);
+.checkin-day__art {
+  position: absolute;
+  right: -12px;
+  bottom: -28px;
+  z-index: 0;
+  width: min(62%, 240px);
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 10px 18px rgb(18 20 26 / 0.12));
 }
 
-.checkin-reward-grid > label > span {
+.checkin-day.is-milestone .checkin-day__art {
+  width: min(68%, 260px);
+  bottom: -22px;
+}
+
+.checkin-day__points {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin-top: auto;
+  max-width: 62%;
+
+  :deep(.el-input-number) {
+    width: 100%;
+  }
+
+  :deep(.el-input__wrapper) {
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  :deep(.el-input__inner) {
+    height: auto;
+    padding: 0;
+    color: var(--ink);
+    font-size: clamp(36px, 5.4vh, 56px);
+    font-weight: 780;
+    line-height: 1;
+    text-align: left;
+  }
+
+  i {
+    color: var(--ink-3);
+    font-size: 13px;
+    font-style: normal;
+    font-weight: 650;
+  }
+}
+
+.checkin-day__points--static strong {
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
-  text-align: center;
+  font-size: clamp(36px, 5.4vh, 56px);
+  font-weight: 780;
+  letter-spacing: -0.04em;
+  line-height: 1;
 }
 
-.checkin-reward-grid :deep(.el-input-number) {
-  width: 100%;
+.checkin-day.is-milestone .checkin-day__points {
+  :deep(.el-input__inner) {
+    color: var(--accent-ink);
+  }
+
+  i {
+    color: var(--accent-ink);
+  }
 }
 
-.checkin-reward-grid :deep(.el-input-number .el-input__wrapper) {
-  padding-left: 0;
-  padding-right: 0;
+.checkin-day__bar {
+  position: relative;
+  z-index: 1;
+  height: 6px;
+  max-width: 46%;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+
+  i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--ink-3) 55%, var(--surface-3));
+  }
+}
+
+.checkin-day.is-milestone .checkin-day__bar i {
+  background: var(--accent);
+}
+
+html.dark .checkin-day__art {
+  opacity: 0.92;
+  filter: drop-shadow(0 8px 16px rgb(0 0 0 / 0.35));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checkin-day {
+    transition: none;
+  }
 }
 </style>

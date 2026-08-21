@@ -250,3 +250,66 @@ func TestCanvasWorkflowTemplateCoverURLAndUploadValidation(t *testing.T) {
 		t.Fatalf("unsupported cover: status %d body %s", w.Code, w.Body.String())
 	}
 }
+
+func TestCanvasWorkflowTemplatesReorder(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	firstPayload := validCanvasWorkflowTemplatePayload()
+	firstPayload["slug"] = "template-first"
+	firstPayload["title"] = "模板甲"
+	firstPayload["sort"] = 10
+	firstResponse := env.do(t, http.MethodPost, "/api/v1/admin/canvas-workflow-templates", firstPayload, adminToken)
+	if firstResponse.Code != http.StatusCreated {
+		t.Fatalf("create first template: status %d body %s", firstResponse.Code, firstResponse.Body.String())
+	}
+	first, _ := decode(t, firstResponse)
+
+	secondPayload := validCanvasWorkflowTemplatePayload()
+	secondPayload["slug"] = "template-second"
+	secondPayload["title"] = "模板乙"
+	secondPayload["sort"] = 20
+	secondResponse := env.do(t, http.MethodPost, "/api/v1/admin/canvas-workflow-templates", secondPayload, adminToken)
+	if secondResponse.Code != http.StatusCreated {
+		t.Fatalf("create second template: status %d body %s", secondResponse.Code, secondResponse.Body.String())
+	}
+	second, _ := decode(t, secondResponse)
+
+	firstID, _ := first["id"].(string)
+	secondID, _ := second["id"].(string)
+	if firstID == "" || secondID == "" {
+		t.Fatalf("created ids = first %#v second %#v", first, second)
+	}
+
+	reorderResponse := env.do(t, http.MethodPatch, "/api/v1/admin/canvas-workflow-templates/order", gin.H{
+		"ids": []string{secondID, firstID},
+	}, adminToken)
+	if reorderResponse.Code != http.StatusOK {
+		t.Fatalf("reorder templates: status %d body %s", reorderResponse.Code, reorderResponse.Body.String())
+	}
+
+	listResponse := env.do(t, http.MethodGet, "/api/v1/admin/canvas-workflow-templates", nil, adminToken)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list after reorder: status %d body %s", listResponse.Code, listResponse.Body.String())
+	}
+	list, _ := decode(t, listResponse)
+	items, _ := list["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("items after reorder = %#v, want 2", items)
+	}
+	firstItem, _ := items[0].(map[string]any)
+	secondItem, _ := items[1].(map[string]any)
+	if firstItem["id"] != secondID || secondItem["id"] != firstID {
+		t.Fatalf("order after reorder = %#v, want %s then %s", items, secondID, firstID)
+	}
+	if firstItem["sort"] != float64(10) || secondItem["sort"] != float64(20) {
+		t.Fatalf("sort after reorder = %#v, want 10 then 20", items)
+	}
+
+	unknown := env.do(t, http.MethodPatch, "/api/v1/admin/canvas-workflow-templates/order", gin.H{
+		"ids": []string{uuid.NewString()},
+	}, adminToken)
+	if unknown.Code != http.StatusConflict {
+		t.Fatalf("unknown id reorder: status %d body %s", unknown.Code, unknown.Body.String())
+	}
+}

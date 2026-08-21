@@ -6,8 +6,9 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import {
-    CANVAS_IMAGE_MAX_COUNT,
+    CANVAS_IMAGE_HARD_MAX_COUNT,
     aspectRatiosForResolution,
+    canvasImageMaxCount,
     canvasImageModelCapabilities,
     canvasImageOutputSize,
     coerceCanvasImageSettings,
@@ -36,7 +37,7 @@ type ImageSettingsPanelProps = {
     showDimensions?: boolean;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "", maxCount = CANVAS_IMAGE_MAX_COUNT, embedded = false, showDimensions = true }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "", maxCount, embedded = false, showDimensions = true }: ImageSettingsPanelProps) {
     const { t } = useTranslation();
     const model = modelOptionMeta(config, config.model);
     const capabilities = canvasImageModelCapabilities(model);
@@ -44,7 +45,8 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const quality = settings.quality;
     const selectedRatio = settings.size;
     const selectedResolution = settings.resolution;
-    const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(settings.count)) || 1)));
+    const countLimit = Math.max(1, Math.min(CANVAS_IMAGE_HARD_MAX_COUNT, Math.floor(Number(maxCount)) || canvasImageMaxCount(model)));
+    const count = Math.max(1, Math.min(countLimit, Math.floor(Math.abs(Number(settings.count)) || 1)));
     const transparentBackground = settings.background === "transparent";
     const ratioOptions = aspectRatiosForResolution(model, selectedResolution).map((ratio) => ({ value: ratio, label: ratio === "auto" ? t("settingsPanels.common.auto") : ratio }));
     const resolutionOptions = capabilities.resolutions.map((resolution) => ({ value: resolution, label: resolution }));
@@ -55,17 +57,20 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     countRef.current = count;
 
     const stepCount = (delta: number) => {
-        const next = Math.max(1, Math.min(maxCount, countRef.current + delta));
+        const next = Math.max(1, Math.min(countLimit, countRef.current + delta));
         if (next === countRef.current) return;
         onConfigChange("count", String(next));
     };
 
     const labelStyle = { color: theme.node.muted };
 
+    const controlH = embedded ? "h-9" : "h-10";
+    const triggerClass = embedded ? "!h-9 !rounded-[10px] canvas-config-field" : undefined;
+
     return (
         <ImageSettingsTheme theme={theme}>
             <div
-                className={`flex w-full flex-col gap-3 ${className}`.trim()}
+                className={`flex w-full flex-col ${embedded ? "gap-2" : "gap-3"} ${className}`.trim()}
                 style={{ color: theme.node.text }}
                 onMouseDown={(event) => {
                     if (event.target instanceof HTMLInputElement) return;
@@ -76,18 +81,18 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
 
                 <div className="grid grid-cols-3 gap-1.5">
                     <FieldBlock label={t("settingsPanels.image.quality")} style={labelStyle}>
-                        <CanvasFieldMenu compact value={quality} options={qualityOptions} theme={theme} surface={controlBg} onChange={(value) => onConfigChange("quality", value)}>
+                        <CanvasFieldMenu compact value={quality} options={qualityOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(value) => onConfigChange("quality", value)}>
                             {(open) => <FieldMenuValue open={open}>{imageQualityLabel(quality)}</FieldMenuValue>}
                         </CanvasFieldMenu>
                     </FieldBlock>
                     <FieldBlock label={t("settingsPanels.image.aspectRatio")} style={labelStyle}>
-                        <CanvasFieldMenu compact value={selectedRatio} options={ratioOptions} theme={theme} surface={controlBg} onChange={(ratio) => onConfigChange("size", ratio)}>
+                        <CanvasFieldMenu compact value={selectedRatio} options={ratioOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(ratio) => onConfigChange("size", ratio)}>
                             {(open) => <FieldMenuValue open={open}>{selectedRatio === "auto" ? t("settingsPanels.common.auto") : selectedRatio}</FieldMenuValue>}
                         </CanvasFieldMenu>
                     </FieldBlock>
                     <FieldBlock label={t("settingsPanels.image.resolution")} style={labelStyle}>
                         {resolutionOptions.length ? (
-                            <CanvasFieldMenu compact value={selectedResolution} options={resolutionOptions} theme={theme} surface={controlBg} onChange={(resolution) => {
+                            <CanvasFieldMenu compact value={selectedResolution} options={resolutionOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(resolution) => {
                                 const next = coerceCanvasImageSettings(model, { ...settings, resolution });
                                 onConfigChange("resolution", next.resolution);
                                 if (next.size !== selectedRatio) onConfigChange("size", next.size);
@@ -95,7 +100,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 {(open) => <FieldMenuValue open={open}>{selectedResolution}</FieldMenuValue>}
                             </CanvasFieldMenu>
                         ) : (
-                            <div className="flex h-10 items-center rounded-xl px-2.5 text-[13px] font-medium" style={{ background: controlBg, color: theme.node.muted }}>
+                            <div className={`canvas-config-field flex ${controlH} items-center rounded-[10px] px-2.5 text-[13px] font-medium`} style={{ background: controlBg, color: theme.node.muted }}>
                                 {t("settingsPanels.common.auto")}
                             </div>
                         )}
@@ -103,13 +108,13 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </div>
 
                 <div className="grid grid-cols-2 gap-1.5">
-                    <div className="flex h-10 min-w-0 items-center justify-between rounded-xl px-2.5" style={{ background: controlBg, opacity: capabilities.transparentBackground ? 1 : 0.45 }} title={t("settingsPanels.image.transparentHint")}>
+                    <div className={`canvas-config-field flex ${controlH} min-w-0 items-center justify-between rounded-[10px] px-2.5`} style={{ background: controlBg, opacity: capabilities.transparentBackground ? 1 : 0.45 }} title={t("settingsPanels.image.transparentHint")}>
                         <span className="truncate text-[12px] font-medium">{t("settingsPanels.image.transparent")}</span>
                         <span className="shrink-0" onMouseDown={(event) => event.stopPropagation()}>
                             <Switch size="small" checked={transparentBackground} disabled={!capabilities.transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
                         </span>
                     </div>
-                    <div className="flex h-10 min-w-0 items-center rounded-xl px-1" style={{ background: controlBg }}>
+                    <div className={`canvas-config-field flex ${controlH} min-w-0 items-center rounded-[10px] px-1`} style={{ background: controlBg }}>
                         <HoldButton disabled={count <= 1} theme={theme} onHold={() => stepCount(-1)}>
                             <Minus className="size-3.5" />
                         </HoldButton>
@@ -119,7 +124,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 {t("settingsPanels.image.countUnit")}
                             </span>
                         </span>
-                        <HoldButton disabled={count >= maxCount} theme={theme} onHold={() => stepCount(1)}>
+                        <HoldButton disabled={count >= countLimit} theme={theme} onHold={() => stepCount(1)}>
                             <Plus className="size-3.5" />
                         </HoldButton>
                     </div>
@@ -128,8 +133,8 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 {showDimensions ? (
                     <FieldBlock label={t("settingsPanels.image.size")} style={labelStyle}>
                         <div className="grid grid-cols-2 gap-1.5">
-                            <DimensionPreview prefix="W" value={dimensions?.width} theme={theme} surface={controlBg} />
-                            <DimensionPreview prefix="H" value={dimensions?.height} theme={theme} surface={controlBg} />
+                            <DimensionPreview prefix="W" value={dimensions?.width} theme={theme} surface={controlBg} compact={embedded} />
+                            <DimensionPreview prefix="H" value={dimensions?.height} theme={theme} surface={controlBg} compact={embedded} />
                         </div>
                     </FieldBlock>
                 ) : null}
@@ -214,13 +219,13 @@ function HoldButton({ disabled, theme, onHold, children }: { disabled?: boolean;
     );
 }
 
-function DimensionPreview({ prefix, value, theme, surface }: { prefix: string; value?: number; theme: CanvasTheme; surface?: string }) {
+function DimensionPreview({ prefix, value, theme, surface, compact }: { prefix: string; value?: number; theme: CanvasTheme; surface?: string; compact?: boolean }) {
     return (
-        <label className="flex h-10 min-w-0 items-center gap-1.5 rounded-xl px-3" style={{ background: surface || theme.node.fill, color: theme.node.text, opacity: value ? 1 : 0.4 }}>
+        <label className={`${compact ? "canvas-config-field" : ""} flex ${compact ? "h-9" : "h-10"} min-w-0 items-center gap-1.5 rounded-[10px] px-3`.trim()} style={{ background: surface || theme.node.fill, color: theme.node.text, opacity: value ? 1 : 0.4 }}>
             <span className="w-3 shrink-0 text-[11px] font-semibold" style={{ color: theme.node.muted }}>
                 {prefix}
             </span>
-            <span className="h-full min-w-0 flex-1 text-[13px] leading-10 tabular-nums" style={{ color: "inherit" }}>
+            <span className={`h-full min-w-0 flex-1 text-[13px] tabular-nums ${compact ? "leading-9" : "leading-10"}`} style={{ color: "inherit" }}>
                 {value || "—"}
             </span>
         </label>

@@ -88,6 +88,7 @@ export function CanvasCostConfirmDialog({ cost, onCancel, onConfirm }: CanvasCos
                     <span>{t("canvas.costConfirm.estimate")}</span>
                     {priced ? (
                         <p>
+                            {displayCost.compareTotal && displayCost.compareTotal > displayCost.total ? <s>{formatPoints(displayCost.compareTotal)}</s> : null}
                             <strong>{formatPoints(displayCost.total)}</strong>
                             <em>{t("canvas.costConfirm.credits")}</em>
                         </p>

@@ -34,6 +34,7 @@ const open = computed({
 });
 
 const categories = ref<PromptCategory[]>([]);
+const categoryFilter = ref<"all" | "on" | "off">("all");
 const dragList = ref<PromptCategory[]>([]);
 const loading = ref(false);
 const saving = ref("");
@@ -42,18 +43,34 @@ const addForm = reactive({ key: "", label: "", active: true });
 const editingId = ref("");
 const editingLabel = ref("");
 
+const enabledCategories = computed(() =>
+  categories.value.filter((item) => item.active),
+);
+
+const filteredCategories = computed(() => {
+  const list =
+    categoryFilter.value === "on"
+      ? categories.value.filter((item) => item.active)
+      : categoryFilter.value === "off"
+        ? categories.value.filter((item) => !item.active)
+        : categories.value;
+  return [...list].sort(
+    (a, b) => a.sort - b.sort || a.label.localeCompare(b.label, "zh-CN"),
+  );
+});
+
 watch(
-  categories,
-  (items) => {
-    dragList.value = [...items].sort(
-      (a, b) => a.sort - b.sort || a.label.localeCompare(b.label, "zh-CN"),
-    );
+  filteredCategories,
+  (list) => {
+    dragList.value = [...list];
   },
-  { deep: true },
+  { immediate: true },
 );
 
 watch(open, (value) => {
-  if (value) void loadCategories();
+  if (!value) return;
+  categoryFilter.value = "all";
+  void loadCategories();
 });
 
 async function loadCategories() {
@@ -142,7 +159,7 @@ async function startEdit(item: PromptCategory) {
   editingId.value = item.id;
   editingLabel.value = item.label;
   await nextTick();
-  const selector = `.prompt-category-manager__row[data-key="${CSS.escape(item.id)}"] input`;
+  const selector = `.pcm-card[data-key="${CSS.escape(item.id)}"] .pcm-card__name-input input`;
   const input = document.querySelector(selector) as HTMLInputElement | null;
   input?.focus();
   input?.select();
@@ -161,7 +178,7 @@ async function commitEdit(item: PromptCategory) {
 }
 
 async function persistOrder() {
-  if (saving.value) return;
+  if (categoryFilter.value !== "all" || saving.value) return;
   const changes = dragList.value
     .map((item, index) => ({ item, sort: (index + 1) * 10 }))
     .filter(({ item, sort }) => item.sort !== sort);
@@ -214,83 +231,120 @@ async function removeCategory(item: PromptCategory) {
 <template>
   <AdminDialog
     v-model="open"
-    title="提示词分类"
+    panel-class="prompt-category-dialog"
+    title="分类管理"
+    subtitle="启停、改名与拖动排序；删除后提示词会移入“其他”"
     :icon="CollectionTag"
-    width="min(680px, 92vw)"
+    width="720px"
     hide-footer
+    nested-scroll
   >
-    <div class="prompt-category-manager">
-      <div class="prompt-category-manager__toolbar">
-        <el-button type="primary" :icon="Plus" @click="openAddDialog"
-          >新增分类</el-button
-        >
+    <div class="pcm">
+      <div class="pcm-toolbar">
+        <div class="pcm-filters">
+          <button
+            type="button"
+            class="pcm-filter"
+            :class="{ 'is-active': categoryFilter === 'all' }"
+            @click="categoryFilter = 'all'"
+          >
+            全部 {{ categories.length }}
+          </button>
+          <button
+            type="button"
+            class="pcm-filter"
+            :class="{ 'is-active': categoryFilter === 'on' }"
+            @click="categoryFilter = 'on'"
+          >
+            启用 {{ enabledCategories.length }}
+          </button>
+          <button
+            type="button"
+            class="pcm-filter"
+            :class="{ 'is-active': categoryFilter === 'off' }"
+            @click="categoryFilter = 'off'"
+          >
+            停用 {{ categories.length - enabledCategories.length }}
+          </button>
+        </div>
+        <el-button type="primary" :icon="Plus" @click="openAddDialog">
+          新增
+        </el-button>
       </div>
 
-      <div v-loading="loading" class="prompt-category-manager__list">
+      <p class="pcm-tip">点击名称改名；停用后用户端不再展示。在「全部」下可拖动手柄排序。</p>
+
+      <div v-loading="loading" class="pcm-list">
         <el-empty v-if="!loading && !dragList.length" description="暂无分类" />
         <draggable
           v-else
           v-model="dragList"
+          class="pcm-list__stack"
           item-key="id"
-          handle=".prompt-category-manager__handle"
+          handle=".pcm-card__handle"
           :animation="180"
-          :disabled="Boolean(saving)"
+          :disabled="categoryFilter !== 'all' || Boolean(saving)"
           ghost-class="is-ghost"
+          drag-class="is-drag"
           @end="persistOrder"
         >
           <template #item="{ element: item }">
             <article
-              class="prompt-category-manager__row"
-              :class="{ 'is-off': !item.active }"
+              class="pcm-card"
               :data-key="item.id"
+              :class="{
+                'is-off': !item.active,
+                'is-locked': categoryFilter !== 'all',
+              }"
             >
               <button
                 type="button"
-                class="prompt-category-manager__handle"
+                class="pcm-card__handle"
+                :disabled="categoryFilter !== 'all' || Boolean(saving)"
                 title="拖动排序"
-                :disabled="Boolean(saving)"
               >
-                <el-icon><Rank /></el-icon>
+                <el-icon :size="14"><Rank /></el-icon>
               </button>
 
-              <span class="prompt-category-manager__mark">
-                <el-icon><CollectionTag /></el-icon>
-              </span>
+              <button
+                type="button"
+                class="pcm-card__delete"
+                :disabled="item.builtin || Boolean(saving)"
+                :title="item.builtin ? '内置分类可改名和停用，但不能删除' : '删除分类'"
+                @click="removeCategory(item)"
+              >
+                <el-icon :size="13">
+                  <Lock v-if="item.builtin" />
+                  <Delete v-else />
+                </el-icon>
+              </button>
 
-              <div class="prompt-category-manager__copy">
+              <div class="pcm-card__icon">
+                <el-icon :size="22"><CollectionTag /></el-icon>
+              </div>
+
+              <div class="pcm-card__body">
                 <el-input
                   v-if="editingId === item.id"
                   v-model="editingLabel"
+                  class="pcm-card__name-input"
                   size="small"
                   maxlength="64"
                   @keyup.enter="commitEdit(item)"
                   @keyup.esc="editingId = ''"
                   @blur="commitEdit(item)"
                 />
-                <button v-else type="button" @click="startEdit(item)">
-                  {{ item.label }}
-                </button>
-                <small>{{ item.key }} · {{ item.count }} 条提示词</small>
-              </div>
-
-              <el-tooltip
-                :content="
-                  item.builtin ? '内置分类可改名和停用，但不能删除' : '删除分类'
-                "
-              >
                 <button
+                  v-else
                   type="button"
-                  class="prompt-category-manager__delete"
-                  :disabled="item.builtin || Boolean(saving)"
-                :aria-label="item.builtin ? '内置分类' : '删除分类'"
-                @click="removeCategory(item)"
-              >
-                  <el-icon>
-                    <Lock v-if="item.builtin" />
-                    <Delete v-else />
-                  </el-icon>
+                  class="pcm-card__name"
+                  title="点击改名"
+                  @click="startEdit(item)"
+                >
+                  {{ item.label || "未命名分类" }}
                 </button>
-              </el-tooltip>
+                <small>{{ item.count }} 条</small>
+              </div>
 
               <el-switch
                 :model-value="item.active"
@@ -312,14 +366,14 @@ async function removeCategory(item: PromptCategory) {
 
   <AdminDialog
     v-model="addOpen"
-    title="新增提示词分类"
+    title="新增分类"
     :icon="Plus"
-    width="440px"
-    confirm-text="创建分类"
+    width="420px"
+    confirm-text="添加"
     :confirm-loading="saving === '__create__'"
     @confirm="createCategory"
   >
-    <el-form label-position="top" class="prompt-category-editor">
+    <el-form label-position="top" class="pcm-editor">
       <el-form-item label="显示名称">
         <el-input
           v-model="addForm.label"
@@ -341,122 +395,179 @@ async function removeCategory(item: PromptCategory) {
   </AdminDialog>
 </template>
 
-<style scoped>
-.prompt-category-manager {
+<style scoped lang="scss">
+.pcm {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
-.prompt-category-manager__toolbar {
+.pcm-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 16px;
+  justify-content: space-between;
+  gap: 8px 12px;
 }
 
-.prompt-category-manager__list {
+.pcm-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pcm-filter {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  &.is-active {
+    border-color: transparent;
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+}
+
+.pcm-tip {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pcm-list {
   min-height: 180px;
+  max-height: min(56vh, 560px);
+  overflow: auto;
 }
 
-.prompt-category-manager__list > div {
+.pcm-list__stack {
   display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
-.prompt-category-manager__row {
+.pcm-card {
+  position: relative;
   display: grid;
-  grid-template-columns: 30px 34px minmax(0, 1fr) 32px auto;
-  align-items: center;
   gap: 10px;
-  min-height: 58px;
-  padding: 8px 10px;
+  justify-items: center;
+  padding: 16px 12px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--surface);
-  transition:
-    opacity 0.15s ease,
-    border-color 0.15s ease;
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+
+  &.is-off {
+    opacity: 0.68;
+  }
+
+  &.is-ghost {
+    opacity: 0.45;
+    border-style: dashed;
+  }
+
+  &.is-drag {
+    box-shadow: var(--shadow-md);
+  }
 }
 
-.prompt-category-manager__row.is-off {
-  opacity: 0.58;
-}
-
-.prompt-category-manager__row.is-ghost {
-  border-color: var(--accent);
-  opacity: 0.5;
-}
-
-.prompt-category-manager__handle,
-.prompt-category-manager__delete,
-.prompt-category-manager__copy button {
+.pcm-card__handle,
+.pcm-card__delete {
+  position: absolute;
+  top: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
   border: 0;
+  border-radius: 8px;
   background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.prompt-category-manager__handle,
-.prompt-category-manager__delete {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: 6px;
   color: var(--ink-3);
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+  }
 }
 
-.prompt-category-manager__handle {
+.pcm-card__handle {
+  left: 6px;
   cursor: grab;
+
+  &:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--accent-ink);
+  }
+
+  &:active:not(:disabled) {
+    cursor: grabbing;
+  }
 }
 
-.prompt-category-manager__delete:not(:disabled):hover {
-  background: var(--danger-soft);
-  color: var(--danger);
+.pcm-card__delete {
+  right: 6px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
 }
 
-.prompt-category-manager__delete:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.prompt-category-manager__mark {
+.pcm-card__icon {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 48px;
+  height: 48px;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 12px;
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
 
-.prompt-category-manager__copy {
+.pcm-card__body {
   display: grid;
+  width: 100%;
   min-width: 0;
-  gap: 3px;
+  gap: 2px;
 }
 
-.prompt-category-manager__copy button {
-  min-width: 0;
-  padding: 0;
+.pcm-card__name {
+  display: block;
   overflow: hidden;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 700;
-  text-align: left;
+  font-weight: 680;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: text;
+
+  &:hover {
+    color: var(--accent-ink);
+  }
 }
 
-.prompt-category-manager__copy small {
-  overflow: hidden;
+.pcm-card__name-input {
+  width: 100%;
+}
+
+.pcm-card__body small {
   color: var(--ink-3);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.prompt-category-editor {
+.pcm-editor {
   display: grid;
   gap: 2px;
 }

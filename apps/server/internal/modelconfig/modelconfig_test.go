@@ -264,8 +264,8 @@ func TestLegacyImageModelReceivesDefaultCapabilities(t *testing.T) {
 	if len(model.AspectRatios) != len(ImageAspectRatios) || len(model.Qualities) != len(ImageQualities) {
 		t.Fatalf("legacy capabilities were not populated: %#v", model)
 	}
-	if !model.TransparentBackground || model.MaxReferenceImages != 4 {
-		t.Fatalf("legacy defaults = transparent %v, references %d", model.TransparentBackground, model.MaxReferenceImages)
+	if !model.TransparentBackground || model.MaxReferenceImages != 4 || model.MaxImages != 4 {
+		t.Fatalf("legacy defaults = transparent %v, references %d, images %d", model.TransparentBackground, model.MaxReferenceImages, model.MaxImages)
 	}
 }
 
@@ -288,6 +288,22 @@ func TestExplicitlyDisabledImageCapabilitiesStayDisabled(t *testing.T) {
 	}
 	if model.OutputFormats == nil || len(model.OutputFormats) != 0 || model.ModerationLevels == nil || len(model.ModerationLevels) != 0 {
 		t.Fatalf("built-in behavior markers were overwritten: %#v", model)
+	}
+}
+
+func TestExplicitImageCountLimitKeepsItsValue(t *testing.T) {
+	var model Model
+	if err := json.Unmarshal([]byte(`{
+		"id":"count-model","name":"Count model","kind":"image",
+		"maxImages":8
+	}`), &model); err != nil {
+		t.Fatal(err)
+	}
+	if model.MaxImages != 8 || !model.maxImagesSet {
+		t.Fatalf("max images = %d, set = %v", model.MaxImages, model.maxImagesSet)
+	}
+	if got := model.GenerationMaxImages(); got != 8 {
+		t.Fatalf("GenerationMaxImages = %d", got)
 	}
 }
 

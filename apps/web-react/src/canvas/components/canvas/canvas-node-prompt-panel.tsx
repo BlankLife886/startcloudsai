@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { reasoningEffortLabel } from "@/components/text-settings-panel";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
-import { defaultConfig, formatModelPrice, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
@@ -14,6 +14,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasFieldMenu } from "./canvas-field-menu";
+import { CanvasPriceMark } from "./canvas-setting-controls";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
@@ -247,13 +248,14 @@ function PromptSendButton({
     onClick: () => void;
 }) {
     const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const elapsedMs = useGenerationElapsed(startedAt, durationMs, isRunning);
     const runningLabel = t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) });
     return (
         <button
             type="button"
             className="grid size-9 shrink-0 place-items-center rounded-full disabled:opacity-35"
-            style={{ background: nodeTypeColor(mode), color: "#fff" }}
+            style={{ background: nodeTypeColor(mode, undefined, theme.scheme), color: "#fff" }}
             disabled={disabled}
             title={locked && !isRunning ? t("canvas.unavailable") : isRunning ? runningLabel : t("canvas.promptPanel.generate")}
             onClick={onClick}
@@ -298,18 +300,19 @@ function PromptDockModel({
             <CanvasFieldMenu
                 compact
                 value={current}
-                options={options.map((model) => ({
-                    value: model,
-                    label: (
-                        <span className="flex min-w-0 flex-1 items-center gap-2">
-                            <PromptModelMark model={model} />
-                            <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
-                            <span className="shrink-0 text-[11px]" style={{ color: theme.node.muted }}>
-                                {formatModelPrice(modelOptionMeta(config, model))}
+                options={options.map((model) => {
+                    const parts = formatModelPriceParts(modelOptionMeta(config, model), config.reasoningEffort);
+                    return {
+                        value: model,
+                        label: (
+                            <span className="flex min-w-0 flex-1 items-center gap-2">
+                                <PromptModelMark model={model} />
+                                <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
+                                <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} />
                             </span>
-                        </span>
-                    ),
-                }))}
+                        ),
+                    };
+                })}
                 theme={theme}
                 surface={surface}
                 emptyLabel={placeholder}

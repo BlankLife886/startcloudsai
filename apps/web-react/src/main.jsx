@@ -12,6 +12,7 @@ import { router } from "./router.jsx";
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import { LocaleProvider } from "./i18n/index.js";
 import { ClientReleaseBanner } from "./components/ClientReleaseBanner.jsx";
+import { NotificationContainer } from "./components/toast/NotificationContainer.jsx";
 import { installDevPerformanceEntryGuard } from "./utils/devPerformanceEntryGuard.js";
 import { installGlobalClickGuard } from "./utils/globalClickGuard.js";
 import "./styles.css";
@@ -28,6 +29,7 @@ createRoot(document.getElementById("root")).render(
     <LocaleProvider>
       <AuthProvider>
         <ClientReleaseBanner />
+        <NotificationContainer />
         <RouterProvider router={router} />
       </AuthProvider>
     </LocaleProvider>

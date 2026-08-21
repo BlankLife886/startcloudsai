@@ -43,36 +43,43 @@ func (w *Worker) requestAssistantArtifactText(
 	client *sub2api.Client,
 	run *store.AssistantRun,
 	payload []sub2api.Message,
-	onFinalText func(string) error,
-) (string, []string, []map[string]any, error) {
+	onFinalText func(string, string) error,
+) (string, []string, []map[string]any, sub2api.ChatUsage, error) {
 	registry, skills, err := assistanttools.NewDefaultRegistries(w.St, w.Storage)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, sub2api.ChatUsage{}, err
 	}
 	skill, err := skills.Resolve(assistanttools.SkillGeneral, false)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, sub2api.ChatUsage{}, err
 	}
 	definitions, err := registry.Definitions(skill.AllowedTools)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, sub2api.ChatUsage{}, err
 	}
 	if len(definitions) == 0 {
-		return "", nil, nil, fmt.Errorf("file creation tool is unavailable")
+		return "", nil, nil, sub2api.ChatUsage{}, fmt.Errorf("file creation tool is unavailable")
 	}
 	messages := make([]sub2api.Message, 0, len(payload)+8)
 	messages = append(messages, sub2api.Message{Role: "system", Content: assistantArtifactInstruction})
 	messages = append(messages, payload...)
 	used := make([]string, 0, skill.MaxSteps)
 	artifacts := make([]map[string]any, 0, 2)
+	var usage sub2api.ChatUsage
 	for step := 0; step < skill.MaxSteps; step++ {
 		toolChoice := ""
 		if len(artifacts) == 0 {
 			toolChoice = sub2api.RequiredToolChoice
 		}
-		result, err := client.ChatAgentWithTools(ctx, messages, nil, definitions, toolChoice, nil)
+		result, err := client.ChatAgentWithTools(ctx, messages, nil, definitions, toolChoice, func(_, reasoning string) error {
+			if onFinalText == nil || strings.TrimSpace(reasoning) == "" {
+				return nil
+			}
+			return onFinalText("", reasoning)
+		})
+		usage = usage.Add(result.Usage)
 		if err != nil {
-			return result.Text, used, artifacts, err
+			return result.Text, used, artifacts, usage, err
 		}
 		if result.ToolCall == nil {
 			text := strings.TrimSpace(result.Text)
@@ -86,11 +93,11 @@ func (w *Worker) requestAssistantArtifactText(
 				break
 			}
 			if onFinalText != nil {
-				if err := onFinalText(text); err != nil {
-					return text, used, artifacts, err
+				if err := onFinalText(text, strings.TrimSpace(result.Reasoning)); err != nil {
+					return text, used, artifacts, usage, err
 				}
 			}
-			return text, used, artifacts, nil
+			return text, used, artifacts, usage, nil
 		}
 		call := *result.ToolCall
 		messages = append(messages, sub2api.Message{
@@ -117,9 +124,9 @@ func (w *Worker) requestAssistantArtifactText(
 		}
 	}
 	if len(artifacts) == 0 {
-		return "", used, artifacts, fmt.Errorf("assistant did not create the requested file")
+		return "", used, artifacts, usage, fmt.Errorf("assistant did not create the requested file")
 	}
 	messages = append([]sub2api.Message{{Role: "system", Content: "Answer now without calling tools. Tell the user the generated file is available in the download section below."}}, messages...)
-	text, err := requestAssistantChatText(ctx, client, messages, run.Prompt, onFinalText, nil)
-	return text, used, artifacts, err
+	text, finalUsage, err := requestAssistantChatText(ctx, client, messages, run.Prompt, onFinalText, nil)
+	return text, used, artifacts, usage.Add(finalUsage), err
 }

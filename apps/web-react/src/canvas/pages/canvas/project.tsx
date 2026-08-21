@@ -11,8 +11,8 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { applyCanvasImageModelSettings } from "@/lib/canvas/canvas-image-model";
-import { defaultConfig, modelOptionMeta, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { applyCanvasImageModelSettings, canvasImageModelCapabilities } from "@/lib/canvas/canvas-image-model";
+import { defaultConfig, modelOptionMeta, resolveModelForCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { adoptGeneratedImage, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -136,17 +136,14 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
 import {
-    applyCanvasTransparentRemoval,
     cancelCanvasTask,
     canvasManualTaskKey,
     canvasWorkflowTaskKey,
     createCanvasTaskNonce,
     imagesFromCanvasTask,
-    requestCanvasBackgroundRemoval,
     waitForCanvasAssistantRun,
     waitForCanvasTask,
 } from "@/services/canvas-task-api";
-import { fetchSiteBackgroundRemovalTools } from "@/services/site-model-catalog";
 import { acquireCanvasWorkflowRun, getActiveCanvasWorkflowRun, updateCanvasWorkflowRun, type CanvasWorkflowRunRecord } from "@/services/canvas-workflow-run-api";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 
@@ -296,6 +293,10 @@ function InfiniteCanvasPage() {
 
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
+    const canRemoveBackground = useMemo(() => {
+        const model = resolveModelForCapability(effectiveConfig, effectiveConfig.model, "image");
+        return canvasImageModelCapabilities(modelOptionMeta(effectiveConfig, model)).transparentBackground;
+    }, [effectiveConfig]);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const addAsset = useAssetStore((state) => state.addAsset);
@@ -352,25 +353,10 @@ function InfiniteCanvasPage() {
     const [transientPositions, setTransientPositions] = useState<Map<string, Position>>(() => new Map());
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
-    const [backgroundRemovalModelKey, setBackgroundRemovalModelKey] = useState("");
-    const [backgroundRemovalPricePoints, setBackgroundRemovalPricePoints] = useState<number | undefined>(undefined);
     const [costConfirm, setCostConfirm] = useState<CanvasCostPayload | null>(null);
     const [workflowRun, setWorkflowRun] = useState<CanvasWorkflowRunState>({ status: "idle", completed: 0, total: 0 });
     const costResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
     const auth = useAuth() as { user: { requireCostConfirm?: boolean } | null; setUser: (user: unknown) => void };
-
-    useEffect(() => {
-        void fetchSiteBackgroundRemovalTools()
-            .then((tools) => {
-                const tool = tools.find((item) => item.default) || tools[0];
-                setBackgroundRemovalModelKey(tool?.id || "");
-                setBackgroundRemovalPricePoints(tool?.pricePoints);
-            })
-            .catch(() => {
-                setBackgroundRemovalModelKey("");
-                setBackgroundRemovalPricePoints(undefined);
-            });
-    }, []);
 
     const requestCostEstimateConfirm = useCallback(
         async (estimate: CanvasCostEstimate) => {
@@ -671,9 +657,7 @@ function InfiniteCanvasPage() {
                                         );
                                     } else {
                                         const task = await waitForCanvasTask(target.taskId, controller.signal);
-                                        const [rawImage] = imagesFromCanvasTask(task);
-                                        const node = nodesRef.current.find((item) => item.id === target.nodeId);
-                                        const image = node?.metadata?.background === "transparent" ? await applyCanvasTransparentRemoval(rawImage, controller.signal) : rawImage;
+                                        const [image] = imagesFromCanvasTask(task);
                                         const uploaded = await adoptGeneratedImage(image);
                                         commitNodes((current) => current.map((item) => (item.id === target.nodeId ? applyUploadedImageToNode(item, uploaded, target.imageId) : item)));
                                     }
@@ -2398,9 +2382,25 @@ function InfiniteCanvasPage() {
 
     const removeBackgroundFromImageNode = useCallback(
         async (node: CanvasNodeData) => {
-            if (!node.metadata?.content || !backgroundRemovalModelKey) return;
-            if (!(await requestCostConfirm({ config: buildGenerationConfig(effectiveConfig, node, "image"), kind: "background_remove", count: 1, unitOverride: backgroundRemovalPricePoints, modelLabel: t("canvas.costConfirm.backgroundRemove") }))) return;
+            if (!node.metadata?.content) return;
+            const generationConfig = applyCanvasImageModelSettings(
+                { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", background: "transparent" },
+                modelOptionMeta(effectiveConfig, resolveModelForCapability(effectiveConfig, node.metadata?.model, "image")),
+            );
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                setSelectedNodeIds(new Set([node.id]));
+                setSelectedConnectionId(null);
+                openConfigDialog(true);
+                message.warning(t("canvas.workflow.modelUnavailable", { name: node.title || t("canvas.node.untitled") }));
+                return;
+            }
+            if (generationConfig.background !== "transparent") {
+                message.warning(t("canvas.imageTools.removeBackgroundUnavailable"));
+                return;
+            }
+            if (!(await requestCostConfirm({ config: generationConfig, kind: "image", count: 1 }))) return;
             const childId = nanoid();
+            const prompt = t("canvas.imageTools.removeBackgroundPrompt");
             const source: ReferenceImage = {
                 id: node.id,
                 name: `${node.title || node.id}.png`,
@@ -2408,17 +2408,18 @@ function InfiniteCanvasPage() {
                 dataUrl: node.metadata.content,
                 storageKey: node.metadata.storageKey,
             };
+            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
             setRunningNodeIds((current) => new Set(current).add(childId));
             setNodes((prev) => [
                 ...prev,
                 {
                     id: childId,
                     type: CanvasNodeType.Image,
-                    title: `${node.title || "图片"} - 已移除背景`,
+                    title: `${node.title || t("canvas.node.untitled")} - ${t("canvas.imageTools.removeBackground")}`,
                     position: { x: node.position.x + node.width + 96, y: node.position.y },
                     width: node.width,
                     height: node.height,
-                    metadata: { prompt: "移除图片背景", status: NODE_STATUS_LOADING },
+                    metadata: { prompt, status: NODE_STATUS_LOADING, ...generationMetadata },
                 },
             ]);
             setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
@@ -2426,30 +2427,17 @@ function InfiniteCanvasPage() {
             setSelectedConnectionId(null);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const removed = await requestCanvasBackgroundRemoval(source, backgroundRemovalModelKey, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(childId, taskId), idempotencyKey: canvasManualTaskKey(projectId, childId, createCanvasTaskNonce()) });
-                const meta = await readImageMeta(removed.dataUrl);
-                setNodes((prev) =>
-                    prev.map((item) =>
-                        item.id === childId
-                            ? {
-                                  ...item,
-                                  metadata: {
-                                      ...item.metadata,
-                                      content: removed.dataUrl,
-                                      storageKey: removed.storageKey,
-                                      mimeType: removed.type,
-                                      naturalWidth: meta.width,
-                                      naturalHeight: meta.height,
-                                      status: NODE_STATUS_SUCCESS,
-                                  },
-                              }
-                            : item,
-                    ),
-                );
-                message.success("背景已移除，原节点已保留");
+                const image = await requestEdit(generationConfig, prompt, [source], undefined, {
+                    signal: controller.signal,
+                    onCreated: (taskId) => persistCanvasTaskId(childId, taskId),
+                    idempotencyKey: canvasManualTaskKey(projectId, childId, createCanvasTaskNonce()),
+                }).then((items) => items[0]);
+                const uploaded = await adoptGeneratedImage(image);
+                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
+                message.success(t("canvas.projectPage.backgroundRemoved"));
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
-                const errorDetails = error instanceof Error ? error.message : "背景移除失败";
+                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.backgroundRemoveFailed");
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
             } finally {
                 finishGenerationRequest(childId, controller);
@@ -2460,7 +2448,7 @@ function InfiniteCanvasPage() {
                 });
             }
         },
-        [backgroundRemovalModelKey, backgroundRemovalPricePoints, effectiveConfig, finishGenerationRequest, message, persistCanvasTaskId, projectId, requestCostConfirm, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistCanvasTaskId, projectId, requestCostConfirm, startGenerationRequest, t],
     );
 
     const generateAngleNode = useCallback(
@@ -3887,7 +3875,6 @@ function InfiniteCanvasPage() {
                 config,
                 kind: mode === "text" ? "text" : "image",
                 count: getGenerationCount(config.count),
-                backgroundRemovalPricePoints,
             });
             if (estimate.pricingUnavailable) {
                 setSelectedNodeIds(new Set([nodeId]));
@@ -3899,6 +3886,7 @@ function InfiniteCanvasPage() {
         }
         const generationUnit = estimates.reduce((sum, estimate) => sum + estimate.generationUnit * estimate.count, 0);
         const removalUnit = estimates.reduce((sum, estimate) => sum + estimate.removalUnit * estimate.count, 0);
+        const compareTotal = estimates.reduce((sum, estimate) => sum + (estimate.compareTotal ?? estimate.total), 0);
         const total = generationUnit + removalUnit;
         const costConfirmed = await requestCostEstimateConfirm({
             kind: "workflow",
@@ -3908,12 +3896,14 @@ function InfiniteCanvasPage() {
             removalUnit,
             count: 1,
             total,
+            compareUnit: compareTotal > total ? compareTotal : undefined,
+            compareTotal: compareTotal > total ? compareTotal : undefined,
             unitLabel: "run",
             pricingUnavailable: estimates.some((estimate) => estimate.pricingUnavailable),
         });
         if (!costConfirmed) return;
         await executeWorkflow(checkpoint, canResumeSaved && !retryingFailure);
-    }, [backgroundRemovalPricePoints, beginWorkflowStop, effectiveConfig, executeWorkflow, isAiConfigReady, message, openConfigDialog, requestCostEstimateConfirm, t, workflowReadinessErrorMessage, workflowRun.status]);
+    }, [beginWorkflowStop, effectiveConfig, executeWorkflow, isAiConfigReady, message, openConfigDialog, requestCostEstimateConfirm, t, workflowReadinessErrorMessage, workflowRun.status]);
 
     const cancelQueuedWorkflowNode = useCallback(
         (nodeId: string) => {
@@ -4580,7 +4570,7 @@ function InfiniteCanvasPage() {
                     onSplit={(node) => setSplitNodeId(node.id)}
                     onUpscale={(node) => setUpscaleNodeId(node.id)}
                     onRemoveBackground={(node) => void removeBackgroundFromImageNode(node)}
-                    backgroundRemovalAvailable={Boolean(backgroundRemovalModelKey)}
+                    backgroundRemovalAvailable={canRemoveBackground}
                     onAngle={(node) => setAngleNodeId(node.id)}
                     onViewImage={(node) => setPreviewNodeId(node.id)}
                     onReversePrompt={createImageReversePromptNodes}

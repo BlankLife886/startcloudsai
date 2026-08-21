@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
 function readIsDark() {
-  return document.documentElement.classList.contains("color-scheme-dark");
+  const root = document.documentElement;
+  return root.classList.contains("color-scheme-dark") || root.classList.contains("dark") || root.dataset.colorScheme === "dark";
 }
 
 export function useIsDark() {

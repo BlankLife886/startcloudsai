@@ -386,7 +386,7 @@ export function InfiniteCanvas({
             onDragOver={(event) => event.preventDefault()}
             onDrop={onDrop}
         >
-            {backgroundMode === "blank" ? null : <div ref={gridRef} className="canvas-grid pointer-events-none absolute inset-0 opacity-40" data-mode={backgroundMode} style={{ backgroundImage: backgroundMode === "dots" ? `radial-gradient(circle, ${theme.canvas.dot} 1.15px, transparent 1.35px)` : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)` }} />}
+            {backgroundMode === "blank" ? null : <div ref={gridRef} className="canvas-grid pointer-events-none absolute inset-0 opacity-55" data-mode={backgroundMode} style={{ backgroundImage: backgroundMode === "dots" ? `radial-gradient(circle, ${theme.canvas.dot} 1.1px, transparent 1.3px)` : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)` }} />}
             <div ref={worldRef} className="canvas-world absolute origin-top-left">
                 {children}
             </div>

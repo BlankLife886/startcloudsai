@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Outlet, useLocation } from "react-router";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
-import "antd/dist/reset.css";
+import "./styles/antd-reset-layer.css";
 import "streamdown/styles.css";
 import "@/styles/globals.css";
 

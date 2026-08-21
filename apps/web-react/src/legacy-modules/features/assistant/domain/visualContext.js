@@ -20,12 +20,14 @@ export function promptNeedsRecentVisual(prompt) {
   )
 }
 
-export function resolveVisualContext(conversation, prompt) {
+export function resolveVisualContext(conversation, prompt, maxImages = 16) {
+  const limit = Math.min(16, Math.max(0, Number(maxImages) || 0));
+  if (limit <= 0) return [];
   const latestUserMessage = [...conversation.messages]
     .reverse()
     .find((message) => message.role === 'user')
   const currentImages = (latestUserMessage?.referenceImages || []).filter((image) => image?.dataUrl)
-  if (currentImages.length) return currentImages.slice(0, 4)
+  if (currentImages.length) return currentImages.slice(0, limit)
   if (!promptNeedsRecentVisual(prompt)) return []
 
   for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
@@ -34,7 +36,7 @@ export function resolveVisualContext(conversation, prompt) {
     const images = [...(message.images || []), ...(message.referenceImages || [])].filter(
       (image) => image?.dataUrl,
     )
-    if (images.length) return images.slice(0, 4)
+    if (images.length) return images.slice(0, limit)
   }
   return []
 }

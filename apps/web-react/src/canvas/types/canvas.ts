@@ -51,7 +51,7 @@ export type CanvasNodeMetadata = {
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
     model?: string;
-    reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
+    reasoningEffort?: "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
     size?: string;
     resolution?: string;
     quality?: string;

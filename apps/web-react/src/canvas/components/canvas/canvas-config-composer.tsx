@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { Button, Image } from "antd";
 import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
+import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { buildLightweightPreview } from "@/lib/canvas/canvas-preview-image";
 import { cloudThumbnailUrl } from "@/lib/canvas/canvas-preview-url";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 import { CanvasPreviewImage } from "./canvas-preview-image";
+import { canvasMentionMenuPlacement, contentEditableCaretRect, sameMentionRect } from "./canvas-resource-mention-menu";
 
 type CanvasConfigComposerProps = {
     value: string;
@@ -177,7 +180,7 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
                     }}
                     onBlur={() => window.setTimeout(closeMention, 120)}
                 />
-                {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+                {mention && candidates.length ? <MentionMenu query={mention.query} inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
             </div>
             {imagePreview ? <Image src={imagePreview} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>
@@ -185,9 +188,26 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
 
 }
 
-function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inputs: NodeGenerationInput[]; allInputs: NodeGenerationInput[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (input: NodeGenerationInput) => void }) {
+function MentionMenu({ query, inputs, allInputs, activeIndex, theme, onSelect }: { query: string; inputs: NodeGenerationInput[]; allInputs: NodeGenerationInput[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (input: NodeGenerationInput) => void }) {
     const selectedRef = useRef(false);
     const activeItemRef = useRef<HTMLButtonElement | null>(null);
+    const [anchor, setAnchor] = useState<DOMRect | null>(() => getCaretClientRect());
+
+    useLayoutEffect(() => {
+        const update = () => {
+            const editor = closestEditor(window.getSelection()?.anchorNode || document.body);
+            const next = contentEditableCaretRect(editor instanceof HTMLElement ? editor : null) || getCaretClientRect();
+            setAnchor((current) => (sameMentionRect(current, next) ? current : next));
+        };
+        update();
+        const editor = closestEditor(window.getSelection()?.anchorNode || document.body);
+        editor?.addEventListener("scroll", update, { passive: true });
+        window.addEventListener("resize", update);
+        return () => {
+            editor?.removeEventListener("scroll", update);
+            window.removeEventListener("resize", update);
+        };
+    }, [query, inputs]);
 
     useEffect(() => {
         activeItemRef.current?.scrollIntoView({ block: "nearest" });
@@ -199,35 +219,64 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
         onSelect(input);
     };
 
-    return (
-        <div className="absolute left-2 top-[calc(100%+6px)] z-[90] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
-            {inputs.map((input, index) => (
-                <button
-                    key={input.nodeId}
-                    ref={index === activeIndex ? activeItemRef : undefined}
-                    type="button"
-                    className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition"
-                    style={{ background: index === activeIndex ? theme.toolbar.activeBg : "transparent", color: index === activeIndex ? theme.toolbar.activeText : theme.node.text }}
-                    onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        selectInput(input);
-                    }}
-                >
-                    <ResourcePreview input={input} />
-                    <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{resourceLabel(input, allInputs)}</span>
-                        <span className="block truncate opacity-65">{input.text || input.title}</span>
-                    </span>
-                </button>
-            ))}
-        </div>
+    const caret = anchor || new DOMRect(16, 16, 0, 20);
+    const placement = canvasMentionMenuPlacement(caret, { menuWidth: 320 });
+    const menuStyle: CSSProperties = {
+        ...placement.style,
+        background: theme.toolbar.panel,
+        borderColor: theme.toolbar.border,
+    };
+
+    return createPortal(
+        <div
+            data-canvas-no-zoom
+            data-canvas-resource-mention-menu="true"
+            data-side={placement.showAbove ? "above" : "below"}
+            className="fixed z-[120] w-[min(20rem,calc(100vw-16px))] overflow-y-auto rounded-xl border p-1 shadow-2xl"
+            style={menuStyle}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+        >
+            {inputs.map((input, index) => {
+                const subtitle = input.type === "image" || input.type === "video" ? input.title : input.text || input.title;
+                return (
+                    <button
+                        key={input.nodeId}
+                        ref={index === activeIndex ? activeItemRef : undefined}
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-xs transition"
+                        style={{ "--mention-i": String(Math.min(index, 6)), background: index === activeIndex ? theme.toolbar.activeBg : "transparent", color: index === activeIndex ? theme.toolbar.activeText : theme.node.text } as CSSProperties}
+                        onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            selectInput(input);
+                        }}
+                    >
+                        <ResourcePreview input={input} />
+                        <span className="min-w-0 flex-1 overflow-hidden">
+                            <span className="block truncate whitespace-nowrap font-medium">{resourceLabel(input, allInputs)}</span>
+                            {subtitle ? <span className="mt-0.5 block truncate whitespace-nowrap opacity-65">{subtitle}</span> : null}
+                        </span>
+                    </button>
+                );
+            })}
+        </div>,
+        getCanvasPortalRoot(),
     );
 }
 
 function ResourcePreview({ input }: { input: NodeGenerationInput }) {
-    if (input.type === "image" && input.image) return <CanvasPreviewImage storageKey={input.image.storageKey} thumbnailUrl={cloudThumbnailUrl(input.image.storageKey || input.image.dataUrl || "") || undefined} maxEdge={160} allowOriginalFallback={false} alt="" className="size-9 rounded-md object-cover" />;
-    if (input.type === "video" && input.video) return <video src={input.video.url} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
+    if (input.type === "image" && input.image) {
+        return (
+            <span className="relative size-9 shrink-0 overflow-hidden rounded-md">
+                <CanvasPreviewImage storageKey={input.image.storageKey} thumbnailUrl={cloudThumbnailUrl(input.image.storageKey || input.image.dataUrl || "") || undefined} maxEdge={160} allowOriginalFallback={false} alt="" className="h-full w-full object-cover" />
+            </span>
+        );
+    }
+    if (input.type === "video" && input.video) {
+        return <video src={input.video.url} className="size-9 shrink-0 rounded-md bg-black object-cover" muted preload="metadata" />;
+    }
     const Icon = input.type === "audio" ? Music2 : input.type === "video" ? Video : input.type === "image" ? ImageIcon : FileText;
     return (
         <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
@@ -342,6 +391,17 @@ function textBeforeCaret() {
 function closestEditor(node: Node) {
     const element = node instanceof Element ? node : node.parentElement;
     return element?.closest("[contenteditable='true']") || null;
+}
+
+function getCaretClientRect(): DOMRect | null {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const rects = range.getClientRects();
+    if (rects.length) return rects[0];
+    const rect = range.getBoundingClientRect();
+    if (rect.top || rect.left || rect.width || rect.height) return rect;
+    return closestEditor(range.startContainer)?.getBoundingClientRect() ?? null;
 }
 
 function placeCaretAtEnd(element: HTMLElement) {

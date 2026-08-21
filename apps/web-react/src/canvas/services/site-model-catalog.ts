@@ -17,6 +17,7 @@ type SiteModel = {
     qualities?: unknown;
     transparentBackground?: unknown;
     maxReferenceImages?: unknown;
+    maxImages?: unknown;
     supportedReasoningEfforts?: unknown;
     defaultReasoningEffort?: unknown;
     reasoningPrices?: unknown;
@@ -148,6 +149,7 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         qualities: stringList(raw.qualities),
         transparentBackground: raw.transparentBackground !== false,
         maxReferenceImages: finiteNumber(raw.maxReferenceImages),
+        maxImages: finiteNumber(raw.maxImages),
         supportedReasoningEfforts: reasoningEffortList(raw.supportedReasoningEfforts),
         defaultReasoningEffort: reasoningEffort(raw.defaultReasoningEffort),
         reasoningPrices: reasoningPriceMap(raw.reasoningPrices),
@@ -160,9 +162,9 @@ function reasoningEffort(value: unknown): ModelReasoningEffort | undefined {
 }
 
 function reasoningEffortList(value: unknown) {
-    if (!Array.isArray(value)) return undefined;
+    if (!Array.isArray(value)) return [];
     const efforts = value.map(reasoningEffort).filter((item): item is ModelReasoningEffort => Boolean(item));
-    return efforts.length ? [...new Set(efforts)] : undefined;
+    return [...new Set(efforts)];
 }
 
 function reasoningPriceMap(value: unknown): Partial<Record<ModelReasoningEffort, ModelReasoningPrice>> | undefined {
@@ -174,9 +176,9 @@ function reasoningPriceMap(value: unknown): Partial<Record<ModelReasoningEffort,
         const source = raw as Record<string, unknown>;
         prices[effort] = {
             assistantStandardPricePoints: finiteNumber(source.assistantStandardPricePoints),
-            assistantPricePoints: finiteNumber(source.assistantPricePoints),
+            assistantPricePoints: finiteNumber(source.assistantPricePoints ?? source.assistantDiscountPricePoints),
             canvasAgentStandardPricePoints: finiteNumber(source.canvasAgentStandardPricePoints),
-            canvasAgentPricePoints: finiteNumber(source.canvasAgentPricePoints),
+            canvasAgentPricePoints: finiteNumber(source.canvasAgentPricePoints ?? source.canvasAgentDiscountPricePoints),
         };
     }
     return Object.keys(prices).length ? prices : undefined;

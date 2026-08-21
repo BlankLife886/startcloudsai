@@ -78,8 +78,8 @@ func TestAssistantDocumentChatExecutesAttachedFileSearchBeforeAnswering(t *testi
 	}
 	worker := &Worker{St: st}
 	streamed := ""
-	text, used, artifacts, err := worker.requestAssistantDocumentText(ctx, client, run,
-		[]sub2api.Message{{Role: "user", Content: run.Prompt}}, func(value string) error {
+	text, used, artifacts, _, err := worker.requestAssistantDocumentText(ctx, client, run,
+		[]sub2api.Message{{Role: "user", Content: run.Prompt}}, func(value, _ string) error {
 			streamed = value
 			return nil
 		})

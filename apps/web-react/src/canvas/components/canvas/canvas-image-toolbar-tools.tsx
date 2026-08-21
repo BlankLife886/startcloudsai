@@ -110,8 +110,8 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
     {
         id: "removeBackground",
         defaultVisible: true,
-        label: "移除背景",
-        title: "移除图片背景并生成新节点",
+        label: () => i18n.t("canvas.imageTools.removeBackground"),
+        title: () => i18n.t("canvas.imageTools.removeBackgroundTitle"),
         icon: () => <Eraser className="size-4" />,
         run: (node, handlers) => handlers.onRemoveBackground(node),
     },

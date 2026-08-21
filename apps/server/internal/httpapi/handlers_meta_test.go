@@ -321,8 +321,8 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 		efforts       []string
 		defaultEffort string
 	}{
-		"canvas-chat":          {},
-		"canvas-chat-alias-56": {},
+		"canvas-chat":          {efforts: []string{}},
+		"canvas-chat-alias-56": {efforts: []string{}},
 		"canvas-chat-sol":      {efforts: []string{"low", "medium", "high", "xhigh", "max"}, defaultEffort: "medium"},
 	}
 	for _, got := range canvas.TextModels {

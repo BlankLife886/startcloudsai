@@ -3,10 +3,9 @@ import { useTranslation } from "react-i18next";
 import { Segmented, SegmentedItem } from "@/components/canvas/canvas-setting-controls";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import i18n from "@/i18n";
+import { canvasSelectedControlStyle } from "@/lib/canvas-ui";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import type { AiConfig, ReasoningEffort } from "@/stores/use-config-store";
-
-const reasoningEffortOptions: ReasoningEffort[] = ["auto", "low", "medium", "high", "xhigh"];
+import { canvasReasoningEfforts, MODEL_REASONING_EFFORTS, modelOptionMeta, resolveCanvasReasoningEffort, type AiConfig, type ModelReasoningEffort, type ReasoningEffort } from "@/stores/use-config-store";
 
 type TextSettingsPanelProps = {
     config: AiConfig;
@@ -18,7 +17,11 @@ type TextSettingsPanelProps = {
 
 export function TextSettingsPanel({ config, onConfigChange, theme, className = "space-y-3.5", embedded = false }: TextSettingsPanelProps) {
     const { t } = useTranslation();
-    const effort = config.reasoningEffort || "auto";
+    const model = modelOptionMeta(config, config.model);
+    const efforts = canvasReasoningEfforts(model) as ReasoningEffort[];
+    const effort = resolveCanvasReasoningEffort(model, config.reasoningEffort) || config.reasoningEffort || "auto";
+
+    if (!efforts.length) return null;
 
     if (embedded) {
         return (
@@ -26,22 +29,18 @@ export function TextSettingsPanel({ config, onConfigChange, theme, className = "
                 <div className="h-4 truncate text-[11px] font-medium leading-4" style={{ color: theme.node.muted }}>
                     {t("canvas.controls.reasoning")}
                 </div>
-                <div className="grid h-10 grid-cols-5 gap-1 rounded-xl p-1" style={{ background: theme.toolbar.itemHover }}>
-                    {reasoningEffortOptions.map((value) => {
+                <div className="grid h-9 gap-1 rounded-xl p-1 canvas-config-efforts" style={{ background: theme.toolbar.itemHover, gridTemplateColumns: `repeat(${efforts.length}, minmax(0, 1fr))` }}>
+                    {efforts.map((value) => {
                         const selected = effort === value;
                         return (
                             <button
                                 key={value}
                                 type="button"
-                                className="flex items-center justify-center rounded-[10px] text-[12px] font-medium"
-                                style={{
-                                    background: selected ? theme.node.panel : "transparent",
-                                    color: selected ? theme.node.text : theme.node.muted,
-                                    boxShadow: selected ? "0 1px 4px rgba(42, 37, 64, 0.08)" : "none",
-                                }}
+                                className={`canvas-config-effort flex items-center justify-center rounded-lg text-[12px] font-medium${selected ? " is-selected" : ""}`}
+                                style={selected ? canvasSelectedControlStyle(theme) : { background: "transparent", color: theme.node.muted }}
                                 onClick={() => onConfigChange("reasoningEffort", value)}
                             >
-                                {t(`settingsPanels.common.${value}`)}
+                                {reasoningEffortLabel(value)}
                             </button>
                         );
                     })}
@@ -61,9 +60,9 @@ export function TextSettingsPanel({ config, onConfigChange, theme, className = "
                         {t("settingsPanels.text.reasoning")}
                     </div>
                     <Segmented theme={theme}>
-                        {reasoningEffortOptions.map((value) => (
+                        {efforts.map((value) => (
                             <SegmentedItem key={value} selected={effort === value} theme={theme} onClick={() => onConfigChange("reasoningEffort", value)}>
-                                {t(`settingsPanels.common.${value}`)}
+                                {reasoningEffortLabel(value)}
                             </SegmentedItem>
                         ))}
                     </Segmented>
@@ -73,6 +72,15 @@ export function TextSettingsPanel({ config, onConfigChange, theme, className = "
     );
 }
 
-export function reasoningEffortLabel(value: ReasoningEffort) {
-    return reasoningEffortOptions.includes(value) ? i18n.t(`settingsPanels.common.${value}`) : value;
+export function reasoningEffortLabel(value: string) {
+    const effort = String(value || "").trim().toLowerCase();
+    if (effort === "auto" || MODEL_REASONING_EFFORTS.includes(effort as ModelReasoningEffort)) {
+        const key = `settingsPanels.common.${effort}`;
+        const translated = i18n.t(key);
+        if (translated !== key) return translated;
+        const composerKey = `agent.composer.effort.${effort}`;
+        const composer = i18n.t(composerKey);
+        if (composer !== composerKey) return composer;
+    }
+    return value;
 }

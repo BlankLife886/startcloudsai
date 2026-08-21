@@ -89,6 +89,22 @@ func validateModelImageCapabilities(model modelconfig.Model, params map[string]a
 	return nil
 }
 
+func normalizeCanvasImageOutputFormat(model modelconfig.Model, params map[string]any) {
+	if stringParam(params, "_source") != "react_canvas" {
+		return
+	}
+	outputFormat := strings.ToLower(stringParam(params, "outputFormat"))
+	if outputFormat == "jpg" {
+		outputFormat = "jpeg"
+	}
+	if outputFormat != "" && !supports(model.OutputFormats, outputFormat) {
+		// Infinite canvas has no output-format selector. Old clients could still
+		// send a persisted implicit format, so fall back to the model-native format
+		// instead of rejecting an otherwise valid generation.
+		delete(params, "outputFormat")
+	}
+}
+
 func ValidateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
 	return validateModelImageCapabilities(model, params, referenceCount)
 }
@@ -235,8 +251,8 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	if in.Type == "puzzle" {
 		return nil, false, apperr.E("puzzle_local_only", "AI 拼图是免费本地工具，不创建云端生成任务", 422)
 	}
-	if in.Count < 1 || in.Count > 4 {
-		return nil, false, apperr.E("validation_error", "count 须在 1-4 之间", 422)
+	if in.Count < 1 || in.Count > modelconfig.MaxImagesLimit {
+		return nil, false, apperr.E("validation_error", fmt.Sprintf("count 须在 1-%d 之间", modelconfig.MaxImagesLimit), 422)
 	}
 	isBackgroundRemove := in.Type == "background_remove"
 	taskFeature, _ := trialfeature.ForTaskType(in.Type)
@@ -360,8 +376,12 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		}
 		if configured {
 			if !isBackgroundRemove {
-				if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
+				normalizeCanvasImageOutputFormat(selection.Model, params)
+				if err := validateModelImageCapabilities(selection.Model, params, len(in.InputKeys)); err != nil {
 					return err
+				}
+				if in.Count > selection.Model.GenerationMaxImages() {
+					return apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
 				}
 				if quality := stringParam(params, "quality"); quality != "" {
 					switch quality {
@@ -426,6 +446,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_modelOutputFormats"] = selection.Model.OutputFormats
 			params["_modelModerationLevels"] = selection.Model.ModerationLevels
 			params["_modelMaxReferenceImages"] = selection.Model.MaxReferenceImages
+			params["_modelMaxImages"] = selection.Model.GenerationMaxImages()
 			params["_unitPriceCents"] = unitPrice
 		} else if isBackgroundRemove {
 			return apperr.E("validation_error", "背景移除工具尚未配置或未开放", 422)

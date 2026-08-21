@@ -2,12 +2,8 @@
 import { computed, reactive, ref } from 'vue'
 import {
   Back,
-  Delete,
-  Edit,
   Plus,
   Setting,
-  SwitchButton,
-  VideoPlay,
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AdminDialog from '@/components/AdminDialog.vue'
@@ -46,12 +42,6 @@ const dialogTitle = computed(() => {
   return editingId.value ? '编辑体验活动' : '新建体验活动'
 })
 
-const dialogSubtitle = computed(() =>
-  mode.value === 'list'
-    ? '同一时间只允许一个活动启用，历史活动与申请记录独立保留'
-    : '配置真实功能、准入方式和活动名额',
-)
-
 const editingCampaign = computed(() =>
   campaigns.value.find((campaign) => campaign.id === editingId.value),
 )
@@ -61,12 +51,6 @@ const statusLabel: Record<string, string> = {
   active: '启用中',
   draft: '草稿',
   closed: '已关闭',
-}
-
-const statusType: Record<string, 'success' | 'info' | 'warning'> = {
-  active: 'success',
-  draft: 'info',
-  closed: 'warning',
 }
 
 async function load() {
@@ -196,7 +180,14 @@ async function remove(item: TrialCampaign) {
 function formatDate(value?: string | null) {
   if (!value) return '—'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
 function isExpired(item: TrialCampaign) {
@@ -210,6 +201,19 @@ function formatRemaining(item: TrialCampaign) {
   if (hours < 24) return `剩余 ${hours} 小时`
   return `剩余 ${Math.ceil(hours / 24)} 天`
 }
+
+function campaignStatus(item: TrialCampaign) {
+  if (isExpired(item)) return { key: 'expired', label: '已过期' }
+  return { key: item.status, label: statusLabel[item.status] || item.status }
+}
+
+function canDelete(item: TrialCampaign) {
+  return item.status !== 'active' && item.actualApplied <= 0
+}
+
+function applyExpiryShortcut(fn: () => Date) {
+  form.expiresAt = fn()
+}
 </script>
 
 <template>
@@ -217,13 +221,14 @@ function formatRemaining(item: TrialCampaign) {
 
   <AdminDialog
     v-model="open"
+    panel-class="trial-campaign-dialog"
     :title="dialogTitle"
-    :subtitle="dialogSubtitle"
     :icon="Setting"
-    width="960px"
+    width="720px"
+    nested-scroll
     :hide-footer="mode === 'list'"
-    :confirm-text="editingId ? '保存修改' : '创建活动'"
-    cancel-text="返回列表"
+    :confirm-text="editingId ? '保存' : '创建'"
+    cancel-text="返回"
     :confirm-loading="saving"
     :confirm-disabled="loading || features.length === 0"
     @open="load"
@@ -231,254 +236,454 @@ function formatRemaining(item: TrialCampaign) {
     @confirm="save"
     @closed="backToList"
   >
-    <div v-loading="loading" class="trial-campaign-manager">
+    <div v-loading="loading" class="campaign-manager">
       <template v-if="mode === 'list'">
-        <div class="trial-campaign-manager__toolbar">
-          <div>
-            <strong>{{ campaigns.length }} 期活动</strong>
-            <small>启用新活动时，当前活动会在同一事务内关闭</small>
-          </div>
+        <div class="campaign-manager__toolbar">
           <el-button type="primary" :icon="Plus" @click="resetForm()">新建活动</el-button>
         </div>
 
-        <el-table :data="campaigns" height="480" size="small" table-layout="fixed">
-          <template #empty>
-            <el-empty description="暂无体验活动" :image-size="64" />
-          </template>
-          <el-table-column label="活动" min-width="210">
-            <template #default="{ row }">
-              <div class="trial-campaign-manager__identity">
-                <strong>{{ row.title }}</strong>
-                <small>截止 {{ formatDate(row.expiresAt) }} · {{ formatRemaining(row as TrialCampaign) }}</small>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="92" align="center">
-            <template #default="{ row }">
-              <el-tag :type="isExpired(row as TrialCampaign) ? 'danger' : statusType[row.status]" size="small" effect="light">
-                {{ isExpired(row as TrialCampaign) ? '已过期' : statusLabel[row.status] || row.status }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="体验功能" min-width="220">
-            <template #default="{ row }">
-              <div class="trial-campaign-manager__features">
-                <el-tag
-                  v-for="feature in row.features"
-                  :key="feature.key"
-                  size="small"
-                  effect="plain"
-                >{{ feature.label }}</el-tag>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="名额 / 申请" width="116" align="center">
-            <template #default="{ row }">
-              <span class="trial-campaign-manager__number">
-                {{ row.actualApplied.toLocaleString('zh-CN') }} / {{ row.capacity.toLocaleString('zh-CN') }}
+        <div v-if="!loading && !campaigns.length" class="campaign-manager__empty">
+          <strong>还没有体验活动</strong>
+          <span>创建后会出现在这里</span>
+        </div>
+
+        <div v-else class="campaign-manager__list">
+          <article
+            v-for="row in campaigns"
+            :key="row.id"
+            class="campaign-card"
+            :class="`is-${campaignStatus(row).key}`"
+          >
+            <header>
+              <strong>{{ row.title }}</strong>
+              <span class="campaign-card__status" :class="`is-${campaignStatus(row).key}`">
+                {{ campaignStatus(row).label }}
               </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="255" fixed="right" align="right">
-            <template #default="{ row }">
-              <div class="trial-campaign-manager__actions">
-                <el-tooltip content="编辑活动" placement="top">
-                  <el-button circle text :icon="Edit" @click="resetForm(row as TrialCampaign)" />
-                </el-tooltip>
-                <el-button
-                  v-if="row.status !== 'active'"
-                  size="small"
-                  type="success"
-                  plain
-                  :icon="VideoPlay"
-                  :disabled="isExpired(row as TrialCampaign)"
-                  @click="activate(row as TrialCampaign)"
-                >启用</el-button>
-                <el-button
-                  v-else
-                  size="small"
-                  type="warning"
-                  plain
-                  :icon="SwitchButton"
-                  @click="closeCampaign(row as TrialCampaign)"
-                >关闭</el-button>
-                <el-tooltip
-                  :content="row.actualApplied > 0 ? '已有申请记录，不能删除' : '删除活动'"
-                  placement="top"
-                >
-                  <el-button
-                    circle
-                    text
-                    type="danger"
-                    :icon="Delete"
-                    :disabled="row.status === 'active' || row.actualApplied > 0"
-                    @click="remove(row as TrialCampaign)"
-                  />
-                </el-tooltip>
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
+            </header>
+            <div class="campaign-card__meta">
+              <span>截止 {{ formatDate(row.expiresAt) }}</span>
+              <i>·</i>
+              <span>{{ formatRemaining(row) }}</span>
+              <i>·</i>
+              <span class="tnum">{{ row.actualApplied.toLocaleString('zh-CN') }} / {{ row.capacity.toLocaleString('zh-CN') }}</span>
+            </div>
+            <div v-if="row.features?.length" class="campaign-card__features">
+              <span v-for="feature in row.features" :key="feature.key">{{ feature.label }}</span>
+            </div>
+            <footer>
+              <button type="button" class="campaign-card__action" @click="resetForm(row)">编辑</button>
+              <button
+                v-if="row.status !== 'active'"
+                type="button"
+                class="campaign-card__action is-on"
+                :disabled="isExpired(row)"
+                @click="activate(row)"
+              >
+                启用
+              </button>
+              <button
+                v-else
+                type="button"
+                class="campaign-card__action is-warn"
+                @click="closeCampaign(row)"
+              >
+                关闭
+              </button>
+              <button
+                v-if="canDelete(row)"
+                type="button"
+                class="campaign-card__action is-danger"
+                @click="remove(row)"
+              >
+                删除
+              </button>
+            </footer>
+          </article>
+        </div>
       </template>
 
-      <template v-else>
-        <el-button text :icon="Back" class="trial-campaign-manager__back" @click="backToList">
-          返回活动列表
-        </el-button>
-        <section class="module-settings-section">
-          <div class="module-settings-grid">
-            <div class="module-settings-field module-settings-field--wide module-settings-field--stack">
-              <div class="module-settings-field__copy">
-                <strong>活动标题</strong>
-                <small>显示在用户体验资格入口和申请弹窗中</small>
+      <div v-else class="campaign-form">
+        <button type="button" class="campaign-form__back" @click="backToList">
+          <el-icon><Back /></el-icon>
+          返回
+        </button>
+
+        <label class="campaign-form__field">
+          <span>活动标题</span>
+          <el-input v-model="form.title" maxlength="60" show-word-limit />
+        </label>
+
+        <label class="campaign-form__field">
+          <span>体验功能</span>
+          <el-select
+            v-model="form.featureKeys"
+            class="campaign-form__select"
+            popper-class="module-settings-feature-popper"
+            placeholder="选择功能"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="3"
+            :multiple-limit="6"
+            :disabled="featureSelectionLocked"
+          >
+            <el-option
+              v-for="feature in features"
+              :key="feature.key"
+              :label="feature.label"
+              :value="feature.key"
+            >
+              <div class="module-settings-feature-option">
+                <i :class="['bi', feature.icon]" aria-hidden="true" />
+                <span>
+                  <strong>{{ feature.label }}</strong>
+                  <small>{{ feature.route }} · {{ feature.taskTypes.join(', ') }}</small>
+                </span>
               </div>
-              <el-input v-model="form.title" maxlength="60" show-word-limit />
-            </div>
-            <div class="module-settings-field module-settings-field--wide">
-              <div class="module-settings-field__copy">
-                <strong>活动截止时间</strong>
-                <small>到期后自动关闭入口，并停止申请、审核、积分领取和体验积分使用</small>
-              </div>
-              <el-date-picker
-                v-model="form.expiresAt"
-                type="datetime"
-                format="YYYY-MM-DD HH:mm"
-                placeholder="选择活动截止时间"
-                :shortcuts="expiryShortcuts"
-                :clearable="false"
-              />
-            </div>
-            <div class="module-settings-field module-settings-field--wide module-settings-field--stack">
-              <div class="module-settings-field__copy">
-                <strong>体验功能</strong>
-                <small v-if="featureSelectionLocked">已有申请记录，为保证历史授权一致，体验功能不可修改</small>
-                <small v-else>审核通过后全部授权，体验积分可在所选功能中通用</small>
-              </div>
-              <el-select
-                v-model="form.featureKeys"
-                class="module-settings-feature-select"
-                popper-class="module-settings-feature-popper"
-                placeholder="选择一个或多个真实功能"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                :max-collapse-tags="3"
-                :multiple-limit="6"
-                :disabled="featureSelectionLocked"
-              >
-                <el-option
-                  v-for="feature in features"
-                  :key="feature.key"
-                  :label="feature.label"
-                  :value="feature.key"
-                >
-                  <div class="module-settings-feature-option">
-                    <i :class="['bi', feature.icon]" aria-hidden="true" />
-                    <span>
-                      <strong>{{ feature.label }}</strong>
-                      <small>{{ feature.route }} · {{ feature.taskTypes.join(', ') }}</small>
-                    </span>
-                  </div>
-                </el-option>
-              </el-select>
-            </div>
-            <div class="module-settings-field module-settings-field--wide">
-              <div class="module-settings-field__copy">
-                <strong>体验方式</strong>
-                <small>权限内测会限制未通过用户提交所选功能任务</small>
-              </div>
-              <el-segmented
-                v-model="form.accessMode"
-                :options="[
-                  { label: '功能专属积分', value: 'credit_only' },
-                  { label: '权限内测', value: 'restricted' },
-                ]"
-              />
-            </div>
-            <div class="module-settings-field">
-              <div class="module-settings-field__copy">
-                <strong>活动总名额</strong>
-                <small>达到上限后原子停止接收新申请</small>
-              </div>
-              <div class="module-settings-control">
-                <el-input-number v-model="form.capacity" :min="1" :max="1000000" :precision="0" />
-                <span>人</span>
-              </div>
-            </div>
-            <div class="module-settings-field">
-              <div class="module-settings-field__copy">
-                <strong>展示人数调整</strong>
-                <small>展示申请数 = 真实申请数 + 调整值</small>
-              </div>
-              <div class="module-settings-control">
-                <el-input-number
-                  v-model="form.displayOffset"
-                  :min="-1000000"
-                  :max="1000000"
-                  :precision="0"
-                />
-                <span>人</span>
-              </div>
-            </div>
+            </el-option>
+          </el-select>
+        </label>
+
+        <div class="campaign-form__field">
+          <span>体验方式</span>
+          <div class="campaign-form__chips">
+            <button
+              type="button"
+              class="campaign-form__chip"
+              :class="{ 'is-active': form.accessMode === 'credit_only' }"
+              @click="form.accessMode = 'credit_only'"
+            >
+              功能专属积分
+            </button>
+            <button
+              type="button"
+              class="campaign-form__chip"
+              :class="{ 'is-active': form.accessMode === 'restricted' }"
+              @click="form.accessMode = 'restricted'"
+            >
+              权限内测
+            </button>
           </div>
-        </section>
-      </template>
+        </div>
+
+        <div class="campaign-form__field">
+          <span>截止时间</span>
+          <div class="campaign-form__chips">
+            <button
+              v-for="item in expiryShortcuts"
+              :key="item.text"
+              type="button"
+              class="campaign-form__chip"
+              @click="applyExpiryShortcut(item.value)"
+            >
+              {{ item.text }}
+            </button>
+          </div>
+          <el-date-picker
+            v-model="form.expiresAt"
+            type="datetime"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="选择截止时间"
+            :clearable="false"
+          />
+        </div>
+
+        <div class="campaign-form__row">
+          <label class="campaign-form__field">
+            <span>总名额</span>
+            <div class="campaign-form__number">
+              <el-input-number v-model="form.capacity" :min="1" :max="1000000" :precision="0" :controls="false" />
+              <em>人</em>
+            </div>
+          </label>
+          <label class="campaign-form__field">
+            <span>展示调整</span>
+            <div class="campaign-form__number">
+              <el-input-number
+                v-model="form.displayOffset"
+                :min="-1000000"
+                :max="1000000"
+                :precision="0"
+                :controls="false"
+              />
+              <em>人</em>
+            </div>
+          </label>
+        </div>
+      </div>
     </div>
   </AdminDialog>
 </template>
 
-<style scoped>
-.trial-campaign-manager {
-  min-height: 220px;
+<style scoped lang="scss">
+.campaign-manager {
+  display: grid;
+  gap: 12px;
+  min-height: 200px;
 }
 
-.trial-campaign-manager__toolbar {
+.campaign-manager__toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.campaign-manager__list {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.campaign-manager__empty {
+  display: grid;
+  min-height: 220px;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  text-align: center;
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    font-size: 12px;
+  }
+}
+
+.campaign-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+}
+
+.campaign-card__status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-active {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-draft {
+    background: var(--surface);
+    color: var(--ink-3);
+  }
+
+  &.is-closed,
+  &.is-expired {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  &.is-closed {
+    background: var(--surface-3);
+    color: var(--ink-3);
+  }
+}
+
+.campaign-card__meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 14px;
-}
-
-.trial-campaign-manager__toolbar strong,
-.trial-campaign-manager__toolbar small,
-.trial-campaign-manager__identity strong,
-.trial-campaign-manager__identity small {
-  display: block;
-}
-
-.trial-campaign-manager__toolbar strong,
-.trial-campaign-manager__identity strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.trial-campaign-manager__toolbar small,
-.trial-campaign-manager__identity small {
-  margin-top: 3px;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 12px;
+  white-space: nowrap;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  i {
+    flex: 0 0 auto;
+    font-style: normal;
+  }
 }
 
-.trial-campaign-manager__features {
+.campaign-card__features {
   display: flex;
   flex-wrap: wrap;
+  gap: 6px;
+
+  span {
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+    background: var(--violet-soft);
+    color: var(--violet);
+    font-size: 11px;
+    font-weight: 700;
+  }
+}
+
+.campaign-card__action {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+
+  &.is-on {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-warn {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+}
+
+.campaign-form {
+  display: grid;
+  gap: 14px;
+}
+
+.campaign-form__back {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  width: max-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--ink);
+  }
 }
 
-.trial-campaign-manager__number {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
+.campaign-form__field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+
+  > span {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
 }
 
-.trial-campaign-manager__actions {
+.campaign-form__select {
+  width: 100%;
+}
+
+.campaign-form__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.campaign-form__chip {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface-3);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+}
+
+.campaign-form__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.campaign-form__number {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-}
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
 
-.trial-campaign-manager__back {
-  margin-bottom: 10px;
+  :deep(.el-input-number) {
+    width: 100%;
+  }
+
+  :deep(.el-input__wrapper) {
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  em {
+    flex: 0 0 auto;
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+  }
 }
 </style>

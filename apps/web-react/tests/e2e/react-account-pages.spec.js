@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { fulfillJson } from './helpers/authMocks.js'
 import { installVisualBaseline } from './helpers/visualBaseline.js'
+import { expectPricingPageIsolated } from './helpers/pricingIsolation.js'
 
 const account = {
   id: 'account-react-test',
@@ -1389,6 +1390,22 @@ test.describe('React authenticated account pages', () => {
 
     await page.goto('/profile?tab=materials', { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(/\/assets$/)
+  })
+
+  test('pricing layout is not polluted after visiting profile', async ({ page }) => {
+    await page.route('**/api/v1/auth/session', (route) =>
+      fulfillJson(route, { user: accountProfile }),
+    )
+    await page.route('**/api/v1/me/wallet', (route) => fulfillJson(route, walletSnapshot))
+    await page.route('**/api/v1/me/overview', (route) => fulfillJson(route, profileOverview))
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/profile', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.pp-page')).toBeVisible()
+
+    await page.locator('.site-header a[href="/pricing"]').click()
+    await expect(page).toHaveURL(/\/pricing$/)
+    await expectPricingPageIsolated(page)
+    await expect(page.locator('.pp-page')).toHaveCount(0)
   })
 
   test('incentive group joins, shares, and creates through the existing growth contract', async ({

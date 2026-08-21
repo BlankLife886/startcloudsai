@@ -644,10 +644,18 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	if body.Count == 0 {
-		body.Count = 2
+		if body.Mode == "image" {
+			body.Count = 2
+		} else {
+			body.Count = 1
+		}
 	}
-	if body.Count < 1 || body.Count > 4 {
-		fail(c, apperr.E("validation_error", "图片数量须在 1-4 之间", 422))
+	maxImages := modelconfig.DefaultMaxImages
+	if body.Mode == "image" && modelConfigured {
+		maxImages = selectedModel.Model.GenerationMaxImages()
+	}
+	if body.Mode == "image" && (body.Count < 1 || body.Count > maxImages) {
+		fail(c, apperr.E("validation_error", fmt.Sprintf("图片数量须在 1-%d 之间", maxImages), 422))
 		return
 	}
 	if body.RequestSize == "" {
@@ -680,7 +688,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if chatSelection != nil {
 			upstreamModel = chatSelection.Model.UpstreamModel
 		}
-		body.ReasoningEffort, err = normalizeAssistantReasoningEffortForModel(body.ReasoningEffort, upstreamModel, false)
+		body.ReasoningEffort, err = normalizeAssistantReasoningEffortForSupported(body.ReasoningEffort, reasoningEffortsForRun(chatSelection, upstreamModel), false)
 		if err != nil {
 			fail(c, err)
 			return
@@ -833,6 +841,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				"aspectRatios":       selection.Model.AspectRatios,
 				"qualities":          selection.Model.Qualities,
 				"maxReferenceImages": selection.Model.MaxReferenceImages,
+				"maxImages":          selection.Model.GenerationMaxImages(),
 				"fastMode":           selection.Model.FastMode,
 			})
 		}
@@ -1293,13 +1302,23 @@ func normalizeAssistantReasoningEffort(value string, defaultStandard bool) (stri
 }
 
 func normalizeAssistantReasoningEffortForModel(value, upstreamModel string, defaultStandard bool) (string, error) {
+	return normalizeAssistantReasoningEffortForSupported(value, modelconfig.ReasoningEffortsForModel(upstreamModel), defaultStandard)
+}
+
+func reasoningEffortsForRun(selection *modelconfig.Selection, upstreamModel string) []string {
+	if selection != nil {
+		return append([]string(nil), selection.Model.SupportedReasoningEfforts...)
+	}
+	return modelconfig.ReasoningEffortsForModel(upstreamModel)
+}
+
+func normalizeAssistantReasoningEffortForSupported(value string, supported []string, defaultStandard bool) (string, error) {
 	effort := strings.ToLower(strings.TrimSpace(value))
-	supported := modelconfig.ReasoningEffortsForModel(upstreamModel)
 	if len(supported) == 0 {
 		if effort == "" {
 			return "", nil
 		}
-		return "", apperr.E("validation_error", "reasoningEffort: 所选模型不支持可配置推理强度", 422)
+		return "", apperr.E("validation_error", "reasoningEffort: 所选模型未开启可配置推理强度", 422)
 	}
 	if effort == "" && defaultStandard {
 		if containsString(supported, "medium") {

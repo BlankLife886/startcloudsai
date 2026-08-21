@@ -4,7 +4,7 @@ import { Copy, Download, Ellipsis, FolderPlus, Image as ImageIcon, MessageSquare
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
-import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
+import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
 import { useCopyText } from "@/hooks/use-copy-text";
@@ -264,9 +264,9 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
                 ? t(`assets.kinds.${node.type}`)
                 : getNodeDefinition(node.type)?.title || node.type
         : "";
-    const typeColor = nodeTypeColor(node?.type === CanvasNodeType.Group ? "group" : node?.type);
+    const typeColor = nodeTypeColor(node?.type === CanvasNodeType.Group ? "group" : node?.type, undefined, theme.scheme);
     const status = node?.metadata?.status || "idle";
-    const statusColor = status === "error" ? "#ef4444" : status === "success" ? "#10b981" : status === "loading" ? "#6d5cff" : theme.node.muted;
+    const statusColor = status === "error" ? "#ef4444" : status === "success" ? "#34d399" : status === "loading" ? theme.node.activeStroke : theme.node.muted;
 
     return (
         <Modal className="canvas-node-info-modal" title={null} open={open && Boolean(node)} centered footer={null} width={400} onCancel={onClose}>
@@ -284,11 +284,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
                                         key={item}
                                         type="button"
                                         className="rounded-[8px] px-2.5 text-[12px] font-medium"
-                                        style={{
-                                            background: active ? theme.node.panel : "transparent",
-                                            color: active ? theme.toolbar.activeText : theme.node.muted,
-                                            boxShadow: active ? "0 1px 4px rgba(42, 37, 64, 0.08)" : "none",
-                                        }}
+                                        style={active ? { ...canvasRaisedStyle(theme), color: theme.node.text } : { background: "transparent", color: theme.node.muted }}
                                         onClick={() => setView(item)}
                                     >
                                         {item === "info" ? t("canvas.nodeToolbar.info") : "JSON"}

@@ -130,7 +130,6 @@ const compressionSummary = ref("");
 const uploadProgress = ref({ current: 0, total: 0 });
 
 const sortOpen = ref(false);
-const sortQuery = ref("");
 const sortItems = ref<CatalogItem[]>([]);
 const sortSnapshot = ref<string[]>([]);
 const sortSaving = ref(false);
@@ -225,18 +224,6 @@ const hasFilters = computed(
     statusFilter.value !== "all" ||
     sortMode.value !== "manual",
 );
-const sortIsSearching = computed(() => Boolean(sortQuery.value.trim()));
-const visibleSortItems = computed(() => {
-  const keyword = sortQuery.value.trim().toLocaleLowerCase();
-  if (!keyword) return sortItems.value;
-  return sortItems.value.filter((item) =>
-    [item.label, item.apparel].some((value) =>
-      String(value || "")
-        .toLocaleLowerCase()
-        .includes(keyword),
-    ),
-  );
-});
 const sortDirty = computed(
   () =>
     sortItems.value.map((item) => item.id).join("|") !== sortSnapshot.value.join("|"),
@@ -599,21 +586,11 @@ function openPreview(item: CatalogItem, list = visibleItems.value) {
 }
 
 function openSortDialog() {
-  sortQuery.value = "";
   sortItems.value = items.value
     .slice()
     .sort((a, b) => a.sort - b.sort || a.label.localeCompare(b.label, "zh-CN"));
   sortSnapshot.value = sortItems.value.map((item) => item.id);
   sortOpen.value = true;
-}
-
-function moveSortItem(index: number, destination: number) {
-  if (sortIsSearching.value) return;
-  if (index < 0 || index >= sortItems.value.length) return;
-  const target = Math.max(0, Math.min(destination, sortItems.value.length - 1));
-  if (target === index) return;
-  const [item] = sortItems.value.splice(index, 1);
-  if (item) sortItems.value.splice(target, 0, item);
 }
 
 async function saveSortOrder() {
@@ -985,35 +962,29 @@ onBeforeUnmount(() => {
 
     <AdminDialog
       v-model="sortOpen"
-      :title="`${kindMeta.label}排序`"
-      subtitle="拖拽调整当前分类顺序，保存后立即同步到用户端"
+      :title="`调整${kindMeta.label}顺序`"
+      subtitle="拖动缩略图排序，保存后同步到用户端"
       :icon="Rank"
-      width="min(720px, 94vw)"
+      width="min(520px, 94vw)"
       nested-scroll
       panel-class="catalog-sort-dialog"
       :close-on-click-modal="!sortDirty"
       confirm-text="保存顺序"
       :confirm-loading="sortSaving"
-      :confirm-disabled="!sortDirty || sortIsSearching || !sortItems.length"
+      :confirm-disabled="!sortDirty || !sortItems.length"
       @confirm="saveSortOrder"
     >
       <template #footer>
         <div class="admin-dialog__footer">
           <span class="admin-dialog__hint">
-            {{
-              sortIsSearching
-                ? "搜索时不能拖拽，清除搜索后再保存顺序"
-                : sortDirty
-                  ? "当前顺序有改动，尚未保存"
-                  : "当前顺序已保存"
-            }}
+            {{ sortDirty ? "当前顺序有改动，尚未保存" : "拖动缩略图调整顺序" }}
           </span>
           <div class="admin-dialog__actions">
             <el-button :disabled="sortSaving" @click="closeSortDialog">取消</el-button>
             <el-button
               type="primary"
               :loading="sortSaving"
-              :disabled="!sortDirty || sortIsSearching || !sortItems.length"
+              :disabled="!sortDirty || !sortItems.length"
               @click="saveSortOrder"
             >
               保存顺序
@@ -1021,72 +992,33 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </template>
-      <div class="catalog-sort-panel">
-        <el-input
-          v-model="sortQuery"
-          clearable
-          :prefix-icon="Search"
-          placeholder="搜索名称，快速定位目标"
-        />
-        <div v-if="!sortItems.length" class="catalog-sort-empty">
-          <el-icon><Rank /></el-icon>
-          <strong>当前分类没有素材</strong>
-        </div>
-        <div v-else-if="sortIsSearching" class="catalog-sort-list">
-          <article v-for="item in visibleSortItems" :key="item.id" class="catalog-sort-row is-search-result">
-            <span class="catalog-sort-index">·</span>
-            <span class="catalog-sort-cover">
-              <img :src="item.imageUrl" :alt="item.label" />
-            </span>
-            <span class="catalog-sort-copy">
-              <strong>{{ item.label }}</strong>
-              <small>{{ item.active ? "已上架" : "已下架" }}{{ item.apparel ? ` · ${item.apparel}` : "" }}</small>
-            </span>
-          </article>
-          <div v-if="!visibleSortItems.length" class="catalog-sort-empty">
-            <strong>没有匹配的素材</strong>
-          </div>
-        </div>
-        <draggable
-          v-else
-          v-model="sortItems"
-          item-key="id"
-          handle=".catalog-sort-handle"
-          :animation="180"
-          ghost-class="is-sort-ghost"
-          drag-class="is-sort-dragging"
-          class="catalog-sort-list"
-        >
-          <template #item="{ element: item, index }">
-            <article class="catalog-sort-row">
-              <button type="button" class="catalog-sort-handle" title="拖动排序" aria-label="拖动排序">
-                <el-icon><Rank /></el-icon>
-              </button>
-              <span class="catalog-sort-index">{{ index + 1 }}</span>
-              <span class="catalog-sort-cover">
-                <img :src="item.imageUrl" :alt="item.label" />
-              </span>
-              <span class="catalog-sort-copy">
-                <strong>{{ item.label }}</strong>
-                <small>{{ item.active ? "已上架" : "已下架" }}{{ item.apparel ? ` · ${item.apparel}` : "" }}</small>
-              </span>
-              <span class="catalog-sort-actions">
-                <button type="button" title="置顶" :disabled="index === 0" @click="moveSortItem(index, 0)">⇈</button>
-                <button type="button" title="上移" :disabled="index === 0" @click="moveSortItem(index, index - 1)">↑</button>
-                <button type="button" title="下移" :disabled="index === sortItems.length - 1" @click="moveSortItem(index, index + 1)">↓</button>
-                <button
-                  type="button"
-                  title="置底"
-                  :disabled="index === sortItems.length - 1"
-                  @click="moveSortItem(index, sortItems.length - 1)"
-                >
-                  ⇊
-                </button>
-              </span>
-            </article>
-          </template>
-        </draggable>
+      <div v-if="!sortItems.length" class="catalog-sort-empty">
+        <el-icon><Rank /></el-icon>
+        <strong>当前分类没有素材</strong>
       </div>
+      <draggable
+        v-else
+        v-model="sortItems"
+        item-key="id"
+        handle=".catalog-sort-handle"
+        :animation="180"
+        ghost-class="is-sort-ghost"
+        drag-class="is-sort-dragging"
+        class="catalog-sort-list"
+      >
+        <template #item="{ element: item, index }">
+          <article class="catalog-sort-row">
+            <span class="catalog-sort-index">{{ index + 1 }}</span>
+            <button
+              type="button"
+              class="catalog-sort-handle catalog-sort-cover"
+              :aria-label="`拖动第 ${index + 1} 项`"
+            >
+              <img :src="item.imageUrl" :alt="item.label" />
+            </button>
+          </article>
+        </template>
+      </draggable>
     </AdminDialog>
   </div>
 </template>
@@ -1115,9 +1047,7 @@ onBeforeUnmount(() => {
 .catalog-card__actions,
 .catalog-compression-settings__heading,
 .catalog-compression-settings__value,
-.catalog-capacity > div,
-.catalog-sort-row,
-.catalog-sort-actions {
+.catalog-capacity > div {
   display: flex;
   align-items: center;
 }
@@ -1762,20 +1692,13 @@ onBeforeUnmount(() => {
   align-content: center;
 }
 
-.catalog-sort-panel {
-  display: grid;
-  height: 100%;
-  flex: 1 1 auto;
-  min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-}
-
 .catalog-sort-list {
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding-right: 2px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: 4px 2px;
 }
 
 .catalog-sort-empty {
@@ -1789,36 +1712,15 @@ onBeforeUnmount(() => {
 
 .catalog-sort-row {
   display: grid;
-  grid-template-columns: 32px 32px 56px minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 6px;
+  justify-items: center;
   min-width: 0;
-  min-height: 68px;
-  margin-bottom: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-.catalog-sort-row.is-search-result {
-  grid-template-columns: 32px 56px minmax(0, 1fr);
-}
-
-.catalog-sort-row.is-sort-ghost,
-.is-sort-ghost .catalog-sort-row {
-  opacity: 0.32;
 }
 
 .catalog-sort-handle {
-  display: grid;
-  width: 32px;
-  height: 36px;
-  place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--ink-3);
+  background: transparent;
   cursor: grab;
 }
 
@@ -1828,71 +1730,41 @@ onBeforeUnmount(() => {
 
 .catalog-sort-index {
   color: var(--ink-3);
-  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
   text-align: center;
 }
 
 .catalog-sort-cover {
   display: grid;
-  width: 56px;
-  height: 50px;
+  width: 64px;
+  height: 64px;
   place-items: center;
   overflow: hidden;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
 }
 
 .catalog-sort-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  pointer-events: none;
 }
 
-.catalog-sort-copy {
-  min-width: 0;
+.is-sort-ghost {
+  opacity: 0.35;
 }
 
-.catalog-sort-copy strong,
-.catalog-sort-copy small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.is-sort-ghost .catalog-sort-cover {
+  border-style: dashed;
 }
 
-.catalog-sort-copy strong {
-  font-size: 13px;
-}
-
-.catalog-sort-copy small {
-  margin-top: 4px;
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.catalog-sort-actions {
-  gap: 4px;
-}
-
-.catalog-sort-actions button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-2);
-  color: var(--ink-2);
-  cursor: pointer;
-}
-
-.catalog-sort-actions button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.catalog-sort-actions button:disabled {
-  opacity: 0.28;
-  cursor: not-allowed;
+.is-sort-dragging .catalog-sort-cover {
+  box-shadow: var(--shadow-md);
 }
 
 @media (max-width: 1100px) {
@@ -1950,15 +1822,6 @@ onBeforeUnmount(() => {
 
   .catalog-grid {
     grid-template-columns: repeat(auto-fill, minmax(166px, 1fr));
-  }
-
-  .catalog-sort-row {
-    grid-template-columns: 32px 32px minmax(0, 1fr);
-  }
-
-  .catalog-sort-cover,
-  .catalog-sort-actions {
-    display: none;
   }
 }
 </style>

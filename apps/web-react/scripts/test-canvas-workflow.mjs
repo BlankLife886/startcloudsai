@@ -28,6 +28,7 @@ import {
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
 import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
+import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
 const edge = (fromNodeId, toNodeId) => ({ id: `${fromNodeId}-${toNodeId}`, fromNodeId, toNodeId });
@@ -50,6 +51,12 @@ test("defaults new and legacy canvas image generation to one image", () => {
     assert.equal(defaultConfig.canvasImageCount, "1");
     assert.equal(migrateConfigStore({ config: { canvasImageCount: "3" } }, 1).config.canvasImageCount, "1");
     assert.equal(migrateConfigStore({ config: { canvasImageCount: "4" } }, 2).config.canvasImageCount, "4");
+});
+
+test("promotes the first completed image when the previous batch primary is stale", () => {
+    assert.equal(shouldPromoteGeneratedImage("old-primary", "new-1", ["new-1", "new-2"]), true);
+    assert.equal(shouldPromoteGeneratedImage("new-1", "new-2", ["new-1", "new-2"]), false);
+    assert.equal(shouldPromoteGeneratedImage(undefined, "new-2", ["new-1", "new-2"]), true);
 });
 
 test("orders config nodes through generated resource nodes", () => {

@@ -37,6 +37,14 @@ html {
   scroll-padding-top: calc(var(--app-header-offset, 82px) + 16px);
   scrollbar-gutter: stable;
 }
+/* 画布 / Ant Design 的 html、body 锁定会在路由离开后残留，文档流页面必须能纵向滚动。 */
+html:not(.starclouds-hosted):not(.canvas-entry),
+html:not(.starclouds-hosted):not(.canvas-entry) body {
+  height: auto;
+  max-height: none;
+  overflow-x: clip;
+  overflow-y: visible;
+}
 body.download-session-locked {
   overflow: hidden;
 }

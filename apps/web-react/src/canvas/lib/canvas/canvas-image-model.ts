@@ -2,6 +2,7 @@ import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiIm
 import { modelOptionMeta, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
+export const CANVAS_IMAGE_HARD_MAX_COUNT = 16;
 export const CANVAS_IMAGE_ASPECT_RATIOS = ["auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21"] as const;
 export const CANVAS_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;
 export const CANVAS_IMAGE_QUALITIES = ["low", "medium", "high"] as const;
@@ -12,6 +13,7 @@ export type CanvasImageModelCapabilities = {
     resolutions: string[];
     qualities: string[];
     transparentBackground: boolean;
+    maxImages: number;
 };
 
 export type CanvasImageSettings = {
@@ -43,6 +45,14 @@ function normalizeQuality(value: string) {
     return quality;
 }
 
+export function canvasImageMaxCount(model?: ChannelModel | null) {
+    const raw = Number(model?.maxImages);
+    if (Number.isFinite(raw) && raw >= 1) {
+        return Math.min(CANVAS_IMAGE_HARD_MAX_COUNT, Math.floor(raw));
+    }
+    return CANVAS_IMAGE_MAX_COUNT;
+}
+
 export function canvasImageModelCapabilities(model?: ChannelModel | null): CanvasImageModelCapabilities {
     const safe: Partial<ChannelModel> = model ?? {};
     const globalAspectRatios = normalizeList(safe.aspectRatios, CANVAS_IMAGE_ASPECT_RATIOS, CANVAS_IMAGE_ASPECT_RATIOS);
@@ -64,6 +74,7 @@ export function canvasImageModelCapabilities(model?: ChannelModel | null): Canva
         resolutions: resolutions.length ? resolutions : ["1K"],
         qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_QUALITIES),
         transparentBackground: safe.transparentBackground !== false,
+        maxImages: canvasImageMaxCount(model),
     };
 }
 
@@ -124,7 +135,7 @@ export function coerceCanvasImageSettings(model: ChannelModel | null | undefined
         size,
         resolution,
         background: capabilities.transparentBackground && settings.background === "transparent" ? "transparent" : "",
-        count: String(Math.max(1, Math.min(CANVAS_IMAGE_MAX_COUNT, Math.floor(Math.abs(Number(settings.count)) || 1)))),
+        count: String(Math.max(1, Math.min(capabilities.maxImages, Math.floor(Math.abs(Number(settings.count)) || 1)))),
     };
 }
 

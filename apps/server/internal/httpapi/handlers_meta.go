@@ -66,12 +66,13 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"maxImages": model.GenerationMaxImages(),
 		}
 	}
 	chatItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
 		model := selection.Model
 		price := modelconfig.EffectivePrice(model)
-		reasoningEfforts, defaultReasoningEffort, reasoningPrices := reasoningModelPayload(model)
+		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model)
 		return gin.H{
 			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
 			"description": model.Description, "provider": selection.Provider.Name,
@@ -79,7 +80,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"pricePoints": price, "standardPricePoints": model.PriceCents,
 			"discountPricePoints": model.DiscountPriceCents, "default": isDefault,
 			"supportedReasoningEfforts": reasoningEfforts, "defaultReasoningEffort": defaultReasoningEffort,
-			"reasoningPrices": reasoningPrices,
+			"reasoningPrices": reasoningPrices, "reasoningEfforts": reasoningEffortItems,
 		}
 	}
 	toolItem := func(selection modelconfig.Selection) gin.H {
@@ -115,6 +116,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"maxImages": model.GenerationMaxImages(),
 			"pricing": gin.H{
 				"points": price, "cents": price, "standardPoints": model.PriceCents,
 				"discountPoints": model.DiscountPriceCents,

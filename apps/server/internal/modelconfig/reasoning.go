@@ -14,6 +14,7 @@ const (
 )
 
 type ReasoningEffortPricing struct {
+	Enabled                       *bool  `json:"enabled,omitempty"`
 	AssistantPriceCents           int64  `json:"assistantPriceCents"`
 	AssistantDiscountPriceCents   *int64 `json:"assistantDiscountPriceCents"`
 	CanvasAgentPriceCents         int64  `json:"canvasAgentPriceCents"`
@@ -84,6 +85,29 @@ func canonicalReasoningModel(raw string) string {
 	return model
 }
 
+// ReasoningEffortLabel is the Chinese label shown in public clients.
+// Unknown effort ids are returned unchanged so admin-configured values stay visible.
+func ReasoningEffortLabel(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none":
+		return "关闭"
+	case "minimal":
+		return "极低"
+	case "low":
+		return "低"
+	case "medium":
+		return "中"
+	case "high":
+		return "高"
+	case "xhigh":
+		return "超高"
+	case "max":
+		return "最大"
+	default:
+		return strings.TrimSpace(effort)
+	}
+}
+
 func defaultReasoningEffort(efforts []string) string {
 	for _, effort := range efforts {
 		if effort == "medium" {
@@ -115,12 +139,22 @@ func multipliedDiscount(value *int64, multiplier int64) *int64 {
 
 func fallbackReasoningEffortPricing(model Model, effort string) ReasoningEffortPricing {
 	multiplier := reasoningEffortMultiplier(effort)
+	enabled := true
 	return ReasoningEffortPricing{
+		Enabled:                       &enabled,
 		AssistantPriceCents:           model.PriceCents,
 		AssistantDiscountPriceCents:   multipliedDiscount(model.DiscountPriceCents, 1),
 		CanvasAgentPriceCents:         model.PriceCents * multiplier,
 		CanvasAgentDiscountPriceCents: multipliedDiscount(model.DiscountPriceCents, multiplier),
 	}
+}
+
+func reasoningEffortEnabled(price ReasoningEffortPricing) bool {
+	return price.Enabled == nil || *price.Enabled
+}
+
+func enabledBool(value bool) *bool {
+	return &value
 }
 
 func normalizeModelReasoningPricing(model *Model) {
@@ -131,12 +165,14 @@ func normalizeModelReasoningPricing(model *Model) {
 		}
 		return
 	}
-	supported := ReasoningEffortsForModel(model.UpstreamModel)
-	model.SupportedReasoningEfforts = append([]string(nil), supported...)
-	if len(supported) == 0 {
+	available := ReasoningEffortsForModel(model.UpstreamModel)
+	if len(available) == 0 {
+		model.SupportedReasoningEfforts = nil
 		model.ReasoningPricing = nil
 		return
 	}
+	incoming := append([]string(nil), model.SupportedReasoningEfforts...)
+	incomingSet := model.supportedReasoningEffortsSet
 	pricing := model.ReasoningPricing
 	if pricing == nil {
 		pricing = &ReasoningPricing{}
@@ -144,19 +180,31 @@ func normalizeModelReasoningPricing(model *Model) {
 	if pricing.Efforts == nil {
 		pricing.Efforts = map[string]ReasoningEffortPricing{}
 	}
-	normalized := make(map[string]ReasoningEffortPricing, len(supported))
-	for _, effort := range supported {
-		if configured, ok := pricing.Efforts[effort]; ok {
-			normalized[effort] = configured
-		} else {
-			normalized[effort] = fallbackReasoningEffortPricing(*model, effort)
+	normalized := make(map[string]ReasoningEffortPricing, len(available))
+	enabled := make([]string, 0, len(available))
+	for _, effort := range available {
+		price, ok := pricing.Efforts[effort]
+		if !ok {
+			price = fallbackReasoningEffortPricing(*model, effort)
+		}
+		on := reasoningEffortEnabled(price)
+		if incomingSet && !containsStringValue(incoming, effort) {
+			on = false
+		}
+		price.Enabled = enabledBool(on)
+		normalized[effort] = price
+		if on {
+			enabled = append(enabled, effort)
 		}
 	}
 	pricing.Efforts = normalized
 	pricing.DefaultEffort = strings.ToLower(strings.TrimSpace(pricing.DefaultEffort))
-	if !containsStringValue(supported, pricing.DefaultEffort) {
-		pricing.DefaultEffort = defaultReasoningEffort(supported)
+	if len(enabled) == 0 {
+		pricing.DefaultEffort = ""
+	} else if !containsStringValue(enabled, pricing.DefaultEffort) {
+		pricing.DefaultEffort = defaultReasoningEffort(enabled)
 	}
+	model.SupportedReasoningEfforts = enabled
 	model.ReasoningPricing = pricing
 }
 
@@ -180,13 +228,17 @@ func validateDiscountPrice(modelName, label string, standard int64, discount *in
 }
 
 func validateModelReasoningPricing(model Model) error {
-	if len(model.SupportedReasoningEfforts) == 0 {
+	available := ReasoningEffortsForModel(model.UpstreamModel)
+	if len(available) == 0 {
 		return nil
 	}
-	if model.ReasoningPricing == nil || !containsStringValue(model.SupportedReasoningEfforts, model.ReasoningPricing.DefaultEffort) {
+	if model.ReasoningPricing == nil {
+		return fmt.Errorf("对话模型 %s 缺少推理强度配置", model.Name)
+	}
+	if len(model.SupportedReasoningEfforts) > 0 && !containsStringValue(model.SupportedReasoningEfforts, model.ReasoningPricing.DefaultEffort) {
 		return fmt.Errorf("对话模型 %s 的默认推理强度无效", model.Name)
 	}
-	for _, effort := range model.SupportedReasoningEfforts {
+	for _, effort := range available {
 		price, ok := model.ReasoningPricing.Efforts[effort]
 		if !ok {
 			return fmt.Errorf("对话模型 %s 缺少 %s 推理定价", model.Name, effort)

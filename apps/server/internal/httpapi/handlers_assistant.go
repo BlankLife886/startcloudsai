@@ -75,10 +75,17 @@ func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
 	return s.assistantClient(c)
 }
 
-func reasoningModelPayload(model modelconfig.Model) ([]string, string, gin.H) {
-	efforts := model.SupportedReasoningEfforts
+func optionalDiscountPoints(standard, effective int64) any {
+	if effective < standard {
+		return effective
+	}
+	return nil
+}
+
+func reasoningModelPayload(model modelconfig.Model) ([]string, string, gin.H, []gin.H) {
+	efforts := append([]string{}, model.SupportedReasoningEfforts...)
 	if len(efforts) == 0 {
-		efforts = modelconfig.ReasoningEffortsForModel(model.UpstreamModel)
+		return []string{}, "", gin.H{}, []gin.H{}
 	}
 	defaultEffort := ""
 	if model.ReasoningPricing != nil {
@@ -87,22 +94,42 @@ func reasoningModelPayload(model modelconfig.Model) ([]string, string, gin.H) {
 	if defaultEffort == "" {
 		if containsString(efforts, "medium") {
 			defaultEffort = "medium"
-		} else if len(efforts) > 0 {
+		} else {
 			defaultEffort = efforts[0]
 		}
 	}
 	prices := gin.H{}
+	options := make([]gin.H, 0, len(efforts))
 	for _, effort := range efforts {
 		assistantPrice := modelconfig.ResolveReasoningPrice(model, effort, modelconfig.ReasoningPriceScopeAssistant)
 		canvasPrice := modelconfig.ResolveReasoningPrice(model, effort, modelconfig.ReasoningPriceScopeCanvasAgent)
-		prices[effort] = gin.H{
+		assistantDiscount := optionalDiscountPoints(assistantPrice.StandardCents, assistantPrice.EffectiveCents)
+		canvasDiscount := optionalDiscountPoints(canvasPrice.StandardCents, canvasPrice.EffectiveCents)
+		price := gin.H{
 			"assistantStandardPricePoints":   assistantPrice.StandardCents,
 			"assistantPricePoints":           assistantPrice.EffectiveCents,
 			"canvasAgentStandardPricePoints": canvasPrice.StandardCents,
 			"canvasAgentPricePoints":         canvasPrice.EffectiveCents,
 		}
+		if assistantDiscount != nil {
+			price["assistantDiscountPricePoints"] = assistantDiscount
+		}
+		if canvasDiscount != nil {
+			price["canvasAgentDiscountPricePoints"] = canvasDiscount
+		}
+		prices[effort] = price
+		option := gin.H{
+			"id":                  effort,
+			"label":               modelconfig.ReasoningEffortLabel(effort),
+			"standardPricePoints": assistantPrice.StandardCents,
+			"pricePoints":         assistantPrice.EffectiveCents,
+		}
+		if assistantDiscount != nil {
+			option["discountPricePoints"] = assistantDiscount
+		}
+		options = append(options, option)
 	}
-	return append([]string(nil), efforts...), defaultEffort, prices
+	return efforts, defaultEffort, prices, options
 }
 
 func (s *Server) assistantConfig(c *gin.Context) {
@@ -135,9 +162,11 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		OutputFormats             []string            `json:"outputFormats"`
 		ModerationLevels          []string            `json:"moderationLevels"`
 		MaxReferenceImages        int                 `json:"maxReferenceImages"`
-		SupportedReasoningEfforts []string            `json:"supportedReasoningEfforts,omitempty"`
+		MaxImages                 int                 `json:"maxImages,omitempty"`
+		SupportedReasoningEfforts []string            `json:"supportedReasoningEfforts"`
 		DefaultReasoningEffort    string              `json:"defaultReasoningEffort,omitempty"`
 		ReasoningPrices           gin.H               `json:"reasoningPrices,omitempty"`
+		ReasoningEfforts          []gin.H             `json:"reasoningEfforts,omitempty"`
 	}
 	reasoningOptions := func(model string) ([]string, string) {
 		efforts := modelconfig.ReasoningEffortsForModel(model)
@@ -163,9 +192,9 @@ func (s *Server) assistantConfig(c *gin.Context) {
 					description = "对话与图片理解模型"
 				}
 			}
-			reasoningEfforts, defaultReasoningEffort, reasoningPrices := []string(nil), "", gin.H(nil)
+			reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := []string(nil), "", gin.H(nil), []gin.H(nil)
 			if kind == modelconfig.ModelKindChat {
-				reasoningEfforts, defaultReasoningEffort, reasoningPrices = reasoningModelPayload(selection.Model)
+				reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems = reasoningModelPayload(selection.Model)
 			}
 			options = append(options, modelOption{
 				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
@@ -179,8 +208,9 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				TransparentBackground: selection.Model.TransparentBackground,
 				OutputFormats:         selection.Model.OutputFormats, ModerationLevels: selection.Model.ModerationLevels,
 				MaxReferenceImages:        selection.Model.MaxReferenceImages,
+				MaxImages:                 selection.Model.GenerationMaxImages(),
 				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
-				ReasoningPrices: reasoningPrices,
+				ReasoningPrices: reasoningPrices, ReasoningEfforts: reasoningEffortItems,
 			})
 		}
 		return options

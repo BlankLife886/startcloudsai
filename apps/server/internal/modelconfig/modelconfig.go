@@ -59,6 +59,11 @@ var ImageQualities = []string{"low", "medium", "high"}
 var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
 
+const (
+	DefaultMaxImages = 4
+	MaxImagesLimit   = 16
+)
+
 type Provider struct {
 	ID               string          `json:"id"`
 	Name             string          `json:"name"`
@@ -133,37 +138,40 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                          string              `json:"id"`
-	Name                        string              `json:"name"`
-	ProviderID                  string              `json:"providerId"`
-	UpstreamModel               string              `json:"upstreamModel"`
-	Kind                        string              `json:"kind"`
-	Tool                        string              `json:"tool,omitempty"`
-	Description                 string              `json:"description,omitempty"`
-	PriceCents                  int64               `json:"priceCents"`
-	DiscountPriceCents          *int64              `json:"discountPriceCents"`
-	FastMode                    bool                `json:"fastMode"`
-	MinSeconds                  int                 `json:"minSeconds"`
-	MaxSeconds                  int                 `json:"maxSeconds"`
-	Resolutions                 []string            `json:"resolutions"`
-	AspectRatios                []string            `json:"aspectRatios"`
-	AspectRatiosByResolution    map[string][]string `json:"aspectRatiosByResolution"`
-	Qualities                   []string            `json:"qualities"`
-	TransparentBackground       bool                `json:"transparentBackground"`
-	OutputFormats               []string            `json:"outputFormats"`
-	ModerationLevels            []string            `json:"moderationLevels"`
-	MaxReferenceImages          int                 `json:"maxReferenceImages"`
-	ContextWindowTokens         int                 `json:"contextWindowTokens,omitempty"`
-	MaxOutputTokens             int                 `json:"maxOutputTokens,omitempty"`
-	SupportedReasoningEfforts   []string            `json:"supportedReasoningEfforts,omitempty"`
-	ReasoningPricing            *ReasoningPricing   `json:"reasoningPricing,omitempty"`
-	Public                      bool                `json:"public"`
-	Default                     bool                `json:"default"`
-	Enabled                     bool                `json:"enabled"`
-	transparentBackgroundSet    bool
-	maxReferenceImagesSet       bool
-	aspectRatiosByResolutionSet bool
-	legacyAutoAspectRatios      map[string][]string
+	ID                           string              `json:"id"`
+	Name                         string              `json:"name"`
+	ProviderID                   string              `json:"providerId"`
+	UpstreamModel                string              `json:"upstreamModel"`
+	Kind                         string              `json:"kind"`
+	Tool                         string              `json:"tool,omitempty"`
+	Description                  string              `json:"description,omitempty"`
+	PriceCents                   int64               `json:"priceCents"`
+	DiscountPriceCents           *int64              `json:"discountPriceCents"`
+	FastMode                     bool                `json:"fastMode"`
+	MinSeconds                   int                 `json:"minSeconds"`
+	MaxSeconds                   int                 `json:"maxSeconds"`
+	Resolutions                  []string            `json:"resolutions"`
+	AspectRatios                 []string            `json:"aspectRatios"`
+	AspectRatiosByResolution     map[string][]string `json:"aspectRatiosByResolution"`
+	Qualities                    []string            `json:"qualities"`
+	TransparentBackground        bool                `json:"transparentBackground"`
+	OutputFormats                []string            `json:"outputFormats"`
+	ModerationLevels             []string            `json:"moderationLevels"`
+	MaxReferenceImages           int                 `json:"maxReferenceImages"`
+	MaxImages                    int                 `json:"maxImages"`
+	ContextWindowTokens          int                 `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens              int                 `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts    []string            `json:"supportedReasoningEfforts"`
+	ReasoningPricing             *ReasoningPricing   `json:"reasoningPricing,omitempty"`
+	Public                       bool                `json:"public"`
+	Default                      bool                `json:"default"`
+	Enabled                      bool                `json:"enabled"`
+	transparentBackgroundSet     bool
+	maxReferenceImagesSet        bool
+	maxImagesSet                 bool
+	aspectRatiosByResolutionSet  bool
+	supportedReasoningEffortsSet bool
+	legacyAutoAspectRatios       map[string][]string
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {
@@ -173,6 +181,7 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		Public                   *bool                      `json:"public"`
 		TransparentBackground    *bool                      `json:"transparentBackground"`
 		MaxReferenceImages       *int                       `json:"maxReferenceImages"`
+		MaxImages                *int                       `json:"maxImages"`
 		AspectRatiosByResolution map[string]json.RawMessage `json:"aspectRatiosByResolution"`
 		AutoAspectRatios         map[string]json.RawMessage `json:"autoAspectRatios"`
 	}
@@ -180,6 +189,11 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Model(raw.alias)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, m.supportedReasoningEffortsSet = keys["supportedReasoningEfforts"]
 	decodeRatioMap := func(source map[string]json.RawMessage) (map[string][]string, error) {
 		result := make(map[string][]string, len(source))
 		for resolution, encoded := range source {
@@ -225,7 +239,26 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		m.MaxReferenceImages = *raw.MaxReferenceImages
 		m.maxReferenceImagesSet = true
 	}
+	if raw.MaxImages == nil && m.Kind == ModelKindImage {
+		m.MaxImages = DefaultMaxImages
+	} else if raw.MaxImages != nil {
+		m.MaxImages = *raw.MaxImages
+		m.maxImagesSet = true
+	}
 	return nil
+}
+
+func (m Model) GenerationMaxImages() int {
+	if m.Kind == ModelKindImageTool {
+		return 1
+	}
+	if m.MaxImages <= 0 {
+		return DefaultMaxImages
+	}
+	if m.MaxImages > MaxImagesLimit {
+		return MaxImagesLimit
+	}
+	return m.MaxImages
 }
 
 type Config struct {
@@ -365,6 +398,9 @@ func normalize(cfg *Config) {
 			}
 			if !model.maxReferenceImagesSet {
 				model.MaxReferenceImages = 4
+			}
+			if !model.maxImagesSet {
+				model.MaxImages = DefaultMaxImages
 			}
 			if model.AspectRatios == nil {
 				model.AspectRatios = append([]string(nil), ImageAspectRatios...)
@@ -700,6 +736,9 @@ func Validate(cfg Config) error {
 			}
 			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > 16 {
 				return fmt.Errorf("模型 %s 的参考图数量须在 0-16 之间", model.Name)
+			}
+			if model.MaxImages < 1 || model.MaxImages > MaxImagesLimit {
+				return fmt.Errorf("模型 %s 的单次生成张数须在 1-%d 之间", model.Name, MaxImagesLimit)
 			}
 		}
 		models[model.ID] = model

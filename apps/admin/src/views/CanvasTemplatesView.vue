@@ -6,11 +6,13 @@ import {
   Files,
   Picture,
   Plus,
+  Rank,
   Refresh,
   Search,
   Upload,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import draggable from "vuedraggable";
 
 import AdminDialog from "@/components/AdminDialog.vue";
 import { request } from "@/request";
@@ -72,6 +74,10 @@ const previewUrl = ref("");
 const coverInputRef = ref<HTMLInputElement | null>(null);
 const coverPreviewOpen = ref(false);
 const coverPreviewIndex = ref(0);
+const sortOpen = ref(false);
+const sortSaving = ref(false);
+const sortItems = ref<TemplateItem[]>([]);
+const sortSnapshot = ref<string[]>([]);
 const form = reactive({
   slug: "",
   title: "",
@@ -147,6 +153,192 @@ const hasFilters = computed(
     statusFilter.value !== "all",
 );
 
+const selectedIds = reactive(new Set<string>());
+const selectionMode = ref(false);
+const batchSaving = ref(false);
+const batchDeleting = ref(false);
+const batchBusy = computed(() => batchSaving.value || batchDeleting.value);
+const batchForm = reactive({
+  category: "",
+  enabled: "" as "" | "published" | "unpublished",
+});
+
+const selectedItems = computed(() =>
+  items.value.filter((item) => selectedIds.has(item.id)),
+);
+const selectedVisibleCount = computed(() =>
+  visibleItems.value.reduce(
+    (count, item) => count + Number(selectedIds.has(item.id)),
+    0,
+  ),
+);
+const allVisibleSelected = computed(
+  () =>
+    visibleItems.value.length > 0 &&
+    selectedVisibleCount.value === visibleItems.value.length,
+);
+const someVisibleSelected = computed(
+  () => selectedVisibleCount.value > 0 && !allVisibleSelected.value,
+);
+const hasBatchChanges = computed(
+  () => Boolean(batchForm.category || batchForm.enabled),
+);
+
+function resetBatchForm() {
+  batchForm.category = "";
+  batchForm.enabled = "";
+}
+
+function pruneSelection() {
+  const loadedIds = new Set(items.value.map((item) => item.id));
+  for (const id of [...selectedIds]) {
+    if (!loadedIds.has(id)) selectedIds.delete(id);
+  }
+}
+
+function clearSelection() {
+  selectedIds.clear();
+  resetBatchForm();
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) clearSelection();
+  selectionMode.value = !selectionMode.value;
+}
+
+function toggleSelected(id: string, selected: boolean) {
+  if (selected) selectedIds.add(id);
+  else selectedIds.delete(id);
+}
+
+function toggleVisibleSelection(selected: boolean) {
+  for (const item of visibleItems.value) {
+    if (selected) selectedIds.add(item.id);
+    else selectedIds.delete(item.id);
+  }
+}
+
+function categoryLabelOf(value: string) {
+  return (
+    CATEGORY_PRESETS.find((item) => item.value === value)?.label ||
+    categories.value.find((item) => item.id === value)?.label ||
+    value
+  );
+}
+
+async function applyBatchEdit() {
+  const targets = selectedItems.value;
+  if (!targets.length) {
+    ElMessage.warning("请先选择模板");
+    return;
+  }
+  if (!hasBatchChanges.value) {
+    ElMessage.warning("请选择需要批量修改的字段");
+    return;
+  }
+
+  const body: { category?: string; categoryLabel?: string; enabled?: boolean } =
+    {};
+  if (batchForm.category) {
+    body.category = batchForm.category;
+    body.categoryLabel = categoryLabelOf(batchForm.category);
+  }
+  if (batchForm.enabled) body.enabled = batchForm.enabled === "published";
+
+  batchSaving.value = true;
+  const queue = [...targets];
+  const failedIds = new Set<string>();
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      if (!item) return;
+      try {
+        await request(`/api/v1/admin/canvas-workflow-templates/${item.id}`, {
+          method: "PATCH",
+          body,
+          silent: true,
+        });
+        Object.assign(item, body);
+        selectedIds.delete(item.id);
+      } catch {
+        failedIds.add(item.id);
+      }
+    }
+  };
+
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(6, targets.length) }, worker),
+    );
+    const successCount = targets.length - failedIds.size;
+    if (successCount) ElMessage.success(`已更新 ${successCount} 个模板`);
+    if (failedIds.size) {
+      for (const id of failedIds) selectedIds.add(id);
+      ElMessage.error(`${failedIds.size} 个更新失败，已保留选择`);
+    } else {
+      resetBatchForm();
+    }
+  } finally {
+    batchSaving.value = false;
+  }
+}
+
+async function applyBatchDelete() {
+  const targets = selectedItems.value;
+  if (!targets.length) {
+    ElMessage.warning("请先选择模板");
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `删除后，用户端无限画布将不再展示已选的 ${targets.length} 个模板。`,
+      "批量删除模板",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  batchDeleting.value = true;
+  const queue = [...targets];
+  const failedIds = new Set<string>();
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      if (!item) return;
+      try {
+        await request(`/api/v1/admin/canvas-workflow-templates/${item.id}`, {
+          method: "DELETE",
+          silent: true,
+        });
+        selectedIds.delete(item.id);
+      } catch {
+        failedIds.add(item.id);
+      }
+    }
+  };
+
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(6, targets.length) }, worker),
+    );
+    const successCount = targets.length - failedIds.size;
+    if (successCount) ElMessage.success(`已删除 ${successCount} 个模板`);
+    if (failedIds.size) {
+      for (const id of failedIds) selectedIds.add(id);
+      ElMessage.error(`${failedIds.size} 个删除失败，已保留选择`);
+    }
+    if (successCount) await load();
+  } finally {
+    batchDeleting.value = false;
+  }
+}
+
 const coverPreviewUrls = computed(() =>
   visibleItems.value.map((item) => item.coverUrl).filter(Boolean) as string[],
 );
@@ -158,6 +350,24 @@ const activeCategoryLabel = computed(() => {
     "模板"
   );
 });
+
+const sortableItems = computed(() => {
+  const list =
+    categoryFilter.value === "all"
+      ? items.value
+      : items.value.filter((item) => item.category === categoryFilter.value);
+  return [...list].sort(
+    (left, right) =>
+      (left.sort || 0) - (right.sort || 0) ||
+      left.title.localeCompare(right.title, "zh-CN"),
+  );
+});
+
+const sortDirty = computed(
+  () => sortItems.value.map((item) => item.id).join("|") !== sortSnapshot.value.join("|"),
+);
+
+const sortDialogTitle = computed(() => `调整${activeCategoryLabel.value}顺序`);
 
 function splitItems(value: string) {
   return value
@@ -200,6 +410,7 @@ async function load() {
       { silent: true },
     );
     items.value = data.items || [];
+    pruneSelection();
   } catch (error) {
     items.value = [];
     loadError.value = error instanceof Error ? error.message : "模板读取失败";
@@ -422,7 +633,53 @@ async function remove(item: TemplateItem) {
   await load();
 }
 
+function openSortDialog() {
+  sortItems.value = sortableItems.value.map((item) => ({ ...item }));
+  sortSnapshot.value = sortItems.value.map((item) => item.id);
+  sortOpen.value = true;
+}
+
+async function saveSortOrder() {
+  if (!sortItems.value.length || !sortDirty.value || sortSaving.value) return;
+  sortSaving.value = true;
+  try {
+    await request("/api/v1/admin/canvas-workflow-templates/order", {
+      method: "PATCH",
+      body: { ids: sortItems.value.map((item) => item.id) },
+    });
+    sortSnapshot.value = sortItems.value.map((item) => item.id);
+    ElMessage.success(`已保存 ${sortItems.value.length} 个模板的顺序`);
+    sortOpen.value = false;
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "排序保存失败");
+  } finally {
+    sortSaving.value = false;
+  }
+}
+
+async function closeSortDialog() {
+  if (!sortDirty.value || sortSaving.value) {
+    sortOpen.value = false;
+    return;
+  }
+  try {
+    await ElMessageBox.confirm("当前排序还没有保存，确定放弃这些调整吗？", "放弃排序调整", {
+      type: "warning",
+      confirmButtonText: "放弃调整",
+      cancelButtonText: "继续排序",
+    });
+    sortOpen.value = false;
+  } catch {
+    /* keep open */
+  }
+}
+
 onMounted(load);
+
+watch(categoryFilter, () => {
+  if (sortOpen.value) openSortDialog();
+});
 
 watch(dialogOpen, (open) => {
   if (open) return;
@@ -475,6 +732,21 @@ watch(dialogOpen, (open) => {
             <el-option label="已下架" value="unpublished" />
           </el-select>
           <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button
+            :icon="Rank"
+            :disabled="!sortableItems.length || batchBusy"
+            @click="openSortDialog"
+          >
+            排序
+          </el-button>
+          <el-button
+            :type="selectionMode ? 'primary' : undefined"
+            :icon="EditPen"
+            :disabled="batchBusy"
+            @click="toggleSelectionMode"
+          >
+            {{ selectionMode ? "退出多选" : "多选" }}
+          </el-button>
           <el-button :icon="Refresh" :loading="loading" @click="load">
             刷新
           </el-button>
@@ -498,23 +770,113 @@ watch(dialogOpen, (open) => {
       </div>
 
       <div v-else v-loading="loading" class="templates-board">
+        <div
+          v-if="selectionMode"
+          class="templates-bulk-bar"
+          :class="{ 'is-active': selectedItems.length }"
+        >
+          <div class="templates-bulk-selection">
+            <el-checkbox
+              :model-value="allVisibleSelected"
+              :indeterminate="someVisibleSelected"
+              :disabled="!visibleItems.length || batchBusy"
+              @change="toggleVisibleSelection(Boolean($event))"
+            >
+              全选当前结果
+            </el-checkbox>
+            <span v-if="selectedItems.length">已选 {{ selectedItems.length }} 个</span>
+          </div>
+          <div v-if="selectedItems.length" class="templates-bulk-controls">
+            <el-select
+              v-model="batchForm.category"
+              clearable
+              size="small"
+              placeholder="修改分类"
+              aria-label="批量修改分类"
+              :disabled="batchBusy"
+            >
+              <el-option
+                v-for="preset in CATEGORY_PRESETS"
+                :key="preset.value"
+                :label="preset.label"
+                :value="preset.value"
+              />
+            </el-select>
+            <el-select
+              v-model="batchForm.enabled"
+              clearable
+              size="small"
+              placeholder="修改状态"
+              aria-label="批量修改发布状态"
+              :disabled="batchBusy"
+            >
+              <el-option label="已发布" value="published" />
+              <el-option label="已下架" value="unpublished" />
+            </el-select>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="batchSaving"
+              :disabled="!hasBatchChanges || batchBusy"
+              @click="applyBatchEdit"
+            >
+              应用修改
+            </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              :icon="Delete"
+              :loading="batchDeleting"
+              :disabled="batchBusy"
+              @click="applyBatchDelete"
+            >
+              删除
+            </el-button>
+            <el-button text size="small" :disabled="batchBusy" @click="clearSelection">
+              清除选择
+            </el-button>
+          </div>
+        </div>
+
         <div v-if="visibleItems.length" class="templates-grid">
           <article
             v-for="item in visibleItems"
             :key="item.id"
             class="template-card"
-            :class="{ 'is-off': !item.enabled }"
+            :class="{
+              'is-off': !item.enabled,
+              'is-selected': selectedIds.has(item.id),
+              'is-selection-mode': selectionMode,
+            }"
             :style="{ '--template-accent': item.accent || '#6d5cff' }"
           >
             <div
               class="template-card__visual"
-              :class="{ 'has-cover': Boolean(item.coverUrl) }"
-              :role="item.coverUrl ? 'button' : undefined"
-              :tabindex="item.coverUrl ? 0 : undefined"
-              :aria-label="item.coverUrl ? `查看${item.title}封面` : undefined"
-              @click="openCoverPreview(item)"
-              @keydown.enter.prevent="openCoverPreview(item)"
+              :class="{
+                'has-cover': Boolean(item.coverUrl) && !selectionMode,
+              }"
+              :role="item.coverUrl && !selectionMode ? 'button' : undefined"
+              :tabindex="item.coverUrl && !selectionMode ? 0 : undefined"
+              :aria-label="item.coverUrl && !selectionMode ? `查看${item.title}封面` : undefined"
+              @click="
+                selectionMode
+                  ? toggleSelected(item.id, !selectedIds.has(item.id))
+                  : openCoverPreview(item)
+              "
+              @keydown.enter.prevent="
+                selectionMode
+                  ? toggleSelected(item.id, !selectedIds.has(item.id))
+                  : openCoverPreview(item)
+              "
             >
+              <el-checkbox
+                v-if="selectionMode"
+                class="template-card__select"
+                :model-value="selectedIds.has(item.id)"
+                :aria-label="`选择 ${item.title}`"
+                @click.stop
+                @change="toggleSelected(item.id, Boolean($event))"
+              />
               <img
                 v-if="item.coverUrl"
                 :src="item.coverUrl"
@@ -558,11 +920,12 @@ watch(dialogOpen, (open) => {
                 <el-switch
                   :model-value="item.enabled"
                   :loading="switchingId === item.id"
+                  :disabled="batchBusy"
                   @change="toggleEnabled(item, Boolean($event))"
                 />
               </label>
               <div class="template-card__actions">
-                <el-button :icon="EditPen" @click="resetForm(item)">
+                <el-button :icon="EditPen" :disabled="batchBusy" @click="resetForm(item)">
                   编辑
                 </el-button>
                 <el-button
@@ -570,6 +933,7 @@ watch(dialogOpen, (open) => {
                   plain
                   :icon="Delete"
                   aria-label="删除模板"
+                  :disabled="batchBusy"
                   @click="remove(item)"
                 />
               </div>
@@ -771,6 +1135,68 @@ watch(dialogOpen, (open) => {
       </el-form>
     </AdminDialog>
 
+    <AdminDialog
+      v-model="sortOpen"
+      :title="sortDialogTitle"
+      subtitle="拖动缩略图排序，保存后同步到无限画布"
+      :icon="Rank"
+      width="min(520px, 94vw)"
+      nested-scroll
+      panel-class="template-sort-dialog"
+      :close-on-click-modal="!sortDirty"
+      confirm-text="保存顺序"
+      :confirm-loading="sortSaving"
+      :confirm-disabled="!sortDirty || !sortItems.length"
+      @confirm="saveSortOrder"
+    >
+      <template #footer>
+        <div class="admin-dialog__footer">
+          <span class="admin-dialog__hint">
+            {{ sortDirty ? "当前顺序有改动，尚未保存" : "拖动缩略图调整顺序" }}
+          </span>
+          <div class="admin-dialog__actions">
+            <el-button :disabled="sortSaving" @click="closeSortDialog">取消</el-button>
+            <el-button
+              type="primary"
+              :loading="sortSaving"
+              :disabled="!sortDirty || !sortItems.length"
+              @click="saveSortOrder"
+            >
+              保存顺序
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div v-if="!sortItems.length" class="template-sort-empty">
+        <el-icon><Rank /></el-icon>
+        <strong>当前分类没有模板</strong>
+      </div>
+      <draggable
+        v-else
+        v-model="sortItems"
+        item-key="id"
+        handle=".template-sort-handle"
+        :animation="180"
+        ghost-class="is-sort-ghost"
+        drag-class="is-sort-dragging"
+        class="template-sort-list"
+      >
+        <template #item="{ element: item, index }">
+          <article class="template-sort-row">
+            <span class="template-sort-index">{{ index + 1 }}</span>
+            <button
+              type="button"
+              class="template-sort-handle template-sort-cover"
+              :aria-label="`拖动第 ${index + 1} 项`"
+            >
+              <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.title" />
+              <span v-else>{{ item.title.slice(0, 1) }}</span>
+            </button>
+          </article>
+        </template>
+      </draggable>
+    </AdminDialog>
+
     <el-image-viewer
       v-if="coverPreviewOpen && coverPreviewUrls.length"
       :url-list="coverPreviewUrls"
@@ -911,6 +1337,59 @@ watch(dialogOpen, (open) => {
   overscroll-behavior: contain;
 }
 
+.templates-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 46px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
+}
+
+.templates-bulk-bar.is-active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.templates-bulk-selection {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.templates-bulk-selection > span {
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.templates-bulk-controls {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.templates-bulk-controls :deep(.el-select) {
+  width: 128px;
+}
+
 .templates-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -939,6 +1418,22 @@ watch(dialogOpen, (open) => {
 
 .template-card.is-off {
   opacity: 0.72;
+}
+
+.template-card.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.template-card.is-selection-mode {
+  cursor: pointer;
+}
+
+.template-card__select {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
 }
 
 .template-card__visual {
@@ -1007,6 +1502,11 @@ watch(dialogOpen, (open) => {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   color: var(--ink-2);
   box-shadow: var(--shadow-sm);
+}
+
+.template-card.is-selection-mode .template-card__badge {
+  left: 38px;
+  max-width: calc(100% - 96px);
 }
 
 .template-card__status {
@@ -1237,6 +1737,84 @@ watch(dialogOpen, (open) => {
   padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.template-sort-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.template-sort-empty {
+  display: grid;
+  min-height: 180px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+}
+
+.template-sort-row {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-width: 0;
+}
+
+.template-sort-handle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+}
+
+.template-sort-handle:active {
+  cursor: grabbing;
+}
+
+.template-sort-index {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+.template-sort-cover {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-2);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.template-sort-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.is-sort-ghost {
+  opacity: 0.35;
+}
+
+.is-sort-ghost .template-sort-cover {
+  border-style: dashed;
+}
+
+.is-sort-dragging .template-sort-cover {
+  box-shadow: var(--shadow-md);
 }
 
 @media (prefers-reduced-motion: reduce) {

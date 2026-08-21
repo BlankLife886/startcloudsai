@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	assistantChatSystemPromptVersion    = "assistant-chat-v2"
+	assistantChatSystemPromptVersion    = "assistant-chat-v3"
 	assistantContextPolicyVersion       = "assistant-context-v2"
 	assistantMessageLimitForContext     = 160
 	assistantDefaultContextTokens       = 128_000
@@ -28,6 +28,7 @@ const (
 
 const assistantChatSystemPrompt = `你是 StarCloudsAI 的 AI 助手。
 - 默认使用用户当前使用的语言，表达清楚、直接、准确。
+- 用户使用中文时，回答和思考过程都使用简体中文，不要改用英文提纲。
 - 先回答当前问题并给出可执行结论，再补充必要依据；避免复述问题、空泛开场和不必要的小结。
 - 延续长对话时，优先遵循用户最新的明确目标、约束和修正；较早的压缩摘要可能有损，不得覆盖更新的要求。
 - 信息不足时说明缺口，不编造事实、来源、文件内容或工具结果。

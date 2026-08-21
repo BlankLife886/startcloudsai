@@ -211,7 +211,6 @@ onMounted(load);
                 :min="2"
                 :max="10"
                 :precision="0"
-                controls-position="right"
               />
             </label>
             <label class="group-field">
@@ -225,7 +224,6 @@ onMounted(load);
                   :min="0"
                   :max="1000000"
                   :precision="0"
-                  controls-position="right"
                 />
                 <em>积分</em>
               </div>
@@ -241,7 +239,6 @@ onMounted(load);
                   :min="1"
                   :max="720"
                   :precision="0"
-                  controls-position="right"
                 />
                 <em>小时</em>
               </div>
@@ -266,23 +263,23 @@ onMounted(load);
           <div class="group-metrics">
             <div>
               <small>全部拼团</small>
-              <strong>{{ overview?.summary.totalGroups ?? 0 }}</strong>
+              <strong class="tnum">{{ overview?.summary.totalGroups ?? 0 }}</strong>
             </div>
             <div>
               <small>进行中</small>
-              <strong>{{ overview?.summary.activeGroups ?? 0 }}</strong>
+              <strong class="tnum">{{ overview?.summary.activeGroups ?? 0 }}</strong>
             </div>
             <div>
               <small>已完成</small>
-              <strong>{{ overview?.summary.completedGroups ?? 0 }}</strong>
+              <strong class="tnum">{{ overview?.summary.completedGroups ?? 0 }}</strong>
             </div>
             <div>
               <small>已过期</small>
-              <strong>{{ overview?.summary.expiredGroups ?? 0 }}</strong>
+              <strong class="tnum">{{ overview?.summary.expiredGroups ?? 0 }}</strong>
             </div>
             <div>
               <small>参与人次</small>
-              <strong>{{ overview?.summary.participations ?? 0 }}</strong>
+              <strong class="tnum">{{ overview?.summary.participations ?? 0 }}</strong>
             </div>
           </div>
 
@@ -313,23 +310,19 @@ onMounted(load);
             </el-table-column>
             <el-table-column label="进度" width="90">
               <template #default="{ row }">
-                {{ row.memberCount }} / {{ row.targetMembers }}
+                <span class="tnum">{{ row.memberCount }} / {{ row.targetMembers }}</span>
               </template>
             </el-table-column>
             <el-table-column label="每人奖励" width="110">
               <template #default="{ row }">
-                {{ normalizePoints(row.rewardCents) }} 积分
+                <span class="tnum">{{ normalizePoints(row.rewardCents) }} 积分</span>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
-                <el-tag
-                  :type="statusOf(row.status).type"
-                  effect="plain"
-                  size="small"
-                >
+                <span class="group-status-pill" :class="`is-${row.status}`">
                   {{ statusOf(row.status).label }}
-                </el-tag>
+                </span>
               </template>
             </el-table-column>
             <el-table-column label="发起时间" width="130">
@@ -351,7 +344,7 @@ onMounted(load);
   </div>
 </template>
 
-<style scoped>
+<style scoped lang="scss">
 .group-admin-page {
   display: flex;
   flex-direction: column;
@@ -359,6 +352,7 @@ onMounted(load);
   height: 100%;
   min-height: 0;
   padding: 0;
+  background: var(--bg);
 }
 
 .group-admin-page :deep(.page-card) {
@@ -367,6 +361,8 @@ onMounted(load);
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .group-admin-page :deep(.page-card__body) {
@@ -383,7 +379,7 @@ onMounted(load);
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 16px;
+  padding-bottom: 14px;
 }
 
 .group-toolbar__actions {
@@ -392,7 +388,7 @@ onMounted(load);
   gap: 6px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
 }
 
@@ -408,35 +404,37 @@ onMounted(load);
   gap: 7px;
   padding: 0 11px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
   color: var(--ink-3);
   font-size: 12px;
   font-weight: 650;
-}
 
-.sync-state i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px var(--success-soft);
-}
+  i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 3px var(--success-soft);
+  }
 
-.sync-state.is-dirty {
-  color: var(--warning);
-}
+  &.is-dirty {
+    border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+    background: var(--warning-soft);
+    color: var(--warning);
 
-.sync-state.is-dirty i {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px var(--warning-soft);
+    i {
+      background: var(--warning);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+    }
+  }
 }
 
 .group-workspace {
   display: grid;
   flex: 1;
   grid-template-columns: 360px minmax(0, 1fr);
-  gap: 20px;
+  gap: 18px;
   min-height: 0;
 }
 
@@ -457,13 +455,18 @@ onMounted(load);
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface-2);
-}
 
-.group-status.is-open {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-  background: var(--accent-soft);
+  &.is-open {
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+    background: var(--success-soft);
+
+    .group-status__dot {
+      background: var(--success);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 18%, transparent);
+    }
+  }
 }
 
 .group-status__copy {
@@ -477,14 +480,9 @@ onMounted(load);
   width: 8px;
   height: 8px;
   margin-top: 6px;
-  flex: 0 0 auto;
+  flex: none;
   border-radius: 50%;
   background: var(--ink-3);
-}
-
-.group-status.is-open .group-status__dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .group-status strong {
@@ -505,34 +503,47 @@ onMounted(load);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-}
 
-.group-rules span {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-2);
-}
+  span {
+    --tone: var(--info);
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--tone) 22%, var(--border));
+    border-radius: 14px;
+    background: linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--tone) 14%, var(--surface)) 0%,
+      var(--surface-2) 100%
+    );
 
-.group-rules small {
-  color: var(--ink-3);
-  font-size: 11px;
-}
+    &:nth-child(2) {
+      --tone: var(--accent);
+    }
 
-.group-rules b {
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
+    &:nth-child(3) {
+      --tone: var(--violet);
+    }
+  }
+
+  small {
+    color: var(--tone);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  b {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 750;
+  }
 }
 
 .group-fields {
   display: grid;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface);
 }
 
@@ -543,49 +554,73 @@ onMounted(load);
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
-}
 
-.group-field:last-child {
-  border-bottom: 0;
-}
+  &:last-child {
+    border-bottom: 0;
+  }
 
-.group-field.is-key {
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
+  &.is-key {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
 
-.group-field > span {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
+  > span {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
 
-.group-field strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-}
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
 
-.group-field small {
-  color: var(--ink-3);
-  font-size: 11px;
-  line-height: 1.4;
-}
+  small {
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.4;
+  }
 
-.group-field :deep(.el-input-number) {
-  width: 108px;
+  :deep(.el-input-number) {
+    width: 132px;
+
+    .el-input-number__decrease,
+    .el-input-number__increase {
+      width: 28px;
+      color: var(--ink-2);
+      background: var(--surface-2);
+      border-color: var(--border);
+
+      &:hover {
+        color: var(--ink);
+        background: var(--surface-3);
+      }
+    }
+
+    .el-input__wrapper {
+      padding: 0 28px;
+      box-shadow: 0 0 0 1px var(--border) inset;
+    }
+
+    .el-input__inner {
+      color: var(--ink);
+      font-weight: 700;
+      text-align: center;
+    }
+  }
 }
 
 .group-field__unit {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
 
-.group-field__unit em {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-style: normal;
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+  }
 }
 
 .group-note {
@@ -611,22 +646,22 @@ onMounted(load);
   flex: 0 0 auto;
   align-items: center;
   gap: 12px;
-}
 
-.group-ops__head strong {
-  display: block;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 750;
-}
+  strong {
+    display: block;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 750;
+  }
 
-.group-ops__head small {
-  display: block;
-  margin-top: 2px;
-  color: var(--ink-3);
-  font:
-    600 11px/1.3 ui-monospace,
-    monospace;
+  small {
+    display: block;
+    margin-top: 2px;
+    color: var(--ink-3);
+    font:
+      600 11px/1.3 ui-monospace,
+      monospace;
+  }
 }
 
 .group-metrics {
@@ -634,28 +669,48 @@ onMounted(load);
   flex: 0 0 auto;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
-}
 
-.group-metrics > div {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface-2);
-}
+  > div {
+    --tone: var(--ink);
+    display: grid;
+    gap: 6px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--tone) 18%, var(--border));
+    border-radius: 14px;
+    background: linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--tone) 10%, var(--surface)) 0%,
+      var(--surface-2) 100%
+    );
 
-.group-metrics small {
-  color: var(--ink-3);
-  font-size: 11px;
-}
+    &:nth-child(2) {
+      --tone: var(--warning);
+    }
 
-.group-metrics strong {
-  color: var(--ink);
-  font-size: 20px;
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
+    &:nth-child(3) {
+      --tone: var(--success);
+    }
+
+    &:nth-child(4) {
+      --tone: var(--ink-3);
+    }
+
+    &:nth-child(5) {
+      --tone: var(--info);
+    }
+  }
+
+  small {
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+
+  strong {
+    color: var(--tone);
+    font-size: 20px;
+    font-weight: 750;
+    letter-spacing: -0.03em;
+  }
 }
 
 .group-table-wrap {
@@ -665,17 +720,53 @@ onMounted(load);
 
 .group-table {
   width: 100%;
-  --el-table-border-color: var(--border);
-  border: 1px solid var(--border);
-  border-radius: 14px;
   overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  --el-table-header-bg-color: var(--surface-2);
+  --el-table-tr-bg-color: var(--surface);
+  --el-table-row-hover-bg-color: var(--surface-2);
+  --el-table-border-color: var(--border);
+  --el-table-text-color: var(--ink);
+  --el-table-header-text-color: var(--ink-3);
+
+  :deep(th.el-table__cell) {
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  :deep(td.el-table__cell) {
+    font-size: 13px;
+  }
+
+  code {
+    color: var(--accent-ink);
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0.04em;
+  }
 }
 
-.group-table code {
-  color: var(--accent-ink);
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.04em;
+.group-status-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-active {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-completed {
+    background: var(--success-soft);
+    color: var(--success);
+  }
 }
 
 .owner-cell {
@@ -683,12 +774,14 @@ onMounted(load);
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
 
-.owner-cell span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  span {
+    overflow: hidden;
+    color: var(--ink);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .empty-groups {
@@ -697,7 +790,7 @@ onMounted(load);
   min-height: 0;
   place-items: center;
   border: 1px dashed var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: var(--surface-2);
   color: var(--ink-3);
   font-size: 13px;

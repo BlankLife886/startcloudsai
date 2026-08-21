@@ -4,8 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasImageMaxCount } from "@/lib/canvas/canvas-image-model";
+import { modelOptionMeta, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { AiConfig } from "@/stores/use-config-store";
 import { AnchorPopoverPanel, AnchorPopoverTrigger, useAnchorPopover } from "./canvas-anchor-popover";
 
 type CanvasImageSettingsPopoverProps = {
@@ -26,7 +27,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { buttonRef, panelRef, open, buttonRect, updateOpen } = useAnchorPopover(onOpenChange);
     const quality = config.quality || "medium";
-    const count = Math.max(1, Math.min(4, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const count = Math.max(1, Math.min(canvasImageMaxCount(modelOptionMeta(config, config.model)), Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
     const summary = `${imageQualityLabel(quality)} · ${imageSizeLabel(activeSize, config.resolution)} · ${t("canvas.controls.images", { count })}`;
 

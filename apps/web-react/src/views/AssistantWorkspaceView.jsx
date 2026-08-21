@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -21,23 +21,27 @@ import {
   waitForAssistantRun,
 } from "@react/legacy-modules/services/assistantApi.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
-import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import {
-  IMAGE_COUNTS,
   conversationTitle,
   createAssistantPlaceholder,
   formatMessageDate,
   formatTime,
+  assistantSendMode,
   imageCountFromPrompt,
   messagePreview,
   messageStatus,
   uid,
 } from "@react/legacy-modules/features/assistant/domain/assistantMessages.js";
+import {
+  assistantCodeLanguageLabel,
+  highlightAssistantCode,
+} from "@react/legacy-modules/features/assistant/domain/assistantCodeHighlight.js";
 import { resolveVisualContext } from "@react/legacy-modules/features/assistant/domain/visualContext.js";
 import {
   clearAssistantHistory,
@@ -47,7 +51,10 @@ import {
 } from "@react/legacy-modules/services/assistantHistory.js";
 import {
   IMAGE_ASPECT_RATIOS,
+  clampImageCount,
   getModelAspectRatiosForResolution,
+  imageCountOptions,
+  imageModelMaxCount,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
@@ -81,48 +88,94 @@ const CREATION_TYPE_DESCRIPTIONS = {
 
 const REASONING_EFFORT_LABELS = {
   none: "关闭",
-  minimal: "最少",
+  minimal: "极低",
   low: "低",
   medium: "中",
   high: "高",
   xhigh: "超高",
   max: "最大",
 };
-const REASONING_EFFORT_VALUES = Object.keys(REASONING_EFFORT_LABELS);
+const ASSET_LIBRARY_MOTION_MS = 320;
+const ASSET_LIBRARY_PAGE_SIZE = 48;
+const ASSET_GRID_RENDER_SIZE = 36;
+const MAX_MODEL_REFERENCE_IMAGES = 16;
 
-function normalizeReasoningEfforts(value) {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((item) => String(item || "").trim().toLowerCase()).filter((item) => REASONING_EFFORT_VALUES.includes(item)))];
+function normalizeReasoningEffortId(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function finiteReasoningPoints(value) {
+  const points = Number(value);
+  return Number.isFinite(points) && points >= 0 ? Math.round(points) : undefined;
 }
 
 function normalizeReasoningPrices(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).flatMap(([effort, raw]) => {
-    if (!REASONING_EFFORT_VALUES.includes(effort) || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const id = normalizeReasoningEffortId(effort);
+    if (!id || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
     const price = raw;
-    const finite = (key) => Number.isFinite(Number(price[key])) ? Math.max(0, Number(price[key])) : undefined;
-    return [[effort, {
+    const finite = (key) => finiteReasoningPoints(price[key]);
+    return [[id, {
       assistantStandardPricePoints: finite("assistantStandardPricePoints"),
       assistantPricePoints: finite("assistantPricePoints"),
+      assistantDiscountPricePoints: finite("assistantDiscountPricePoints"),
       canvasAgentStandardPricePoints: finite("canvasAgentStandardPricePoints"),
       canvasAgentPricePoints: finite("canvasAgentPricePoints"),
+      canvasAgentDiscountPricePoints: finite("canvasAgentDiscountPricePoints"),
     }]];
   }));
 }
 
-function assistantReasoningPrice(model, effort) {
-  const configured = model?.reasoningPrices?.[effort];
-  const effective = Number(configured?.assistantPricePoints);
-  const standard = Number(configured?.assistantStandardPricePoints);
+function assistantReasoningPrice(model, effort, option = {}) {
+  const configured = model?.reasoningPrices?.[effort] || {};
+  const effective = finiteReasoningPoints(option.pricePoints ?? configured.assistantPricePoints)
+    ?? finiteReasoningPoints(model?.pricePoints)
+    ?? 0;
+  const standard = finiteReasoningPoints(option.standardPricePoints ?? configured.assistantStandardPricePoints)
+    ?? finiteReasoningPoints(model?.standardPricePoints ?? model?.pricePoints)
+    ?? effective;
+  const discount = finiteReasoningPoints(option.discountPricePoints ?? configured.assistantDiscountPricePoints);
+  const billed = discount ?? effective;
   return {
-    effective: Number.isFinite(effective) ? Math.max(0, effective) : Math.max(0, Number(model?.pricePoints || 0)),
-    standard: Number.isFinite(standard) ? Math.max(0, standard) : Math.max(0, Number(model?.standardPricePoints ?? model?.pricePoints ?? 0)),
+    effective: billed,
+    standard,
+    discount: standard > billed ? billed : undefined,
+    hasDiscount: standard > billed,
   };
 }
 
+function reasoningEffortOptionPriceModel(price) {
+  return {
+    pricePoints: price.effective,
+    standardPricePoints: price.standard,
+    discountPricePoints: price.hasDiscount ? price.effective : null,
+  };
+}
+
+function normalizeReasoningEffortOptions(model = {}) {
+  const priced = Array.isArray(model.reasoningEfforts) ? model.reasoningEfforts : [];
+  const source = priced.length
+    ? priced
+    : (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []);
+  const seen = new Set();
+  return source.flatMap((item) => {
+    const raw = item && typeof item === "object" ? item : { id: item };
+    const id = normalizeReasoningEffortId(raw.id || raw.effort);
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    const price = assistantReasoningPrice(model, id, raw);
+    return [{
+      id,
+      label: String(raw.label || REASONING_EFFORT_LABELS[id] || id).trim() || id,
+      ...price,
+    }];
+  });
+}
+
 function defaultReasoningEffort(model) {
-  const efforts = normalizeReasoningEfforts(model?.supportedReasoningEfforts);
-  const configured = String(model?.defaultReasoningEffort || "").trim().toLowerCase();
+  const efforts = (model?.reasoningEfforts || []).map((item) => item.id);
+  const configured = normalizeReasoningEffortId(model?.defaultReasoningEffort);
   if (efforts.includes(configured)) return configured;
   return efforts.includes("medium") ? "medium" : efforts[0] || "";
 }
@@ -154,6 +207,7 @@ function ratioOption(value) {
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const MESSAGE_BATCH_SIZE = 24;
 const MAX_ASSISTANT_MESSAGE_CHARACTERS = 12000;
+const SIDEBAR_MOTION_MS = 460;
 
 function assistantCharacterCount(value) {
   return Array.from(String(value || "")).length;
@@ -162,6 +216,130 @@ function assistantCharacterCount(value) {
 
 function imageUrl(image = {}) {
   return String(image.dataUrl || image.url || "").trim();
+}
+
+function fileKeyFromAssetUrl(url) {
+  const raw = String(url || "").trim();
+  const marker = "/api/v1/files/";
+  const index = raw.indexOf(marker);
+  if (index < 0) return "";
+  const key = raw.slice(index + marker.length).split(/[?#]/, 1)[0] || "";
+  try {
+    return decodeURIComponent(key).replace(/\/+$/, "");
+  } catch {
+    return key.replace(/\/+$/, "");
+  }
+}
+
+function sameAssetReference(item, asset) {
+  if (asset.dataUrl && item.dataUrl === asset.dataUrl) return true;
+  const itemKey = String(item.fileKey || "").trim();
+  const assetKey = String(asset.fileKey || "").trim();
+  return Boolean(itemKey && assetKey && itemKey === assetKey);
+}
+
+function collectConversationAssets(source = []) {
+  const seen = new Set();
+  const assets = [];
+  for (const conversation of source) {
+    for (const message of conversation.messages || []) {
+      for (const [index, image] of [...(message.images || []), ...(message.referenceImages || [])].entries()) {
+        const dataUrl = imageUrl(image);
+        if (!dataUrl || seen.has(dataUrl)) continue;
+        seen.add(dataUrl);
+        assets.push({
+          id: `${conversation.id}-${message.id}-${index}`,
+          label: image.revisedPrompt || image.name || conversation.title || "创作资产",
+          dataUrl,
+          thumbUrl: imageThumbUrl(image),
+          fileKey: image.fileKey || fileKeyFromAssetUrl(dataUrl),
+        });
+      }
+    }
+  }
+  return assets;
+}
+
+function collectConversationFiles(source = []) {
+  const seen = new Set();
+  const files = [];
+  const push = (item, sourceKind) => {
+    const id = String(item.id || item.downloadUrl || "").trim();
+    if (!id || seen.has(id)) return;
+    if (sourceKind !== "output" && item.status && item.status !== "ready") return;
+    seen.add(id);
+    files.push({
+      ...item,
+      id,
+      source: sourceKind,
+      label: item.name || item.label || (sourceKind === "output" ? "生成文件" : "文档"),
+    });
+  };
+  for (const conversation of source) {
+    for (const message of conversation.messages || []) {
+      for (const item of message.attachments || []) push(item, "attachment");
+      for (const item of message.artifacts || []) push(item, "output");
+    }
+  }
+  return files;
+}
+
+function messageSearchText(message) {
+  if (!message || message.kind === "context-divider") return "";
+  const proposal = message.proposal || {};
+  return [
+    message.content,
+    message.prompt,
+    message.error,
+    proposal.prompt,
+    proposal.reason,
+    proposal.planningSummary,
+    ...(message.attachments || []).map((item) => item.name),
+    ...(message.artifacts || []).map((item) => item.name),
+    ...(message.referenceImages || []).map((item) => item.name),
+  ].filter(Boolean).join("\n");
+}
+
+function AssetLibraryFileRow({ file, picked, capped, blocked, onPick }) {
+  const isOutput = file.source === "output";
+  const title = isOutput
+    ? `下载 ${file.label}`
+    : picked
+      ? `移除 ${file.label}`
+      : blocked
+        ? "图片生成模式仅支持图片附件"
+        : capped
+          ? "文档已达上限"
+          : `添加 ${file.label} 到附件`;
+  return (
+    <button
+      type="button"
+      className={`asset-file-row${picked ? " is-picked" : ""}${capped && !picked && !isOutput ? " is-capped" : ""}`}
+      aria-pressed={isOutput ? undefined : picked}
+      title={title}
+      onClick={() => onPick(file)}
+    >
+      <i className={`bi ${documentIcon(file)}`} aria-hidden="true" />
+      <span>
+        <strong>{file.label}</strong>
+        <small>
+          {isOutput
+            ? `${String(file.format || "file").toUpperCase()} · ${formatDocumentSize(file.sizeBytes)} · 输出`
+            : `${formatDocumentSize(file.sizeBytes)}${file.pageCount ? ` · ${file.pageCount} 页` : " · 文档"}`}
+        </small>
+      </span>
+      <i className={`bi ${isOutput ? "bi-download" : picked ? "bi-check-lg" : "bi-plus-lg"}`} aria-hidden="true" />
+    </button>
+  );
+}
+
+function AssetLibraryTile({ asset, onPick, picked, capped }) {
+  return (
+    <button type="button" className={`${picked ? "is-picked" : ""}${capped && !picked ? " is-capped" : ""}`.trim()} aria-pressed={picked} title={picked ? `移除 ${asset.label}` : capped ? `参考图已达上限` : `添加 ${asset.label} 到参考图`} onClick={() => onPick(asset)}>
+      <img src={asset.thumbUrl || asset.dataUrl} alt="" width="160" height="160" loading="lazy" decoding="async" />
+      <span><i className={`bi ${picked ? "bi-check-lg" : "bi-plus-lg"}`} /></span>
+    </button>
+  );
 }
 
 // 聊天气泡内的小图：优先服务端缩略图，老消息没有则回退原图
@@ -227,11 +405,108 @@ function formatContextTokens(value) {
   return `${(tokens / 1000000).toFixed(1)}M`;
 }
 
+function formatDurationMs(value) {
+  const ms = Math.max(0, Number(value) || 0);
+  if (!ms) return "";
+  if (ms < 100) return `${Math.round(ms)}ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
+}
+
+function estimateAssistantTokens(text) {
+  let ascii = 0;
+  let other = 0;
+  for (const char of String(text || "")) {
+    if (char.charCodeAt(0) <= 0x7f) ascii += 1;
+    else other += 1;
+  }
+  const tokens = Math.floor(ascii / 4) + other;
+  return String(text || "").trim() ? Math.max(1, tokens) : 0;
+}
+
+function messageDurationMs(message) {
+  const start = Date.parse(message?.createdAt || "");
+  const end = Date.parse(message?.updatedAt || "");
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return end - start;
+}
+
+function mergeAssistantUsage(current, incoming, extras = {}) {
+  const next = {
+    ...(current && typeof current === "object" ? current : {}),
+    ...(incoming && typeof incoming === "object" ? incoming : {}),
+  };
+  for (const [key, value] of Object.entries(extras)) {
+    const amount = Math.max(0, Number(value) || 0);
+    if (!amount) continue;
+    if (!Math.max(0, Number(next[key]) || 0)) next[key] = amount;
+  }
+  return next;
+}
+
+function usageStartedAtMs(message) {
+  const marked = Number(message?.usageStartedAt);
+  if (Number.isFinite(marked) && marked > 0) return marked;
+  const created = Date.parse(message?.createdAt || "");
+  return Number.isFinite(created) ? created : 0;
+}
+
+function normalizeAssistantUsage(message) {
+  if (!message || message.pending || message.role !== "assistant") return null;
+  const raw = message.usage && typeof message.usage === "object" ? message.usage : {};
+  const context = message.context && typeof message.context === "object" ? message.context : {};
+  const durationMs = Math.max(0, Number(raw.durationMs) || 0) || messageDurationMs(message);
+  const firstTokenMs = Math.max(0, Number(raw.firstTokenMs) || 0);
+  const isImage = message.kind === "image" || Boolean(message.images?.length);
+  if (isImage) {
+    return durationMs ? { inputTokens: 0, outputTokens: 0, firstTokenMs: 0, durationMs } : null;
+  }
+  const inputTokens = Math.max(0, Number(raw.inputTokens ?? raw.promptTokens) || Number(context.estimatedInputTokens) || 0);
+  const outputTokens = Math.max(0, Number(raw.outputTokens ?? raw.completionTokens) || 0) || estimateAssistantTokens(message.content);
+  if (!inputTokens && !outputTokens && !firstTokenMs && !durationMs) return null;
+  return { inputTokens, outputTokens, firstTokenMs, durationMs };
+}
+
+function ContextMeterIcon({ percent }) {
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
+  const radius = 5.25;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <svg className="assistant-context-meter-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <circle className="is-track" cx="8" cy="8" r={radius} />
+      <circle
+        className="is-value"
+        cx="8"
+        cy="8"
+        r={radius}
+        strokeDasharray={`${(value / 100) * circumference} ${circumference}`}
+      />
+    </svg>
+  );
+}
+
 function AssistantContextMeter({ context }) {
   const usage = normalizeAssistantContext(context);
-  if (!usage) return <div className="assistant-context-meter is-empty" title="完成一次回答后显示上下文占用"><i className="bi bi-layers" /><span>上下文</span><strong>--</strong></div>;
+  if (!usage) {
+    return (
+      <div className="assistant-context-meter is-empty" title="完成一次回答后显示上下文占用">
+        <ContextMeterIcon percent={0} />
+        <span>上下文</span>
+        <strong>--</strong>
+      </div>
+    );
+  }
   const title = `本轮估算 ${formatContextTokens(usage.estimatedInputTokens)} / ${formatContextTokens(usage.inputBudgetTokens)} tokens${usage.compactedMessages ? `，已压缩 ${usage.compactedMessages} 条消息` : ""}`;
-  return <div className={`assistant-context-meter${usage.usagePercent >= 80 ? " is-high" : usage.compactedMessages ? " is-compacted" : ""}`} title={title} aria-label={title} role="status"><i className="bi bi-layers" /><span>上下文</span><strong>{usage.usagePercent}%</strong><em aria-hidden="true"><i style={{ width: `${usage.usagePercent}%` }} /></em></div>;
+  return (
+    <div className={`assistant-context-meter${usage.usagePercent >= 80 ? " is-high" : usage.compactedMessages ? " is-compacted" : ""}`} title={title} aria-label={title} role="status">
+      <ContextMeterIcon percent={usage.usagePercent} />
+      <span>上下文</span>
+      <strong>{usage.usagePercent}%</strong>
+    </div>
+  );
 }
 
 function imageRequestFromProposal(proposal = {}) {
@@ -269,7 +544,7 @@ async function prepareLegacyConversations(stored, signal) {
       const message = { ...original };
       for (const field of ["referenceImages", "images"]) {
         const migrated = [];
-        for (const image of (Array.isArray(message[field]) ? message[field] : []).slice(0, 4)) {
+        for (const image of (Array.isArray(message[field]) ? message[field] : []).slice(0, MAX_MODEL_REFERENCE_IMAGES)) {
           if (image?.fileKey) {
             migrated.push(image);
             continue;
@@ -315,15 +590,20 @@ function normalizeConfig(config = {}) {
   const conversationModels = (Array.isArray(config.conversationModels)
     ? config.conversationModels
     : [])
-    .map((item) => ({
-      ...item,
-      model: String(item?.model || "").trim(),
-      label: String(item?.label || item?.model || "").trim(),
-      description: String(item?.description || item?.provider || "后台配置的对话模型"),
-      supportedReasoningEfforts: normalizeReasoningEfforts(item?.supportedReasoningEfforts),
-      defaultReasoningEffort: String(item?.defaultReasoningEffort || "").trim().toLowerCase(),
-      reasoningPrices: normalizeReasoningPrices(item?.reasoningPrices),
-    }))
+    .map((item) => {
+      const reasoningPrices = normalizeReasoningPrices(item?.reasoningPrices);
+      const reasoningEfforts = normalizeReasoningEffortOptions({ ...item, reasoningPrices });
+      return {
+        ...item,
+        model: String(item?.model || "").trim(),
+        label: String(item?.label || item?.model || "").trim(),
+        description: String(item?.description || item?.provider || "后台配置的对话模型"),
+        reasoningEfforts,
+        supportedReasoningEfforts: reasoningEfforts.map((option) => option.id),
+        defaultReasoningEffort: String(item?.defaultReasoningEffort || "").trim().toLowerCase(),
+        reasoningPrices,
+      };
+    })
     .filter((item) => item.model && item.label);
   const imageModels = (Array.isArray(config.imageModels) ? config.imageModels : [])
     .map((item) => ({
@@ -337,10 +617,10 @@ function normalizeConfig(config = {}) {
   return { conversationModels, imageModels };
 }
 
-function ModelMenuPrice({ model, perImage }) {
+function ModelMenuPrice({ model, perImage, unitSuffix }) {
   const price = resolveModelPointPricing(model);
   if (!price.configured) return <span className="model-menu-price is-empty">未定价</span>;
-  const suffix = perImage ? "/张" : "";
+  const suffix = unitSuffix ?? (perImage ? "/张" : "");
   if (price.hasDiscount) {
     return (
       <span className="model-menu-price has-discount">
@@ -440,53 +720,355 @@ function AssistantImageViewer({ value, onClose, onStep }) {
   );
 }
 
-function AssistantMarkdown({ content, streaming }) {
-  const rootRef = useRef(null);
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(content || ""), { async: false, breaks: true, gfm: true }), { USE_PROFILES: { html: true } }), [content]);
+function appendColorSwatches(node) {
+  const pattern = /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\brgba?\(\s*(?:\d{1,3}%?\s*,\s*){2}\d{1,3}%?(?:\s*[/,]\s*[\d.]+%?)?\s*\)/gi;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) texts.push(walker.currentNode);
+  for (const textNode of texts) {
+    const value = textNode.nodeValue;
+    if (!value || !pattern.test(value)) continue;
+    pattern.lastIndex = 0;
+    const parts = [];
+    let last = 0;
+    let match = pattern.exec(value);
+    while (match) {
+      if (match.index > last) parts.push(document.createTextNode(value.slice(last, match.index)));
+      const color = match[0];
+      const wrap = document.createElement("span");
+      wrap.className = "assistant-code-color";
+      const swatch = document.createElement("span");
+      swatch.className = "assistant-code-swatch";
+      swatch.style.setProperty("--swatch", color);
+      swatch.setAttribute("aria-hidden", "true");
+      wrap.append(swatch, document.createTextNode(color));
+      parts.push(wrap);
+      last = match.index + color.length;
+      match = pattern.exec(value);
+    }
+    if (last < value.length) parts.push(document.createTextNode(value.slice(last)));
+    textNode.replaceWith(...parts);
+  }
+}
 
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    root.querySelectorAll("a").forEach((link) => {
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-    });
-    root.querySelectorAll("pre").forEach((pre) => {
-      if (pre.dataset.enhanced === "true") return;
-      const code = pre.querySelector("code");
-      if (!code) return;
-      const toolbar = document.createElement("div");
-      toolbar.className = "markdown-code-toolbar";
+function enhanceMarkdownCodeBlocks(root, { streaming = false } = {}) {
+  root.querySelectorAll("pre").forEach((pre) => {
+    if (pre.closest(".assistant-code")) return;
+    const code = pre.querySelector("code");
+    if (!code) return;
+    try {
+      const source = String(code.textContent || "").replace(/\n$/, "");
+      const highlighted = highlightAssistantCode(source, code.classList, { streaming });
+      const languageLabel = assistantCodeLanguageLabel(code.classList);
+      const block = document.createElement("figure");
+      block.className = "assistant-code markdown-code-block";
+      block.dataset.code = source;
+      const header = document.createElement("header");
+      header.className = "assistant-code-toolbar";
       const language = document.createElement("span");
-      const languageClass = [...code.classList].find((name) => name.startsWith("language-"));
-      language.textContent = languageClass ? languageClass.slice(9) : "代码";
+      language.className = "assistant-code-lang markdown-code-lang";
+      language.textContent = languageLabel;
       const copy = document.createElement("button");
       copy.type = "button";
       copy.dataset.copyCode = "true";
       copy.title = "复制代码";
       copy.setAttribute("aria-label", "复制代码");
-      copy.innerHTML = '<i class="bi bi-copy" aria-hidden="true"></i><span>复制</span>';
-      toolbar.append(language, copy);
-      pre.prepend(toolbar);
-      pre.dataset.enhanced = "true";
-    });
-  }, [html]);
+      copy.innerHTML = '<i class="bi bi-copy" aria-hidden="true"></i>';
+      header.append(language, copy);
+      const body = document.createElement("pre");
+      body.className = "assistant-code-body";
+      const src = document.createElement("code");
+      src.className = "assistant-code-src hljs";
+      src.innerHTML = highlighted.html || "&nbsp;";
+      if (!streaming) appendColorSwatches(src);
+      body.append(src);
+      pre.replaceWith(block);
+      block.append(header, body);
+    } catch {
+      pre.classList.add("assistant-code-fallback");
+    }
+  });
+}
+
+function renderAssistantMarkdownHtml(content, { streaming = false } = {}) {
+  const clean = DOMPurify.sanitize(marked.parse(String(content || ""), { async: false, breaks: true, gfm: true }), { USE_PROFILES: { html: true } });
+  const root = document.createElement("div");
+  root.innerHTML = clean;
+  root.querySelectorAll("a").forEach((link) => {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  });
+  enhanceMarkdownCodeBlocks(root, { streaming });
+  return root.innerHTML;
+}
+
+function fenceCount(text) {
+  return (String(text || "").match(/```/g) || []).length;
+}
+
+function streamInsideFence(text) {
+  return fenceCount(text) % 2 === 1;
+}
+
+function streamNeedsRebuild(previous, next) {
+  if (!previous) return fenceCount(next) > 0;
+  if (!next.startsWith(previous)) return true;
+  return fenceCount(previous) !== fenceCount(next);
+}
+
+function takeStreamChunk(target, from, count) {
+  const remain = String(target || "").slice(from);
+  if (!remain) return "";
+  let end = Math.min(remain.length, Math.max(1, count));
+  if (end < remain.length && /[\uD800-\uDBFF]/.test(remain[end - 1])) end += 1;
+  if (remain.startsWith("```")) return remain.slice(0, Math.max(end, 3));
+  return remain.slice(0, end);
+}
+
+function unwrapStreamToken(span) {
+  if (!span?.isConnected) return;
+  span.replaceWith(document.createTextNode(span.textContent || ""));
+}
+
+function ensureStreamCaret(root, host = null) {
+  let caret = root.querySelector(".assistant-stream-caret");
+  if (!caret) {
+    caret = document.createElement("span");
+    caret.className = "assistant-stream-caret";
+    caret.setAttribute("aria-hidden", "true");
+  }
+  if (host) {
+    if (caret.parentNode !== host) host.append(caret);
+    return caret;
+  }
+  let nextHost = root.lastElementChild;
+  if (!nextHost || nextHost.matches("pre, figure, table, hr, .assistant-stream-caret")) {
+    nextHost = document.createElement("p");
+    root.append(nextHost);
+  } else if (nextHost.matches("ul, ol")) {
+    nextHost = nextHost.lastElementChild || nextHost;
+  }
+  if (caret.parentNode !== nextHost) nextHost.append(caret);
+  return caret;
+}
+
+function appendAnimatedText(caret, text, reduceMotion) {
+  if (!text) return;
+  if (reduceMotion) {
+    caret.before(document.createTextNode(text));
+    return;
+  }
+  const span = document.createElement("span");
+  span.className = "assistant-stream-token";
+  span.textContent = text;
+  caret.before(span);
+  span.addEventListener("animationend", () => unwrapStreamToken(span), { once: true });
+}
+
+function appendToStreamCode(root, chunk) {
+  const src = root.querySelector("figure.assistant-code:last-of-type .assistant-code-src")
+    || root.querySelector("pre:last-of-type code");
+  if (!src) return false;
+  src.append(document.createTextNode(chunk));
+  ensureStreamCaret(root, src);
+  return true;
+}
+
+function startStreamParagraph(root, caret) {
+  const host = caret.parentElement;
+  const next = document.createElement("p");
+  caret.remove();
+  if (host?.parentElement === root) host.after(next);
+  else root.append(next);
+  next.append(caret);
+}
+
+function appendStreamChunk(root, chunk, reduceMotion, revealed) {
+  if (!chunk) return;
+  if (streamInsideFence(revealed)) {
+    if (appendToStreamCode(root, chunk)) return;
+    root.innerHTML = renderAssistantMarkdownHtml(revealed + chunk, { streaming: true });
+    ensureStreamCaret(root, root.querySelector("figure.assistant-code:last-of-type .assistant-code-src"));
+    return;
+  }
+  const caret = ensureStreamCaret(root);
+  let buffer = "";
+  const flush = () => {
+    appendAnimatedText(caret, buffer, reduceMotion);
+    buffer = "";
+  };
+  for (let index = 0; index < chunk.length; index += 1) {
+    if (chunk[index] !== "\n") {
+      buffer += chunk[index];
+      continue;
+    }
+    flush();
+    if (chunk[index + 1] === "\n") {
+      index += 1;
+      startStreamParagraph(root, caret);
+      continue;
+    }
+    caret.before(document.createElement("br"));
+  }
+  flush();
+}
+
+function normalizeReasoningText(text) {
+  return String(text || "")
+    .replace(/\*\*\s*\*\*/g, "**\n\n**")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function AssistantReasoning({ text, pending }) {
+  const value = normalizeReasoningText(text);
+  const html = useMemo(() => (value ? renderAssistantMarkdownHtml(value, { streaming: false }) : ""), [value]);
+  const [open, setOpen] = useState(Boolean(pending));
+  useEffect(() => {
+    setOpen(Boolean(pending));
+  }, [pending]);
+  if (!value) return null;
+  return (
+    <details className={`assistant-reasoning${pending ? " is-live" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        {pending ? <i className="reasoning-pulse" aria-hidden="true" /> : <i className="bi bi-lightbulb" aria-hidden="true" />}
+        <strong>{pending ? "正在思考" : "思考过程"}</strong>
+        <i className={`bi bi-chevron-down${open ? " is-open" : ""}`} aria-hidden="true" />
+      </summary>
+      <div className="assistant-reasoning-body" dangerouslySetInnerHTML={{ __html: html }} />
+    </details>
+  );
+}
+
+function AssistantMarkdown({ content, streaming }) {
+  const rootRef = useRef(null);
+  const targetRef = useRef("");
+  const revealedRef = useRef("");
+  const polishedRef = useRef(false);
+  const rafRef = useRef(0);
+  const lastTsRef = useRef(0);
+  const carryRef = useRef(0);
+  const tickRef = useRef(null);
+
+  const stopStream = () => {
+    if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+    lastTsRef.current = 0;
+    carryRef.current = 0;
+  };
+
+  tickRef.current = (timestamp) => {
+    const root = rootRef.current;
+    if (!root) {
+      rafRef.current = 0;
+      return;
+    }
+    const target = targetRef.current;
+    let revealed = revealedRef.current;
+    if (revealed === target) {
+      rafRef.current = 0;
+      lastTsRef.current = 0;
+      return;
+    }
+    if (revealed && !target.startsWith(revealed)) {
+      revealed = "";
+      revealedRef.current = "";
+      root.innerHTML = "";
+    }
+    const elapsed = lastTsRef.current ? Math.min(48, timestamp - lastTsRef.current) : 16.6;
+    lastTsRef.current = timestamp;
+    const backlog = target.length - revealed.length;
+    const rush = Math.min(1, backlog / 140);
+    const msPerChar = 34 - rush * 22;
+    carryRef.current += elapsed / msPerChar;
+    let take = Math.floor(carryRef.current);
+    if (take < 1) {
+      rafRef.current = window.requestAnimationFrame((next) => tickRef.current?.(next));
+      return;
+    }
+    carryRef.current -= take;
+    take = Math.min(take, backlog);
+    if (!revealed && backlog > 280) take = Math.max(take, backlog - 64);
+    const chunk = takeStreamChunk(target, revealed.length, take);
+    const next = revealed + chunk;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!revealed || streamNeedsRebuild(revealed, next)) {
+      root.innerHTML = renderAssistantMarkdownHtml(next, { streaming: true });
+      ensureStreamCaret(root, streamInsideFence(next)
+        ? root.querySelector("figure.assistant-code:last-of-type .assistant-code-src")
+        : null);
+    } else {
+      appendStreamChunk(root, chunk, reduceMotion, revealed);
+    }
+    revealedRef.current = next;
+    rafRef.current = window.requestAnimationFrame((nextTs) => tickRef.current?.(nextTs));
+  };
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+    const text = String(content || "");
+    if (!streaming) {
+      stopStream();
+      if (!polishedRef.current || revealedRef.current !== text) {
+        root.innerHTML = renderAssistantMarkdownHtml(text, { streaming: false });
+        polishedRef.current = true;
+        revealedRef.current = text;
+        targetRef.current = text;
+      }
+      return undefined;
+    }
+    polishedRef.current = false;
+    targetRef.current = text;
+    if (revealedRef.current && !text.startsWith(revealedRef.current)) {
+      revealedRef.current = "";
+      root.innerHTML = "";
+    }
+    if (!text && !revealedRef.current) {
+      root.innerHTML = "";
+      ensureStreamCaret(root);
+    }
+    if (!rafRef.current) {
+      lastTsRef.current = 0;
+      rafRef.current = window.requestAnimationFrame((timestamp) => tickRef.current?.(timestamp));
+    }
+    return undefined;
+  }, [content, streaming]);
+
+  useEffect(() => () => stopStream(), []);
 
   const handleClick = async (event) => {
     const button = event.target.closest("[data-copy-code]");
-    const code = button?.closest("pre")?.querySelector("code")?.innerText;
-    if (!button || !code) return;
-    await navigator.clipboard.writeText(code);
+    const block = button?.closest(".assistant-code");
+    const code = block?.dataset.code ?? block?.querySelector(".assistant-code-raw")?.value;
+    if (!button || code == null) return;
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = code;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
     button.classList.add("is-copied");
-    button.innerHTML = '<i class="bi bi-check2" aria-hidden="true"></i><span>已复制</span>';
+    button.setAttribute("aria-label", "已复制");
+    button.title = "已复制";
+    button.innerHTML = '<i class="bi bi-check2" aria-hidden="true"></i>';
     window.setTimeout(() => {
       if (!button.isConnected) return;
       button.classList.remove("is-copied");
-      button.innerHTML = '<i class="bi bi-copy" aria-hidden="true"></i><span>复制</span>';
+      button.setAttribute("aria-label", "复制代码");
+      button.title = "复制代码";
+      button.innerHTML = '<i class="bi bi-copy" aria-hidden="true"></i>';
     }, 1600);
   };
 
-  return <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} />;
 }
 
 function artifactLayerLabel(item = {}) {
@@ -499,54 +1081,405 @@ function AssistantArtifacts({ items = [] }) {
   return <div className="assistant-artifacts" aria-label="生成的文件">{items.map((item, index) => <a key={item.id || `${item.name}-${index}`} className="assistant-artifact" href={item.downloadUrl} download={item.name || "assistant-output.txt"}><i className={`bi ${documentIcon(item)}`} aria-hidden="true" /><span><strong>{item.name || "生成文件"}</strong><small>{String(item.format || "file").toUpperCase()} · {formatDocumentSize(item.sizeBytes)}{artifactLayerLabel(item)}</small></span><i className="bi bi-download" aria-hidden="true" /></a>)}</div>;
 }
 
+function ProposalSelect({ id, label, ariaLabel, valueLabel, options, disabled, open, onToggle, onPick }) {
+  const wrapRef = useRef(null);
+  const [menuStyle, setMenuStyle] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuStyle(null);
+      return undefined;
+    }
+    const place = () => {
+      const rect = wrapRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const minWidth = Math.max(rect.width, id === "model" ? 220 : 0);
+      const spaceBelow = window.innerHeight - rect.bottom - 12;
+      const openUp = spaceBelow < 180 && rect.top > spaceBelow;
+      const alignRight = id === "resolution" || id === "count";
+      const next = {
+        minWidth: `${minWidth}px`,
+        maxHeight: `${Math.min(240, Math.max(120, openUp ? rect.top - 16 : spaceBelow))}px`,
+      };
+      if (openUp) next.bottom = `${window.innerHeight - rect.top + 6}px`;
+      else next.top = `${rect.bottom + 6}px`;
+      if (alignRight) next.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+      else next.left = `${Math.max(8, rect.left)}px`;
+      setMenuStyle(next);
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open, id, options.length, valueLabel]);
+
+  const host = wrapRef.current?.closest(".assistant-workspace");
+  const menu = open && menuStyle ? (
+    <div className="agent-proposal-menu" role="listbox" aria-label={ariaLabel} style={menuStyle}>
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="option"
+          aria-selected={option.selected}
+          className={option.selected ? "active" : ""}
+          onClick={(event) => { event.stopPropagation(); onPick(option.id); }}
+        >
+          {option.mark ? <i className={`ratio-shape is-${option.mark}`} style={option.markStyle} /> : null}
+          <span className="agent-proposal-menu-copy">
+            <strong>{option.label}</strong>
+            {option.detail}
+          </span>
+          {option.selected ? <i className="bi bi-check-lg" aria-hidden="true" /> : null}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  return (
+    <div className={`agent-proposal-field${id === "model" ? " is-model" : ""}`}>
+      <span>{label}</span>
+      <div className="agent-proposal-menu-wrap" ref={wrapRef}>
+        <button
+          type="button"
+          className={`agent-proposal-trigger${open ? " is-open" : ""}`}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          onClick={(event) => { event.stopPropagation(); onToggle(); }}
+        >
+          <span>{valueLabel}</span>
+          <i className={`bi bi-chevron-down${open ? " is-open" : ""}`} aria-hidden="true" />
+        </button>
+        {menu && host ? createPortal(menu, host) : menu}
+      </div>
+    </div>
+  );
+}
+
+function ProposalPromptDialog({ value, onCancel, onSave }) {
+  const isDark = useIsDark();
+  const [draft, setDraft] = useState(value || "");
+  const textareaRef = useRef(null);
+  const draftRef = useRef(draft);
+  const onCancelRef = useRef(onCancel);
+  const onSaveRef = useRef(onSave);
+  draftRef.current = draft;
+  onCancelRef.current = onCancel;
+  onSaveRef.current = onSave;
+  const count = assistantCharacterCount(draft);
+  const overLimit = count > MAX_ASSISTANT_MESSAGE_CHARACTERS;
+
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (node) {
+      node.focus();
+      const end = node.value.length;
+      node.setSelectionRange(end, end);
+    }
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancelRef.current();
+      }
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        if (assistantCharacterCount(draftRef.current) <= MAX_ASSISTANT_MESSAGE_CHARACTERS) {
+          onSaveRef.current(draftRef.current);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return createPortal(
+    <div
+      className={`assistant-dialog-layer agent-proposal-prompt-layer${isDark ? " is-dark" : ""}`}
+      role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}
+    >
+      <section
+        className="agent-proposal-prompt-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-proposal-prompt-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <h2 id="agent-proposal-prompt-title">编辑生成提示词</h2>
+            <p>在弹窗里修改文案，确认后写回方案。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onCancel}><i className="bi bi-x-lg" /></button>
+        </header>
+        <textarea
+          ref={textareaRef}
+          rows={8}
+          maxLength={12000}
+          aria-label="编辑生成提示词"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <footer>
+          <span className={overLimit ? "is-over" : ""}>{count.toLocaleString("zh-CN")} / 12,000</span>
+          <div>
+            <button type="button" onClick={onCancel}>取消</button>
+            <button type="button" className="is-primary" disabled={overLimit} onClick={() => onSave(draft)}>完成</button>
+          </div>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function AgentProposal({ message, imageModels, generating, executed, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
+  const [openMenu, setOpenMenu] = useState("");
+  const [promptOpen, setPromptOpen] = useState(false);
+  useEffect(() => {
+    if (!openMenu) return undefined;
+    const onPointerDown = (event) => {
+      if (event.target instanceof Element && event.target.closest(".agent-proposal-menu-wrap, .agent-proposal-menu")) return;
+      setOpenMenu("");
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setOpenMenu("");
+    };
+    const onScroll = (event) => {
+      if (event.target instanceof Element && event.target.closest(".agent-proposal-menu")) return;
+      setOpenMenu("");
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [openMenu]);
   const proposal = message.proposal;
   if (!proposal) return null;
   if (proposal.dismissed) {
-    return <div className="agent-proposal is-dismissed"><button type="button" className="agent-proposal-restore" onClick={onRestore}><i className="bi bi-magic" aria-hidden="true" /><span>创作方案已收起</span><i className="bi bi-chevron-down" aria-hidden="true" /></button></div>;
+    return (
+      <div className="agent-proposal is-dismissed">
+        <button type="button" className="agent-proposal-restore" onClick={onRestore}>
+          <i className="bi bi-magic" aria-hidden="true" />
+          <span>创作方案已收起</span>
+          <i className="bi bi-chevron-down" aria-hidden="true" />
+        </button>
+      </div>
+    );
   }
   const selectedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
-  const resolutions = RESOLUTIONS.filter((item) =>
-    normalizeImageModelCapabilities(selectedModel || {}).resolutions.includes(item.id),
-  );
+  const modelCapabilities = normalizeImageModelCapabilities(selectedModel || {});
+  const resolutions = RESOLUTIONS.filter((item) => modelCapabilities.resolutions.includes(item.id));
   const ratios = getModelAspectRatiosForResolution(selectedModel, proposal.resolution).map(ratioOption);
-  return <div className="agent-proposal">
-    <header className="agent-proposal-head"><span className="agent-proposal-icon"><i className="bi bi-stars" /></span><div><strong>{proposal.action === "edit" ? "图片编辑方案" : "图片生成方案"}</strong><small>{proposal.planningSummary || proposal.reason}</small></div>{executed && <span className="agent-proposal-state">已执行</span>}</header>
-    {proposal.reason && proposal.reason !== proposal.planningSummary && <p className="agent-proposal-reason"><i className="bi bi-signpost-split" /><span>{proposal.reason}</span></p>}
-    {proposal.referenceImages?.length > 0 && <div className="agent-proposal-refs">{proposal.referenceImages.map((image, index) => <button key={image.id || image.fileKey || index} type="button" onClick={() => onOpenImage(image, index, proposal.referenceImages)}><img src={imageUrl(image)} alt={image.name || `参考图 ${index + 1}`} /><span>图{index + 1}</span></button>)}</div>}
-    <label className="agent-proposal-prompt"><span>生成提示词</span><textarea rows={4} maxLength={12000} disabled={proposal.submitting} value={proposal.prompt || ""} onChange={(event) => onChange({ prompt: event.target.value })} /></label>
-    <div className="agent-proposal-params">
-      <label><span>生成模型</span>{imageModels.length ? <select value={proposal.model || selectedModel?.model || ""} disabled={proposal.submitting} onChange={(event) => onChange({ model: event.target.value })}>{imageModels.map((model) => <option key={model.model} value={model.model}>{model.label}</option>)}</select> : <div className="agent-proposal-readonly">{proposal.modelName || proposal.model || "模型不可用"}</div>}</label>
-      <label><span>画面比例</span><select value={proposal.ratio || "auto"} disabled={proposal.submitting} onChange={(event) => onChange({ ratio: event.target.value })}>{ratios.map((ratio) => <option key={ratio.id} value={ratio.id}>{ratio.label}</option>)}</select></label>
-      <label><span>清晰度</span><select value={proposal.resolution || resolutions[0]?.id || "1K"} disabled={proposal.submitting} onChange={(event) => onChange({ resolution: event.target.value })}>{resolutions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-      <label><span>生成数量</span><select value={Number(proposal.count || 1)} disabled={proposal.submitting} onChange={(event) => onChange({ count: Number(event.target.value) })}>{IMAGE_COUNTS.map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>
+  const counts = imageCountOptions(selectedModel);
+  const proposalCount = clampImageCount(proposal.count || 1, selectedModel, 1);
+  const summary = proposal.planningSummary || proposal.reason || "";
+  const busy = Boolean(proposal.submitting);
+  const toggleMenu = (id) => setOpenMenu((current) => current === id ? "" : id);
+  return (
+    <div className={`agent-proposal${executed ? " is-executed" : ""}`}>
+      <header className="agent-proposal-head">
+        <span className="agent-proposal-icon"><i className="bi bi-stars" /></span>
+        <div>
+          <strong>{proposal.action === "edit" ? "图片编辑方案" : "图片生成方案"}</strong>
+          {summary ? <small>{summary}</small> : null}
+        </div>
+        {executed ? <span className="agent-proposal-state">已执行</span> : null}
+      </header>
+      {proposal.referenceImages?.length > 0 && (
+        <div className="agent-proposal-refs" aria-label="参考图">
+          {proposal.referenceImages.map((image, index) => (
+            <button key={image.id || image.fileKey || index} type="button" onClick={() => onOpenImage(image, index, proposal.referenceImages)}>
+              <img src={imageUrl(image)} alt={image.name || `参考图 ${index + 1}`} />
+              <span>图{index + 1}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="agent-proposal-prompt">
+        <span>生成提示词</span>
+        <button
+          type="button"
+          className={`agent-proposal-prompt-preview${proposal.prompt ? "" : " is-empty"}`}
+          disabled={busy}
+          aria-label="编辑生成提示词"
+          onClick={() => { setOpenMenu(""); setPromptOpen(true); }}
+        >
+          <span>{proposal.prompt || "点击编辑生成提示词"}</span>
+          <i className="bi bi-pencil" aria-hidden="true" />
+        </button>
+      </div>
+      {promptOpen ? (
+        <ProposalPromptDialog
+          value={proposal.prompt || ""}
+          onCancel={() => setPromptOpen(false)}
+          onSave={(prompt) => { onChange({ prompt }); setPromptOpen(false); }}
+        />
+      ) : null}
+      <div className="agent-proposal-params">
+        {imageModels.length ? (
+          <ProposalSelect
+            id="model"
+            label={<>模型{selectedModel ? <> · <ModelMenuPrice model={selectedModel} perImage /></> : null}</>}
+            ariaLabel="生成模型"
+            valueLabel={selectedModel?.label || proposal.modelName || proposal.model || "选择模型"}
+            disabled={busy}
+            open={openMenu === "model"}
+            onToggle={() => toggleMenu("model")}
+            onPick={(nextModel) => {
+              setOpenMenu("");
+              onChange({ model: nextModel, count: clampImageCount(proposal.count, imageModels.find((item) => item.model === nextModel) || selectedModel, 1) });
+            }}
+            options={imageModels.map((model) => ({
+              id: model.model,
+              label: model.label,
+              selected: (proposal.model || selectedModel?.model) === model.model,
+              detail: <ModelMenuPrice model={model} perImage />,
+            }))}
+          />
+        ) : (
+          <div className="agent-proposal-field is-model">
+            <span>模型</span>
+            <div className="agent-proposal-readonly">{proposal.modelName || proposal.model || "模型不可用"}</div>
+          </div>
+        )}
+        <ProposalSelect
+          id="ratio"
+          label="比例"
+          ariaLabel="画面比例"
+          valueLabel={ratios.find((item) => item.id === (proposal.ratio || "auto"))?.label || proposal.ratio || "自动"}
+          disabled={busy}
+          open={openMenu === "ratio"}
+          onToggle={() => toggleMenu("ratio")}
+          onPick={(ratio) => { setOpenMenu(""); onChange({ ratio }); }}
+          options={ratios.map((ratio) => ({
+            id: ratio.id,
+            label: ratio.label,
+            selected: (proposal.ratio || "auto") === ratio.id,
+            mark: ratio.shape,
+            markStyle: ratioPreviewStyle(ratio.id),
+          }))}
+        />
+        <ProposalSelect
+          id="resolution"
+          label="清晰度"
+          ariaLabel="清晰度"
+          valueLabel={resolutions.find((item) => item.id === (proposal.resolution || resolutions[0]?.id))?.label || "标清 1K"}
+          disabled={busy}
+          open={openMenu === "resolution"}
+          onToggle={() => toggleMenu("resolution")}
+          onPick={(resolution) => { setOpenMenu(""); onChange({ resolution }); }}
+          options={resolutions.map((option) => ({
+            id: option.id,
+            label: option.label,
+            selected: (proposal.resolution || resolutions[0]?.id || "1K") === option.id,
+          }))}
+        />
+        <ProposalSelect
+          id="count"
+          label="数量"
+          ariaLabel="生成数量"
+          valueLabel={`${proposalCount} 张`}
+          disabled={busy}
+          open={openMenu === "count"}
+          onToggle={() => toggleMenu("count")}
+          onPick={(count) => { setOpenMenu(""); onChange({ count: Number(count) }); }}
+          options={counts.map((count) => ({
+            id: String(count),
+            label: `${count} 张`,
+            selected: proposalCount === count,
+          }))}
+        />
+      </div>
+      <footer className="agent-proposal-actions">
+        <button type="button" className="is-secondary" disabled={busy} onClick={onDismiss}>取消</button>
+        <button type="button" className="is-primary" disabled={busy || generating || !String(proposal.prompt || "").trim()} onClick={onApprove}>
+          <i className={`bi ${busy ? "bi-arrow-repeat" : "bi-stars"}`} />
+          <span>{busy ? "正在提交" : executed ? "再生成一组" : "开始生成"}</span>
+        </button>
+      </footer>
     </div>
-    <footer className="agent-proposal-actions"><button type="button" className="is-secondary" disabled={proposal.submitting} onClick={onDismiss}>取消</button><button type="button" className="is-primary" disabled={proposal.submitting || generating || !String(proposal.prompt || "").trim()} onClick={onApprove}><i className={`bi ${proposal.submitting ? "bi-arrow-repeat" : "bi-stars"}`} /><span>{proposal.submitting ? "正在提交" : executed ? "再生成一组" : "开始生成"}</span></button></footer>
-  </div>;
+  );
 }
 
-function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, onToggleStatus, onCopy, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onWithdraw, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
+function AssistantMessageStatus({ message, status, contextUsage, expanded, onToggle }) {
+  const pending = Boolean(message.pending);
+  const progress = Math.min(92, Math.max(Number(status.progress) || 12, 12));
+  const ring = 2 * Math.PI * 7;
+  const usage = normalizeAssistantUsage(message);
+  const metrics = [];
+  if (usage?.outputTokens) metrics.push(`消耗 ${formatContextTokens(usage.outputTokens)}`);
+  if (usage?.inputTokens) metrics.push(`输入 ${formatContextTokens(usage.inputTokens)}`);
+  if (usage?.firstTokenMs) metrics.push(`首字 ${formatDurationMs(usage.firstTokenMs)}`);
+  return (
+    <div className={`assistant-message-label is-${status.tone}${pending ? " is-live" : ""}`}>
+      <div className="message-status-row">
+        {pending ? (
+          <div className="message-status-toggle" role="status">
+            <span className="message-status-spinner" aria-hidden="true">
+              <svg viewBox="0 0 18 18">
+                <circle className="is-track" cx="9" cy="9" r="7" />
+                <circle className="is-value" cx="9" cy="9" r="7" strokeDasharray={ring} strokeDashoffset={ring * (1 - progress / 100)} />
+              </svg>
+            </span>
+            <strong aria-live="polite"><span>{status.label}</span></strong>
+          </div>
+        ) : (
+          <button type="button" className="message-status-toggle" aria-expanded={expanded} onClick={() => onToggle(message.id)}>
+            <span className="message-status-indicator" aria-hidden="true"><i /></span>
+            <strong aria-live="polite"><span>{status.label}</span></strong>
+            <i className={`bi bi-chevron-down message-status-chevron${expanded ? " is-expanded" : ""}`} aria-hidden="true" />
+          </button>
+        )}
+        {!pending && metrics.length ? <b className="message-status-metrics">{metrics.join(" · ")}</b> : null}
+      </div>
+      {!pending && expanded ? (
+        <div className="message-status-detail">
+          <p>{contextUsage ? "本轮实际送进模型的上下文如下。当前问题和正在生成的回复不计入条数。" : status.detail}</p>
+          {contextUsage ? (
+            <div className="message-context-stats">
+              <div className="message-context-stat"><b>{contextUsage.usagePercent}%</b><em>上下文</em><small>{formatContextTokens(contextUsage.estimatedInputTokens)} / {formatContextTokens(contextUsage.inputBudgetTokens)}</small></div>
+              <div className="message-context-stat"><b>{contextUsage.includedMessages}</b>{" "}<em>条近期消息</em></div>
+              {Number(contextUsage.totalMessages) > contextUsage.includedMessages ? <div className="message-context-stat"><b>{contextUsage.totalMessages}</b><em>条对话总计</em></div> : null}
+              {contextUsage.compactedMessages > 0 ? <div className="message-context-stat"><b>{contextUsage.compactedMessages}</b>{" "}<em>条已压缩</em></div> : null}
+              {contextUsage.omittedMessages > 0 ? <div className="message-context-stat"><b>{contextUsage.omittedMessages}</b><em>条未纳入</em></div> : null}
+              {Number(contextUsage.droppedMessages) > 0 ? <div className="message-context-stat"><b>{contextUsage.droppedMessages}</b><em>条已丢弃</em></div> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, searchHit = false, searchCurrent = false, onToggleStatus, onCopy, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
   const status = message.role === "assistant" ? messageStatus(message) : null;
   const contextUsage = normalizeAssistantContext(message.context);
+  const usage = normalizeAssistantUsage(message);
   return (
     <div className="message-turn">
       {showDate && <h2 className="message-date-divider">{formatMessageDate(message.createdAt)}</h2>}
-      {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
-        {status && <div className={`assistant-message-label is-${status.tone}`}><button className="message-status-toggle" type="button" aria-expanded={expanded} onClick={() => onToggleStatus(message.id)}><span className="message-status-indicator" aria-hidden="true"><i /></span><strong aria-live="polite"><span>{status.label}</span></strong><i className={`bi bi-chevron-right message-status-chevron${expanded ? " is-expanded" : ""}`} /></button>{expanded && <div className="message-status-detail"><p>{status.detail}</p>{contextUsage && <div className="message-context-stats"><span><b>{contextUsage.usagePercent}%</b> 上下文</span><span><b>{contextUsage.includedMessages}</b> 条近期消息</span>{contextUsage.compactedMessages > 0 && <span><b>{contextUsage.compactedMessages}</b> 条已压缩</span>}{contextUsage.omittedMessages > 0 && <span><b>{contextUsage.omittedMessages}</b> 条未纳入</span>}</div>}{message.pending && message.kind !== "image" && status.progress > 0 && <div className="message-status-progress" aria-hidden="true"><i style={{ width: `${status.progress}%` }} /></div>}</div>}</div>}
-        {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="撤回本轮" aria-label="撤回本轮" disabled={generating} onClick={() => onWithdraw(message)}><i className="bi bi-arrow-counterclockwise" /></button>}</div>}
+      {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}${searchHit ? " is-search-hit" : ""}${searchCurrent ? " is-search-current" : ""}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
+        {status ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} /> : null}
+        {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(message)}><i className="bi bi-arrow-repeat" /></button>}</div>}
         {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / 12,000</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > MAX_ASSISTANT_MESSAGE_CHARACTERS || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
           {message.pending && message.kind === "image" ? <div className="image-generation-stage"><div className="image-generation-summary"><strong>{message.prompt || "正在生成图片"}</strong><span>{message.model || "默认模型"}</span><i /><span>{message.ratio || "智能"}</span><i /><span>{message.resolution || "1K"}</span><button type="button" title="生成详情" aria-label="生成详情"><i className="bi bi-info-circle" /></button></div><div className={`image-dream-grid${Number(message.count || 2) === 1 ? " is-single" : ""}${Number(message.count || 2) > 2 ? " is-many" : ""}`} style={{ "--image-skeleton-ratio": imageRatioValue(message), "--image-slot-count": Number(message.count || 2) }}>{Array.from({ length: Number(message.count || 2) }, (_, index) => { const image = message.images?.[index]; return <div key={index} className={`image-dream-slot${image ? " is-ready" : ""}${image && loadedImages.has(`${message.id}-${index}`) ? " is-loaded" : ""}`}>{image && <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images)}><img src={imageThumbUrl(image)} alt={image.revisedPrompt || "AI 生成图片"} onLoad={() => onImageLoad(message.id, index)} /></button>}{(!image || !loadedImages.has(`${message.id}-${index}`)) && <i className="dream-slot-spinner" aria-hidden="true" />}</div>; })}</div><div className="image-generation-queue"><span>{message.statusStage === "preparing-image" ? "意图识别" : "普通队列"}</span><strong>{message.statusStage === "preparing-image" ? "正在准备图片任务" : "成功进入生成阶段"}</strong></div></div> : <>
             {message.role === "user" && message.quoted && <div className="sent-quote"><i className="bi bi-quote" /><span>[{message.quoted.kind}] {message.quoted.content}</span></div>}
             {message.role === "user" && message.referenceImages?.length > 0 && <div className="sent-reference-images">{message.referenceImages.map((image, index) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, message.referenceImages)}><img src={imageUrl(image)} alt={image.name || "参考图"} /></button>)}</div>}
             {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
+            {message.role === "assistant" && <AssistantReasoning text={message.reasoning} pending={message.pending} />}
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{message.content}</p> : null}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
-            {!message.content && message.pending && status?.tone === "working" && <span className="typing-indicator"><i /><i /><i /></span>}
             {message.images?.length > 0 && <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>{message.images.map((image, index) => { const key = `${message.id}-${index}`; const loaded = loadedImages.has(key); const failed = failedImages.has(key); return <figure key={key} data-image-key={key} className={failed ? "is-failed" : loaded ? "" : "is-loading"}>{failed ? <div className="generated-image-failed"><i className="bi bi-image-alt" /><span>图片加载失败</span><button type="button" onClick={() => onImageRetry(message.id, index)}>重新加载</button></div> : <button className="generated-image-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images)}><img src={retryableImageUrl(imageThumbUrl(image), imageRetryVersions[key])} alt={image.revisedPrompt || "AI 生成图片"} loading="lazy" decoding="async" onLoad={() => onImageLoad(message.id, index)} onError={() => onImageError(message.id, index)} /><i className="tile-sheen" aria-hidden="true" /></button>}{loaded && !failed && <div className="generated-image-actions"><button type="button" title="下载原图" aria-label="下载原图" onClick={() => { const link = document.createElement("a"); link.href = imageUrl(image); link.download = `assistant-image-${index + 1}.png`; link.click(); }}><i className="bi bi-download" /></button></div>}</figure>; })}</div>}
           </>}
         </div>}
-        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(message)}><i className="bi bi-arrow-repeat" /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div></>}
+        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成{usage?.durationMs ? <b className="message-meta-duration">{formatDurationMs(usage.durationMs)}</b> : null}</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(message)}><i className="bi bi-arrow-repeat" /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div></>}
       </article>}
     </div>
   );
@@ -560,6 +1493,9 @@ export function AssistantWorkspaceView() {
   const mountedRef = useRef(true);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const draftRef = useRef("");
+  const voiceBaseDraftRef = useRef("");
   const messageScrollerRef = useRef(null);
   const atBottomRef = useRef(true);
   const returningRef = useRef(false);
@@ -573,6 +1509,7 @@ export function AssistantWorkspaceView() {
   const costResolverRef = useRef(null);
   const pendingLaunchRef = useRef(null);
   const activeIdRef = useRef("");
+  const messagesRef = useRef([]);
   const workspaceHydratedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [serviceError, setServiceError] = useState("");
@@ -581,6 +1518,8 @@ export function AssistantWorkspaceView() {
   const [draft, setDraft] = useState("");
   const [creationType, setCreationType] = useState("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarAnimating, setSidebarAnimating] = useState(false);
+  const sidebarMotionTimerRef = useRef(0);
   const [conversationSearch, setConversationSearch] = useState("");
   const [modelSearch, setModelSearch] = useState("");
   const [creationMenuOpen, setCreationMenuOpen] = useState(false);
@@ -588,8 +1527,17 @@ export function AssistantWorkspaceView() {
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [assetLibraryOpen, setAssetLibraryOpen] = useState(false);
+  const [assetLibraryMounted, setAssetLibraryMounted] = useState(false);
+  const [assetLibraryEntered, setAssetLibraryEntered] = useState(false);
   const [assetTab, setAssetTab] = useState("all");
+  const [assetKind, setAssetKind] = useState("image");
   const [assetSearch, setAssetSearch] = useState("");
+  const [libraryAssets, setLibraryAssets] = useState([]);
+  const [libraryAssetsLoading, setLibraryAssetsLoading] = useState(false);
+  const [assetRenderLimit, setAssetRenderLimit] = useState(ASSET_GRID_RENDER_SIZE);
+  const libraryAssetsLoadedRef = useRef(false);
+  const libraryCursorRef = useRef("");
+  const libraryLoadingMoreRef = useRef(false);
   const [conversationModels, setConversationModels] = useState([]);
   const [imageModels, setImageModels] = useState([]);
   const [conversationModel, setConversationModel] = useState("");
@@ -603,8 +1551,11 @@ export function AssistantWorkspaceView() {
   const [references, setReferences] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
   const [activeRuns, setActiveRuns] = useState({});
   const [costPayload, setCostPayload] = useState(null);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [resumeCandidates, setResumeCandidates] = useState([]);
   const [selectedImage, setSelectedImage] = useState(null);
@@ -622,33 +1573,73 @@ export function AssistantWorkspaceView() {
   const [isReturningToBottom, setIsReturningToBottom] = useState(false);
   const [visibleMessageLimit, setVisibleMessageLimit] = useState(MESSAGE_BATCH_SIZE);
   const [activeNavigatorMessageId, setActiveNavigatorMessageId] = useState("");
+  const [threadSearch, setThreadSearch] = useState("");
+  const [threadHitIndex, setThreadHitIndex] = useState(-1);
 
   const activeConversation = conversations.find((item) => item.id === activeId) || null;
   activeIdRef.current = activeId;
   const messages = activeConversation?.messages || [];
+  messagesRef.current = messages;
   const activeRun = activeRuns[activeId] || null;
   const firstRenderedMessageIndex = Math.max(0, messages.length - visibleMessageLimit);
   const renderedMessages = messages.slice(firstRenderedMessageIndex);
   const hiddenMessageCount = firstRenderedMessageIndex;
+  const threadSearchHits = useMemo(() => {
+    const query = threadSearch.trim().toLowerCase();
+    if (!query) return [];
+    return messages.filter((message) => messageSearchText(message).toLowerCase().includes(query));
+  }, [messages, threadSearch]);
+  const threadSearchHitIds = useMemo(() => new Set(threadSearchHits.map((message) => message.id)), [threadSearchHits]);
+  const currentThreadHitId = threadHitIndex >= 0 ? threadSearchHits[threadHitIndex]?.id || "" : "";
   const mode = creationType === "image" ? "image" : "chat";
   const selectedCreation = CREATION_TYPES.find((item) => item.id === creationType) || CREATION_TYPES[0];
   const generationModels = mode === "image" ? imageModels : conversationModels;
   const generationModel = mode === "image" ? imageModel : conversationModel;
+  const resolveAssistantSend = (prompt, documentCount = documents.length) => {
+    const responseMode = assistantSendMode(creationType, documentCount, prompt);
+    return {
+      responseMode,
+      sendModel: responseMode === "image"
+        ? (imageModel || imageModels[0]?.model || "")
+        : (conversationModel || conversationModels[0]?.model || ""),
+      requestedCount: responseMode === "image"
+        ? clampImageCount(imageCountFromPrompt(prompt, maxImages) || generationCount, selectedImageModel)
+        : responseMode === "agent"
+          ? clampImageCount(imageCountFromPrompt(prompt, maxImages) || 1, selectedImageModel)
+          : 1,
+    };
+  };
   const selectedModel = generationModels.find((item) => item.model === generationModel) || generationModels[0] || null;
   const generationModelLabel = selectedModel?.label || (loading ? "加载模型…" : "暂无可用模型");
   const selectedConversationModel = conversationModels.find((item) => item.model === conversationModel) || conversationModels[0] || null;
-  const reasoningEfforts = useMemo(() => normalizeReasoningEfforts(selectedConversationModel?.supportedReasoningEfforts), [selectedConversationModel]);
+  const reasoningEffortOptions = selectedConversationModel?.reasoningEfforts || [];
+  const reasoningEfforts = reasoningEffortOptions.map((item) => item.id);
   const activeReasoningEffort = reasoningEfforts.includes(reasoningEffort) ? reasoningEffort : defaultReasoningEffort(selectedConversationModel);
-  const reasoningEffortLabel = REASONING_EFFORT_LABELS[activeReasoningEffort] || "";
+  const activeReasoningOption = reasoningEffortOptions.find((item) => item.id === activeReasoningEffort);
+  const reasoningEffortLabel = activeReasoningOption?.label || REASONING_EFFORT_LABELS[activeReasoningEffort] || activeReasoningEffort || "";
   const modelWithReasoningPrice = (model, effort = activeReasoningEffort) => {
-    const price = assistantReasoningPrice(model, effort);
-    return { ...model, pricePoints: price.effective, standardPricePoints: price.standard };
+    const option = (model?.reasoningEfforts || []).find((item) => item.id === effort);
+    const price = assistantReasoningPrice(model, effort, option);
+    return {
+      ...model,
+      pricing: undefined,
+      pricePoints: price.effective,
+      standardPricePoints: price.standard,
+      discountPricePoints: price.hasDiscount ? price.effective : null,
+    };
   };
   const filteredGenerationModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return query ? generationModels.filter((item) => `${item.label} ${item.model} ${item.description || ""}`.toLowerCase().includes(query)) : generationModels;
   }, [generationModels, modelSearch]);
   const selectedImageModel = imageModels.find((item) => item.model === imageModel) || imageModels[0] || null;
+  const availableCounts = useMemo(() => imageCountOptions(selectedImageModel), [selectedImageModel]);
+  const maxImages = imageModelMaxCount(selectedImageModel);
+  const maxReferences = normalizeImageModelCapabilities(selectedImageModel || {}).maxReferenceImages;
+  const atReferenceLimit = references.length >= maxReferences;
+  const referenceLimitMessage = maxReferences <= 0
+    ? "当前模型不接收参考图"
+    : `参考图已达上限，最多 ${maxReferences} 张`;
   const availableRatios = useMemo(
     () =>
       getModelAspectRatiosForResolution(
@@ -670,24 +1661,35 @@ export function AssistantWorkspaceView() {
       ? listable.filter((item) => `${item.title} ${item.messages.map((message) => message.content).join(" ")}`.toLowerCase().includes(query))
       : listable;
   }, [conversationSearch, conversations]);
-  const assetLibraryImages = useMemo(() => {
-    const source = assetTab === "session" ? [activeConversation].filter(Boolean) : conversations;
+  const libraryAssetItems = useMemo(() => {
     const seen = new Set();
-    const assets = [];
-    for (const conversation of source) {
-      for (const message of conversation.messages || []) {
-        for (const [index, image] of [...(message.images || []), ...(message.referenceImages || [])].entries()) {
-          const dataUrl = imageUrl(image);
-          if (!dataUrl || seen.has(dataUrl)) continue;
-          seen.add(dataUrl);
-          // 网格小图优先服务端缩略图；dataUrl 原图保留给引用/下载
-          assets.push({ id: `${conversation.id}-${message.id}-${index}`, label: image.revisedPrompt || image.name || conversation.title || "创作资产", dataUrl, thumbUrl: imageThumbUrl(image) });
-        }
-      }
-    }
+    return libraryAssets.flatMap((item) => {
+      const dataUrl = String(item.url || "").trim();
+      if (!dataUrl || seen.has(dataUrl)) return [];
+      seen.add(dataUrl);
+      return [{
+        id: `library-${item.id}`,
+        label: item.title || "我的资产",
+        dataUrl,
+        thumbUrl: item.thumbnailUrl || dataUrl,
+        fileKey: String(item.fileKey || "").trim() || fileKeyFromAssetUrl(dataUrl),
+      }];
+    });
+  }, [libraryAssets]);
+  const assetLibraryImages = useMemo(() => {
+    const conversationAssets = collectConversationAssets(assetTab === "session" ? [activeConversation].filter(Boolean) : conversations);
+    const assets = assetTab === "all"
+      ? [...libraryAssetItems, ...conversationAssets.filter((item) => !libraryAssetItems.some((libraryItem) => libraryItem.dataUrl === item.dataUrl))]
+      : conversationAssets;
     const query = assetSearch.trim().toLowerCase();
     return query ? assets.filter((asset) => asset.label.toLowerCase().includes(query)) : assets;
+  }, [activeConversation, assetSearch, assetTab, conversations, libraryAssetItems]);
+  const assetLibraryFiles = useMemo(() => {
+    const files = collectConversationFiles(assetTab === "session" ? [activeConversation].filter(Boolean) : conversations);
+    const query = assetSearch.trim().toLowerCase();
+    return query ? files.filter((file) => `${file.label} ${file.name || ""}`.toLowerCase().includes(query)) : files;
   }, [activeConversation, assetSearch, assetTab, conversations]);
+  const visibleAssetLibraryImages = assetLibraryImages.slice(0, assetRenderLimit);
   const lastAssistantId = [...messages].reverse().find((message) => message.role === "assistant")?.id || "";
   const lastUserMessageId = [...messages].reverse().find((message) => message.role === "user")?.id || "";
   const latestContext = useMemo(() => {
@@ -828,6 +1830,7 @@ export function AssistantWorkspaceView() {
     if (leftBottom) {
       setCreationMenuOpen(false);
       setModelMenuOpen(false);
+      setReasoningMenuOpen(false);
       setPreferencesOpen(false);
     }
     if (scroller.scrollTop <= 36 && hiddenMessageCount > 0 && !loadingEarlierRef.current) {
@@ -867,8 +1870,39 @@ export function AssistantWorkspaceView() {
     }));
   }, [firstRenderedMessageIndex, messages]);
 
+  const jumpToThreadHit = useCallback((direction) => {
+    if (!threadSearchHits.length) return;
+    const count = threadSearchHits.length;
+    const next = direction < 0
+      ? (threadHitIndex < 0 ? count - 1 : threadHitIndex - 1)
+      : threadHitIndex + 1;
+    const index = ((next % count) + count) % count;
+    setThreadHitIndex(index);
+    scrollToMessage(threadSearchHits[index].id);
+  }, [scrollToMessage, threadHitIndex, threadSearchHits]);
+
+  useEffect(() => {
+    const query = threadSearch.trim();
+    if (!query) {
+      setThreadHitIndex(-1);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      const hits = messagesRef.current.filter((message) => messageSearchText(message).toLowerCase().includes(query.toLowerCase()));
+      if (!hits.length) {
+        setThreadHitIndex(-1);
+        return;
+      }
+      setThreadHitIndex(0);
+      scrollToMessage(hits[0].id);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [scrollToMessage, threadSearch]);
+
   useEffect(() => {
     setVisibleMessageLimit(MESSAGE_BATCH_SIZE);
+    setThreadSearch("");
+    setThreadHitIndex(-1);
     if (loading || !activeId) return;
     scrollToBottom();
   }, [activeId, loading, scrollToBottom]);
@@ -876,9 +1910,10 @@ export function AssistantWorkspaceView() {
   useEffect(() => {
     const input = textareaRef.current;
     if (!input) return;
+    const compact = messages.length > 0 && !isAtBottom && !isReturningToBottom;
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
-  }, [draft]);
+    input.style.height = `${Math.min(input.scrollHeight, compact ? 36 : 168)}px`;
+  }, [draft, isAtBottom, isReturningToBottom, messages.length]);
 
   const loadWorkspace = useCallback(async () => {
     const controller = new AbortController();
@@ -925,7 +1960,7 @@ export function AssistantWorkspaceView() {
       if (CREATION_TYPES.some((item) => item.id === workspaceState.creationType)) setCreationType(workspaceState.creationType);
       if (IMAGE_ASPECT_RATIOS.includes(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
       if (RESOLUTIONS.some((item) => item.id === String(workspaceState.generationResolution || "").toUpperCase())) setGenerationResolution(String(workspaceState.generationResolution).toUpperCase());
-      if (IMAGE_COUNTS.includes(Number(workspaceState.generationCount))) setGenerationCount(Number(workspaceState.generationCount));
+      if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, config.imageModels.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || config.imageModels[0]));
       if (Number.isFinite(Number(workspaceState.customImageWidth))) setCustomImageWidth(Math.min(4096, Math.max(256, Number(workspaceState.customImageWidth))));
       if (Number.isFinite(Number(workspaceState.customImageHeight))) setCustomImageHeight(Math.min(4096, Math.max(256, Number(workspaceState.customImageHeight))));
       const savedModel = String(workspaceState.generationModel || "").trim();
@@ -943,8 +1978,10 @@ export function AssistantWorkspaceView() {
         if (RESOLUTIONS.some((item) => item.id === String(pending.config?.resolution || "").toUpperCase())) {
           setGenerationResolution(String(pending.config.resolution).toUpperCase());
         }
-        if (IMAGE_COUNTS.includes(Number(pending.config?.count))) setGenerationCount(Number(pending.config.count));
-        if (Array.isArray(pending.config?.referenceImages)) setReferences(pending.config.referenceImages.slice(0, 4));
+        if (Number.isFinite(Number(pending.config?.count))) {
+          setGenerationCount(clampImageCount(pending.config.count, config.imageModels.find((item) => item.model === pending.config?.model) || config.imageModels[0]));
+        }
+        if (Array.isArray(pending.config?.referenceImages)) setReferences(pending.config.referenceImages.slice(0, MAX_MODEL_REFERENCE_IMAGES));
         if (pending.config?.model) {
           if (pendingMode === "image") setImageModel(pending.config.model);
           else setConversationModel(pending.config.model);
@@ -983,14 +2020,67 @@ export function AssistantWorkspaceView() {
       costResolverRef.current?.(false);
       costResolverRef.current = null;
       window.clearTimeout(returnBottomTimerRef.current);
+      window.clearTimeout(sidebarMotionTimerRef.current);
+      recognitionRef.current?.abort?.();
       document.documentElement.classList.remove("assistant-image-viewer-open");
     };
   }, [loadWorkspace]);
 
   useEffect(() => {
-    if (!reasoningEfforts.length || reasoningEfforts.includes(reasoningEffort)) return;
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) return undefined;
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "zh-CN";
+    recognition.onstart = () => {
+      if (mountedRef.current) setVoiceListening(true);
+    };
+    recognition.onend = () => {
+      if (mountedRef.current) setVoiceListening(false);
+    };
+    recognition.onerror = (event) => {
+      if (!mountedRef.current) return;
+      setVoiceListening(false);
+      if (event?.error === "aborted" || event?.error === "no-speech") return;
+      notificationService.warning(event?.error === "not-allowed" ? "请允许使用麦克风后再试" : "语音识别暂时不可用");
+    };
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript += event.results[index]?.[0]?.transcript || "";
+      }
+      if (!mountedRef.current || !transcript) return;
+      const base = String(voiceBaseDraftRef.current || "").trim();
+      setDraft(base && transcript ? `${base}\n${transcript}` : transcript || base);
+    };
+    recognitionRef.current = recognition;
+    setVoiceSupported(true);
+    return () => {
+      recognition.onstart = null;
+      recognition.onend = null;
+      recognition.onerror = null;
+      recognition.onresult = null;
+      recognition.abort?.();
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeRun) return;
+    recognitionRef.current?.abort?.();
+    setVoiceListening(false);
+  }, [activeRun]);
+
+  useEffect(() => {
+    const ids = (selectedConversationModel?.reasoningEfforts || []).map((item) => item.id);
+    if (!ids.length || ids.includes(reasoningEffort)) return;
     setReasoningEffort(defaultReasoningEffort(selectedConversationModel));
-  }, [reasoningEffort, reasoningEfforts, selectedConversationModel]);
+  }, [reasoningEffort, selectedConversationModel]);
+
+  useEffect(() => {
+    setGenerationCount((current) => clampImageCount(current, selectedImageModel));
+  }, [selectedImageModel]);
 
   useEffect(() => {
     if (!workspaceHydratedRef.current || loading) return;
@@ -1024,11 +2114,73 @@ export function AssistantWorkspaceView() {
         setPreferencesOpen(false);
         setActiveMessageMenuId("");
       } else if (assetLibraryOpen) setAssetLibraryOpen(false);
+      else if (stopConfirmOpen) setStopConfirmOpen(false);
       else if (deleteTarget) setDeleteTarget(null);
     };
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [activeMessageMenuId, assetLibraryOpen, creationMenuOpen, deleteTarget, editingMessageId, modelMenuOpen, preferencesOpen, reasoningMenuOpen, selectedImage]);
+  }, [activeMessageMenuId, assetLibraryOpen, creationMenuOpen, deleteTarget, editingMessageId, modelMenuOpen, preferencesOpen, reasoningMenuOpen, selectedImage, stopConfirmOpen]);
+
+  useEffect(() => {
+    if (!activeRun) setStopConfirmOpen(false);
+  }, [activeRun]);
+
+  useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (assetLibraryOpen) {
+      if (!assetLibraryMounted) {
+        setAssetLibraryMounted(true);
+        return undefined;
+      }
+      if (reduced) {
+        setAssetLibraryEntered(true);
+        return undefined;
+      }
+      let frameTwo = 0;
+      const frameOne = window.requestAnimationFrame(() => {
+        frameTwo = window.requestAnimationFrame(() => setAssetLibraryEntered(true));
+      });
+      return () => {
+        window.cancelAnimationFrame(frameOne);
+        window.cancelAnimationFrame(frameTwo);
+      };
+    }
+    setAssetLibraryEntered(false);
+    if (!assetLibraryMounted) return undefined;
+    const timer = window.setTimeout(() => setAssetLibraryMounted(false), reduced ? 0 : ASSET_LIBRARY_MOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [assetLibraryMounted, assetLibraryOpen]);
+
+  useEffect(() => {
+    libraryAssetsLoadedRef.current = false;
+    libraryCursorRef.current = "";
+    setLibraryAssets([]);
+    setAssetRenderLimit(ASSET_GRID_RENDER_SIZE);
+  }, [workspaceScope]);
+
+  useEffect(() => {
+    setAssetRenderLimit(ASSET_GRID_RENDER_SIZE);
+  }, [assetSearch, assetTab]);
+
+  useEffect(() => {
+    if (!assetLibraryOpen || !auth.isAuthenticated || libraryAssetsLoadedRef.current) return;
+    const controller = new AbortController();
+    setLibraryAssetsLoading(true);
+    (async () => {
+      try {
+        const page = await listUserAssets({ limit: ASSET_LIBRARY_PAGE_SIZE, groupId: "all", signal: controller.signal });
+        if (controller.signal.aborted || !mountedRef.current) return;
+        setLibraryAssets(page.items || []);
+        libraryCursorRef.current = page.nextCursor || "";
+        libraryAssetsLoadedRef.current = true;
+      } catch (error) {
+        if (error?.name !== "AbortError") notificationService.error(error?.message || "我的资产读取失败");
+      } finally {
+        if (!controller.signal.aborted && mountedRef.current) setLibraryAssetsLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [assetLibraryOpen, auth.isAuthenticated, workspaceScope]);
 
   useEffect(() => {
     if (!availableResolutions.length) return;
@@ -1098,18 +2250,31 @@ export function AssistantWorkspaceView() {
     }
   }, [availableResolutions, generationRatio, generationResolution]);
 
+  useEffect(() => {
+    setReferences((current) => (current.length > maxReferences ? current.slice(0, Math.max(0, maxReferences)) : current));
+  }, [maxReferences]);
+
   const updateSidebar = () => {
     const next = !sidebarCollapsed;
     setSidebarCollapsed(next);
     setConversationPeek(null);
     try { localStorage.setItem("starclouds:assistant-sidebar-collapsed", String(next)); } catch { /* ignore */ }
+    window.clearTimeout(sidebarMotionTimerRef.current);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setSidebarAnimating(false);
+      return;
+    }
+    setSidebarAnimating(true);
+    sidebarMotionTimerRef.current = window.setTimeout(() => setSidebarAnimating(false), SIDEBAR_MOTION_MS);
   };
 
   const newConversation = () => {
     setActiveId("");
     setDraft("");
     setReferences([]);
-    for (const item of documents) void deleteAssistantFile(item.id).catch(() => undefined);
+    for (const item of documents) {
+      if (!item.retained) void deleteAssistantFile(item.id).catch(() => undefined);
+    }
     setDocuments([]);
     setQuotedMessage(null);
     setVisibleMessageLimit(MESSAGE_BATCH_SIZE);
@@ -1120,16 +2285,21 @@ export function AssistantWorkspaceView() {
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  const notifyReferenceLimit = () => {
+    notificationService.warning(referenceLimitMessage);
+  };
+
   const uploadReferences = async (files) => {
-    const maxReferences = Math.min(4, Math.max(0, Number(selectedImageModel?.maxReferenceImages ?? 4)));
     const selected = Array.from(files || []);
 	const psdFiles = selected.filter(isPSDFile);
 	if (psdFiles.length) notificationService.warning("AI 助手暂不支持 PSD 文件");
 	const supported = selected.filter((file) => !isPSDFile(file));
-    const imageFiles = supported.filter((file) => file.type.startsWith("image/")).slice(0, Math.max(0, maxReferences - references.length));
+    const incomingImages = supported.filter((file) => file.type.startsWith("image/"));
+    const imageFiles = incomingImages.slice(0, Math.max(0, maxReferences - references.length));
     const documentFiles = mode === "image" ? [] : supported.filter((file) => !file.type.startsWith("image/")).slice(0, Math.max(0, 8 - documents.length));
+    if (incomingImages.length && imageFiles.length < incomingImages.length) notifyReferenceLimit();
     if (!imageFiles.length && !documentFiles.length) {
-      if (selected.length && mode === "image") notificationService.warning("图片生成模式仅支持图片附件");
+      if (selected.length && mode === "image" && !incomingImages.length) notificationService.warning("图片生成模式仅支持图片附件");
       return;
     }
     const controller = new AbortController();
@@ -1167,7 +2337,7 @@ export function AssistantWorkspaceView() {
 
   const removeComposerDocument = (item) => {
     setDocuments((current) => current.filter((document) => document.id !== item.id));
-    void deleteAssistantFile(item.id).catch(() => undefined);
+    if (!item.retained) void deleteAssistantFile(item.id).catch(() => undefined);
   };
 
   const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", requestedReasoningEffort = activeReasoningEffort, { skip = false } = {}) => {
@@ -1184,6 +2354,10 @@ export function AssistantWorkspaceView() {
     const wallet = await getWallet({ signal: controller.signal }).catch(() => null);
     if (controller.signal.aborted || !mountedRef.current) return false;
     const unit = responseMode === "image" ? imageUnit : chatUnit;
+    const requestedEffortLabel = (selectedConversationModel?.reasoningEfforts || []).find((item) => item.id === requestedReasoningEffort)?.label
+      || REASONING_EFFORT_LABELS[requestedReasoningEffort]
+      || requestedReasoningEffort
+      || "默认";
     setCostPayload({
       title: responseMode === "image" ? "确认生成费用" : "确认本轮费用",
       unit,
@@ -1193,10 +2367,10 @@ export function AssistantWorkspaceView() {
       unitLabel: responseMode === "image" ? "张" : "轮",
       featureLabel: responseMode === "image" ? "AI 助手生图" : responseMode === "agent" ? "AI 助手 Agent" : "AI 助手对话",
       summary: responseMode === "image"
-        ? "提交后按图片数量预留费用，成功结算；失败或停止时自动退回。"
+        ? "提交后按图片数量预留费用，成功结算；失败自动退回。主动停止不退还本轮积分。"
         : responseMode === "agent"
-          ? `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；本轮只收 Agent 推理费用，执行生图时另行确认图片费用。`
-          : `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；成功后结算，失败或停止时自动退回。`,
+          ? `${requestedEffortLabel}推理为 ${chatUnit} 积分/轮；本轮只收 Agent 推理费用，执行生图时另行确认图片费用。主动停止不退还本轮积分。`
+          : `${requestedEffortLabel}推理为 ${chatUnit} 积分/轮；成功后结算，失败自动退回。主动停止不退还本轮积分。`,
     });
     return new Promise((resolve) => { costResolverRef.current = resolve; });
   };
@@ -1213,9 +2387,16 @@ export function AssistantWorkspaceView() {
             ...message,
             ...(persisted || {}),
             id: persisted?.id || message.id,
-            content: persisted?.content ?? message.content,
+            content: persisted?.content || message.content,
             images: Array.isArray(persisted?.images) ? persisted.images : message.images,
+            artifacts: Array.isArray(persisted?.artifacts) ? persisted.artifacts : terminal ? [] : message.artifacts,
             kind: run.resolvedMode || persisted?.kind || message.kind,
+            usage: mergeAssistantUsage(message.usage, persisted?.usage, terminal ? {
+              durationMs: usageStartedAtMs(message) ? Math.max(1, Date.now() - usageStartedAtMs(message)) : 0,
+              outputTokens: estimateAssistantTokens(persisted?.content ?? message.content),
+              inputTokens: Number(persisted?.context?.estimatedInputTokens ?? message.context?.estimatedInputTokens) || 0,
+            } : {}),
+            reasoning: persisted?.reasoning || message.reasoning,
             pending: terminal ? false : ["queued", "running"].includes(run.status || persisted?.status),
             error: run?.errorMessage || persisted?.error || "",
             statusStage: terminal ? persisted?.statusStage || (run.status === "canceled" ? "stopped" : undefined) : run?.stage || persisted?.statusStage,
@@ -1245,17 +2426,28 @@ export function AssistantWorkspaceView() {
               else images.push(event.image);
               images.sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
             }
+            const startedAt = usageStartedAtMs(message) || Date.now();
+            const hasVisible = typeof event?.content === "string" && event.content.trim();
+            const extras = {};
+            if (hasVisible) extras.firstTokenMs = Math.max(1, Date.now() - startedAt);
+            if (event?.done) extras.durationMs = Math.max(1, Date.now() - startedAt);
+            const usage = event?.usage || extras.firstTokenMs || extras.durationMs
+              ? mergeAssistantUsage(message.usage, event?.usage, extras)
+              : message.usage;
             return {
               ...message,
+              usageStartedAt: startedAt,
               ...(typeof event?.content === "string" && event.content ? { content: event.content } : {}),
+              ...(typeof event?.reasoning === "string" && event.reasoning ? { reasoning: event.reasoning } : {}),
               ...(event?.kind ? { kind: event.kind === "agent" ? message.kind : event.kind } : {}),
               ...(event?.stage ? { statusStage: event.stage } : {}),
               ...(event?.context ? { context: event.context } : {}),
+              ...(usage ? { usage } : {}),
               ...(event?.image ? { images, kind: "image", count: event.imageTotal || message.count } : {}),
             };
           }),
         }));
-        if (conversationId === activeIdRef.current) followConversationBottom();
+        if (conversationId === activeIdRef.current && (event?.image || event?.reasoning || (event?.stage && !event?.content))) followConversationBottom();
       },
     });
     try {
@@ -1288,10 +2480,10 @@ export function AssistantWorkspaceView() {
         attachments: (userMessage.attachments || []).filter((item) => item.status === "ready").map((item) => ({ id: item.id })),
         quoted: userMessage.quoted || null,
         skill: userMessage.skill || "",
-        model: assistantMessage.model || generationModel,
+        model: assistantMessage.model || (responseMode === "image" ? imageModel : conversationModel),
         ratio: assistantMessage.requestRatio || assistantMessage.ratio || generationRatio,
         resolution: assistantMessage.resolution || generationResolution,
-        count: assistantMessage.count || generationCount,
+        count: responseMode === "image" || responseMode === "agent" ? assistantMessage.count || generationCount : 1,
         requestSize: assistantMessage.requestSize || (generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`),
         width: assistantMessage.width || customImageWidth,
         height: assistantMessage.height || customImageHeight,
@@ -1312,7 +2504,7 @@ export function AssistantWorkspaceView() {
     } finally {
       if (runControllersRef.current.get(conversationId) === controller) runControllersRef.current.delete(conversationId);
     }
-  }, [activeReasoningEffort, applyRunResult, availableResolutions, clearConversationRun, customImageHeight, customImageWidth, generationCount, generationModel, generationRatio, generationResolution, monitorRun, patchConversation]);
+  }, [activeReasoningEffort, applyRunResult, availableResolutions, clearConversationRun, conversationModel, customImageHeight, customImageWidth, generationCount, generationRatio, generationResolution, imageModel, monitorRun, patchConversation]);
 
   const executeSend = useCallback(async (prompt) => {
     const controller = new AbortController();
@@ -1332,14 +2524,13 @@ export function AssistantWorkspaceView() {
     }
     draftRequestControllerRef.current = null;
     const userMessageId = uid();
-    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : creationType === "agent" ? "agent" : "chat";
-    const requestedCount = imageCountFromPrompt(prompt) || generationCount;
+    const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
     const assistantMessage = createAssistantPlaceholder({
       prompt,
       responseMode,
       userMessageId,
       defaults: {
-        model: generationModel,
+        model: sendModel,
         reasoningEffort: activeReasoningEffort,
         ratio: generationRatio,
         resolution: generationResolution,
@@ -1352,7 +2543,7 @@ export function AssistantWorkspaceView() {
     });
     const currentQuote = quotedMessage ? { ...quotedMessage } : null;
     const userMessage = { id: userMessageId, role: "user", content: prompt, kind: "chat", quoted: currentQuote, referenceImages: references, attachments: documents.filter((item) => item.status === "ready"), createdAt: new Date().toISOString() };
-    const visualContext = resolveVisualContext({ ...conversation, messages: [...conversation.messages, userMessage] }, prompt);
+    const visualContext = resolveVisualContext({ ...conversation, messages: [...conversation.messages, userMessage] }, prompt, maxReferences);
     if (!userMessage.referenceImages.length && visualContext.length) userMessage.referenceImages = visualContext;
     const nextTitle = conversation.messages.length ? conversation.title : conversationTitle(prompt);
     patchConversation(conversation.id, (item) => ({ ...item, title: nextTitle, messages: [...item.messages, userMessage, assistantMessage] }));
@@ -1363,7 +2554,7 @@ export function AssistantWorkspaceView() {
     scrollToBottom();
     controller.abort();
     await launchRun({ conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode });
-  }, [activeConversation, activeReasoningEffort, availableResolutions, creationType, customImageHeight, customImageWidth, documents, generationCount, generationModel, generationRatio, generationResolution, launchRun, patchConversation, quotedMessage, references, scrollToBottom]);
+  }, [activeConversation, activeReasoningEffort, availableResolutions, conversationModel, conversationModels, creationType, customImageHeight, customImageWidth, documents, generationCount, generationRatio, generationResolution, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
 
   useEffect(() => {
     if (!resumeCandidates.length) return;
@@ -1390,6 +2581,8 @@ export function AssistantWorkspaceView() {
   }, [clearConversationRun, conversations, monitorRun, patchConversation, resumeCandidates]);
 
   const requestSend = async () => {
+    recognitionRef.current?.abort?.();
+    setVoiceListening(false);
     if (requestAuth({ featureLabel: "AI 助手" })) return;
     const prompt = draft.trim();
     if (!canSend) {
@@ -1410,9 +2603,11 @@ export function AssistantWorkspaceView() {
       notificationService.warning("AI 助手暂未开放 PSD 转换");
       return;
     }
-    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : creationType === "agent" ? "agent" : "chat";
-    const requestedCount = imageCountFromPrompt(prompt) || generationCount;
-    const confirmed = await confirmAssistantCost(responseMode, requestedCount, generationModel, activeReasoningEffort, {
+    const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
+    if (creationType === "image" && responseMode !== "image") {
+      notificationService.info("这句话不像画面描述，已按对话回复，不会生成图片");
+    }
+    const confirmed = await confirmAssistantCost(responseMode, requestedCount, sendModel, activeReasoningEffort, {
       skip: pendingLaunchRef.current?.config?.costConfirmed === true,
     });
     if (!mountedRef.current || !confirmed) return;
@@ -1455,12 +2650,71 @@ export function AssistantWorkspaceView() {
   };
 
   const addAssetReference = (asset) => {
+    if (references.some((item) => sameAssetReference(item, asset))) {
+      setReferences((current) => current.filter((item) => !sameAssetReference(item, asset)));
+      return;
+    }
+    if (references.length >= maxReferences) {
+      notifyReferenceLimit();
+      return;
+    }
     setReferences((current) => {
-      if (current.length >= 4 || current.some((item) => item.dataUrl === asset.dataUrl)) return current;
-      return [...current, { id: uid(), name: asset.label, dataUrl: asset.dataUrl, thumbnailUrl: asset.thumbUrl || asset.dataUrl, fileKey: "" }];
+      if (current.length >= maxReferences || current.some((item) => sameAssetReference(item, asset))) return current;
+      return [...current, { id: uid(), name: asset.label, dataUrl: asset.dataUrl, thumbnailUrl: asset.thumbUrl || asset.dataUrl, fileKey: asset.fileKey || "" }];
     });
-    setAssetLibraryOpen(false);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const addAssetDocument = (file) => {
+    if (file?.source === "output") {
+      if (!file.downloadUrl) return;
+      const link = document.createElement("a");
+      link.href = file.downloadUrl;
+      link.download = file.name || file.label || "assistant-output.txt";
+      link.click();
+      return;
+    }
+    if (mode === "image") {
+      notificationService.warning("图片生成模式仅支持图片附件");
+      return;
+    }
+    if (documents.some((item) => item.id === file.id)) {
+      setDocuments((current) => current.filter((item) => item.id !== file.id));
+      return;
+    }
+    if (documents.length >= 8) {
+      notificationService.warning("最多 8 个文档");
+      return;
+    }
+    setDocuments((current) => {
+      if (current.length >= 8 || current.some((item) => item.id === file.id)) return current;
+      return [...current, { ...file, name: file.label || file.name, status: file.status || "ready", retained: true }];
+    });
+  };
+
+  const handleAssetGridScroll = (event) => {
+    const scroller = event.currentTarget;
+    if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 160) return;
+    setAssetRenderLimit((current) => {
+      if (current >= assetLibraryImages.length) return current;
+      return Math.min(assetLibraryImages.length, current + ASSET_GRID_RENDER_SIZE);
+    });
+    if (!libraryCursorRef.current || libraryLoadingMoreRef.current || !auth.isAuthenticated) return;
+    libraryLoadingMoreRef.current = true;
+    listUserAssets({ limit: ASSET_LIBRARY_PAGE_SIZE, cursor: libraryCursorRef.current, groupId: "all" })
+      .then((page) => {
+        if (!mountedRef.current) return;
+        setLibraryAssets((current) => {
+          const seen = new Set(current.map((item) => item.id));
+          return [...current, ...(page.items || []).filter((item) => !seen.has(item.id))];
+        });
+        libraryCursorRef.current = page.nextCursor || "";
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") notificationService.error(error?.message || "我的资产读取失败");
+      })
+      .finally(() => {
+        libraryLoadingMoreRef.current = false;
+      });
   };
 
   const startEditingUserMessage = (message) => {
@@ -1528,18 +2782,46 @@ export function AssistantWorkspaceView() {
   };
 
   const retryAssistant = async (message) => {
-    if (!activeConversation || activeRun || message.id !== lastAssistantId) return;
-    const index = messages.findIndex((item) => item.id === message.id);
+    if (!activeConversation || activeRun) return;
+    const target = message?.role === "user"
+      ? messages[messages.findIndex((item) => item.id === message.id) + 1]
+      : message;
+    if (!target || target.role !== "assistant" || target.id !== lastAssistantId) return;
+    const index = messages.findIndex((item) => item.id === target.id);
     const userMessage = messages[index - 1];
     const prompt = String(userMessage?.content || "").trim();
-    if (index < 1 || !prompt) return;
-    const responseMode = messageResponseMode(message);
-    const model = modelForMode(responseMode, message.model);
-    const retryEffort = message.reasoningEffort || activeReasoningEffort;
-    if (!(await confirmAssistantCost(responseMode, message.count || generationCount, model, retryEffort))) return;
-    const nextAssistant = { ...message, model, reasoningEffort: retryEffort, requestedMode: responseMode, content: "", images: [], feedback: "", error: "", pending: true, routing: responseMode === "agent", statusStage: responseMode === "image" ? "preparing-image" : "thinking" };
-    patchConversation(activeConversation.id, (conversation) => ({ ...conversation, messages: conversation.messages.map((item) => item.id === message.id ? nextAssistant : item) }));
-    await launchRun({ conversationId: activeConversation.id, prompt, userMessage, assistantMessage: nextAssistant, responseMode, sourceUserMessageId: userMessage.id });
+    if (index < 1 || userMessage?.role !== "user" || !prompt) return;
+    const requestedMode = messageResponseMode(target);
+    const responseMode = assistantSendMode(requestedMode, 0, prompt);
+    const model = modelForMode(responseMode, responseMode === requestedMode ? target.model : "");
+    const retryEffort = target.reasoningEffort || activeReasoningEffort;
+    const retryModel = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const retryCount = responseMode === "image" ? clampImageCount(target.count || generationCount, retryModel) : 1;
+    if (!(await confirmAssistantCost(responseMode, retryCount, model, retryEffort))) return;
+    const assistantMessage = createAssistantPlaceholder({
+      prompt,
+      responseMode,
+      previous: { ...target, model },
+      userMessageId: userMessage.id,
+      defaults: {
+        model,
+        reasoningEffort: retryEffort,
+        ratio: target.ratio || generationRatio,
+        requestRatio: target.requestRatio || target.ratio || generationRatio,
+        resolution: target.resolution || generationResolution,
+        count: retryCount,
+        requestSize: target.requestSize || (generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`),
+        width: target.width || customImageWidth,
+        height: target.height || customImageHeight,
+        quality: target.quality || availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
+      },
+    });
+    patchConversation(activeConversation.id, (conversation) => ({
+      ...conversation,
+      updatedAt: assistantMessage.createdAt,
+      messages: [...conversation.messages.slice(0, index), assistantMessage],
+    }));
+    await launchRun({ conversationId: activeConversation.id, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId: userMessage.id });
   };
 
   const submitUserMessageEdit = async (message) => {
@@ -1548,9 +2830,12 @@ export function AssistantWorkspaceView() {
     const messageIndex = messages.findIndex((item) => item.id === message.id);
     if (messageIndex < 0) return;
     const previousReply = messages[messageIndex + 1];
-    const responseMode = previousReply ? messageResponseMode(previousReply) : "chat";
-    const model = modelForMode(responseMode, previousReply?.model);
-    const count = Number(previousReply?.count || generationCount);
+    const requestedMode = previousReply ? messageResponseMode(previousReply) : "chat";
+    const responseMode = assistantSendMode(requestedMode, 0, prompt);
+    const model = modelForMode(responseMode, responseMode === requestedMode ? previousReply?.model : "");
+    const count = responseMode === "image"
+      ? clampImageCount(previousReply?.count || generationCount, imageModels.find((item) => item.model === model) || selectedImageModel)
+      : 1;
     const editEffort = previousReply?.reasoningEffort || activeReasoningEffort;
     if (!(await confirmAssistantCost(responseMode, count, model, editEffort))) return;
     const assistantMessage = createAssistantPlaceholder({
@@ -1628,6 +2913,7 @@ export function AssistantWorkspaceView() {
   const stopRun = async () => {
     if (!activeRun?.id) return;
     const stoppingRun = activeRun;
+    setStopConfirmOpen(false);
     runControllersRef.current.get(activeId)?.abort();
     runControllersRef.current.delete(activeId);
     if (stoppingRun.conversationId && stoppingRun.assistantMessageId) {
@@ -1641,6 +2927,7 @@ export function AssistantWorkspaceView() {
     clearConversationRun(activeId);
     try {
       await cancelAssistantRun(stoppingRun.id);
+      notificationService.warning("已停止生成，本轮积分不退还");
     } catch (error) {
       notificationService.error(error?.message || "停止任务失败");
     }
@@ -1675,9 +2962,30 @@ export function AssistantWorkspaceView() {
 
   const draftCharacterCount = assistantCharacterCount(draft.trim());
   const canSend = draftCharacterCount > 0 && draftCharacterCount <= MAX_ASSISTANT_MESSAGE_CHARACTERS && !documents.some((item) => item.status !== "ready") && !activeRun && !costPayload && !loading && !serviceError && !uploading;
+  const voiceBusy = Boolean(activeRun) || Boolean(serviceError);
+  draftRef.current = draft;
+
+  const toggleVoiceInput = () => {
+    if (!recognitionRef.current) {
+      notificationService.warning("当前浏览器不支持语音输入");
+      return;
+    }
+    if (voiceListening) {
+      recognitionRef.current.stop?.();
+      return;
+    }
+    if (voiceBusy) return;
+    voiceBaseDraftRef.current = draftRef.current;
+    recognitionRef.current.lang = "zh-CN";
+    try {
+      recognitionRef.current.start?.();
+    } catch {
+      notificationService.warning("语音识别暂时不可用");
+    }
+  };
 
   return (
-    <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); }}>
+    <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-collapsed" : ""}${sidebarAnimating ? " is-sidebar-animating" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); }}>
       <aside className="assistant-sidebar" onClick={(event) => event.stopPropagation()}>
         <div className="assistant-brand-row"><div className="assistant-brand"><strong>开启创作</strong></div><button className="icon-button sidebar-close" type="button" title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} onClick={updateSidebar}><i className={`bi bi-chevron-left${sidebarCollapsed ? " is-collapsed" : ""}`} /></button></div>
         <button className="new-chat-button" type="button" title="新对话" onClick={newConversation}><i className="bi bi-pencil-square" /><span>新对话</span></button>
@@ -1685,7 +2993,7 @@ export function AssistantWorkspaceView() {
           <p className="conversation-label"><span>最近</span><small>{conversations.filter((item) => item.messages.length).length}</small></p>
           <label className="conversation-search"><i className="bi bi-search" /><input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} type="text" placeholder="搜索对话" />{conversationSearch && <button type="button" aria-label="清空搜索" onClick={() => setConversationSearch("")}><i className="bi bi-x" /></button>}</label>
           <div className="conversation-list">
-            {loading ? Array.from({ length: 5 }, (_, index) => <div key={index} className="conversation-skeleton" aria-hidden="true"><i /><span><b /><b /></span></div>) : filteredConversations.length ? filteredConversations.map((conversation) => { const thumbnail = conversationThumbnail(conversation); const running = Boolean(activeRuns[conversation.id]); return <div key={conversation.id} className={`conversation-row${conversation.id === activeId ? " active" : ""}`} data-conversation-id={conversation.id}><button className="conversation-select" type="button" title={conversation.title} onClick={() => { setConversationPeek(null); setActiveId(conversation.id); }} onMouseEnter={(event) => { if (!sidebarCollapsed) return; const rect = event.currentTarget.getBoundingClientRect(); setConversationPeek({ conversation, top: Math.max(64, Math.min(rect.top, window.innerHeight - 176)) }); }} onMouseLeave={() => setConversationPeek(null)}><span className={`conversation-thumb${thumbnail ? " has-image" : ""}${running ? " is-running" : ""}`}>{thumbnail ? <img src={thumbnail} alt="" loading="lazy" decoding="async" /> : <i className="bi bi-chat-square" />}{running && <i className="bi bi-arrow-repeat conversation-run-indicator" aria-label="任务处理中" />}</span><span className="conversation-copy"><span>{conversation.title}</span><small>{running ? "处理中" : formatTime(conversation.updatedAt)}</small></span></button><button className="conversation-delete" type="button" title="删除对话" aria-label="删除对话" onClick={() => setDeleteTarget(conversation)}><i className="bi bi-trash3" /></button></div>; }) : <p className="conversation-empty">暂无记录</p>}
+            {loading ? Array.from({ length: 5 }, (_, index) => <div key={index} className="conversation-skeleton" aria-hidden="true"><i /><span><b /><b /></span></div>) : filteredConversations.length ? filteredConversations.map((conversation) => { const thumbnail = conversationThumbnail(conversation); const running = Boolean(activeRuns[conversation.id]); return <div key={conversation.id} className={`conversation-row${conversation.id === activeId ? " active" : ""}`} data-conversation-id={conversation.id}><button className="conversation-select" type="button" title={conversation.title} onClick={() => { setConversationPeek(null); setActiveId(conversation.id); }} onMouseEnter={(event) => { if (!sidebarCollapsed) return; const rect = event.currentTarget.getBoundingClientRect(); setConversationPeek({ conversation, top: Math.max(64, Math.min(rect.top, window.innerHeight - 176)) }); }} onMouseLeave={() => setConversationPeek(null)}><span className={`conversation-thumb${thumbnail ? " has-image" : ""}${running ? " is-running" : ""}`}>{thumbnail ? <img src={thumbnail} alt="" loading="lazy" decoding="async" /> : <i className="bi bi-chat-square" />}{running && <i className="bi bi-arrow-repeat conversation-run-indicator" aria-label="任务处理中" />}</span><span className="conversation-copy"><span>{conversation.title}</span><small>{running ? "处理中" : formatTime(conversation.updatedAt)}</small></span></button><button className="conversation-delete" type="button" title="删除对话" aria-label="删除对话" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setDeleteTarget(conversation); }}><i className="bi bi-trash3" /></button></div>; }) : <p className="conversation-empty">暂无记录</p>}
           </div>
         </div>
       </aside>
@@ -1693,7 +3001,7 @@ export function AssistantWorkspaceView() {
 
       <main className={`assistant-main${messages.length ? "" : " is-empty"}`}>
         <div className="assistant-ambient-stage" aria-hidden="true"><i className="ambient-blob is-a" /><i className="ambient-blob is-b" /><i className="ambient-blob is-c" /></div>
-        {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><span className="active-conversation-title" title={activeConversation?.title}>{activeConversation?.title}</span></div><div className="topbar-context"><AssistantContextMeter context={latestContext} /></div><div className="topbar-filters"><button type="button" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={Boolean(activeRun) || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><i className="bi bi-eraser" /><span>清除上文</span></button><button type="button" className={assetLibraryOpen ? "active" : ""} aria-pressed={assetLibraryOpen} title="资产库" aria-label="资产库" onClick={(event) => { event.stopPropagation(); setAssetLibraryOpen((value) => !value); }}><i className="bi bi-archive" /><span>资产库</span></button></div></header>}
+        {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><label className="thread-search"><i className="bi bi-search" /><input value={threadSearch} type="text" placeholder="搜索对话历史" aria-label="搜索对话历史" autoComplete="off" onChange={(event) => { setThreadSearch(event.target.value); setThreadHitIndex(-1); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setThreadSearch(""); setThreadHitIndex(-1); return; } if (event.key !== "Enter" || event.nativeEvent.isComposing) return; event.preventDefault(); jumpToThreadHit(event.shiftKey ? -1 : 1); }} />{threadSearch.trim() ? <span className="thread-search-count" aria-live="polite">{threadSearchHits.length ? (threadHitIndex >= 0 ? `${threadHitIndex + 1}/${threadSearchHits.length}` : `${threadSearchHits.length} 条`) : "无结果"}</span> : null}{threadSearch.trim() ? <button type="button" title="上一条" aria-label="上一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(-1)}><i className="bi bi-chevron-up" /></button> : null}{threadSearch.trim() ? <button type="button" title="下一条" aria-label="下一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(1)}><i className="bi bi-chevron-down" /></button> : null}{threadSearch ? <button type="button" title="清空搜索" aria-label="清空搜索" onClick={() => { setThreadSearch(""); setThreadHitIndex(-1); }}><i className="bi bi-x" /></button> : null}</label></div><div className="topbar-filters"><button type="button" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={Boolean(activeRun) || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><i className="bi bi-eraser" /><span>清除上文</span></button><button type="button" className={assetLibraryOpen ? "active" : ""} aria-pressed={assetLibraryOpen} title="资产库" aria-label="资产库" onClick={(event) => { event.stopPropagation(); setAssetLibraryOpen((value) => !value); }}><i className="bi bi-archive" /><span>资产库</span></button></div></header>}
         <div ref={messageScrollerRef} className="assistant-messages" onScroll={handleMessageScroll}>
           {loading ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <section className="assistant-empty-state" aria-label="空白创作区"><div className="assistant-empty-content"><span className="empty-mark"><i className="bi bi-stars" /></span><p className="empty-mode-label"><i className={`bi ${selectedCreation.icon}`} />{CREATION_TYPE_DESCRIPTIONS[creationType]}</p><h1>今天想创作什么？</h1><div className="suggestion-grid">{SUGGESTIONS.map(([icon, text]) => <button key={text} type="button" onClick={() => { setDraft(text); textareaRef.current?.focus(); }}><i className={`bi ${icon}`} /><span>{text}</span><i className="bi bi-arrow-up-right suggestion-arrow" /></button>)}</div></div></section> : <section className="message-thread" aria-live="polite">{hiddenMessageCount > 0 && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { const scroller = messageScrollerRef.current; if (scroller) scroller.scrollTop = 0; }}><i className="bi bi-clock-history" /><span>加载更早的对话（{hiddenMessageCount}）</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
             const originalIndex = firstRenderedMessageIndex + offset;
@@ -1703,26 +3011,36 @@ export function AssistantWorkspaceView() {
             const showDate = originalIndex === 0 || Number.isNaN(previousDate.getTime()) || currentDate.toDateString() !== previousDate.toDateString();
             const previousUser = message.role === "user" ? message : [...messages.slice(0, originalIndex)].reverse().find((item) => item.role === "user");
             const sourceProposal = sourceProposalForImage(message);
-            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={Boolean(activeRun)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} onToggleStatus={toggleStatus} onCopy={copyMessage} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onWithdraw={(item) => void withdrawLastTurn(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => { updateProposal(message.id, { dismissed: false }); scrollToMessage(message.id); }} onProposalApprove={() => void approveAgentProposal(message)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
+            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={Boolean(activeRun)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} onToggleStatus={toggleStatus} onCopy={copyMessage} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => { updateProposal(message.id, { dismissed: false }); scrollToMessage(message.id); }} onProposalApprove={() => void approveAgentProposal(message)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
           })}</div></section>}
         </div>
 
         {navigatorItems.length > 0 && <nav className="conversation-minimap" aria-label="对话位置导航">{navigatorItems.map((item) => <button key={item.id} type="button" className={activeNavigatorMessageId === item.id ? "active" : ""} aria-label={`跳转到：${item.preview}`} onClick={() => scrollToMessage(item.id)}><i /><span className="conversation-minimap-preview"><small>{item.date} · {item.time}</small><strong>{item.preview}</strong><em><i className={`bi ${item.icon}`} /> 对话节点</em></span></button>)}</nav>}
 
         <div className={`composer-zone${messages.length > 0 && !isAtBottom && !isReturningToBottom ? " is-scrolled-away" : ""}`} onClick={(event) => event.stopPropagation()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}>
-          {messages.length > 0 && !isAtBottom && !isReturningToBottom && <div className="return-to-bottom-row"><button className="return-to-bottom" type="button" title="回到底部" aria-label="回到底部" onClick={() => scrollToBottom("smooth")}><span>回到底部</span><i className="bi bi-chevron-double-down" /></button></div>}
           {serviceError && <div className="assistant-service-error"><i className="bi bi-exclamation-circle" /><span>{serviceError}</span><button type="button" onClick={() => void loadWorkspace()}><i className="bi bi-arrow-clockwise" />重试</button></div>}
           <div className={`assistant-composer${mode === "image" ? " is-image-mode" : ""}`}>
+            {messages.length > 0 && !isAtBottom && !isReturningToBottom && (
+              <button className="return-to-bottom" type="button" title="回到底部" aria-label="回到底部" onClick={() => scrollToBottom("smooth")}>
+                <svg className="return-to-bottom-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 2.5v8.2" />
+                  <path d="M4.8 7.6 8 10.8l3.2-3.2" />
+                  <path d="M3.5 13.5h9" />
+                </svg>
+                <span>回到底部</span>
+              </button>
+            )}
             {creationMenuOpen && <section className="composer-popover creation-type-menu"><p className="popover-eyebrow">创作类型</p>{CREATION_TYPES.map((type) => <button key={type.id} type="button" className={creationType === type.id ? "active" : ""} disabled={type.id === "image" && documents.length > 0} title={type.id === "image" && documents.length > 0 ? "先移除文档附件" : undefined} onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}><i className={`bi ${type.icon}`} /><span>{type.label}</span>{creationType === type.id && <i className="bi bi-check-lg menu-check" />}</button>)}</section>}
-            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "150px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong></span><ModelMenuPrice model={mode === "image" ? model : modelWithReasoningPrice(model)} perImage={mode === "image"} /><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
-            {reasoningMenuOpen && mode !== "image" && reasoningEfforts.length > 0 && (
+            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "168px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong></span><ModelMenuPrice model={mode === "image" ? model : modelWithReasoningPrice(model)} perImage={mode === "image"} /><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
+            {reasoningMenuOpen && mode !== "image" && reasoningEffortOptions.length > 0 && (
               <section className="composer-popover reasoning-effort-menu" aria-label="推理强度">
-                <header><p className="popover-eyebrow">推理强度</p><span>当前模型支持 {reasoningEfforts.length} 档</span></header>
+                <header><p className="popover-eyebrow">推理强度</p><span>当前模型支持 {reasoningEffortOptions.length} 档</span></header>
                 <div className="reasoning-effort-options">
-                  {reasoningEfforts.map((effort) => (
-                    <button key={effort} type="button" className={activeReasoningEffort === effort ? "active" : ""} aria-pressed={activeReasoningEffort === effort} onClick={() => { setReasoningEffort(effort); setReasoningMenuOpen(false); }}>
-                      <span><strong>{REASONING_EFFORT_LABELS[effort] || effort}</strong><small>{effort} · {assistantReasoningPrice(selectedConversationModel, effort).effective} 积分/轮</small></span>
-                      {activeReasoningEffort === effort && <i className="bi bi-check-lg menu-check" />}
+                  {reasoningEffortOptions.map((option) => (
+                    <button key={option.id} type="button" className={activeReasoningEffort === option.id ? "active" : ""} aria-pressed={activeReasoningEffort === option.id} onClick={() => { setReasoningEffort(option.id); setReasoningMenuOpen(false); }}>
+                      <span className="reasoning-effort-copy"><strong>{option.label}</strong><small>{option.id}</small></span>
+                      <ModelMenuPrice model={reasoningEffortOptionPriceModel(option)} unitSuffix="/轮" />
+                      {activeReasoningEffort === option.id && <i className="bi bi-check-lg menu-check" />}
                     </button>
                   ))}
                 </div>
@@ -1756,7 +3074,7 @@ export function AssistantWorkspaceView() {
                   <div className="preferences-block">
                     <p className="preferences-label">选择生成数量</p>
                     <div className="image-count-options">
-                      {IMAGE_COUNTS.map((value) => (
+                      {availableCounts.map((value) => (
                         <button key={value} type="button" className={generationCount === value ? "active" : ""} aria-pressed={generationCount === value} onClick={() => setGenerationCount(value)}>{value}</button>
                       ))}
                     </div>
@@ -1780,34 +3098,50 @@ export function AssistantWorkspaceView() {
               </section>
             )}
             <input ref={fileInputRef} className="reference-file-input" type="file" accept={mode === "image" ? "image/*" : "image/*,.txt,.md,.markdown,.csv,.json,.pdf,.docx,.xlsx,.pptx"} multiple aria-label={mode === "image" ? "添加参考图" : "添加图片或文档"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
-            {(references.length > 0 || documents.length > 0 || uploading) && <div className={`reference-dock has-images${uploading ? " is-uploading" : ""}`} aria-label="已添加的附件">{references.map((image) => <figure key={image.id} className="reference-card"><img src={image.thumbnailUrl || image.dataUrl} alt={image.name} /><button type="button" title="移除参考图" aria-label="移除参考图" onClick={() => setReferences((current) => current.filter((item) => item.id !== image.id))}><i className="bi bi-x" /></button></figure>)}{documents.map((item) => <div key={item.id} className={`reference-document-card is-${item.status || "queued"}`} title={item.errorMessage || item.name}><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{documentStatusLabel(item)} · {formatDocumentSize(item.sizeBytes)}</small></span><button type="button" title="移除文档" aria-label={`移除文档 ${item.name}`} onClick={() => removeComposerDocument(item)}><i className="bi bi-x" /></button></div>)}{uploading && <span className="reference-card reference-skeleton" aria-label="附件上传或解析中" />}</div>}
+            {(references.length > 0 || documents.length > 0 || uploading) && <div className={`reference-dock has-images${uploading ? " is-uploading" : ""}`} aria-label="已添加的附件">{references.map((image, index) => <figure key={image.id} className="reference-card"><button type="button" className="reference-card-preview" title={image.name ? `查看 ${image.name}` : "查看参考图"} onClick={() => openImage(image, index, references)}><img src={image.thumbnailUrl || image.dataUrl} alt={image.name || "参考图"} /></button><button type="button" className="reference-card-remove" title="移除参考图" aria-label={image.name ? `移除参考图 ${image.name}` : "移除参考图"} onClick={(event) => { event.stopPropagation(); setReferences((current) => current.filter((item) => item.id !== image.id)); }}><i className="bi bi-x" /></button></figure>)}{documents.map((item) => <div key={item.id} className={`reference-document-card is-${item.status || "queued"}`} title={item.errorMessage || item.name}><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{documentStatusLabel(item)} · {formatDocumentSize(item.sizeBytes)}</small></span><button type="button" title="移除文档" aria-label={`移除文档 ${item.name}`} onClick={() => removeComposerDocument(item)}><i className="bi bi-x" /></button></div>)}{uploading && <span className="reference-card reference-skeleton" aria-label="附件上传或解析中" />}</div>}
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}
             <textarea ref={textareaRef} value={draft} rows={1} aria-label="消息输入" placeholder={mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(activeRun) || Boolean(serviceError)} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = assistantClipboardFiles(event.clipboardData); if (files.length) { event.preventDefault(); void uploadReferences(files); } }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
             {draftCharacterCount > 10000 && <div className={`draft-counter${draftCharacterCount > MAX_ASSISTANT_MESSAGE_CHARACTERS ? " is-over" : ""}`}>{draftCharacterCount.toLocaleString("zh-CN")} / 12,000</div>}
             <div className="composer-toolbar">
               <div className="composer-left">
                 <button className="composer-attachment-inline" type="button" title={mode === "image" ? "添加参考图" : "添加附件"} aria-label={mode === "image" ? "添加参考图" : "添加附件"} onClick={() => fileInputRef.current?.click()}><i className="bi bi-paperclip" /></button>
-                <button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => { setCreationMenuOpen((value) => !value); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi ${creationMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button>
-                <button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} onClick={() => { setModelMenuOpen((value) => !value); setCreationMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span><i className={`bi ${mode === "image" ? "bi-stars" : "bi-chevron-down"}`} /></button>
+                <button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => { setCreationMenuOpen((value) => !value); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi bi-chevron-down menu-chevron${creationMenuOpen ? " is-open" : ""}`} /></button>
+                <button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} onClick={() => { setModelMenuOpen((value) => !value); setCreationMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span>{mode === "image" ? <i className="bi bi-stars" /> : <i className={`bi bi-chevron-down menu-chevron${modelMenuOpen ? " is-open" : ""}`} />}</button>
                 {mode === "image" ? (
                   <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => { setPreferencesOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); }}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button>
                 ) : (
                   <>
-                    {reasoningEfforts.length > 0 && activeReasoningEffort ? <button className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} onClick={() => { setReasoningMenuOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setPreferencesOpen(false); }}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi ${reasoningMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button> : null}
-                    <button className={`composer-tool-button${documents.length ? " active" : ""}`} type="button" disabled title={documents.length ? "文档分析已启用" : "上传文档后自动启用"} aria-label={documents.length ? "文档分析已启用" : "使用技能"}><i className={`bi ${documents.length ? "bi-file-earmark-search" : "bi-wrench-adjustable"}`} /><span>{documents.length ? "文档分析" : "使用技能"}</span></button>
-                    <button className="composer-tool-button is-mention" type="button" disabled title="暂未开放" aria-label="添加主体，暂未开放"><span>@</span></button>
+                    {reasoningEfforts.length > 0 && activeReasoningEffort ? <button className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} onClick={() => { setReasoningMenuOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setPreferencesOpen(false); }}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi bi-chevron-down menu-chevron${reasoningMenuOpen ? " is-open" : ""}`} /></button> : null}
                   </>
                 )}
               </div>
-              {activeRun ? <button className="send-button stop-button" type="button" aria-label="停止生成" onClick={() => void stopRun()}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={auth.isAuthenticated && !canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}
+              <div className="composer-actions">
+                {voiceListening && <span className="composer-voice-status">正在聆听</span>}
+                <button
+                  className={`voice-button${voiceListening ? " is-listening" : ""}`}
+                  type="button"
+                  disabled={!voiceSupported || voiceBusy}
+                  title={voiceSupported ? (voiceListening ? "停止语音输入" : "语音输入") : "当前浏览器不支持语音输入"}
+                  aria-label={voiceListening ? "停止语音输入" : "语音输入"}
+                  aria-pressed={voiceListening}
+                  onClick={(event) => { event.stopPropagation(); toggleVoiceInput(); }}
+                >
+                  <i className={`bi ${voiceListening ? "bi-stop-fill" : "bi-mic"}`} />
+                </button>
+                {activeRun ? <button className="send-button stop-button" type="button" title="停止生成，本轮积分不退还" aria-label="停止生成" onClick={() => setStopConfirmOpen(true)}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={auth.isAuthenticated && !canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}
+              </div>
             </div>
+          </div>
+          <div className="composer-context-row">
+            <AssistantContextMeter context={latestContext} />
           </div>
         </div>
       </main>
 
-      {assetLibraryOpen && <aside className="asset-library-panel" aria-label="资产库" onClick={(event) => event.stopPropagation()}><header className="asset-library-header"><div className="asset-library-tabs" role="tablist" aria-label="资产范围"><button type="button" role="tab" aria-selected={assetTab === "session"} className={assetTab === "session" ? "active" : ""} onClick={() => setAssetTab("session")}>会话资产</button><button type="button" role="tab" aria-selected={assetTab === "all"} className={assetTab === "all" ? "active" : ""} onClick={() => setAssetTab("all")}>全部资产</button></div><button className="asset-close" type="button" title="关闭资产库" aria-label="关闭资产库" onClick={() => setAssetLibraryOpen(false)}><i className="bi bi-x-lg" /></button></header><div className="asset-search-row"><label><i className="bi bi-search" /><input value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} type="text" placeholder="搜索图片资产" /></label><button type="button" title="筛选" aria-label="筛选"><i className="bi bi-funnel" /></button></div><nav className="asset-type-tabs" aria-label="资产类型"><button type="button" className="active">图片</button><button type="button">视频</button><button type="button">音频</button><button type="button">文档</button><button type="button">主体</button></nav><div className="asset-image-grid">{assetLibraryImages.map((asset) => <button key={asset.id} type="button" title={`添加 ${asset.label} 到参考图`} onClick={() => addAssetReference(asset)}><img src={asset.thumbUrl || asset.dataUrl} alt={asset.label} loading="lazy" decoding="async" /><span><i className="bi bi-plus-lg" /></span></button>)}</div>{!assetLibraryImages.length && <div className="asset-empty"><i className="bi bi-images" /><p>没有匹配的图片资产</p></div>}<footer className="asset-library-footer"><span>{assetLibraryImages.length} 个图片资产</span><small>点击图片即可添加为参考图</small></footer></aside>}
+      {assetLibraryMounted && createPortal(<div className={`asset-library-layer${isDark ? " is-dark" : ""}${assetLibraryEntered ? " is-open" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAssetLibraryOpen(false); }}><div className={`assistant-workspace${isDark ? " is-dark" : ""}`}><aside className="asset-library-panel" role="dialog" aria-modal="true" aria-label="资产库" onMouseDown={(event) => event.stopPropagation()}><header className="asset-library-header"><div className="asset-library-heading"><p className="asset-library-kicker">资产库</p><div className="asset-library-tabs" role="tablist" aria-label="资产范围"><button type="button" role="tab" aria-selected={assetTab === "session"} className={assetTab === "session" ? "active" : ""} onClick={() => setAssetTab("session")}>会话资产</button><button type="button" role="tab" aria-selected={assetTab === "all"} className={assetTab === "all" ? "active" : ""} onClick={() => setAssetTab("all")}>全部资产</button></div></div><button className="asset-close" type="button" title="关闭资产库" aria-label="关闭资产库" onClick={() => setAssetLibraryOpen(false)}><i className="bi bi-x-lg" /></button></header><div className="asset-search-row"><label><i className="bi bi-search" /><input value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} type="text" placeholder={assetKind === "file" ? "搜索文件资产" : "搜索图片资产"} /></label></div><nav className="asset-kind-tabs" role="tablist" aria-label="资产类型"><button type="button" role="tab" aria-selected={assetKind === "image"} className={assetKind === "image" ? "active" : ""} onClick={() => setAssetKind("image")}>图片</button><button type="button" role="tab" aria-selected={assetKind === "file"} className={assetKind === "file" ? "active" : ""} onClick={() => setAssetKind("file")}>文件</button></nav>{assetKind === "file" ? <><div className="asset-file-list">{assetLibraryFiles.map((file) => <AssetLibraryFileRow key={file.id} file={file} picked={file.source !== "output" && documents.some((item) => item.id === file.id)} capped={documents.length >= 8} blocked={mode === "image"} onPick={addAssetDocument} />)}</div>{!assetLibraryFiles.length && <div className="asset-empty"><i className="bi bi-file-earmark-text" /><p>没有匹配的文件资产</p></div>}</> : <><div className="asset-image-grid" onScroll={handleAssetGridScroll}>{visibleAssetLibraryImages.map((asset) => <AssetLibraryTile key={asset.id} asset={asset} picked={references.some((item) => sameAssetReference(item, asset))} capped={atReferenceLimit} onPick={addAssetReference} />)}</div>{!assetLibraryImages.length && <div className="asset-empty"><i className="bi bi-images" /><p>{libraryAssetsLoading && assetTab !== "session" ? "正在载入我的资产…" : "没有匹配的图片资产"}</p></div>}</>}<footer className="asset-library-footer">{assetKind === "file" ? <><span>{assetLibraryFiles.length} 个文件资产</span><small>{mode === "image" ? "图片生成模式仅支持图片附件" : documents.length ? `已添加 ${documents.length}/8 个文档` : "附件可添加，输出文件可下载"}</small></> : <><span>{assetLibraryImages.length} 个图片资产</span><small>{references.length ? `已添加 ${references.length}/${maxReferences} 张参考图` : "点击即可添加为参考图"}</small></>}</footer></aside></div></div>, document.body)}
 
-      {deleteTarget && createPortal(<div className="assistant-dialog-layer" role="presentation"><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-delete-title"><span className="dialog-icon is-danger"><i className={`bi ${activeRuns[deleteTarget.id] ? "bi-stop-circle" : "bi-trash3"}`} /></span><div><h2 id="assistant-delete-title">{activeRuns[deleteTarget.id] ? "停止任务并删除对话？" : "删除这个对话？"}</h2><p>“{deleteTarget.title}”{activeRuns[deleteTarget.id] ? "仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。" : "及其中的消息将被永久删除。"}</p></div><div className="dialog-actions"><button type="button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="is-danger" onClick={() => void deleteConversationRow()}>{activeRuns[deleteTarget.id] ? "停止任务并删除" : "删除"}</button></div></section></div>, document.body)}
+      {stopConfirmOpen && createPortal(<div className={`assistant-dialog-layer${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStopConfirmOpen(false); }}><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-stop-title" onMouseDown={(event) => event.stopPropagation()}><span className="dialog-icon is-danger"><i className="bi bi-stop-circle" /></span><div className="dialog-copy"><h2 id="assistant-stop-title">停止本次生成？</h2><p>任务仍在进行中。主动停止后，本轮已预留的积分不会退还。</p></div><div className="dialog-actions"><button type="button" onClick={() => setStopConfirmOpen(false)}>继续生成</button><button type="button" className="is-danger" onClick={() => void stopRun()}>确认停止</button></div></section></div>, document.body)}
+      {deleteTarget && createPortal(<div className={`assistant-dialog-layer${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleteTarget(null); }}><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-delete-title" onMouseDown={(event) => event.stopPropagation()}><span className="dialog-icon is-danger"><i className={`bi ${activeRuns[deleteTarget.id] ? "bi-stop-circle" : "bi-trash3"}`} /></span><div className="dialog-copy"><h2 id="assistant-delete-title">{activeRuns[deleteTarget.id] ? "停止任务并删除对话？" : "删除这个对话？"}</h2><p>“{deleteTarget.title}”{activeRuns[deleteTarget.id] ? "仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。主动停止不退还本轮积分。" : "及其中的消息将被永久删除。"}</p></div><div className="dialog-actions"><button type="button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="is-danger" onClick={() => void deleteConversationRow()}>{activeRuns[deleteTarget.id] ? "停止任务并删除" : "删除"}</button></div></section></div>, document.body)}
       <AssistantCostDialog payload={costPayload} light={!isDark} onCancel={cancelCost} onConfirm={(skip) => void confirmCost(skip)} />
       <AssistantImageViewer value={selectedImage} onClose={closeImage} onStep={stepImage} />
     </div>

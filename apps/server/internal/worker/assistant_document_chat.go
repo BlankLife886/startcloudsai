@@ -49,22 +49,23 @@ func (w *Worker) requestAssistantDocumentText(
 	client *sub2api.Client,
 	run *store.AssistantRun,
 	payload []sub2api.Message,
-	onFinalText func(string) error,
-) (string, []string, []map[string]any, error) {
+	onFinalText func(string, string) error,
+) (string, []string, []map[string]any, sub2api.ChatUsage, error) {
 	fileIDs := assistantRunFileIDs(run)
 	if len(fileIDs) == 0 {
-		return "", nil, nil, fmt.Errorf("document chat has no attached files")
+		return "", nil, nil, sub2api.ChatUsage{}, fmt.Errorf("document chat has no attached files")
 	}
 	registry, skill, err := w.assistantDocumentSkill(run)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, sub2api.ChatUsage{}, err
 	}
 	definitions, err := registry.Definitions(skill.AllowedTools)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, sub2api.ChatUsage{}, err
 	}
 	used := make([]string, 0, skill.MaxSteps)
 	artifacts := make([]map[string]any, 0, 2)
+	var usage sub2api.ChatUsage
 	wantsArtifact := assistantArtifactRequested(run.Prompt)
 	messages := append([]sub2api.Message(nil), payload...)
 	for step := 0; step < skill.MaxSteps; step++ {
@@ -76,9 +77,15 @@ func (w *Worker) requestAssistantDocumentText(
 		if step == 0 {
 			toolChoice = sub2api.RequiredToolChoice
 		}
-		result, err := client.ChatAgentWithTools(ctx, messages, nil, turnDefinitions, toolChoice, nil)
+		result, err := client.ChatAgentWithTools(ctx, messages, nil, turnDefinitions, toolChoice, func(_, reasoning string) error {
+			if onFinalText == nil || strings.TrimSpace(reasoning) == "" {
+				return nil
+			}
+			return onFinalText("", reasoning)
+		})
+		usage = usage.Add(result.Usage)
 		if err != nil {
-			return result.Text, used, artifacts, err
+			return result.Text, used, artifacts, usage, err
 		}
 		if result.ToolCall == nil {
 			text := strings.TrimSpace(result.Text)
@@ -98,11 +105,11 @@ func (w *Worker) requestAssistantDocumentText(
 				break
 			}
 			if onFinalText != nil {
-				if err := onFinalText(text); err != nil {
-					return text, used, artifacts, err
+				if err := onFinalText(text, strings.TrimSpace(result.Reasoning)); err != nil {
+					return text, used, artifacts, usage, err
 				}
 			}
-			return text, used, artifacts, nil
+			return text, used, artifacts, usage, nil
 		}
 		call := *result.ToolCall
 		messages = append(messages, sub2api.Message{
@@ -131,14 +138,14 @@ func (w *Worker) requestAssistantDocumentText(
 		}
 	}
 	if !assistantDocumentEvidenceRead(used) {
-		return "", used, artifacts, fmt.Errorf("document analysis finished without reading file evidence")
+		return "", used, artifacts, usage, fmt.Errorf("document analysis finished without reading file evidence")
 	}
 	if wantsArtifact && len(artifacts) == 0 {
-		return "", used, artifacts, fmt.Errorf("assistant did not create the requested file")
+		return "", used, artifacts, usage, fmt.Errorf("assistant did not create the requested file")
 	}
 	messages = append([]sub2api.Message{{Role: "system", Content: assistantDocumentFinalInstruction}}, messages...)
-	text, err := requestAssistantChatText(ctx, client, messages, run.Prompt, onFinalText, nil)
-	return text, used, artifacts, err
+	text, finalUsage, err := requestAssistantChatText(ctx, client, messages, run.Prompt, onFinalText, nil)
+	return text, used, artifacts, usage.Add(finalUsage), err
 }
 
 func assistantToolDefinitionsWithout(definitions []sub2api.FunctionTool, excluded string) []sub2api.FunctionTool {

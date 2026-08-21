@@ -27,6 +27,7 @@ type Event struct {
 	Image      *ImageEvent    `json:"image,omitempty"`
 	ImageTotal int            `json:"imageTotal,omitempty"`
 	Context    map[string]any `json:"context,omitempty"`
+	Usage      map[string]any `json:"usage,omitempty"`
 	Tool       *ToolCallEvent `json:"tool,omitempty"`
 	Done       bool           `json:"done,omitempty"`
 	Status     string         `json:"status,omitempty"`

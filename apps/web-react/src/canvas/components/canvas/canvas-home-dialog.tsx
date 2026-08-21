@@ -286,7 +286,7 @@ const DIALOG_CSS = `
 }
 .sc-cd-quote-hero span {
   display: block;
-  color: #c4b5fd;
+  color: #8b7cff;
   font-size: 12px;
   font-weight: 650;
 }
@@ -295,6 +295,13 @@ const DIALOG_CSS = `
   align-items: baseline;
   gap: 8px;
   margin: 6px 0 0;
+}
+.sc-cd-quote-hero s {
+  color: rgba(255,255,255,0.38);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
 }
 .sc-cd-quote-hero strong {
   color: #fff;
@@ -305,7 +312,7 @@ const DIALOG_CSS = `
   font-variant-numeric: tabular-nums;
 }
 .sc-cd-quote-hero em {
-  color: #c4b5fd;
+  color: #8b7cff;
   font-size: 15px;
   font-style: normal;
   font-weight: 650;
@@ -370,7 +377,7 @@ const DIALOG_CSS = `
 }
 .sc-cd-quote-flow > div { min-width: 0; }
 .sc-cd-quote-flow > div:last-child { text-align: right; }
-.sc-cd-quote-flow svg { color: #c4b5fd; }
+.sc-cd-quote-flow svg { color: #8b7cff; }
 .sc-cd-quote-flow b {
   display: block;
   color: #9a9aa6;

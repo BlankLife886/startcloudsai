@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -122,4 +123,56 @@ func UpdateCanvasWorkflowTemplateCover(ctx context.Context, q Q, id uuid.UUID, c
 func DeleteCanvasWorkflowTemplate(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `DELETE FROM canvas_workflow_templates WHERE id = $1`, id)
 	return tag.RowsAffected() > 0, err
+}
+
+// ReorderCanvasWorkflowTemplates replaces the selected templates in their
+// current sort slots and then normalizes sort values. Items outside the
+// selection keep their relative positions, so category-filtered sorting is safe.
+func ReorderCanvasWorkflowTemplates(ctx context.Context, q Q, orderedIDs []uuid.UUID) error {
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	rows, err := q.Query(ctx, `SELECT id FROM canvas_workflow_templates ORDER BY sort ASC, created_at DESC, id DESC FOR UPDATE`)
+	if err != nil {
+		return err
+	}
+	allIDs := make([]uuid.UUID, 0, len(orderedIDs))
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		allIDs = append(allIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	selected := make(map[uuid.UUID]bool, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if selected[id] {
+			return fmt.Errorf("duplicate canvas template id %s", id)
+		}
+		selected[id] = true
+	}
+	selectedSlots := make([]int, 0, len(orderedIDs))
+	for index, id := range allIDs {
+		if selected[id] {
+			selectedSlots = append(selectedSlots, index)
+		}
+	}
+	if len(selectedSlots) != len(orderedIDs) {
+		return fmt.Errorf("one or more canvas template ids do not exist")
+	}
+	next := append([]uuid.UUID(nil), allIDs...)
+	for index, slot := range selectedSlots {
+		next[slot] = orderedIDs[index]
+	}
+	_, err = q.Exec(ctx, `UPDATE canvas_workflow_templates AS template
+		SET sort = (ordered.position * 10)::integer, updated_at = now()
+		FROM unnest($1::uuid[]) WITH ORDINALITY AS ordered(id, position)
+		WHERE template.id = ordered.id`, next)
+	return err
 }

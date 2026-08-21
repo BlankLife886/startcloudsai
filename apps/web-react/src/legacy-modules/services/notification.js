@@ -6,24 +6,29 @@
 //   import notificationService from '@/services/notification'
 //   notificationService.success('已保存')
 //   notificationService.error('保存失败', { action: { label: '重试', handler: retry } })
+//   notificationService.warning('参考图已达上限')
+//   notificationService.failure('提交失败')
 
 const notifications = []
+const listeners = new Set()
 
 let notificationId = 0
 
 const POSITIONS = [
+  'top-center',
   'top-right',
   'top-left',
   'bottom-right',
   'bottom-left',
-  'top-center',
   'bottom-center',
 ]
+
+const TYPES = ['success', 'error', 'warning', 'info']
 
 const defaultOptions = {
   duration: 3500,
   closable: true,
-  position: 'top-right',
+  position: 'top-center',
   dedupe: true,
   dedupeWindow: 8000,
   maxPerPosition: 3,
@@ -36,12 +41,32 @@ const typeDuration = {
   error: 5200,
 }
 
+function normalizeType(type) {
+  if (type === 'failure') return 'error'
+  return TYPES.includes(type) ? type : 'info'
+}
+
+function snapshot() {
+  return notifications.map((item) => ({ ...item }))
+}
+
+function emit() {
+  const next = snapshot()
+  listeners.forEach((listener) => listener(next))
+}
+
+function subscribe(listener) {
+  listeners.add(listener)
+  listener(snapshot())
+  return () => listeners.delete(listener)
+}
+
 /**
  * 添加通知
  * @param {Object} options
  * @param {string} options.message  正文（必填）
  * @param {string} [options.title]  可选标题（加粗首行）
- * @param {string} [options.type]   error | warning | info | success
+ * @param {string} [options.type]   error | failure | warning | info | success
  * @param {number} [options.duration] 毫秒；0 表示不自动关闭
  * @param {boolean} [options.closable]
  * @param {string} [options.position] top/bottom-left/center/right
@@ -50,23 +75,24 @@ const typeDuration = {
  * @returns {number} 通知ID
  */
 function addNotification(options) {
-  const merged = { ...defaultOptions, ...options }
-  if (options.duration === undefined && typeDuration[merged.type]) {
-    merged.duration = typeDuration[merged.type]
+  const type = normalizeType(options.type)
+  const merged = { ...defaultOptions, ...options, type }
+  if (options.duration === undefined && typeDuration[type]) {
+    merged.duration = typeDuration[type]
   }
-  if (!POSITIONS.includes(merged.position)) merged.position = 'top-right'
+  if (!POSITIONS.includes(merged.position)) merged.position = 'top-center'
 
   const dedupeKey =
     merged.dedupeKey ||
-    `${merged.type || 'info'}|${merged.position}|${String(merged.title || '').trim()}|${String(merged.message || '').trim()}`
+    `${merged.type}|${merged.position}|${String(merged.title || '').trim()}|${String(merged.message || '').trim()}`
 
   if (merged.dedupe) {
     const now = Date.now()
     const exists = notifications.find((item) => item.dedupeKey === dedupeKey)
     if (exists && now - (exists.timestamp || 0) < merged.dedupeWindow) {
       exists.timestamp = now
-      // revision 变化会让 ToastItem 重置倒计时并轻微闪烁提示“又发生了一次”
       exists.revision = (exists.revision || 0) + 1
+      emit()
       return exists.id
     }
   }
@@ -85,20 +111,27 @@ function addNotification(options) {
   while (samePosition.length >= maxPerPosition) {
     const oldest = samePosition.shift()
     if (!oldest) break
-    removeNotification(oldest.id)
+    const index = notifications.findIndex((item) => item.id === oldest.id)
+    if (index !== -1) notifications.splice(index, 1)
   }
 
   notifications.push(notification)
+  emit()
   return id
 }
 
 function removeNotification(id) {
   const index = notifications.findIndex((notification) => notification.id === id)
-  if (index !== -1) notifications.splice(index, 1)
+  if (index !== -1) {
+    notifications.splice(index, 1)
+    emit()
+  }
 }
 
 function clearNotifications() {
+  if (!notifications.length) return
   notifications.splice(0, notifications.length)
+  emit()
 }
 
 function error(message, options = {}) {
@@ -119,10 +152,12 @@ function success(message, options = {}) {
 
 export default {
   notifications,
+  subscribe,
   addNotification,
   removeNotification,
   clearNotifications,
   error,
+  failure: error,
   warning,
   info,
   success,

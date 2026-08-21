@@ -16,15 +16,15 @@ const neutral = {
     },
     dark: {
         primary: "#8b7cff",
-        primaryHover: "#a78bfa",
+        primaryHover: "#a394ff",
         primaryText: "#ffffff",
-        elevatedBg: "#1c1917",
-        itemHoverBg: "rgba(250, 250, 249, 0.08)",
-        itemSelectedBg: "rgba(250, 250, 249, 0.12)",
-        itemSelectedHoverBg: "rgba(250, 250, 249, 0.16)",
-        itemText: "#fafafa",
-        tableSelectedBg: "rgba(255, 255, 255, 0.08)",
-        tableSelectedHoverBg: "rgba(255, 255, 255, 0.12)",
+        elevatedBg: "#1a1c26",
+        itemHoverBg: "rgba(255, 255, 255, 0.06)",
+        itemSelectedBg: "rgba(109, 92, 255, 0.22)",
+        itemSelectedHoverBg: "rgba(109, 92, 255, 0.3)",
+        itemText: "#e8ebf4",
+        tableSelectedBg: "rgba(109, 92, 255, 0.16)",
+        tableSelectedHoverBg: "rgba(109, 92, 255, 0.22)",
     },
 };
 

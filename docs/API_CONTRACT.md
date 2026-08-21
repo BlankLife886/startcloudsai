@@ -263,6 +263,7 @@ task 主要字段：
 | ------ | ------------------------------------------------------ | ---- |
 | GET    | `/api/v1/admin/canvas-workflow-templates`              | 全部模板元数据，包含已下架记录，不返回完整 `document` |
 | POST   | `/api/v1/admin/canvas-workflow-templates`              | 上传模板正文与展示元数据 |
+| PATCH  | `/api/v1/admin/canvas-workflow-templates/order`        | `{ids}` 按数组顺序写入模板展示排序 |
 | PATCH  | `/api/v1/admin/canvas-workflow-templates/{id}`         | 修改元数据、排序、发布状态，可选替换模板正文 |
 | DELETE | `/api/v1/admin/canvas-workflow-templates/{id}`         | 删除模板，成功返回 204 |
 

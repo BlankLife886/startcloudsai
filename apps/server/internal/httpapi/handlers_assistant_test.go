@@ -27,6 +27,7 @@ func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T)
 		ID: uuid.New(), Role: "assistant", Kind: "chat", Status: "complete", Content: "完成",
 		Metadata: map[string]any{
 			"context":                         map[string]any{"usagePercent": 42, "compactedMessages": 12},
+			"usage":                           map[string]any{"inputTokens": 120, "outputTokens": 48, "firstTokenMs": 210, "durationMs": 1800},
 			"_contextSummary":                 "不应发送到浏览器的滚动摘要",
 			"_contextSummaryMessages":         12,
 			"_contextSummaryThroughMessageId": uuid.NewString(),
@@ -35,6 +36,9 @@ func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T)
 	payload := assistantMessageDict(message)
 	if payload["context"] == nil {
 		t.Fatalf("context stats missing: %#v", payload)
+	}
+	if payload["usage"] == nil {
+		t.Fatalf("usage missing: %#v", payload)
 	}
 	if _, exists := payload["_contextSummary"]; exists {
 		t.Fatalf("private summary leaked: %#v", payload)
@@ -91,7 +95,8 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`,
 		`"supportedReasoningEfforts":["low","medium","high","xhigh","max"]`, `"defaultReasoningEffort":"medium"`,
 		`"reasoningPrices":`, `"assistantStandardPricePoints":11`, `"assistantPricePoints":8`,
-		`"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
+		`"assistantDiscountPricePoints":8`, `"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
+		`"canvasAgentDiscountPricePoints":29`, `"reasoningEfforts":`,
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("assistant model price missing %s: %s", field, body)
@@ -219,8 +224,8 @@ func TestNormalizeAssistantReasoningEffortForModel(t *testing.T) {
 		{name: "gpt 5 rejects none", value: "none", model: "gpt-5", wantErr: true},
 		{name: "gpt 5.1 rejects xhigh", value: "xhigh", model: "gpt-5.1", wantErr: true},
 		{name: "gpt 5.3 codex rejects none", value: "none", model: "gpt-5.3-codex", wantErr: true},
-		{name: "unknown model remains unset", model: "custom-chat", defaultStandard: true},
 		{name: "unknown model rejects explicit effort", value: "medium", model: "custom-chat", wantErr: true},
+		{name: "unknown model remains unset", model: "custom-chat", defaultStandard: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,6 +237,21 @@ func TestNormalizeAssistantReasoningEffortForModel(t *testing.T) {
 				t.Fatalf("effort = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeAssistantReasoningEffortForSupported(t *testing.T) {
+	if got, err := normalizeAssistantReasoningEffortForSupported("", nil, true); err != nil || got != "" {
+		t.Fatalf("all-off empty: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("high", nil, true); err == nil || got != "" {
+		t.Fatalf("all-off explicit: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("max", []string{"low", "medium"}, false); err == nil || got != "" {
+		t.Fatalf("disabled effort: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("low", []string{"low", "high"}, false); err != nil || got != "low" {
+		t.Fatalf("enabled effort: got=%q err=%v", got, err)
 	}
 }
 
